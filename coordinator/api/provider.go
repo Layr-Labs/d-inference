@@ -28,6 +28,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 
 	"net/http"
 	"strings"
@@ -1120,17 +1121,26 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				totalCost = pr.ReservedMicroUSD * 2
 			}
 			if err := s.ledger.Charge(pr.ConsumerKey, overage, "overage:"+msg.RequestID); err != nil {
-				// Overage charge failed (insufficient balance). Clamp
-				// to reservation so the provider still gets paid
-				// something rather than nothing.
-				s.logger.Error("overage charge failed — clamping to reservation",
-					"provider_id", providerID,
-					"request_id", msg.RequestID,
-					"reported_cost_micro_usd", totalCost,
-					"reserved_micro_usd", pr.ReservedMicroUSD,
-					"overage_micro_usd", overage,
-					"error", err,
-				)
+				// Overage charge failed — clamp to reservation so
+				// the provider still gets paid something.
+				if errors.Is(err, store.ErrInsufficientBalance) {
+					s.logger.Warn("overage charge failed (insufficient balance) — clamping to reservation",
+						"provider_id", providerID,
+						"request_id", msg.RequestID,
+						"reported_cost_micro_usd", totalCost,
+						"reserved_micro_usd", pr.ReservedMicroUSD,
+						"overage_micro_usd", overage,
+					)
+				} else {
+					s.logger.Error("overage charge failed (DB error) — clamping to reservation",
+						"provider_id", providerID,
+						"request_id", msg.RequestID,
+						"reported_cost_micro_usd", totalCost,
+						"reserved_micro_usd", pr.ReservedMicroUSD,
+						"overage_micro_usd", overage,
+						"error", err,
+					)
+				}
 				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
 				totalCost = pr.ReservedMicroUSD
 			} else {
@@ -1156,11 +1166,18 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	} else {
 		start := time.Now()
 		if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
-			s.logger.Warn("could not charge consumer (insufficient balance)",
-				"consumer_key", pr.ConsumerKey,
-				"cost_micro_usd", totalCost,
-				"error", err,
-			)
+			if errors.Is(err, store.ErrInsufficientBalance) {
+				s.logger.Warn("could not charge consumer (insufficient balance)",
+					"consumer_key", pr.ConsumerKey,
+					"cost_micro_usd", totalCost,
+				)
+			} else {
+				s.logger.Error("could not charge consumer (DB error)",
+					"consumer_key", pr.ConsumerKey,
+					"cost_micro_usd", totalCost,
+					"error", err,
+				)
+			}
 		}
 		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
 	}

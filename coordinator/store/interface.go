@@ -16,8 +16,14 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrInsufficientBalance is returned by Debit when the account has
+// insufficient funds (or does not exist). Callers should check with
+// errors.Is to distinguish this from transient DB errors.
+var ErrInsufficientBalance = errors.New("insufficient balance or account not found")
 
 // Store is the interface that all storage backends must implement.
 type Store interface {
@@ -78,6 +84,14 @@ type Store interface {
 	// public stats. Implementations must not store or return raw client IPs.
 	UsageLocationBuckets(since time.Time) []UsageLocationBucket
 
+	// UsageFlowBuckets returns aggregated directional flow buckets between
+	// consumer and provider regions. providerLocs supplies live provider
+	// locations from the registry so recently-connected providers that
+	// haven't been persisted yet are included. PostgresStore uses a SQL
+	// JOIN with the providers table and merges the live map; MemoryStore
+	// uses providerLocs directly.
+	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket
+
 	// Leaderboard returns the top N accounts ranked by the given metric
 	// over the given time window. Zero `since` means all-time.
 	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
@@ -105,6 +119,11 @@ type Store interface {
 
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64
+
+	// GetBalanceWithWithdrawable returns both the total balance and the
+	// withdrawable balance in a single query, avoiding two round trips to
+	// the same row in the balances table.
+	GetBalanceWithWithdrawable(accountID string) (balance int64, withdrawable int64)
 
 	// CreditWithdrawable adds micro-USD to both the total balance and the
 	// withdrawable balance, and records a ledger entry. Use for provider
@@ -377,6 +396,17 @@ type Store interface {
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
 
+	// --- Provider Log Reports ---
+
+	// StoreLogReport stores a provider log report.
+	StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error
+
+	// GetLogReports retrieves log reports for a serial number, newest first.
+	GetLogReports(serialNumber string, limit int) ([]LogReport, error)
+
+	// GetLogReport retrieves a single log report by ID.
+	GetLogReport(id int64) (*LogReport, error)
+
 	// --- Telemetry ---
 	//
 	// Telemetry events are forwarded to Datadog (Logs API + DogStatsD).
@@ -452,6 +482,31 @@ type UsageLocationBucket struct {
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
 	Providers        int     `json:"providers"`
+}
+
+// UsageFlowBucket is a pre-aggregated directional flow between a consumer
+// location and a provider location, computed via SQL JOIN.
+type UsageFlowBucket struct {
+	// Consumer (request origin)
+	ConsumerCity        string  `json:"consumer_city"`
+	ConsumerRegion      string  `json:"consumer_region"`
+	ConsumerRegionCode  string  `json:"consumer_region_code"`
+	ConsumerCountry     string  `json:"consumer_country"`
+	ConsumerCountryCode string  `json:"consumer_country_code"`
+	ConsumerLatitude    float64 `json:"consumer_latitude"`
+	ConsumerLongitude   float64 `json:"consumer_longitude"`
+	// Provider
+	ProviderCity        string  `json:"provider_city"`
+	ProviderRegion      string  `json:"provider_region"`
+	ProviderRegionCode  string  `json:"provider_region_code"`
+	ProviderCountry     string  `json:"provider_country"`
+	ProviderCountryCode string  `json:"provider_country_code"`
+	ProviderLatitude    float64 `json:"provider_latitude"`
+	ProviderLongitude   float64 `json:"provider_longitude"`
+	// Aggregates
+	Requests         int64 `json:"requests"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
 }
 
 // LeaderboardMetric selects the ranking column for a leaderboard query.
@@ -845,6 +900,18 @@ type ProviderLocation struct {
 	Timezone         string    `json:"timezone,omitempty"`
 	Source           string    `json:"source,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+}
+
+// LogReport represents a stored provider log report. LogData is only populated
+// when fetching a single report by ID (GetLogReport), not when listing.
+type LogReport struct {
+	ID           int64     `json:"id"`
+	SerialNumber string    `json:"serial_number"`
+	ProviderID   string    `json:"provider_id"`
+	AccountID    string    `json:"account_id"`
+	LogSizeBytes int64     `json:"log_size_bytes"`
+	CreatedAt    time.Time `json:"created_at"`
+	LogData      []byte    `json:"log_data,omitempty"`
 }
 
 // ReputationRecord is the persistent representation of a provider's reputation.

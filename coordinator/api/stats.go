@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -519,19 +518,12 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 }
 
 // aggregateRequestFlows builds directional request flow buckets between
-// consumer and provider regions.
+// consumer and provider regions. Uses a SQL JOIN via UsageFlowBuckets to
+// avoid loading all usage rows + all provider rows into Go memory (the
+// previous approach held two pool connections for up to 10s each).
 func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucket {
-	type flowKey struct {
-		consumerCity, consumerRegion, consumerCountry string
-		providerCity, providerRegion, providerCountry string
-	}
-	type flowAgg struct {
-		from                             flowEndpoint
-		to                               flowEndpoint
-		requests, promptTok, completeTok int64
-	}
-
-	// Build a provider location lookup from the live fleet.
+	// Build live provider location map from the registry so recently-
+	// connected providers (not yet persisted) are included.
 	providerLocs := make(map[string]*store.ProviderLocation)
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		if p.Location != nil {
@@ -540,79 +532,34 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 		}
 	})
 
-	// Fall back to stored provider records for providers that disconnected.
-	if storedRecords, err := s.store.ListProviderRecords(context.Background()); err == nil {
-		for _, rec := range storedRecords {
-			if _, live := providerLocs[rec.ID]; !live && rec.Location != nil {
-				cp := *rec.Location
-				providerLocs[rec.ID] = &cp
-			}
-		}
-	}
+	buckets := s.store.UsageFlowBuckets(since, providerLocs)
 
-	flows := make(map[flowKey]*flowAgg)
-	records := s.store.UsageRecordsSince(since)
-	for _, rec := range records {
-		consumerLoc := rec.RequestLocation
-		providerLoc := providerLocs[rec.ProviderID]
-		if consumerLoc == nil || providerLoc == nil {
+	out := make([]publicRequestFlowBucket, 0, len(buckets))
+	for _, b := range buckets {
+		if b.Requests < int64(minRequestsPerFlowBucket) {
 			continue
 		}
-		k := flowKey{
-			consumerCity:    consumerLoc.City,
-			consumerRegion:  consumerLoc.RegionCode,
-			consumerCountry: consumerLoc.CountryCode,
-			providerCity:    providerLoc.City,
-			providerRegion:  providerLoc.RegionCode,
-			providerCountry: providerLoc.CountryCode,
-		}
-		fa, ok := flows[k]
-		if !ok {
-			fromKey := "consumer:" + locationKey(consumerLoc.CountryCode, consumerLoc.RegionCode, consumerLoc.City)
-			toKey := "provider:" + locationKey(providerLoc.CountryCode, providerLoc.RegionCode, providerLoc.City)
-			fa = &flowAgg{
-				from: flowEndpoint{
-					Key:         fromKey,
-					Kind:        "consumer",
-					City:        consumerLoc.City,
-					Region:      consumerLoc.Region,
-					RegionCode:  consumerLoc.RegionCode,
-					Country:     consumerLoc.Country,
-					CountryCode: consumerLoc.CountryCode,
-					Latitude:    consumerLoc.Latitude,
-					Longitude:   consumerLoc.Longitude,
-				},
-				to: flowEndpoint{
-					Key:         toKey,
-					Kind:        "provider",
-					City:        providerLoc.City,
-					Region:      providerLoc.Region,
-					RegionCode:  providerLoc.RegionCode,
-					Country:     providerLoc.Country,
-					CountryCode: providerLoc.CountryCode,
-					Latitude:    providerLoc.Latitude,
-					Longitude:   providerLoc.Longitude,
-				},
-			}
-			flows[k] = fa
-		}
-		fa.requests++
-		fa.promptTok += int64(rec.PromptTokens)
-		fa.completeTok += int64(rec.CompletionTokens)
-	}
-
-	out := make([]publicRequestFlowBucket, 0, len(flows))
-	for _, fa := range flows {
-		if fa.requests < int64(minRequestsPerFlowBucket) {
-			continue
-		}
+		fromKey := "consumer:" + locationKey(b.ConsumerCountryCode, b.ConsumerRegionCode, b.ConsumerCity)
+		toKey := "provider:" + locationKey(b.ProviderCountryCode, b.ProviderRegionCode, b.ProviderCity)
 		out = append(out, publicRequestFlowBucket{
-			Key:              fa.from.Key + "->" + fa.to.Key,
-			From:             fa.from,
-			To:               fa.to,
-			Requests:         fa.requests,
-			PromptTokens:     fa.promptTok,
-			CompletionTokens: fa.completeTok,
+			Key: fromKey + "->" + toKey,
+			From: flowEndpoint{
+				Key: fromKey, Kind: "consumer",
+				City: b.ConsumerCity, Region: b.ConsumerRegion,
+				RegionCode: b.ConsumerRegionCode, Country: b.ConsumerCountry,
+				CountryCode: b.ConsumerCountryCode,
+				Latitude:    b.ConsumerLatitude, Longitude: b.ConsumerLongitude,
+			},
+			To: flowEndpoint{
+				Key: toKey, Kind: "provider",
+				City: b.ProviderCity, Region: b.ProviderRegion,
+				RegionCode: b.ProviderRegionCode, Country: b.ProviderCountry,
+				CountryCode: b.ProviderCountryCode,
+				Latitude:    b.ProviderLatitude, Longitude: b.ProviderLongitude,
+			},
+			Requests:         b.Requests,
+			PromptTokens:     b.PromptTokens,
+			CompletionTokens: b.CompletionTokens,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

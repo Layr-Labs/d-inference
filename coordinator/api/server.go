@@ -451,6 +451,7 @@ func (s *Server) SyncModelCatalog() {
 		}
 		s.registry.SetModelCatalog(entries)
 		s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
+		s.invalidateCatalogCache()
 		return
 	}
 
@@ -467,6 +468,17 @@ func (s *Server) SyncModelCatalog() {
 	}
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model catalog synced to registry", "active_models", len(entries))
+	s.invalidateCatalogCache()
+}
+
+// invalidateCatalogCache removes all cached model catalog responses so the
+// next request picks up any changes made by admin endpoints.
+func (s *Server) invalidateCatalogCache() {
+	if s.readCache == nil {
+		return
+	}
+	s.readCache.Invalidate("models:catalog")
+	s.readCache.Invalidate("models:catalog:text")
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
@@ -1133,6 +1145,11 @@ func (s *Server) routes() {
 	// removed (use Datadog Log Explorer).
 	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
 
+	// Provider log reports
+	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
+	s.mux.HandleFunc("GET /v1/admin/log-reports", s.requireAuth(s.handleListLogReports))
+	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))
+
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
 
@@ -1353,6 +1370,22 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				s.storeAPIKeyCache(token, apiKeyCacheEntry{
 					active:         keyActive,
 					ownerAccountID: ownerAccountID,
+					cachedAt:       time.Now(),
+				})
+			}
+		}
+
+		// If the API key lookup failed, try provider tokens (eigeninference-pt-...).
+		// These are issued by the device-code login flow and stored in a
+		// separate table. Without this fallback, `darkbloom report` (which
+		// sends the device-login token) would get 401.
+		if !keyActive {
+			if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
+				keyActive = true
+				ownerAccountID = pt.AccountID
+				s.storeAPIKeyCache(token, apiKeyCacheEntry{
+					active:         true,
+					ownerAccountID: pt.AccountID,
 					cachedAt:       time.Now(),
 				})
 			}

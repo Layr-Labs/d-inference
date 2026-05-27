@@ -2607,16 +2607,16 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 			  updated_at = NOW()
 		)
 		SELECT balance_micro_usd FROM credit`,
-		earning.AccountID,      // $1
-		earning.AmountMicroUSD, // $2
-		string(LedgerPayout),   // $3
-		earning.JobID,          // $4
+		earning.AccountID,                    // $1
+		earning.AmountMicroUSD,               // $2
+		string(LedgerPayout),                 // $3
+		earning.JobID,                        // $4
 		nullableCreatedAt(earning.CreatedAt), // $5
-		earning.ProviderID,       // $6
-		earning.ProviderKey,      // $7
-		earning.Model,            // $8
-		earning.PromptTokens,     // $9
-		earning.CompletionTokens, // $10
+		earning.ProviderID,                   // $6
+		earning.ProviderKey,                  // $7
+		earning.Model,                        // $8
+		earning.PromptTokens,                 // $9
+		earning.CompletionTokens,             // $10
 	).Scan(&balanceAfter)
 	if err != nil {
 		return fmt.Errorf("store: credit provider account: %w", err)

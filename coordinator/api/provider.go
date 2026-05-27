@@ -1794,4 +1794,3 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
-

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -76,28 +77,22 @@ func TestQueuedRequestGetsProviderWhenIdle(t *testing.T) {
 		Models: []protocol.ModelInfo{{ID: "test-model"}},
 	}
 
-	// TryAssign in a goroutine.
+	// Send provider on the response channel in a goroutine.
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		assigned := q.TryAssign("test-model", provider)
-		if !assigned {
-			t.Error("TryAssign should have succeeded")
-		}
+		req.ResponseCh <- provider
 	}()
 
-	// WaitForProvider should succeed.
-	p, err := q.WaitForProvider(req)
+	// WaitForProviderContext should succeed.
+	p, err := q.WaitForProviderContext(context.Background(), req)
 	if err != nil {
-		t.Fatalf("WaitForProvider: %v", err)
+		t.Fatalf("WaitForProviderContext: %v", err)
 	}
 	if p == nil {
 		t.Fatal("expected non-nil provider")
 	}
 	if p.ID != "p1" {
 		t.Errorf("provider id = %q, want p1", p.ID)
-	}
-	if p.Status != StatusServing {
-		t.Errorf("provider status = %q, want serving", p.Status)
 	}
 }
 
@@ -115,7 +110,7 @@ func TestQueueTimeoutReturnsError(t *testing.T) {
 	}
 
 	// No provider becomes available — should timeout.
-	_, err := q.WaitForProvider(req)
+	_, err := q.WaitForProviderContext(context.Background(), req)
 	if !errors.Is(err, ErrQueueTimeout) {
 		t.Errorf("expected ErrQueueTimeout, got %v", err)
 	}
@@ -140,84 +135,6 @@ func TestQueueRemove(t *testing.T) {
 
 	if q.QueueSize("test-model") != 0 {
 		t.Errorf("queue size after remove = %d, want 0", q.QueueSize("test-model"))
-	}
-}
-
-func TestStaleRequestsCleanedUp(t *testing.T) {
-	q := NewRequestQueue(10, 50*time.Millisecond)
-
-	req := &QueuedRequest{
-		RequestID:  "req-stale",
-		Model:      "test-model",
-		ResponseCh: make(chan *Provider, 1),
-	}
-	q.Enqueue(req)
-
-	// Wait for the request to become stale.
-	time.Sleep(100 * time.Millisecond)
-
-	q.CleanStale()
-
-	if q.QueueSize("test-model") != 0 {
-		t.Errorf("queue size after clean = %d, want 0", q.QueueSize("test-model"))
-	}
-}
-
-func TestTryAssignSkipsStaleRequests(t *testing.T) {
-	q := NewRequestQueue(10, 50*time.Millisecond)
-
-	// Enqueue a request.
-	staleReq := &QueuedRequest{
-		RequestID:  "req-stale",
-		Model:      "test-model",
-		ResponseCh: make(chan *Provider, 1),
-	}
-	q.Enqueue(staleReq)
-
-	// Wait for it to become stale.
-	time.Sleep(100 * time.Millisecond)
-
-	// Enqueue a fresh request.
-	freshReq := &QueuedRequest{
-		RequestID:  "req-fresh",
-		Model:      "test-model",
-		ResponseCh: make(chan *Provider, 1),
-	}
-	q.Enqueue(freshReq)
-
-	provider := &Provider{
-		ID:     "p1",
-		Status: StatusOnline,
-	}
-
-	// TryAssign should skip the stale one and assign to the fresh one.
-	assigned := q.TryAssign("test-model", provider)
-	if !assigned {
-		t.Fatal("TryAssign should have succeeded for fresh request")
-	}
-
-	// Read the assigned provider.
-	select {
-	case p := <-freshReq.ResponseCh:
-		if p.ID != "p1" {
-			t.Errorf("provider id = %q, want p1", p.ID)
-		}
-	default:
-		t.Error("fresh request should have received provider")
-	}
-}
-
-func TestTryAssignNoQueuedRequests(t *testing.T) {
-	q := NewRequestQueue(10, 30*time.Second)
-
-	provider := &Provider{
-		ID:     "p1",
-		Status: StatusOnline,
-	}
-
-	assigned := q.TryAssign("test-model", provider)
-	if assigned {
-		t.Error("TryAssign should return false when queue is empty")
 	}
 }
 

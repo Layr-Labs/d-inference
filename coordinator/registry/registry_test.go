@@ -194,7 +194,7 @@ func TestSwiftProviderPrivateTextWithoutPythonCaps(t *testing.T) {
 func TestPythonProviderRequiresPythonCaps(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	msg.Backend = BackendInprocessMLX
+	msg.Backend = "inprocess-mlx"
 	msg.PrivacyCapabilities.PythonRuntimeLocked = false
 	msg.PrivacyCapabilities.DangerousModulesBlocked = false
 
@@ -1834,7 +1834,7 @@ func TestModelCatalogGatesRoutingWithoutDroppingInventory(t *testing.T) {
 	if len(p.Models) != 2 {
 		t.Fatalf("expected full provider inventory to be preserved, got %d models", len(p.Models))
 	}
-	reg.ForceTrustProvider(p.ID)
+	testMakeTextRoutable(p)
 	if found := reg.FindProvider("mlx-community/random-model-not-in-catalog"); found != nil {
 		t.Fatal("expected non-catalog model to stay unroutable")
 	}
@@ -1943,7 +1943,7 @@ func TestRegisterWithEmptyConfiguredCatalogPreservesInventoryButRoutesNothingUnt
 	if len(provider.Models) != 1 {
 		t.Fatalf("expected provider inventory to be preserved, got %#v", provider.Models)
 	}
-	reg.ForceTrustProvider(provider.ID)
+	testMakeTextRoutable(provider)
 	modelID := provider.Models[0].ID
 	if found := reg.FindProvider(modelID); found != nil {
 		t.Fatal("expected empty configured catalog to route no models")

@@ -55,10 +55,7 @@ const (
 	TrustHardware   TrustLevel = "hardware"    // MDM + MDA + SE key bound to Apple-verified hardware
 )
 
-const (
-	BackendInprocessMLX = "inprocess-mlx"
-	BackendMLXSwift     = "mlx-swift"
-)
+const BackendMLXSwift = "mlx-swift"
 
 func BackendUsesSwiftRuntime(backend string) bool {
 	return backend == BackendMLXSwift
@@ -243,7 +240,7 @@ func providerSupportsPrivateTextLocked(p *Provider) bool {
 }
 
 func privateTextBackendSupported(backend string) bool {
-	return backend == BackendInprocessMLX || backend == BackendMLXSwift
+	return backend == "inprocess-mlx" || backend == BackendMLXSwift
 }
 
 // AddPending registers a pending request on this provider.
@@ -1651,40 +1648,6 @@ func (r *Registry) MarkUntrusted(providerID string) {
 	)
 }
 
-func (r *Registry) ForceTrustProvider(providerID string) {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
-		return
-	}
-
-	p.mu.Lock()
-	p.Status = StatusOnline
-	p.TrustLevel = TrustSelfSigned
-	p.ChallengeVerifiedSIP = true
-	p.LastChallengeVerified = time.Now()
-	p.FailedChallenges = 0
-	p.RuntimeVerified = true
-	p.RuntimeManifestChecked = true
-	if p.PrivacyCapabilities == nil {
-		p.PrivacyCapabilities = &protocol.PrivacyCapabilities{}
-	}
-	p.PrivacyCapabilities.TextBackendInprocess = true
-	p.PrivacyCapabilities.TextProxyDisabled = true
-	p.PrivacyCapabilities.PythonRuntimeLocked = true
-	p.PrivacyCapabilities.DangerousModulesBlocked = true
-	p.PrivacyCapabilities.AntiDebugEnabled = true
-	p.PrivacyCapabilities.CoreDumpsDisabled = true
-	p.PrivacyCapabilities.EnvScrubbed = true
-	p.mu.Unlock()
-
-	r.drainQueuedRequestsForModels(providerModelIDs(p))
-	r.logger.Info("provider force-trusted for testing",
-		"provider_id", providerID,
-	)
-}
-
 // SetTrustLevel updates a provider's trust level (thread-safe).
 func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 	r.mu.RLock()
@@ -2249,37 +2212,6 @@ func (r *Registry) ModelProviderSnapshot() map[string]int64 {
 	}
 	r.modelProvidersMu.Unlock()
 	return snap
-}
-
-// ProviderCountByChip returns a map of chip_name -> count of online providers.
-func (r *Registry) ProviderCountByChip() map[string]int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	counts := make(map[string]int)
-	for _, p := range r.providers {
-		p.mu.Lock()
-		online := p.Status != StatusOffline && p.Status != StatusUntrusted
-		p.mu.Unlock()
-		if online {
-			chip := p.Hardware.ChipName
-			if chip == "" {
-				chip = "unknown"
-			}
-			counts[chip]++
-		}
-	}
-	return counts
-}
-
-// ModelProviderCounts returns a map of model_id -> count of online providers
-// serving that model.
-func (r *Registry) ModelProviderCounts() map[string]int {
-	snap := r.ModelProviderSnapshot()
-	out := make(map[string]int, len(snap))
-	for k, v := range snap {
-		out[k] = int(v)
-	}
-	return out
 }
 
 func (r *Registry) ProviderCount() int {

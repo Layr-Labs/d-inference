@@ -28,7 +28,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"log/slog"
+
 	"net/http"
 	"strings"
 	"sync"
@@ -1756,15 +1756,3 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// SendInferenceRequest writes an inference request to the provider's WebSocket.
-func SendInferenceRequest(ctx context.Context, conn *websocket.Conn, msg *protocol.InferenceRequestMessage, logger *slog.Logger) error {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
-		logger.Error("failed to send inference request", "request_id", msg.RequestID, "error", err)
-		return err
-	}
-	return nil
-}

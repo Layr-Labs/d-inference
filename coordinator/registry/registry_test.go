@@ -717,9 +717,9 @@ func TestRecordChallengeSuccess(t *testing.T) {
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 
-	// Record some failures first
-	reg.RecordChallengeFailure("p1")
-	reg.RecordChallengeFailure("p1")
+	// Record some transient failures first
+	reg.RecordChallengeFailure("p1", true)
+	reg.RecordChallengeFailure("p1", true)
 
 	// Now record success
 	reg.RecordChallengeSuccess("p1")
@@ -735,30 +735,51 @@ func TestRecordChallengeSuccess(t *testing.T) {
 	}
 }
 
-func TestRecordChallengeFailure(t *testing.T) {
+func TestRecordChallengeFailureTransient(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
 
-	count := reg.RecordChallengeFailure("p1")
+	// Transient (timeout) failure: should NOT clear routing below threshold.
+	count := reg.RecordChallengeFailure("p1", true)
 	if count != 1 {
 		t.Errorf("failure count = %d, want 1", count)
 	}
-	if p.FailedChallenges != 1 {
-		t.Errorf("failed_challenges = %d, want 1", p.FailedChallenges)
-	}
-	if !p.LastChallengeVerified.IsZero() {
-		t.Error("challenge failure should clear last_challenge_verified")
-	}
-	if p.ChallengeVerifiedSIP {
-		t.Error("challenge failure should clear SIP verification")
+	if p.LastChallengeVerified.IsZero() {
+		t.Error("single transient failure should NOT clear last_challenge_verified")
 	}
 
-	count = reg.RecordChallengeFailure("p1")
-	if count != 2 {
-		t.Errorf("failure count = %d, want 2", count)
+	reg.RecordChallengeFailure("p1", true) // 2
+	if p.LastChallengeVerified.IsZero() {
+		t.Error("two transient failures should NOT clear last_challenge_verified")
+	}
+
+	// Third transient failure hits threshold — now clear.
+	reg.RecordChallengeFailure("p1", true) // 3
+	if !p.LastChallengeVerified.IsZero() {
+		t.Error("at MaxFailedChallenges, transient failures should clear last_challenge_verified")
+	}
+}
+
+func TestRecordChallengeFailureSecurity(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+
+	// Security failure (e.g. SIP disabled): clears routing immediately.
+	count := reg.RecordChallengeFailure("p1", false)
+	if count != 1 {
+		t.Errorf("failure count = %d, want 1", count)
+	}
+	if !p.LastChallengeVerified.IsZero() {
+		t.Error("security failure should clear last_challenge_verified immediately")
+	}
+	if p.ChallengeVerifiedSIP {
+		t.Error("security failure should clear SIP verification immediately")
 	}
 }
 
@@ -767,9 +788,9 @@ func TestChallengeFailureThreshold(t *testing.T) {
 	msg := testRegisterMessage()
 	reg.Register("p1", nil, msg)
 
-	// Record failures up to the threshold
+	// Record failures up to the threshold (security failures)
 	for range 3 {
-		reg.RecordChallengeFailure("p1")
+		reg.RecordChallengeFailure("p1", false)
 	}
 
 	// The caller (handleChallengeFailure) is responsible for calling MarkUntrusted,

@@ -1809,9 +1809,9 @@ func TestChallengeResponseWrongKey(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Answer challenges with the wrong public key repeatedly.
-	// We need MaxFailedChallenges (3) failures for the provider to be marked untrusted.
+	// We need registry.MaxFailedChallenges (3) failures for the provider to be marked untrusted.
 	failCount := 0
-	for failCount < MaxFailedChallenges {
+	for failCount < registry.MaxFailedChallenges {
 		readCtx, readCancel := context.WithTimeout(ctx, 2*time.Second)
 		_, data, err := conn.Read(readCtx)
 		readCancel()

@@ -51,9 +51,6 @@ const (
 
 	// ChallengeResponseTimeout is how long to wait for a challenge response.
 	ChallengeResponseTimeout = 30 * time.Second
-
-	// MaxFailedChallenges is the number of consecutive failures before marking untrusted.
-	MaxFailedChallenges = 3
 )
 
 // pendingChallenge tracks an outstanding challenge sent to a provider.
@@ -301,7 +298,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeInferenceComplete:
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
-			s.handleComplete(providerID, provider, completeMsg)
+			// Run completion handling (billing settlement) off the read loop.
+			// Billing does synchronous DB calls (GetModelPrice, Credit, Charge)
+			// that can block for seconds under DB pressure. If the read loop is
+			// blocked, attestation challenge responses can't be read from the
+			// WebSocket, causing challenge timeouts and provider derouting.
+			saferun.Go(s.logger, "handleComplete", func() {
+				s.handleComplete(providerID, provider, completeMsg)
+			})
 
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
@@ -930,7 +934,8 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 // handleChallengeFailure records a failed challenge and marks the provider
 // as untrusted if the failure threshold is reached.
 func (s *Server) handleChallengeFailure(providerID string, reason string) {
-	failures := s.registry.RecordChallengeFailure(providerID)
+	transient := reason == "timeout" || reason == "no response"
+	failures := s.registry.RecordChallengeFailure(providerID, transient)
 	s.ddIncr("attestation.challenges", []string{"outcome:failed"})
 	s.logger.Warn("attestation challenge failed",
 		"provider_id", providerID,
@@ -939,7 +944,7 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) {
 	)
 
 	severity := protocol.SeverityWarn
-	if failures >= MaxFailedChallenges {
+	if failures >= registry.MaxFailedChallenges {
 		severity = protocol.SeverityError
 		s.registry.MarkUntrusted(providerID)
 	}

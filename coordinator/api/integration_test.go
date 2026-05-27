@@ -275,7 +275,7 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 }
 
 // TestIntegration_ChallengeFailureBlocksRouting verifies that a provider
-// responding with wrong nonces gets marked untrusted after MaxFailedChallenges.
+// responding with wrong nonces gets marked untrusted after registry.MaxFailedChallenges.
 func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
@@ -335,12 +335,12 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 		t.Fatal("provider should be routable after first challenge")
 	}
 
-	// Now respond to the next MaxFailedChallenges challenges with wrong nonces.
+	// Now respond to the next registry.MaxFailedChallenges challenges with wrong nonces.
 	failCount := 0
 	failsDone := make(chan struct{})
 	go func() {
 		defer close(failsDone)
-		for failCount < MaxFailedChallenges {
+		for failCount < registry.MaxFailedChallenges {
 			_, data, err := conn.Read(ctx)
 			if err != nil {
 				return
@@ -360,7 +360,7 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 	select {
 	case <-failsDone:
 	case <-time.After(10 * time.Second):
-		t.Fatalf("timed out waiting for %d failed challenges, got %d", MaxFailedChallenges, failCount)
+		t.Fatalf("timed out waiting for %d failed challenges, got %d", registry.MaxFailedChallenges, failCount)
 	}
 
 	// Wait for the last failure to be processed.

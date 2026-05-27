@@ -57,6 +57,10 @@ const (
 
 const BackendMLXSwift = "mlx-swift"
 
+// MaxFailedChallenges is the number of consecutive challenge failures before
+// a provider is marked untrusted and fully derouted.
+const MaxFailedChallenges = 3
+
 func BackendUsesSwiftRuntime(backend string) bool {
 	return backend == BackendMLXSwift
 }
@@ -1711,7 +1715,16 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 
 // RecordChallengeFailure records a failed challenge-response. Returns the
 // new consecutive failure count.
-func (r *Registry) RecordChallengeFailure(providerID string) int {
+//
+// When transientOnly is true (timeout — the provider didn't respond in time),
+// routing eligibility is preserved until MaxFailedChallenges consecutive
+// failures. A single transient timeout should not instantly deroute a provider
+// that was verified seconds ago.
+//
+// When transientOnly is false (security failure — wrong signature, SIP
+// disabled, binary hash mismatch, etc.), routing eligibility is cleared
+// immediately because the provider actively failed a security check.
+func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool) int {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
@@ -1721,12 +1734,18 @@ func (r *Registry) RecordChallengeFailure(providerID string) int {
 
 	p.mu.Lock()
 	p.FailedChallenges++
-	// Any failed or missing challenge result invalidates the previous
-	// coordinator-verified security posture until the provider proves it again.
-	p.LastChallengeVerified = time.Time{}
-	p.ChallengeVerifiedSIP = false
 	p.Reputation.RecordChallengeFail()
 	count := p.FailedChallenges
+
+	if !transientOnly {
+		// Security failure — clear routing eligibility immediately.
+		p.LastChallengeVerified = time.Time{}
+		p.ChallengeVerifiedSIP = false
+	} else if count >= MaxFailedChallenges {
+		// Transient failures only clear after hitting the threshold.
+		p.LastChallengeVerified = time.Time{}
+		p.ChallengeVerifiedSIP = false
+	}
 	p.mu.Unlock()
 
 	// Persist challenge state and reputation.

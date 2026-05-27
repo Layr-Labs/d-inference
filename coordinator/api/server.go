@@ -171,6 +171,10 @@ type Server struct {
 	// coordinator substitutes it into install.sh at serve time.
 	r2CDNURL string
 
+	// r2SitePackagesCDNURL is the R2 URL for the Python site-packages tarball.
+	// Prod historically uses a second bucket; dev can reuse r2CDNURL.
+	r2SitePackagesCDNURL string
+
 	// corsOrigin is the allowed CORS origin (e.g. "https://console.darkbloom.dev").
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
@@ -311,6 +315,12 @@ func (s *Server) SetBaseURL(url string) {
 // loud instead of silent.
 func (s *Server) SetR2CDNURL(url string) {
 	s.r2CDNURL = strings.TrimRight(url, "/")
+}
+
+// SetR2SitePackagesCDNURL sets the R2 URL for the Python site-packages
+// tarball. Defaults to r2CDNURL when unset.
+func (s *Server) SetR2SitePackagesCDNURL(url string) {
+	s.r2SitePackagesCDNURL = strings.TrimRight(url, "/")
 }
 
 // SetEmitter wires the coordinator-side telemetry emitter. Call once at boot.

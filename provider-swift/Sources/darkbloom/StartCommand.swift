@@ -629,11 +629,6 @@ struct Start: AsyncParsableCommand {
         var cursorPos = 0
         var selected = [Bool](repeating: false, count: entries.count)
 
-        // Pre-select the largest downloaded model.
-        if let idx = entries.firstIndex(where: { $0.downloaded }) {
-            selected[idx] = true
-        }
-
         let downloadedCount = entries.filter(\.downloaded).count
         let availableCount = entries.count - downloadedCount
 
@@ -658,6 +653,23 @@ struct Start: AsyncParsableCommand {
 
         var lastLineCount: Int = 0
 
+        let ansiReset = "\u{1B}[0m"
+        let ansiDim = "\u{1B}[2m"
+        let ansiYellow = "\u{1B}[33m"
+
+        func formattedGB(_ value: Double) -> String {
+            String(format: "%.1f", value)
+        }
+
+        func canFitIndividually(_ entry: PickerEntry) -> Bool {
+            entry.sizeGb <= budget
+        }
+
+        // Pre-select the largest downloaded model that can fit on this machine.
+        if let idx = entries.firstIndex(where: { $0.downloaded && canFitIndividually($0) }) {
+            selected[idx] = true
+        }
+
         /// Render the picker UI, returning the number of lines written.
         func render(pos: Int, sel: [Bool], prevLines: Int) -> Int {
             var output = ""
@@ -673,15 +685,19 @@ struct Start: AsyncParsableCommand {
                 .filter { sel[$0.offset] }
                 .map(\.element.sizeGb)
                 .reduce(0, +)
-            let remaining = budget - used
             let count = sel.filter { $0 }.count
+            let fitsSimultaneously = used <= budget
 
             var lines = 0
 
             output += "  Select models (RAM: \(Int(memoryGb)) GB)  \u{2191}\u{2193} navigate \u{00B7} Space toggle \u{00B7} Enter confirm\r\n"
             lines += 1
 
-            output += "  \u{1B}[2m\(count) selected \u{00B7} \(String(format: "%.1f", used)) GB used \u{00B7} \(String(format: "%.1f", remaining)) GB remaining\u{1B}[0m\r\n\r\n"
+            if fitsSimultaneously {
+                output += "  \(ansiDim)\(count) selected \u{00B7} \(formattedGB(used)) GB total \u{00B7} all models can be served simultaneously\(ansiReset)\r\n\r\n"
+            } else {
+                output += "  \(ansiDim)\(count) selected \u{00B7} \(formattedGB(used)) GB on disk \u{00B7} \(ansiReset)\(ansiYellow)one model active at a time (swap on demand)\(ansiReset)\r\n\r\n"
+            }
             lines += 2
 
             var idx = 0
@@ -695,7 +711,7 @@ struct Start: AsyncParsableCommand {
                     let check = sel[idx] ? "\u{2713}" : " "
                     let highlight = idx == pos ? "\u{1B}[36m" : ""
                     let reset = highlight.isEmpty ? "" : "\u{1B}[0m"
-                    output += "    \(highlight)\(arrow) [\(check)] \(entry.displayName) (\(String(format: "%.1f", entry.sizeGb)) GB)\(reset)\r\n"
+                    output += "    \(highlight)\(arrow) [\(check)] \(entry.displayName) (\(formattedGB(entry.sizeGb)) GB)\(reset)\r\n"
                     lines += 1
                     idx += 1
                 }
@@ -712,17 +728,17 @@ struct Start: AsyncParsableCommand {
                 for entry in entries where !entry.downloaded {
                     let arrow = idx == pos ? "\u{25B8}" : " "
                     let check = sel[idx] ? "\u{2713}" : " "
-                    let fits = !sel[idx] && entry.sizeGb > remaining
+                    let tooLargeForMachine = !canFitIndividually(entry)
                     let highlight: String
                     if idx == pos {
                         highlight = "\u{1B}[33m"
-                    } else if fits {
+                    } else if tooLargeForMachine {
                         highlight = "\u{1B}[2;31m"
                     } else {
                         highlight = "\u{1B}[2m"
                     }
-                    let warn = fits ? " \u{26A0} won't fit" : ""
-                    output += "    \(highlight)\(arrow) [\(check)] \u{2193} \(entry.displayName) (\(String(format: "%.1f", entry.sizeGb)) GB)\(warn)\u{1B}[0m\r\n"
+                    let warn = tooLargeForMachine ? " \u{26A0} exceeds RAM" : ""
+                    output += "    \(highlight)\(arrow) [\(check)] \u{2193} \(entry.displayName) (\(formattedGB(entry.sizeGb)) GB)\(warn)\u{1B}[0m\r\n"
                     lines += 1
                     idx += 1
                 }
@@ -758,11 +774,11 @@ struct Start: AsyncParsableCommand {
                     if selected[cursorPos] {
                         selected[cursorPos] = false
                     } else {
-                        let used: Double = entries.enumerated()
-                            .filter { selected[$0.offset] }
-                            .map(\.element.sizeGb)
-                            .reduce(0, +)
-                        if used + entries[cursorPos].sizeGb <= budget {
+                        // Allow selection if the model individually fits in memory.
+                        // Multiple models can be selected even if their total exceeds
+                        // available RAM — only one will be warm (loaded) at a time;
+                        // the coordinator manages model swaps on demand.
+                        if canFitIndividually(entries[cursorPos]) {
                             selected[cursorPos] = true
                         }
                     }

@@ -105,12 +105,6 @@ func (q *RequestQueue) Enqueue(req *QueuedRequest) error {
 	return nil
 }
 
-// WaitForProvider blocks until a provider is assigned or the timeout expires.
-// The caller should call Enqueue first, then WaitForProvider.
-func (q *RequestQueue) WaitForProvider(req *QueuedRequest) (*Provider, error) {
-	return q.WaitForProviderContext(context.Background(), req)
-}
-
 // WaitForProviderContext blocks until a provider is assigned, the timeout
 // expires, or the context is cancelled.
 func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRequest) (*Provider, error) {
@@ -135,50 +129,6 @@ func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRe
 		q.Remove(req.RequestID, req.Model)
 		return nil, ctx.Err()
 	}
-}
-
-// TryAssign attempts to assign a provider to the first queued request for
-// the given model. Returns true if a request was assigned. The provider's
-// status is set to StatusServing if assigned.
-func (q *RequestQueue) TryAssign(model string, provider *Provider) bool {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	queue := q.queues[model]
-	if len(queue) == 0 {
-		return false
-	}
-
-	now := time.Now()
-
-	// Find the first non-stale request
-	for len(queue) > 0 {
-		req := queue[0]
-		queue = queue[1:]
-		q.queues[model] = queue
-
-		// Skip stale requests
-		if now.Sub(req.EnqueuedAt) > q.maxWait {
-			close(req.ResponseCh)
-			continue
-		}
-
-		// Assign the provider. Hold the provider lock to avoid racing
-		// with FindProviderWithTrust and SetProviderIdle which also
-		// read/write Status under the lock.
-		provider.mu.Lock()
-		provider.Status = StatusServing
-		provider.mu.Unlock()
-		select {
-		case req.ResponseCh <- provider:
-			return true
-		default:
-			// Consumer already timed out / gone
-			continue
-		}
-	}
-
-	return false
 }
 
 // Remove removes a specific request from the queue by request ID.
@@ -266,6 +216,44 @@ func (q *RequestQueue) CleanStale() {
 	for model := range q.queues {
 		q.cleanStaleLocked(model)
 	}
+}
+
+// FailQueuedRequestsForModel rejects all queued requests for a model by
+// sending nil on their ResponseCh. Waiters receive ErrQueueTimeout.
+// Called when the coordinator determines no provider can serve the model
+// (e.g. all load_model attempts failed with no alternative provider).
+func (q *RequestQueue) FailQueuedRequestsForModel(model string) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	queue := q.queues[model]
+	failed := 0
+	for _, req := range queue {
+		req.markDone()
+		select {
+		case req.ResponseCh <- nil:
+			failed++
+		default:
+		}
+	}
+	delete(q.queues, model)
+	return failed
+}
+
+// QueuedModels returns the set of model IDs that currently have at least
+// one request waiting in the queue.
+func (q *RequestQueue) QueuedModels() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var models []string
+	for model := range q.queues {
+		q.cleanStaleLocked(model)
+		if len(q.queues[model]) > 0 {
+			models = append(models, model)
+		}
+	}
+	return models
 }
 
 // cleanStaleLocked removes stale requests for a specific model.

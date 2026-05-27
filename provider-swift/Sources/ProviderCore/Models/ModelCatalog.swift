@@ -1070,12 +1070,7 @@ public struct ModelDownloader: Sendable {
 
             do {
                 let (tempFile, response) = try await urlSession.download(for: request)
-
-                // URLSession.download(for:) returns a temp file that the system
-                // may reclaim after this call returns. Move it to a stable
-                // location immediately before doing anything else.
-                try? fm.removeItem(at: partial)
-                try fm.moveItem(at: tempFile, to: partial)
+                defer { try? fm.removeItem(at: tempFile) }
 
                 guard let http = response as? HTTPURLResponse else {
                     try? fm.removeItem(at: partial)
@@ -1092,6 +1087,39 @@ public struct ModelDownloader: Sendable {
                 guard (200..<300).contains(http.statusCode) else {
                     try? fm.removeItem(at: partial)
                     throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
+                }
+
+                // URLSession.download(for:) returns a temp file that the
+                // system may reclaim after this call returns. Promote it to a
+                // stable .part file before hashing or moving to the final path.
+                if http.statusCode == 206 {
+                    // Validate Content-Range to ensure the server resumed at
+                    // the correct offset. Expected: "bytes <start>-<end>/<total>".
+                    let expectedStart = UInt64(existingBytes)
+                    let rangeVerified: Bool
+                    if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+                       let rangeStart = Self.parseContentRangeStart(contentRange) {
+                        rangeVerified = (rangeStart == expectedStart)
+                    } else {
+                        // Missing or unparseable Content-Range -- cannot verify
+                        // the server resumed at the correct offset.
+                        rangeVerified = false
+                    }
+
+                    if rangeVerified {
+                        try Self.appendDownloadedRange(tempFile, to: partial, label: label)
+                    } else {
+                        // Range unverifiable or mismatched -- discard the stale
+                        // partial and replace it with the server's fresh response.
+                        // The next download attempt (if needed) will resume from
+                        // this new position, or the SHA check below will detect
+                        // a truncated file.
+                        try? fm.removeItem(at: partial)
+                        try fm.moveItem(at: tempFile, to: partial)
+                    }
+                } else {
+                    try? fm.removeItem(at: partial)
+                    try fm.moveItem(at: tempFile, to: partial)
                 }
 
                 if let expectedSHA256 {
@@ -1135,23 +1163,33 @@ public struct ModelDownloader: Sendable {
         return false
     }
 
-    private static func appendFile(_ source: URL, to destination: URL) throws {
-        guard let reader = try? FileHandle(forReadingFrom: source) else {
-            throw ModelCatalogError.downloadFailed("could not open downloaded file")
-        }
-        defer { try? reader.close() }
+    private static func appendDownloadedRange(_ source: URL, to destination: URL, label: String) throws {
+        do {
+            let reader = try FileHandle(forReadingFrom: source)
+            defer { try? reader.close() }
 
-        guard let writer = try? FileHandle(forWritingTo: destination) else {
-            throw ModelCatalogError.downloadFailed("could not open partial destination")
-        }
-        defer { try? writer.close() }
+            let writer = try FileHandle(forWritingTo: destination)
+            defer { try? writer.close() }
 
-        try writer.seekToEnd()
-        while true {
-            guard let chunk = try reader.read(upToCount: 4 * 1_048_576) else { break }
-            if chunk.isEmpty { break }
-            try writer.write(contentsOf: chunk)
+            try writer.seekToEnd()
+            while true {
+                guard let chunk = try reader.read(upToCount: 4 * 1_048_576), !chunk.isEmpty else {
+                    break
+                }
+                try writer.write(contentsOf: chunk)
+            }
+        } catch {
+            throw ModelCatalogError.downloadFailed("\(label): could not append resumed download (\(error.localizedDescription))")
         }
+    }
+
+    /// Parse the start offset from a Content-Range header value.
+    /// Expected format: "bytes 12345-67890/123456".
+    private static func parseContentRangeStart(_ value: String) -> UInt64? {
+        guard value.hasPrefix("bytes ") else { return nil }
+        let afterBytes = value.dropFirst("bytes ".count)
+        guard let dashIndex = afterBytes.firstIndex(of: "-") else { return nil }
+        return UInt64(afterBytes[afterBytes.startIndex..<dashIndex])
     }
 
     private static func downloadFailureMessage(label: String, error: Error?) -> String {

@@ -198,6 +198,28 @@ Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 - Request queue timeout is 120 seconds. Initial attestation challenge is sent immediately on registration, then every 5 minutes.
 - Backend idle timeout is 1 hour (not 10 minutes as some comments may say).
 
+### Coordinator State Model — Multiple Overlapping Views
+
+Provider state lives in several fields that are read by different code paths with different precedence rules. When mutating any of these, trace every reader:
+
+- `BackendCapacity.Slots` is **authoritative** for the scheduler when present (Swift providers). The scheduler derives `slotState`, `modelLoaded`, token budgets, and observed TPS from it. `WarmModels` is only a fallback for legacy providers without `BackendCapacity`.
+- `WarmModels` is updated by heartbeats. It is NOT consulted by `snapshotProviderLocked` or `buildCandidateWithReason` when `BackendCapacity` is non-nil. `TriggerModelSwaps` / `hasWarmProviderLocked` checks it as a fallback. Legacy `ScoreProvider` also reads it for warm bonus, and `/v1/me/providers` copies it into API responses.
+- `CurrentModel` is set from heartbeat `active_model`. A nil/omitted `active_model` means no model is loaded. Stale `CurrentModel` can cause attestation hash mismatches.
+- `pendingModelLoads` is only checked by `TriggerModelSwaps` planning. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `freeMemoryAdmits`. Do not assume pending-load state affects routing decisions.
+- Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
+- Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
+- The provider's `ensureModelLoaded` requires `estimatedMemoryGb * 3.0` headroom. The coordinator's `freeMemoryAdmits` uses a different (less conservative) check. A model the coordinator admits can still fail on the provider side.
+
+### Coordinator Mutation Checklist
+
+When adding code that mutates provider state or sends commands (`load_model`, etc.):
+
+1. Enumerate every reader of the fields you're mutating (`BackendCapacity.Slots`, `WarmModels`, `CurrentModel`, `pendingModelLoads`).
+2. Check what happens on the failure path — does state get cleaned up on disconnect, timeout, and load failure?
+3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModels`.
+4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
+5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the 3x memory gate on the provider side.
+
 ## Formatting
 
 A pre-commit hook in `.githooks/pre-commit` checks staged files only. It is enabled via:

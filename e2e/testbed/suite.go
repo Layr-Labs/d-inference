@@ -18,6 +18,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/e2e/testbed/deps"
@@ -326,20 +327,33 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 
 	time.Sleep(3 * time.Second)
 
-	for _, id := range s.Coordinator.Registry.ProviderIDs() {
-		s.Coordinator.Registry.ForceTrustProvider(id)
-	}
-	s.Logger.Info("providers force-trusted for testing")
-
-	// Link providers to a user account so the payout destination check
-	// (providerHasPayoutDestination) passes when billing is enabled.
+	// Force-trust all providers and link them to a user account so the
+	// payout destination check passes when billing is enabled.
 	s.Coordinator.Registry.ForEachProvider(func(p *registry.Provider) {
-		if p.AccountID == "" && len(s.Users) > 0 {
-			p.Mu().Lock()
-			p.AccountID = s.Users[0].AccountID
-			p.Mu().Unlock()
+		p.Mu().Lock()
+		p.Status = registry.StatusOnline
+		p.TrustLevel = registry.TrustSelfSigned
+		p.ChallengeVerifiedSIP = true
+		p.LastChallengeVerified = time.Now()
+		p.FailedChallenges = 0
+		p.RuntimeVerified = true
+		p.RuntimeManifestChecked = true
+		if p.PrivacyCapabilities == nil {
+			p.PrivacyCapabilities = &protocol.PrivacyCapabilities{}
 		}
+		p.PrivacyCapabilities.TextBackendInprocess = true
+		p.PrivacyCapabilities.TextProxyDisabled = true
+		p.PrivacyCapabilities.PythonRuntimeLocked = true
+		p.PrivacyCapabilities.DangerousModulesBlocked = true
+		p.PrivacyCapabilities.AntiDebugEnabled = true
+		p.PrivacyCapabilities.CoreDumpsDisabled = true
+		p.PrivacyCapabilities.EnvScrubbed = true
+		if p.AccountID == "" && len(s.Users) > 0 {
+			p.AccountID = s.Users[0].AccountID
+		}
+		p.Mu().Unlock()
 	})
+	s.Logger.Info("providers force-trusted for testing")
 
 	return nil
 }

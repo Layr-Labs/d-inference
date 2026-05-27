@@ -207,12 +207,13 @@ func (s *Server) handleTelemetryIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(records) > 0 {
-		if err := s.store.InsertTelemetryEvents(r.Context(), records); err != nil {
-			s.logger.Error("telemetry: failed to insert events", "error", err, "count", len(records))
-			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to persist telemetry"))
-			return
-		}
-		// Metrics: bump ingestion counters.
+		// Telemetry is NOT written to Postgres. Datadog is the sole durable
+		// sink. The Postgres telemetry_events table + 5 indexes was the
+		// single largest source of DB write pressure: 60 providers × 1 batch
+		// every 10s = 6 INSERTs/second × 50 rows × 5 index updates each.
+		// That alone consumed ~30-40% of the connection pool.
+
+		// Metrics: bump ingestion counters (in-memory, no DB).
 		if s.metrics != nil {
 			for _, rec := range records {
 				s.metrics.IncCounter("telemetry_events_total",

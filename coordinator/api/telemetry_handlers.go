@@ -212,6 +212,10 @@ func (s *Server) handleTelemetryIngest(w http.ResponseWriter, r *http.Request) {
 		// single largest source of DB write pressure: 60 providers × 1 batch
 		// every 10s = 6 INSERTs/second × 50 rows × 5 index updates each.
 		// That alone consumed ~30-40% of the connection pool.
+		//
+		// The in-memory ring buffer is still populated for the admin metrics
+		// endpoint and test assertions — it's free (no DB, bounded at 10K).
+		_ = s.store.InsertTelemetryEvents(r.Context(), records)
 
 		// Metrics: bump ingestion counters (in-memory, no DB).
 		if s.metrics != nil {

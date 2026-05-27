@@ -190,7 +190,11 @@ func (s *Server) dispatchOneProvider(
 		if err != nil {
 			cleanupPending()
 			excludeProviders[provider.ID] = struct{}{}
-			return nil, nil, decision, "insufficient funds for provider price", http.StatusPaymentRequired
+			if errors.Is(err, store.ErrInsufficientBalance) {
+				return nil, nil, decision, "insufficient funds for provider price", http.StatusPaymentRequired
+			}
+			s.logger.Error("provider reservation failed (DB error)", "provider_id", provider.ID, "error", err)
+			return nil, nil, decision, "service temporarily unavailable — please retry", http.StatusServiceUnavailable
 		}
 	}
 	// refundExtra credits back the provider-specific surcharge that
@@ -954,8 +958,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			if errors.Is(err, store.ErrInsufficientBalance) {
+				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			} else {
+				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
+					"service temporarily unavailable — please retry"))
+			}
 			return
 		}
 		s.ddHistogram("billing.reserved_micro_usd", float64(reservedMicroUSD), []string{"model:" + model})
@@ -1140,16 +1150,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// platform rate. Reserve the additional amount now.
 			if s.billing != nil {
 				if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
-					s.logger.Warn("queued provider pricing exceeds balance, skipping",
-						"request_id", requestID,
-						"provider_id", provider.ID,
-						"error", err,
-					)
 					provider.RemovePending(requestID)
 					s.registry.SetProviderIdle(provider.ID)
 					excludeProviders[provider.ID] = struct{}{}
-					lastErr = "insufficient funds for provider price"
-					lastErrCode = http.StatusPaymentRequired
+					if errors.Is(err, store.ErrInsufficientBalance) {
+						s.logger.Warn("queued provider pricing exceeds balance, skipping",
+							"request_id", requestID,
+							"provider_id", provider.ID,
+							"error", err,
+						)
+						lastErr = "insufficient funds for provider price"
+						lastErrCode = http.StatusPaymentRequired
+					} else {
+						s.logger.Error("queued provider reservation failed (DB error)",
+							"request_id", requestID,
+							"provider_id", provider.ID,
+							"error", err,
+						)
+						lastErr = "service temporarily unavailable — please retry"
+						lastErrCode = http.StatusServiceUnavailable
+					}
 					continue
 				}
 			}
@@ -3356,8 +3376,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			if errors.Is(err, store.ErrInsufficientBalance) {
+				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			} else {
+				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
+					"service temporarily unavailable — please retry"))
+			}
 			return
 		}
 		s.ddHistogram("billing.reserved_micro_usd", float64(reservedMicroUSD), []string{"model:" + model})
@@ -3437,6 +3463,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				excludeProviders = append(excludeProviders, provider.ID)
+				if !errors.Is(err, store.ErrInsufficientBalance) {
+					s.logger.Error("provider reservation failed (DB error)",
+						"request_id", requestID,
+						"provider_id", provider.ID,
+						"error", err,
+					)
+				}
 				continue
 			}
 		}
@@ -3502,8 +3535,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			cleanupPending()
 			refundExtra()
 			refundReservation()
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low for this provider price — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			if errors.Is(err, store.ErrInsufficientBalance) {
+				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+					"your balance is too low for this provider price — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			} else {
+				s.logger.Error("provider reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
+					"service temporarily unavailable — please retry"))
+			}
 			return
 		}
 	}

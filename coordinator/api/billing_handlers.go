@@ -641,9 +641,23 @@ func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) 
 
 // handleModelCatalog handles GET /v1/models/catalog.
 // Public endpoint — returns active models for providers and the install script.
+// Cached for 60s — the underlying DB query is fast but this endpoint is hit
+// by every provider heartbeat and install script poll.
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	// Optional filter: ?type=text
 	typeFilter := r.URL.Query().Get("type")
+
+	cacheKey := "models:catalog"
+	if typeFilter != "" {
+		cacheKey = "models:catalog:" + typeFilter
+	}
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, cached)
+		return
+	}
+
+	var response any
+
 	registryRows, err := s.store.ListActiveModelRegistryWithError()
 	if err != nil {
 		s.logger.Error("model registry: failed to list active models", "error", err)
@@ -657,27 +671,34 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 				models = append(models, catalogModelFromRegistryRecord(&registryRows[i]))
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"models": models})
+		response = map[string]any{"models": models}
+	} else {
+		allModels := s.store.ListSupportedModels()
+
+		// Filter to active models only (and by type if specified)
+		var active []store.SupportedModel
+		for _, m := range allModels {
+			if !m.Active || IsRetiredProviderModel(m) {
+				continue
+			}
+			if typeFilter != "" && m.ModelType != typeFilter {
+				continue
+			}
+			active = append(active, m)
+		}
+		if active == nil {
+			active = []store.SupportedModel{}
+		}
+		response = map[string]any{"models": active}
+	}
+
+	body, err := json.Marshal(response)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal catalog"))
 		return
 	}
-
-	allModels := s.store.ListSupportedModels()
-
-	// Filter to active models only (and by type if specified)
-	var active []store.SupportedModel
-	for _, m := range allModels {
-		if !m.Active || IsRetiredProviderModel(m) {
-			continue
-		}
-		if typeFilter != "" && m.ModelType != typeFilter {
-			continue
-		}
-		active = append(active, m)
-	}
-	if active == nil {
-		active = []store.SupportedModel{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": active})
+	s.readCache.Set(cacheKey, body, time.Minute)
+	writeCachedJSON(w, body)
 }
 
 // handleAdminCredit handles POST /v1/admin/credit.
@@ -846,6 +867,7 @@ func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
 // handleAccountEarnings handles GET /v1/provider/account-earnings?limit=50.
 // Returns recent earnings history, lifetime aggregates, and current account balance
 // for the authenticated provider account.
+// Cached for 20s per account — dashboard polls this frequently.
 func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	accountID := s.resolveAccountID(r)
 
@@ -857,6 +879,12 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	}
 	if limit > 1000 {
 		limit = 1000
+	}
+
+	cacheKey := "account-earnings:" + accountID + ":" + strconv.Itoa(limit)
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, cached)
+		return
 	}
 
 	earnings, err := s.store.GetAccountEarnings(accountID, limit)
@@ -873,10 +901,9 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	availableBalance := s.store.GetBalance(accountID)
-	withdrawableBalance := s.store.GetWithdrawableBalance(accountID)
+	availableBalance, withdrawableBalance := s.store.GetBalanceWithWithdrawable(accountID)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	body, err := json.Marshal(map[string]any{
 		"account_id":                     accountID,
 		"earnings":                       earnings,
 		"total_micro_usd":                summary.TotalMicroUSD,
@@ -889,4 +916,10 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		"withdrawable_balance_micro_usd": withdrawableBalance,
 		"withdrawable_balance_usd":       fmt.Sprintf("%.6f", float64(withdrawableBalance)/1_000_000),
 	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal earnings"))
+		return
+	}
+	s.readCache.Set(cacheKey, body, 20*time.Second)
+	writeCachedJSON(w, body)
 }

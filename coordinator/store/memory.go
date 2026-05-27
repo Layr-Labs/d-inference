@@ -102,6 +102,10 @@ type MemoryStore struct {
 	reputationRecords  map[string]*ReputationRecord // providerID → reputation
 	serialToProviderID map[string]string            // serialNumber → providerID
 
+	// Provider log reports
+	logReports   []LogReport
+	logReportSeq int64
+
 	// Telemetry ring buffer (bounded at memTelemetryCap)
 	telemetryEvents []TelemetryEventRecord
 }
@@ -616,6 +620,102 @@ func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucke
 	return out
 }
 
+// UsageFlowBuckets aggregates directional consumer→provider flows in memory.
+// providerLocs supplies live provider locations from the registry; the store's
+// own providerRecords are used as a fallback for disconnected providers.
+func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type flowKey struct {
+		cCity, cRegion, cCountry string
+		pCity, pRegion, pCountry string
+	}
+	type agg struct {
+		b         UsageFlowBucket
+		cLatSum   float64
+		cLngSum   float64
+		cCoordCnt int
+		pLatSum   float64
+		pLngSum   float64
+		pCoordCnt int
+	}
+
+	// Resolve provider location: prefer live registry, fall back to stored records.
+	resolveProviderLoc := func(providerID string) *ProviderLocation {
+		if loc, ok := providerLocs[providerID]; ok && loc != nil {
+			return loc
+		}
+		if rec, ok := s.providerRecords[providerID]; ok {
+			return rec.Location
+		}
+		return nil
+	}
+
+	flows := make(map[flowKey]*agg)
+	for _, r := range s.usage {
+		ts := r.Timestamp
+		if ts.IsZero() {
+			ts = r.CreatedAt
+		}
+		if !since.IsZero() && ts.Before(since) {
+			continue
+		}
+		if r.RequestLocation == nil {
+			continue
+		}
+		pLoc := resolveProviderLoc(r.ProviderID)
+		if pLoc == nil {
+			continue
+		}
+		cLoc := r.RequestLocation
+		k := flowKey{
+			cCity: cLoc.City, cRegion: cLoc.RegionCode, cCountry: cLoc.CountryCode,
+			pCity: pLoc.City, pRegion: pLoc.RegionCode, pCountry: pLoc.CountryCode,
+		}
+		fa, ok := flows[k]
+		if !ok {
+			fa = &agg{b: UsageFlowBucket{
+				ConsumerCity: cLoc.City, ConsumerRegion: cLoc.Region,
+				ConsumerRegionCode: cLoc.RegionCode, ConsumerCountry: cLoc.Country,
+				ConsumerCountryCode: cLoc.CountryCode,
+				ProviderCity:        pLoc.City, ProviderRegion: pLoc.Region,
+				ProviderRegionCode: pLoc.RegionCode, ProviderCountry: pLoc.Country,
+				ProviderCountryCode: pLoc.CountryCode,
+			}}
+			flows[k] = fa
+		}
+		fa.b.Requests++
+		fa.b.PromptTokens += int64(r.PromptTokens)
+		fa.b.CompletionTokens += int64(r.CompletionTokens)
+		if cLoc.Latitude != 0 || cLoc.Longitude != 0 {
+			fa.cLatSum += cLoc.Latitude
+			fa.cLngSum += cLoc.Longitude
+			fa.cCoordCnt++
+		}
+		if pLoc.Latitude != 0 || pLoc.Longitude != 0 {
+			fa.pLatSum += pLoc.Latitude
+			fa.pLngSum += pLoc.Longitude
+			fa.pCoordCnt++
+		}
+	}
+
+	out := make([]UsageFlowBucket, 0, len(flows))
+	for _, fa := range flows {
+		b := fa.b
+		if fa.cCoordCnt > 0 {
+			b.ConsumerLatitude = fa.cLatSum / float64(fa.cCoordCnt)
+			b.ConsumerLongitude = fa.cLngSum / float64(fa.cCoordCnt)
+		}
+		if fa.pCoordCnt > 0 {
+			b.ProviderLatitude = fa.pLatSum / float64(fa.pCoordCnt)
+			b.ProviderLongitude = fa.pLngSum / float64(fa.pCoordCnt)
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
 // KeyCount returns the number of active API keys.
 func (s *MemoryStore) KeyCount() int {
 	s.mu.RLock()
@@ -635,6 +735,13 @@ func (s *MemoryStore) GetWithdrawableBalance(accountID string) int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.withdrawable[accountID]
+}
+
+// GetBalanceWithWithdrawable returns both balances under a single lock.
+func (s *MemoryStore) GetBalanceWithWithdrawable(accountID string) (int64, int64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.balances[accountID], s.withdrawable[accountID]
 }
 
 // Credit adds micro-USD to an account and records a ledger entry.
@@ -684,13 +791,14 @@ func (s *MemoryStore) DebitWithdrawable(accountID string, amountMicroUSD int64, 
 	return nil
 }
 
-// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
+// Debit subtracts micro-USD from an account. Returns ErrInsufficientBalance
+// if the account has insufficient funds.
 func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.balances[accountID] < amountMicroUSD {
-		return fmt.Errorf("insufficient balance: have %d, need %d micro-USD", s.balances[accountID], amountMicroUSD)
+		return ErrInsufficientBalance
 	}
 
 	s.balances[accountID] -= amountMicroUSD
@@ -2134,6 +2242,86 @@ func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*Repu
 	}
 	cp := *rep
 	return &cp, nil
+}
+
+// --- Provider Log Reports ---
+
+func (s *MemoryStore) StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error {
+	const maxSize = 10 << 20 // 10 MB
+	if len(logData) > maxSize {
+		logData = logData[:maxSize]
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.logReportSeq++
+	cp := make([]byte, len(logData))
+	copy(cp, logData)
+	s.logReports = append(s.logReports, LogReport{
+		ID:           s.logReportSeq,
+		SerialNumber: serialNumber,
+		ProviderID:   providerID,
+		AccountID:    accountID,
+		LogSizeBytes: int64(len(cp)),
+		LogData:      cp,
+		CreatedAt:    time.Now(),
+	})
+	return nil
+}
+
+func (s *MemoryStore) GetLogReports(serialNumber string, limit int) ([]LogReport, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var reports []LogReport
+	for i := len(s.logReports) - 1; i >= 0; i-- {
+		r := s.logReports[i]
+		if r.SerialNumber != serialNumber {
+			continue
+		}
+		// Return without log data for list queries.
+		reports = append(reports, LogReport{
+			ID:           r.ID,
+			SerialNumber: r.SerialNumber,
+			ProviderID:   r.ProviderID,
+			AccountID:    r.AccountID,
+			LogSizeBytes: r.LogSizeBytes,
+			CreatedAt:    r.CreatedAt,
+		})
+		if len(reports) >= limit {
+			break
+		}
+	}
+	if reports == nil {
+		return []LogReport{}, nil
+	}
+	return reports, nil
+}
+
+func (s *MemoryStore) GetLogReport(id int64) (*LogReport, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for i := range s.logReports {
+		if s.logReports[i].ID == id {
+			r := s.logReports[i]
+			cp := LogReport{
+				ID:           r.ID,
+				SerialNumber: r.SerialNumber,
+				ProviderID:   r.ProviderID,
+				AccountID:    r.AccountID,
+				LogSizeBytes: r.LogSizeBytes,
+				CreatedAt:    r.CreatedAt,
+				LogData:      make([]byte, len(r.LogData)),
+			}
+			copy(cp.LogData, r.LogData)
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("log report %d not found", id)
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.

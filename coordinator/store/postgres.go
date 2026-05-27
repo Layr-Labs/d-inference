@@ -609,6 +609,38 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			WHERE account_id = b.account_id
 			  AND entry_type IN ('payout', 'referral_reward', 'admin_reward', 'stripe_payout')
 		), 0)) WHERE b.withdrawable_micro_usd = 0`,
+
+		// Materialized usage totals — eliminates full-table scan of usage
+		// on every stats cache miss.  Single counter row incremented
+		// atomically by RecordUsage / RecordUsageWithCostAndLocation.
+		`CREATE TABLE IF NOT EXISTS usage_totals (
+			id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			total_requests BIGINT NOT NULL DEFAULT 0,
+			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
+			total_completion_tokens BIGINT NOT NULL DEFAULT 0
+		)`,
+		// Backfill from existing usage rows.  ON CONFLICT DO NOTHING makes
+		// this idempotent — only runs on first deploy.
+		`INSERT INTO usage_totals (id, total_requests, total_prompt_tokens, total_completion_tokens)
+		 SELECT 1, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
+		 FROM usage
+		 ON CONFLICT (id) DO NOTHING`,
+
+		// Partial index for UsageLocationBuckets — only rows with a
+		// non-null request_location are ever queried.
+		`CREATE INDEX IF NOT EXISTS idx_usage_request_location_notnull ON usage(created_at DESC) WHERE request_location IS NOT NULL`,
+
+		// Provider log reports — providers upload 24h unified logs for debugging.
+		`CREATE TABLE IF NOT EXISTS provider_log_reports (
+			id BIGSERIAL PRIMARY KEY,
+			serial_number TEXT NOT NULL,
+			provider_id TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			log_data BYTEA NOT NULL,
+			log_size_bytes BIGINT NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_log_reports_serial ON provider_log_reports(serial_number, created_at DESC)`,
 	}
 
 	for _, m := range migrations {
@@ -780,8 +812,15 @@ func (s *PostgresStore) RecordUsage(providerID, consumerKey, model string, promp
 	defer cancel()
 
 	_, _ = s.pool.Exec(ctx,
-		`INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens)
-		 VALUES ($1, $2, $3, $4, $5)`,
+		`WITH ins AS (
+			INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens)
+			VALUES ($1, $2, $3, $4, $5)
+		)
+		UPDATE usage_totals SET
+			total_requests = total_requests + 1,
+			total_prompt_tokens = total_prompt_tokens + $4,
+			total_completion_tokens = total_completion_tokens + $5
+		WHERE id = 1`,
 		providerID, h, model, promptTokens, completionTokens,
 	)
 }
@@ -826,8 +865,15 @@ func (s *PostgresStore) RecordUsageWithCostAndLocation(providerID, consumerKey, 
 	defer cancel()
 
 	_, _ = s.pool.Exec(ctx,
-		`INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		`WITH ins AS (
+			INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		)
+		UPDATE usage_totals SET
+			total_requests = total_requests + 1,
+			total_prompt_tokens = total_prompt_tokens + $4,
+			total_completion_tokens = total_completion_tokens + $5
+		WHERE id = 1`,
 		providerID, h, model, promptTokens, completionTokens, requestID, costMicroUSD, marshalProviderLocation(requestLocation),
 	)
 }
@@ -885,6 +931,68 @@ func (s *PostgresStore) UsageLocationBuckets(since time.Time) []UsageLocationBuc
 	return buckets
 }
 
+// UsageFlowBuckets aggregates directional consumer→provider flows by JOINing
+// the usage table with providers in SQL. This replaces loading all rows into
+// Go and doing the aggregation in-process. The query only returns the top 50
+// flows (by request count) so the result set is bounded.
+func (s *PostgresStore) UsageFlowBuckets(since time.Time, _ map[string]*ProviderLocation) []UsageFlowBucket {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+			COALESCE(u.request_location->>'city', '')         AS c_city,
+			COALESCE(u.request_location->>'region', '')       AS c_region,
+			COALESCE(u.request_location->>'region_code', '')  AS c_region_code,
+			COALESCE(u.request_location->>'country', '')      AS c_country,
+			COALESCE(u.request_location->>'country_code', '') AS c_country_code,
+			COALESCE(AVG(NULLIF(u.request_location->>'latitude',  '')::double precision), 0) AS c_lat,
+			COALESCE(AVG(NULLIF(u.request_location->>'longitude', '')::double precision), 0) AS c_lng,
+			COALESCE(p.location->>'city', '')         AS p_city,
+			COALESCE(p.location->>'region', '')       AS p_region,
+			COALESCE(p.location->>'region_code', '')  AS p_region_code,
+			COALESCE(p.location->>'country', '')      AS p_country,
+			COALESCE(p.location->>'country_code', '') AS p_country_code,
+			COALESCE(AVG(NULLIF(p.location->>'latitude',  '')::double precision), 0) AS p_lat,
+			COALESCE(AVG(NULLIF(p.location->>'longitude', '')::double precision), 0) AS p_lng,
+			COUNT(*)                              AS requests,
+			COALESCE(SUM(u.prompt_tokens), 0)     AS prompt_tokens,
+			COALESCE(SUM(u.completion_tokens), 0) AS completion_tokens
+		 FROM usage u
+		 JOIN providers p ON p.id = u.provider_id
+		 WHERE u.request_location IS NOT NULL
+		   AND p.location IS NOT NULL
+		   AND ($1::timestamptz IS NULL OR u.created_at >= $1)
+		 GROUP BY c_city, c_region, c_region_code, c_country, c_country_code,
+		          p_city, p_region, p_region_code, p_country, p_country_code
+		 ORDER BY requests DESC
+		 LIMIT 50`,
+		nullSince(since),
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var buckets []UsageFlowBucket
+	for rows.Next() {
+		var b UsageFlowBucket
+		if err := rows.Scan(
+			&b.ConsumerCity, &b.ConsumerRegion, &b.ConsumerRegionCode,
+			&b.ConsumerCountry, &b.ConsumerCountryCode,
+			&b.ConsumerLatitude, &b.ConsumerLongitude,
+			&b.ProviderCity, &b.ProviderRegion, &b.ProviderRegionCode,
+			&b.ProviderCountry, &b.ProviderCountryCode,
+			&b.ProviderLatitude, &b.ProviderLongitude,
+			&b.Requests, &b.PromptTokens, &b.CompletionTokens,
+		); err != nil {
+			continue
+		}
+		buckets = append(buckets, b)
+	}
+	return buckets
+}
+
 func nullSince(since time.Time) any {
 	if since.IsZero() {
 		return nil
@@ -923,20 +1031,17 @@ func (s *PostgresStore) UsageCountSince(since time.Time) int64 {
 	return count
 }
 
-// UsageTotals returns aggregated lifetime totals from the usage table.
-// Uses SQL aggregation to avoid shipping every row over the wire.
-// The idx_usage_created index covers the created_at scan when Postgres
-// chooses an index-only aggregate plan.
+// UsageTotals returns aggregated lifetime totals from the materialized
+// usage_totals counter row. This is a single PK lookup — O(1) regardless
+// of how many rows exist in the usage table.
 func (s *PostgresStore) UsageTotals() UsageTotals {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var t UsageTotals
 	_ = s.pool.QueryRow(ctx,
-		`SELECT COUNT(*),
-		        COALESCE(SUM(prompt_tokens), 0),
-		        COALESCE(SUM(completion_tokens), 0)
-		 FROM usage`,
+		`SELECT total_requests, total_prompt_tokens, total_completion_tokens
+		 FROM usage_totals WHERE id = 1`,
 	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens)
 	return t
 }
@@ -1258,6 +1363,21 @@ func (s *PostgresStore) GetWithdrawableBalance(accountID string) int64 {
 	return balance
 }
 
+// GetBalanceWithWithdrawable returns both balances in a single query.
+func (s *PostgresStore) GetBalanceWithWithdrawable(accountID string) (int64, int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var balance, withdrawable int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT balance_micro_usd, withdrawable_micro_usd FROM balances WHERE account_id = $1`, accountID,
+	).Scan(&balance, &withdrawable)
+	if err != nil {
+		return 0, 0
+	}
+	return balance, withdrawable
+}
+
 // CreditWithdrawable adds micro-USD to both the total balance and the
 // withdrawable balance, and records a ledger entry.
 func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
@@ -1304,7 +1424,10 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 		accountID, amountMicroUSD, string(entryType), reference,
 	).Scan(&balanceAfter)
 	if err != nil {
-		return errors.New("insufficient balance or account not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInsufficientBalance
+		}
+		return fmt.Errorf("debit: %w", err)
 	}
 	return nil
 }
@@ -3023,4 +3146,75 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		return nil, fmt.Errorf("store: reputation not found: %w", err)
 	}
 	return &rep, nil
+}
+
+// --- Provider Log Reports ---
+
+const maxLogReportSize = 10 << 20 // 10 MB
+
+func (s *PostgresStore) StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error {
+	if len(logData) > maxLogReportSize {
+		logData = logData[:maxLogReportSize]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_log_reports (serial_number, provider_id, account_id, log_data, log_size_bytes)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		serialNumber, providerID, accountID, logData, int64(len(logData)),
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert log report: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetLogReports(serialNumber string, limit int) ([]LogReport, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, serial_number, provider_id, account_id, log_size_bytes, created_at
+		 FROM provider_log_reports
+		 WHERE serial_number = $1
+		 ORDER BY created_at DESC
+		 LIMIT $2`,
+		serialNumber, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list log reports: %w", err)
+	}
+	defer rows.Close()
+
+	var reports []LogReport
+	for rows.Next() {
+		var r LogReport
+		if err := rows.Scan(&r.ID, &r.SerialNumber, &r.ProviderID, &r.AccountID, &r.LogSizeBytes, &r.CreatedAt); err != nil {
+			continue
+		}
+		reports = append(reports, r)
+	}
+	if reports == nil {
+		return []LogReport{}, nil
+	}
+	return reports, nil
+}
+
+func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var r LogReport
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, serial_number, provider_id, account_id, log_data, log_size_bytes, created_at
+		 FROM provider_log_reports WHERE id = $1`, id,
+	).Scan(&r.ID, &r.SerialNumber, &r.ProviderID, &r.AccountID, &r.LogData, &r.LogSizeBytes, &r.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("store: log report %d not found: %w", id, err)
+	}
+	return &r, nil
 }

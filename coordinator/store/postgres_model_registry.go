@@ -171,19 +171,38 @@ func (s *PostgresStore) ListActiveModelRegistryWithError() ([]ModelRegistryRecor
 	defer rows.Close()
 
 	var records []ModelRegistryRecord
+	var versionIDs []int64
 	for rows.Next() {
 		rec, err := scanModelRegistryRecord(rows)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan active model registry: %w", err)
 		}
-		if err := s.loadModelRegistryFiles(ctx, rec); err != nil {
-			return nil, err
+		if rec.ActiveVersion != nil {
+			versionIDs = append(versionIDs, rec.ActiveVersion.ID)
 		}
 		records = append(records, *rec)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate active model registry: %w", err)
 	}
+
+	// Batch-load all version files in a single query instead of N+1.
+	if len(versionIDs) > 0 {
+		filesByVersion, err := s.loadModelRegistryFilesBatch(ctx, versionIDs)
+		if err != nil {
+			return nil, err
+		}
+		for i := range records {
+			if records[i].ActiveVersion != nil {
+				files := filesByVersion[records[i].ActiveVersion.ID]
+				if files == nil {
+					files = []ModelVersionFile{}
+				}
+				records[i].Files = files
+			}
+		}
+	}
+
 	return records, nil
 }
 
@@ -328,6 +347,33 @@ func (s *PostgresStore) loadModelRegistryFiles(ctx context.Context, rec *ModelRe
 		rec.Files = []ModelVersionFile{}
 	}
 	return nil
+}
+
+// loadModelRegistryFilesBatch fetches files for multiple version IDs in a
+// single query, returning them grouped by model_version_id.
+func (s *PostgresStore) loadModelRegistryFilesBatch(ctx context.Context, versionIDs []int64) (map[int64][]ModelVersionFile, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, model_version_id, path, size_bytes, sha256, role
+		 FROM model_version_files
+		 WHERE model_version_id = ANY($1)
+		 ORDER BY model_version_id, path ASC`, versionIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: batch list model version files: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64][]ModelVersionFile, len(versionIDs))
+	for rows.Next() {
+		var file ModelVersionFile
+		if err := rows.Scan(&file.ID, &file.ModelVersionID, &file.Path, &file.SizeBytes, &file.SHA256, &file.Role); err != nil {
+			return nil, fmt.Errorf("store: scan batch model version file: %w", err)
+		}
+		result[file.ModelVersionID] = append(result[file.ModelVersionID], file)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate batch model version files: %w", err)
+	}
+	return result, nil
 }
 
 func marshalMetadata(metadata map[string]any) ([]byte, error) {

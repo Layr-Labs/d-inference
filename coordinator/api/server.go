@@ -1133,6 +1133,11 @@ func (s *Server) routes() {
 	// removed (use Datadog Log Explorer).
 	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
 
+	// Provider log reports
+	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
+	s.mux.HandleFunc("GET /v1/admin/log-reports", s.requireAuth(s.handleListLogReports))
+	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))
+
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
 

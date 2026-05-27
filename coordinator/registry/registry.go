@@ -1162,10 +1162,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			}
 		}
 	}
-	// Update warm models from heartbeat
-	if len(msg.WarmModels) > 0 {
-		p.WarmModels = msg.WarmModels
-	}
+	// Update warm models from heartbeat. Always overwrite -- an empty list
+	// means the provider has no models loaded, and stale entries must be
+	// cleared to prevent TriggerModelSwaps from suppressing needed swaps.
+	p.WarmModels = msg.WarmModels
 	if msg.ActiveModel != nil {
 		p.CurrentModel = *msg.ActiveModel
 	}
@@ -1285,7 +1285,7 @@ func (r *Registry) planModelLoadActions(queuedModels []string, now time.Time) []
 	selectedProviders := make(map[string]struct{})
 	actions := make([]modelLoadAction, 0, len(queuedModels))
 	for _, model := range queuedModels {
-		if r.hasWarmProviderLocked(model) {
+		if r.hasWarmProviderLocked(model, now) {
 			continue
 		}
 
@@ -1301,10 +1301,10 @@ func (r *Registry) planModelLoadActions(queuedModels []string, now time.Time) []
 
 // hasWarmProviderLocked reports whether a connected provider already has the
 // model warm. Caller must hold r.mu (read or write).
-func (r *Registry) hasWarmProviderLocked(model string) bool {
+func (r *Registry) hasWarmProviderLocked(model string, now time.Time) bool {
 	for _, p := range r.providers {
 		p.mu.Lock()
-		warm := providerHasWarmModelLocked(p, model)
+		warm := r.providerHasWarmModelLocked(p, model, now)
 		p.mu.Unlock()
 		if warm {
 			return true
@@ -1313,10 +1313,24 @@ func (r *Registry) hasWarmProviderLocked(model string) bool {
 	return false
 }
 
-// providerHasWarmModelLocked checks heartbeat-reported warm state. Caller must
-// hold p.mu.
-func providerHasWarmModelLocked(p *Provider, model string) bool {
+// providerHasWarmModelLocked checks whether the provider has the model warm
+// AND passes the same routing safety gates used by the scheduler. A provider
+// with stale attestation or failed privacy checks should not suppress swap
+// planning. Caller must hold p.mu. Caller must hold r.mu (read or write).
+func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now time.Time) bool {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+		return false
+	}
+	if !p.RuntimeVerified {
+		return false
+	}
+	if !providerSupportsPrivateTextLocked(p) {
+		return false
+	}
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -1338,7 +1352,6 @@ func providerHasWarmModelLocked(p *Provider, model string) bool {
 // pending requests. Caller must hold r.mu (read or write).
 func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, selectedProviders map[string]struct{}) string {
 	bestProviderID := ""
-	bestPendingCount := -1
 	for id, p := range r.providers {
 		if _, selected := selectedProviders[id]; selected {
 			continue
@@ -1351,11 +1364,11 @@ func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, sele
 		if !ok {
 			continue
 		}
-		if bestPendingCount < 0 || pendingCount < bestPendingCount {
-			bestProviderID = id
-			bestPendingCount = pendingCount
-		}
+		// Only consider idle providers (no in-flight requests). Sending
+		// load_model to a provider that is actively serving another model
+		// will fail because the active slot cannot be evicted.
 		if pendingCount == 0 {
+			bestProviderID = id
 			break
 		}
 	}

@@ -1093,7 +1093,22 @@ public struct ModelDownloader: Sendable {
                 // system may reclaim after this call returns. Promote it to a
                 // stable .part file before hashing or moving to the final path.
                 if http.statusCode == 206 {
-                    try Self.appendDownloadedRange(tempFile, to: partial, label: label)
+                    // Validate Content-Range to ensure the server resumed at
+                    // the correct offset. Expected format: "bytes <start>-<end>/<total>".
+                    let expectedStart = UInt64(existingBytes)
+                    if let contentRange = http.value(forHTTPHeaderField: "Content-Range") {
+                        if let rangeStart = Self.parseContentRangeStart(contentRange),
+                           rangeStart != expectedStart {
+                            // Range mismatch: discard partial and re-download fully.
+                            try? fm.removeItem(at: partial)
+                            try fm.moveItem(at: tempFile, to: partial)
+                        } else {
+                            try Self.appendDownloadedRange(tempFile, to: partial, label: label)
+                        }
+                    } else {
+                        // No Content-Range header: cannot verify, append optimistically.
+                        try Self.appendDownloadedRange(tempFile, to: partial, label: label)
+                    }
                 } else {
                     try? fm.removeItem(at: partial)
                     try fm.moveItem(at: tempFile, to: partial)
@@ -1158,6 +1173,15 @@ public struct ModelDownloader: Sendable {
         } catch {
             throw ModelCatalogError.downloadFailed("\(label): could not append resumed download (\(error.localizedDescription))")
         }
+    }
+
+    /// Parse the start offset from a Content-Range header value.
+    /// Expected format: "bytes 12345-67890/123456".
+    private static func parseContentRangeStart(_ value: String) -> UInt64? {
+        guard value.hasPrefix("bytes ") else { return nil }
+        let afterBytes = value.dropFirst("bytes ".count)
+        guard let dashIndex = afterBytes.firstIndex(of: "-") else { return nil }
+        return UInt64(afterBytes[afterBytes.startIndex..<dashIndex])
     }
 
     private static func downloadFailureMessage(label: String, error: Error?) -> String {

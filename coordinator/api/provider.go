@@ -313,6 +313,21 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				"status", statusMsg.Status,
 				"error", statusMsg.Error,
 			)
+			switch statusMsg.Status {
+			case protocol.LoadModelStatusSucceeded:
+				// Mark the model warm on this provider BEFORE draining so
+				// the scheduler sees it as a candidate. Without this, the
+				// provider still looks cold until the next heartbeat.
+				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
+				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
+				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
+			case protocol.LoadModelStatusFailed:
+				// Keep the pending entry (TTL cooldown suppresses retry storms).
+				// If no other provider can serve this model, reject queued
+				// requests immediately rather than making them wait 120s.
+				s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)
+			}
+			// "started" status: no action — load is in progress.
 
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)

@@ -96,8 +96,8 @@ func TestCalculateCostWithOverrides(t *testing.T) {
 	}{
 		{
 			name:             "custom prices override fallback",
-			customInput:      15_000,  // $0.015
-			customOutput:     70_000,  // $0.070
+			customInput:      15_000, // $0.015
+			customOutput:     70_000, // $0.070
 			hasCustom:        true,
 			promptTokens:     1_000_000,
 			completionTokens: 1_000_000,

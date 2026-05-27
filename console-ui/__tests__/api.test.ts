@@ -218,6 +218,27 @@ describe("fetchModels", () => {
     expect(result[0].attested).toBe(true);
   });
 
+  it("unwraps the public catalog response shape", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      models: [
+        {
+          id: "gpt-oss-20b",
+          display_name: "GPT-OSS 20B",
+          size_gb: 12.1,
+          min_ram_gb: 24,
+          architecture: "MoE",
+        },
+      ],
+    }));
+
+    const result = await fetchModels();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("gpt-oss-20b");
+    expect(result[0].display_name).toBe("GPT-OSS 20B");
+    expect(result[0].min_ram_gb).toBe(24);
+  });
+
   it("throws on non-ok response", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 503));
     await expect(fetchModels()).rejects.toThrow("Failed to fetch models: 503");

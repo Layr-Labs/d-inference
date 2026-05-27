@@ -1421,11 +1421,13 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 
 	reserved := actions[:0]
 	for _, action := range actions {
-		key := modelLoadKey(action.providerID, action.modelID)
-		if _, pending := r.pendingModelLoads[key]; pending {
+		// Check per-provider (not just per-key) to prevent concurrent
+		// heartbeat goroutines from reserving the same idle provider
+		// for different models.
+		if r.providerHasPendingLoad(action.providerID) {
 			continue
 		}
-		r.pendingModelLoads[key] = now
+		r.pendingModelLoads[modelLoadKey(action.providerID, action.modelID)] = now
 		reserved = append(reserved, action)
 	}
 	return reserved

@@ -882,6 +882,13 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 	return candidateCount, capacityRejections
 }
 
+// DrainQueuedRequestsForModel attempts to assign queued requests for a
+// single model to available providers. Called when a load_model completes
+// so requests don't have to wait for the next heartbeat cycle.
+func (r *Registry) DrainQueuedRequestsForModel(model string) {
+	r.drainQueuedRequestsForModels([]string{model})
+}
+
 func (r *Registry) drainQueuedRequestsForModels(models []string) {
 	if r.queue == nil || len(models) == 0 {
 		return

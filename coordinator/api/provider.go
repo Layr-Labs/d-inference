@@ -319,6 +319,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				statusMsg.Status == protocol.LoadModelStatusFailed {
 				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 			}
+			// On success, drain queued requests immediately rather than
+			// waiting for the next heartbeat (up to 5s). The model is
+			// warm now and requests near their queue timeout would
+			// otherwise expire unnecessarily.
+			if statusMsg.Status == protocol.LoadModelStatusSucceeded {
+				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
+			}
 
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)

@@ -2,25 +2,26 @@ package payments
 
 // Pricing model for Darkbloom.
 //
-// Prices are set at 50% of the cheapest major competitor for each model type.
-// Users accept higher latency and lower reliability in exchange for the discount.
-// Providers keep ~90%+ profit margin since marginal electricity on Apple Silicon
-// is negligible ($0.001-0.05 per 1M tokens vs $0.075-1.04 revenue).
+// All model-specific prices are managed via the admin API:
 //
-// All prices are in micro-USD per 1M tokens unless noted.
+//   PUT /v1/admin/pricing  {"model":"...", "input_price":..., "output_price":...}
 //
-//   Model                              Input/1M    Output/1M    Competitor
-//   ────────────────────────────────   ─────────   ──────────   ──────────
-//   Qwen3.5 27B Claude Opus (dense)    $0.100      $0.780       OpenRouter $1.56
-//   Trinity Mini (27B MoE, 3B active)  $0.023      $0.075       OpenRouter $0.15
-//   Gemma 4 26B (MoE, 4B active)       $0.065      $0.200       OpenRouter $0.40
-//   Qwen3.5 122B (MoE, 10B active)     $0.130      $1.040       OpenRouter $2.08
-//   MiniMax M2.5 (239B MoE, 11B act)   $0.060      $0.500       OpenRouter $1.00
+// Prices are stored in the database (model_prices table, account_id="platform").
+// The billing path resolves prices in order:
+//   1. Provider custom price  (store.GetModelPrice(providerAccountID, model))
+//   2. Platform admin price   (store.GetModelPrice("platform", model))
+//   3. Fallback defaults      (constants below)
+//
+// The fallback defaults apply only to models that have not been priced via API.
+// All prices are in micro-USD per 1M tokens.
 
-// Default pricing for unknown models (micro-USD per 1M tokens).
-// Falls back to a mid-range rate comparable to a 7B model.
-const defaultInputPricePerMillion int64 = 50_000   // $0.05 per 1M input tokens
-const defaultOutputPricePerMillion int64 = 200_000 // $0.20 per 1M output tokens
+// DefaultInputPricePerMillion is the fallback input price for models without
+// DB-configured pricing (micro-USD per 1M tokens). $0.05 per 1M tokens.
+const DefaultInputPricePerMillion int64 = 50_000
+
+// DefaultOutputPricePerMillion is the fallback output price for models without
+// DB-configured pricing (micro-USD per 1M tokens). $0.20 per 1M tokens.
+const DefaultOutputPricePerMillion int64 = 200_000
 
 // Minimum charge per inference request in micro-USD ($0.0001).
 const minimumChargeMicroUSD int64 = 100
@@ -28,40 +29,21 @@ const minimumChargeMicroUSD int64 = 100
 // Platform fee percentage — Darkbloom retains 5% as a routing fee, provider receives 95%.
 const platformFeePercent int64 = 5
 
-// modelPricing stores input and output prices per model (micro-USD per 1M tokens).
-type modelPrice struct {
-	input  int64
-	output int64
-}
-
-var modelPricing = map[string]modelPrice{
-	// Text generation — 50% of OpenRouter rates
-	"qwen3.5-27b-claude-opus-8bit":          {input: 100_000, output: 780_000},   // $0.10 / $0.78
-	"mlx-community/Trinity-Mini-8bit":       {input: 23_000, output: 75_000},     // $0.023 / $0.075 (50% of OpenRouter)
-	"mlx-community/gemma-4-26b-a4b-it-8bit": {input: 65_000, output: 200_000},    // $0.065 / $0.20 (50% of OpenRouter)
-	"mlx-community/Qwen3.5-122B-A10B-8bit":  {input: 130_000, output: 1_040_000}, // $0.13 / $1.04
-	"mlx-community/MiniMax-M2.5-8bit":       {input: 60_000, output: 500_000},    // $0.06 / $0.50
-}
-
 // MinimumCharge returns the minimum charge per inference request in micro-USD.
 func MinimumCharge() int64 {
 	return minimumChargeMicroUSD
 }
 
-// InputPricePerMillion returns the price in micro-USD for 1M input tokens.
-func InputPricePerMillion(model string) int64 {
-	if p, ok := modelPricing[model]; ok {
-		return p.input
-	}
-	return defaultInputPricePerMillion
+// InputPricePerMillion returns the fallback price in micro-USD for 1M input tokens.
+// Callers should check the store for model-specific prices first.
+func InputPricePerMillion(_ string) int64 {
+	return DefaultInputPricePerMillion
 }
 
-// OutputPricePerMillion returns the price in micro-USD for 1M output tokens.
-func OutputPricePerMillion(model string) int64 {
-	if p, ok := modelPricing[model]; ok {
-		return p.output
-	}
-	return defaultOutputPricePerMillion
+// OutputPricePerMillion returns the fallback price in micro-USD for 1M output tokens.
+// Callers should check the store for model-specific prices first.
+func OutputPricePerMillion(_ string) int64 {
+	return DefaultOutputPricePerMillion
 }
 
 // CalculateCost returns the total cost in micro-USD for a completed inference
@@ -101,15 +83,6 @@ func CalculateCostWithOverrides(model string, promptTokens, completionTokens int
 		cost = minimumChargeMicroUSD
 	}
 	return cost
-}
-
-// DefaultPrices returns the platform default pricing table.
-func DefaultPrices() map[string][2]int64 {
-	result := make(map[string][2]int64, len(modelPricing))
-	for model, price := range modelPricing {
-		result[model] = [2]int64{price.input, price.output}
-	}
-	return result
 }
 
 // PlatformFee returns Darkbloom's routing fee (5%).

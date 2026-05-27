@@ -100,7 +100,14 @@ func TestRegisterValidationAndR2Prefix(t *testing.T) {
 			t.Fatalf("expected invalid request to fail: %#v", req)
 		}
 	}
-	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "mlx-community/gemma-4-26b-a4b-it-8bit", Version: "2026-05-23-r1", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 36}); err != nil {
+	// Verify missing pricing is rejected.
+	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 1, InputPrice: 0, OutputPrice: 100}); err == nil {
+		t.Fatal("expected missing input_price to fail")
+	}
+	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 1, InputPrice: 100, OutputPrice: 0}); err == nil {
+		t.Fatal("expected missing output_price to fail")
+	}
+	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "mlx-community/gemma-4-26b-a4b-it-8bit", Version: "2026-05-23-r1", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 36, InputPrice: 30000, OutputPrice: 165000}); err != nil {
 		t.Fatalf("expected valid request: %v", err)
 	}
 	if modelR2Prefix("foo/bar", "v1") == modelR2Prefix("foo__bar", "v1") {
@@ -171,6 +178,8 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 		"runtime_parameters": map[string]any{"default_temperature": 0, "chat_template_required": true},
 		"metadata":           map[string]any{"tier": "test"},
 		"promote":            true,
+		"input_price":        50000,
+		"output_price":       200000,
 	}
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", bytes.NewReader(body))

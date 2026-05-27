@@ -1,5 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const apiMocks = vi.hoisted(() => ({
+  fetchModels: vi.fn(),
+  fetchPricing: vi.fn(),
+}));
 
 vi.mock("@/components/TopBar", () => ({
   TopBar: ({ title }: { title?: string }) => (
@@ -19,37 +24,69 @@ vi.mock("@/lib/google-analytics", () => ({
   trackEvent: vi.fn(),
 }));
 
+vi.mock("@/lib/api", () => ({
+  fetchModels: apiMocks.fetchModels,
+  fetchPricing: apiMocks.fetchPricing,
+}));
+
+beforeEach(() => {
+  apiMocks.fetchModels.mockReset();
+  apiMocks.fetchPricing.mockReset();
+  apiMocks.fetchModels.mockResolvedValue([
+    {
+      id: "gpt-oss-20b",
+      object: "model",
+      display_name: "GPT-OSS 20B",
+      size_gb: 12.1,
+      min_ram_gb: 24,
+      architecture: "MoE",
+    },
+    {
+      id: "gemma-4-26b",
+      object: "model",
+      display_name: "Gemma 4 26B",
+      size_gb: 28,
+      min_ram_gb: 36,
+      architecture: "MoE",
+    },
+  ]);
+  apiMocks.fetchPricing.mockResolvedValue({
+    prices: [
+      { model: "gemma-4-26b", input_price: 65_000, output_price: 200_000, input_usd: "$0.0650", output_usd: "$0.2000" },
+    ],
+  });
+});
+
 describe("EarnPage", () => {
   it("keeps rendering when selected hardware has no eligible models", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
 
     fireEvent.click(screen.getByRole("button", { name: "MacBook Air" }));
+    fireEvent.click(screen.getByRole("button", { name: "16 GB" }));
 
     expect(screen.getByText("Provider Earnings Calculator")).toBeInTheDocument();
-    expect(screen.getByText("No models fit in 32 GB RAM")).toBeInTheDocument();
+    expect(await screen.findByText("No models fit in 16 GB RAM")).toBeInTheDocument();
     expect(screen.getByText("No compatible model for this hardware")).toBeInTheDocument();
   });
 
-  it("allows switching to another solo model even when it cannot fit beside the auto-selected model", async () => {
+  it("allows adding another model when it fits beside the auto-selected model", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
 
-    const qwenButton = screen.getByRole("button", { name: /Qwen3.5 27B Claude Opus/ });
+    const gptButton = await screen.findByRole("button", { name: /GPT-OSS 20B/ });
 
-    expect(screen.getByText("28 GB weights / 48 GB RAM")).toBeInTheDocument();
-    expect(qwenButton).not.toBeDisabled();
-    fireEvent.click(qwenButton);
+    expect(screen.getByText("12 GB weights / 48 GB RAM")).toBeInTheDocument();
+    expect(gptButton).not.toBeDisabled();
+    fireEvent.click(gptButton);
+
+    const gemmaButton = await screen.findByRole("button", { name: /Gemma 4 26B/ });
+    expect(gemmaButton).not.toBeDisabled();
+    fireEvent.click(gemmaButton);
 
     expect(
       screen.getByText("Selected models share active inference hours, so earnings are not double-counted.")
     ).toBeInTheDocument();
-    expect(screen.getByText("27 GB weights / 48 GB RAM")).toBeInTheDocument();
-
-    const gemmaButton = screen.getByRole("button", { name: /Gemma 4 26B/ });
-    expect(gemmaButton).not.toBeDisabled();
-    fireEvent.click(gemmaButton);
-
-    expect(screen.getByText("28 GB weights / 48 GB RAM")).toBeInTheDocument();
+    expect(screen.getByText("40 GB weights / 48 GB RAM")).toBeInTheDocument();
   });
 });

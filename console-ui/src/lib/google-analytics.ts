@@ -1,3 +1,5 @@
+import { track } from "@vercel/analytics";
+
 const ATTRIBUTION_QUERY_PARAMS = new Set([
   "_gl",
   "dclid",
@@ -76,21 +78,6 @@ function getCookieDomain() {
   return "";
 }
 
-function getGoogleAnalyticsConsentCookie(): GoogleAnalyticsConsentStatus {
-  if (typeof document === "undefined") {
-    return "unset";
-  }
-
-  const prefix = `${GA_CONSENT_STORAGE_KEY}=`;
-  const cookie = document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix));
-
-  const value = cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
-  return value === "granted" || value === "denied" ? value : "unset";
-}
-
 function setGoogleAnalyticsConsentCookie(status: Exclude<GoogleAnalyticsConsentStatus, "unset">) {
   if (typeof document === "undefined") {
     return;
@@ -107,12 +94,7 @@ export function getGoogleAnalyticsConsentStatus(): GoogleAnalyticsConsentStatus 
     return "unset";
   }
 
-  const stored = window.localStorage.getItem(GA_CONSENT_STORAGE_KEY);
-  if (stored === "granted" || stored === "denied") {
-    return stored;
-  }
-
-  return getGoogleAnalyticsConsentCookie();
+  return "granted";
 }
 
 export function applyGoogleAnalyticsConsentState(): GoogleAnalyticsConsentStatus {
@@ -122,12 +104,6 @@ export function applyGoogleAnalyticsConsentState(): GoogleAnalyticsConsentStatus
   }
 
   setGoogleAnalyticsDisabled(status !== "granted");
-
-  if (status !== "granted") {
-    window.__googleAnalyticsInitialized = false;
-    window.__googleAnalyticsCurrentPageLocation = undefined;
-    window.__googleAnalyticsCurrentPageReferrer = undefined;
-  }
 
   return status;
 }
@@ -152,8 +128,8 @@ export function revokeGoogleAnalyticsConsent() {
     return;
   }
 
-  window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "denied");
-  setGoogleAnalyticsConsentCookie("denied");
+  window.localStorage.removeItem(GA_CONSENT_STORAGE_KEY);
+  setGoogleAnalyticsConsentCookie("granted");
   applyGoogleAnalyticsConsentState();
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
@@ -304,8 +280,30 @@ export function trackEvent(
   eventName: string,
   params: GoogleAnalyticsEventParams = {},
 ) {
+  if (!eventName) {
+    return;
+  }
+
+  // --- Vercel Analytics (cookieless, always-on) ---
+  const sanitized = sanitizeEventParams(params);
+  try {
+    // Vercel track() accepts up to 5 key-value pairs and string values
+    // only. Convert values to strings and take the first 5 entries.
+    const vercelData: Record<string, string> = {};
+    let count = 0;
+    for (const [key, value] of Object.entries(sanitized)) {
+      if (count >= 5) break;
+      vercelData[key] = String(value);
+      count++;
+    }
+    track(eventName, Object.keys(vercelData).length > 0 ? vercelData : undefined);
+  } catch {
+    // Vercel Analytics may not be loaded in non-Vercel environments
+  }
+
+  // --- Google Analytics (consent-gated) ---
   const analytics = getGtag();
-  if (!analytics || !eventName) {
+  if (!analytics) {
     return;
   }
 
@@ -314,7 +312,7 @@ export function trackEvent(
     page_referrer:
       window.__googleAnalyticsCurrentPageReferrer ||
       sanitizeReferrer(document.referrer),
-    ...sanitizeEventParams(params),
+    ...sanitized,
     send_to: analytics.measurementId,
   });
 }

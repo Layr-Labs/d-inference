@@ -67,6 +67,7 @@ public actor StandaloneServer {
     private struct CachedScheduler {
         let scheduler: BatchScheduler
         let tokenizer: TokenizerHandle
+        let modelType: String?
         var lastUsedAt: ContinuousClock.Instant
     }
 
@@ -207,9 +208,11 @@ public actor StandaloneServer {
         let tokenizer: TokenizerHandle = await container.perform { ctx in
             TokenizerHandle(ctx.tokenizer)
         }
+        let modelType = models.first(where: { $0.id == modelId })?.modelType
         schedulers[modelId] = CachedScheduler(
             scheduler: scheduler,
             tokenizer: tokenizer,
+            modelType: modelType,
             lastUsedAt: .now
         )
     }
@@ -391,7 +394,8 @@ public actor StandaloneServer {
         return MultiModelBatchSchedulerEngine.AcquiredModel(
             scheduler: cached.scheduler,
             tokenizer: cached.tokenizer,
-            releaseToken: token
+            releaseToken: token,
+            modelType: cached.modelType
         )
     }
 

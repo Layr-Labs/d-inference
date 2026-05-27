@@ -118,6 +118,18 @@ enum KVEstimation {
             layerTypes = Array(lt.prefix(l))
         }
 
+        // Context length: `max_position_embeddings` is canonical for modern
+        // transformers (Llama, Qwen, Gemma, Mistral). Fallbacks cover
+        // older model configs that use different field names.
+        var maxContextLength: Int? = cfg["max_position_embeddings"] as? Int
+            ?? cfg["max_sequence_length"] as? Int
+            ?? cfg["n_positions"] as? Int
+            ?? cfg["seq_length"] as? Int
+        // Clamp to a sane range (1 to 2M tokens).
+        if let mcl = maxContextLength {
+            maxContextLength = min(max(mcl, 1), 2_097_152)
+        }
+
         return ModelArchitecture(
             numLayers: numLayers,
             kvHeads: kvHeads,
@@ -126,7 +138,8 @@ enum KVEstimation {
             globalHeadDim: globalHeadDim,
             numGlobalKvHeads: numGlobalKvHeads,
             slidingWindowPattern: slidingWindowPattern,
-            layerTypes: layerTypes
+            layerTypes: layerTypes,
+            maxContextLength: maxContextLength
         )
     }
 
@@ -222,6 +235,14 @@ enum KVEstimation {
 
     /// Sum per-layer KV bytes for hybrid-attention models, skipping
     /// recurrent layers (which hold a fixed state, not per-token KV).
+    /// Compute KV bytes per token for hybrid-attention models.
+    ///
+    /// Only **full-attention** layers contribute a per-token cost (their KV
+    /// cache grows linearly with sequence length). Sliding-attention layers
+    /// have a **fixed** KV cache (window × per-layer bytes) that does NOT
+    /// grow with sequence length. Counting them in the per-token cost
+    /// overestimates by up to 2x for models like GPT-OSS 20B (50% sliding)
+    /// and Gemma 4 (similar hybrid layout).
     private static func totalHybridBytesPerToken(
         cachedLayers: Int,
         layerTypes: [String],
@@ -237,6 +258,13 @@ enum KVEstimation {
         for i in 0..<cachedLayers {
             let layerType = layerTypes[i]
             if recurrentLayerTypes.contains(layerType) {
+                continue
+            }
+            // Sliding-attention layers have a fixed-size KV cache (bounded
+            // by the window size). Their per-token marginal cost is zero
+            // once the window fills -- they do NOT grow the KV cache with
+            // sequence length. Only full-attention layers contribute.
+            if slidingLayerTypes.contains(layerType) {
                 continue
             }
 
@@ -255,6 +283,11 @@ enum KVEstimation {
         }
         return totalBytesPerToken
     }
+
+    private static let slidingLayerTypes: Set<String> = [
+        "sliding_attention",
+        "local_sliding_attention",
+    ]
 }
 
 // MARK: - BatchScheduler convenience shims

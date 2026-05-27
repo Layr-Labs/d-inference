@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -34,6 +35,17 @@ var _ Store = (*PostgresStore)(nil)
 // PostgresStore is a PostgreSQL-backed implementation of Store.
 type PostgresStore struct {
 	pool *pgxpool.Pool
+
+	// In-memory cache for model prices. Keyed by "accountID:model".
+	// Eliminates a DB round trip on every inference request for
+	// platform pricing lookups (which change rarely).
+	priceCacheMu sync.RWMutex
+	priceCache   map[string]cachedPrice
+}
+
+type cachedPrice struct {
+	input, output int64
+	at            time.Time
 }
 
 // NewPostgres creates a new PostgresStore connected to the given database URL.
@@ -63,7 +75,10 @@ func NewPostgres(ctx context.Context, connString string) (*PostgresStore, error)
 		return nil, fmt.Errorf("store: ping postgres: %w", err)
 	}
 
-	s := &PostgresStore{pool: pool}
+	s := &PostgresStore{
+		pool:       pool,
+		priceCache: make(map[string]cachedPrice),
+	}
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
@@ -1188,43 +1203,31 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	// Check and update balance atomically
+	// Single-statement CTE: debit balance, cap withdrawable, insert ledger
+	// entry -- all in one round trip. The old implementation used 5 sequential
+	// round trips (BEGIN + 2 UPDATEs + INSERT + COMMIT) which paid full
+	// network latency to Postgres on each hop (~200ms × 5 = 1s+).
 	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`UPDATE balances
-		 SET balance_micro_usd = balance_micro_usd - $2, updated_at = NOW()
-		 WHERE account_id = $1 AND balance_micro_usd >= $2
-		 RETURNING balance_micro_usd`,
-		accountID, amountMicroUSD,
+	err := s.pool.QueryRow(ctx, `
+		WITH debit AS (
+			UPDATE balances
+			SET balance_micro_usd = balance_micro_usd - $2,
+			    withdrawable_micro_usd = LEAST(withdrawable_micro_usd, balance_micro_usd - $2),
+			    updated_at = NOW()
+			WHERE account_id = $1 AND balance_micro_usd >= $2
+			RETURNING balance_micro_usd
+		), ledger AS (
+			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+			SELECT $1, $3, -$2, balance_micro_usd, $4
+			FROM debit
+		)
+		SELECT balance_micro_usd FROM debit`,
+		accountID, amountMicroUSD, string(entryType), reference,
 	).Scan(&balanceAfter)
 	if err != nil {
 		return errors.New("insufficient balance or account not found")
 	}
-
-	// Cap withdrawable at the new balance (credits consumed first).
-	_, _ = tx.Exec(ctx,
-		`UPDATE balances SET withdrawable_micro_usd = LEAST(withdrawable_micro_usd, balance_micro_usd)
-		 WHERE account_id = $1`,
-		accountID,
-	)
-
-	// Record ledger entry
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		accountID, string(entryType), -amountMicroUSD, balanceAfter, reference,
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 // DebitWithdrawable subtracts micro-USD from both the total balance and the
@@ -1514,10 +1517,27 @@ func (s *PostgresStore) SetModelPrice(accountID, model string, inputPrice, outpu
 	if err != nil {
 		return fmt.Errorf("store: set model price: %w", err)
 	}
+
+	// Invalidate cache.
+	key := accountID + ":" + model
+	s.priceCacheMu.Lock()
+	delete(s.priceCache, key)
+	s.priceCacheMu.Unlock()
+
 	return nil
 }
 
 func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bool) {
+	key := accountID + ":" + model
+
+	// Check in-memory cache (30-second TTL).
+	s.priceCacheMu.RLock()
+	if cached, ok := s.priceCache[key]; ok && time.Since(cached.at) < 30*time.Second {
+		s.priceCacheMu.RUnlock()
+		return cached.input, cached.output, true
+	}
+	s.priceCacheMu.RUnlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -1529,6 +1549,12 @@ func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bo
 	if err != nil {
 		return 0, 0, false
 	}
+
+	// Populate cache.
+	s.priceCacheMu.Lock()
+	s.priceCache[key] = cachedPrice{input: input, output: output, at: time.Now()}
+	s.priceCacheMu.Unlock()
+
 	return input, output, true
 }
 

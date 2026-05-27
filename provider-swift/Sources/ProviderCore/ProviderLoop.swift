@@ -166,6 +166,11 @@ public actor ProviderLoop {
     /// long-running generations are still in flight.
     private var capacityRefreshTask: Task<Void, Never>?
 
+    /// Background task that periodically checks for provider updates and
+    /// applies them automatically. nil when auto-update is disabled or
+    /// before `run()` starts it.
+    private var autoUpdateTask: Task<Void, Never>?
+
     private let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
 
     private static let shutdownDrainTimeout: Duration = .seconds(600)
@@ -217,6 +222,19 @@ public actor ProviderLoop {
     private static let schedulerMaxConcurrent = 24
     private static let schedulerPendingTimeout: Duration = .seconds(120)
     private static let schedulerDefaultMaxTokens = 4096
+
+    /// Infer the reasoning parser format from the model's `model_type`
+    /// (read from config.json at scan time). Used to auto-select the
+    /// parser when the consumer doesn't specify one.
+    static func inferReasoningParser(for modelType: String?) -> ReasoningParserFormat {
+        guard let type = modelType?.lowercased() else { return .qwen3 }
+        if type == "gpt_oss" { return .harmony }
+        if type.hasPrefix("gemma") { return .gemma4 }
+        if type.hasPrefix("qwen") { return .qwen3 }
+        if type.hasPrefix("deepseek") { return .deepseekR1 }
+        // Safe default: qwen3's <think> parser handles the most common format.
+        return .qwen3
+    }
 
     private struct ModelSlot {
         let scheduler: BatchScheduler
@@ -305,6 +323,7 @@ public actor ProviderLoop {
         // timer.
         startIdleMonitor()
         startCapacityRefreshMonitor()
+        startAutoUpdateMonitor()
 
         logger.info("Coordinator client started, entering event loop")
 
@@ -361,6 +380,8 @@ public actor ProviderLoop {
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
         capacityRefreshTask = nil
+        autoUpdateTask?.cancel()
+        autoUpdateTask = nil
         let preloads = Array(preloadTasks.values)
         for task in preloads { task.cancel() }
         cancelLoadWaiters()
@@ -614,6 +635,7 @@ public actor ProviderLoop {
         let signingIdentity = self.signer
         let log = self.logger
         let tokenizer = slot.tokenizer
+        let modelType = loopConfig.models.first(where: { $0.id == modelId })?.modelType
 
         // 7. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
@@ -668,7 +690,7 @@ public actor ProviderLoop {
             // still going through the upstream library for SSE encoding.
             let providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
-                    [chatRequest.model: .init(scheduler: sched, tokenizer: tokenizer)]
+                    [chatRequest.model: .init(scheduler: sched, tokenizer: tokenizer, modelType: modelType)]
                 },
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },
@@ -695,6 +717,15 @@ public actor ProviderLoop {
                 ?? OpenAIStreamOptions()
             forcedStreamOptions.includeUsage = true
             streamingRequest.streamOptions = forcedStreamOptions
+
+            // Auto-select reasoning parser based on model type if the
+            // consumer didn't specify one. This ensures model-specific
+            // reasoning tokens (Harmony channels, Gemma4 channels,
+            // Qwen3/DeepSeek <think> tags) are parsed into
+            // reasoning_content rather than leaking as raw content.
+            if streamingRequest.reasoningParser == nil {
+                streamingRequest.reasoningParser = Self.inferReasoningParser(for: modelType)
+            }
 
             let service = MLXOpenAIService(engine: providerEngine)
             let frames: AsyncThrowingStream<String, Error>
@@ -1085,6 +1116,88 @@ public actor ProviderLoop {
                 if Task.isCancelled { break }
                 await me.updateAggregateCapacity()
             }
+        }
+    }
+
+    // MARK: - Background Auto-Update
+
+    /// Initial delay before the first background update check (5 minutes).
+    /// Avoids slowing down startup; lets the provider stabilize first.
+    private static let autoUpdateInitialDelay: Duration = .seconds(300)
+
+    /// Interval between subsequent update checks (30 minutes).
+    private static let autoUpdateInterval: Duration = .seconds(1800)
+
+    /// Start the background auto-update monitor. Checks the coordinator
+    /// for a newer release every 30 minutes (after an initial 5-minute
+    /// delay), downloads + verifies + installs the update, then performs
+    /// a launchd-aware restart.
+    ///
+    /// The check is skipped when:
+    ///   - `config.provider.autoUpdate` is false
+    ///   - `DARKBLOOM_NO_UPDATE_CHECK` env var is set
+    ///   - inference requests are currently active (never update mid-inference)
+    ///
+    /// Failures are logged at warning level and never crash the provider.
+    private func startAutoUpdateMonitor() {
+        autoUpdateTask?.cancel()
+
+        guard loopConfig.config.provider.autoUpdate else {
+            logger.info("Background auto-update disabled (auto_update=false)")
+            return
+        }
+        guard ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil else {
+            logger.info("Background auto-update disabled (DARKBLOOM_NO_UPDATE_CHECK set)")
+            return
+        }
+
+        let coordinatorURL = loopConfig.coordinatorURL
+        let me = self
+        autoUpdateTask = Task.detached {
+            // Wait 5 minutes before first check.
+            try? await Task.sleep(for: Self.autoUpdateInitialDelay)
+
+            while !Task.isCancelled {
+                await me.performAutoUpdateCheck(coordinatorURL: coordinatorURL)
+                // Sleep 30 minutes before next check.
+                try? await Task.sleep(for: Self.autoUpdateInterval)
+            }
+        }
+        logger.info("Background auto-update monitor started (initial delay: 5m, interval: 30m)")
+    }
+
+    /// Perform a single background update check + apply cycle.
+    private func performAutoUpdateCheck(coordinatorURL: String) async {
+        // Skip if inference is active -- never update mid-inference.
+        if !requestToModel.isEmpty {
+            logger.info("Auto-update check skipped: inference requests in flight")
+            return
+        }
+
+        logger.info("Auto-update: checking for provider update...")
+        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let result = await updater.update()
+
+        switch result {
+        case .alreadyUpToDate:
+            logger.info("Auto-update: already running latest version")
+
+        case .updated(let from, let to):
+            logger.info("Auto-update: updated provider v\(from) -> v\(to), restarting...")
+            do {
+                try ProcessLifecycle.restartAfterUpdate()
+            } catch {
+                logger.warning("Auto-update: restart failed: \(error.localizedDescription)")
+            }
+
+        case .downloadFailed(let reason):
+            logger.warning("Auto-update: check failed: \(reason)")
+
+        case .hashMismatch(let expected, let got):
+            logger.warning("Auto-update: bundle hash mismatch (expected \(expected), got \(got))")
+
+        case .replaceFailed(let reason):
+            logger.warning("Auto-update: install failed: \(reason)")
         }
     }
 

@@ -89,6 +89,8 @@ interface CatalogModel {
   outputPriceMicro: number;
 }
 
+const DEFAULT_OUTPUT_PRICE_MICRO_USD = 200_000;
+
 function buildPricingLookup(pricing: PricingResponse | null): Record<string, number> {
   if (!pricing) return {};
   return Object.fromEntries(pricing.prices.map((p) => [p.model, p.output_price]));
@@ -113,14 +115,13 @@ function buildCatalogModels(models: Model[], pricing: PricingResponse | null): C
   const outputPrices = buildPricingLookup(pricing);
   return models
     .map((model) => {
-      const outputPriceMicro = outputPrices[model.id];
-      if (!outputPriceMicro) return null;
+      const outputPriceMicro = outputPrices[model.id] ?? DEFAULT_OUTPUT_PRICE_MICRO_USD;
       const size = Math.max(1, Math.round(modelSizeGB(model)));
       return {
         id: model.id,
         name: model.display_name || model.id.split("/").pop() || model.id,
         minRAMGB: model.min_ram_gb || Math.ceil(size * 1.35),
-        demandNote: "Uses the live coordinator catalog and current per-token pricing.",
+        demandNote: "Uses the live coordinator catalog and current/default per-token pricing.",
         activeParamsGB: activeParamsGB(model, size),
         modelSizeGB: size,
         outputPriceMicro,

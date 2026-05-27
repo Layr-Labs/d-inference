@@ -28,13 +28,13 @@ The Services may include:
 - provider software and installers used to contribute compute capacity;
 - account, billing, referral, enrollment, attestation, and device-linking features.
 
-**Research Preview Status.** The Services are currently offered as a research preview and may be labeled alpha, beta, preview, experimental, or research. This means:
+**Public Alpha Status.** The Services are currently offered as a public alpha and may be labeled alpha, beta, preview, experimental, or research. This means:
 
 - Features may change without notice, may be incomplete, and may break.
 - We do not provide service-level agreements, uptime commitments, support commitments, service credits, or production warranties unless we expressly agree otherwise in a separate written contract.
-- Provider earnings are dependent on consumer demand, platform availability, and routing decisions, all of which may vary significantly during the research preview period. Providers should not rely on the Services as a primary or stable source of income during this phase.
+- Provider earnings are dependent on consumer demand, platform availability, and routing decisions, all of which may vary significantly during the public alpha period. Providers should not rely on the Services as a primary or stable source of income during this phase.
 - Consumers should not rely on the Services for production workloads, time-sensitive applications, or use cases where interruptions would cause significant harm.
-- We may modify, suspend, or discontinue the Services or any feature at any time during the research preview period, including features that affect provider earnings or consumer access.
+- We may modify, suspend, or discontinue the Services or any feature at any time during the public alpha period, including features that affect provider earnings or consumer access.
 - OpenAI compatibility describes interface compatibility only. The Services are not endorsed by or affiliated with OpenAI unless we expressly say so.
 
 ## 3. Accounts, Authentication, and API Keys
@@ -140,14 +140,14 @@ MDM enrollment is configured for security verification only. Darkbloom requests 
 
 ## 10. Beta, Research, and Experimental Features
 
-The Services are being offered as a beta test, research preview. The Services are offered "AS IS," may be incomplete, may contain bugs or security issues, and may change or be withdrawn at any time. We may impose limits on usage, supported models, regions, features, access methods, or uptime at any time.
+The Services are being offered as a public alpha. The Services are offered "AS IS," may be incomplete, may contain bugs or security issues, and may change or be withdrawn at any time. We may impose limits on usage, supported models, regions, features, access methods, or uptime at any time.
 
 Unless we expressly agree otherwise in a separate written agreement:
 
 - the Services are not a production service;
 - we do not commit to any minimum availability, support response time, incident response time, or disaster recovery objective;
 - you are solely responsible for determining whether the Services are appropriate for any testing, staging, or production use;
-- provider earnings during the research preview period may be interrupted, reduced, or suspended without notice if we modify, suspend, or discontinue features or capacity.
+- provider earnings during the public alpha period may be interrupted, reduced, or suspended without notice if we modify, suspend, or discontinue features or capacity.
 
 ## 11. Third-Party Services and Open Source
 
@@ -192,7 +192,7 @@ THE SERVICES ARE PROVIDED "AS IS" AND "AS AVAILABLE." TO THE MAXIMUM EXTENT PERM
 We do not warrant:
 
 - any minimum uptime, availability, response time, throughput, or provider availability;
-- any compatibility, continuity, or stability of preview features, research features, or APIs;
+- any compatibility, continuity, or stability of alpha features, experimental features, or APIs;
 - any support availability, response time, remediation timeline, or service credits;
 - that outputs are accurate, lawful, safe, or suitable for your intended use;
 - that security features, attestation features, or integrity checks will detect every threat or prevent every incident.

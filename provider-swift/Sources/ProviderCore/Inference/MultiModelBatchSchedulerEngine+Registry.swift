@@ -21,10 +21,14 @@ public extension MultiModelBatchSchedulerEngine {
         /// Tokenizer wrapper for token-utility endpoints
         /// (`/tokenize`, `/detokenize`, `/apply-template`).
         public let tokenizer: TokenizerHandle
+        /// The `model_type` from config.json (e.g. `"gpt_oss"`, `"gemma2"`,
+        /// `"qwen3"`). Used to auto-select reasoning and tool call parsers.
+        public let modelType: String?
 
-        public init(scheduler: BatchScheduler, tokenizer: TokenizerHandle) {
+        public init(scheduler: BatchScheduler, tokenizer: TokenizerHandle, modelType: String? = nil) {
             self.scheduler = scheduler
             self.tokenizer = tokenizer
+            self.modelType = modelType
         }
     }
 
@@ -42,15 +46,19 @@ public extension MultiModelBatchSchedulerEngine {
         public let scheduler: BatchScheduler
         public let tokenizer: TokenizerHandle
         public let releaseToken: OneShotRelease
+        /// The `model_type` from config.json.
+        public let modelType: String?
 
         public init(
             scheduler: BatchScheduler,
             tokenizer: TokenizerHandle,
-            releaseToken: OneShotRelease
+            releaseToken: OneShotRelease,
+            modelType: String? = nil
         ) {
             self.scheduler = scheduler
             self.tokenizer = tokenizer
             self.releaseToken = releaseToken
+            self.modelType = modelType
         }
     }
 }

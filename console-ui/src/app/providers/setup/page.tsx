@@ -148,7 +148,7 @@ export default function ProviderSetupPage() {
           Your Mac becomes part of a decentralized, hardware-attested inference network.
         </p>
         <p className="text-xs text-text-tertiary max-w-md mx-auto mt-3 leading-relaxed">
-          Darkbloom is an experimental research project in active development.
+          Darkbloom is currently in public alpha and in active development.
           Provider participation is part of our pilot program and the system may change as we iterate.
         </p>
       </div>

@@ -288,11 +288,15 @@ private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
         }
         let body = Self.payload.dropFirst(start)
         let status = start > 0 ? 206 : 200
+        var headers = ["Content-Length": "\(body.count)"]
+        if status == 206 {
+            headers["Content-Range"] = "bytes \(start)-\(Self.payload.count - 1)/\(Self.payload.count)"
+        }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: status,
             httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Length": "\(body.count)"]
+            headerFields: headers
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body))

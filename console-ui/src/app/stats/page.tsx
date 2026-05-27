@@ -22,10 +22,19 @@ import {
 } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 import {
+  catalogModelsFromResponse,
+  capacityModelsFromResponse,
+  filterServedCatalogModels,
+  type CapacityModelSummary,
+  type CatalogModelSummary,
+} from "@/lib/stats-model-filter";
+import {
   verifyCertificateChain,
   type CertVerificationResult,
   type VerificationStep,
 } from "@/lib/cert-verify";
+
+const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 
 interface CPUCores {
   total: number;
@@ -185,9 +194,16 @@ interface ModelInventory {
   hardware: number;
   gpuCores: number;
   memoryGB: number;
-  tokens: number;
   sharePct: number;
 }
+
+type ActiveModelInventory = ModelInventory & {
+  id: string;
+  providers: number;
+  catalogStatus?: string;
+  catalogModel?: CatalogModelSummary;
+  capacity?: CapacityModelSummary;
+};
 
 function formatNumber(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -224,6 +240,69 @@ function normalizeTimeSeries(data: TimeSeriesBucket[], minutes = 30): TimeSeries
       active_providers: 0,
     };
   });
+}
+
+async function fetchModelCatalog(): Promise<CatalogModelSummary[] | null> {
+  const urls = [
+    "/api/models",
+    `${COORDINATOR_URL}/v1/models/catalog?type=text`,
+  ];
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      const catalog = catalogModelsFromResponse(await res.json());
+      if (catalog.length > 0) return catalog;
+    } catch {
+      // Keep stats usable if catalog lookup fails.
+    }
+  }
+
+  return null;
+}
+
+async function fetchModelCapacity(): Promise<CapacityModelSummary[] | null> {
+  const urls = [
+    "/api/models/capacity",
+    `${COORDINATOR_URL}/v1/models/capacity`,
+  ];
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      const capacity = capacityModelsFromResponse(await res.json());
+      if (capacity.length > 0) return capacity;
+    } catch {
+      // Keep stats usable if capacity lookup fails.
+    }
+  }
+
+  return null;
+}
+
+function formatGB(value?: number): string | null {
+  if (value === undefined) return null;
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} GB`;
+}
+
+function formatLatency(ms?: number): string {
+  if (ms === undefined) return "--";
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
+function formatDecimal(value?: number): string {
+  if (value === undefined) return "--";
+  return value >= 100 ? value.toFixed(0) : value.toFixed(1);
+}
+
+function formatTokenBudget(capacity?: CapacityModelSummary): string {
+  if (!capacity || capacity.tokenBudgetTotal === undefined) return "--";
+  if (capacity.tokenBudgetTotal <= 0) return "0";
+  const remaining = capacity.tokenBudgetRemaining ?? 0;
+  return `${Math.round((remaining / capacity.tokenBudgetTotal) * 100)}%`;
 }
 
 function StatusDot({ status }: { status: string }) {
@@ -332,11 +411,18 @@ function buildModelInventory(stats: PlatformStats): ModelInventory[] {
         hardware: providers.filter((provider) => provider.trust_level === "hardware").length,
         gpuCores: providers.reduce((sum, provider) => sum + provider.gpu_cores, 0),
         memoryGB: providers.reduce((sum, provider) => sum + provider.memory_gb, 0),
-        tokens: providers.reduce((sum, provider) => sum + provider.tokens_generated, 0),
         sharePct: totalSlots > 0 ? (model.providers / totalSlots) * 100 : 0,
       };
     })
     .sort((a, b) => b.model.providers - a.model.providers || a.model.id.localeCompare(b.model.id));
+}
+
+function deprecatedModelLabel(status?: string): string | null {
+  if (!status) return null;
+  const normalized = status.toLowerCase();
+  if (normalized === "deprecated") return "Deprecated";
+  if (normalized === "retired") return "Retired";
+  return null;
 }
 
 function ModelRow({
@@ -344,7 +430,7 @@ function ModelRow({
   maxProviders,
   rank,
 }: {
-  item: ModelInventory;
+  item: ActiveModelInventory;
   maxProviders: number;
   rank: number;
 }) {
@@ -352,6 +438,18 @@ function ModelRow({
   const pct = maxProviders > 0 ? (model.providers / maxProviders) * 100 : 0;
   const routablePct = model.providers > 0 ? (item.routable / model.providers) * 100 : 0;
   const isLeader = rank === 1;
+  const statusLabel = deprecatedModelLabel(item.catalogStatus);
+  const catalog = item.catalogModel;
+  const capacity = item.capacity;
+  const displayName = catalog?.displayName || shortModelName(model.id);
+  const modelSize = formatGB(catalog?.sizeGB);
+  const minRAM = formatGB(catalog?.minRAMGB);
+  const queueValue = capacity
+    ? `${(capacity.activeRequests ?? 0) + (capacity.queuedRequests ?? 0)}/${capacity.queueLimit ?? "--"}`
+    : "--";
+  const warmColdValue = capacity
+    ? `${capacity.warmProviders ?? 0}/${capacity.coldProviders ?? 0}`
+    : "--";
 
   return (
     <div
@@ -383,15 +481,26 @@ function ModelRow({
           </div>
           <div className="min-w-0 space-y-2">
             <div>
-              <p className="truncate text-base font-mono font-semibold text-text-primary">
-                {shortModelName(model.id)}
-              </p>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <p className="truncate text-base font-mono font-semibold text-text-primary">
+                  {displayName}
+                </p>
+                {statusLabel && (
+                  <span className="shrink-0 rounded-full border border-accent-amber/30 bg-accent-amber-dim px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-accent-amber">
+                    {statusLabel}
+                  </span>
+                )}
+              </div>
               <p className="truncate text-xs font-mono text-text-tertiary">{model.id}</p>
             </div>
             <div className="flex flex-wrap gap-1.5">
+              {catalog?.family && <ModelPill label={catalog.family} />}
+              {catalog?.quantization && <ModelPill label={catalog.quantization} />}
+              {modelSize && <ModelPill label={modelSize} />}
+              {minRAM && <ModelPill label={`${minRAM} min`} />}
+              {catalog?.maxContextLength && <ModelPill label={`${formatNumber(catalog.maxContextLength)} ctx`} />}
               <ModelPill label={`${formatNumber(item.gpuCores)} GPU`} />
               <ModelPill label={`${formatNumber(item.memoryGB)} GB RAM`} />
-              <ModelPill label={`${formatNumber(item.tokens)} tok`} />
             </div>
           </div>
         </div>
@@ -404,9 +513,23 @@ function ModelRow({
         </div>
       </div>
 
+      {capacity && (
+        <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-5">
+          <CapacityMetric label="Capacity TPS" value={formatDecimal(capacity.aggregateTPS)} />
+          <CapacityMetric label="TTFT Est." value={formatLatency(capacity.estimatedTTFTMS)} />
+          <CapacityMetric label="Queue" value={queueValue} />
+          <CapacityMetric label="Warm/Cold" value={warmColdValue} />
+          <CapacityMetric
+            label="Token Budget"
+            value={formatTokenBudget(capacity)}
+            tone={capacity.canAccept ? "green" : "amber"}
+          />
+        </div>
+      )}
+
       <div className="mt-4 space-y-2">
         <div className="flex items-center justify-between gap-3 text-[11px] font-mono text-text-tertiary">
-          <span>{item.sharePct.toFixed(0)}% of advertised model slots</span>
+          <span>{item.sharePct.toFixed(0)}% of visible model slots</span>
           <span>{Math.round(routablePct)}% routable coverage</span>
         </div>
         <div className="relative h-2.5 overflow-hidden rounded-full bg-bg-elevated">
@@ -451,6 +574,32 @@ function ModelMiniMetric({
   );
 }
 
+function CapacityMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "green" | "amber";
+}) {
+  let toneClass = "text-text-primary";
+  if (tone === "green") {
+    toneClass = "text-accent-green";
+  } else if (tone === "amber") {
+    toneClass = "text-accent-amber";
+  }
+
+  return (
+    <div className="rounded-lg border border-border-dim bg-bg-primary/60 px-2.5 py-2">
+      <p className={`text-sm font-mono font-bold ${toneClass}`}>{value}</p>
+      <p className="mt-0.5 text-[9px] font-mono uppercase tracking-wider text-text-tertiary">
+        {label}
+      </p>
+    </div>
+  );
+}
+
 function ModelPill({ label }: { label: string }) {
   return (
     <span className="rounded-md border border-border-dim bg-bg-primary/70 px-2 py-1 text-[10px] font-mono text-text-tertiary">
@@ -472,14 +621,39 @@ function ModelHeaderMetric({ label, value }: { label: string; value: string }) {
 
 function ActiveModelsSection({
   stats,
-  maxProviders,
+  catalogModels,
+  capacityModels,
 }: {
   stats: PlatformStats;
-  maxProviders: number;
+  catalogModels: CatalogModelSummary[] | null;
+  capacityModels: CapacityModelSummary[] | null;
 }) {
+  const [showDeprecatedModels, setShowDeprecatedModels] = useState(false);
   const inventory = buildModelInventory(stats);
-  const totalSlots = inventory.reduce((sum, item) => sum + item.model.providers, 0);
-  const routableSlots = inventory.reduce((sum, item) => sum + item.routable, 0);
+  const catalogByID = new Map((catalogModels ?? []).map((model) => [model.id, model]));
+  const capacityByID = new Map((capacityModels ?? []).map((model) => [model.id, model]));
+  const servedInventory = inventory.map((item) => ({
+    ...item,
+    id: item.model.id,
+    providers: item.model.providers,
+    catalogModel: catalogByID.get(item.model.id),
+    capacity: capacityByID.get(item.model.id),
+  }));
+  const filtered = catalogModels
+    ? filterServedCatalogModels(servedInventory, catalogModels, showDeprecatedModels)
+    : {
+      visible: servedInventory.map((item) => ({ ...item, catalogStatus: "active" })),
+      catalogServedCount: servedInventory.length,
+      deprecatedCount: 0,
+    };
+  const filteredSlots = filtered.visible.reduce((sum, item) => sum + item.model.providers, 0);
+  const visibleInventory = filtered.visible.map((item) => ({
+    ...item,
+    sharePct: filteredSlots > 0 ? (item.model.providers / filteredSlots) * 100 : 0,
+  }));
+  const maxProviders = Math.max(...visibleInventory.map((item) => item.model.providers), 1);
+  const totalSlots = filteredSlots;
+  const routableSlots = visibleInventory.reduce((sum, item) => sum + item.routable, 0);
 
   return (
     <section className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
@@ -493,27 +667,59 @@ function ActiveModelsSection({
               Active Models
             </h3>
             <p className="mt-1 text-xs text-text-tertiary">
-              Capacity by model, routability, and trusted node coverage
+              Catalog metadata, live capacity, and trusted node coverage
             </p>
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[250px]">
-          <ModelHeaderMetric label="Models" value={inventory.length.toString()} />
-          <ModelHeaderMetric label="Slots" value={totalSlots.toString()} />
-          <ModelHeaderMetric label="Routable" value={routableSlots.toString()} />
+        <div className="flex flex-col items-start gap-3 sm:items-end">
+          {filtered.deprecatedCount > 0 && (
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border-dim bg-bg-secondary px-3 py-2 text-xs font-mono text-text-secondary transition-colors hover:bg-bg-hover">
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={showDeprecatedModels}
+                onChange={(event) => setShowDeprecatedModels(event.target.checked)}
+                aria-label="Show deprecated models"
+              />
+              <span
+                className={`relative h-5 w-9 rounded-full transition-colors ${
+                  showDeprecatedModels ? "bg-accent-brand" : "bg-bg-elevated"
+                }`}
+                aria-hidden="true"
+              >
+                <span
+                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-bg-primary shadow-sm transition-transform ${
+                    showDeprecatedModels ? "translate-x-4" : "translate-x-0.5"
+                  }`}
+                />
+              </span>
+              <span>Show deprecated ({filtered.deprecatedCount})</span>
+            </label>
+          )}
+          <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[250px]">
+            <ModelHeaderMetric label="Models" value={visibleInventory.length.toString()} />
+            <ModelHeaderMetric label="Slots" value={totalSlots.toString()} />
+            <ModelHeaderMetric label="Routable Slots" value={routableSlots.toString()} />
+          </div>
         </div>
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-3">
-          {inventory.map((item, index) => (
-            <ModelRow
-              key={item.model.id}
-              item={item}
-              maxProviders={maxProviders}
-              rank={index + 1}
-            />
-          ))}
+          {visibleInventory.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border-dim bg-bg-secondary px-4 py-5 text-sm text-text-tertiary">
+              No currently served catalog models.
+            </div>
+          ) : (
+            visibleInventory.map((item, index) => (
+              <ModelRow
+                key={item.model.id}
+                item={item}
+                maxProviders={maxProviders}
+                rank={index + 1}
+              />
+            ))
+          )}
         </div>
         <div className="rounded-xl border border-border-dim bg-bg-secondary p-4">
           <div className="flex items-center justify-between gap-3">
@@ -525,24 +731,30 @@ function ActiveModelsSection({
             </p>
           </div>
           <div className="mt-4 space-y-3">
-            {inventory.map((item) => (
-              <div key={`mix-${item.model.id}`}>
-                <div className="flex items-center justify-between gap-3 text-xs">
-                  <p className="truncate font-mono text-text-secondary">
-                    {shortModelName(item.model.id)}
-                  </p>
-                  <p className="shrink-0 font-mono font-semibold text-text-primary">
-                    {item.sharePct.toFixed(0)}%
-                  </p>
+            {visibleInventory.length === 0 ? (
+              <p className="text-sm text-text-tertiary">
+                Deprecated provider-advertised models are hidden.
+              </p>
+            ) : (
+              visibleInventory.map((item) => (
+                <div key={`mix-${item.model.id}`}>
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <p className="truncate font-mono text-text-secondary">
+                      {shortModelName(item.model.id)}
+                    </p>
+                    <p className="shrink-0 font-mono font-semibold text-text-primary">
+                      {item.sharePct.toFixed(0)}%
+                    </p>
+                  </div>
+                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-bg-elevated">
+                    <div
+                      className="h-full rounded-full bg-accent-brand/70"
+                      style={{ width: `${Math.max(3, item.sharePct)}%` }}
+                    />
+                  </div>
                 </div>
-                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-bg-elevated">
-                  <div
-                    className="h-full rounded-full bg-accent-brand/70"
-                    style={{ width: `${Math.max(3, item.sharePct)}%` }}
-                  />
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
           <div className="mt-5 rounded-lg border border-accent-green/20 bg-accent-green/10 px-3 py-2">
             <div className="flex items-center justify-between gap-3">
@@ -2265,16 +2477,28 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
 // ---------------------------------------------------------------------------
 export default function StatsPage() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [catalogModels, setCatalogModels] = useState<CatalogModelSummary[] | null>(null);
+  const [capacityModels, setCapacityModels] = useState<CapacityModelSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchStats = async () => {
     try {
       const query = typeof window === "undefined" ? "" : window.location.search;
-      const res = await fetch(`/api/stats${query}`);
+      const [res, catalog, capacity] = await Promise.all([
+        fetch(`/api/stats${query}`),
+        fetchModelCatalog(),
+        fetchModelCapacity(),
+      ]);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setStats(data);
+      if (catalog) {
+        setCatalogModels(catalog);
+      }
+      if (capacity) {
+        setCapacityModels(capacity);
+      }
       setError(null);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to fetch stats");
@@ -2318,7 +2542,6 @@ export default function StatsPage() {
   }
 
   const hardwareAttested = stats.providers.filter((p) => p.trust_level === "hardware").length;
-  const maxModelProviders = Math.max(...stats.models.map((m) => m.providers), 1);
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto">
@@ -2437,7 +2660,11 @@ export default function StatsPage() {
 
         {/* Models */}
         {stats.models.length > 0 && (
-          <ActiveModelsSection stats={stats} maxProviders={maxModelProviders} />
+          <ActiveModelsSection
+            stats={stats}
+            catalogModels={catalogModels}
+            capacityModels={capacityModels}
+          />
         )}
 
         <NetworkNodes providers={stats.providers} />

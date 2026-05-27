@@ -90,6 +90,7 @@ struct ModelArchitecture: Sendable {
     let numGlobalKvHeads: Int?
     let slidingWindowPattern: Int?
     let layerTypes: [String]?
+    let maxContextLength: Int?
 
     static let empty = ModelArchitecture(
         numLayers: nil,
@@ -99,7 +100,8 @@ struct ModelArchitecture: Sendable {
         globalHeadDim: nil,
         numGlobalKvHeads: nil,
         slidingWindowPattern: nil,
-        layerTypes: nil
+        layerTypes: nil,
+        maxContextLength: nil
     )
 }
 

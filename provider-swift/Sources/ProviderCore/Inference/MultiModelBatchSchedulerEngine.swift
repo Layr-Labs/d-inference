@@ -135,11 +135,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // `requestToModel[id] = modelId` pins the slot before load and
         // closes the same race at the caller side.
         let scheduler: BatchScheduler
+        let tokenizer: TokenizerHandle
+        let modelType: String?
         let releaseBox: OneShotRelease
         let modelId = request.model
         if let acquire {
             let acquired = try await acquire(modelId)
             scheduler = acquired.scheduler
+            tokenizer = acquired.tokenizer
+            modelType = acquired.modelType
             releaseBox = acquired.releaseToken
         } else {
             try await ensureLoaded(modelId)
@@ -148,22 +152,65 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
             }
             scheduler = entry.scheduler
+            tokenizer = entry.tokenizer
+            modelType = entry.modelType
             await reserveModel(modelId)
             releaseBox = OneShotRelease(release: releaseModel, modelId: modelId)
         }
-        let ourRequest = Self.translate(
-            openAIRequest: request,
-            defaultMaxTokens: defaultMaxTokens
-        )
+
+        // Tokenize the full OpenAI request (including tools, tool_call_id,
+        // reasoning_content, etc.) ourselves rather than going through the
+        // lossy `translate()` → `ChatMessage` path that drops tool fields.
+        let messages = request.messages.map { $0.templateMessageDict() }
+        let toolSpecs = request.tools?.map { $0.toolSpec() }
+        let promptTokens: [Int]
+        do {
+            promptTokens = try tokenizer.inner.applyChatTemplate(
+                messages: messages, tools: toolSpecs, additionalContext: nil
+            )
+        } catch {
+            await releaseBox.fire()
+            throw error
+        }
+
+        let maxTokens = request.maxTokens ?? defaultMaxTokens
+        let temperature = request.temperature ?? 0.0
+
+        // Resolve tool call format before submitting so a bad
+        // `tool_call_parser` value does not leave an orphaned request.
+        let toolHandler: BatchedToolStreamHandler?
+        if let requestTools = request.tools, !requestTools.isEmpty {
+            let format: ToolCallFormat
+            do {
+                format = try ServerToolParser.resolve(
+                    requested: request.toolCallParser,
+                    modelType: modelType
+                )
+            } catch {
+                await releaseBox.fire()
+                throw error
+            }
+            toolHandler = BatchedToolStreamHandler(
+                format: format,
+                tools: toolSpecs
+            )
+        } else {
+            toolHandler = nil
+        }
+
         let requestId = "req-\(UUID().uuidString.prefix(12))"
-        let upstream = await scheduler.submit(
-            request: ourRequest,
+        let upstream = await scheduler.submitTokenized(
+            promptTokens: promptTokens,
+            maxTokens: maxTokens,
+            temperature: temperature,
+            topP: request.topP,
+            topK: request.topK,
             requestId: requestId
         )
 
         return AsyncThrowingStream { continuation in
             let task = Task {
-                var promptTokens = 0
+                var promptTokenCount = 0
                 var completionTokens = 0
                 var startedAt = Date()
                 var firstTokenAt: Date?
@@ -184,10 +231,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         if firstTokenAt == nil { firstTokenAt = Date() }
                         lastTokenAt = Date()
                         if !text.isEmpty {
-                            continuation.yield(.content(text))
+                            if let handler = toolHandler {
+                                if let visible = handler.processChunk(text),
+                                    !visible.isEmpty
+                                {
+                                    continuation.yield(.content(visible))
+                                }
+                            } else {
+                                continuation.yield(.content(text))
+                            }
                         }
                     case .info(let p, let c, _):
-                        promptTokens = p
+                        promptTokenCount = p
                         completionTokens = c
                     case .error(let message):
                         failed = message
@@ -209,6 +264,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
 
+                // Flush remaining tool calls on successful completion.
+                if let handler = toolHandler {
+                    for toolCall in handler.finish() {
+                        continuation.yield(.toolCall(toolCall))
+                    }
+                }
+
                 let now = Date()
                 let promptTime = (firstTokenAt ?? now).timeIntervalSince(startedAt)
                 let generateTime = (lastTokenAt ?? now)
@@ -216,7 +278,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 continuation.yield(
                     .info(
                         ServerGenerationInfo(
-                            promptTokens: promptTokens,
+                            promptTokens: promptTokenCount,
                             completionTokens: completionTokens,
                             promptTime: max(0, promptTime),
                             generationTime: max(0, generateTime),

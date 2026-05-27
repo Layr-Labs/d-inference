@@ -14,7 +14,7 @@ const (
 	defaultRequestedMaxTokens = 256
 
 	slotStatePenaltyRunning      = 0.0
-	slotStatePenaltyUnknown      = 2_500.0
+	slotStatePenaltyUnknown      = 30_000.0
 	slotStatePenaltyIdleShutdown = 20_000.0
 
 	// Penalty constants. Phase 3 raised queueDepthPenaltyMs (1000→3000),
@@ -82,6 +82,7 @@ type routingSnapshot struct {
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
 	modelLoaded        bool    // true when the requested model is the currently-running slot
+	availableOnDisk    bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
 	activeTokenBudgetUsed int64
@@ -429,6 +430,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 		}
 	}
 	snap.modelLoaded = snap.slotState == "running"
+	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
 	return snap, true
@@ -466,7 +468,24 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	if tokens > maxTokensForCalc {
 		tokens = maxTokensForCalc
 	}
-	required += float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
+	kvCacheGB := float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
+	required += kvCacheGB
+
+	// When the model is available on disk but not currently loaded, the
+	// provider will evict idle models to make room (LRU eviction). Check
+	// whether the model individually fits in total memory (with OS/KV
+	// overhead) rather than requiring it to fit alongside existing loaded
+	// models. The provider handles the swap autonomously.
+	//
+	// However, if the provider has in-flight requests (totalPending > 0),
+	// it cannot evict the currently-serving model. In that case, fall
+	// through to the standard free-memory check which requires room
+	// alongside active models.
+	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
+		const osReserveGB = 4.0
+		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
+	}
+
 	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB
 	return free >= required
 }
@@ -575,9 +594,14 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 
 func slotStatePenalty(state string) (float64, bool) {
 	switch state {
-	case "", "running":
+	case "", "running", "idle":
 		return slotStatePenaltyRunning, true
 	case "unknown":
+		// Model is available but not loaded. The provider must evict the
+		// current model and load this one — typically 15–60 seconds for
+		// large models (depends on model size and disk speed). Warm
+		// providers are strongly preferred but cold providers are still
+		// eligible when no warm alternative exists.
 		return slotStatePenaltyUnknown, true
 	case "idle_shutdown":
 		return slotStatePenaltyIdleShutdown, true
@@ -838,6 +862,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 			}
 		}
 		snap.modelLoaded = snap.slotState == "running"
+		snap.availableOnDisk = !snap.modelLoaded
 
 		p.mu.Unlock()
 
@@ -855,6 +880,13 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 		candidateCount++
 	}
 	return candidateCount, capacityRejections
+}
+
+// DrainQueuedRequestsForModel attempts to assign queued requests for a
+// single model to available providers. Called when a load_model completes
+// so requests don't have to wait for the next heartbeat cycle.
+func (r *Registry) DrainQueuedRequestsForModel(model string) {
+	r.drainQueuedRequestsForModels([]string{model})
 }
 
 func (r *Registry) drainQueuedRequestsForModels(models []string) {

@@ -349,7 +349,7 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"prices": prices,
+		"prices":                prices,
 		"fallback_input_price":  payments.DefaultInputPricePerMillion,
 		"fallback_output_price": payments.DefaultOutputPricePerMillion,
 		"fallback_input_usd":    fmt.Sprintf("$%.4f", float64(payments.DefaultInputPricePerMillion)/1_000_000),

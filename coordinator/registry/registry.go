@@ -1168,6 +1168,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.WarmModels = msg.WarmModels
 	if msg.ActiveModel != nil {
 		p.CurrentModel = *msg.ActiveModel
+	} else {
+		// nil active_model means no model is loaded — clear stale state
+		// so attestation challenges don't compare against an unloaded model.
+		p.CurrentModel = ""
 	}
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
@@ -1465,6 +1469,28 @@ func (r *Registry) providerHasPendingLoad(providerID string) bool {
 		}
 	}
 	return false
+}
+
+// MarkModelWarm adds a model to the provider's WarmModels list if not already
+// present. Called when load_model_status:succeeded arrives before the next
+// heartbeat, so the scheduler sees the provider as warm during queue drain.
+func (r *Registry) MarkModelWarm(providerID, modelID string) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, wm := range p.WarmModels {
+		if wm == modelID {
+			return // already warm
+		}
+	}
+	p.WarmModels = append(p.WarmModels, modelID)
+	p.CurrentModel = modelID
 }
 
 // ClearPendingModelLoad removes a pending model load entry after a terminal

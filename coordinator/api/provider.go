@@ -315,8 +315,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			)
 			switch statusMsg.Status {
 			case protocol.LoadModelStatusSucceeded:
-				// Clear pending entry and drain queued requests immediately
-				// so consumers don't wait for the next heartbeat (up to 5s).
+				// Mark the model warm on this provider BEFORE draining so
+				// the scheduler sees it as a candidate. Without this, the
+				// provider still looks cold until the next heartbeat.
+				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
 				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
 			case protocol.LoadModelStatusFailed:

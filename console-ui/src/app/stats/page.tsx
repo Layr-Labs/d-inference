@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
@@ -2095,6 +2096,13 @@ function LeaderboardSection() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Link
+              href="/providers/setup"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-accent-brand px-3 py-1.5 text-sm font-semibold text-bg-primary shadow-sm transition-colors hover:bg-accent-brand/90"
+            >
+              <Zap size={14} />
+              Earn Now
+            </Link>
             {windowOptions.map((option) => (
               <button
                 key={option.value}

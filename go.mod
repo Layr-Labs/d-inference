@@ -8,7 +8,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/openai/openai-go v1.12.0
-	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.49.0
 	golang.org/x/time v0.15.0
@@ -54,7 +53,6 @@ require (
 	github.com/lufia/plan9stats v0.0.0-20250317134145-8bc96cf8fc35 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
-	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	github.com/outcaste-io/ristretto v0.2.3 // indirect
 	github.com/philhofer/fwd v1.1.3-0.20240916144458-20a13a1f6b7c // indirect
 	github.com/pkg/errors v0.9.1 // indirect

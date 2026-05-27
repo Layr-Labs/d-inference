@@ -1,6 +1,9 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"net"
@@ -12,11 +15,9 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/oschwald/geoip2-golang"
 )
 
 const (
-	envGeoIPDBPath     = "EIGENINFERENCE_GEOIP_DB"
 	envTrustGeoHeaders = "EIGENINFERENCE_TRUST_GEO_HEADERS"
 )
 
@@ -24,45 +25,25 @@ type providerGeoResolver interface {
 	Lookup(*http.Request) *store.ProviderLocation
 }
 
-type maxMindGeoResolver struct {
-	reader       *geoip2.Reader
+type ipAPIGeoResolver struct {
 	trustHeaders bool
 	logger       *slog.Logger
 }
 
 func newProviderGeoResolverFromEnv(logger *slog.Logger) providerGeoResolver {
-	path := strings.TrimSpace(os.Getenv(envGeoIPDBPath))
 	trustHeaders := os.Getenv(envTrustGeoHeaders) == "1"
-	if path == "" && !trustHeaders {
-		return nil
-	}
-
-	var reader *geoip2.Reader
-	if path != "" {
-		r, err := geoip2.Open(path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("provider geo database unavailable", "path", path, "error", err)
-			}
-		} else {
-			reader = r
-		}
-	}
-
-	if reader == nil && !trustHeaders {
-		return nil
-	}
-	return &maxMindGeoResolver{
-		reader:       reader,
+	return &ipAPIGeoResolver{
 		trustHeaders: trustHeaders,
 		logger:       logger,
 	}
 }
 
-func (g *maxMindGeoResolver) Lookup(r *http.Request) *store.ProviderLocation {
+func (g *ipAPIGeoResolver) Lookup(r *http.Request) *store.ProviderLocation {
 	if g == nil || r == nil {
 		return nil
 	}
+	// If behind a trusted proxy that sets geo headers (Cloudflare, Vercel),
+	// use those directly — no external API call needed.
 	if g.trustHeaders {
 		remoteIP := parseIPHost(r.RemoteAddr)
 		if remoteIP != nil && trustedProxyIP(remoteIP) {
@@ -71,44 +52,66 @@ func (g *maxMindGeoResolver) Lookup(r *http.Request) *store.ProviderLocation {
 			}
 		}
 	}
-	if g.reader == nil {
-		return nil
-	}
+
+	// Extract the provider's real public IP and look it up via ip-api.com.
 	ip := providerClientIP(r)
 	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() {
 		return nil
 	}
-	record, err := g.reader.City(ip)
+	return g.lookupIPAPI(ip)
+}
+
+// lookupIPAPI resolves geolocation via the free ip-api.com service.
+// No API key required. Rate limit: 45 req/min — called once per provider
+// WebSocket connection, so even 250 concurrent providers is fine.
+func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	apiURL := fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,regionName,region,city,lat,lon,timezone", ip.String())
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if g.logger != nil {
-			g.logger.Debug("provider geo lookup failed", "error", err)
+			g.logger.Debug("ip-api lookup failed", "ip", ip.String(), "error", err)
 		}
 		return nil
 	}
-	if record == nil || record.Country.IsoCode == "" {
+	defer resp.Body.Close()
+
+	var result struct {
+		Status      string  `json:"status"`
+		Country     string  `json:"country"`
+		CountryCode string  `json:"countryCode"`
+		RegionName  string  `json:"regionName"`
+		Region      string  `json:"region"`
+		City        string  `json:"city"`
+		Lat         float64 `json:"lat"`
+		Lon         float64 `json:"lon"`
+		Timezone    string  `json:"timezone"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Status != "success" {
+		if g.logger != nil {
+			g.logger.Debug("ip-api lookup unsuccessful", "ip", ip.String(), "status", result.Status)
+		}
 		return nil
 	}
 
-	loc := &store.ProviderLocation{
-		City:             englishName(record.City.Names),
-		Country:          englishName(record.Country.Names),
-		CountryCode:      strings.ToUpper(record.Country.IsoCode),
-		Latitude:         record.Location.Latitude,
-		Longitude:        record.Location.Longitude,
-		AccuracyRadiusKM: int(record.Location.AccuracyRadius),
-		Timezone:         record.Location.TimeZone,
-		Source:           "maxmind",
-		UpdatedAt:        time.Now().UTC(),
+	return &store.ProviderLocation{
+		City:        result.City,
+		Region:      result.RegionName,
+		RegionCode:  result.Region,
+		Country:     result.Country,
+		CountryCode: strings.ToUpper(result.CountryCode),
+		Latitude:    result.Lat,
+		Longitude:   result.Lon,
+		Timezone:    result.Timezone,
+		Source:      "ip-api",
+		UpdatedAt:   time.Now().UTC(),
 	}
-	if len(record.Subdivisions) > 0 {
-		sub := record.Subdivisions[0]
-		loc.Region = englishName(sub.Names)
-		loc.RegionCode = sub.IsoCode
-	}
-	if loc.Country == "" {
-		loc.Country = loc.CountryCode
-	}
-	return loc
 }
 
 func (s *Server) requestLocation(r *http.Request) *store.ProviderLocation {
@@ -251,19 +254,4 @@ func parseHeaderFloat(v string) float64 {
 		return 0
 	}
 	return f
-}
-
-func englishName(names map[string]string) string {
-	if names == nil {
-		return ""
-	}
-	if v := strings.TrimSpace(names["en"]); v != "" {
-		return v
-	}
-	for _, v := range names {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }

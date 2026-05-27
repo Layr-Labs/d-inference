@@ -588,7 +588,7 @@ func TestStress_HeterogeneousProviderScoring(t *testing.T) {
 				MemoryGB:     spec.memoryGB,
 			},
 			Models:                  []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
-			Backend:                 "inprocess-mlx",
+			Backend:                 "mlx-swift",
 			PublicKey:               spec.pubKey,
 			DecodeTPS:               spec.decodeTPS,
 			EncryptedResponseChunks: true,

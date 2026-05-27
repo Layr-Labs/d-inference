@@ -57,7 +57,7 @@ func registerProvider(t *testing.T, conn *websocket.Conn, models []protocol.Mode
 			MemoryGB:     64,
 		},
 		Models:    models,
-		Backend:   "inprocess-mlx",
+		Backend:   "mlx-swift",
 		PublicKey: publicKey,
 	}
 	data, _ := json.Marshal(regMsg)

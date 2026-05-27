@@ -249,6 +249,18 @@ func (s *MemoryStore) GetKeyAccount(key string) string {
 	return s.keyAccounts[key]
 }
 
+// ValidateKeyFull returns the active status and owner account ID for an
+// API key in a single lookup. Returns an error if the key does not exist.
+func (s *MemoryStore) ValidateKeyFull(key string) (bool, string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	active, ok := s.keys[key]
+	if !ok {
+		return false, "", fmt.Errorf("key not found")
+	}
+	return active, s.keyAccounts[key], nil
+}
+
 // RevokeKey removes a key from the store. Returns true if the key existed.
 func (s *MemoryStore) RevokeKey(key string) bool {
 	s.mu.Lock()
@@ -350,6 +362,26 @@ func (s *MemoryStore) UsageRecordsSince(since time.Time) []UsageRecord {
 		return []UsageRecord{}
 	}
 	return out
+}
+
+// UsageCountSince returns the number of usage records created at or after the given time.
+func (s *MemoryStore) UsageCountSince(since time.Time) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if since.IsZero() {
+		return int64(len(s.usage))
+	}
+	var count int64
+	for _, r := range s.usage {
+		ts := r.Timestamp
+		if ts.IsZero() {
+			ts = r.CreatedAt
+		}
+		if !ts.Before(since) {
+			count++
+		}
+	}
+	return count
 }
 
 // UsageTotals returns aggregated lifetime totals.

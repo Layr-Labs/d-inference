@@ -33,6 +33,11 @@ type Store interface {
 	// GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
 	GetKeyAccount(key string) string
 
+	// ValidateKeyFull returns the active status and owner account ID for an
+	// API key in a single query, avoiding the 2-query overhead of
+	// ValidateKey + GetKeyAccount on every authenticated request.
+	ValidateKeyFull(key string) (active bool, ownerAccountID string, err error)
+
 	// RevokeKey deactivates a key. Returns true if the key existed.
 	RevokeKey(key string) bool
 
@@ -55,6 +60,11 @@ type Store interface {
 	// UsageRecordsSince returns usage records created at or after the given time.
 	// Zero since returns all records.
 	UsageRecordsSince(since time.Time) []UsageRecord
+
+	// UsageCountSince returns the number of usage records created at or after
+	// the given time. Zero since returns all records. Uses SQL COUNT(*) to
+	// avoid transferring rows over the wire.
+	UsageCountSince(since time.Time) int64
 
 	// UsageTotals returns aggregated lifetime totals across all usage records
 	// without transferring per-row data over the wire.

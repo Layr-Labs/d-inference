@@ -22,6 +22,13 @@ func (s *PostgresStore) InsertTelemetryEvents(ctx context.Context, events []Tele
 		return nil
 	}
 
+	// Guard: the caller passes the HTTP request context which can be
+	// very long-lived. A large batch INSERT (100 events x 14 columns)
+	// can hold a pool connection indefinitely under DB pressure,
+	// starving inference and heartbeat operations.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	now := time.Now().UTC()
 
 	// Build a batch INSERT … ON CONFLICT (id) DO NOTHING.

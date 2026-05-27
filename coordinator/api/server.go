@@ -47,6 +47,19 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 )
 
+// apiKeyCacheEntry stores the result of ValidateKeyFull for a single API key.
+// Cached to skip DB round trips on repeat requests with the same key.
+type apiKeyCacheEntry struct {
+	active         bool
+	ownerAccountID string
+	cachedAt       time.Time
+}
+
+const (
+	apiKeyCacheTTL     = 60 * time.Second
+	apiKeyCacheMaxSize = 1000
+)
+
 // contextKey is an unexported type for context keys in this package.
 // Using a distinct type prevents collisions with context keys from other packages.
 type contextKey int
@@ -158,10 +171,6 @@ type Server struct {
 	// coordinator substitutes it into install.sh at serve time.
 	r2CDNURL string
 
-	// r2SitePackagesCDNURL is the R2 URL for the Python site-packages tarball.
-	// Prod historically uses a second bucket; dev can reuse r2CDNURL.
-	r2SitePackagesCDNURL string
-
 	// corsOrigin is the allowed CORS origin (e.g. "https://console.darkbloom.dev").
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
@@ -201,6 +210,12 @@ type Server struct {
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
 	dd *datadog.Client
+
+	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
+	// with the same API key skip the DB round trip. Entries expire after
+	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries.
+	apiKeyCacheMu sync.RWMutex
+	apiKeyCache   map[string]apiKeyCacheEntry
 
 	// rateLimiter applies per-account token-bucket rate limits to consumer
 	// inference endpoints. Nil means unlimited (compatibility with old call
@@ -243,6 +258,7 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		telemetryLimiter:     newTelemetryLimiter(),
 		readCache:            newTTLCache(),
 		geoResolver:          newProviderGeoResolverFromEnv(logger),
+		apiKeyCache:          make(map[string]apiKeyCacheEntry),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -277,12 +293,6 @@ func (s *Server) SetBaseURL(url string) {
 // loud instead of silent.
 func (s *Server) SetR2CDNURL(url string) {
 	s.r2CDNURL = strings.TrimRight(url, "/")
-}
-
-// SetR2SitePackagesCDNURL sets the R2 URL for the Python site-packages
-// tarball. Defaults to r2CDNURL when unset.
-func (s *Server) SetR2SitePackagesCDNURL(url string) {
-	s.r2SitePackagesCDNURL = strings.TrimRight(url, "/")
 }
 
 // SetEmitter wires the coordinator-side telemetry emitter. Call once at boot.
@@ -600,6 +610,14 @@ func (s *Server) binaryHashPolicySnapshot() (bool, map[string]bool) {
 func (s *Server) SyncRuntimeManifest() {
 	releases := s.store.ListReleases()
 
+	// Guard: if the store returns nil (e.g. Postgres timeout), do NOT nuke
+	// a previously-good manifest. A transient DB failure should not
+	// instantly deroute every provider on the network.
+	if releases == nil {
+		s.logger.Warn("SyncRuntimeManifest: ListReleases returned nil (DB timeout?), keeping existing manifest")
+		return
+	}
+
 	// Minimum provider version is set manually via EIGENINFERENCE_MIN_PROVIDER_VERSION
 	// env var. It is NOT auto-derived from the latest release — pushing a new release
 	// should not instantly knock all existing providers offline.
@@ -663,7 +681,18 @@ func (s *Server) SyncRuntimeManifest() {
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
 		)
+	} else if len(releases) > 0 {
+		// Explicit empty: releases exist but none have hashes. Clear manifest.
+		s.knownRuntimeManifest = nil
+		s.logger.Info("runtime manifest cleared: releases exist but none have runtime hashes")
 	} else {
+		// Empty releases slice (not nil — nil is handled above). No releases
+		// at all, which is only expected on a fresh coordinator. Keep
+		// existing manifest if one exists.
+		if s.knownRuntimeManifest != nil {
+			s.logger.Warn("SyncRuntimeManifest: zero releases returned, keeping existing manifest")
+			return
+		}
 		s.knownRuntimeManifest = nil
 	}
 
@@ -671,6 +700,11 @@ func (s *Server) SyncRuntimeManifest() {
 }
 
 func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
+	// Note: the DB-timeout case (ListReleases returns nil) is already guarded
+	// in SyncRuntimeManifest — it returns early before reaching this function.
+	// A nil manifest here means releases exist but none carry runtime hashes,
+	// i.e. an intentional manifest withdrawal. Providers must be derouted.
+
 	for _, providerID := range s.registry.ProviderIDs() {
 		provider := s.registry.GetProvider(providerID)
 		if provider == nil {
@@ -683,17 +717,19 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
 		version := provider.Version
 		backend := provider.Backend
-		switch {
-		case s.knownRuntimeManifest == nil:
+
+		if s.knownRuntimeManifest == nil {
+			// Manifest was withdrawn — deroute provider until the next
+			// successful challenge re-verifies it.
 			provider.RuntimeVerified = false
 			provider.RuntimeManifestChecked = false
-		case s.minProviderVersion != "" &&
+		} else if s.minProviderVersion != "" &&
 			version != "" &&
-			semverLess(version, s.minProviderVersion):
+			semverLess(version, s.minProviderVersion) {
 			provider.RuntimeVerified = false
 			provider.RuntimeManifestChecked = false
 			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
-		default:
+		} else {
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
 				backend,
 				pythonHash,
@@ -758,20 +794,19 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
 }
 
-// verifyRuntimeHashes checks provider-reported runtime hashes against the
-// known-good manifest. When a component has expected hashes in the manifest,
-// the provider MUST report that component and it MUST match one of the known
-// good values. Omitting a required hash is treated as a mismatch.
-func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
-	if s.knownRuntimeManifest == nil {
-		return true, nil
-	}
-	return s.verifyRuntimeHashesAgainstManifest(s.knownRuntimeManifest, pythonHash, runtimeHash, templateHashes)
-}
-
 func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
 		return true, nil
+	}
+
+	// Only mlx-swift backends are supported. Non-Swift backends (legacy
+	// Python/inprocess-mlx) are deprecated and immediately rejected.
+	if !registry.BackendUsesSwiftRuntime(backend) {
+		return false, []protocol.RuntimeMismatch{{
+			Component: "backend",
+			Expected:  "mlx-swift",
+			Got:       backend,
+		}}
 	}
 
 	manifest := s.knownRuntimeManifest
@@ -782,32 +817,11 @@ func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash 
 	}
 	scopedReportedTemplates := make(map[string]string)
 
-	if registry.BackendUsesSwiftRuntime(backend) {
-		if expected := manifest.TemplateHashes["mlx_metallib"]; expected != "" {
-			scoped.TemplateHashes["mlx_metallib"] = expected
-		}
-		if got := templateHashes["mlx_metallib"]; got != "" {
-			scopedReportedTemplates["mlx_metallib"] = got
-		}
-	} else {
-		for hash := range manifest.PythonHashes {
-			scoped.PythonHashes[hash] = true
-		}
-		for hash := range manifest.RuntimeHashes {
-			scoped.RuntimeHashes[hash] = true
-		}
-		for name, hash := range manifest.TemplateHashes {
-			if name == "mlx_metallib" {
-				continue
-			}
-			scoped.TemplateHashes[name] = hash
-		}
-		for name, got := range templateHashes {
-			if name == "mlx_metallib" {
-				continue
-			}
-			scopedReportedTemplates[name] = got
-		}
+	if expected := manifest.TemplateHashes["mlx_metallib"]; expected != "" {
+		scoped.TemplateHashes["mlx_metallib"] = expected
+	}
+	if got := templateHashes["mlx_metallib"]; got != "" {
+		scopedReportedTemplates["mlx_metallib"] = got
 	}
 
 	return s.verifyRuntimeHashesAgainstManifest(scoped, pythonHash, runtimeHash, scopedReportedTemplates)
@@ -1248,6 +1262,45 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// lookupAPIKeyCache returns a cached ValidateKeyFull result if present and
+// not expired. Returns false on miss or expiry.
+func (s *Server) lookupAPIKeyCache(token string) (apiKeyCacheEntry, bool) {
+	s.apiKeyCacheMu.RLock()
+	entry, ok := s.apiKeyCache[token]
+	s.apiKeyCacheMu.RUnlock()
+	if !ok || time.Since(entry.cachedAt) > apiKeyCacheTTL {
+		return apiKeyCacheEntry{}, false
+	}
+	return entry, true
+}
+
+// storeAPIKeyCache inserts a ValidateKeyFull result into the cache. If the
+// cache is at capacity, the oldest entry is evicted.
+func (s *Server) storeAPIKeyCache(token string, entry apiKeyCacheEntry) {
+	s.apiKeyCacheMu.Lock()
+	defer s.apiKeyCacheMu.Unlock()
+	if len(s.apiKeyCache) >= apiKeyCacheMaxSize {
+		var oldest string
+		var oldestTime time.Time
+		for k, v := range s.apiKeyCache {
+			if oldest == "" || v.cachedAt.Before(oldestTime) {
+				oldest = k
+				oldestTime = v.cachedAt
+			}
+		}
+		delete(s.apiKeyCache, oldest)
+	}
+	s.apiKeyCache[token] = entry
+}
+
+// invalidateAPIKeyCache removes a single key from the API key cache. Called
+// when a key is revoked so stale positive results don't grant access.
+func (s *Server) invalidateAPIKeyCache(token string) {
+	s.apiKeyCacheMu.Lock()
+	delete(s.apiKeyCache, token)
+	s.apiKeyCacheMu.Unlock()
+}
+
 // requireAuth wraps a handler with authentication. It tries Privy JWT first
 // (if configured), then falls back to API key validation. The authenticated
 // identity is stored in the request context for downstream use.
@@ -1286,7 +1339,26 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Fall back to API key auth.
-		if !s.store.ValidateKey(token) {
+		// Check cache first to skip DB on repeat requests with the same key.
+		var keyActive bool
+		var ownerAccountID string
+		if cached, ok := s.lookupAPIKeyCache(token); ok {
+			keyActive = cached.active
+			ownerAccountID = cached.ownerAccountID
+		} else {
+			// Cache miss — single DB query instead of separate ValidateKey + GetKeyAccount.
+			var err error
+			keyActive, ownerAccountID, err = s.store.ValidateKeyFull(token)
+			if err == nil {
+				s.storeAPIKeyCache(token, apiKeyCacheEntry{
+					active:         keyActive,
+					ownerAccountID: ownerAccountID,
+					cachedAt:       time.Now(),
+				})
+			}
+		}
+
+		if !keyActive {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid API key"))
 			return
 		}
@@ -1295,9 +1367,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// use that account ID and load the user.
 		accountID := token
 		ctx := r.Context()
-		if ownerID := s.store.GetKeyAccount(token); ownerID != "" {
-			accountID = ownerID
-			if user, err := s.store.GetUserByAccountID(ownerID); err == nil {
+		if ownerAccountID != "" {
+			accountID = ownerAccountID
+			if user, err := s.store.GetUserByAccountID(ownerAccountID); err == nil {
 				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 			}
 		}

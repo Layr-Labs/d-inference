@@ -449,8 +449,9 @@ func (s *Server) SyncModelCatalog() {
 				SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
 			})
 		}
-		s.registry.SetModelCatalog(entries)
+	s.registry.SetModelCatalog(entries)
 		s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
+		s.invalidateCatalogCache()
 		return
 	}
 
@@ -467,6 +468,17 @@ func (s *Server) SyncModelCatalog() {
 	}
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model catalog synced to registry", "active_models", len(entries))
+	s.invalidateCatalogCache()
+}
+
+// invalidateCatalogCache removes all cached model catalog responses so the
+// next request picks up any changes made by admin endpoints.
+func (s *Server) invalidateCatalogCache() {
+	if s.readCache == nil {
+		return
+	}
+	s.readCache.Invalidate("models:catalog")
+	s.readCache.Invalidate("models:catalog:text")
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
@@ -1358,6 +1370,22 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				s.storeAPIKeyCache(token, apiKeyCacheEntry{
 					active:         keyActive,
 					ownerAccountID: ownerAccountID,
+					cachedAt:       time.Now(),
+				})
+			}
+		}
+
+		// If the API key lookup failed, try provider tokens (eigeninference-pt-...).
+		// These are issued by the device-code login flow and stored in a
+		// separate table. Without this fallback, `darkbloom report` (which
+		// sends the device-login token) would get 401.
+		if !keyActive {
+			if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
+				keyActive = true
+				ownerAccountID = pt.AccountID
+				s.storeAPIKeyCache(token, apiKeyCacheEntry{
+					active:         true,
+					ownerAccountID: pt.AccountID,
 					cachedAt:       time.Now(),
 				})
 			}

@@ -57,7 +57,7 @@ struct Logs: AsyncParsableCommand {
             "log", "show",
             "--predicate", Self.predicate,
             "--style", "ndjson",
-            "--level", "info",
+            "--info",
             "--last", duration,
         ])
     }

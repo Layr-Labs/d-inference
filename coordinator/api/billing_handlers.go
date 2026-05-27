@@ -871,12 +871,6 @@ func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	accountID := s.resolveAccountID(r)
 
-	cacheKey := "account-earnings:" + accountID
-	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, cached)
-		return
-	}
-
 	limit := 50
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
@@ -885,6 +879,12 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	}
 	if limit > 1000 {
 		limit = 1000
+	}
+
+	cacheKey := "account-earnings:" + accountID + ":" + strconv.Itoa(limit)
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, cached)
+		return
 	}
 
 	earnings, err := s.store.GetAccountEarnings(accountID, limit)

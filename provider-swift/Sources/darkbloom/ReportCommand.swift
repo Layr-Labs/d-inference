@@ -107,7 +107,7 @@ struct Report: AsyncParsableCommand {
             "--predicate", "subsystem == \"dev.darkbloom.provider\"",
             "--style", "ndjson",
             "--last", last,
-            "--level", "info",
+            "--info",
         ]
 
         let pipe = Pipe()

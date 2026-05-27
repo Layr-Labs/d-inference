@@ -449,7 +449,7 @@ func (s *Server) SyncModelCatalog() {
 				SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
 			})
 		}
-	s.registry.SetModelCatalog(entries)
+		s.registry.SetModelCatalog(entries)
 		s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
 		s.invalidateCatalogCache()
 		return

@@ -103,8 +103,8 @@ type MemoryStore struct {
 	serialToProviderID map[string]string            // serialNumber → providerID
 
 	// Provider log reports
-	logReports    []LogReport
-	logReportSeq  int64
+	logReports   []LogReport
+	logReportSeq int64
 
 	// Telemetry ring buffer (bounded at memTelemetryCap)
 	telemetryEvents []TelemetryEventRecord
@@ -632,13 +632,13 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 		pCity, pRegion, pCountry string
 	}
 	type agg struct {
-		b          UsageFlowBucket
-		cLatSum    float64
-		cLngSum    float64
-		cCoordCnt  int
-		pLatSum    float64
-		pLngSum    float64
-		pCoordCnt  int
+		b         UsageFlowBucket
+		cLatSum   float64
+		cLngSum   float64
+		cCoordCnt int
+		pLatSum   float64
+		pLngSum   float64
+		pCoordCnt int
 	}
 
 	// Resolve provider location: prefer live registry, fall back to stored records.
@@ -679,7 +679,7 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 				ConsumerCity: cLoc.City, ConsumerRegion: cLoc.Region,
 				ConsumerRegionCode: cLoc.RegionCode, ConsumerCountry: cLoc.Country,
 				ConsumerCountryCode: cLoc.CountryCode,
-				ProviderCity: pLoc.City, ProviderRegion: pLoc.Region,
+				ProviderCity:        pLoc.City, ProviderRegion: pLoc.Region,
 				ProviderRegionCode: pLoc.RegionCode, ProviderCountry: pLoc.Country,
 				ProviderCountryCode: pLoc.CountryCode,
 			}}

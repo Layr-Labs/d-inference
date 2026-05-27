@@ -313,18 +313,19 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				"status", statusMsg.Status,
 				"error", statusMsg.Error,
 			)
-			// Clear the pending load entry only on success. On failure, leave
-			// the entry in place so the TTL cooldown suppresses retry storms.
-			if statusMsg.Status == protocol.LoadModelStatusSucceeded {
+			switch statusMsg.Status {
+			case protocol.LoadModelStatusSucceeded:
+				// Clear pending entry and drain queued requests immediately
+				// so consumers don't wait for the next heartbeat (up to 5s).
 				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
-			}
-			// On success, drain queued requests immediately rather than
-			// waiting for the next heartbeat (up to 5s). The model is
-			// warm now and requests near their queue timeout would
-			// otherwise expire unnecessarily.
-			if statusMsg.Status == protocol.LoadModelStatusSucceeded {
 				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
+			case protocol.LoadModelStatusFailed:
+				// Keep the pending entry (TTL cooldown suppresses retry storms).
+				// If no other provider can serve this model, reject queued
+				// requests immediately rather than making them wait 120s.
+				s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)
 			}
+			// "started" status: no action — load is in progress.
 
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)

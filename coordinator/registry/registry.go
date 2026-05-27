@@ -1475,6 +1475,33 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) {
 	r.mu.Unlock()
 }
 
+// RejectUnservableQueuedRequests checks whether any eligible provider can
+// serve the given model. If not, all queued requests for the model are
+// rejected immediately rather than waiting for the 120s queue timeout.
+// Called after a load_model failure to give consumers a fast error.
+func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
+	if r.queue == nil {
+		return
+	}
+	if r.queue.QueueSize(modelID) == 0 {
+		return
+	}
+
+	// Check if any provider can still serve this model.
+	candidates, _ := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
+	if candidates > 0 {
+		return
+	}
+
+	failed := r.queue.FailQueuedRequestsForModel(modelID)
+	if failed > 0 {
+		r.logger.Warn("rejected queued requests for unservable model",
+			"model_id", modelID,
+			"rejected", failed,
+		)
+	}
+}
+
 func cumulativeDelta(previous, current int64) int64 {
 	if current <= 0 {
 		return 0

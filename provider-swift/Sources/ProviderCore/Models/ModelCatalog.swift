@@ -1070,12 +1070,7 @@ public struct ModelDownloader: Sendable {
 
             do {
                 let (tempFile, response) = try await urlSession.download(for: request)
-
-                // URLSession.download(for:) returns a temp file that the system
-                // may reclaim after this call returns. Move it to a stable
-                // location immediately before doing anything else.
-                try? fm.removeItem(at: partial)
-                try fm.moveItem(at: tempFile, to: partial)
+                defer { try? fm.removeItem(at: tempFile) }
 
                 guard let http = response as? HTTPURLResponse else {
                     try? fm.removeItem(at: partial)
@@ -1092,6 +1087,16 @@ public struct ModelDownloader: Sendable {
                 guard (200..<300).contains(http.statusCode) else {
                     try? fm.removeItem(at: partial)
                     throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
+                }
+
+                // URLSession.download(for:) returns a temp file that the
+                // system may reclaim after this call returns. Promote it to a
+                // stable .part file before hashing or moving to the final path.
+                if http.statusCode == 206 {
+                    try Self.appendDownloadedRange(tempFile, to: partial, label: label)
+                } else {
+                    try? fm.removeItem(at: partial)
+                    try fm.moveItem(at: tempFile, to: partial)
                 }
 
                 if let expectedSHA256 {
@@ -1135,22 +1140,23 @@ public struct ModelDownloader: Sendable {
         return false
     }
 
-    private static func appendFile(_ source: URL, to destination: URL) throws {
-        guard let reader = try? FileHandle(forReadingFrom: source) else {
-            throw ModelCatalogError.downloadFailed("could not open downloaded file")
-        }
-        defer { try? reader.close() }
+    private static func appendDownloadedRange(_ source: URL, to destination: URL, label: String) throws {
+        do {
+            let reader = try FileHandle(forReadingFrom: source)
+            defer { try? reader.close() }
 
-        guard let writer = try? FileHandle(forWritingTo: destination) else {
-            throw ModelCatalogError.downloadFailed("could not open partial destination")
-        }
-        defer { try? writer.close() }
+            let writer = try FileHandle(forWritingTo: destination)
+            defer { try? writer.close() }
 
-        try writer.seekToEnd()
-        while true {
-            guard let chunk = try reader.read(upToCount: 4 * 1_048_576) else { break }
-            if chunk.isEmpty { break }
-            try writer.write(contentsOf: chunk)
+            try writer.seekToEnd()
+            while true {
+                guard let chunk = try reader.read(upToCount: 4 * 1_048_576), !chunk.isEmpty else {
+                    break
+                }
+                try writer.write(contentsOf: chunk)
+            }
+        } catch {
+            throw ModelCatalogError.downloadFailed("\(label): could not append resumed download (\(error.localizedDescription))")
         }
     }
 

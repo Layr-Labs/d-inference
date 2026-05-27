@@ -268,6 +268,22 @@ func (q *RequestQueue) CleanStale() {
 	}
 }
 
+// QueuedModels returns the set of model IDs that currently have at least
+// one request waiting in the queue.
+func (q *RequestQueue) QueuedModels() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var models []string
+	for model := range q.queues {
+		q.cleanStaleLocked(model)
+		if len(q.queues[model]) > 0 {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
 // cleanStaleLocked removes stale requests for a specific model.
 // Caller must hold q.mu.
 func (q *RequestQueue) cleanStaleLocked(model string) {

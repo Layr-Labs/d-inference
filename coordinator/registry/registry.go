@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -489,17 +490,30 @@ type Registry struct {
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
+
+	// pendingModelLoads tracks provider-model pairs that have been sent a
+	// load_model command and are awaiting completion. Prevents duplicate
+	// sends across heartbeat cycles.
+	pendingModelLoads map[string]time.Time // key: "providerID:modelID"
+}
+
+const pendingModelLoadTTL = 2 * time.Minute
+
+type modelLoadAction struct {
+	providerID string
+	modelID    string
 }
 
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:      make(map[string]*Provider),
-		queue:          NewRequestQueue(10, 120*time.Second),
-		MinTrustLevel:  TrustHardware,
-		tpsRegistry:    NewTPSRegistry(),
-		modelProviders: make(map[string]*atomic.Int64),
-		logger:         logger,
+		providers:         make(map[string]*Provider),
+		queue:             NewRequestQueue(10, 120*time.Second),
+		MinTrustLevel:     TrustHardware,
+		tpsRegistry:       NewTPSRegistry(),
+		modelProviders:    make(map[string]*atomic.Int64),
+		pendingModelLoads: make(map[string]time.Time),
+		logger:            logger,
 	}
 }
 
@@ -1178,6 +1192,249 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// crash auto-restart). Drain matching queues using the canonical scheduler
 	// rather than the legacy direct queue assignment path.
 	r.drainQueuedRequestsForModels(providerModelIDs(p))
+
+	// If queue drain didn't satisfy all pending requests (no warm provider),
+	// check if a cold provider should swap models to serve queued demand.
+	r.TriggerModelSwaps()
+}
+
+// SendLoadModel instructs a provider to eagerly load a model so it becomes
+// warm for incoming requests. The provider will autonomously evict idle
+// models to make room. This is a fire-and-forget call — the coordinator
+// does not block waiting for the load to complete. The provider replies
+// asynchronously with a load_model_status message.
+func (r *Registry) SendLoadModel(providerID, modelID string) error {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerID)
+	}
+
+	msg := protocol.LoadModelMessage{
+		Type:    protocol.TypeLoadModel,
+		ModelID: modelID,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal load_model message: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.mu.Lock()
+	conn := p.Conn
+	p.mu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("provider %q has no active connection", providerID)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		return fmt.Errorf("failed to send load_model to provider %q: %w", providerID, err)
+	}
+
+	r.logger.Info("sent load_model to provider",
+		"provider_id", providerID,
+		"model_id", modelID,
+	)
+	return nil
+}
+
+// TriggerModelSwaps checks for queued requests that have no warm provider
+// and sends load_model to cold providers that have the model available on
+// disk. This enables demand-driven model swapping: when requests queue for
+// a model that no provider has warm, the coordinator proactively triggers
+// a swap on an idle provider.
+//
+// Called after heartbeat processing and queue drain to catch demand that
+// can't be satisfied by warm providers alone.
+func (r *Registry) TriggerModelSwaps() {
+	if r.queue == nil {
+		return
+	}
+
+	queuedModels := r.queue.QueuedModels()
+	if len(queuedModels) == 0 {
+		return
+	}
+
+	now := time.Now()
+	r.expirePendingModelLoads(now)
+
+	actions := r.planModelLoadActions(queuedModels, now)
+	actions = r.reservePendingModelLoads(actions, now)
+	r.sendModelLoadActions(actions)
+}
+
+func (r *Registry) expirePendingModelLoads(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, sentAt := range r.pendingModelLoads {
+		if now.Sub(sentAt) > pendingModelLoadTTL {
+			delete(r.pendingModelLoads, key)
+		}
+	}
+}
+
+func (r *Registry) planModelLoadActions(queuedModels []string, now time.Time) []modelLoadAction {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	selectedProviders := make(map[string]struct{})
+	actions := make([]modelLoadAction, 0, len(queuedModels))
+	for _, model := range queuedModels {
+		if r.hasWarmProviderLocked(model) {
+			continue
+		}
+
+		providerID := r.bestModelLoadProviderLocked(model, now, selectedProviders)
+		if providerID == "" {
+			continue
+		}
+		selectedProviders[providerID] = struct{}{}
+		actions = append(actions, modelLoadAction{providerID: providerID, modelID: model})
+	}
+	return actions
+}
+
+// hasWarmProviderLocked reports whether a connected provider already has the
+// model warm. Caller must hold r.mu (read or write).
+func (r *Registry) hasWarmProviderLocked(model string) bool {
+	for _, p := range r.providers {
+		p.mu.Lock()
+		warm := providerHasWarmModelLocked(p, model)
+		p.mu.Unlock()
+		if warm {
+			return true
+		}
+	}
+	return false
+}
+
+// providerHasWarmModelLocked checks heartbeat-reported warm state. Caller must
+// hold p.mu.
+func providerHasWarmModelLocked(p *Provider, model string) bool {
+	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if p.BackendCapacity != nil {
+		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model == model && slot.State == "running" {
+				return true
+			}
+		}
+	}
+	for _, warmModel := range p.WarmModels {
+		if warmModel == model {
+			return true
+		}
+	}
+	return false
+}
+
+// bestModelLoadProviderLocked selects the eligible provider with the fewest
+// pending requests. Caller must hold r.mu (read or write).
+func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, selectedProviders map[string]struct{}) string {
+	bestProviderID := ""
+	bestPendingCount := -1
+	for id, p := range r.providers {
+		if _, selected := selectedProviders[id]; selected {
+			continue
+		}
+		if _, pending := r.pendingModelLoads[modelLoadKey(id, model)]; pending {
+			continue
+		}
+
+		pendingCount, ok := r.modelLoadCandidatePendingLocked(p, model, now)
+		if !ok {
+			continue
+		}
+		if bestPendingCount < 0 || pendingCount < bestPendingCount {
+			bestProviderID = id
+			bestPendingCount = pendingCount
+		}
+		if pendingCount == 0 {
+			break
+		}
+	}
+	return bestProviderID
+}
+
+// modelLoadCandidatePendingLocked applies the same routing safety gates used by
+// the scheduler, then returns the provider's current pending request count.
+// Caller must hold r.mu (read or write).
+func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, now time.Time) (int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return 0, false
+	}
+	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+		return 0, false
+	}
+	if !p.RuntimeVerified {
+		return 0, false
+	}
+	if !providerSupportsPrivateTextLocked(p) {
+		return 0, false
+	}
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		return 0, false
+	}
+	if !r.providerServesCatalogModelLocked(p, model) {
+		return 0, false
+	}
+	return p.pendingCount(), true
+}
+
+func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.Time) []modelLoadAction {
+	if len(actions) == 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pendingModelLoads == nil {
+		r.pendingModelLoads = make(map[string]time.Time)
+	}
+
+	reserved := actions[:0]
+	for _, action := range actions {
+		key := modelLoadKey(action.providerID, action.modelID)
+		if _, pending := r.pendingModelLoads[key]; pending {
+			continue
+		}
+		r.pendingModelLoads[key] = now
+		reserved = append(reserved, action)
+	}
+	return reserved
+}
+
+func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
+	for _, action := range actions {
+		if err := r.SendLoadModel(action.providerID, action.modelID); err != nil {
+			r.logger.Warn("failed to trigger model swap",
+				"provider_id", action.providerID,
+				"model_id", action.modelID,
+				"error", err,
+			)
+			r.ClearPendingModelLoad(action.providerID, action.modelID)
+		}
+	}
+}
+
+func modelLoadKey(providerID, modelID string) string {
+	return providerID + ":" + modelID
+}
+
+// ClearPendingModelLoad removes a pending model load entry after a terminal
+// load_model_status response.
+func (r *Registry) ClearPendingModelLoad(providerID, modelID string) {
+	r.mu.Lock()
+	delete(r.pendingModelLoads, modelLoadKey(providerID, modelID))
+	r.mu.Unlock()
 }
 
 func cumulativeDelta(previous, current int64) int64 {

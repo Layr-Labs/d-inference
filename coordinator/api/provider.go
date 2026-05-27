@@ -313,6 +313,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				"status", statusMsg.Status,
 				"error", statusMsg.Error,
 			)
+			// Clear the pending load entry so TriggerModelSwaps stops
+			// suppressing new load requests for this (provider, model) pair.
+			if statusMsg.Status == protocol.LoadModelStatusSucceeded ||
+				statusMsg.Status == protocol.LoadModelStatusFailed {
+				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
+			}
 
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)

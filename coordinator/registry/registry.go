@@ -1491,6 +1491,28 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	}
 	p.WarmModels = append(p.WarmModels, modelID)
 	p.CurrentModel = modelID
+
+	// Inject a synthetic "idle" slot into BackendCapacity so the scheduler
+	// sees the model as warm. Without this, the scheduler only checks
+	// BackendCapacity.Slots (not WarmModels) for Swift providers, and a
+	// stale snapshot without the new model's slot would treat it as cold
+	// until the next heartbeat arrives.
+	if p.BackendCapacity != nil {
+		found := false
+		for i, slot := range p.BackendCapacity.Slots {
+			if slot.Model == modelID {
+				p.BackendCapacity.Slots[i].State = "idle"
+				found = true
+				break
+			}
+		}
+		if !found {
+			p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+				Model: modelID,
+				State: "idle",
+			})
+		}
+	}
 }
 
 // ClearPendingModelLoad removes a pending model load entry after a terminal

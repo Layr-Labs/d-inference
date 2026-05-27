@@ -27,9 +27,9 @@ import (
 func testServer(t *testing.T) (*Server, *store.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	return srv, st
 }
 
@@ -295,9 +295,9 @@ func writeEncryptedTestChunk(t *testing.T, ctx context.Context, conn *websocket.
 // provider connected via WebSocket.
 func TestStreamingE2E(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	// Start an httptest server.
 	ts := httptest.NewServer(srv.Handler())
@@ -453,9 +453,9 @@ func TestStreamingE2E(t *testing.T) {
 // TestNonStreamingE2E tests a non-streaming completion request.
 func TestNonStreamingE2E(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -568,9 +568,9 @@ func TestNonStreamingE2E(t *testing.T) {
 
 func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

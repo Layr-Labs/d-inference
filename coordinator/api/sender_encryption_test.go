@@ -26,12 +26,12 @@ const senderTestMnemonic = "praise warfare warrior rebuild raven garlic kite bla
 func newEncryptedTestServer(t *testing.T) (*httptest.Server, *e2e.CoordinatorKey) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	// Seed a one-entry catalog so requests for any other model fast-fail with
 	// 404 model_not_found instead of queueing for 120s waiting on a provider.
 	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "test-known-model"}})
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	coordKey, err := e2e.DeriveCoordinatorKey(senderTestMnemonic)
 	if err != nil {
@@ -80,9 +80,9 @@ func TestEncryptionKeyEndpoint(t *testing.T) {
 
 func TestEncryptionKeyEndpoint_Disabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	// No SetCoordinatorKey call → endpoint should report 503.
 
 	ts := httptest.NewServer(srv.Handler())
@@ -287,9 +287,9 @@ func TestSealedRequest_CaseInsensitiveContentType(t *testing.T) {
 // reader side and contains the original payload in order.
 func TestSealedTransport_SSE(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	coordKey, err := e2e.DeriveCoordinatorKey(senderTestMnemonic)
 	if err != nil {

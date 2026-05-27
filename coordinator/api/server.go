@@ -243,7 +243,7 @@ func (s *Server) SetFinancialRateLimiter(rl *ratelimit.Limiter) {
 }
 
 // NewServer creates a configured Server with all routes mounted.
-func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Server {
+func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger *slog.Logger) *Server {
 	// Wire the store into the registry for provider fleet persistence.
 	reg.SetStore(st)
 
@@ -266,6 +266,24 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 	// Load stored provider records into a lookup table for matching
 	// reconnecting providers to their persisted state.
 	s.storedProviders = reg.LoadStoredProviders()
+	// Apply server configuration from ServerConfig.
+	// TODO(auth): storing admin emails in the server struct is an antipattern.
+	// Move admin verification to an external auth service (Privy or IDP) so that
+	// the server doesn't need to hold email state.
+	s.adminKey = cfg.AdminKey
+	if len(cfg.AdminEmails) > 0 {
+		s.adminEmails = make(map[string]bool)
+		for _, e := range cfg.AdminEmails {
+			s.adminEmails[strings.ToLower(strings.TrimSpace(e))] = true
+		}
+	}
+	s.consoleURL = cfg.ConsoleURL
+	s.corsOrigin = cfg.CORSOrigin
+	s.baseURL = strings.TrimRight(cfg.BaseURL, "/")
+	s.minProviderVersion = strings.TrimSpace(cfg.MinProviderVersion)
+	s.r2CDNURL = strings.TrimRight(cfg.R2CDNURL, "/")
+	s.r2SitePackagesCDNURL = strings.TrimRight(cfg.R2SitePackagesCDNURL, "/")
+	s.releaseKey = cfg.ReleaseKey
 
 	return s
 }

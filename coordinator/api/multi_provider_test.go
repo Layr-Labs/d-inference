@@ -31,9 +31,9 @@ import (
 
 func TestMultiProvider_TwoProvidersSameModel(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -126,9 +126,9 @@ func TestMultiProvider_BothProvidersServeSameModel(t *testing.T) {
 
 func TestMultiProvider_DifferentModels(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -183,9 +183,9 @@ func TestMultiProvider_DifferentModels(t *testing.T) {
 
 func TestMultiProvider_ProviderLeavesOtherContinues(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -228,9 +228,9 @@ func TestMultiProvider_ProviderLeavesOtherContinues(t *testing.T) {
 
 func TestMultiProvider_ProviderJoinsLate(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -280,9 +280,9 @@ func TestMultiProvider_ProviderJoinsLate(t *testing.T) {
 
 func TestMultiProvider_CatalogFiltersDuringRegistration(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	// Set catalog before providers connect
 	reg.SetModelCatalog([]registry.CatalogEntry{
@@ -337,9 +337,9 @@ func TestMultiProvider_CatalogFiltersDuringRegistration(t *testing.T) {
 
 func TestMultiProvider_ManyProviders(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -383,9 +383,9 @@ func TestMultiProvider_ManyProviders(t *testing.T) {
 
 func TestMultiProvider_ConcurrentRegistration(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -464,9 +464,9 @@ func TestMultiProvider_ConcurrentRegistration(t *testing.T) {
 
 func TestMultiProvider_SingleProviderMultipleModels(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -507,9 +507,9 @@ func TestMultiProvider_SingleProviderMultipleModels(t *testing.T) {
 
 func TestMultiProvider_TrustLevelFiltering(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

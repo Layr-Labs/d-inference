@@ -50,8 +50,8 @@ type cachedPrice struct {
 
 // NewPostgres creates a new PostgresStore connected to the given database URL.
 // It runs schema migrations on startup.
-func NewPostgres(ctx context.Context, connString string) (*PostgresStore, error) {
-	cfg, err := pgxpool.ParseConfig(connString)
+func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
+	cfg, err := pgxpool.ParseConfig(scfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse postgres config: %w", err)
 	}

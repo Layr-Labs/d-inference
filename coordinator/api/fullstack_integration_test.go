@@ -462,11 +462,11 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	// --- Start coordinator ---
 	t.Log("=== Starting coordinator ===")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	reg.MinTrustLevel = registry.TrustNone // no attestation for testing
 	reg.SetQueue(registry.NewRequestQueue(100, 60*time.Second))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 30 * time.Second
 
 	ts := httptest.NewServer(srv.Handler())
@@ -735,11 +735,11 @@ func TestFullStack_TenProviderStress(t *testing.T) {
 
 	t.Logf("=== 10-PROVIDER STRESS TEST ===")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	reg.MinTrustLevel = registry.TrustNone
 	reg.SetQueue(registry.NewRequestQueue(200, 60*time.Second))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 30 * time.Second
 
 	ts := httptest.NewServer(srv.Handler())
@@ -898,11 +898,11 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	reg.MinTrustLevel = registry.TrustNone
 	reg.SetQueue(registry.NewRequestQueue(200, 120*time.Second))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 60 * time.Second
 
 	ts := httptest.NewServer(srv.Handler())
@@ -1048,11 +1048,11 @@ func TestFullStack_LargeModelInference(t *testing.T) {
 	t.Logf("=== LARGE MODEL TEST: %s ===", selectedModel)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	reg.MinTrustLevel = registry.TrustNone
 	reg.SetQueue(registry.NewRequestQueue(10, 120*time.Second))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 60 * time.Second
 
 	ts := httptest.NewServer(srv.Handler())

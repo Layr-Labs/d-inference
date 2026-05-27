@@ -1333,6 +1333,9 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
 		return false
 	}
+	if !r.providerServesCatalogModelLocked(p, model) {
+		return false
+	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == model && slot.State == "running" {
@@ -1356,7 +1359,10 @@ func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, sele
 		if _, selected := selectedProviders[id]; selected {
 			continue
 		}
-		if _, pending := r.pendingModelLoads[modelLoadKey(id, model)]; pending {
+		// Skip providers that have any pending model load -- sending a
+		// second load_model while the first is in progress can cause
+		// swap oscillation on single-slot providers.
+		if r.providerHasPendingLoad(id) {
 			continue
 		}
 
@@ -1440,6 +1446,18 @@ func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
 
 func modelLoadKey(providerID, modelID string) string {
 	return providerID + ":" + modelID
+}
+
+// providerHasPendingLoad reports whether the provider has any pending
+// load_model command. Caller must hold r.mu (read or write).
+func (r *Registry) providerHasPendingLoad(providerID string) bool {
+	prefix := providerID + ":"
+	for key := range r.pendingModelLoads {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
 }
 
 // ClearPendingModelLoad removes a pending model load entry after a terminal

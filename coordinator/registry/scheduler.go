@@ -594,7 +594,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 
 func slotStatePenalty(state string) (float64, bool) {
 	switch state {
-	case "", "running":
+	case "", "running", "idle":
 		return slotStatePenaltyRunning, true
 	case "unknown":
 		// Model is available but not loaded. The provider must evict the

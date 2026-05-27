@@ -1094,20 +1094,28 @@ public struct ModelDownloader: Sendable {
                 // stable .part file before hashing or moving to the final path.
                 if http.statusCode == 206 {
                     // Validate Content-Range to ensure the server resumed at
-                    // the correct offset. Expected format: "bytes <start>-<end>/<total>".
+                    // the correct offset. Expected: "bytes <start>-<end>/<total>".
                     let expectedStart = UInt64(existingBytes)
-                    if let contentRange = http.value(forHTTPHeaderField: "Content-Range") {
-                        if let rangeStart = Self.parseContentRangeStart(contentRange),
-                           rangeStart != expectedStart {
-                            // Range mismatch: discard partial and re-download fully.
-                            try? fm.removeItem(at: partial)
-                            try fm.moveItem(at: tempFile, to: partial)
-                        } else {
-                            try Self.appendDownloadedRange(tempFile, to: partial, label: label)
-                        }
+                    let rangeVerified: Bool
+                    if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+                       let rangeStart = Self.parseContentRangeStart(contentRange) {
+                        rangeVerified = (rangeStart == expectedStart)
                     } else {
-                        // No Content-Range header: cannot verify, append optimistically.
+                        // Missing or unparseable Content-Range -- cannot verify
+                        // the server resumed at the correct offset.
+                        rangeVerified = false
+                    }
+
+                    if rangeVerified {
                         try Self.appendDownloadedRange(tempFile, to: partial, label: label)
+                    } else {
+                        // Range unverifiable or mismatched -- discard the stale
+                        // partial and replace it with the server's fresh response.
+                        // The next download attempt (if needed) will resume from
+                        // this new position, or the SHA check below will detect
+                        // a truncated file.
+                        try? fm.removeItem(at: partial)
+                        try fm.moveItem(at: tempFile, to: partial)
                     }
                 } else {
                     try? fm.removeItem(at: partial)

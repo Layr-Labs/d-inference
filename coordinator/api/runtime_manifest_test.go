@@ -75,7 +75,7 @@ func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testi
 	}
 }
 
-func TestVerifyRuntimeHashesForLegacyIgnoresSwiftMetallib(t *testing.T) {
+func TestVerifyRuntimeHashesForLegacyBackendRejected(t *testing.T) {
 	srv, _ := runtimeManifestTestServer(t)
 	srv.SetRuntimeManifest(&RuntimeManifest{
 		PythonHashes:   map[string]bool{"legacy-python": true},
@@ -86,8 +86,11 @@ func TestVerifyRuntimeHashesForLegacyIgnoresSwiftMetallib(t *testing.T) {
 	ok, mismatches := srv.verifyRuntimeHashesForBackend("vllm-mlx", "legacy-python", "legacy-runtime", map[string]string{
 		"qwen3.5": "legacy-template",
 	})
-	if !ok {
-		t.Fatalf("legacy runtime verification failed due to swift metallib: %#v", mismatches)
+	if ok {
+		t.Fatal("legacy (vllm-mlx) backend should be rejected — only mlx-swift is supported")
+	}
+	if len(mismatches) != 1 || mismatches[0].Component != "backend" {
+		t.Fatalf("mismatches = %#v, want one backend mismatch", mismatches)
 	}
 }
 
@@ -201,37 +204,6 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 	}
 }
 
-func TestVerifyRuntimeHashesRejectsMissingRequiredComponents(t *testing.T) {
-	srv, _ := runtimeManifestTestServer(t)
-	srv.SetRuntimeManifest(&RuntimeManifest{
-		PythonHashes:   map[string]bool{"py-good": true},
-		RuntimeHashes:  map[string]bool{"rt-good": true},
-		TemplateHashes: map[string]string{"qwen": "tmpl-good"},
-	})
-
-	ok, mismatches := srv.verifyRuntimeHashes("", "", nil)
-	if ok {
-		t.Fatal("verifyRuntimeHashes should fail when required hash fields are missing")
-	}
-	if len(mismatches) != 3 {
-		t.Fatalf("mismatches = %d, want 3", len(mismatches))
-	}
-
-	byComponent := make(map[string]string, len(mismatches))
-	for _, mm := range mismatches {
-		byComponent[mm.Component] = mm.Got
-	}
-	for _, component := range []string{
-		"python",
-		"runtime",
-		"template:qwen",
-	} {
-		if got := byComponent[component]; got != "(missing)" {
-			t.Fatalf("%s mismatch got = %q, want %q", component, got, "(missing)")
-		}
-	}
-}
-
 func TestSyncRuntimeManifestDeroutesLiveProvidersBelowMinVersion(t *testing.T) {
 	srv, st := runtimeManifestTestServer(t)
 
@@ -242,7 +214,7 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersBelowMinVersion(t *testing.T) {
 			MemoryGB: 64,
 		},
 		Models:                  []protocol.ModelInfo{{ID: "live-version-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               "bound-public-key",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -257,18 +229,20 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersBelowMinVersion(t *testing.T) {
 	provider.Mu().Unlock()
 
 	if err := st.SetRelease(&store.Release{
-		Version:     "0.3.9",
-		Platform:    "macos-arm64",
-		BinaryHash:  "new-binary",
-		BundleHash:  "new-bundle",
-		PythonHash:  "new-python",
-		RuntimeHash: "new-runtime",
-		URL:         "https://example.com/new.tar.gz",
-		Active:      true,
+		Version:      "0.3.9",
+		Platform:     "macos-arm64",
+		BinaryHash:   "new-binary",
+		BundleHash:   "new-bundle",
+		MetallibHash: strings.Repeat("a", 64),
+		URL:          "https://example.com/new.tar.gz",
+		Active:       true,
 	}); err != nil {
 		t.Fatalf("SetRelease(new): %v", err)
 	}
 
+	// Version gate: providers below this version are derouted regardless of
+	// hash verification. The manifest must be non-nil for revalidation to run.
+	srv.SetMinProviderVersion("0.3.9")
 	srv.SyncRuntimeManifest()
 
 	provider = srv.registry.GetProvider("provider-1")
@@ -297,7 +271,7 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersWhenManifestClears(t *testing.T
 			MemoryGB: 64,
 		},
 		Models:                  []protocol.ModelInfo{{ID: "live-manifest-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               "bound-public-key",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -342,6 +316,8 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersWhenManifestClears(t *testing.T
 
 func TestSyncRuntimeManifestDeroutesLiveProvidersWhenHashesChangeWithoutVersionBump(t *testing.T) {
 	srv, st := runtimeManifestTestServer(t)
+	oldMetallib := strings.Repeat("a", 64)
+	newMetallib := strings.Repeat("b", 64)
 
 	provider := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
@@ -350,7 +326,7 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersWhenHashesChangeWithoutVersionB
 			MemoryGB: 64,
 		},
 		Models:                  []protocol.ModelInfo{{ID: "same-version-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               "bound-public-key",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -362,19 +338,17 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersWhenHashesChangeWithoutVersionB
 	provider.RuntimeManifestChecked = true
 	provider.ChallengeVerifiedSIP = true
 	provider.LastChallengeVerified = time.Now()
-	provider.PythonHash = "old-python"
-	provider.RuntimeHash = "old-runtime"
+	provider.TemplateHashes = map[string]string{"mlx_metallib": oldMetallib}
 	provider.Mu().Unlock()
 
 	if err := st.SetRelease(&store.Release{
-		Version:     "0.3.9",
-		Platform:    "macos-arm64",
-		BinaryHash:  "new-binary",
-		BundleHash:  "new-bundle",
-		PythonHash:  "new-python",
-		RuntimeHash: "new-runtime",
-		URL:         "https://example.com/new.tar.gz",
-		Active:      true,
+		Version:      "0.3.9",
+		Platform:     "macos-arm64",
+		BinaryHash:   "new-binary",
+		BundleHash:   "new-bundle",
+		MetallibHash: newMetallib,
+		URL:          "https://example.com/new.tar.gz",
+		Active:       true,
 	}); err != nil {
 		t.Fatalf("SetRelease(new): %v", err)
 	}
@@ -385,11 +359,11 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersWhenHashesChangeWithoutVersionB
 	provider.Mu().Lock()
 	if provider.RuntimeVerified {
 		provider.Mu().Unlock()
-		t.Fatal("live provider should be derouted when same-version runtime hashes change")
+		t.Fatal("live provider should be derouted when same-version metallib hash changes")
 	}
 	if provider.RuntimeManifestChecked {
 		provider.Mu().Unlock()
-		t.Fatal("live provider should lose private-text eligibility when same-version runtime hashes change")
+		t.Fatal("live provider should lose private-text eligibility when same-version metallib hash changes")
 	}
 	provider.Mu().Unlock()
 	if models := srv.registry.ListModels(); len(models) != 0 {

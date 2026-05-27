@@ -201,6 +201,10 @@ type Provider struct {
 	// this is set by the coordinator after independently checking the challenge response.
 	ChallengeVerifiedSIP bool `json:"challenge_verified_sip"`
 
+	// lastPersisted tracks when this provider was last written to the store.
+	// Used by PersistProviderThrottled to avoid hammering Postgres on every heartbeat.
+	lastPersisted time.Time
+
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges      int       // consecutive failed challenges
@@ -221,26 +225,25 @@ func providerSupportsPrivateTextLocked(p *Provider) bool {
 	if !p.ChallengeVerifiedSIP {
 		return false
 	}
-	swiftRuntime := BackendUsesSwiftRuntime(p.Backend)
 	caps := p.PrivacyCapabilities
 	if caps == nil {
 		return false
 	}
-	base := caps.TextBackendInprocess &&
+	// Only mlx-swift is routable (enforced by privateTextBackendSupported above).
+	// Python-specific caps (PythonRuntimeLocked, DangerousModulesBlocked) are
+	// retained in the protocol struct for wire backward compat but are no longer
+	// required for routing.
+	return caps.TextBackendInprocess &&
 		caps.TextProxyDisabled &&
 		caps.AntiDebugEnabled &&
 		caps.CoreDumpsDisabled &&
 		caps.EnvScrubbed
-	if swiftRuntime {
-		return base
-	}
-	return base &&
-		caps.PythonRuntimeLocked &&
-		caps.DangerousModulesBlocked
 }
 
 func privateTextBackendSupported(backend string) bool {
-	return backend == "inprocess-mlx" || backend == BackendMLXSwift
+	// Python/legacy inprocess-mlx backend is deprecated and no longer
+	// routable. Only Swift (mlx-swift) providers are admitted.
+	return backend == BackendMLXSwift
 }
 
 // AddPending registers a pending request on this provider.
@@ -626,15 +629,31 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	)
 }
 
-// PersistProvider is the public entry point for persisting a provider's state.
-// Called by the API layer after attestation and trust changes.
+// PersistProvider unconditionally persists provider state to the store.
+// Use for critical state changes (attestation, trust level, disconnect).
 func (r *Registry) PersistProvider(p *Provider) {
-	r.persistProvider(p)
+	r.persistProviderNow(p)
 }
 
-// persistProvider saves a provider's current state to the store.
+// PersistProviderThrottled persists provider state at most once per 30 seconds.
+// Use for high-frequency updates (heartbeats) that would otherwise saturate the
+// DB connection pool. Skipped writes are not lost — the next unthrottled persist
+// or the next throttle window will capture the current state.
+func (r *Registry) PersistProviderThrottled(p *Provider) {
+	const minInterval = 30 * time.Second
+	p.mu.Lock()
+	if time.Since(p.lastPersisted) < minInterval {
+		p.mu.Unlock()
+		return
+	}
+	p.lastPersisted = time.Now()
+	p.mu.Unlock()
+	r.persistProviderNow(p)
+}
+
+// persistProviderNow saves a provider's current state to the store.
 // Called asynchronously to avoid blocking the hot path.
-func (r *Registry) persistProvider(p *Provider) {
+func (r *Registry) persistProviderNow(p *Provider) {
 	if r.store == nil {
 		return
 	}
@@ -1065,7 +1084,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	)
 
 	// Persist provider record to store (async).
-	r.persistProvider(p)
+	r.persistProviderNow(p)
 
 	return p
 }
@@ -1187,7 +1206,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	}
 	p.mu.Unlock()
 
-	r.PersistProvider(p)
+	r.PersistProviderThrottled(p)
 
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
@@ -1661,7 +1680,7 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 	p.mu.Unlock()
 
 	// Persist trust state.
-	r.persistProvider(p)
+	r.persistProviderNow(p)
 }
 
 // RecordChallengeSuccess records a successful challenge-response verification.
@@ -1683,7 +1702,7 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	p.mu.Unlock()
 
 	// Persist challenge state and reputation.
-	r.persistProvider(p)
+	r.persistProviderNow(p)
 	r.persistReputation(p)
 
 	// A newly verified provider may unlock queued requests for any model it serves.
@@ -1711,7 +1730,7 @@ func (r *Registry) RecordChallengeFailure(providerID string) int {
 	p.mu.Unlock()
 
 	// Persist challenge state and reputation.
-	r.persistProvider(p)
+	r.persistProviderNow(p)
 	r.persistReputation(p)
 
 	return count

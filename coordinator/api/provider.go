@@ -240,9 +240,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						_ = conn.Write(writeCtx, websocket.MessageText, statusData)
 						writeCancel()
 					}
+					mismatchDetails := make([]string, 0, len(mismatches))
+					for _, m := range mismatches {
+						mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
+					}
 					s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
 						"provider_id", providerID,
 						"mismatches", len(mismatches),
+						"details", mismatchDetails,
+						"backend", regMsg.Backend,
 					)
 				} else {
 					s.logger.Info("provider runtime integrity verified",
@@ -835,9 +841,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		provider.Mu().Unlock()
 
 		if !runtimeOK {
+			// Log detailed mismatch info for debugging outages.
+			mismatchDetails := make([]string, 0, len(mismatches))
+			for _, m := range mismatches {
+				mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
+			}
 			s.logger.Warn("provider runtime integrity mismatch in challenge response — excluding from routing",
 				"provider_id", providerID,
 				"mismatches", len(mismatches),
+				"details", mismatchDetails,
+				"backend", provider.Backend,
 			)
 			// Send status feedback but do NOT fail the challenge or mark untrusted.
 			// The provider remains connected but is excluded from routing until
@@ -1148,8 +1161,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	}
 
 	if billingFinalized {
-		// Record usage entry — both in-memory (for current session) and persisted
-		// to database (survives coordinator restart).
+		// Record in-memory usage (for current session queries).
 		s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
 			JobID:            msg.RequestID,
 			Model:            pr.Model,
@@ -1158,18 +1170,36 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			CostMicroUSD:     totalCost,
 			Timestamp:        time.Now(),
 		})
-		s.store.RecordUsageWithCostAndLocation(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
+
+		// Persist usage to DB asynchronously — billing has already been
+		// settled above, so this INSERT is not on the critical path.
+		saferun.Go(s.logger, "recordUsage", func() {
+			s.store.RecordUsageWithCostAndLocation(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
+		})
+
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
-		// Credit the provider's pending payout.
-		// If the provider is linked to an account (via device auth), credit that account.
+
+		// Resolve provider identity for payout.
 		p := s.registry.GetProvider(providerID)
 		if p == nil {
 			p = provider
 		}
+
+		// Compute platform fee (needs referral lookup before spawning goroutines).
+		platformFee := payments.PlatformFee(totalCost)
+		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
+			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
+		}
+
+		// Run provider credit and platform fee credit concurrently —
+		// they target different accounts so there is no data dependency.
+		var settlementWg sync.WaitGroup
+
+		// Credit the provider's linked account (if any).
 		if p != nil {
 			p.Mu().Lock()
 			accountID := p.AccountID
@@ -1177,43 +1207,47 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			p.Mu().Unlock()
 
 			if accountID != "" {
-				start := time.Now()
-				if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-					AccountID:        accountID,
-					ProviderID:       providerID,
-					ProviderKey:      publicKey,
-					JobID:            msg.RequestID,
-					Model:            pr.Model,
-					AmountMicroUSD:   providerPayout,
-					PromptTokens:     msg.Usage.PromptTokens,
-					CompletionTokens: msg.Usage.CompletionTokens,
-					CreatedAt:        time.Now(),
-				}); err != nil {
-					s.logger.Error("failed to credit linked provider account",
-						"provider_id", providerID,
-						"account_id", accountID,
-						"request_id", msg.RequestID,
-						"error", err,
-					)
-				}
-				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
-				s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
+				settlementWg.Add(1)
+				go func() {
+					defer settlementWg.Done()
+					start := time.Now()
+					if err := s.store.CreditProviderAccount(&store.ProviderEarning{
+						AccountID:        accountID,
+						ProviderID:       providerID,
+						ProviderKey:      publicKey,
+						JobID:            msg.RequestID,
+						Model:            pr.Model,
+						AmountMicroUSD:   providerPayout,
+						PromptTokens:     msg.Usage.PromptTokens,
+						CompletionTokens: msg.Usage.CompletionTokens,
+						CreatedAt:        time.Now(),
+					}); err != nil {
+						s.logger.Error("failed to credit linked provider account",
+							"provider_id", providerID,
+							"account_id", accountID,
+							"request_id", msg.RequestID,
+							"error", err,
+						)
+					}
+					s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
+					s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
+				}()
 			}
 		}
 
-		// Record platform fee, distributing referral rewards if applicable.
-		platformFee := payments.PlatformFee(totalCost)
+		// Record platform fee.
 		if platformFee > 0 {
-			// Check if consumer has a referrer and distribute reward.
-			// The referral service deducts the referrer's share from the platform fee.
-			if s.billing != nil && s.billing.Referral() != nil {
-				platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
-			}
-			start := time.Now()
-			_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
-			s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
+			settlementWg.Add(1)
+			go func() {
+				defer settlementWg.Done()
+				start := time.Now()
+				_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
+				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
+				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
+			}()
 		}
+
+		settlementWg.Wait()
 	}
 
 	// Signal completion to the consumer response handler. This must happen

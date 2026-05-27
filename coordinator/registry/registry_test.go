@@ -40,7 +40,7 @@ func testRegisterMessage() *protocol.RegisterMessage {
 				Quantization: "4bit",
 			},
 		},
-		Backend:                 "inprocess-mlx",
+		Backend:                 BackendMLXSwift,
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities: &protocol.PrivacyCapabilities{
@@ -191,23 +191,21 @@ func TestSwiftProviderPrivateTextWithoutPythonCaps(t *testing.T) {
 	}
 }
 
-func TestPythonProviderRequiresPythonCaps(t *testing.T) {
+func TestPythonProviderDeprecatedNotRoutable(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	msg.Backend = "inprocess-mlx"
-	msg.PrivacyCapabilities.PythonRuntimeLocked = false
-	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+	msg.Backend = "inprocess-mlx" // intentionally legacy backend
 
-	p := reg.Register("p-python-nocaps", nil, msg)
+	p := reg.Register("p-python-deprecated", nil, msg)
 	testMakeTextRoutable(p)
 
 	if providerSupportsPrivateTextLocked(p) {
-		t.Fatal("Python (inprocess-mlx) provider without PythonRuntimeLocked/DangerousModulesBlocked should NOT support private text")
+		t.Fatal("Python (inprocess-mlx) provider should NOT support private text — backend is deprecated")
 	}
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
-		t.Fatal("Python provider without Python caps should not be routable for text models")
+		t.Fatal("deprecated Python provider should not be routable")
 	}
 }
 
@@ -235,7 +233,7 @@ func TestSwiftProviderMissingBaseCapsExcluded(t *testing.T) {
 func TestProviderPartialPrivacyCapsExcluded(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+	msg.PrivacyCapabilities.EnvScrubbed = false // base cap required for all backends
 	p := reg.Register("p-partial", nil, msg)
 	p.ChallengeVerifiedSIP = true
 	reg.SetTrustLevel(p.ID, TrustHardware)

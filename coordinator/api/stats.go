@@ -404,9 +404,8 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 	for _, b := range locBuckets {
 		locatedRequests += b.Requests
 	}
-	// Total usage records in the window for unknown count.
-	allRecords := s.store.UsageRecordsSince(since)
-	totalInWindow := int64(len(allRecords))
+	// Total usage records in the window (SQL COUNT, no row transfer).
+	totalInWindow := s.store.UsageCountSince(since)
 	unknownRequests = totalInWindow - locatedRequests
 
 	type cityKey struct {

@@ -108,7 +108,7 @@ func connectProviderWithAttestation(t *testing.T, ctx context.Context, tsURL str
 			MemoryGB:     64,
 		},
 		Models:                  models,
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               publicKey,
 		Attestation:             attestation,
 		EncryptedResponseChunks: true,

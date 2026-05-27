@@ -188,7 +188,7 @@ func (p *simulatedProvider) connect(ctx context.Context, coordinatorURL string) 
 			Quantization: "4bit",
 			SizeBytes:    500_000_000,
 		}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               p.pubKeyB64,
 		DecodeTPS:               100.0,
 		EncryptedResponseChunks: true,

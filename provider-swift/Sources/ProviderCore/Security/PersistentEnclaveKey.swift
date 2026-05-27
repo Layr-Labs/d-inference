@@ -107,6 +107,11 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     // MARK: - Load or Create
 
     /// Load an existing persistent key from the keychain, or create one if not found.
+    ///
+    /// Includes a one-time migration: keys created with the old
+    /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` policy are deleted and
+    /// recreated with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so
+    /// background signing works when the screen is locked.
     public static func loadOrCreate(
         accessGroup: String? = nil,
         label: String? = nil
@@ -120,7 +125,20 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         do {
             let existing = try findExisting(accessGroup: group, label: keyLabel)
             logger.info("Loaded existing persistent Secure Enclave key")
-            return existing
+
+            // Migration check: try a test sign to verify the key's access
+            // policy allows background usage. Keys created with the old
+            // WhenUnlockedThisDeviceOnly policy fail with -25308 when the
+            // screen is locked. Delete and recreate with the relaxed policy.
+            let testData = Data("darkbloom-key-migration-check".utf8)
+            do {
+                _ = try existing.sign(testData)
+                return existing
+            } catch PersistentEnclaveKeyError.signingFailed(let status, _) where status == -25308 {
+                logger.warning("SE key has restrictive access policy (WhenUnlockedOnly) — migrating to AfterFirstUnlock")
+                try? delete(accessGroup: group, label: keyLabel)
+                return try createNew(accessGroup: group, label: keyLabel)
+            }
         } catch PersistentEnclaveKeyError.keyLookupFailed(status: errSecItemNotFound) {
             // No existing key — proceed to creation.
         }
@@ -180,7 +198,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         var acError: Unmanaged<CFError>?
         guard let accessControl = SecAccessControlCreateWithFlags(
             kCFAllocatorDefault,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             .privateKeyUsage,
             &acError
         ) else {

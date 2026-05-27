@@ -313,10 +313,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				"status", statusMsg.Status,
 				"error", statusMsg.Error,
 			)
-			// Clear the pending load entry so TriggerModelSwaps stops
-			// suppressing new load requests for this (provider, model) pair.
-			if statusMsg.Status == protocol.LoadModelStatusSucceeded ||
-				statusMsg.Status == protocol.LoadModelStatusFailed {
+			// Clear the pending load entry only on success. On failure, leave
+			// the entry in place so the TTL cooldown suppresses retry storms.
+			if statusMsg.Status == protocol.LoadModelStatusSucceeded {
 				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 			}
 			// On success, drain queued requests immediately rather than

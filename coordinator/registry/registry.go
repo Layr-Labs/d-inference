@@ -1338,11 +1338,16 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model == model && slot.State == "running" {
-				return true
+			if slot.Model == model {
+				// BackendCapacity is authoritative when present.
+				// Only "running" and "idle" mean the model is warm.
+				return slot.State == "running" || slot.State == "idle"
 			}
 		}
+		// Model has no slot in BackendCapacity -- it's not loaded.
+		return false
 	}
+	// Legacy provider without BackendCapacity: fall back to WarmModels.
 	for _, warmModel := range p.WarmModels {
 		if warmModel == model {
 			return true
@@ -1487,6 +1492,12 @@ func (r *Registry) Disconnect(id string) {
 	p, ok := r.providers[id]
 	if ok {
 		delete(r.providers, id)
+		// Clear any pending model load entries for this provider.
+		for key := range r.pendingModelLoads {
+			if len(key) > len(id)+1 && key[:len(id)+1] == id+":" {
+				delete(r.pendingModelLoads, key)
+			}
+		}
 		p.mu.Lock()
 		if p.Status != StatusUntrusted {
 			r.onlineCount.Add(-1)

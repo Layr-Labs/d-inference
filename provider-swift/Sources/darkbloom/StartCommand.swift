@@ -629,11 +629,6 @@ struct Start: AsyncParsableCommand {
         var cursorPos = 0
         var selected = [Bool](repeating: false, count: entries.count)
 
-        // Pre-select the largest downloaded model.
-        if let idx = entries.firstIndex(where: { $0.downloaded }) {
-            selected[idx] = true
-        }
-
         let downloadedCount = entries.filter(\.downloaded).count
         let availableCount = entries.count - downloadedCount
 
@@ -668,6 +663,11 @@ struct Start: AsyncParsableCommand {
 
         func canFitIndividually(_ entry: PickerEntry) -> Bool {
             entry.sizeGb <= budget
+        }
+
+        // Pre-select the largest downloaded model that can fit on this machine.
+        if let idx = entries.firstIndex(where: { $0.downloaded && canFitIndividually($0) }) {
+            selected[idx] = true
         }
 
         /// Render the picker UI, returning the number of lines written.

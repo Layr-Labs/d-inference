@@ -1497,21 +1497,27 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	// BackendCapacity.Slots (not WarmModels) for Swift providers, and a
 	// stale snapshot without the new model's slot would treat it as cold
 	// until the next heartbeat arrives.
+	//
+	// Also remove stale slots for models that were evicted to make room
+	// for the new model. The provider only has one active slot after a
+	// swap, so any other "running"/"idle" slots are stale until the next
+	// heartbeat corrects them.
 	if p.BackendCapacity != nil {
-		found := false
-		for i, slot := range p.BackendCapacity.Slots {
+		fresh := p.BackendCapacity.Slots[:0]
+		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == modelID {
-				p.BackendCapacity.Slots[i].State = "idle"
-				found = true
-				break
+				continue // will be replaced below
 			}
+			if slot.State == "running" || slot.State == "idle" {
+				continue // evicted — drop stale warm slot
+			}
+			fresh = append(fresh, slot) // keep crashed/reloading/other states
 		}
-		if !found {
-			p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
-				Model: modelID,
-				State: "idle",
-			})
-		}
+		fresh = append(fresh, protocol.BackendSlotCapacity{
+			Model: modelID,
+			State: "idle",
+		})
+		p.BackendCapacity.Slots = fresh
 	}
 }
 

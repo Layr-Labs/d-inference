@@ -16,7 +16,6 @@ if [ ! -d "/data/step-ca/config" ]; then
 
     # Copy Apple attestation root CA and ACME template to persistent storage
     mkdir -p /data/step-ca/apple /data/step-ca/templates
-    cp /opt/step-ca-seed/Apple_Enterprise_Attestation_Root_CA.pem /data/step-ca/apple/
     cp /opt/step-ca-seed/acme-device.tpl /data/step-ca/templates/
 
     STEPPATH=/data/step-ca step ca init \

@@ -22,8 +22,8 @@ func TestComputeFeaturesBasic(t *testing.T) {
 
 	// Provider with three completed sessions of 5h, 1h, 9h plus one open.
 	rows := []store.SessionRow{
-		{ProviderID: "p", ConnectedAt: since.Add(1 * time.Hour), DisconnectedAt: since.Add(6 * time.Hour), DisconnectReason: store.DisconnectReasonCleanClose},  // 5h
-		{ProviderID: "p", ConnectedAt: since.Add(48 * time.Hour), DisconnectedAt: since.Add(49 * time.Hour), DisconnectReason: store.DisconnectReasonReadError}, // 1h
+		{ProviderID: "p", ConnectedAt: since.Add(1 * time.Hour), DisconnectedAt: since.Add(6 * time.Hour), DisconnectReason: store.DisconnectReasonCleanClose},   // 5h
+		{ProviderID: "p", ConnectedAt: since.Add(48 * time.Hour), DisconnectedAt: since.Add(49 * time.Hour), DisconnectReason: store.DisconnectReasonReadError},  // 1h
 		{ProviderID: "p", ConnectedAt: since.Add(72 * time.Hour), DisconnectedAt: since.Add(81 * time.Hour), DisconnectReason: store.DisconnectReasonCleanClose}, // 9h
 		{ProviderID: "p", ConnectedAt: now.Add(-30 * time.Minute)}, // still open
 	}

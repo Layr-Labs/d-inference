@@ -3276,6 +3276,7 @@ func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
 	}
 	return &r, nil
 }
+
 // --- Provider Liveness ---
 
 // heartbeatColumns mirrors the column order used by AppendHeartbeats CopyFrom.

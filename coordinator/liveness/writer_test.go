@@ -21,7 +21,7 @@ type fakeStore struct {
 	mu     sync.Mutex
 	calls  int
 	rows   []store.HeartbeatEvent
-	failN  int   // fail the next N calls then succeed
+	failN  int // fail the next N calls then succeed
 	delay  time.Duration
 	failed atomic.Int64
 }

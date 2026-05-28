@@ -60,9 +60,9 @@ func TestComputeLivenessScoreRecencyDecays(t *testing.T) {
 	score := func(ageHours float64) float64 {
 		return computeLivenessScore(0.9, 0.6, 0.4, int64(7200), now.Add(-time.Duration(ageHours*float64(time.Hour))), now)
 	}
-	hot := score(0.1)  // 6 min ago — recency penalty nearly maxed
-	warm := score(6)   // 6h ago — half decayed
-	cold := score(48)  // 48h ago — well past the 24h window
+	hot := score(0.1) // 6 min ago — recency penalty nearly maxed
+	warm := score(6)  // 6h ago — half decayed
+	cold := score(48) // 48h ago — well past the 24h window
 	if !(hot < warm && warm < cold) {
 		t.Fatalf("recency should monotonically improve score: hot=%v warm=%v cold=%v", hot, warm, cold)
 	}

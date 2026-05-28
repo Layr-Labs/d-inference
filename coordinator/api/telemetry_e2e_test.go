@@ -20,9 +20,9 @@ import (
 // TestTelemetryE2E_FullPipeline drives the full coordinator-side telemetry
 // pipeline: ingestion → in-memory store → metrics.
 func TestTelemetryE2E_FullPipeline(t *testing.T) {
-	srv, st := testServer(t)
+	srv, _ := testServer(t)
 	srv.SetAdminKey("admin-key")
-	srv.SetEmitter(telemetry.NewEmitter(srv.logger, st, srv.metrics, "e2e-test"))
+	srv.SetEmitter(telemetry.NewEmitter(srv.logger, srv.metrics, "e2e-test"))
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

@@ -1,23 +1,18 @@
 package telemetry
 
-// Internal emitter for coordinator-side telemetry. Writes directly to the
-// store (no HTTP round-trip) and also mirrors each event to the process
-// logger at an appropriate level.
+// Internal emitter for coordinator-side telemetry. Mirrors events to the
+// process logger and forwards them to Datadog (Logs API + DogStatsD).
 //
-// The emitter is intentionally simple: we buffer nothing, because the store
-// itself is either in-process memory or a fast connection-pooled Postgres.
-// If the store write fails we log and move on — telemetry must never break
-// the request path.
+// No Postgres or in-memory store writes — Datadog is the sole durable sink.
+// If a forward fails we log and move on — telemetry must never break the
+// request path.
 
 import (
-	"context"
-	"encoding/json"
 	"log/slog"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
 
@@ -38,20 +33,18 @@ type MetricsSink interface {
 // Emitter writes coordinator-side telemetry events. Safe for concurrent use.
 type Emitter struct {
 	logger  *slog.Logger
-	store   store.Store
 	metrics MetricsSink
 	dd      *datadog.Client
 	version string
 }
 
 // NewEmitter wires the coordinator-side emitter.
-func NewEmitter(logger *slog.Logger, st store.Store, metrics MetricsSink, version string) *Emitter {
+func NewEmitter(logger *slog.Logger, metrics MetricsSink, version string) *Emitter {
 	if version == "" {
 		version = CoordinatorVersion
 	}
 	return &Emitter{
 		logger:  logger,
-		store:   st,
 		metrics: metrics,
 		version: version,
 	}
@@ -67,7 +60,7 @@ func (e *Emitter) SetDatadog(dd *datadog.Client) {
 
 // Emit records a single event. The event's source is forced to "coordinator"
 // because that's the only thing this emitter legitimately speaks for.
-func (e *Emitter) Emit(ctx context.Context, ev Event) {
+func (e *Emitter) Emit(ev Event) {
 	if e == nil {
 		return
 	}
@@ -81,35 +74,8 @@ func (e *Emitter) Emit(ctx context.Context, ev Event) {
 		ev.Timestamp = time.Now().UTC()
 	}
 
-	fieldsJSON := json.RawMessage(`{}`)
-	if len(ev.Fields) > 0 {
-		if b, err := json.Marshal(ev.Fields); err == nil {
-			fieldsJSON = b
-		}
-	}
-
-	rec := store.TelemetryEventRecord{
-		ID:         uuid.NewString(),
-		Timestamp:  ev.Timestamp,
-		Source:     string(protocol.TelemetrySourceCoordinator),
-		Severity:   string(ev.Severity),
-		Kind:       string(ev.Kind),
-		Version:    e.version,
-		RequestID:  ev.RequestID,
-		SessionID:  SessionID,
-		Message:    ev.Message,
-		Fields:     fieldsJSON,
-		Stack:      ev.Stack,
-		ReceivedAt: time.Now().UTC(),
-	}
-
-	// Best-effort persistence.
-	if err := e.store.InsertTelemetryEvents(ctx, []store.TelemetryEventRecord{rec}); err != nil {
-		e.logger.Warn("telemetry: emit store write failed", "error", err, "kind", ev.Kind)
-	}
-
 	// Mirror to the process logger so operators get something useful in
-	// stdout without having to query the store. Map severity to slog level.
+	// stdout without having to query Datadog. Map severity to slog level.
 	logArgs := []any{"kind", ev.Kind}
 	if ev.RequestID != "" {
 		logArgs = append(logArgs, "request_id", ev.RequestID)

@@ -324,7 +324,7 @@ func (s *Server) emit(ctx context.Context, severity protocol.TelemetrySeverity, 
 	if s.emitter == nil {
 		return
 	}
-	s.emitter.Emit(ctx, telemetry.Event{
+	s.emitter.Emit(telemetry.Event{
 		Severity: severity,
 		Kind:     kind,
 		Message:  message,
@@ -337,7 +337,7 @@ func (s *Server) emitRequest(ctx context.Context, severity protocol.TelemetrySev
 	if s.emitter == nil {
 		return
 	}
-	s.emitter.Emit(ctx, telemetry.Event{
+	s.emitter.Emit(telemetry.Event{
 		Severity:  severity,
 		Kind:      protocol.KindInferenceError,
 		Message:   message,
@@ -378,7 +378,7 @@ func (s *Server) emitPanic(ctx context.Context, message, stack string, fields ma
 	if s.emitter == nil {
 		return
 	}
-	s.emitter.Emit(ctx, telemetry.Event{
+	s.emitter.Emit(telemetry.Event{
 		Severity: protocol.SeverityFatal,
 		Kind:     protocol.KindPanic,
 		Message:  message,

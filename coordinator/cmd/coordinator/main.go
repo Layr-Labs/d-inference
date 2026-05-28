@@ -146,7 +146,7 @@ func main() {
 		}
 		livenessWriter = liveness.NewWriter(st, logger, nil, liveness.Config{})
 		livenessWriter.Start()
-		tracker := liveness.NewSessionTracker(st, logger, coordinatorID)
+		tracker := liveness.NewSessionTracker(st, logger, nil, coordinatorID)
 		reg.SetLivenessSink(liveness.NewSink(livenessWriter, tracker))
 
 		// Close any sessions left open by a previous coordinator process.

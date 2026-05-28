@@ -150,7 +150,7 @@ func TestLivenessFullCycle(t *testing.T) {
 	w.Start()
 	defer w.Close()
 
-	tracker := liveness.NewSessionTracker(st, logger, "coord-test")
+	tracker := liveness.NewSessionTracker(st, logger, nil, "coord-test")
 	sink := liveness.NewSink(w, tracker)
 
 	reg := registry.New(logger)
@@ -228,17 +228,17 @@ func TestOrphanCloseOnBoot(t *testing.T) {
 
 	// Previous incarnation of "coord-A" opens two sessions, then "crashes"
 	// (we discard the tracker without closing anything).
-	prev := liveness.NewSessionTracker(st, logger, "coord-A")
+	prev := liveness.NewSessionTracker(st, logger, nil, "coord-A")
 	prev.Open("ghost-A1")
 	prev.Open("ghost-A2")
 
 	// A sibling coordinator "coord-B" runs concurrently and has its own
 	// live session. CloseOrphans on coord-A's boot must NOT touch this.
-	siblingTracker := liveness.NewSessionTracker(st, logger, "coord-B")
+	siblingTracker := liveness.NewSessionTracker(st, logger, nil, "coord-B")
 	siblingTracker.Open("live-on-B")
 
 	// New incarnation of "coord-A" boots and sweeps.
-	bootTracker := liveness.NewSessionTracker(st, logger, "coord-A")
+	bootTracker := liveness.NewSessionTracker(st, logger, nil, "coord-A")
 	closed, err := bootTracker.CloseOrphans(context.Background())
 	if err != nil {
 		t.Fatalf("CloseOrphans: %v", err)

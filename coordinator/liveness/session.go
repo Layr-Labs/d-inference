@@ -18,6 +18,7 @@ import (
 type SessionTracker struct {
 	store         store.Store
 	logger        *slog.Logger
+	count         CounterFn
 	coordinatorID string
 	timeout       time.Duration
 
@@ -27,14 +28,15 @@ type SessionTracker struct {
 
 // NewSessionTracker constructs a tracker. coordinatorID is stamped into each
 // row so future debugging can distinguish which coordinator instance owned a
-// session (matters during blue/green deploys).
-func NewSessionTracker(s store.Store, logger *slog.Logger, coordinatorID string) *SessionTracker {
+// session (matters during blue/green deploys). count may be nil.
+func NewSessionTracker(s store.Store, logger *slog.Logger, count CounterFn, coordinatorID string) *SessionTracker {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &SessionTracker{
 		store:         s,
 		logger:        logger.With("component", "liveness.sessions"),
+		count:         count,
 		coordinatorID: coordinatorID,
 		timeout:       5 * time.Second,
 		open:          make(map[string]int64),
@@ -88,6 +90,13 @@ func (t *SessionTracker) Close(providerID, reason string, lastHeartbeat time.Tim
 	ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
 	defer cancel()
 	if err := t.store.CloseSession(ctx, id, reason, time.Now(), lastHeartbeat, requestsServed, tokensGenerated); err != nil {
+		// Tracker has already forgotten the session (delete above). The
+		// row stays OPEN in Postgres; orphan-sweep on next coordinator
+		// boot will reconcile. Surface the gap so operators can alarm
+		// before the next reboot.
+		if t.count != nil {
+			t.count("liveness_session_close_failed_total", 1)
+		}
 		t.logger.Warn("close session failed",
 			"provider_id", providerID,
 			"session_id", id,

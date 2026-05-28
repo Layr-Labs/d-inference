@@ -9,11 +9,11 @@ import (
 )
 
 func TestRecoverMiddlewareCatchesPanic(t *testing.T) {
-	srv, st := testServer(t)
+	srv, _ := testServer(t)
 	srv.SetAdminKey("admin-key")
 
-	// Emitter wired so we can confirm the event lands in the store.
-	srv.SetEmitter(telemetry.NewEmitter(srv.logger, st, srv.metrics, "test"))
+	// Emitter wired for metric side-effects (Datadog forwarding is no-op in tests).
+	srv.SetEmitter(telemetry.NewEmitter(srv.logger, srv.metrics, "test"))
 
 	// Mount a panicking handler onto the internal mux directly.
 	srv.mux.HandleFunc("GET /v1/test/boom", func(w http.ResponseWriter, r *http.Request) {
@@ -28,18 +28,4 @@ func TestRecoverMiddlewareCatchesPanic(t *testing.T) {
 		t.Fatalf("status: got %d want 500", rr.Code)
 	}
 
-	events := st.TelemetryEventsSnapshot()
-	found := false
-	for _, e := range events {
-		if e.Kind == "panic" {
-			found = true
-			if e.Stack == "" {
-				t.Fatalf("stack missing on panic event")
-			}
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("no panic telemetry stored")
-	}
 }

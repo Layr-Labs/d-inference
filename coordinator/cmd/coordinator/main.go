@@ -174,7 +174,7 @@ func main() {
 
 	// Coordinator self-telemetry emitter. Writes directly to the store so
 	// panics and handler errors are observable from the admin console.
-	telemetryEmitter := telemetry.NewEmitter(logger, st, srv.Metrics(), telemetry.CoordinatorVersion)
+	telemetryEmitter := telemetry.NewEmitter(logger, srv.Metrics(), telemetry.CoordinatorVersion)
 	srv.SetEmitter(telemetryEmitter)
 
 	// --- Datadog APM + DogStatsD + Logs API ---

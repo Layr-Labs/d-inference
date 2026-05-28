@@ -1,0 +1,38 @@
+flowchart TD
+    A["Inference request arrives<br/>model X currently loaded<br/>currentLoadedModelHash = X"] --> B["Compute prefix digests<br/>for prompt tokens"]
+    B --> C{"RAM tier hit?<br/>dict keyed by modelHash=X"}
+
+    C -->|"hit"| RAMOK["RAM entry is X-keyed<br/>→ structurally cannot be<br/>another model. Safe."]
+    RAMOK --> SEED["Seed BatchKVCache row<br/>skip prefill on matched prefix"]
+
+    C -->|"miss"| D["SSD tier: look in<br/>~/.cache/darkbloom/kv/&lt;hash(X)&gt;/"]
+    D --> E["readMetadataOnly(file)<br/>NO KEK, NO decrypt yet"]
+
+    E --> MB1{"MB-1 GUARD<br/>meta.modelHash == X ?"}
+    MB1 -->|"NO — wrong model"| REJ1["Remove index entry<br/>metric: model_mismatch<br/>→ cold prefill"]
+    MB1 -->|"yes"| SHAPE{"Shape guard<br/>numLayers / kvHeads / headDim<br/>match loaded model?"}
+
+    SHAPE -->|"NO — 12-char prefix collision"| REJ2["Remove index entry<br/>metric: shape_mismatch<br/>→ cold prefill"]
+    SHAPE -->|"yes"| DEC["NOW safe to unwrap DEK<br/>+ AES-256-GCM decrypt chunks"]
+
+    DEC --> AUTH{"GCM auth tag<br/>+ DEK unwrap OK?"}
+    AUTH -->|"NO — bytes tampered<br/>since write"| REJ3["Delete file<br/>→ cold prefill"]
+    AUTH -->|"yes"| SEED
+
+    subgraph CRYPTO ["What the AES-GCM layer DOES vs does NOT guarantee"]
+        direction TB
+        Y["✅ Tamper-evidence:<br/>metadata edited after write<br/>→ tag fails, read aborts"]
+        N["❌ NOT model-binding:<br/>AAD = file's OWN metadata,<br/>read back from disk.<br/>A valid file from model A<br/>decrypts cleanly under model B.<br/>Crypto cannot tell them apart."]
+    end
+
+    N -.->|"this gap is closed by"| MB1
+
+    classDef guard fill:#7c2d12,stroke:#fb923c,stroke-width:3px,color:#fff
+    classDef reject fill:#450a0a,stroke:#ef4444,color:#fff
+    classDef safe fill:#064e3b,stroke:#34d399,color:#fff
+    classDef crypto fill:#1e293b,stroke:#64748b,color:#e2e8f0
+
+    class MB1,SHAPE guard
+    class REJ1,REJ2,REJ3 reject
+    class RAMOK,SEED,DEC safe
+    class Y,N crypto

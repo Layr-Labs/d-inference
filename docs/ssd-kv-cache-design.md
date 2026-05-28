@@ -182,9 +182,27 @@ Offset  Size       Field                       Notes
 }
 ```
 
-`metadata` is used **verbatim as AAD** on every chunk seal. Tampering
-with any field fails authentication. `model_hash` binds the cache to
-a specific model file — reloading after a model upgrade fails closed.
+`metadata` is used **verbatim as AAD** on every chunk seal and on the
+DEK wrap.
+
+**What the AAD does and does NOT guarantee** (this distinction is
+load-bearing — see §8.1.1):
+
+- ✅ **Tamper-evidence.** Editing any metadata field *after* the file
+  was written breaks the GCM tag on the DEK unwrap and every chunk.
+  The read fails closed.
+- ❌ **NOT model-binding.** On read, the AAD is the metadata block
+  *read back from the same file* — it is self-describing, not checked
+  against the live model. A structurally valid cache file authored for
+  model A decrypts successfully even while model B is loaded. The
+  crypto layer cannot tell "wrong model" from "right model" because
+  both use the file's own metadata as AAD.
+
+Therefore `model_hash` in the metadata is necessary but **not
+sufficient** on its own. The "right model" guarantee is an
+*application-layer equality check* the reader must perform explicitly
+(§8.1.1). The crypto gives confidentiality + tamper-evidence; model
+correctness is enforced one layer up.
 
 ### 5.2 Chunked ciphertext
 
@@ -357,6 +375,82 @@ in `ProviderLoop.handleInferenceRequest`. The MLXArray buffers from
 `PrefixCacheRAM` are reference-counted; we use them directly in the
 batch row without copy.
 
+### 8.1.1 MANDATORY model-binding guard
+
+> See the read-path flowchart:
+> [`ssd-kv-cache-model-binding.svg`](ssd-kv-cache-model-binding.svg)
+> (source: [`ssd-kv-cache-model-binding.mmd`](ssd-kv-cache-model-binding.mmd)).
+> It shows where MB-1 sits — between metadata-read and decrypt — and why
+> the AES-GCM layer alone would let a wrong-model file through. Open the
+> SVG in a browser to see the flow animate; it renders statically when
+> embedded as an image.
+
+> **Invariant (MB-1):** before any cached KV tensors are seeded into a
+> batch row, `PrefixCacheManager` MUST verify
+> `loadedFile.metadata.modelHash == currentLoadedModelHash` and reject
+> on mismatch. The encrypted-store layer does **not** enforce this
+> (§5.1) — a valid file from the wrong model decrypts cleanly. Skipping
+> this check feeds another model's KV state into the current model and
+> silently produces garbage tokens with no error.
+
+Why the crypto doesn't cover it: AES-GCM authenticates the file
+against *its own* metadata (read back as AAD), proving the bytes
+weren't altered since write — not that they belong to the model now in
+memory. "Wrong model" and "right model" are indistinguishable to the
+cipher because both supply the file's embedded metadata as AAD.
+
+The check is cheap and happens before the DEK is even unwrapped — use
+`EncryptedKVStore.readMetadataOnly(from:)`, which parses the metadata
+without touching the KEK:
+
+```swift
+// In PrefixCacheManager.lookup, SSD tier:
+let meta = try EncryptedKVStore.readMetadataOnly(from: fileURL)
+
+// MB-1: reject cross-model files BEFORE unwrap/decrypt.
+guard meta.modelHash == currentLoadedModelHash else {
+    logger.warning("prefix cache file model mismatch — refusing",
+                   metadata: ["file": "\(meta.modelHash)",
+                              "loaded": "\(currentLoadedModelHash)"])
+    metrics.increment("prefix_cache.model_mismatch")
+    // Evict the misfiled entry from the index; fall through to cold prefill.
+    await index.remove(fileURL)
+    return nil
+}
+
+// Defense in depth: also assert architectural shape matches, in case
+// two distinct models ever truncate to the same 12-char dir prefix.
+guard meta.numLayers == model.numLayers,
+      meta.kvHeads   == model.kvHeads,
+      meta.headDim   == model.headDim else {
+    metrics.increment("prefix_cache.shape_mismatch")
+    await index.remove(fileURL)
+    return nil
+}
+
+// Only now is it safe to unwrap + decrypt.
+let (_, chunks) = try await EncryptedKVStore.read(from: fileURL, kek: kek)
+```
+
+The same equality check applies to the **RAM tier** — entries there are
+keyed by `modelHash` in the dictionary, so a lookup keyed by
+`currentLoadedModelHash` structurally cannot return another model's
+entry. The directory layout (`<model-hash>/…`) plays the same role for
+the SSD tier in the *common* case; MB-1 is the backstop for when a
+symlink, an index bug, or a 12-char hash-prefix collision defeats the
+path convention.
+
+**Tests (P3):**
+- `prefixCacheRejectsCrossModelFile` — write a file with model A's
+  `modelHash`, attempt lookup while model B is "loaded", assert the
+  result is `nil`, the index entry is removed, and `model_mismatch` is
+  counted. Must fail if the guard is removed.
+- `prefixCacheRejectsShapeMismatch` — same `modelHash` but mismatched
+  `numLayers`; assert rejection.
+- `prefixCacheModelBindingGuardRunsBeforeDecrypt` — supply a KEK that
+  would throw on unwrap; assert the model-mismatch path returns `nil`
+  *without* the KEK ever being consulted (proves ordering).
+
 ### 8.2 Write path (IdleMonitor + lifecycle)
 
 Three triggers:
@@ -427,6 +521,8 @@ re-measured during implementation. `[Q5]`
 | KEK unwrap fails (SE wiped, identity rotated) | Cache disabled. Index dropped. Old files deleted lazily (next eviction). |
 | DEK unwrap fails for a single file | That file deleted. Index entry removed. Continue with cold prefill. |
 | AES-GCM auth tag mismatch | Same — file deleted, log, continue. |
+| **Cross-model file (right hash dir, wrong model loaded)** | **Caught by the MB-1 guard (§8.1.1), not the crypto — decrypts cleanly otherwise.** Entry removed from index, `model_mismatch` counted, cold prefill. |
+| **Architectural-shape mismatch (12-char hash-prefix collision)** | Caught by the shape guard (§8.1.1). Entry removed, `shape_mismatch` counted, cold prefill. |
 | Disk full on write | Refuse to write. Existing entries untouched. Future eviction sweeps may reclaim. |
 | Index DB corrupt | Rebuild from filesystem scan (each file is self-describing). |
 | Process crash mid-write | Atomic-rename ensures partial files never appear in the index. Tmp file orphan cleaned on next startup. |
@@ -478,7 +574,7 @@ existing telemetry. See `docs/telemetry.md`.
 | **P0** | EncryptedKVStore (write + read roundtrip), KEK + DEK, no integration | Unit tests w/ fixed-byte fixtures; tamper tests; tag-mismatch tests |
 | **P1** | PrefixCacheRAM (LRU, no SSD) | Unit tests; correctness vs cold prefill |
 | **P2** | PrefixCacheIndex (SQLite, prefix-match tree) | Unit + small integration; concurrent insert/lookup |
-| **P3** | Integration into BatchScheduler.submitTokenized read path | Integration: run benchmark, observe TTFT drop |
+| **P3** | Integration into BatchScheduler.submitTokenized read path **+ MB-1 model-binding guard (§8.1.1)** | Integration: run benchmark, observe TTFT drop; **cross-model + shape-mismatch rejection tests that fail if the guard is removed** |
 | **P4** | Idle-unload + shutdown flush write paths | Process-restart roundtrip test |
 | **P5** | TTFT optimizations O4–O8 (mmap, parallel chunks, prewarm) | Microbenchmarks before/after each |
 | **P6** | Telemetry, disk budget enforcement, eviction | E2E test with budget exhaustion |

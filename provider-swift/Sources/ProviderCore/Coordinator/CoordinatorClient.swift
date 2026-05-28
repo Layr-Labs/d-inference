@@ -21,6 +21,8 @@ public enum CoordinatorEvent: Sendable {
     /// (off-thread) and reply with a `loadModelStatus` outbound message
     /// when the load completes or fails.
     case loadModel(modelId: String)
+    /// Coordinator informs the provider of its current trust level and status.
+    case trustStatus(trustLevel: String, status: String, reason: String)
 }
 
 // MARK: - Shared State
@@ -568,6 +570,14 @@ public actor CoordinatorClient {
         case .loadModel(let load):
             logger.info("Received coordinator-driven preload for: \(load.modelId)")
             eventContinuation?.yield(.loadModel(modelId: load.modelId))
+
+        case .trustStatus(let ts):
+            logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")
+            eventContinuation?.yield(.trustStatus(
+                trustLevel: ts.trustLevel,
+                status: ts.status,
+                reason: ts.reason
+            ))
         }
     }
 

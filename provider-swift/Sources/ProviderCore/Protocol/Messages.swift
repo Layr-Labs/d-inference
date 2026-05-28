@@ -461,6 +461,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case attestationChallenge(AttestationChallenge)
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
+    case trustStatus(TrustStatus)
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
@@ -505,6 +506,20 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var modelId: String
         public init(modelId: String) { self.modelId = modelId }
     }
+
+    /// Coordinator informs the provider of its current trust level and status.
+    /// Providers that learn they are "self_signed" or "untrusted" can
+    /// auto-report unified logs for troubleshooting.
+    public struct TrustStatus: Sendable, Equatable {
+        public var trustLevel: String
+        public var status: String
+        public var reason: String
+        public init(trustLevel: String, status: String, reason: String = "") {
+            self.trustLevel = trustLevel
+            self.status = status
+            self.reason = reason
+        }
+    }
 }
 
 // MARK: - CoordinatorMessage Codable
@@ -516,6 +531,7 @@ extension CoordinatorMessage: Codable {
         case attestationChallenge = "attestation_challenge"
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
+        case trustStatus = "trust_status"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -526,6 +542,8 @@ extension CoordinatorMessage: Codable {
         case nonce, timestamp
         case verified, mismatches
         case modelId = "model_id"
+        case trustLevel = "trust_level"
+        case status, reason
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -557,6 +575,14 @@ extension CoordinatorMessage: Codable {
         case .loadModel(let l):
             try container.encode(TypeValue.loadModel, forKey: .type)
             try container.encode(l.modelId, forKey: .modelId)
+
+        case .trustStatus(let t):
+            try container.encode(TypeValue.trustStatus, forKey: .type)
+            try container.encode(t.trustLevel, forKey: .trustLevel)
+            try container.encode(t.status, forKey: .status)
+            if !t.reason.isEmpty {
+                try container.encode(t.reason, forKey: .reason)
+            }
         }
     }
 
@@ -592,6 +618,13 @@ extension CoordinatorMessage: Codable {
         case .loadModel:
             self = .loadModel(LoadModel(
                 modelId: try container.decode(String.self, forKey: .modelId)
+            ))
+
+        case .trustStatus:
+            self = .trustStatus(TrustStatus(
+                trustLevel: try container.decode(String.self, forKey: .trustLevel),
+                status: try container.decode(String.self, forKey: .status),
+                reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
             ))
         }
     }

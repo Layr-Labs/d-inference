@@ -44,6 +44,7 @@ const (
 	TypeAttestationChallenge = "attestation_challenge"
 	TypeRuntimeStatus        = "runtime_status"
 	TypeLoadModel            = "load_model"
+	TypeTrustStatus          = "trust_status"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -350,6 +351,16 @@ type RuntimeMismatch struct {
 	Component string `json:"component"`
 	Expected  string `json:"expected"`
 	Got       string `json:"got"`
+}
+
+// TrustStatusMessage is sent by the coordinator to inform a provider of its
+// current trust level. Providers that learn they are "self_signed" or
+// "untrusted" can auto-report unified logs for troubleshooting.
+type TrustStatusMessage struct {
+	Type       string `json:"type"`
+	TrustLevel string `json:"trust_level"` // "none", "self_signed", "hardware"
+	Status     string `json:"status"`      // "online", "untrusted", etc.
+	Reason     string `json:"reason,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

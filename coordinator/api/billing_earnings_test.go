@@ -23,15 +23,7 @@ type accountEarningsResponse struct {
 	AvailableBalanceUSD      string                  `json:"available_balance_usd"`
 }
 
-type nodeEarningsResponse struct {
-	ProviderKey   string                  `json:"provider_key"`
-	Earnings      []store.ProviderEarning `json:"earnings"`
-	TotalMicroUSD int64                   `json:"total_micro_usd"`
-	TotalUSD      string                  `json:"total_usd"`
-	Count         int64                   `json:"count"`
-	RecentCount   int                     `json:"recent_count"`
-	HistoryLimit  int                     `json:"history_limit"`
-}
+
 
 func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	srv, st := testWithdrawServer(t)

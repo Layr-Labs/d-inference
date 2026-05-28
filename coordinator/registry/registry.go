@@ -1435,6 +1435,22 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return 0, false
 	}
+
+	// Memory gate: reject providers that cannot physically load the model.
+	// The provider applies a 3x multiplier on model weight size when deciding
+	// whether to load (ensureModelLoaded uses estimatedMemoryGb * 3.0 for
+	// headroom). Use the catalog SizeGB * 2.5 as the coordinator-side gate
+	// (slightly less conservative since the provider will reject anyway if
+	// it truly doesn't fit). This prevents the coordinator from sending
+	// load_model commands to machines that will always OOM-reject them.
+	if entry, ok := r.modelCatalog[model]; ok && entry.SizeGB > 0 {
+		requiredGB := entry.SizeGB * 2.5
+		providerMemGB := float64(p.Hardware.MemoryGB)
+		if providerMemGB > 0 && requiredGB > providerMemGB {
+			return 0, false
+		}
+	}
+
 	return p.pendingCount(), true
 }
 

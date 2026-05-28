@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,9 +47,13 @@ type Client struct {
 	apiKey  string
 	client  *http.Client
 	logger  *slog.Logger
-	// Webhook responses arrive asynchronously.
-	responses       chan *SecurityInfoResponse
-	attestResponses chan *DeviceAttestationResponse
+	// Per-UDID one-shot channels for webhook response dispatch.
+	// A goroutine calling WaitForSecurityInfo or WaitForDeviceAttestation
+	// registers a channel here; HandleWebhook delivers to it or drops if
+	// nobody is waiting — no shared buffer, no saturation, no busy-spin.
+	waitMu         sync.Mutex
+	secInfoWaiters map[string]chan *SecurityInfoResponse
+	attestWaiters  map[string]chan *DeviceAttestationResponse
 	// Callback for MDA certs that arrive after the initial wait times out.
 	onMDA OnMDACallback
 }
@@ -66,12 +71,12 @@ func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 		}
 	}
 	return &Client{
-		baseURL:         baseURL,
-		apiKey:          apiKey,
-		client:          httpClient,
-		logger:          logger,
-		responses:       make(chan *SecurityInfoResponse, 16),
-		attestResponses: make(chan *DeviceAttestationResponse, 16),
+		baseURL:        baseURL,
+		apiKey:         apiKey,
+		client:         httpClient,
+		logger:         logger,
+		secInfoWaiters: make(map[string]chan *SecurityInfoResponse),
+		attestWaiters:  make(map[string]chan *DeviceAttestationResponse),
 	}
 }
 
@@ -266,20 +271,23 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 
 // WaitForDeviceAttestation waits for a DevicePropertiesAttestation response.
 func (c *Client) WaitForDeviceAttestation(udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
-	deadline := time.After(timeout)
-	for {
-		select {
-		case resp := <-c.attestResponses:
-			if resp.UDID == udid {
-				return resp, nil
-			}
-			select {
-			case c.attestResponses <- resp:
-			default:
-			}
-		case <-deadline:
-			return nil, fmt.Errorf("timeout waiting for DevicePropertiesAttestation from %s", udid)
-		}
+	ch := make(chan *DeviceAttestationResponse, 1)
+
+	c.waitMu.Lock()
+	c.attestWaiters[udid] = ch
+	c.waitMu.Unlock()
+
+	defer func() {
+		c.waitMu.Lock()
+		delete(c.attestWaiters, udid)
+		c.waitMu.Unlock()
+	}()
+
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("timeout waiting for DevicePropertiesAttestation from %s", udid)
 	}
 }
 
@@ -338,10 +346,16 @@ func (c *Client) HandleWebhook(body []byte) {
 			"secure_boot", secInfo.SecureBootLevel,
 			"auth_root_volume", secInfo.AuthenticatedRootVolumeEnabled,
 		)
-		select {
-		case c.responses <- secInfo:
-		default:
-			c.logger.Warn("mdm response channel full, dropping")
+		c.waitMu.Lock()
+		ch, waiting := c.secInfoWaiters[secInfo.UDID]
+		if waiting {
+			delete(c.secInfoWaiters, secInfo.UDID)
+		}
+		c.waitMu.Unlock()
+		if waiting {
+			ch <- secInfo
+		} else {
+			c.logger.Debug("mdm SecurityInfo dropped (no waiter)", "udid", secInfo.UDID)
 		}
 	}
 
@@ -356,36 +370,41 @@ func (c *Client) HandleWebhook(body []byte) {
 			"udid", resp.UDID,
 			"cert_count", len(resp.CertChain),
 		)
-		select {
-		case c.attestResponses <- resp:
-		default:
-			// Channel full or nobody waiting — use callback instead
-			if c.onMDA != nil {
-				c.onMDA(resp.UDID, resp.CertChain)
-			} else {
-				c.logger.Warn("mdm attestation response dropped (no waiter, no callback)")
-			}
+		c.waitMu.Lock()
+		ch, waiting := c.attestWaiters[resp.UDID]
+		if waiting {
+			delete(c.attestWaiters, resp.UDID)
+		}
+		c.waitMu.Unlock()
+		if waiting {
+			ch <- resp
+		} else if c.onMDA != nil {
+			c.onMDA(resp.UDID, resp.CertChain)
+		} else {
+			c.logger.Debug("mdm attestation response dropped (no waiter, no callback)", "udid", resp.UDID)
 		}
 	}
 }
 
 // WaitForSecurityInfo waits for a SecurityInfo response for the given UDID.
 func (c *Client) WaitForSecurityInfo(udid string, timeout time.Duration) (*SecurityInfoResponse, error) {
-	deadline := time.After(timeout)
-	for {
-		select {
-		case resp := <-c.responses:
-			if resp.UDID == udid {
-				return resp, nil
-			}
-			// Put it back for other waiters
-			select {
-			case c.responses <- resp:
-			default:
-			}
-		case <-deadline:
-			return nil, fmt.Errorf("timeout waiting for SecurityInfo from %s", udid)
-		}
+	ch := make(chan *SecurityInfoResponse, 1)
+
+	c.waitMu.Lock()
+	c.secInfoWaiters[udid] = ch
+	c.waitMu.Unlock()
+
+	defer func() {
+		c.waitMu.Lock()
+		delete(c.secInfoWaiters, udid)
+		c.waitMu.Unlock()
+	}()
+
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("timeout waiting for SecurityInfo from %s", udid)
 	}
 }
 

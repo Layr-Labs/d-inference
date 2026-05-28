@@ -275,6 +275,8 @@ func computeFeatures(providerID string, rows []store.SessionRow, since, now time
 		pStays8h = float64(stays8h) / float64(len(rows))
 	}
 
+	score := computeLivenessScore(uptimePct, pStays4h, pStays8h, mtbfSecs, lastDisconnect, now)
+
 	return store.ReliabilityFeatures{
 		ProviderID:                 providerID,
 		WindowDays:                 windowDays,
@@ -290,7 +292,73 @@ func computeFeatures(providerID string, rows []store.SessionRow, since, now time
 		PStays8h:                   pStays8h,
 		LastDisconnectAt:           lastDisconnect,
 		LastSessionDurationSeconds: lastClosedDur,
+		LivenessScore:              score,
 	}
+}
+
+// Liveness-score weights. Tuned for "is this provider suitable for a
+// long-running job?" — uptime dominates, but session stickiness (PStays4h)
+// gets meaningful weight and MTBF rewards providers with infrequent failures.
+// The positive weights sum to 1.0 so a perfectly reliable, non-recent-disconnect
+// provider scores 1.0; recency is a [0, recencyWeight] subtractive penalty.
+const (
+	scoreWeightUptime  = 0.35
+	scoreWeightStays4h = 0.25
+	scoreWeightStays8h = 0.15
+	scoreWeightMTBF    = 0.25
+	scoreWeightRecency = 0.10
+
+	// Sigmoid parameters for MTBF: target 4h, scale 1h.
+	// sigmoid((mtbf - target) / scale) — at 4h: 0.5, at 5h: ~0.73, at 8h: ~0.98.
+	scoreMTBFTargetSec = 4 * 3600
+	scoreMTBFScaleSec  = 3600
+
+	// Recency penalty decays linearly from 1.0 at t=0 to 0 at 24h.
+	scoreRecencyWindowSec = 24 * 3600
+)
+
+// computeLivenessScore collapses the per-provider reliability features into a
+// single number in [0, 1]. Higher = more reliable for long-running jobs.
+// Formula (see scoreWeight* constants above):
+//
+//	score = 0.35·uptime + 0.25·p_stays_4h + 0.15·p_stays_8h
+//	      + 0.25·sigmoid((mtbf - 4h) / 1h)
+//	      - 0.10·recency_penalty(last_disconnect)
+//
+// All inputs are pre-clamped to their natural ranges by callers, so the
+// output here is guaranteed in [-0.10, 1.00]. We clamp to [0, 1] at the end
+// to keep the public contract clean.
+func computeLivenessScore(uptimePct, pStays4h, pStays8h float64, mtbfSecs int64, lastDisconnect, now time.Time) float64 {
+	mtbfTerm := sigmoid(float64(mtbfSecs-int64(scoreMTBFTargetSec)) / float64(scoreMTBFScaleSec))
+
+	var recencyPenalty float64
+	if !lastDisconnect.IsZero() {
+		ageSec := now.Sub(lastDisconnect).Seconds()
+		if ageSec < 0 {
+			ageSec = 0
+		}
+		if ageSec < scoreRecencyWindowSec {
+			recencyPenalty = 1 - ageSec/float64(scoreRecencyWindowSec)
+		}
+	}
+
+	score := scoreWeightUptime*uptimePct +
+		scoreWeightStays4h*pStays4h +
+		scoreWeightStays8h*pStays8h +
+		scoreWeightMTBF*mtbfTerm -
+		scoreWeightRecency*recencyPenalty
+
+	if score < 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
+}
+
+func sigmoid(x float64) float64 {
+	return 1.0 / (1.0 + math.Exp(-x))
 }
 
 func percentile(sorted []int64, p float64) int64 {

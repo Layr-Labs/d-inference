@@ -693,6 +693,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			last_disconnect_at TIMESTAMPTZ,
 			last_session_duration_seconds BIGINT NOT NULL DEFAULT 0
 		)`,
+		// Additive: scalar liveness score derived from the features above.
+		// ALTER TABLE … ADD COLUMN IF NOT EXISTS is safe to re-run.
+		`ALTER TABLE provider_reliability_features
+		   ADD COLUMN IF NOT EXISTS liveness_score REAL NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_reliability_features_score
+		   ON provider_reliability_features(liveness_score DESC)`,
 	}
 
 	for _, m := range migrations {
@@ -3575,8 +3581,8 @@ func (s *PostgresStore) UpsertReliabilityFeatures(ctx context.Context, row Relia
 		   provider_id, updated_at, window_days, uptime_pct, sessions_count,
 		   mtbf_seconds, median_session_seconds, p10_session_seconds, p90_session_seconds,
 		   hourly_availability, disconnect_reasons, p_stays_4h, p_stays_8h,
-		   last_disconnect_at, last_session_duration_seconds
-		 ) VALUES ($1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		   last_disconnect_at, last_session_duration_seconds, liveness_score
+		 ) VALUES ($1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 ON CONFLICT (provider_id) DO UPDATE SET
 		   updated_at = NOW(),
 		   window_days = EXCLUDED.window_days,
@@ -3591,11 +3597,13 @@ func (s *PostgresStore) UpsertReliabilityFeatures(ctx context.Context, row Relia
 		   p_stays_4h = EXCLUDED.p_stays_4h,
 		   p_stays_8h = EXCLUDED.p_stays_8h,
 		   last_disconnect_at = EXCLUDED.last_disconnect_at,
-		   last_session_duration_seconds = EXCLUDED.last_session_duration_seconds`,
+		   last_session_duration_seconds = EXCLUDED.last_session_duration_seconds,
+		   liveness_score = EXCLUDED.liveness_score`,
 		row.ProviderID, row.WindowDays, row.UptimePct, row.SessionsCount,
 		row.MTBFSeconds, row.MedianSessionSeconds, row.P10SessionSeconds, row.P90SessionSeconds,
 		[]byte(row.HourlyAvailability), []byte(row.DisconnectReasons),
 		row.PStays4h, row.PStays8h, lastDisc, row.LastSessionDurationSeconds,
+		row.LivenessScore,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert reliability features: %w", err)
@@ -3617,14 +3625,14 @@ func (s *PostgresStore) GetReliabilityFeatures(ctx context.Context, providerID s
 		`SELECT provider_id, updated_at, window_days, uptime_pct, sessions_count,
 		        mtbf_seconds, median_session_seconds, p10_session_seconds, p90_session_seconds,
 		        hourly_availability, disconnect_reasons, p_stays_4h, p_stays_8h,
-		        last_disconnect_at, last_session_duration_seconds
+		        last_disconnect_at, last_session_duration_seconds, liveness_score
 		   FROM provider_reliability_features WHERE provider_id = $1`,
 		providerID,
 	).Scan(
 		&row.ProviderID, &row.UpdatedAt, &row.WindowDays, &row.UptimePct, &row.SessionsCount,
 		&row.MTBFSeconds, &row.MedianSessionSeconds, &row.P10SessionSeconds, &row.P90SessionSeconds,
 		&hourly, &reasons, &row.PStays4h, &row.PStays8h,
-		&lastDisc, &row.LastSessionDurationSeconds,
+		&lastDisc, &row.LastSessionDurationSeconds, &row.LivenessScore,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -3649,16 +3657,24 @@ func (s *PostgresStore) ListReliabilityFeatures(ctx context.Context, filter Reli
 		limit = 100
 	}
 
+	// MaxScore == 0 means "unbounded" — treat it as 1.0 (the score's natural
+	// upper bound) so callers don't have to pass it.
+	maxScore := filter.MaxScore
+	if maxScore <= 0 {
+		maxScore = 1
+	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT provider_id, updated_at, window_days, uptime_pct, sessions_count,
 		        mtbf_seconds, median_session_seconds, p10_session_seconds, p90_session_seconds,
 		        hourly_availability, disconnect_reasons, p_stays_4h, p_stays_8h,
-		        last_disconnect_at, last_session_duration_seconds
+		        last_disconnect_at, last_session_duration_seconds, liveness_score
 		   FROM provider_reliability_features
 		  WHERE uptime_pct >= $1 AND p_stays_4h >= $2 AND p_stays_8h >= $3
-		  ORDER BY uptime_pct DESC, provider_id ASC
-		  LIMIT $4`,
-		filter.MinUptimePct, filter.MinPStays4h, filter.MinPStays8h, limit,
+		    AND liveness_score >= $4 AND liveness_score <= $5
+		  ORDER BY liveness_score DESC, uptime_pct DESC, provider_id ASC
+		  LIMIT $6`,
+		filter.MinUptimePct, filter.MinPStays4h, filter.MinPStays8h,
+		filter.MinScore, maxScore, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list reliability features: %w", err)
@@ -3677,7 +3693,7 @@ func (s *PostgresStore) ListReliabilityFeatures(ctx context.Context, filter Reli
 			&row.ProviderID, &row.UpdatedAt, &row.WindowDays, &row.UptimePct, &row.SessionsCount,
 			&row.MTBFSeconds, &row.MedianSessionSeconds, &row.P10SessionSeconds, &row.P90SessionSeconds,
 			&hourly, &reasons, &row.PStays4h, &row.PStays8h,
-			&lastDisc, &row.LastSessionDurationSeconds,
+			&lastDisc, &row.LastSessionDurationSeconds, &row.LivenessScore,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan reliability features: %w", err)
 		}

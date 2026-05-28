@@ -1052,13 +1052,23 @@ type ReliabilityFeatures struct {
 	PStays8h                   float64         `json:"p_stays_8h"`
 	LastDisconnectAt           time.Time       `json:"last_disconnect_at,omitempty"`
 	LastSessionDurationSeconds int64           `json:"last_session_duration_seconds"`
+
+	// LivenessScore is a scalar collapse of the features above into [0, 1].
+	// Computed by coordinator/liveness/features.go and persisted with the
+	// rest of the row so consumers don't have to recompute or know the
+	// formula. Higher = more reliable for long-running jobs.
+	LivenessScore float64 `json:"liveness_score"`
 }
 
 // ReliabilityFilter narrows the providers returned from
-// ListReliabilityFeatures. Zero values mean "no filter on that field".
+// ListReliabilityFeatures. Zero values mean "no filter on that field" —
+// except MaxScore, where 0 means "no upper bound" (we treat MaxScore == 0
+// as unbounded so the caller doesn't have to pass 1.0 to mean "any").
 type ReliabilityFilter struct {
 	MinUptimePct float64
 	MinPStays4h  float64
 	MinPStays8h  float64
+	MinScore     float64
+	MaxScore     float64 // 0 means unbounded
 	Limit        int
 }

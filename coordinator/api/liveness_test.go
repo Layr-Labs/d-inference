@@ -198,6 +198,67 @@ func TestLivenessProviderReliability(t *testing.T) {
 	}
 }
 
+// seedReliabilityWithScore seeds a row with explicit liveness_score so the
+// score filter + ordering can be exercised directly.
+func seedReliabilityWithScore(t *testing.T, st store.Store, providerID string, score float64) {
+	t.Helper()
+	if err := st.UpsertReliabilityFeatures(context.Background(), store.ReliabilityFeatures{
+		ProviderID:    providerID,
+		UpdatedAt:     time.Now(),
+		WindowDays:    14,
+		UptimePct:     0.9,
+		SessionsCount: 10,
+		PStays4h:      0.5,
+		PStays8h:      0.3,
+		LivenessScore: score,
+	}); err != nil {
+		t.Fatalf("UpsertReliabilityFeatures: %v", err)
+	}
+}
+
+func TestLivenessReliabilityFiltersByScoreAndOrdersDesc(t *testing.T) {
+	srv, ts := livenessTestServer(t)
+	// Seed three providers with distinct scores. Bar = 0.5 → only top two
+	// pass; the list should come back ordered score-DESC.
+	seedReliabilityWithScore(t, srv.store, "high", 0.92)
+	seedReliabilityWithScore(t, srv.store, "mid", 0.55)
+	seedReliabilityWithScore(t, srv.store, "low", 0.10)
+
+	code, body := adminGET(t, ts, "/v1/providers/reliability?min_score=0.5&limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d body=%s", code, body)
+	}
+	var resp struct {
+		MinScore float64                     `json:"min_score"`
+		Entries  []store.ReliabilityFeatures `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	if resp.MinScore != 0.5 {
+		t.Fatalf("echo min_score: want 0.5, got %v", resp.MinScore)
+	}
+	if len(resp.Entries) != 2 {
+		t.Fatalf("score filter broken: want 2 entries, got %d (%+v)", len(resp.Entries), resp.Entries)
+	}
+	if resp.Entries[0].ProviderID != "high" || resp.Entries[1].ProviderID != "mid" {
+		t.Fatalf("score ordering broken: want [high, mid], got [%s, %s]",
+			resp.Entries[0].ProviderID, resp.Entries[1].ProviderID)
+	}
+
+	// Upper bound: max_score=0.6 should now exclude "high" (0.92).
+	code, body = adminGET(t, ts, "/v1/providers/reliability?min_score=0.5&max_score=0.6&limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("status (with max_score): want 200, got %d body=%s", code, body)
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	if len(resp.Entries) != 1 || resp.Entries[0].ProviderID != "mid" {
+		t.Fatalf("max_score filter broken: want [mid] only, got %+v", resp.Entries)
+	}
+}
+
 func TestLivenessNetworkAvailability(t *testing.T) {
 	srv, ts := livenessTestServer(t)
 	seedReliability(t, srv.store, "p1", 0.99, 50)

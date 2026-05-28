@@ -2678,6 +2678,10 @@ func (s *MemoryStore) ListReliabilityFeatures(_ context.Context, filter Reliabil
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	maxScore := filter.MaxScore
+	if maxScore <= 0 {
+		maxScore = 1
+	}
 
 	out := make([]ReliabilityFeatures, 0, len(s.reliability))
 	for _, r := range s.reliability {
@@ -2690,9 +2694,15 @@ func (s *MemoryStore) ListReliabilityFeatures(_ context.Context, filter Reliabil
 		if r.PStays8h < filter.MinPStays8h {
 			continue
 		}
+		if r.LivenessScore < filter.MinScore || r.LivenessScore > maxScore {
+			continue
+		}
 		out = append(out, *r)
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].LivenessScore != out[j].LivenessScore {
+			return out[i].LivenessScore > out[j].LivenessScore
+		}
 		if out[i].UptimePct != out[j].UptimePct {
 			return out[i].UptimePct > out[j].UptimePct
 		}

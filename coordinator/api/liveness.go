@@ -147,8 +147,8 @@ func (s *Server) handleProviderHeartbeats(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// handleProviderReliability — GET /v1/providers/reliability?min_uptime=0.9&limit=50
-// Shortlist of providers meeting a reliability bar.
+// handleProviderReliability — GET /v1/providers/reliability?min_uptime=0.9&min_score=0.8&max_score=1&limit=50
+// Shortlist of providers meeting a reliability bar, ordered by liveness_score DESC.
 func (s *Server) handleProviderReliability(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdminKey(w, r) {
 		return
@@ -158,6 +158,8 @@ func (s *Server) handleProviderReliability(w http.ResponseWriter, r *http.Reques
 		MinUptimePct: parseUnitFloat(q.Get("min_uptime")),
 		MinPStays4h:  parseUnitFloat(q.Get("min_stays_4h")),
 		MinPStays8h:  parseUnitFloat(q.Get("min_stays_8h")),
+		MinScore:     parseUnitFloat(q.Get("min_score")),
+		MaxScore:     parseUnitFloat(q.Get("max_score")),
 		Limit:        parseLivenessLimit(q.Get("limit")),
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -173,6 +175,8 @@ func (s *Server) handleProviderReliability(w http.ResponseWriter, r *http.Reques
 		"min_uptime":   filter.MinUptimePct,
 		"min_stays_4h": filter.MinPStays4h,
 		"min_stays_8h": filter.MinPStays8h,
+		"min_score":    filter.MinScore,
+		"max_score":    filter.MaxScore,
 		"entries":      rows,
 	})
 }

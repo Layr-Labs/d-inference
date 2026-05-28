@@ -1,0 +1,247 @@
+/// PrefixCacheRAM — the in-process, decrypted RAM tier of the SSD KV
+/// cache (design doc §4.1, phase P1).
+///
+/// Holds recently-used prefix KV snapshots as live `[any KVCache]`
+/// (one cache per transformer layer, already extracted to single-row
+/// / single-stream form via `BatchedCache.extractBatched(row)`). A
+/// repeat request whose prompt prefix is byte-identical to a cached
+/// checkpoint hits RAM (~ms) instead of decrypting from SSD or running
+/// a cold prefill.
+///
+/// Scope of P1: RAM only — no SSD, no encryption, no BatchScheduler
+/// wiring. Those are later phases. This type is a plain `final class`
+/// (NOT `Sendable`: it stores non-Sendable MLXArrays). It is meant to
+/// be owned and serialized by the `PrefixCacheManager` actor in P3;
+/// the unit tests exercise it single-threaded.
+///
+/// MODEL BINDING (MB-1): entries are keyed by `(modelHash,
+/// prefixDigest)`. A lookup for model B structurally cannot return
+/// model A's entry — the RAM-tier half of the model-binding guarantee
+/// (the SSD tier adds the metadata equality check in §8.1.1).
+///
+/// SNAPSHOT INTEGRITY: `get` returns `copy()` of each stored cache, so
+/// the caller may mutate the returned caches (seed a batch row, decode)
+/// without corrupting the stored snapshot. `put` takes ownership of the
+/// caches it is given — the caller must not mutate them afterward.
+/// Regression-guarded by `getReturnsIndependentCopy`.
+///
+/// EVICTION: LRU by a monotonic use-counter (not wall-clock — keeps the
+/// type deterministic and avoids `Date.now()`). Bounded by both an
+/// entry count and a byte budget; `put` evicts least-recently-used
+/// entries until both are satisfied.
+
+import Foundation
+import MLX
+import MLXLMCommon
+import os
+
+private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "prefix-cache-ram")
+
+// MARK: - Key
+
+/// Composite cache key. `modelHash` is the locally-computed weight
+/// hash (never the coordinator's); `digest` is the SHA-256 of the
+/// token-ID prefix at the checkpoint boundary.
+public struct PrefixCacheKey: Hashable, Sendable {
+    public let modelHash: String
+    public let digest: Data
+
+    public init(modelHash: String, digest: Data) {
+        self.modelHash = modelHash
+        self.digest = digest
+    }
+}
+
+// MARK: - Hit
+
+/// Result of a successful lookup. `caches` are independent copies the
+/// caller owns; `tokenCount` is how many prompt tokens this snapshot
+/// covers (the consumer skips prefill on `tokens[0..<tokenCount]`).
+public struct PrefixCacheHit {
+    public let caches: [any KVCache]
+    public let tokenCount: Int
+}
+
+// MARK: - Stats
+
+public struct PrefixCacheRAMStats: Sendable, Equatable {
+    public var entries: Int = 0
+    public var bytes: Int = 0
+    public var hits: Int = 0
+    public var misses: Int = 0
+    public var evictions: Int = 0
+    public var inserts: Int = 0
+}
+
+// MARK: - PrefixCacheRAM
+
+public final class PrefixCacheRAM {
+
+    // MARK: Entry
+
+    private final class Entry {
+        let key: PrefixCacheKey
+        let caches: [any KVCache]
+        let tokenCount: Int
+        let bytes: Int
+        var lastUsedTick: UInt64
+
+        init(
+            key: PrefixCacheKey, caches: [any KVCache], tokenCount: Int,
+            bytes: Int, tick: UInt64
+        ) {
+            self.key = key
+            self.caches = caches
+            self.tokenCount = tokenCount
+            self.bytes = bytes
+            self.lastUsedTick = tick
+        }
+    }
+
+    // MARK: Config
+
+    /// Maximum number of cached prefixes. `0` disables the count bound.
+    public let maxEntries: Int
+    /// Maximum total decrypted bytes held. `0` disables the byte bound.
+    public let maxBytes: Int
+
+    // MARK: State
+
+    private var entries: [PrefixCacheKey: Entry] = [:]
+    private var tick: UInt64 = 0
+    private var currentBytes: Int = 0
+    private var stats = PrefixCacheRAMStats()
+
+    public init(maxEntries: Int = 64, maxBytes: Int = 8 * 1024 * 1024 * 1024) {
+        self.maxEntries = maxEntries
+        self.maxBytes = maxBytes
+    }
+
+    // MARK: - Lookup
+
+    /// Look up a prefix. On hit, returns independent copies of the
+    /// cached caches (caller may freely mutate them) and bumps the
+    /// entry's recency. On miss, returns nil.
+    public func get(_ key: PrefixCacheKey) -> PrefixCacheHit? {
+        guard let entry = entries[key] else {
+            stats.misses += 1
+            return nil
+        }
+        tick &+= 1
+        entry.lastUsedTick = tick
+        stats.hits += 1
+        let copies = entry.caches.map { $0.copy() }
+        return PrefixCacheHit(caches: copies, tokenCount: entry.tokenCount)
+    }
+
+    /// Convenience overload keyed by raw fields.
+    public func get(modelHash: String, digest: Data) -> PrefixCacheHit? {
+        get(PrefixCacheKey(modelHash: modelHash, digest: digest))
+    }
+
+    // MARK: - Insert
+
+    /// Insert (or replace) a prefix snapshot. Takes ownership of
+    /// `caches` — the caller must not mutate them after this call. The
+    /// stored byte size is measured from the caches' `state` arrays.
+    /// Evicts LRU entries if either budget is exceeded.
+    public func put(_ key: PrefixCacheKey, caches: [any KVCache], tokenCount: Int) {
+        let bytes = Self.byteSize(of: caches)
+
+        // Replace any existing entry for this key (drop its bytes first).
+        if let old = entries[key] {
+            currentBytes -= old.bytes
+        }
+
+        tick &+= 1
+        let entry = Entry(
+            key: key, caches: caches, tokenCount: tokenCount,
+            bytes: bytes, tick: tick
+        )
+        entries[key] = entry
+        currentBytes += bytes
+        stats.inserts += 1
+
+        evictToBudget()
+    }
+
+    /// Convenience overload keyed by raw fields.
+    public func put(modelHash: String, digest: Data, caches: [any KVCache], tokenCount: Int) {
+        put(PrefixCacheKey(modelHash: modelHash, digest: digest), caches: caches, tokenCount: tokenCount)
+    }
+
+    // MARK: - Clear
+
+    /// Drop every entry for a given model (e.g. on model unload, before
+    /// flushing to SSD). Returns the number of entries removed.
+    @discardableResult
+    public func clear(modelHash: String) -> Int {
+        let toRemove = entries.keys.filter { $0.modelHash == modelHash }
+        for k in toRemove { removeEntry(k) }
+        return toRemove.count
+    }
+
+    /// Drop all entries.
+    public func clearAll() {
+        entries.removeAll()
+        currentBytes = 0
+    }
+
+    /// Snapshot every entry for a model as `(key, caches, tokenCount)`
+    /// without removing them — used by the P4 flush path to serialize
+    /// the RAM tier to SSD. Returns copies so the flush can encrypt
+    /// without racing a concurrent mutation.
+    public func entriesForFlush(modelHash: String) -> [(key: PrefixCacheKey, caches: [any KVCache], tokenCount: Int)] {
+        entries.values
+            .filter { $0.key.modelHash == modelHash }
+            .map { ($0.key, $0.caches.map { c in c.copy() }, $0.tokenCount) }
+    }
+
+    // MARK: - Introspection
+
+    public func contains(_ key: PrefixCacheKey) -> Bool { entries[key] != nil }
+    public var count: Int { entries.count }
+    public var byteSize: Int { currentBytes }
+    public func snapshotStats() -> PrefixCacheRAMStats {
+        var s = stats
+        s.entries = entries.count
+        s.bytes = currentBytes
+        return s
+    }
+
+    // MARK: - Eviction
+
+    private func evictToBudget() {
+        // Evict least-recently-used until BOTH bounds are satisfied.
+        while overBudget(), let victim = lruKey() {
+            removeEntry(victim)
+            stats.evictions += 1
+            logger.debug("evicted prefix cache entry; entries=\(self.entries.count) bytes=\(self.currentBytes)")
+        }
+    }
+
+    private func overBudget() -> Bool {
+        if maxEntries > 0 && entries.count > maxEntries { return true }
+        if maxBytes > 0 && currentBytes > maxBytes { return true }
+        return false
+    }
+
+    private func lruKey() -> PrefixCacheKey? {
+        // Small N (tens of entries); linear scan for the min tick is fine.
+        entries.min(by: { $0.value.lastUsedTick < $1.value.lastUsedTick })?.key
+    }
+
+    private func removeEntry(_ key: PrefixCacheKey) {
+        if let e = entries.removeValue(forKey: key) {
+            currentBytes -= e.bytes
+        }
+    }
+
+    // MARK: - Byte accounting
+
+    static func byteSize(of caches: [any KVCache]) -> Int {
+        caches.reduce(0) { acc, cache in
+            acc + cache.state.reduce(0) { $0 + $1.nbytes }
+        }
+    }
+}

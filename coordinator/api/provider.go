@@ -402,6 +402,7 @@ func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, 
 	}
 
 	provider.SetAttested(true, registry.TrustHardware)
+	s.sendTrustStatus(provider, registry.TrustHardware, "online", "ACME device attestation verified")
 	s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
 		"provider_id", providerID,
 		"acme_serial", acmeResult.SerialNumber,
@@ -930,6 +931,22 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			"weight_hash", hash,
 		)
 	}
+
+	// Re-attempt MDM verification for self_signed providers. This handles
+	// providers that installed the MDM enrollment profile after their initial
+	// registration — they would otherwise stay at self_signed trust forever
+	// since verifyProviderViaMDM only ran once at registration time.
+	provider.Mu().Lock()
+	trustLevel := provider.TrustLevel
+	attestResult := provider.AttestationResult
+	provider.Mu().Unlock()
+
+	if trustLevel == registry.TrustSelfSigned && s.mdmClient != nil && attestResult != nil {
+		result := *attestResult
+		saferun.Go(s.logger, "retryMDMVerification", func() {
+			s.verifyProviderViaMDM(providerID, provider, result)
+		})
+	}
 }
 
 // handleChallengeFailure records a failed challenge and marks the provider
@@ -948,6 +965,9 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) {
 	if failures >= registry.MaxFailedChallenges {
 		severity = protocol.SeverityError
 		s.registry.MarkUntrusted(providerID)
+		if p := s.registry.GetProvider(providerID); p != nil {
+			s.sendTrustStatus(p, p.TrustLevel, string(registry.StatusUntrusted), reason)
+		}
 	}
 	s.emit(context.Background(), severity, protocol.KindAttestationFailure,
 		"attestation challenge failed",
@@ -1443,6 +1463,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	}
 
 	provider.SetAttested(true, registry.TrustSelfSigned)
+	s.sendTrustStatus(provider, registry.TrustSelfSigned, "online", "SE attestation verified, awaiting MDM/ACME upgrade")
 
 	// The SE attestation already proves SIP, Secure Boot, and binary hash —
 	// the same checks a challenge re-verifies. Set LastChallengeVerified so
@@ -1559,6 +1580,7 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 
 	// MDM SecurityInfo verification passed — upgrade to hardware trust.
 	provider.SetAttested(true, registry.TrustHardware)
+	s.sendTrustStatus(provider, registry.TrustHardware, "online", "MDM verification passed")
 	s.logger.Info("MDM verification passed — upgraded to hardware trust",
 		"provider_id", providerID,
 		"serial_number", attestResult.SerialNumber,
@@ -1810,4 +1832,27 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			"If verification passes, Apple has confirmed this is a real Apple device with the attested properties.",
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// sendTrustStatus sends the provider its current trust level and status over
+// the WebSocket connection. This allows the provider to react — e.g. by
+// auto-reporting unified logs when it learns it is self_signed or untrusted.
+func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registry.TrustLevel, status string, reason string) {
+	conn := provider.Conn
+	if conn == nil {
+		return
+	}
+	msg := protocol.TrustStatusMessage{
+		Type:       protocol.TypeTrustStatus,
+		TrustLevel: string(trustLevel),
+		Status:     status,
+		Reason:     reason,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = conn.Write(ctx, websocket.MessageText, data)
 }

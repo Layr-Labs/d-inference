@@ -1,0 +1,101 @@
+/// PrefixDigest — exact-checkpoint keys for the prefix KV cache.
+///
+/// A "checkpoint" is a fixed prefix length (256, 512, 1024, … by
+/// default — design O9). For a prompt's token-ID array we compute the
+/// SHA-256 of the first `c` tokens at each checkpoint `c ≤ count`. Two
+/// requests sharing a system prompt produce identical digests at every
+/// checkpoint that lands within the shared region, so an exact-
+/// checkpoint lookup (design §4.4) can find the longest cached prefix
+/// without a full longest-common-prefix scan.
+///
+/// The digests at successive checkpoints are genuine prefixes of one
+/// another: they are computed in a single pass by snapshotting the
+/// rolling SHA-256 state at each boundary, so the checkpoint-`c` digest
+/// equals an independent hash of the first `c` tokens. (Verified in
+/// PrefixDigestTests.)
+///
+/// Tokens are hashed as little-endian Int64 after a fixed domain-
+/// separation prefix, so these digests can't collide with other SHA
+/// uses and are stable across machines (the same prompt → the same
+/// digest everywhere).
+
+import CryptoKit
+import Foundation
+
+public enum PrefixDigest {
+
+    /// Default checkpoint boundaries (design O9). Powers of two from 256
+    /// to 8192 give predictable exact-match points: a 1500-token prompt
+    /// hits the 1024 checkpoint and reuses 1024 of its prefill.
+    public static let defaultCheckpoints: [Int] = [256, 512, 1024, 2048, 4096, 8192]
+
+    /// Domain-separation tag mixed in before any tokens.
+    private static let domainTag = Data("dbkv-prefix-v1".utf8)
+
+    /// Compute the digest of exactly the first `length` tokens.
+    /// `length` must be in `0...tokens.count`.
+    public static func digest(tokens: [Int], length: Int) -> Data {
+        precondition(length >= 0 && length <= tokens.count, "length out of range")
+        var hasher = SHA256()
+        hasher.update(data: domainTag)
+        for i in 0..<length {
+            appendToken(tokens[i], to: &hasher)
+        }
+        return Data(hasher.finalize())
+    }
+
+    /// Compute `(length, digest)` for every checkpoint boundary `≤
+    /// tokens.count`, ascending by length. Single pass over the tokens.
+    public static func checkpoints(
+        tokens: [Int],
+        boundaries: [Int] = defaultCheckpoints
+    ) -> [(length: Int, digest: Data)] {
+        let sorted = boundaries.filter { $0 > 0 }.sorted()
+        guard !sorted.isEmpty, !tokens.isEmpty else { return [] }
+
+        var hasher = SHA256()
+        hasher.update(data: domainTag)
+
+        var result: [(length: Int, digest: Data)] = []
+        var bi = 0
+        for i in 0..<tokens.count {
+            appendToken(tokens[i], to: &hasher)
+            let count = i + 1
+            // A boundary may equal `count`; emit a finalized snapshot.
+            while bi < sorted.count && sorted[bi] <= count {
+                if sorted[bi] == count {
+                    var snap = hasher
+                    result.append((count, Data(snap.finalize())))
+                }
+                bi += 1
+            }
+            if bi >= sorted.count { break }
+        }
+        return result
+    }
+
+    /// The checkpoint boundaries that apply to a prompt of `count`
+    /// tokens (those `≤ count`), ascending.
+    public static func applicableCheckpoints(
+        count: Int,
+        boundaries: [Int] = defaultCheckpoints
+    ) -> [Int] {
+        boundaries.filter { $0 > 0 && $0 <= count }.sorted()
+    }
+
+    // MARK: - Helpers
+
+    private static func appendToken(_ token: Int, to hasher: inout SHA256) {
+        var le = Int64(token).littleEndian
+        withUnsafeBytes(of: &le) { hasher.update(data: Data($0)) }
+    }
+}
+
+// MARK: - Hex helpers
+
+extension Data {
+    /// Lowercase hex string. Used to key the index by digest.
+    public var dbkvHexString: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
+}

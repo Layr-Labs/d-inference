@@ -1,0 +1,129 @@
+import Foundation
+import Testing
+@testable import MLX
+@testable import MLXLMCommon
+
+// Verifies the SLIDING-WINDOW batched path our SSD-KV-cache design
+// actually uses for GPT-OSS-20B and Gemma-4 26B-A4B:
+//
+//   live BatchRotatingKVCache  --extract(row)-->  single-stream
+//   RotatingKVCache (with full metaState)  --snapshot/restore-->
+//   resume.
+//
+// We never serialize the BatchRotatingKVCache directly (its own
+// metaState omits maxCacheSize/idx). Instead extract(idx)
+// (BatchKVCache.swift:726) returns a RotatingKVCache whose state +
+// metaState are fully populated — and the single-stream round-trip is
+// already proven in RotatingKVCacheRestoreTests. These tests close the
+// loop: (a) extraction isolates the right row, and (b) the extracted
+// cache survives snapshot → restore → resume identically.
+
+private let H = 1, D = 2
+
+/// Build batched [B,H,T,D] K/V where rows[r][t] is the token value at
+/// row r, position t. V = K + 100 so keys and values are distinguishable.
+private func batched(_ rows: [[Float]]) -> (MLXArray, MLXArray) {
+    let Bn = rows.count
+    let T = rows[0].count
+    var kf: [Float] = []
+    var vf: [Float] = []
+    for r in 0..<Bn {
+        for t in 0..<T {
+            for _ in 0..<D { kf.append(rows[r][t]) }
+        }
+    }
+    for r in 0..<Bn {
+        for t in 0..<T {
+            for _ in 0..<D { vf.append(rows[r][t] + 100) }
+        }
+    }
+    return (MLXArray(kf, [Bn, H, T, D]), MLXArray(vf, [Bn, H, T, D]))
+}
+
+/// Round-trip a single-stream RotatingKVCache through state + metaState
+/// exactly as loadPromptCache would.
+private func snapshotRestore(_ src: RotatingKVCache) -> RotatingKVCache {
+    let s = src.state
+    let m = src.metaState
+    let dst = RotatingKVCache(maxSize: 1, keep: 0, step: 1)
+    dst.state = s
+    dst.metaState = m
+    return dst
+}
+
+/// Feed `count` single-token steps; row r gets value base[r] + step.
+private func feedBatchedSingles(_ cache: BatchRotatingKVCache, bases: [Float], count: Int) {
+    for s in 0..<count {
+        let rows = bases.map { [$0 + Float(s)] }
+        let (k, v) = batched(rows)
+        _ = cache.update(keys: k, values: v)
+        eval(cache.innerState())
+    }
+}
+
+@Test
+func batchRotatingExtractIsolatesRow() {
+    // Two rows; window 4; feed 10 single tokens each.
+    // row 0 values: 0..9   → window holds 6,7,8,9
+    // row 1 values: 1000..1009 → window holds 1006,1007,1008,1009
+    let bc = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
+    feedBatchedSingles(bc, bases: [0, 1000], count: 10)
+
+    let r0 = bc.extract(0)
+    let r1 = bc.extract(1)
+    let k0 = r0.state[0].asArray(Float.self)
+    let k1 = r1.state[0].asArray(Float.self)
+
+    #expect(k0.allSatisfy { $0 < 1000 }, "row 0 extract leaked row 1 tokens: \(k0)")
+    #expect(k1.allSatisfy { $0 >= 1000 }, "row 1 extract leaked row 0 tokens: \(k1)")
+    // Window size 4 → 4 tokens retained.
+    #expect(r0.state[0].dim(2) == 4, "expected 4 windowed tokens, got \(r0.state[0].dim(2))")
+}
+
+@Test
+func batchRotatingExtractThenRestoreThenMultiTokenMatches() {
+    let cont: [Float] = [10, 11, 12]
+
+    // Path A: extract then resume (no snapshot).
+    let bcA = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
+    feedBatchedSingles(bcA, bases: [0, 1000], count: 10)
+    let rcA = bcA.extract(0)
+    let (kc, vc) = batched([cont])  // single row continuation
+    let (kRef, vRef) = rcA.update(keys: kc, values: vc)
+    eval(kRef, vRef)
+
+    // Path B: extract, snapshot+restore, then resume.
+    let bcB = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
+    feedBatchedSingles(bcB, bases: [0, 1000], count: 10)
+    let rcB = snapshotRestore(bcB.extract(0))
+    let (kc2, vc2) = batched([cont])
+    let (kRes, vRes) = rcB.update(keys: kc2, values: vc2)
+    eval(kRes, vRes)
+
+    #expect(kRes.shape == kRef.shape, "shape \(kRes.shape) != \(kRef.shape)")
+    #expect(kRes.asArray(Float.self) == kRef.asArray(Float.self),
+            "restored keys diverged: \(kRes.asArray(Float.self)) vs \(kRef.asArray(Float.self))")
+    #expect(vRes.asArray(Float.self) == vRef.asArray(Float.self),
+            "restored values diverged")
+}
+
+@Test
+func batchRotatingExtractThenRestoreThenSingleTokenMatches() {
+    let bcA = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
+    feedBatchedSingles(bcA, bases: [0, 1000], count: 10)
+    let rcA = bcA.extract(0)
+    let (kc, vc) = batched([[10]])
+    let (kRef, vRef) = rcA.update(keys: kc, values: vc)
+    eval(kRef, vRef)
+
+    let bcB = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
+    feedBatchedSingles(bcB, bases: [0, 1000], count: 10)
+    let rcB = snapshotRestore(bcB.extract(0))
+    let (kc2, vc2) = batched([[10]])
+    let (kRes, vRes) = rcB.update(keys: kc2, values: vc2)
+    eval(kRes, vRes)
+
+    #expect(kRes.asArray(Float.self) == kRef.asArray(Float.self),
+            "single-token decode after batched-extract restore diverged")
+    #expect(vRes.asArray(Float.self) == vRef.asArray(Float.self))
+}

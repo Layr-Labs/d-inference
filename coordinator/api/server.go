@@ -167,12 +167,12 @@ type Server struct {
 	baseURL string
 
 	// r2CDNURL is the public R2 bucket URL that providers pull release artifacts
-	// and model weights from. Prod bucket is distinct from dev bucket, so the
-	// coordinator substitutes it into install.sh at serve time.
+	// from (e.g. "https://models.darkbloom.ai").
+	// Set from EIGENINFERENCE_R2_CDN_URL env var. Empty disables CDN metadata.
 	r2CDNURL string
 
-	// r2SitePackagesCDNURL is the R2 URL for the Python site-packages tarball.
-	// Prod historically uses a second bucket; dev can reuse r2CDNURL.
+	// r2SitePackagesCDNURL is the R2 bucket URL for site packages (e.g.
+	// auto-update manifests). Set from EIGENINFERENCE_R2_SITE_PACKAGES_CDN_URL.
 	r2SitePackagesCDNURL string
 
 	// corsOrigin is the allowed CORS origin (e.g. "https://console.darkbloom.dev").
@@ -315,12 +315,6 @@ func (s *Server) SetBaseURL(url string) {
 // loud instead of silent.
 func (s *Server) SetR2CDNURL(url string) {
 	s.r2CDNURL = strings.TrimRight(url, "/")
-}
-
-// SetR2SitePackagesCDNURL sets the R2 URL for the Python site-packages
-// tarball. Defaults to r2CDNURL when unset.
-func (s *Server) SetR2SitePackagesCDNURL(url string) {
-	s.r2SitePackagesCDNURL = strings.TrimRight(url, "/")
 }
 
 // SetEmitter wires the coordinator-side telemetry emitter. Call once at boot.

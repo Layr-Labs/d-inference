@@ -117,6 +117,22 @@ type MemoryStore struct {
 
 	// Pre-aggregated reliability features (one row per provider).
 	reliability map[string]*ReliabilityFeatures
+
+	// Pre-aggregated hourly heartbeat rollups. Mirrors the postgres
+	// provider_heartbeats_hourly table; key is (provider_id, hour).
+	heartbeatsHourly map[string]map[time.Time]*HeartbeatHourlyRow
+}
+
+// HeartbeatHourlyRow mirrors a row in provider_heartbeats_hourly.
+// Exposed so tests and (eventually) read endpoints can share one type.
+type HeartbeatHourlyRow struct {
+	ProviderID           string
+	Hour                 time.Time
+	HeartbeatCount       int
+	AvgMemoryPressure    float32
+	AvgCPUUsage          float32
+	MaxThermalState      string
+	AvgMemoryAvailableGB *float32
 }
 
 // memorySession mirrors a row in provider_sessions.
@@ -179,6 +195,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		sessions:                      make(map[int64]*memorySession),
 		sessionsByOpen:                make(map[string]int64),
 		reliability:                   make(map[string]*ReliabilityFeatures),
+		heartbeatsHourly:              make(map[string]map[time.Time]*HeartbeatHourlyRow),
 	}
 	if scfg.AdminKey != "" {
 		s.keys[scfg.AdminKey] = true
@@ -2435,6 +2452,112 @@ func (s *MemoryStore) CloseOrphanSessions(_ context.Context, reason string, at t
 		closed++
 	}
 	return closed, nil
+}
+
+// thermalSeverity ranks Apple thermal states from nominal (lowest) to
+// critical (highest). Unknown states rank below nominal. Used to compute
+// max_thermal_state in the hourly rollup — plain text MAX is alphabetical
+// (critical < fair < nominal < serious), which is the wrong order.
+func thermalSeverity(state string) int {
+	switch state {
+	case "critical":
+		return 4
+	case "serious":
+		return 3
+	case "fair":
+		return 2
+	case "nominal":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (s *MemoryStore) RollupHeartbeatsHourly(_ context.Context, since time.Time) (int64, error) {
+	floor := since.Truncate(time.Hour)
+
+	type acc struct {
+		count          int
+		sumMemPressure float64
+		sumCPU         float64
+		thermalRank    int
+		thermalState   string
+		sumMemAvail    float64
+		memAvailCount  int
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	groups := make(map[string]map[time.Time]*acc)
+	for _, hb := range s.heartbeats {
+		if hb.At.Before(floor) {
+			continue
+		}
+		hour := hb.At.Truncate(time.Hour)
+		byHour, ok := groups[hb.ProviderID]
+		if !ok {
+			byHour = make(map[time.Time]*acc)
+			groups[hb.ProviderID] = byHour
+		}
+		a, ok := byHour[hour]
+		if !ok {
+			a = &acc{}
+			byHour[hour] = a
+		}
+		a.count++
+		a.sumMemPressure += float64(hb.MemoryPressure)
+		a.sumCPU += float64(hb.CPUUsage)
+		if r := thermalSeverity(hb.ThermalState); r > a.thermalRank {
+			a.thermalRank = r
+			a.thermalState = hb.ThermalState
+		}
+		if hb.MemoryAvailableGB != nil {
+			a.sumMemAvail += float64(*hb.MemoryAvailableGB)
+			a.memAvailCount++
+		}
+	}
+
+	var written int64
+	for providerID, byHour := range groups {
+		dest, ok := s.heartbeatsHourly[providerID]
+		if !ok {
+			dest = make(map[time.Time]*HeartbeatHourlyRow)
+			s.heartbeatsHourly[providerID] = dest
+		}
+		for hour, a := range byHour {
+			row := &HeartbeatHourlyRow{
+				ProviderID:        providerID,
+				Hour:              hour,
+				HeartbeatCount:    a.count,
+				AvgMemoryPressure: float32(a.sumMemPressure / float64(a.count)),
+				AvgCPUUsage:       float32(a.sumCPU / float64(a.count)),
+				MaxThermalState:   a.thermalState,
+			}
+			if a.memAvailCount > 0 {
+				v := float32(a.sumMemAvail / float64(a.memAvailCount))
+				row.AvgMemoryAvailableGB = &v
+			}
+			dest[hour] = row
+			written++
+		}
+	}
+	return written, nil
+}
+
+// HeartbeatsHourly returns a snapshot of the in-memory hourly rollup
+// table for test inspection. Not part of store.Store — tests that need
+// it type-assert *MemoryStore.
+func (s *MemoryStore) HeartbeatsHourly() []HeartbeatHourlyRow {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]HeartbeatHourlyRow, 0)
+	for _, byHour := range s.heartbeatsHourly {
+		for _, row := range byHour {
+			out = append(out, *row)
+		}
+	}
+	return out
 }
 
 func (s *MemoryStore) DeleteHeartbeatsBefore(_ context.Context, before time.Time, limit int) (int64, error) {

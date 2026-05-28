@@ -3419,6 +3419,53 @@ func (s *PostgresStore) DeleteHeartbeatsBefore(ctx context.Context, before time.
 	return tag.RowsAffected(), nil
 }
 
+func (s *PostgresStore) RollupHeartbeatsHourly(ctx context.Context, since time.Time) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// thermal_state ordering: nominal < fair < serious < critical. Plain MAX()
+	// on text is alphabetical (critical < fair < nominal < serious) which is
+	// wrong, so we rank in a CASE and pick the highest-ranked sample per hour
+	// via ARRAY_AGG(ORDER BY rank DESC)[1].
+	//
+	// Window is aligned to a clean hour boundary so partial first-hour buckets
+	// aren't produced. ON CONFLICT makes this idempotent — re-running just
+	// upserts the current hour (and any in-window prior hours that backfill).
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_heartbeats_hourly
+		   (provider_id, hour, heartbeat_count, avg_memory_pressure, avg_cpu_usage, max_thermal_state, avg_memory_available_gb)
+		 SELECT
+		   provider_id,
+		   date_trunc('hour', at) AS hour,
+		   COUNT(*)::int,
+		   AVG(memory_pressure)::real,
+		   AVG(cpu_usage)::real,
+		   COALESCE((ARRAY_AGG(thermal_state ORDER BY
+		     CASE thermal_state
+		       WHEN 'critical' THEN 4
+		       WHEN 'serious'  THEN 3
+		       WHEN 'fair'     THEN 2
+		       WHEN 'nominal'  THEN 1
+		       ELSE 0
+		     END DESC))[1], ''),
+		   AVG(memory_available_gb)::real
+		 FROM provider_heartbeats
+		 WHERE at >= date_trunc('hour', $1::timestamptz)
+		 GROUP BY provider_id, date_trunc('hour', at)
+		 ON CONFLICT (provider_id, hour) DO UPDATE SET
+		   heartbeat_count         = EXCLUDED.heartbeat_count,
+		   avg_memory_pressure     = EXCLUDED.avg_memory_pressure,
+		   avg_cpu_usage           = EXCLUDED.avg_cpu_usage,
+		   max_thermal_state       = EXCLUDED.max_thermal_state,
+		   avg_memory_available_gb = EXCLUDED.avg_memory_available_gb`,
+		since,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: rollup heartbeats hourly: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (s *PostgresStore) ListSessionsSince(ctx context.Context, since time.Time) ([]SessionRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

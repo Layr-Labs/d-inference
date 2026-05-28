@@ -422,6 +422,16 @@ func main() {
 			Interval:   featureInterval,
 			WindowDays: featureWindowDays,
 		})
+
+		// Heartbeat hourly rollup. Defaults: 5m cadence, 2h lookback.
+		// Keeps provider_heartbeats_hourly populated so dashboards can
+		// scan 168 rows/week per provider instead of ~60k raw heartbeats.
+		hourlyInterval := envDuration("EIGENINFERENCE_LIVENESS_HOURLY_INTERVAL", liveness.DefaultHourlyInterval())
+		hourlyLookback := envDuration("EIGENINFERENCE_LIVENESS_HOURLY_LOOKBACK", liveness.DefaultHourlyLookback())
+		liveness.StartHourlyLoop(ctx, st, logger, nil, liveness.HourlyConfig{
+			Interval: hourlyInterval,
+			Lookback: hourlyLookback,
+		})
 	}
 
 	// Push gauge values to DogStatsD periodically.

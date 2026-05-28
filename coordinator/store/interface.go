@@ -444,6 +444,14 @@ type Store interface {
 	// Loop until 0 is returned to drain a backlog incrementally.
 	DeleteHeartbeatsBefore(ctx context.Context, before time.Time, limit int) (int64, error)
 
+	// RollupHeartbeatsHourly aggregates raw provider_heartbeats rows into
+	// hourly buckets keyed by (provider_id, hour). Idempotent: re-running
+	// upserts existing rows. The implementation always aligns the window
+	// start to a clean hour boundary so partial first-hour buckets aren't
+	// produced; `since` is treated as a floor and rounded down. Returns
+	// the number of (provider, hour) cells written.
+	RollupHeartbeatsHourly(ctx context.Context, since time.Time) (int64, error)
+
 	// ListSessionsSince returns sessions that connected or were open at any
 	// point in [since, now]. Used by the feature rollup. Rows with
 	// disconnected_at IS NULL are still-open sessions.

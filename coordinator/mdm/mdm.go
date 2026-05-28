@@ -41,6 +41,12 @@ type DeviceAttestationResponse struct {
 // The UDID identifies the device; certChain is the DER-encoded Apple cert chain.
 type OnMDACallback func(udid string, certChain [][]byte)
 
+// OnLateSecurityInfoCallback is called when a SecurityInfo response arrives
+// for a UDID with no active waiter (the original verification timed out).
+// This allows the coordinator to retroactively upgrade a self_signed provider
+// to hardware trust when APN delivery was slow.
+type OnLateSecurityInfoCallback func(udid string, info *SecurityInfoResponse)
+
 // Client talks to the MicroMDM API.
 type Client struct {
 	baseURL string
@@ -56,6 +62,8 @@ type Client struct {
 	attestWaiters  map[string]chan *DeviceAttestationResponse
 	// Callback for MDA certs that arrive after the initial wait times out.
 	onMDA OnMDACallback
+	// Callback for SecurityInfo responses that arrive after the waiter timed out.
+	onLateSecInfo OnLateSecurityInfoCallback
 }
 
 // NewClient creates an MDM client.
@@ -83,6 +91,13 @@ func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 // SetOnMDA registers a callback for late-arriving MDA attestation certs.
 func (c *Client) SetOnMDA(fn OnMDACallback) {
 	c.onMDA = fn
+}
+
+// SetOnLateSecurityInfo registers a callback for SecurityInfo responses that
+// arrive after the synchronous waiter has timed out. This enables the
+// coordinator to retroactively upgrade providers when APN delivery is slow.
+func (c *Client) SetOnLateSecurityInfo(fn OnLateSecurityInfoCallback) {
+	c.onLateSecInfo = fn
 }
 
 // DeviceInfo from MicroMDM's device list.
@@ -354,8 +369,14 @@ func (c *Client) HandleWebhook(body []byte) {
 		c.waitMu.Unlock()
 		if waiting {
 			ch <- secInfo
+		} else if c.onLateSecInfo != nil {
+			// No active waiter — the synchronous verification timed out.
+			// Invoke the late-arrival callback so the coordinator can
+			// retroactively upgrade the provider to hardware trust.
+			c.logger.Info("mdm SecurityInfo arrived late (no waiter), invoking callback", "udid", secInfo.UDID)
+			c.onLateSecInfo(secInfo.UDID, secInfo)
 		} else {
-			c.logger.Debug("mdm SecurityInfo dropped (no waiter)", "udid", secInfo.UDID)
+			c.logger.Debug("mdm SecurityInfo dropped (no waiter, no callback)", "udid", secInfo.UDID)
 		}
 	}
 
@@ -447,8 +468,9 @@ func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestation
 		return result, nil
 	}
 
-	// Step 3: Wait for response (via webhook)
-	secInfo, err := c.WaitForSecurityInfo(device.UDID, 30*time.Second)
+	// Step 3: Wait for response (via webhook). 90 seconds allows for APN
+	// delivery delays during Power Nap cycles (every ~15 minutes on AC).
+	secInfo, err := c.WaitForSecurityInfo(device.UDID, 90*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("SecurityInfo response: %v", err)
 		return result, nil

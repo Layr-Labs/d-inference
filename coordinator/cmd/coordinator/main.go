@@ -417,6 +417,42 @@ func main() {
 			})
 		})
 
+		// Register callback for late-arriving SecurityInfo responses.
+		// When APN delivery is slow (device sleeping, Power Nap cycle),
+		// the synchronous 90s wait may time out, but the webhook arrives
+		// later. This callback retroactively upgrades self_signed providers.
+		mdmClient.SetOnLateSecurityInfo(func(udid string, info *mdm.SecurityInfoResponse) {
+			if info == nil || !info.SystemIntegrityProtectionEnabled || info.SecureBootLevel != "full" {
+				return
+			}
+			reg.ForEachProvider(func(p *registry.Provider) {
+				p.Mu().Lock()
+				trust := p.TrustLevel
+				serial := ""
+				if p.AttestationResult != nil {
+					serial = p.AttestationResult.SerialNumber
+				}
+				p.Mu().Unlock()
+				if trust != registry.TrustSelfSigned || serial == "" {
+					return
+				}
+				// Find the provider whose MDM UDID matches by looking up the
+				// serial → UDID mapping. We don't store UDID on the provider
+				// directly, so do a reverse lookup via MDM.
+				dev, _ := mdmClient.LookupDevice(serial)
+				if dev == nil || dev.UDID != udid {
+					return
+				}
+				p.SetAttested(true, registry.TrustHardware)
+				logger.Info("late SecurityInfo arrival — upgraded provider to hardware trust",
+					"provider_id", p.ID,
+					"serial", serial,
+					"udid", udid,
+				)
+				reg.PersistProvider(p)
+			})
+		})
+
 		srv.SetMDMClient(mdmClient)
 		logger.Info("MDM verification enabled", "url", mdmURL)
 	}

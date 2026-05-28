@@ -11,7 +11,7 @@ import (
 )
 
 func TestSessionTrackerOpenClose(t *testing.T) {
-	s := store.NewMemory("")
+	s := store.NewMemory(store.Config{})
 	tr := NewSessionTracker(s, quietLogger(), nil, "coord-A")
 
 	tr.Open("prov-1")
@@ -36,7 +36,7 @@ func TestSessionTrackerOpenClose(t *testing.T) {
 func TestSessionTrackerCloseWithoutOpen(t *testing.T) {
 	// If we never observed an Open (e.g. coordinator restarted mid-session),
 	// Close should be a silent no-op — orphan sweep on the prior boot handles it.
-	s := store.NewMemory("")
+	s := store.NewMemory(store.Config{})
 	tr := NewSessionTracker(s, quietLogger(), nil, "coord-A")
 
 	// Should not panic, should not error-log loudly.
@@ -58,7 +58,7 @@ func TestSessionTrackerCloseFailureCounter(t *testing.T) {
 	// When the underlying store fails, the tracker has already forgotten the
 	// session (orphan sweep handles eventual recovery). Operators need a
 	// counter signal so they can alarm before the next reboot.
-	s := closeFailStore{Store: store.NewMemory("")}
+	s := closeFailStore{Store: store.NewMemory(store.Config{})}
 
 	var counters []struct {
 		name  string

@@ -185,7 +185,7 @@ func runLivenessSuite(t *testing.T, s Store) {
 
 // TestMemoryLiveness exercises the in-memory backend.
 func TestMemoryLiveness(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	runLivenessSuite(t, s)
 }
 

@@ -37,7 +37,7 @@ type sessionRow struct {
 }
 
 func newInspectableStore() *inspectableStore {
-	return &inspectableStore{MemoryStore: store.NewMemory("")}
+	return &inspectableStore{MemoryStore: store.NewMemory(store.Config{})}
 }
 
 func (s *inspectableStore) AppendHeartbeats(ctx context.Context, events []store.HeartbeatEvent) error {

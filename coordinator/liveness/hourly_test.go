@@ -37,7 +37,7 @@ func TestMemoryRollupHeartbeatsHourly(t *testing.T) {
 	hour11 := time.Date(2026, 5, 28, 11, 0, 0, 0, time.UTC)
 	hour12 := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
 
-	s := store.NewMemory("")
+	s := store.NewMemory(store.Config{})
 
 	// p1 / hour11: three heartbeats. Avg pressure 0.2, avg cpu 0.5.
 	// Thermal: nominal, fair, nominal → max = fair.

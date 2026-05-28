@@ -60,7 +60,7 @@ func seedHeartbeats(t *testing.T, s store.Store, providerID string, age time.Dur
 
 // runRetention drains in batches until 0 or budget elapses.
 func TestRetentionDrainsBacklog(t *testing.T) {
-	fs := &retentionFakeStore{MemoryStore: store.NewMemory("")}
+	fs := &retentionFakeStore{MemoryStore: store.NewMemory(store.Config{})}
 	seedHeartbeats(t, fs, "p", 48*time.Hour, 25)
 	seedHeartbeats(t, fs, "p", time.Minute, 5) // fresh, must survive
 
@@ -84,7 +84,7 @@ func TestRetentionDrainsBacklog(t *testing.T) {
 // A delete error should be logged + counted, not crash; loop exits cleanly.
 func TestRetentionStopsOnError(t *testing.T) {
 	fs := &retentionFakeStore{
-		MemoryStore: store.NewMemory(""),
+		MemoryStore: store.NewMemory(store.Config{}),
 		failN:       1,
 	}
 	seedHeartbeats(t, fs, "p", 48*time.Hour, 5)
@@ -118,7 +118,7 @@ func TestRetentionStopsOnError(t *testing.T) {
 // StartRetentionLoop spins the goroutine, runs once on boot, then again on
 // the ticker. Cancelling the context exits cleanly.
 func TestStartRetentionLoopRunsAndStops(t *testing.T) {
-	fs := &retentionFakeStore{MemoryStore: store.NewMemory("")}
+	fs := &retentionFakeStore{MemoryStore: store.NewMemory(store.Config{})}
 	seedHeartbeats(t, fs, "p", 48*time.Hour, 3)
 
 	ctx, cancel := context.WithCancel(context.Background())

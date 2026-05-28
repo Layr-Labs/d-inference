@@ -461,7 +461,7 @@ type Store interface {
 	UpsertReliabilityFeatures(ctx context.Context, row ReliabilityFeatures) error
 
 	// GetReliabilityFeatures returns the most recent reliability row for
-	// the given provider, or ErrNotFound if none exists yet.
+	// the given provider. Returns (nil, nil) if no row exists yet.
 	GetReliabilityFeatures(ctx context.Context, providerID string) (*ReliabilityFeatures, error)
 
 	// ListReliabilityFeatures returns reliability rows for all providers

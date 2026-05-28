@@ -1074,6 +1074,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
 	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
 
+	// Provider liveness analytics — admin-gated, internal-only. Reads the
+	// rollup tables populated by the coordinator/liveness package.
+	s.mux.HandleFunc("GET /v1/providers/{id}/liveness", s.handleProviderLiveness)
+	s.mux.HandleFunc("GET /v1/providers/{id}/sessions", s.handleProviderSessions)
+	s.mux.HandleFunc("GET /v1/providers/{id}/heartbeats", s.handleProviderHeartbeats)
+	s.mux.HandleFunc("GET /v1/providers/reliability", s.handleProviderReliability)
+	s.mux.HandleFunc("GET /v1/network/availability", s.handleNetworkAvailability)
+
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
 

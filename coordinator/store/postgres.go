@@ -671,6 +671,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_provider_connected ON provider_sessions(provider_id, connected_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_open ON provider_sessions(provider_id) WHERE disconnected_at IS NULL`,
+		// Covers the second half of ListSessionsSince — WHERE disconnected_at >= $1.
+		// (The IS NULL half is already served by idx_provider_sessions_open.)
+		// Partial index keeps it small; open sessions are excluded.
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_disconnected_at ON provider_sessions(disconnected_at DESC) WHERE disconnected_at IS NOT NULL`,
 
 		`CREATE TABLE IF NOT EXISTS provider_reliability_features (
 			provider_id TEXT PRIMARY KEY,

@@ -143,6 +143,22 @@ func ramEvictsByByteBudget() {
 }
 
 @Test
+func ramRejectsEntryLargerThanByteBudget() {
+    // PCR-2: an entry bigger than maxBytes must be refused up front
+    // (not stored-then-self-evicted into a silent no-op).
+    let oneBytes = PrefixCacheRAM.byteSize(of: [simpleCache(tokens: 8)])
+    let ram = PrefixCacheRAM(maxEntries: 0, maxBytes: oneBytes / 2)  // too small for any entry
+
+    let stored = ram.put(modelHash: "m", digest: digest("p"), caches: [simpleCache(tokens: 8)], tokenCount: 8)
+    #expect(stored == false, "oversized entry should be refused")
+    #expect(ram.count == 0)
+    #expect(ram.byteSize == 0, "refused entry must not leak bytes into accounting")
+    #expect(ram.get(modelHash: "m", digest: digest("p")) == nil)
+    #expect(ram.snapshotStats().rejects == 1)
+    #expect(ram.snapshotStats().inserts == 0)
+}
+
+@Test
 func ramClearByModelDropsOnlyThatModel() {
     let ram = PrefixCacheRAM()
     ram.put(modelHash: "A", digest: digest("p"), caches: [simpleCache(tokens: 2)], tokenCount: 2)
@@ -161,12 +177,17 @@ func ramPutReplacesExistingKeyWithoutLeakingBytes() {
     let ram = PrefixCacheRAM()
     let key = PrefixCacheKey(modelHash: "m", digest: digest("p"))
     ram.put(key, caches: [simpleCache(tokens: 4)], tokenCount: 4)
-    let bytesAfterFirst = ram.byteSize
 
-    // Replace with a larger snapshot for the same key.
+    // Replace the snapshot for the same key.
     ram.put(key, caches: [simpleCache(tokens: 8)], tokenCount: 8)
     #expect(ram.count == 1, "replacing a key must not create a second entry")
-    #expect(ram.byteSize > bytesAfterFirst, "byte accounting should reflect the larger replacement")
+    // No leak: replacing drops the old entry's bytes, so the total equals
+    // exactly one current entry's size — not the sum of both puts. (Byte
+    // accounting is physical/innerState-based; KVCacheSimple over-allocates
+    // in step chunks, so the 4- and 8-token buffers happen to be equal —
+    // the point here is that nothing accumulates across the replacement.)
+    #expect(ram.byteSize == PrefixCacheRAM.byteSize(of: [simpleCache(tokens: 8)]),
+            "replacement must not leak the prior entry's bytes")
     #expect(ram.get(key)?.tokenCount == 8)
 }
 

@@ -18,6 +18,7 @@
 /// leak the other.
 
 import Foundation
+import Security
 
 public final class SecureEnclaveKeyWrappingService: KeyWrappingService, @unchecked Sendable {
 
@@ -41,13 +42,28 @@ public final class SecureEnclaveKeyWrappingService: KeyWrappingService, @uncheck
         do {
             return try enclaveKey.eciesDecrypt(wrapped)
         } catch let e as PersistentEnclaveKeyError {
-            // SE returns a generic CFError on auth failure; the
-            // localizedDescription is the most useful signal.
-            let msg = String(describing: e).lowercased()
-            if msg.contains("authentication") || msg.contains("ciphertext") || msg.contains("decrypt") {
+            // Classify by the structured OSStatus rather than the
+            // localized error string (which is locale-dependent and
+            // brittle). The SE surfaces tamper / wrong-key / corrupt-
+            // ciphertext as these decode/auth statuses.
+            if case .signingFailed(let status, _) = e, Self.isAuthFailure(status) {
                 throw KeyWrappingError.authenticationFailed(String(describing: e))
             }
             throw KeyWrappingError.backendError(String(describing: e))
+        }
+    }
+
+    /// OSStatus values the Security framework returns for an ECIES
+    /// open that fails because the ciphertext was tampered, truncated,
+    /// or sealed to a different key.
+    private static func isAuthFailure(_ status: OSStatus) -> Bool {
+        switch status {
+        case errSecDecode,        // -26275: corrupt / wrong-key ciphertext
+             errSecAuthFailed,    // -25293: authentication failed
+             errSecParam:         // -50: malformed input to the decrypt
+            return true
+        default:
+            return false
         }
     }
 }

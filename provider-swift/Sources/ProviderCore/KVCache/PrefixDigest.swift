@@ -50,7 +50,9 @@ public enum PrefixDigest {
         tokens: [Int],
         boundaries: [Int] = defaultCheckpoints
     ) -> [(length: Int, digest: Data)] {
-        let sorted = boundaries.filter { $0 > 0 }.sorted()
+        // Dedup so a caller passing a duplicated boundary doesn't get a
+        // double-emitted checkpoint.
+        let sorted = Array(Set(boundaries.filter { $0 > 0 })).sorted()
         guard !sorted.isEmpty, !tokens.isEmpty else { return [] }
 
         var hasher = SHA256()

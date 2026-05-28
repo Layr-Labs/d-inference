@@ -108,6 +108,45 @@ func batchRotatingExtractThenRestoreThenMultiTokenMatches() {
 }
 
 @Test
+func batchRotatingExtractMatchesIndependentSingleStreamReference() {
+    // XC-1: the other roundtrip tests use extract() on BOTH sides, so
+    // they only prove snapshot/restore idempotency. This one builds the
+    // reference WITHOUT extract(): an independent single-stream
+    // RotatingKVCache fed exactly the tokens row 0 received, then
+    // compares its resume against the batched-extract-then-resume. This
+    // proves extract() produces a cache semantically equivalent to one
+    // that never went through the batched path.
+    let rowTokens: [Float] = Array(0...9).map { Float($0) }
+    let cont: [Float] = [10, 11, 12]
+
+    // Independent single-stream reference: feed row-0's tokens directly.
+    let ref = RotatingKVCache(maxSize: 4, keep: 0, step: 4)
+    for t in rowTokens {
+        let (k, v) = batched([[t]])  // single row, single token
+        _ = ref.update(keys: k, values: v)
+        eval(ref.innerState())
+    }
+    let (kc, vc) = batched([cont])
+    let (kRef, vRef) = ref.update(keys: kc, values: vc)
+    eval(kRef, vRef)
+
+    // Batched path: feed both rows, extract row 0, resume.
+    let bc = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
+    feedBatchedSingles(bc, bases: [0, 1000], count: 10)
+    let extracted = bc.extract(0)
+    let (kc2, vc2) = batched([cont])
+    let (kRes, vRes) = extracted.update(keys: kc2, values: vc2)
+    eval(kRes, vRes)
+
+    #expect(kRes.shape == kRef.shape,
+            "batched-extract shape \(kRes.shape) != independent single-stream \(kRef.shape)")
+    #expect(kRes.asArray(Float.self) == kRef.asArray(Float.self),
+            "batched-extract keys diverged from independent single-stream reference")
+    #expect(vRes.asArray(Float.self) == vRef.asArray(Float.self),
+            "batched-extract values diverged from independent single-stream reference")
+}
+
+@Test
 func batchRotatingExtractThenRestoreThenSingleTokenMatches() {
     let bcA = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
     feedBatchedSingles(bcA, bases: [0, 1000], count: 10)

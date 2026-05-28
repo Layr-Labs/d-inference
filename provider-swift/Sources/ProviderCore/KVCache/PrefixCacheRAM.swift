@@ -71,6 +71,8 @@ public struct PrefixCacheRAMStats: Sendable, Equatable {
     public var misses: Int = 0
     public var evictions: Int = 0
     public var inserts: Int = 0
+    /// Entries refused because their own size exceeded the byte budget.
+    public var rejects: Int = 0
 }
 
 // MARK: - PrefixCacheRAM
@@ -143,10 +145,22 @@ public final class PrefixCacheRAM {
 
     /// Insert (or replace) a prefix snapshot. Takes ownership of
     /// `caches` — the caller must not mutate them after this call. The
-    /// stored byte size is measured from the caches' `state` arrays.
+    /// stored byte size is measured from the caches' physical buffers.
     /// Evicts LRU entries if either budget is exceeded.
-    public func put(_ key: PrefixCacheKey, caches: [any KVCache], tokenCount: Int) {
+    ///
+    /// Returns `true` if the entry was stored, `false` if it was refused
+    /// because its own size exceeds `maxBytes` (storing it would only
+    /// trigger immediate self-eviction — a silent no-op — so we reject
+    /// up front and count it).
+    @discardableResult
+    public func put(_ key: PrefixCacheKey, caches: [any KVCache], tokenCount: Int) -> Bool {
         let bytes = Self.byteSize(of: caches)
+
+        if maxBytes > 0 && bytes > maxBytes {
+            stats.rejects += 1
+            logger.warning("prefix entry (\(bytes) bytes) exceeds byte budget (\(self.maxBytes)); refusing")
+            return false
+        }
 
         // Replace any existing entry for this key (drop its bytes first).
         if let old = entries[key] {
@@ -163,10 +177,12 @@ public final class PrefixCacheRAM {
         stats.inserts += 1
 
         evictToBudget()
+        return true
     }
 
     /// Convenience overload keyed by raw fields.
-    public func put(modelHash: String, digest: Data, caches: [any KVCache], tokenCount: Int) {
+    @discardableResult
+    public func put(modelHash: String, digest: Data, caches: [any KVCache], tokenCount: Int) -> Bool {
         put(PrefixCacheKey(modelHash: modelHash, digest: digest), caches: caches, tokenCount: tokenCount)
     }
 
@@ -239,9 +255,15 @@ public final class PrefixCacheRAM {
 
     // MARK: - Byte accounting
 
+    /// Resident-RAM estimate. Uses `innerState()` (the cache's
+    /// physically-allocated buffers) rather than `state` (the trimmed
+    /// logical view): caches like KVCacheSimple/RotatingKVCache
+    /// over-allocate in `step`-sized chunks, so `state` would undercount
+    /// the memory actually held. Bounding `maxBytes` on physical bytes
+    /// keeps the budget honest.
     static func byteSize(of caches: [any KVCache]) -> Int {
         caches.reduce(0) { acc, cache in
-            acc + cache.state.reduce(0) { $0 + $1.nbytes }
+            acc + cache.innerState().reduce(0) { $0 + $1.nbytes }
         }
     }
 }

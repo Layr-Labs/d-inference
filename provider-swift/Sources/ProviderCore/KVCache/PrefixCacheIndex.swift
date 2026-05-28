@@ -183,9 +183,13 @@ public final class PrefixCacheIndex {
     }
 
     /// Entries for a model ordered least-recently-hit first — the
-    /// eviction order for the P6 disk-budget sweep.
+    /// eviction order for the P6 disk-budget sweep. `digestHex` is a
+    /// deterministic secondary key so entries with equal `lastHitAt`
+    /// sort stably (dictionary iteration order is otherwise undefined).
     public func entriesLRUFirst(modelHash: String) -> [PrefixIndexEntry] {
-        entries(modelHash: modelHash).sorted { $0.lastHitAt < $1.lastHitAt }
+        entries(modelHash: modelHash).sorted {
+            ($0.lastHitAt, $0.digestHex) < ($1.lastHitAt, $1.digestHex)
+        }
     }
 
     public var isDirty: Bool { dirty }
@@ -209,12 +213,14 @@ public final class PrefixCacheIndex {
         if !FileManager.default.fileExists(atPath: dir.path) {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
-        let tmp = fileURL.appendingPathExtension("tmp-\(UUID().uuidString)")
+        // Foundation's `.atomic` already writes to an auxiliary file and
+        // renames into place, which is crash-safe. Using it directly (vs
+        // a manual tmp-<uuid> + replaceItemAt) avoids leaking a UUID-named
+        // sibling if the process dies between write and replace — the
+        // earlier scheme had no sweep for those orphans.
         do {
-            try data.write(to: tmp, options: .atomic)
-            _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tmp)
+            try data.write(to: fileURL, options: .atomic)
         } catch {
-            try? FileManager.default.removeItem(at: tmp)
             throw PrefixCacheIndexError.saveFailed(String(describing: error))
         }
         dirty = false

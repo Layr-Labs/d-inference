@@ -7,7 +7,7 @@
 /// 0       4       magic = "DBKV"
 /// 4       2       uint16 LE  format_version (= 1)
 /// 6       2       uint16 LE  flags (reserved, must be 0)
-/// 8      12       file_IV       random per-file, salt for HKDF
+/// 8      12       file_IV       random per-file; folded into HKDF info (not a salt)
 /// 20      4       uint32 LE  wrapped_DEK length (N)
 /// 24      N       wrapped_DEK   AES-256-GCM(KEK, DEK, AAD=metadata)
 ///                               = nonce(12) ‖ ct(32) ‖ tag(16)
@@ -19,11 +19,17 @@
 ///         var     AES-256-GCM ct ‖ tag       (nonce HKDF-derived)
 /// ```
 ///
-/// Per-chunk nonces are HKDF-derived rather than stored: salt =
-/// file_IV, IKM = DEK, info = "dbkv-chunk-v1" ‖ uint32_be(chunk_index),
-/// length 12. Different files always carry different file_IV → no
-/// nonce collision across files even if DEK material somehow repeated.
-/// Within one file, the chunk-index `info` separates per-chunk nonces.
+/// Per-chunk nonces are HKDF-derived rather than stored, using
+/// HKDF-Expand ONLY (Extract is skipped — the DEK is already a uniform
+/// 256-bit key, so running Extract on it is a no-op per RFC 5869 §3.3):
+///   PRK  = DEK (passed directly; NO salt)
+///   info = "dbkv-chunk-v1" ‖ file_IV ‖ uint32_be(chunk_index)
+///   L    = 12
+/// `file_IV` is a per-file uniqueness value folded into `info` (NOT an
+/// HKDF salt). Different files carry different file_IV → distinct info
+/// → no nonce collision across files even if DEK material somehow
+/// repeated. Within one file, the chunk_index in `info` separates
+/// per-chunk nonces. See `deriveChunkNonce` for the implementation.
 ///
 /// AAD on every chunk seal is the *entire* metadata-JSON byte
 /// sequence. Tampering with any field — model_hash, layer count,
@@ -259,6 +265,14 @@ public enum EncryptedKVStore {
             try? FileManager.default.removeItem(at: tmpURL)
             throw EncryptedKVStoreError.ioFailure("atomic rename: \(error)")
         }
+
+        // Durability: fsync the tmp file (above) flushes the file's data
+        // and inode, but the *directory entry* created by the rename is
+        // not durable until the containing directory is itself flushed.
+        // On Apple SSDs use F_FULLFSYNC for a true flush-to-media; a
+        // best-effort failure here only costs a cold prefill on the rare
+        // crash-after-rename, so we don't fail the write on it.
+        syncDirectory(dir)
 
         storeLogger.debug(
             "wrote \(chunks.count, privacy: .public) chunks to \(url.lastPathComponent, privacy: .public)"
@@ -533,6 +547,24 @@ public enum EncryptedKVStore {
             } catch {
                 throw EncryptedKVStoreError.ioFailure("mkdir \(url.path): \(error)")
             }
+        }
+    }
+
+    /// Best-effort flush of a directory's metadata so a just-renamed
+    /// entry is durable across power loss. Uses F_FULLFSYNC (true
+    /// flush-to-media on APFS/Apple SSDs); failures are logged, not
+    /// fatal — the cache is reconstructable, so a lost rename only
+    /// costs a cold prefill.
+    private static func syncDirectory(_ url: URL) {
+        let fd = open(url.path, O_RDONLY | O_DIRECTORY)
+        guard fd >= 0 else {
+            storeLogger.debug("syncDirectory: open failed for \(url.path, privacy: .public)")
+            return
+        }
+        defer { close(fd) }
+        if fcntl(fd, F_FULLFSYNC) == -1 {
+            // Fall back to fsync where F_FULLFSYNC isn't honored.
+            _ = fsync(fd)
         }
     }
 }

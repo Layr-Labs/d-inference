@@ -121,6 +121,24 @@ func indexLRUOrdering() {
 }
 
 @Test
+func indexLRUTieBreakIsDeterministic() {
+    // Two entries with the SAME lastHitAt must order deterministically
+    // (by digestHex) rather than by undefined dictionary iteration.
+    let idx = PrefixCacheIndex(fileURL: tmpIndexURL())
+    let t = (0..<300).map { $0 }
+    var e1 = entry(model: "m", tokens: t, length: 256, path: "m/1.dbkv")
+    var e2 = entry(model: "m", tokens: t.map { $0 + 1 }, length: 256, path: "m/2.dbkv")
+    e1.lastHitAt = 777
+    e2.lastHitAt = 777  // tie
+    idx.record(e1); idx.record(e2)
+
+    let a = idx.entriesLRUFirst(modelHash: "m").map { $0.digestHex }
+    let b = idx.entriesLRUFirst(modelHash: "m").map { $0.digestHex }
+    #expect(a == b, "tie-break must be stable across calls")
+    #expect(a == a.sorted(), "equal-lastHitAt entries must order by digestHex")
+}
+
+@Test
 func indexPersistsAcrossReload() throws {
     let url = tmpIndexURL()
     let tokens = (0..<600).map { $0 }

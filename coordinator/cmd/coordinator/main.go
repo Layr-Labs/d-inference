@@ -150,7 +150,7 @@ func main() {
 	}
 
 	// Coordinator self-telemetry emitter.
-	telemetryEmitter := telemetry.NewEmitter(logger, st, srv.Metrics(), telemetry.CoordinatorVersion)
+	telemetryEmitter := telemetry.NewEmitter(logger, srv.Metrics(), telemetry.CoordinatorVersion)
 	srv.SetEmitter(telemetryEmitter)
 
 	// --- Datadog APM + DogStatsD + Logs API ---
@@ -181,7 +181,7 @@ func main() {
 	// Sync the model catalog to the registry.
 	srv.SyncModelCatalog()
 
-// Server configuration applied from config.ServerConfig during NewServer().
+	// Server configuration applied from config.ServerConfig during NewServer().
 
 	// Sync known-good provider hashes from active releases in the store.
 	srv.SyncBinaryHashes()
@@ -195,7 +195,7 @@ func main() {
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from
 	// routing (but not disconnected) and receive feedback about mismatches.
-// Python/runtime hashes are deprecated — only template hashes (e.g. mlx_metallib) are checked.
+	// Python/runtime hashes are deprecated — only template hashes (e.g. mlx_metallib) are checked.
 	if templateHashes := os.Getenv("EIGENINFERENCE_KNOWN_TEMPLATE_HASHES"); templateHashes != "" {
 		manifest := &api.RuntimeManifest{
 			PythonHashes:   make(map[string]bool),

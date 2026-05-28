@@ -409,15 +409,8 @@ type Store interface {
 
 	// --- Telemetry ---
 	//
-	// Telemetry events are forwarded to Datadog (Logs API + DogStatsD).
-	// The store retains a bounded in-memory ring buffer for the /v1/admin/metrics
-	// endpoint, but Postgres persistence and admin read/prune endpoints have
-	// been removed — Datadog handles retention and querying.
-
-	// InsertTelemetryEvents appends events to the in-memory ring buffer.
-	// Used by the ingestion handler and the coordinator emitter. The primary
-	// destination is Datadog; this is secondary for debugging.
-	InsertTelemetryEvents(ctx context.Context, events []TelemetryEventRecord) error
+	// Telemetry events are forwarded to Datadog (Logs API + DogStatsD)
+	// for durable storage and querying.
 }
 
 // TelemetryEventRecord is the persistence-layer representation of a telemetry

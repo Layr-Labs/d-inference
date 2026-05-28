@@ -105,9 +105,6 @@ type MemoryStore struct {
 	// Provider log reports
 	logReports   []LogReport
 	logReportSeq int64
-
-	// Telemetry ring buffer (bounded at memTelemetryCap)
-	telemetryEvents []TelemetryEventRecord
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -153,7 +150,6 @@ func NewMemory(scfg Config) *MemoryStore {
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
-		telemetryEvents:               make([]TelemetryEventRecord, 0, memTelemetryCap),
 	}
 	if scfg.AdminKey != "" {
 		s.keys[scfg.AdminKey] = true

@@ -1908,7 +1908,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 					conn.Write(ctx, websocket.MessageText, respData)
 					continue
 				}
-				if msgType == protocol.TypeRuntimeStatus {
+				if msgType == protocol.TypeRuntimeStatus || msgType == protocol.TypeTrustStatus {
 					continue
 				}
 			}

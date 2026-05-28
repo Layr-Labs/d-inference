@@ -47,7 +47,7 @@ func (c *ttlCache) Set(key string, value []byte, ttl time.Duration) {
 
 // Invalidate removes a single key. Useful when an action changes the
 // underlying data (e.g. registering a new release invalidates cached
-// /api/version and /v1/runtime/manifest).
+// /api/version).
 func (c *ttlCache) Invalidate(key string) {
 	c.mu.Lock()
 	delete(c.data, key)

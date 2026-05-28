@@ -2480,39 +2480,6 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 	return nil
 }
 
-// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
-func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
-		 FROM provider_earnings
-		 WHERE provider_key = $1
-		 ORDER BY created_at DESC
-		 LIMIT $2`,
-		providerKey, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query provider earnings: %w", err)
-	}
-	defer rows.Close()
-
-	var results []ProviderEarning
-	for rows.Next() {
-		var e ProviderEarning
-		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
-			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
-			continue
-		}
-		results = append(results, e)
-	}
-	if results == nil {
-		return []ProviderEarning{}, nil
-	}
-	return results, nil
-}
-
 // GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2544,28 +2511,6 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 		return []ProviderEarning{}, nil
 	}
 	return results, nil
-}
-
-// GetProviderEarningsSummary returns lifetime aggregates for a provider node.
-// Reads from the materialized earnings_summary table (PK lookup) instead of
-// scanning all provider_earnings rows.
-func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var summary ProviderEarningsSummary
-	err := s.pool.QueryRow(ctx,
-		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens
-		 FROM earnings_summary
-		 WHERE key = $1 AND key_type = 'provider'`,
-		providerKey,
-	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
-	if err != nil {
-		// No rows = no earnings yet, return zeros (not an error).
-		return ProviderEarningsSummary{}, nil
-	}
-
-	return summary, nil
 }
 
 // GetAccountEarningsSummary returns lifetime aggregates for an account.

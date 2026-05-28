@@ -20,7 +20,6 @@ import (
 	"crypto/subtle"
 	"crypto/x509"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -925,34 +924,6 @@ func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, p
 	return len(mismatches) == 0, mismatches
 }
 
-// handleRuntimeManifest returns the current runtime manifest as JSON.
-// No auth required — hashes are not secrets.
-func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
-	const cacheKey = "runtime_manifest:v1"
-	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, cached)
-		return
-	}
-	var resp map[string]any
-	if s.knownRuntimeManifest == nil {
-		resp = map[string]any{"configured": false}
-	} else {
-		resp = map[string]any{
-			"configured":      true,
-			"python_hashes":   s.knownRuntimeManifest.PythonHashes,
-			"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
-			"template_hashes": s.knownRuntimeManifest.TemplateHashes,
-		}
-	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode manifest"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
-}
-
 // HandleMDMWebhook processes a MicroMDM webhook callback.
 // Mount this on the webhook URL configured in MicroMDM.
 func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
@@ -1048,7 +1019,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
 
 	// Per-node provider earnings — public by provider_key, or auth'd by account.
-	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.handleNodeEarnings)
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.
@@ -1098,7 +1068,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
 
 	// Wallet balance
-	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
 	// Stripe Payouts (Connect Express) — bank/card withdrawals.
 	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
@@ -1130,9 +1099,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/models/catalog", s.handleModelCatalog)
 	s.mux.HandleFunc("GET /v1/models/catalog/manifest/", s.handleModelCatalogManifest)
 	s.mux.HandleFunc("GET /v1/models/catalog/", s.handleModelCatalogItem)
-
-	// Runtime manifest — providers and users can inspect accepted runtime hashes.
-	s.mux.HandleFunc("GET /v1/runtime/manifest", s.handleRuntimeManifest)
 
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed

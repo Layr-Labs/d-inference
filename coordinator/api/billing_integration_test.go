@@ -967,20 +967,20 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 		t.Errorf("wallet balance = %d, want 0 (account-linked provider should not credit wallet)", walletBalance)
 	}
 
-	// Step 8: Verify per-node earnings were recorded.
-	earnings, err := st.GetProviderEarnings(pubKey, 10)
-	if err != nil {
-		t.Fatalf("get provider earnings: %v", err)
-	}
-	if len(earnings) == 0 {
-		t.Fatal("expected at least one provider earning record")
-	}
+	// Step 8: Verify account earnings were recorded.
+		earnings, err := st.GetAccountEarnings(accountID, 10)
+		if err != nil {
+			t.Fatalf("get account earnings: %v", err)
+		}
+		if len(earnings) == 0 {
+			t.Fatal("expected at least one provider earning record")
+		}
 
-	e := earnings[0]
-	if e.AccountID != accountID {
-		t.Errorf("earning account_id = %q, want %q", e.AccountID, accountID)
-	}
-	if e.AmountMicroUSD != expectedPayout {
+		e := earnings[0]
+		if e.AccountID != accountID {
+			t.Errorf("earning account_id = %q, want %q", e.AccountID, accountID)
+		}
+		if e.AmountMicroUSD != expectedPayout{
 		t.Errorf("earning amount = %d, want %d", e.AmountMicroUSD, expectedPayout)
 	}
 	if e.PromptTokens != usage.PromptTokens {

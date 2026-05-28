@@ -1818,26 +1818,6 @@ func (s *MemoryStore) RecordProviderEarning(earning *ProviderEarning) error {
 	return nil
 }
 
-// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
-func (s *MemoryStore) GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var results []ProviderEarning
-	for i := len(s.providerEarnings) - 1; i >= 0; i-- {
-		if s.providerEarnings[i].ProviderKey == providerKey {
-			results = append(results, s.providerEarnings[i])
-			if limit > 0 && len(results) >= limit {
-				break
-			}
-		}
-	}
-	if results == nil {
-		return []ProviderEarning{}, nil
-	}
-	return results, nil
-}
-
 // GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error) {
 	s.mu.RLock()
@@ -1856,25 +1836,6 @@ func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]Provide
 		return []ProviderEarning{}, nil
 	}
 	return results, nil
-}
-
-// GetProviderEarningsSummary returns lifetime aggregates for a provider node.
-func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var summary ProviderEarningsSummary
-	for _, earning := range s.providerEarnings {
-		if earning.ProviderKey != providerKey {
-			continue
-		}
-		summary.Count++
-		summary.TotalMicroUSD += earning.AmountMicroUSD
-		summary.PromptTokens += int64(earning.PromptTokens)
-		summary.CompletionTokens += int64(earning.CompletionTokens)
-	}
-
-	return summary, nil
 }
 
 // GetAccountEarningsSummary returns lifetime aggregates for an account.

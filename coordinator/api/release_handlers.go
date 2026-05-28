@@ -130,11 +130,8 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	s.SyncBinaryHashes()
 	s.SyncRuntimeManifest()
 
-	// Invalidate cached version/manifest/release responses so providers and
-	// install.sh see the new release on the next request instead of waiting
-	// out the TTL.
+	// Invalidate cached version/release responses so providers and
 	s.readCache.Invalidate("api_version:v1")
-	s.readCache.Invalidate("runtime_manifest:v1")
 	s.readCache.Invalidate("latest_release:v1")
 
 	s.logger.Info("release registered",

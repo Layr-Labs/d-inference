@@ -662,10 +662,10 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 		t.Errorf("account balance = %d, want > 0 (provider payout should be credited)", accountBalance)
 	}
 
-	// Verify provider earnings were recorded.
-	earnings, err := st.GetProviderEarnings(pubKey, 10)
+	// Verify provider earnings were recorded via account query.
+	earnings, err := st.GetAccountEarnings(accountID, 10)
 	if err != nil {
-		t.Fatalf("get provider earnings: %v", err)
+		t.Fatalf("get account earnings: %v", err)
 	}
 	if len(earnings) == 0 {
 		t.Error("expected at least one provider earning record")

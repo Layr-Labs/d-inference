@@ -319,14 +319,8 @@ type Store interface {
 	// RecordProviderEarning stores an earning record for a specific provider node.
 	RecordProviderEarning(earning *ProviderEarning) error
 
-	// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
-	GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error)
-
 	// GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 	GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error)
-
-	// GetProviderEarningsSummary returns lifetime aggregates for a provider node.
-	GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error)
 
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)

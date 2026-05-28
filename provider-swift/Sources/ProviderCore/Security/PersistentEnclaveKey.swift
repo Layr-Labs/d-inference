@@ -66,7 +66,11 @@ private func osStatus(from cfError: Unmanaged<CFError>?) -> OSStatus {
 // MARK: - PersistentEnclaveKey
 
 public final class PersistentEnclaveKey: @unchecked Sendable {
-    private let privateKey: SecKey
+    /// The SE-backed P-256 SecKey. Module-internal so the
+    /// `PersistentEnclaveKey+ECIES` extension can call
+    /// `SecKeyCreateDecryptedData` on it; the SE still owns the
+    /// private material, this reference is just the handle.
+    internal let privateKey: SecKey
     private let _publicKeyRaw: Data
 
     /// Default access group. The team ID prefix is hardcoded because codesign

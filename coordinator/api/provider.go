@@ -1566,6 +1566,16 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 	}
 
 	if mdmResult.Error != "" {
+		// A timeout means APN latency or device sleep — not evidence of
+		// compromise. Keep the provider at its current trust level (self_signed)
+		// instead of marking it untrusted.
+		if strings.Contains(mdmResult.Error, "timeout") {
+			s.logger.Warn("MDM verification timed out — staying at current trust level",
+				"provider_id", providerID,
+				"error", mdmResult.Error,
+			)
+			return
+		}
 		s.logger.Warn("MDM verification failed — marking provider untrusted",
 			"provider_id", providerID,
 			"error", mdmResult.Error,

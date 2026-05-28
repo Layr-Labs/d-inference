@@ -163,6 +163,11 @@ public actor ProviderLoop {
     /// Task for the delayed auto-report (10 minutes after learning trust status).
     private var autoReportTask: Task<Void, Never>?
 
+    /// Keeps the network stack alive during sleep for APN push notifications.
+    /// Held for the entire provider session so MDM SecurityInfo commands
+    /// can be delivered even when the Mac is sleeping.
+    private let networkAssertion = NetworkPowerAssertion()
+
     /// Background task that periodically checks idle state and unloads
     /// the model when the timeout has elapsed. nil when disabled
     /// (`idleTimeoutMins == 0`) or before `run()` starts it.
@@ -279,6 +284,10 @@ public actor ProviderLoop {
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
         logger.info("Models: \(loopConfig.models.count) advertised")
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
+
+        // Keep the network stack alive during sleep for APN/MDM push delivery.
+        networkAssertion.acquire()
+        defer { networkAssertion.release() }
 
         // 1. Apply security hardening
         try await applySecurityHardening()

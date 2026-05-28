@@ -1,10 +1,15 @@
 # SSD KV Cache — Design Doc
 
-> Status: **DRAFT — pre-implementation.** Open questions are marked `[Q1]`,
-> `[Q2]`, … and collected at the end. Approve, push back, or fill in
-> answers before code starts.
+> Status: **P0 landed (crypto primitives) + cacheability VERIFIED.**
+> Open questions are marked `[Q1]`, `[Q2]`, … and collected at the end.
 >
-> Branch: `feat/ssd-kv-cache` off `master`. No code yet.
+> Branch: `feat/ssd-kv-cache` off `master`.
+> Done: P0 `EncryptedKVStore` + KEK/DEK envelope encryption (committed);
+> cross-model cacheability + rotating-cache restore correctness verified
+> empirically (§4.4, §4.5; tests `RotatingKVCacheRestoreTests`,
+> `BatchRotatingExtractRoundtripTests`).
+> Pending: P1–P6 (RAM tier, index, BatchScheduler integration + MB-1
+> model-binding guard, flush triggers, perf, telemetry).
 
 ## 1. Goal
 
@@ -32,6 +37,17 @@ Both use the same on-disk format and crypto layer; they differ only in
 - **Cross-model cache reuse.** Cache files are bound to a specific
   `model_hash`. Switching models invalidates the cache for that model
   (it stays on disk for the next time that model loads).
+- **Arbitrary longest-prefix match (was O2).** Dropped for the hybrid/
+  sliding/recurrent models we actually serve (Qwen3.5/Next, Gemma-4,
+  GPT-OSS). Their recurrent and sliding layers cannot be sliced to a
+  shorter prefix, so reuse is **exact-checkpoint only** (see §4.4). Pure-
+  attention models could support it, but we don't special-case them in
+  v1 — one matching policy across all models.
+- **Unsupported cache architectures.** Models whose `newCache()` yields
+  `ChunkedKVCache`, `QuantizedKVCache`, `CacheList`, or a custom pooling
+  cache (DeepseekV4) are gated out at load time and run cold. Only
+  `KVCacheSimple` / `RotatingKVCache` / `MambaCache` (and their batched
+  forms) are supported in v1.
 
 ## 3. Threat model
 
@@ -95,12 +111,14 @@ order. The matched tokens are skipped during prefill.
        │                                             │
        ▼                                             │
   ┌────────────────────────────────────────┐         │
-  │ Tier check (longest-prefix-match):     │ ◄───────┘
+  │ Tier check (EXACT-CHECKPOINT match;     │ ◄───────┘
+  │  digest must equal a cached checkpoint): │
   │   1. PrefixCacheRAM  (decrypted, LRU)  │
   │   2. EncryptedKVStore (decrypt → RAM)  │
+  │      └ MB-1 guard: meta.modelHash == loaded │
   │   3. miss → empty cache, full prefill  │
   └─────────────────┬──────────────────────┘
-                    │ matched prefix length = L
+                    │ matched checkpoint length = L (0 on miss)
                     ▼
          Prefill tokens [L .. end]           ◄── TTFT saving
                     │
@@ -126,16 +144,94 @@ discard the speculative load.
 | Model swap (coordinator `load_model`) | RAM → SSD | flush the outgoing model's RAM tier | Same as idle unload |
 | Crash / SIGKILL | — | — | SSD tier from prior writes survives. RAM tier lost. |
 
-### 4.4 What gets cached
+### 4.4 What gets cached — and the EXACT-CHECKPOINT model
 
-Only the `[KVCache]` array returned by `LanguageModel.newCache(parameters:)`
-after a prefill pass over a prefix. Specifically the `state` arrays
-(K, V tensors per layer) plus the `metaState` strings — both already
-exposed via the existing upstream `savePromptCache` API.
+> This section was rewritten after verifying the real cache types
+> across the model zoo (see §4.5). The earlier draft assumed "slice
+> the first N columns" and arbitrary longest-prefix match; both are
+> wrong for the hybrid/sliding/recurrent architectures we serve.
 
-A "prefix" here means a contiguous run of token IDs starting at index
-0. We don't cache mid-prompt suffixes — the model state isn't valid
-without the preceding context.
+**What:** the per-layer `[KVCache]` for a prefix, obtained by **extracting
+one batch row** from the live continuous-batching caches — NOT by naive
+tensor slicing. darkbloom runs `BatchKVCache` / `BatchRotatingKVCache`
+/ batched `MambaCache` (one row per concurrent request); the prefix
+snapshot for request *r* is `cache.extractBatched(r)`
+(`BatchKVCache.swift`), which returns a standalone single-stream cache
+(`KVCacheSimple` / `RotatingKVCache` / `MambaCache`) with its `state`
+arrays **and** `metaState` strings populated. Those single-stream types
+are exactly what upstream `savePromptCache`/`loadPromptCache` round-trips,
+so we serialize the extracted row, not the batched cache.
+
+**The cache tensors are 4-D**, `[B, kvHeads, seq, headDim]` per layer
+(K and V separately). A prefix is a slice along **axis 2** (the
+sequence axis), per layer × 2 — never "columns" of a matrix.
+
+**EXACT-CHECKPOINT, not arbitrary longest-prefix.** A "prefix" here is
+a contiguous run of token IDs from index 0, captured at a **fixed
+checkpoint boundary** (e.g. the end of a system prompt). A cached entry
+is reusable only when the incoming prompt's first *N* tokens are
+**byte-identical** to that checkpoint. We do NOT support truncating a
+cached length-*N* prefix to serve a shorter length-*M* prefix. Why this
+is forced by the architectures (§4.5):
+
+- **Recurrent layers (Mamba / GatedDeltaNet — e.g. Qwen3.5/Next):** the
+  state after *N* tokens is a fixed-size *summary* `(conv_state,
+  ssm_state)`, not per-token KV. It can be restored to resume at
+  exactly *N* (verified sound), but it **cannot be sliced** to derive
+  the state at *M < N* — the recurrence is non-invertible.
+- **Sliding-window layers (Gemma-4, GPT-OSS):** the rotating buffer
+  holds only the last *W* tokens; its circular/linear layout depends on
+  the exact prefix length. Restore at the exact checkpoint is verified
+  sound; arbitrary truncation is not.
+- **Full-attention layers:** these *could* support longest-prefix slice,
+  but a hybrid model is only as flexible as its least-flexible layer, so
+  the whole model is exact-checkpoint.
+
+This narrows the TTFT win (no arbitrary-prefix reuse) but still covers
+the dominant case: a shared system prompt is a fixed exact prefix every
+request replays.
+
+**MANDATORY metaState-sync invariant (MS-1).** When we serialize an
+extracted cache we MUST persist its `metaState` **in sync with** its
+`state`, and restore both together. For `RotatingKVCache`, `metaState`
+carries `[keep, maxCacheSize, step, offset, idx]`; `idx` is the
+circular write-cursor that `temporalOrder()` depends on. Restoring
+`state` without `metaState` leaves `idx`/`offset` at 0 and **silently
+scrambles token order** on the next multi-token update. P0's
+`EncryptedKVStoreMetadata` already has a `metaState: [String]` field —
+the requirement is "never drop it." This is regression-guarded by
+`omittingMetaStateOnRestoreCorruptsOrder` (which proves the corruption
+is real) alongside the positive round-trip tests.
+
+**Verified, not asserted.** The snapshot → restore → resume correctness
+for the sliding-window path is proven empirically in
+`RotatingKVCacheRestoreTests` (single-stream, incl. the wrapped
+circular-buffer case) and `BatchRotatingExtractRoundtripTests` (the
+`extractBatched(row)` path our design uses). Both match a never-reset
+reference byte-for-byte.
+
+### 4.5 Verified per-model cacheability
+
+Cache type is determined by **attention architecture per layer**, which
+must be detected at **load time** (inspect what `newCache()` returns) —
+never hardcoded to a model name. MoE is irrelevant: it only changes the
+FFN/expert routing, never the KV path.
+
+| Model (served) | Per-layer caches | Prefix cache | Notes |
+|---|---|---|---|
+| Llama, Qwen2/3, Phi, Mistral, GLM4, Cohere (pure attention) | all `KVCacheSimple` | ✅ exact-checkpoint (could do longest-prefix) | simplest case |
+| **Qwen3.5 MoE / Qwen3-Next** (hybrid) | `MambaCache` (3 of 4 layers) + `KVCacheSimple` | ✅ exact-checkpoint | recurrent state restorable at exact boundary; not sliceable. `fullAttentionInterval` default 4 |
+| **Gemma-4 26B-A4B MoE** (sliding hybrid) | `RotatingKVCache` (w=512, 28/35) + `KVCacheSimple` (7/35) | ✅ exact-checkpoint | only **15 non-shared** caches to snapshot — 20 layers KV-share via forward-time indirection, reconstructed automatically |
+| **GPT-OSS-20B MoE** (sliding hybrid) | `RotatingKVCache` (w=128, 18/36) + `KVCacheSimple` (18/36) | ✅ exact-checkpoint | attention sinks are **learned per-head weights, not KV state** — no snapshot impact |
+| Qwen3.6 / 3.7 | not in tree yet | likely exact-checkpoint | Qwen3.5/Next both use GatedDeltaNet hybrid; reasonable but unconfirmed bet they follow it — **must be re-verified when they ship** |
+
+For hybrid/sliding models we snapshot **all** per-layer caches at the
+checkpoint (full-attention KV + Mamba `(conv,ssm)` + rotating window),
+each via `extractBatched(row)`, and restore the whole set as a unit.
+A model whose `newCache()` returns a type we don't yet handle (e.g.
+`ChunkedKVCache`, `QuantizedKVCache`, `CacheList`, DeepseekV4's pooling
+cache) is gated OUT of the prefix cache at load time — it runs cold,
+no error.
 
 ## 5. File format
 
@@ -490,7 +586,7 @@ a "correctness-only" save/load. Each one was identified before code.
 | # | Optimization | Why it matters | Where it lives |
 |---|--------------|----------------|----------------|
 | O1 | **Speculative SSD read.** Start the decrypt + load as soon as the first prefix digest is computed, before tokenization is even done. | TCP/SSD/AES latency is hidden behind tokenization (~5-30ms) and template application. | `PrefixCacheManager.speculativeLoad` |
-| O2 | **Longest-prefix match, not exact match.** Index by digest tree (parent_digest column) so we hit even when prompts diverge at the tail. | Exact-match only catches identical prompts. Prefix-match catches every chat sharing the system prompt. The common case. | `PrefixCacheIndex.findLongestPrefix` |
+| O2 | ~~**Longest-prefix match**~~ — **DROPPED** (see §2 non-goals, §4.4). Hybrid/sliding/recurrent models can't slice to a shorter prefix, so matching is **exact-checkpoint**: hit only when the incoming prompt's prefix is byte-identical to a cached checkpoint boundary. Checkpoints at the O9 boundaries (256/512/1k/2k/…) give multiple exact-match points per prompt. | Exact-checkpoint still catches the dominant case (shared system prompt). | `PrefixCacheIndex.findExactCheckpoint` |
 | O3 | **Three-tier RAM/SSD/VRAM.** Hot prefixes stay decrypted in RAM. SSD is the *cold* path, not the *only* path. | Decrypt+load of a 270MB prefix (~2k tokens, 7B model) is ~80-200ms even with all the below tricks. RAM hit is ~5ms. | `PrefixCacheManager` orchestration |
 | O4 | **Decrypt directly into MLXArray-shaped buffer.** AES-GCM chunk-at-a-time, write decrypted bytes into a pre-allocated MLX buffer; avoid the `Data → MLXArray(...)` round-trip. | Naive path doubles peak RAM and adds ~50-100ms per GB for memcpy. Worth profiling whether MLX's `MLXArray.init(data:dtype:shape:)` can avoid the copy. | `EncryptedKVStore.readInto` |
 | O5 | **`mmap` the encrypted file.** Don't `Data(contentsOf:)`. Lets the kernel page in what we need. | A 1GB cache file fully loaded via `Data(contentsOf:)` spikes RSS by 1GB. mmap'd it stays in unified buffer cache. | `EncryptedKVStore.openMapped` |
@@ -584,8 +680,25 @@ flag so they're inert until P3 wires the read path.
 
 ## 15. Open questions for review
 
+**Resolved by verification (no longer open):**
+- ~~Can hybrid/sliding models (Qwen3.5/Next MoE, Gemma-4 MoE, GPT-OSS)
+  be prefix-cached?~~ **YES, exact-checkpoint** — verified §4.4/§4.5,
+  proven by the rotating-restore tests. MoE is irrelevant to the KV path.
+- ~~Does the sliding-window (rotating) cache survive snapshot/restore?~~
+  **YES** when `state`+`metaState` restored together (invariant MS-1),
+  proven empirically.
+- ~~Does upstream save/load support the batched caches we run?~~ Moot —
+  we `extractBatched(row)` first, yielding single-stream caches the
+  upstream path does handle.
+
+**Still open:**
 - `[Q1]` First-cut excludes cluster (TP/PP) prefix caching. Confirm OK,
   or do you need it from day one?
+- `[Q8]` **Exact-checkpoint match is now the only mode** (longest-prefix
+  dropped, §2). Confirm that's acceptable — it covers shared-system-
+  prompt reuse but not partial-prefix overlap. If partial overlap on
+  pure-attention models is valuable enough, we could special-case those
+  (added complexity).
 - `[Q2]` KEK rotation: design accommodates it but v1 has no UX for
   triggering it. Acceptable?
 - `[Q3]` SQLite for the index, or do you prefer a simpler approach

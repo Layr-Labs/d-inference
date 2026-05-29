@@ -1,13 +1,7 @@
 // Copyright © 2026 Eigen Labs Inc.
 //
-// Live, end-to-end proof for issue #249 against the real
-// `mlx-community/gemma-4-26b-a4b-it-8bit` model + its real downloaded
-// `chat_template.jinja` (rendered by swift-jinja).
-//
-// Gated:
-//   DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_GEMMA=1
-//   (generation additionally needs mlx.metallib — set MLX_METALLIB_SOURCE
-//    or have it under .build; see LiveInferenceFixtures).
+// Live end-to-end coverage for #249 against the real gemma-4-26b model.
+// Gated by DARKBLOOM_LIVE_MLX_TESTS=1 + DARKBLOOM_LIVE_MLX_GEMMA=1.
 
 import Foundation
 import MLX
@@ -24,7 +18,6 @@ struct GemmaToolCallLiveTests {
 
     // MARK: - Scenario
 
-    /// run_terminal tool spec in the shape the chat template + parser expect.
     private var toolSpecs: [[String: any Sendable]] {
         [[
             "type": "function",
@@ -50,10 +43,7 @@ struct GemmaToolCallLiveTests {
         + "which runs a shell command and returns its stdout. Always call the tool "
         + "to inspect files; never guess file contents."
 
-    /// The multi-turn history that triggers the bug: a prior, well-formed
-    /// assistant `tool_calls` step (OpenAI shape — arguments is a JSON string),
-    /// its `tool` result, then a fresh user turn that should produce a second
-    /// tool call.
+    /// Multi-turn history with a prior tool call, its result, and a new user turn.
     private func conversation() -> [OpenAIChatMessage] {
         [
             OpenAIChatMessage(role: .system, content: .text(systemPrompt)),
@@ -77,9 +67,8 @@ struct GemmaToolCallLiveTests {
         ]
     }
 
-    /// Hand-built message dicts identical to `templateMessageDict()` output but
-    /// with the prior tool call's arguments left as the raw OpenAI JSON *string*
-    /// — i.e. the pre-fix behavior, used to demonstrate the double brace.
+    /// Same history but with the prior tool call's arguments left as a raw JSON
+    /// string (the pre-fix shape).
     private func rawStringDicts() -> [[String: any Sendable]] {
         let assistant: [String: any Sendable] = [
             "role": "assistant",
@@ -107,7 +96,7 @@ struct GemmaToolCallLiveTests {
         ]
     }
 
-    // MARK: - A. Prompt rendering against the REAL template (no GPU needed)
+    // MARK: - Prompt rendering
 
     @Test(
         "real Gemma template: fixed translation renders single brace, raw string double-braces",
@@ -121,13 +110,11 @@ struct GemmaToolCallLiveTests {
         }
         let tokenizer = try await LocalTokenizerLoader().load(from: dir)
 
-        // FIXED path: the production code under test.
         let fixedDicts = conversation().map { $0.templateMessageDict() }
         let fixedIDs = try tokenizer.applyChatTemplate(
             messages: fixedDicts, tools: toolSpecs, additionalContext: nil)
         let fixedPrompt = tokenizer.decode(tokenIds: fixedIDs, skipSpecialTokens: false)
 
-        // PRE-FIX path: arguments forwarded as the raw JSON string.
         let buggyIDs = try tokenizer.applyChatTemplate(
             messages: rawStringDicts(), tools: toolSpecs, additionalContext: nil)
         let buggyPrompt = tokenizer.decode(tokenIds: buggyIDs, skipSpecialTokens: false)
@@ -138,14 +125,12 @@ struct GemmaToolCallLiveTests {
         print(snippet(buggyPrompt, around: "call:run_terminal"))
         print("====================================================\n")
 
-        // Pre-fix double brace is present...
         #expect(buggyPrompt.contains(#"{{"command""#))
-        // ...and the fix removes it, emitting the mapping branch instead.
         #expect(!fixedPrompt.contains(#"{{"command""#))
         #expect(fixedPrompt.contains("call:run_terminal{command:"))
     }
 
-    // MARK: - B. Real generation on the real model (needs metallib + ~28 GB)
+    // MARK: - Generation
 
     @Test(
         "real Gemma generation: multi-turn tool call comes back clean",
@@ -166,7 +151,6 @@ struct GemmaToolCallLiveTests {
         let scheduler = loaded.scheduler
         defer { Task { await scheduler.unloadModel() } }
 
-        // Build the prompt via the production translation (templateMessageDict).
         let dicts = conversation().map { $0.templateMessageDict() }
         let promptTokens: [Int] = try await loaded.container.perform { ctx in
             try ctx.tokenizer.applyChatTemplate(
@@ -185,16 +169,13 @@ struct GemmaToolCallLiveTests {
 
         print("\n=== issue #249: real Gemma generation (raw) ===\n\(text)\n===========================\n")
 
-        // No double-brace poison in the generated tool call.
         #expect(!text.contains("{{"))
 
-        // Parse the tool call the same way the server does.
         let parsed = GemmaFunctionParser().parse(content: text, tools: toolSpecs)
         let call = try #require(parsed, "model did not emit a parseable Gemma tool call")
         #expect(call.function.name == "run_terminal")
 
-        // The corruption symptom is a key like `{"command"` (object split at the
-        // first colon). Assert every key is clean.
+        // Keys must be clean (the bug produced keys like `{"command"`).
         for key in call.function.arguments.keys {
             #expect(!key.hasPrefix("{"), "corrupted key: \(key)")
             #expect(!key.contains("\""), "corrupted key: \(key)")

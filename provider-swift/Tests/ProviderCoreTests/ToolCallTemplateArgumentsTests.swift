@@ -6,13 +6,8 @@ import Testing
 
 @testable import ProviderCore
 
-/// Regression tests for issue #249 at the live provider translation boundary.
-///
-/// `templateMessageDict()` feeds `MLXLMCommon.Tokenizer.applyChatTemplate`,
-/// which renders the model's downloaded Gemma `chat_template.jinja`. A tool
-/// call's `arguments` must arrive as a *mapping* so the template takes the
-/// `is mapping` branch (single brace) instead of the `is string` branch that
-/// double-braces and corrupts multi-turn tool calls.
+/// Regression tests for #249: `templateMessageDict()` must hand the chat
+/// template a tool-call `arguments` mapping, not a JSON string.
 struct ToolCallTemplateArgumentsTests {
     private func assistantWithToolCall(arguments: String) -> OpenAIChatMessage {
         OpenAIChatMessage(
@@ -40,7 +35,6 @@ struct ToolCallTemplateArgumentsTests {
             assistantWithToolCall(arguments: #"{"command":"ls -la"}"#))
         let mapping = try #require(arguments as? [String: any Sendable])
         #expect(mapping["command"] as? String == "ls -la")
-        // Guards the regression: a String here re-enables the double-brace bug.
         #expect(!(arguments is String))
     }
 

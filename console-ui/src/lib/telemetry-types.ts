@@ -48,9 +48,6 @@ export interface TelemetryEvent {
   stack?: string;
 }
 
-export interface TelemetryBatch {
-  events: TelemetryEvent[];
-}
 
 /** Server-enforced allowlist — keep in sync with the coordinator handler. */
 export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([

@@ -20,8 +20,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/e2e/testbed"
 	tbassert "github.com/eigeninference/d-inference/e2e/testbed/assert"
-	"github.com/eigeninference/d-inference/e2e/testbed/profile"
-	tbprofile "github.com/eigeninference/d-inference/e2e/testbed/profile"
 )
 
 var httpTimeout = 300 * time.Second

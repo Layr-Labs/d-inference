@@ -3081,7 +3081,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 				maxOutputLen = rec.MaxOutputLength
 			}
 		}
-		pricing := buildPricing(m.ID)
+		pricing := s.buildPricing(m.ID)
 		inputMods, outputMods := modelModalities(m.ModelType)
 		isReady := false
 		if cap, ok := capByModel[m.ID]; ok && cap.CanAccept {
@@ -3134,9 +3134,14 @@ func modelModalities(modelType string) ([]string, []string) {
 	}
 }
 
-func buildPricing(modelID string) []types.PricingTier {
-	inMicro := payments.InputPricePerMillion(modelID)
-	outMicro := payments.OutputPricePerMillion(modelID)
+// buildPricing returns pricing tiers for a model, preferring DB-backed platform
+// prices from model_prices when available, falling back to hard-coded defaults.
+func (s *Server) buildPricing(modelID string) []types.PricingTier {
+	inMicro, outMicro, hasDB := s.store.GetModelPrice("platform", modelID)
+	if !hasDB {
+		inMicro = payments.InputPricePerMillion(modelID)
+		outMicro = payments.OutputPricePerMillion(modelID)
+	}
 	return []types.PricingTier{
 		{
 			Prompt:         microToUSDString(inMicro),

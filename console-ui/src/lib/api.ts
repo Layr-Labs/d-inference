@@ -27,6 +27,14 @@ function proxyHeaders(extra?: Record<string, string>): Record<string, string> {
   };
 }
 
+export interface ModelPricing {
+  prompt: string;
+  completion: string;
+  image?: string;
+  request?: string;
+  input_cache_read?: string;
+}
+
 export interface Model {
   id: string;
   object: string;
@@ -45,6 +53,17 @@ export interface Model {
   architecture?: string;
   family?: string;
   capabilities?: string[];
+  // OpenRouter provider schema fields (from the enriched /v1/models endpoint).
+  name?: string;
+  hugging_face_id?: string;
+  created?: number;
+  description?: string;
+  context_length?: number;
+  pricing?: ModelPricing;
+  input_modalities?: string[];
+  output_modalities?: string[];
+  supported_features?: string[];
+  supported_sampling_parameters?: string[];
 }
 
 export interface BalanceResponse {
@@ -127,6 +146,17 @@ export async function fetchModels(): Promise<Model[]> {
       architecture: m.architecture ?? meta.architecture,
       family: m.family ?? meta.family,
       capabilities: m.capabilities ?? meta.capabilities,
+      // OpenRouter provider schema fields.
+      name: m.name ?? meta.display_name,
+      hugging_face_id: m.hugging_face_id ?? m.id,
+      created: m.created,
+      description: m.description ?? meta.description,
+      context_length: m.context_length ?? m.max_context_length ?? meta.max_context_length,
+      pricing: m.pricing,
+      input_modalities: m.input_modalities,
+      output_modalities: m.output_modalities,
+      supported_features: m.supported_features,
+      supported_sampling_parameters: m.supported_sampling_parameters,
     };
   });
 }

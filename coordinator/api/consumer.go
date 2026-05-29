@@ -946,6 +946,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		rawBody, _ = json.Marshal(providerParsed)
 	}
 
+	// Per-account token rate limiting (ITPM/OTPM) — the industry-standard
+	// token throttle alongside RPM. Charged upfront from the input estimate
+	// and the bounded max_tokens (OpenAI-style). Runs before the balance
+	// reservation so a throttled request never touches billing.
+	if !s.applyTokenRateLimit(w, r, estimatedPromptTokens, requestedMaxTokens) {
+		return
+	}
+
 	// Pre-flight balance reservation — atomically debit the worst-case cost
 	// using the byte-length upper bound for prompt tokens (guaranteed >=
 	// actual tokens for any BPE tokenizer) plus max_tokens we just bounded
@@ -3000,11 +3008,16 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	catalogByID := make(map[string]store.SupportedModel, len(registryRows))
+	// registryByID holds the richer registry entry (context length, output
+	// length, description, capabilities, created_at, metadata) used to populate
+	// the OpenRouter provider fields. Empty for legacy supported_models rows.
+	registryByID := make(map[string]store.ModelRegistryEntry, len(registryRows))
 	if len(registryRows) > 0 {
 		for _, row := range registryRows {
 			cm := supportedModelFromRegistryRecord(&row)
 			if cm.Active {
 				catalogByID[cm.ID] = cm
+				registryByID[cm.ID] = row.ModelRegistryEntry
 			}
 		}
 	} else {
@@ -3050,13 +3063,45 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if inCatalog && cm.DisplayName != "" {
 			metadata.DisplayName = cm.DisplayName
 		}
-		data = append(data, types.ModelEntry{
-			ID:       m.ID,
-			Object:   "model",
-			Created:  0,
-			OwnedBy:  "eigeninference",
-			Metadata: metadata,
-		})
+
+		entry := types.ModelEntry{
+			ID:            m.ID,
+			Object:        "model",
+			Created:       0,
+			OwnedBy:       "eigeninference",
+			Name:          metadata.DisplayName,
+			HuggingFaceID: m.ID, // model IDs are HuggingFace paths
+			Metadata:      metadata,
+		}
+
+		// Quantization mapped to the OpenRouter vocabulary.
+		entry.Quantization = mapQuantizationToOpenRouter(m.Quantization)
+
+		// Per-token pricing (platform rate, falling back to global defaults).
+		inPM, outPM := s.resolvePlatformPricing(m.ID)
+		entry.Pricing = buildModelPricing(inPM, outPM)
+
+		// Sampling parameters are uniform across models (raw body pass-through).
+		entry.SupportedSamplingParameters = defaultSamplingParameters()
+
+		// Fields sourced from the richer registry entry when available.
+		if reg, ok := registryByID[m.ID]; ok {
+			if !reg.CreatedAt.IsZero() {
+				entry.Created = reg.CreatedAt.Unix()
+			}
+			entry.Description = reg.Description
+			entry.ContextLength = reg.MaxContextLength
+			entry.MaxOutputLength = reg.MaxOutputLength
+			entry.SupportedFeatures = supportedFeaturesFromCapabilities(reg.Capabilities)
+			entry.InputModalities, entry.OutputModalities = deriveModalities(m.ModelType, reg.Capabilities)
+			if dd, ok := reg.Metadata["deprecation_date"].(string); ok && dd != "" {
+				entry.DeprecationDate = dd
+			}
+		} else {
+			entry.InputModalities, entry.OutputModalities = deriveModalities(m.ModelType, nil)
+		}
+
+		data = append(data, entry)
 	}
 
 	writeJSON(w, http.StatusOK, types.ModelListResponse{
@@ -3365,6 +3410,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
+
+	// Per-account token rate limiting (ITPM/OTPM), before the reservation.
+	if !s.applyTokenRateLimit(w, r, estimatedPromptTokens, requestedMaxTokens) {
+		return
+	}
 
 	// Pre-flight balance reservation — same worst-case-cost reservation as
 	// handleChatCompletions, using the byte-length upper bound for prompt

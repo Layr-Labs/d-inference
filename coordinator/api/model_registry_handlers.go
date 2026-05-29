@@ -265,9 +265,69 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			"model_id":           modelID,
 			"runtime_parameters": rec.RuntimeParameters,
 		})
+	case "capabilities":
+		var req struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+		if req.Capabilities == nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "capabilities is required (array of strings)"))
+			return
+		}
+		rec, err := s.store.GetModelRegistryRecord(modelID)
+		if err != nil {
+			s.writeModelRegistryStoreError(w, "get model for capabilities update", err)
+			return
+		}
+		// Replace capabilities wholesale (normalized: trimmed, de-duped, ordered).
+		caps := normalizeCapabilities(req.Capabilities)
+		entry := &store.ModelRegistryEntry{
+			ID:                rec.ID,
+			DisplayName:       rec.DisplayName,
+			Family:            rec.Family,
+			Architecture:      rec.Architecture,
+			Quantization:      rec.Quantization,
+			MaxContextLength:  rec.MaxContextLength,
+			MaxOutputLength:   rec.MaxOutputLength,
+			MinRAMGB:          rec.MinRAMGB,
+			Capabilities:      caps,
+			Status:            rec.Status,
+			Description:       rec.Description,
+			RuntimeParameters: rec.RuntimeParameters,
+			Metadata:          rec.Metadata,
+		}
+		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
+			s.writeModelRegistryStoreError(w, "update capabilities", err)
+			return
+		}
+		s.SyncModelCatalog()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":       "updated",
+			"model_id":     modelID,
+			"capabilities": caps,
+		})
 	default:
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model action not found"))
 	}
+}
+
+// normalizeCapabilities trims, drops empties, and de-duplicates a capability
+// list while preserving first-seen order.
+func normalizeCapabilities(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, c := range in {
+		c = strings.TrimSpace(c)
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 func (s *Server) writeModelRegistryStoreError(w http.ResponseWriter, operation string, err error) {
@@ -301,6 +361,12 @@ func (s *Server) requirePublishingAPIKey(w http.ResponseWriter, r *http.Request)
 
 	if bootstrap := os.Getenv("MODEL_REGISTRY_PUBLISHING_KEY"); bootstrap != "" && constantTimeStringEqual(provided, bootstrap) {
 		return publishingActor{ID: "env-bootstrap", Name: "env-bootstrap"}, true
+	}
+	// The admin key (EIGENINFERENCE_ADMIN_KEY) is the highest privilege and is
+	// also accepted for any publishing/registry action (register, promote,
+	// status, runtime-parameters, capabilities).
+	if s.adminKey != "" && constantTimeStringEqual(provided, s.adminKey) {
+		return publishingActor{ID: "admin", Name: "admin"}, true
 	}
 	providedHash := publishingSHA256Hex(provided)
 	keys, err := s.store.FindPublishingAPIKeysWithError()
@@ -353,7 +419,7 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 	if rest == p || rest == "" {
 		return "", "", false
 	}
-	for _, action := range []string{"/promote", "/status", "/runtime-parameters"} {
+	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities"} {
 		if strings.HasSuffix(rest, action) {
 			modelID, err := url.PathUnescape(strings.TrimSuffix(rest, action))
 			if err != nil {
@@ -613,6 +679,7 @@ func verifyManifestFileHEAD(ctx context.Context, client *http.Client, baseURL, r
 func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]any {
 	supported := supportedModelFromRegistryRecord(rec)
 	version := rec.ActiveVersion
+	inputModalities, outputModalities := deriveModalities(supported.ModelType, rec.Capabilities)
 	model := map[string]any{
 		"id":                 supported.ID,
 		"s3_name":            supported.S3Name,
@@ -632,6 +699,17 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 		"runtime_parameters": rec.RuntimeParameters,
 		"metadata":           rec.Metadata,
 		"status":             rec.Status,
+
+		// OpenRouter-shaped fields (mirrors /v1/models) for UI consistency.
+		"name":                          supported.DisplayName,
+		"hugging_face_id":               supported.ID,
+		"input_modalities":              inputModalities,
+		"output_modalities":             outputModalities,
+		"supported_features":            supportedFeaturesFromCapabilities(rec.Capabilities),
+		"supported_sampling_parameters": defaultSamplingParameters(),
+	}
+	if !rec.CreatedAt.IsZero() {
+		model["created"] = rec.CreatedAt.Unix()
 	}
 	if version != nil {
 		model["version"] = version.Version

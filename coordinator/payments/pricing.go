@@ -1,5 +1,10 @@
 package payments
 
+import (
+	"strconv"
+	"strings"
+)
+
 // Pricing model for Darkbloom.
 //
 // All model-specific prices are managed via the admin API:
@@ -85,12 +90,71 @@ func CalculateCostWithOverrides(model string, promptTokens, completionTokens int
 	return cost
 }
 
-// PlatformFee returns Darkbloom's routing fee (5%).
-func PlatformFee(totalCost int64) int64 {
-	return totalCost * platformFeePercent / 100
+// DefaultPlatformFeePercent is the global platform routing fee applied when an
+// account has no per-account override.
+const DefaultPlatformFeePercent int64 = platformFeePercent
+
+// resolveFeePercent clamps an optional per-account fee override to [0,100],
+// falling back to the global default when feePercent is nil.
+func resolveFeePercent(feePercent *int64) int64 {
+	pct := platformFeePercent
+	if feePercent != nil {
+		pct = *feePercent
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return pct
 }
 
-// ProviderPayout returns the amount the provider receives (95%).
+// PlatformFee returns Darkbloom's routing fee at the global default rate.
+func PlatformFee(totalCost int64) int64 {
+	return PlatformFeeWithPercent(totalCost, nil)
+}
+
+// ProviderPayout returns the amount the provider receives at the global default
+// fee rate.
 func ProviderPayout(totalCost int64) int64 {
-	return totalCost - PlatformFee(totalCost)
+	return ProviderPayoutWithPercent(totalCost, nil)
+}
+
+// PlatformFeeWithPercent returns Darkbloom's routing fee using a per-account
+// override when provided (nil = global default). A 0% override yields no fee.
+func PlatformFeeWithPercent(totalCost int64, feePercent *int64) int64 {
+	return totalCost * resolveFeePercent(feePercent) / 100
+}
+
+// ProviderPayoutWithPercent returns the amount the provider receives after the
+// (possibly overridden) platform fee.
+func ProviderPayoutWithPercent(totalCost int64, feePercent *int64) int64 {
+	return totalCost - PlatformFeeWithPercent(totalCost, feePercent)
+}
+
+// FormatPerTokenUSD converts a price expressed in micro-USD per 1,000,000
+// tokens into a plain decimal USD-per-single-token string, as required by the
+// OpenRouter provider /v1/models schema (e.g. 50000 -> "0.00000005").
+//
+// micro-USD per 1M tokens / 1e6 (micro->USD) / 1e6 (per-1M->per-token) = value / 1e12.
+// We render with fixed precision and trim trailing zeros, always leaving at
+// least one digit after the decimal point so the value stays a valid number
+// string ("0" stays "0").
+func FormatPerTokenUSD(microUSDPerMillion int64) string {
+	if microUSDPerMillion == 0 {
+		return "0"
+	}
+	// Scale to USD-per-token: divide by 1e12. Use big-enough fixed precision
+	// (12 decimals captures the full micro-USD resolution).
+	s := strconv.FormatFloat(float64(microUSDPerMillion)/1e12, 'f', 12, 64)
+	// Trim trailing zeros but keep a leading integer digit.
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimSuffix(s, ".")
+	}
+	if s == "" || s == "-" {
+		return "0"
+	}
+	return s
 }

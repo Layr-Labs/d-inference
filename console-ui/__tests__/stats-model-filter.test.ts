@@ -62,6 +62,7 @@ describe("catalogModelsFromResponse", () => {
         id: "proxy-active",
         status: "active",
         displayName: "Proxy Active",
+        name: "Proxy Active",
         sizeGB: 12.5,
       },
       { id: "proxy-deprecated", status: "deprecated" },
@@ -74,6 +75,31 @@ describe("catalogModelsFromResponse", () => {
         ],
       }),
     ).toEqual([{ id: "coordinator-active", status: "active" }]);
+  });
+
+  it("captures OpenRouter provider fields (modalities, features, description)", () => {
+    const [model] = catalogModelsFromResponse({
+      data: [
+        {
+          id: "mlx-community/Qwen3.5-9B-MLX-4bit",
+          status: "active",
+          name: "Qwen3.5 9B",
+          display_name: "Qwen3.5 9B",
+          description: "Balanced general-purpose model.",
+          max_context_length: 262144,
+          input_modalities: ["text"],
+          output_modalities: ["text"],
+          supported_features: ["tools", "reasoning"],
+        },
+      ],
+    });
+
+    expect(model.name).toBe("Qwen3.5 9B");
+    expect(model.description).toBe("Balanced general-purpose model.");
+    expect(model.maxContextLength).toBe(262144);
+    expect(model.inputModalities).toEqual(["text"]);
+    expect(model.outputModalities).toEqual(["text"]);
+    expect(model.supportedFeatures).toEqual(["tools", "reasoning"]);
   });
 });
 

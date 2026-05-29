@@ -228,6 +228,19 @@ type Server struct {
 	// targets for spam/abuse than inference, so we throttle them harder.
 	// Nil means unlimited.
 	financialRateLimiter *ratelimit.Limiter
+
+	// serviceRateLimiter applies an elevated per-account limit to trusted
+	// service accounts (store.RoleService), e.g. an upstream aggregator like
+	// OpenRouter that fans out many end-users behind one key. When nil,
+	// service accounts bypass rate limiting entirely.
+	serviceRateLimiter *ratelimit.Limiter
+
+	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
+	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
+	// the industry-standard token throttle alongside RPM. Nil means no token
+	// limiting for that tier. Service accounts use serviceTokenLimiter.
+	consumerTokenLimiter *ratelimit.TokenLimiter
+	serviceTokenLimiter  *ratelimit.TokenLimiter
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -240,6 +253,87 @@ func (s *Server) SetRateLimiter(rl *ratelimit.Limiter) {
 // balance-mutating endpoints. Pass nil to disable.
 func (s *Server) SetFinancialRateLimiter(rl *ratelimit.Limiter) {
 	s.financialRateLimiter = rl
+}
+
+// SetServiceRateLimiter configures the elevated limiter used for service-role
+// accounts (e.g. OpenRouter). Pass nil to let service accounts bypass limits.
+func (s *Server) SetServiceRateLimiter(rl *ratelimit.Limiter) {
+	s.serviceRateLimiter = rl
+}
+
+// SetTokenLimiters configures the per-account input/output token-per-minute
+// limiters for the consumer and service tiers. Pass nil for a tier to disable
+// token limiting for it.
+func (s *Server) SetTokenLimiters(consumer, service *ratelimit.TokenLimiter) {
+	s.consumerTokenLimiter = consumer
+	s.serviceTokenLimiter = service
+}
+
+// applyTokenRateLimit enforces per-account ITPM/OTPM limits at request
+// admission using the upfront input estimate and the bounded max_tokens
+// (OpenAI-style upfront charge). It returns true when the request may proceed;
+// on rejection it writes a 429 naming the tripped dimension (with Retry-After)
+// and returns false. Admin bypasses. Standard x-ratelimit-*-{input,output}-tokens
+// headers are set on both success and rejection.
+func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int) bool {
+	accountID := consumerKeyFromContext(r.Context())
+	if accountID == "admin" {
+		return true
+	}
+
+	tl := s.consumerTokenLimiter
+	tier := "consumer"
+	if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
+		if s.serviceTokenLimiter != nil {
+			tl = s.serviceTokenLimiter
+			tier = "service"
+		} else {
+			// Service account with no service token limiter configured: bypass.
+			return true
+		}
+	}
+	if tl == nil {
+		return true
+	}
+
+	allowed, dimension, retryAfter := tl.Allow(accountID, inputTokens, outputTokens)
+	setTokenRateLimitHeaders(w, tl, accountID)
+	if !allowed {
+		seconds := int(retryAfter.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		s.ddIncr("ratelimit.rejections", []string{"tier:" + tier, "dimension:" + dimension})
+		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+			fmt.Sprintf("%s rate limit exceeded — retry after %ds", dimension, seconds),
+			withCode("rate_limit_exceeded")))
+		return false
+	}
+	return true
+}
+
+// setTokenRateLimitHeaders emits the standard input/output token rate-limit
+// headers from the limiter's current state.
+func setTokenRateLimitHeaders(w http.ResponseWriter, tl *ratelimit.TokenLimiter, accountID string) {
+	in := tl.InputStat(accountID)
+	out := tl.OutputStat(accountID)
+	h := w.Header()
+	h.Set("x-ratelimit-limit-input-tokens", strconv.Itoa(in.LimitPerMinute))
+	h.Set("x-ratelimit-remaining-input-tokens", strconv.Itoa(in.Remaining))
+	h.Set("x-ratelimit-reset-input-tokens", strconv.Itoa(in.ResetSeconds)+"s")
+	h.Set("x-ratelimit-limit-output-tokens", strconv.Itoa(out.LimitPerMinute))
+	h.Set("x-ratelimit-remaining-output-tokens", strconv.Itoa(out.Remaining))
+	h.Set("x-ratelimit-reset-output-tokens", strconv.Itoa(out.ResetSeconds)+"s")
+}
+
+// setRequestRateLimitHeaders emits the standard request-dimension rate-limit
+// headers.
+func setRequestRateLimitHeaders(w http.ResponseWriter, st ratelimit.Stat) {
+	h := w.Header()
+	h.Set("x-ratelimit-limit-requests", strconv.Itoa(st.LimitPerMinute))
+	h.Set("x-ratelimit-remaining-requests", strconv.Itoa(st.Remaining))
+	h.Set("x-ratelimit-reset-requests", strconv.Itoa(st.ResetSeconds)+"s")
 }
 
 // NewServer creates a configured Server with all routes mounted.
@@ -1009,6 +1103,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions))))
 	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
+	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
+	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
 
 	// Sender encryption — public key publication for sender→coordinator E2E.
 	// Optional: senders may use this to encrypt request bodies; plaintext path
@@ -1090,6 +1186,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))         // provider sets own prices
 	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))   // revert to default
 	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(s.handleAdminPricing)) // platform sets defaults
+
+	// Admin account management (service-role + per-account platform fee)
+	s.mux.HandleFunc("PUT /v1/admin/users/role", s.requireAuth(s.handleAdminSetUserRole))
+	s.mux.HandleFunc("PUT /v1/admin/users/platform-fee", s.requireAuth(s.handleAdminSetUserPlatformFee))
 
 	// Admin model catalog
 	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))
@@ -1497,6 +1597,15 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 			next(w, r)
 			return
 		}
+		// Service-role accounts (e.g. OpenRouter) get the elevated limiter, or
+		// bypass entirely when no service limiter is configured.
+		if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
+			if s.serviceRateLimiter == nil {
+				next(w, r)
+				return
+			}
+			rl = s.serviceRateLimiter
+		}
 		if allowed, retryAfter := rl.Allow(accountID); !allowed {
 			seconds := int(retryAfter.Seconds())
 			if seconds < 1 {
@@ -1504,11 +1613,13 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 			}
 			w.Header().Set("Retry-After", strconv.Itoa(seconds))
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(retryAfter).Unix(), 10))
+			setRequestRateLimitHeaders(w, rl.Stat(accountID))
 			s.ddIncr("ratelimit.rejections", []string{"tier:" + tier})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				"too many requests — slow down and retry after the Retry-After interval", withCode("rate_limit_exceeded")))
 			return
 		}
+		setRequestRateLimitHeaders(w, rl.Stat(accountID))
 		next(w, r)
 	}
 }

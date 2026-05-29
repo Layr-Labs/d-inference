@@ -50,6 +50,12 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+function formatContextLength(tokens?: number): string {
+  if (!tokens || tokens <= 0) return "";
+  if (tokens >= 1000) return `${Math.round(tokens / 1000)}K`;
+  return `${tokens}`;
+}
+
 function TrustIndicator({ level }: { level?: string }) {
   if (level === "hardware") {
     return (
@@ -176,6 +182,11 @@ export default function ModelsPage() {
                           {formatBytes(model.size_bytes)}
                         </span>
                       )}
+                      {(model.context_length ?? model.max_context_length) ? (
+                        <span className="px-2 py-0.5 rounded bg-bg-elevated text-xs font-mono text-text-tertiary shadow-sm">
+                          {formatContextLength(model.context_length ?? model.max_context_length)} ctx
+                        </span>
+                      ) : null}
                     </div>
 
                     {/* Pricing */}

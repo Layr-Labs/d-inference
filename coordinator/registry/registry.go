@@ -25,6 +25,8 @@ import (
 	"log/slog"
 	"math"
 	"math/rand"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -2169,6 +2171,47 @@ func (r *Registry) ListModels() []AggregateModel {
 	}
 
 	return models
+}
+
+// ModelCountryCodes returns the sorted, de-duplicated ISO 3166-1 alpha-2
+// country codes of online providers serving the given model. Used to populate
+// the OpenRouter "datacenters" field. Offline/untrusted providers and those
+// without a known location are skipped.
+func (r *Registry) ModelCountryCodes(modelID string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		status := p.Status
+		var cc string
+		if p.Location != nil {
+			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
+		}
+		serves := false
+		if cc != "" && status != StatusOffline && status != StatusUntrusted {
+			for i := range p.Models {
+				if p.Models[i].ID == modelID {
+					serves = true
+					break
+				}
+			}
+		}
+		p.mu.Unlock()
+		if serves {
+			seen[cc] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for c := range seen {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // trustRank returns a numeric rank for trust levels (higher = more trusted).

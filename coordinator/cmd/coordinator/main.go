@@ -142,12 +142,13 @@ func main() {
 	srv := api.NewServer(reg, st, logger)
 	srv.SetAdminKey(adminKey)
 
-	// Per-account rate limiter on consumer (inference) endpoints. Defaults
-	// are conservative for slow OpenAI-style rollout; raise via env vars
-	// when confident in capacity. Set EIGENINFERENCE_RATE_LIMIT_RPS=0 to
-	// disable.
-	rateRPS := envFloat("EIGENINFERENCE_RATE_LIMIT_RPS", ratelimit.DefaultRPS)
-	rateBurst := envInt("EIGENINFERENCE_RATE_LIMIT_BURST", ratelimit.DefaultBurst)
+	// Per-account request rate limiter on consumer (inference) endpoints.
+	// Defaults are intentionally generous (20 rps / burst 120) — the fleet
+	// token-budget admission is the real capacity ceiling, so this is a
+	// fairness/abuse guard, not a throughput brake. Tune via env vars; set
+	// EIGENINFERENCE_RATE_LIMIT_RPS=0 to disable request limiting entirely.
+	rateRPS := envFloat("EIGENINFERENCE_RATE_LIMIT_RPS", 20.0)
+	rateBurst := envInt("EIGENINFERENCE_RATE_LIMIT_BURST", 120)
 	if rateRPS > 0 {
 		rl := ratelimit.New(ratelimit.Config{RPS: rateRPS, Burst: rateBurst})
 		rl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "ratelimit_pruner") })
@@ -171,6 +172,48 @@ func main() {
 	} else {
 		logger.Warn("financial-endpoint rate limiter DISABLED (EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS=0)")
 	}
+
+	// Elevated request limiter for trusted service accounts (e.g. OpenRouter),
+	// which fan out many end-users behind a single key. Defaults to 200 RPS /
+	// burst 600. Set EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS=0 to let service
+	// accounts bypass request rate limiting entirely.
+	svcRPS := envFloat("EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS", 200.0)
+	svcBurst := envInt("EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST", 600)
+	if svcRPS > 0 {
+		srl := ratelimit.New(ratelimit.Config{RPS: svcRPS, Burst: svcBurst})
+		srl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_ratelimit_pruner") })
+		srv.SetServiceRateLimiter(srl)
+		logger.Info("service-account rate limiter enabled", "rps", svcRPS, "burst", svcBurst)
+	} else {
+		logger.Warn("service-account rate limiter DISABLED — service accounts bypass rate limits")
+	}
+
+	// Per-account token-per-minute limiters (ITPM/OTPM) — the industry-standard
+	// token throttle alongside RPM. Bucket rates are tokens/second (per-minute
+	// limit / 60); bursts must be >= the largest single request (>= max context
+	// for input, >= max output for output). Set a tier's *_ITPM and *_OTPM both
+	// to 0 to disable token limiting for that tier.
+	consumerITPM := envFloat("EIGENINFERENCE_RATE_LIMIT_ITPM", 5_000_000)
+	consumerITPMBurst := envInt("EIGENINFERENCE_RATE_LIMIT_ITPM_BURST", 1_000_000)
+	consumerOTPM := envFloat("EIGENINFERENCE_RATE_LIMIT_OTPM", 500_000)
+	consumerOTPMBurst := envInt("EIGENINFERENCE_RATE_LIMIT_OTPM_BURST", 64_000)
+	svcITPM := envFloat("EIGENINFERENCE_SERVICE_RATE_LIMIT_ITPM", 50_000_000)
+	svcITPMBurst := envInt("EIGENINFERENCE_SERVICE_RATE_LIMIT_ITPM_BURST", 5_000_000)
+	svcOTPM := envFloat("EIGENINFERENCE_SERVICE_RATE_LIMIT_OTPM", 5_000_000)
+	svcOTPMBurst := envInt("EIGENINFERENCE_SERVICE_RATE_LIMIT_OTPM_BURST", 512_000)
+
+	var consumerTokenLimiter, serviceTokenLimiter *ratelimit.TokenLimiter
+	if consumerITPM > 0 || consumerOTPM > 0 {
+		consumerTokenLimiter = ratelimit.NewTokenLimiter(consumerITPM/60, consumerITPMBurst, consumerOTPM/60, consumerOTPMBurst)
+		consumerTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "consumer_token_ratelimit_pruner") })
+		logger.Info("consumer token rate limiter enabled", "itpm", consumerITPM, "otpm", consumerOTPM)
+	}
+	if svcITPM > 0 || svcOTPM > 0 {
+		serviceTokenLimiter = ratelimit.NewTokenLimiter(svcITPM/60, svcITPMBurst, svcOTPM/60, svcOTPMBurst)
+		serviceTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_token_ratelimit_pruner") })
+		logger.Info("service token rate limiter enabled", "itpm", svcITPM, "otpm", svcOTPM)
+	}
+	srv.SetTokenLimiters(consumerTokenLimiter, serviceTokenLimiter)
 
 	// Coordinator self-telemetry emitter. Writes directly to the store so
 	// panics and handler errors are observable from the admin console.

@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { CodeExample } from "@/components/CodeExample";
-import { ApiKeysManager } from "@/components/ApiKeysManager";
+import { ApiKeysManager } from "@/components/api-keys";
 import { trackEvent } from "@/lib/google-analytics";
 import {
   ChevronDown,

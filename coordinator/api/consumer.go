@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -103,15 +104,43 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 }
 
 // cancelDispatch cleans up a speculative dispatch participant that lost the
-// race: removes the pending request, marks the provider idle, and sends a
-// cancel over WebSocket so the provider stops generating tokens.
+// race (or a failed/timed-out attempt): removes the pending request, marks the
+// provider idle, sends a cancel over WebSocket so the provider stops generating
+// tokens, and refunds this attempt's provider-specific reservation top-up.
+//
+// The top-up refund only runs if THIS call actually removed the pending request
+// (RemovePending returned non-nil). If settlement (handleComplete) already
+// claimed it via its own RemovePending, we must not also refund — that would
+// double-credit the consumer.
 func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.PendingRequest) {
 	if provider == nil || pr == nil {
 		return
 	}
-	provider.RemovePending(pr.RequestID)
+	removed := provider.RemovePending(pr.RequestID)
 	s.registry.SetProviderIdle(provider.ID)
 	s.sendProviderCancel(provider, pr.RequestID)
+	if removed != nil {
+		s.refundProviderExtra(pr)
+	}
+}
+
+// refundProviderExtra refunds the provider-specific surcharge charged on top of
+// the shared base reservation when an attempt is abandoned. It is idempotent:
+// after refunding it resets ReservedMicroUSD to the base so a second call (or a
+// later settlement) cannot double-refund. The shared base is never refunded
+// here — that is handled once by refundReservation (full failure) or by the
+// winning attempt's settlement.
+func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
+	if pr == nil {
+		return
+	}
+	extra := pr.ReservedMicroUSD - pr.BaseReservedMicroUSD
+	if extra <= 0 {
+		return
+	}
+	_ = s.store.Credit(pr.ConsumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+pr.RequestID)
+	pr.ReservedMicroUSD = pr.BaseReservedMicroUSD
+	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
 // dispatchOneProvider encrypts and sends an inference request to a single
@@ -142,11 +171,15 @@ func (s *Server) dispatchOneProvider(
 		RequestID:              requestID,
 		Model:                  model,
 		ConsumerKey:            consumerKey,
+		KeyID:                  keyIDFromContext(r.Context()),
+		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
+		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 		ConsumerLocation:       consumerLocation,
 		IsResponsesAPI:         isResponsesAPI,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,
 		ReservedMicroUSD:       reservedMicroUSD,
+		BaseReservedMicroUSD:   reservedMicroUSD,
 		AllowedProviderSerials: allowedProviderSerials,
 		AcceptedCh:             make(chan struct{}, 1),
 		ChunkCh:                make(chan string, chunkBufferSize),
@@ -603,6 +636,18 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	if required <= pr.ReservedMicroUSD {
 		return pr.ReservedMicroUSD, nil
 	}
+	// Per-key spend cap re-check against the provider-specific total: the
+	// initial cap check only saw the platform reservation, so a provider whose
+	// custom price exceeds it could otherwise push a capped key over its limit
+	// in a single request. Treat a cap breach like insufficient funds so the
+	// caller excludes this provider (a cheaper one may still fit) and, if none
+	// fit, the request fails with 402. Checked BEFORE charging the top-up.
+	if pr.KeyID != "" && pr.KeyLimitMicroUSD != nil {
+		since := store.KeySpendWindowStart(pr.KeyLimitReset, time.Now())
+		if s.store.KeySpendSince(pr.KeyID, since)+required > *pr.KeyLimitMicroUSD {
+			return pr.ReservedMicroUSD, store.ErrInsufficientBalance
+		}
+	}
 	extra := required - pr.ReservedMicroUSD
 	if err := s.ledger.Charge(pr.ConsumerKey, extra, "reserve:"+pr.ConsumerKey); err != nil {
 		return pr.ReservedMicroUSD, err
@@ -901,6 +946,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-key model allow-list enforcement (phase 3).
+	if !s.keyModelAllowed(r.Context(), model) {
+		writeJSON(w, http.StatusForbidden, errorResponse("model_not_allowed",
+			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
+		return
+	}
+
 	// Accept either chat completions format (messages) or Responses API
 	// format (input). The provider's backend handles both natively.
 	messages, _ := parsed["messages"].([]any)
@@ -984,6 +1036,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
+		// Per-key spend cap (phase 1) — checked before the reservation so a
+		// capped key never debits the account ledger.
+		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
+			return
+		}
 		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
@@ -1106,11 +1164,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				RequestID:              requestID,
 				Model:                  model,
 				ConsumerKey:            consumerKey,
+				KeyID:                  keyIDFromContext(r.Context()),
+				KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
+				KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 				ConsumerLocation:       consumerLocation,
 				IsResponsesAPI:         isResponsesAPI,
 				EstimatedPromptTokens:  estimatedPromptTokens,
 				RequestedMaxTokens:     requestedMaxTokens,
 				ReservedMicroUSD:       reservedMicroUSD,
+				BaseReservedMicroUSD:   reservedMicroUSD,
 				AllowedProviderSerials: allowedProviderSerials,
 				AcceptedCh:             make(chan struct{}, 1),
 				ChunkCh:                make(chan string, chunkBufferSize),
@@ -1205,6 +1267,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if provider.PublicKey == "" {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
+				s.refundProviderExtra(pr)
 				excludeProviders[provider.ID] = struct{}{}
 				lastErr = "no provider with E2E encryption"
 				continue
@@ -1213,6 +1276,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
+				s.refundProviderExtra(pr)
 				excludeProviders[provider.ID] = struct{}{}
 				lastErr = "provider public key invalid"
 				continue
@@ -1221,6 +1285,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
+				s.refundProviderExtra(pr)
 				lastErr = "failed to generate session keys"
 				continue
 			}
@@ -1228,6 +1293,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
+				s.refundProviderExtra(pr)
 				lastErr = "failed to encrypt request"
 				continue
 			}
@@ -1247,6 +1313,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
+				s.refundProviderExtra(pr)
 				excludeProviders[provider.ID] = struct{}{}
 				lastErr = "failed to send request to provider"
 				continue
@@ -3130,7 +3197,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		Key string `json:"key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"eigeninference-...\"}"))
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"sk-db-...\"}"))
 		return
 	}
 
@@ -3147,6 +3214,388 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 	s.invalidateAPIKeyCache(body.Key)
 
 	writeJSON(w, http.StatusOK, types.RevokeKeyResponse{Status: "revoked"})
+}
+
+// ── Multi-key management handlers (GET/POST/PATCH/DELETE /v1/keys) ────
+
+// createAPIKeyRequest is the POST /v1/keys (and rotate inherit) body. Money is
+// supplied in USD; the wire never sees the secret after the create response.
+type createAPIKeyRequest struct {
+	Name          string     `json:"name"`
+	LimitUSD      *float64   `json:"limit_usd"`
+	LimitReset    string     `json:"limit_reset"`
+	RPMLimit      *int64     `json:"rpm_limit"`
+	ITPMLimit     *int64     `json:"itpm_limit"`
+	OTPMLimit     *int64     `json:"otpm_limit"`
+	AllowedModels []string   `json:"allowed_models"`
+	ExpiresAt     *time.Time `json:"expires_at"`
+}
+
+// usdToMicro converts a USD dollar amount to micro-USD (rounded).
+func usdToMicro(usd float64) int64 { return int64(math.Round(usd * 1_000_000)) }
+
+// microToUSD converts micro-USD to a USD float.
+func microToUSD(micro int64) float64 { return float64(micro) / 1_000_000 }
+
+// apiKeyToResponse projects a stored key into its masked API representation,
+// computing the current-window spend and remaining budget.
+func (s *Server) apiKeyToResponse(k *store.APIKey) types.APIKeyResponse {
+	resp := types.APIKeyResponse{
+		ID:            k.ID,
+		Name:          k.Name,
+		Label:         k.Label,
+		Disabled:      k.Disabled,
+		LimitReset:    store.NormalizeResetWindow(k.LimitReset),
+		RPMLimit:      k.RPMLimit,
+		ITPMLimit:     k.ITPMLimit,
+		OTPMLimit:     k.OTPMLimit,
+		AllowedModels: k.AllowedModels,
+		ExpiresAt:     k.ExpiresAt,
+		CreatedAt:     k.CreatedAt,
+		LastUsedAt:    k.LastUsedAt,
+	}
+	since := store.KeySpendWindowStart(resp.LimitReset, time.Now())
+	spent := s.store.KeySpendSince(k.ID, since)
+	resp.UsageUSD = microToUSD(spent)
+	if k.LimitMicroUSD != nil {
+		limitUSD := microToUSD(*k.LimitMicroUSD)
+		resp.LimitUSD = &limitUSD
+		remaining := *k.LimitMicroUSD - spent
+		if remaining < 0 {
+			remaining = 0
+		}
+		remUSD := microToUSD(remaining)
+		resp.RemainingUSD = &remUSD
+	}
+	return resp
+}
+
+// validateKeyLimitInputs sanity-checks user-supplied limit values. Returns a
+// human-readable error string (empty when valid).
+func validateKeyLimitInputs(reset string, limitUSD *float64, rpm, itpm, otpm *int64, expiresAt *time.Time) string {
+	switch reset {
+	case "", store.KeyResetNone, store.KeyResetDaily, store.KeyResetWeekly, store.KeyResetMonthly:
+	default:
+		return "limit_reset must be one of: none, daily, weekly, monthly"
+	}
+	if limitUSD != nil && *limitUSD < 0 {
+		return "limit_usd must be >= 0"
+	}
+	if rpm != nil && *rpm < 0 {
+		return "rpm_limit must be >= 0"
+	}
+	if itpm != nil && *itpm < 0 {
+		return "itpm_limit must be >= 0"
+	}
+	if otpm != nil && *otpm < 0 {
+		return "otpm_limit must be >= 0"
+	}
+	if expiresAt != nil && !expiresAt.IsZero() && expiresAt.Before(time.Now()) {
+		return "expires_at must be in the future"
+	}
+	return ""
+}
+
+// keyModelAllowed returns false when the calling key restricts models via an
+// allow-list that does not include the requested model. Account-scoped/legacy
+// keys (no key in context) and keys without an allow-list always pass.
+func (s *Server) keyModelAllowed(ctx context.Context, model string) bool {
+	k := apiKeyFromContext(ctx)
+	if k == nil || len(k.AllowedModels) == 0 {
+		return true
+	}
+	for _, m := range k.AllowedModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+// checkKeySpendCap reports whether charging additionalMicroUSD to the calling
+// key would exceed its per-key spend cap in the current window. It returns
+// (message, ok); ok=false means the request must be rejected with 402. The
+// per-account balance ledger is still the hard atomic ceiling — this is the
+// soft, per-key sub-cap, enforced against settled usage (so concurrent
+// in-flight requests are eventually-consistent, never over the account balance).
+func (s *Server) checkKeySpendCap(ctx context.Context, additionalMicroUSD int64) (string, bool) {
+	k := apiKeyFromContext(ctx)
+	if k == nil || k.ID == "" || k.LimitMicroUSD == nil {
+		return "", true
+	}
+	since := store.KeySpendWindowStart(k.LimitReset, time.Now())
+	spent := s.store.KeySpendSince(k.ID, since)
+	if spent+additionalMicroUSD > *k.LimitMicroUSD {
+		window := store.NormalizeResetWindow(k.LimitReset)
+		if window == store.KeyResetNone {
+			window = "total"
+		}
+		return fmt.Sprintf("API key spend limit reached (%s cap $%.2f, used $%.2f) — raise this key's limit or use another key",
+			window, microToUSD(*k.LimitMicroUSD), microToUSD(spent)), false
+	}
+	return "", true
+}
+
+// handleListAPIKeys handles GET /v1/keys — lists the caller's keys (masked).
+func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+	keys, err := s.store.ListAPIKeys(user.AccountID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to list keys"))
+		return
+	}
+	out := make([]types.APIKeyResponse, 0, len(keys))
+	for i := range keys {
+		out = append(out, s.apiKeyToResponse(&keys[i]))
+	}
+	writeJSON(w, http.StatusOK, types.APIKeyListResponse{Object: "list", Data: out})
+}
+
+// handleCreateAPIKey handles POST /v1/keys — mints a new named, optionally
+// limited key. The raw secret is returned exactly once.
+func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error",
+			"API key creation requires a Privy account — authenticate with a Privy access token"))
+		return
+	}
+
+	var req createAPIKeyRequest
+	if r.Body != nil {
+		// A missing/empty body is allowed (creates a default unnamed key).
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "invalid JSON body"))
+			return
+		}
+	}
+	if msg := validateKeyLimitInputs(req.LimitReset, req.LimitUSD, req.RPMLimit, req.ITPMLimit, req.OTPMLimit, req.ExpiresAt); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", msg))
+		return
+	}
+
+	opts := store.APIKeyCreate{
+		Name:          strings.TrimSpace(req.Name),
+		LimitReset:    store.NormalizeResetWindow(req.LimitReset),
+		RPMLimit:      req.RPMLimit,
+		ITPMLimit:     req.ITPMLimit,
+		OTPMLimit:     req.OTPMLimit,
+		AllowedModels: req.AllowedModels,
+		ExpiresAt:     req.ExpiresAt,
+	}
+	if req.LimitUSD != nil {
+		m := usdToMicro(*req.LimitUSD)
+		opts.LimitMicroUSD = &m
+	}
+
+	raw, rec, err := s.store.CreateAPIKey(user.AccountID, opts)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create key"))
+		return
+	}
+	writeJSON(w, http.StatusOK, types.CreateAPIKeyResponse{
+		Key:  raw,
+		Data: s.apiKeyToResponse(rec),
+	})
+}
+
+// handleGetAPIKey handles GET /v1/keys/{id}.
+func (s *Server) handleGetAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+	id := r.PathValue("id")
+	k, err := s.store.GetAPIKeyByID(user.AccountID, id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.apiKeyToResponse(k))
+}
+
+// handleGetCallingKey handles GET /v1/key — returns the metadata for the API
+// key used to authenticate the request (OpenRouter parity).
+func (s *Server) handleGetCallingKey(w http.ResponseWriter, r *http.Request) {
+	k := apiKeyFromContext(r.Context())
+	if k == nil || k.ID == "" {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found",
+			"no key metadata — this endpoint requires API key authentication"))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.apiKeyToResponse(k))
+}
+
+// handleUpdateAPIKey handles PATCH /v1/keys/{id} — sparse update of a key's
+// name, disabled flag, limits, reset window, expiry, and model allow-list.
+func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+	id := r.PathValue("id")
+	existing, err := s.store.GetAPIKeyByID(user.AccountID, id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found"))
+		return
+	}
+
+	// Decode into a presence map so we can distinguish "field omitted" (leave
+	// unchanged) from "field set to null" (clear the limit).
+	var patch map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "invalid JSON body"))
+		return
+	}
+	if msg := applyKeyPatch(existing, patch); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", msg))
+		return
+	}
+	if msg := validateKeyLimitInputs(existing.LimitReset, nil, existing.RPMLimit, existing.ITPMLimit, existing.OTPMLimit, existing.ExpiresAt); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", msg))
+		return
+	}
+
+	// Bump the auth-cache generation before AND after the mutation so a
+	// concurrent request cannot keep authenticating with a stale (e.g.
+	// just-disabled) cached record.
+	s.invalidateAllAPIKeyCache()
+	updated, err := s.store.UpdateAPIKey(user.AccountID, id, *existing)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to update key"))
+		return
+	}
+	s.invalidateAllAPIKeyCache()
+	writeJSON(w, http.StatusOK, s.apiKeyToResponse(updated))
+}
+
+// applyKeyPatch merges a presence-aware PATCH body into an existing key record.
+// Returns a human-readable error string on invalid input (empty when ok).
+func applyKeyPatch(k *store.APIKey, patch map[string]json.RawMessage) string {
+	if raw, ok := patch["name"]; ok {
+		var name string
+		if err := json.Unmarshal(raw, &name); err != nil {
+			return "invalid value for name"
+		}
+		k.Name = strings.TrimSpace(name)
+	}
+	if raw, ok := patch["disabled"]; ok {
+		var disabled bool
+		if err := json.Unmarshal(raw, &disabled); err != nil {
+			return "invalid value for disabled"
+		}
+		k.Disabled = disabled
+	}
+	if raw, ok := patch["limit_reset"]; ok {
+		var reset string
+		if err := json.Unmarshal(raw, &reset); err != nil {
+			return "invalid value for limit_reset"
+		}
+		k.LimitReset = store.NormalizeResetWindow(reset)
+	}
+	if raw, ok := patch["limit_usd"]; ok {
+		if string(raw) == "null" {
+			k.LimitMicroUSD = nil
+		} else {
+			var usd float64
+			if err := json.Unmarshal(raw, &usd); err != nil {
+				return "invalid value for limit_usd"
+			}
+			if usd < 0 {
+				return "limit_usd must be >= 0"
+			}
+			m := usdToMicro(usd)
+			k.LimitMicroUSD = &m
+		}
+	}
+	if raw, ok := patch["allowed_models"]; ok {
+		if string(raw) == "null" {
+			k.AllowedModels = nil
+		} else {
+			var models []string
+			if err := json.Unmarshal(raw, &models); err != nil {
+				return "invalid value for allowed_models"
+			}
+			k.AllowedModels = models
+		}
+	}
+	for field, dst := range map[string]**int64{
+		"rpm_limit":  &k.RPMLimit,
+		"itpm_limit": &k.ITPMLimit,
+		"otpm_limit": &k.OTPMLimit,
+	} {
+		if raw, ok := patch[field]; ok {
+			if string(raw) == "null" {
+				*dst = nil
+			} else {
+				var v int64
+				if err := json.Unmarshal(raw, &v); err != nil {
+					return "invalid value for " + field
+				}
+				*dst = &v
+			}
+		}
+	}
+	if raw, ok := patch["expires_at"]; ok {
+		if string(raw) == "null" {
+			k.ExpiresAt = nil
+		} else {
+			var t time.Time
+			if err := json.Unmarshal(raw, &t); err != nil {
+				return "invalid value for expires_at (use RFC 3339)"
+			}
+			k.ExpiresAt = &t
+		}
+	}
+	return ""
+}
+
+// handleDeleteAPIKey handles DELETE /v1/keys/{id} — permanently deletes a key.
+func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+	id := r.PathValue("id")
+	s.invalidateAllAPIKeyCache()
+	if err := s.store.RevokeAPIKeyByID(user.AccountID, id); err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found"))
+		return
+	}
+	s.invalidateAllAPIKeyCache()
+	writeJSON(w, http.StatusOK, types.RevokeKeyResponse{Status: "revoked"})
+}
+
+// handleRotateAPIKey handles POST /v1/keys/{id}/rotate — mints a fresh secret
+// carrying the same limits and metadata, then deletes the old key. The new
+// secret is returned exactly once.
+func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+	id := r.PathValue("id")
+	// Bump the auth-cache generation before AND after the mutation so the old
+	// secret stops authenticating the instant rotation commits.
+	s.invalidateAllAPIKeyCache()
+	raw, rec, err := s.store.RotateAPIKey(user.AccountID, id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found"))
+		return
+	}
+	s.invalidateAllAPIKeyCache()
+	writeJSON(w, http.StatusOK, types.CreateAPIKeyResponse{
+		Key:  raw,
+		Data: s.apiKeyToResponse(rec),
+	})
 }
 
 // handleHealth handles GET /health.
@@ -3363,6 +3812,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required", withParam("model")))
 		return
 	}
+	// Per-key model allow-list enforcement (phase 3).
+	if !s.keyModelAllowed(r.Context(), model) {
+		writeJSON(w, http.StatusForbidden, errorResponse("model_not_allowed",
+			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
+		return
+	}
 	if !s.registry.IsModelInCatalog(model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model), withParam("model")))
@@ -3408,6 +3863,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	var reservedMicroUSD int64
 	if s.billing != nil {
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
+		// Per-key spend cap (phase 1) — checked before the reservation.
+		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
+			return
+		}
 		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
@@ -3450,11 +3910,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		RequestID:              requestID,
 		Model:                  model,
 		ConsumerKey:            consumerKey,
+		KeyID:                  keyIDFromContext(r.Context()),
+		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
+		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 		ConsumerLocation:       consumerLocation,
 		AllowedProviderSerials: allowedProviderSerials,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,
 		ReservedMicroUSD:       reservedMicroUSD,
+		BaseReservedMicroUSD:   reservedMicroUSD,
 		AcceptedCh:             make(chan struct{}, 1),
 		ChunkCh:                make(chan string, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),

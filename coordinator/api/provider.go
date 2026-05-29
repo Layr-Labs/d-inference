@@ -1254,9 +1254,10 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		})
 
 		// Persist usage to DB asynchronously — billing has already been
-		// settled above, so this INSERT is not on the critical path.
+		// settled above, so this INSERT is not on the critical path. KeyID
+		// carries per-key usage/spend attribution (empty for legacy callers).
 		saferun.Go(s.logger, "recordUsage", func() {
-			s.store.RecordUsageWithCostAndLocation(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
+			s.store.RecordUsageFull(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 		})
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})

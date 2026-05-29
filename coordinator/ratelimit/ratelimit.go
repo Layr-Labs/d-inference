@@ -40,6 +40,11 @@ type Limiter struct {
 type entry struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
+	// rps/burst record the rate this bucket was configured with so callers
+	// using per-key (variable-rate) buckets can detect a limit change and
+	// reconcile the underlying token bucket. Zero for default-rate buckets.
+	rps   float64
+	burst int
 }
 
 // New constructs a Limiter with the given config. Zero-value fields fall
@@ -144,6 +149,77 @@ func (l *Limiter) bucketFor(accountID string, now time.Time) *entry {
 	e.lastSeen = now
 	l.mu.Unlock()
 	return e
+}
+
+// bucketForWithRate returns a bucket configured with a caller-supplied rate,
+// lazily creating it and reconciling its rate/burst if the caller's per-key
+// limit changed since the bucket was created. Used for per-key (variable-rate)
+// limits where each key may carry a different ceiling.
+func (l *Limiter) bucketForWithRate(key string, rps float64, burst int, now time.Time) *entry {
+	l.mu.Lock()
+	e, ok := l.buckets[key]
+	if !ok {
+		e = &entry{
+			limiter: rate.NewLimiter(rate.Limit(rps), burst),
+			rps:     rps,
+			burst:   burst,
+		}
+		l.buckets[key] = e
+	} else if e.rps != rps || e.burst != burst {
+		e.limiter.SetLimit(rate.Limit(rps))
+		e.limiter.SetBurst(burst)
+		e.rps = rps
+		e.burst = burst
+	}
+	e.lastSeen = now
+	l.mu.Unlock()
+	return e
+}
+
+// AllowNWithRate consumes n units against a per-key bucket configured with the
+// given per-key rate (units/sec) and burst. A non-positive rps or burst is
+// treated as UNLIMITED (always allowed). n is clamped to burst so a single
+// oversized request can still pass once the bucket is full. Empty key or n<=0
+// is always allowed.
+func (l *Limiter) AllowNWithRate(key string, n int, rps float64, burst int) (bool, time.Duration) {
+	if key == "" || n <= 0 || rps <= 0 || burst <= 0 {
+		return true, 0
+	}
+	if n > burst {
+		n = burst
+	}
+	now := time.Now()
+	e := l.bucketForWithRate(key, rps, burst, now)
+	if e.limiter.AllowN(now, n) {
+		return true, 0
+	}
+	deficit := float64(n) - e.limiter.TokensAt(now)
+	if deficit < 0 {
+		deficit = 0
+	}
+	retryAfter := time.Duration(deficit / rps * float64(time.Second))
+	if retryAfter < time.Millisecond {
+		retryAfter = DefaultRetryAfter
+	}
+	if retryAfter > maxRetryAfter {
+		retryAfter = maxRetryAfter
+	}
+	return false, retryAfter
+}
+
+// CanNWithRate reports whether n units are currently available against a per-key
+// bucket at the given rate WITHOUT consuming. Ensures the bucket exists at the
+// requested rate. Non-positive rps/burst is unlimited (always true).
+func (l *Limiter) CanNWithRate(key string, n int, rps float64, burst int) bool {
+	if key == "" || n <= 0 || rps <= 0 || burst <= 0 {
+		return true
+	}
+	if n > burst {
+		n = burst
+	}
+	now := time.Now()
+	e := l.bucketForWithRate(key, rps, burst, now)
+	return e.limiter.TokensAt(now) >= float64(n)
 }
 
 // RPS returns the configured sustained rate (units per second).

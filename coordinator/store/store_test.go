@@ -31,8 +31,8 @@ func TestCreateKey(t *testing.T) {
 		t.Fatalf("CreateKey: %v", err)
 	}
 
-	if !strings.HasPrefix(key, "eigeninference-") {
-		t.Errorf("key %q does not have eigeninference- prefix", key)
+	if !strings.HasPrefix(key, KeyPrefix) {
+		t.Errorf("key %q does not have %q prefix", key, KeyPrefix)
 	}
 
 	if !s.ValidateKey(key) {

@@ -52,6 +52,13 @@ extension ProviderLoop {
                 return 503
             case .requestRejected:
                 return 503
+            case .templateRenderingFailed:
+                // #242: a chat template that throws while rendering the
+                // request (e.g. a defective `X | upper` filter on tool
+                // definitions) is unprocessable for this model, not a
+                // provider fault. 422 keeps the provider healthy instead
+                // of triggering a reroute + cascading `model load failed`.
+                return 422
             case .generationFailed:
                 return 500
             }

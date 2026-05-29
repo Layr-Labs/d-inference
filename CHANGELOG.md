@@ -57,6 +57,10 @@
 - mlx-swift-lm double buffering, UInt32 token tensors. `56b050b4`
 - Release-mode BatchGenerator B=4 matches mlx_lm Python reference (Qwen: ~1130 vs 1119 tok/s; Gemma: ~186 vs 181 tok/s). `56b050b4`
 
+#### Bug Fixes
+
+- **Chat-template render failures return 422 instead of cascading 500** (#242) -- A defective `chat_template.jinja` (e.g. `mlx-community/gemma-4-26b-a4b-it-8bit`'s `X | upper` on an `Undefined` value when tool definitions are present) throws `upper filter requires string` under swift-jinja, where CPython's permissive jinja2 silently passes. `MultiModelBatchSchedulerEngine.streamChatCompletion`/`applyTemplate` now wrap the render error into the typed `MultiModelBatchSchedulerEngineError.templateRenderingFailed`, which `mapInferenceErrorToStatus` maps to 422 -- so the provider is no longer misread as faulty and rerouted into a cascading `model load failed`.
+
 ---
 
 ### Console UI

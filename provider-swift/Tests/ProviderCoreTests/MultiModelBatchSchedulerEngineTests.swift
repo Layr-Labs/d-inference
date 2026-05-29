@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 import Testing
 @testable import ProviderCore
@@ -244,9 +245,109 @@ func invalidRoleMapsToBadRequest() {
     #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 400)
 }
 
+// MARK: - Chat-template render failures (#242)
+//
+// A defective `chat_template.jinja` (e.g. gemma-4-26b's `X | upper` on
+// an Undefined value when tool definitions are present) throws inside
+// swift-jinja. Before #242 that raw error fell through
+// `mapInferenceErrorToStatus` to a generic 500, which the coordinator
+// reads as a provider fault and reroutes — cascading into a
+// `model load failed` across every provider. The engine now wraps the
+// render failure into `.templateRenderingFailed` so it surfaces as a
+// clean, request-shaped 422 and the provider stays healthy.
+
+@Test("templateRenderingFailed maps to 422 (#242)")
+func templateRenderingFailedMapsToUnprocessable() {
+    let err = MultiModelBatchSchedulerEngineError.templateRenderingFailed(
+        "chat template failed to render request: upper filter requires string"
+    )
+    #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 422)
+}
+
+@Test("templateRenderingFailed preserves the underlying render message")
+func templateRenderingFailedPreservesMessage() {
+    let err = MultiModelBatchSchedulerEngineError.templateRenderingFailed(
+        "upper filter requires string"
+    )
+    #expect(err.errorDescription == "upper filter requires string",
+        "verbatim render error must be preserved for operator debugging")
+}
+
+@Test("applyTemplate with tool definitions wraps a throwing template into .templateRenderingFailed (422) (#242)")
+func applyTemplateWrapsTemplateRenderFailureAs422() async throws {
+    // Drive the render path through `applyTemplate`'s tokenizer-provider
+    // (no live model / scheduler needed). The fake tokenizer reproduces
+    // the swift-jinja `upper filter requires string` failure that
+    // gemma-4-26b throws when tool definitions are present.
+    let engine = MultiModelBatchSchedulerEngine(
+        acquire: { _ in
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded("unused-in-this-test")
+        },
+        tokenizerProvider: { _ in TokenizerHandle(ThrowingTemplateTokenizer()) },
+        availableModels: { [] }
+    )
+
+    let request = ApplyTemplateRequest(
+        model: "mlx-community/gemma-4-26b-a4b-it-8bit",
+        messages: [.init(role: .user, content: .text("What's the weather in NYC?"))],
+        tools: [
+            OpenAITool(function: OpenAIFunctionDefinition(
+                name: "get_weather",
+                description: "Look up the current weather for a city",
+                parameters: nil
+            ))
+        ]
+    )
+
+    do {
+        _ = try await engine.applyTemplate(request)
+        Issue.record("expected applyTemplate to throw for a defective chat template")
+    } catch let error as MultiModelBatchSchedulerEngineError {
+        guard case .templateRenderingFailed(let message) = error else {
+            Issue.record("expected .templateRenderingFailed, got \(error)")
+            return
+        }
+        #expect(message.contains("upper filter requires string"),
+            "underlying swift-jinja error must be preserved for operator debugging")
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422,
+            "#242: a defective chat template is unprocessable (422), not a provider fault (500)")
+    }
+}
+
 // MARK: - Helpers
 
 private actor Counter {
     private(set) var value: Int = 0
     func increment() { value += 1 }
+}
+
+/// Error mirroring the swift-jinja render failure surfaced by a
+/// defective `chat_template.jinja` (issue #242).
+private struct FakeJinjaRenderError: Error, LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+/// Minimal `MLXLMCommon.Tokenizer` whose `applyChatTemplate` always
+/// throws — mirrors `LocalTokenizerBridge`'s conformance surface but
+/// reproduces the gemma-4-26b template render failure. Only the
+/// `applyChatTemplate(messages:tools:additionalContext:)` overload is a
+/// protocol requirement; the `chatTemplate:`-string overloads have
+/// default implementations.
+private struct ThrowingTemplateTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        throw FakeJinjaRenderError(message: "upper filter requires string")
+    }
 }

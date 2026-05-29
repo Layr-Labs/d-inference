@@ -168,9 +168,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             promptTokens = try tokenizer.inner.applyChatTemplate(
                 messages: messages, tools: toolSpecs, additionalContext: nil
             )
-        } catch {
+        } catch let error as MultiModelBatchSchedulerEngineError {
             await releaseBox.fire()
             throw error
+        } catch {
+            // #242: a defective `chat_template.jinja` (e.g. gemma-4-26b's
+            // `X | upper` on an Undefined value when tools are present)
+            // throws inside swift-jinja. Wrap it as a typed, request-shaped
+            // 422 instead of letting the raw render error fall through to a
+            // generic 500 that the coordinator misreads as a provider fault
+            // and reroutes into a cascading `model load failed`.
+            await releaseBox.fire()
+            throw MultiModelBatchSchedulerEngineError.templateRenderingFailed(
+                "chat template failed to render request: \(error.localizedDescription)"
+            )
         }
 
         let maxTokens = request.maxTokens ?? defaultMaxTokens
@@ -321,11 +332,23 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let tokenizer = try await resolveTokenizer(modelId: request.model)
         let messages = request.messages.map { $0.templateMessageDict() }
         let tools = request.tools?.map { $0.toolSpec() }
-        let tokens = try tokenizer.inner.applyChatTemplate(
-            messages: messages,
-            tools: tools,
-            additionalContext: nil
-        )
+        let tokens: [Int]
+        do {
+            tokens = try tokenizer.inner.applyChatTemplate(
+                messages: messages,
+                tools: tools,
+                additionalContext: nil
+            )
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            throw error
+        } catch {
+            // #242: same defensive wrap as `streamChatCompletion` so a
+            // template that throws on tool definitions surfaces as a clean
+            // 422 from `/apply-template` rather than a generic 500.
+            throw MultiModelBatchSchedulerEngineError.templateRenderingFailed(
+                "chat template failed to render request: \(error.localizedDescription)"
+            )
+        }
         return TokenizeResponse(tokens: tokens)
     }
 

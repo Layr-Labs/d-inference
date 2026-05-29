@@ -45,6 +45,21 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// example a future "request_rejected: ..." path). Surfaces as
     /// 503 — the request was not run and the client may safely retry.
     case requestRejected(String)
+    /// The model's chat template (`chat_template.jinja`) threw while
+    /// rendering the request — e.g. a defective template that fails
+    /// inside a Jinja filter when tool definitions are present.
+    ///
+    /// Issue #242: `mlx-community/gemma-4-26b-a4b-it-8bit` renders
+    /// `X | upper` against an `Undefined` value, which CPython's
+    /// permissive jinja2 swallows but swift-jinja rejects with
+    /// `upper filter requires string`. Without this case the raw render
+    /// error fell through ``ProviderLoop/mapInferenceErrorToStatus(_:)``
+    /// to a generic 500, which the coordinator reads as a provider fault
+    /// and reroutes — turning a deterministic, request-shaped failure
+    /// into a cascading `model load failed` across every provider. This
+    /// is a model/request-shape problem, not a transient capacity fault,
+    /// so it surfaces as 422 and the provider stays healthy.
+    case templateRenderingFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -61,6 +76,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         case .queueFull(let message):
             return message
         case .requestRejected(let message):
+            return message
+        case .templateRenderingFailed(let message):
             return message
         }
     }

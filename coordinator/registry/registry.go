@@ -69,10 +69,19 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
-	RequestID        string
-	ProviderID       string
-	Model            string
-	ConsumerKey      string
+	RequestID   string
+	ProviderID  string
+	Model       string
+	ConsumerKey string
+	// KeyID is the public ID of the API key that originated the request, used
+	// for per-key usage and spend attribution. Empty for account-scoped/legacy
+	// callers (Privy JWT, admin, provider tokens, unlinked keys without an ID).
+	KeyID string
+	// KeyLimitMicroUSD / KeyLimitReset carry the originating key's spend cap so
+	// the per-key cap can be re-enforced when a provider's custom price tops up
+	// the reservation above the platform rate. Nil limit = no per-key cap.
+	KeyLimitMicroUSD *int64
+	KeyLimitReset    string
 	ConsumerLocation *store.ProviderLocation
 	// IsResponsesAPI tracks requests received through /v1/responses so the
 	// coordinator can translate provider chat-completions output back into
@@ -99,7 +108,14 @@ type PendingRequest struct {
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
-	ReservedMicroUSD     int64
+	ReservedMicroUSD int64
+	// BaseReservedMicroUSD is the shared base reservation (platform price)
+	// charged once per request. ReservedMicroUSD may exceed it after a
+	// provider-specific top-up; the difference (the per-attempt "extra") must
+	// be refunded if this attempt is abandoned (speculative loser, retry,
+	// timeout). The base itself is refunded once globally or settled by the
+	// winning attempt.
+	BaseReservedMicroUSD int64
 	reservationMu        sync.Mutex
 	reservationFinalized bool
 

@@ -43,16 +43,18 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 )
 
-// apiKeyCacheEntry stores the result of ValidateKeyFull for a single API key.
-// Cached to skip DB round trips on repeat requests with the same key.
+// apiKeyCacheEntry stores the authenticated key record for a single raw API
+// key. Cached to skip DB round trips on repeat requests with the same key. A
+// nil key means the token is known-invalid (negative cache).
 type apiKeyCacheEntry struct {
-	active         bool
-	ownerAccountID string
-	cachedAt       time.Time
+	key      *store.APIKey
+	cachedAt time.Time
+	gen      uint64 // cache generation this entry was stored under
 }
 
 const (
@@ -67,6 +69,7 @@ type contextKey int
 const (
 	ctxKeyConsumer contextKey = iota
 	ctxKeyRequestID
+	ctxKeyAPIKey
 )
 
 // requestIDFromContext returns the per-request correlation ID set by
@@ -89,6 +92,44 @@ var cryptoRand = rand.Read
 func consumerKeyFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKeyConsumer).(string); ok {
 		return v
+	}
+	return ""
+}
+
+// apiKeyFromContext returns the authenticated API key record set by requireAuth,
+// carrying the per-key limits used by the request path. Returns nil for
+// non-API-key auth (Privy JWT, admin key) and for account-scoped/legacy keys
+// without per-key metadata.
+func apiKeyFromContext(ctx context.Context) *store.APIKey {
+	if v, ok := ctx.Value(ctxKeyAPIKey).(*store.APIKey); ok {
+		return v
+	}
+	return nil
+}
+
+// keyIDFromContext returns the public ID of the authenticated API key, or ""
+// for account-scoped/legacy callers. Used to stamp per-key usage attribution
+// onto in-flight requests.
+func keyIDFromContext(ctx context.Context) string {
+	if k := apiKeyFromContext(ctx); k != nil {
+		return k.ID
+	}
+	return ""
+}
+
+// keyLimitMicroFromContext / keyLimitResetFromContext expose the calling key's
+// spend cap so it can be stamped onto a PendingRequest and re-enforced when a
+// provider's custom price tops up the reservation. nil = no per-key cap.
+func keyLimitMicroFromContext(ctx context.Context) *int64 {
+	if k := apiKeyFromContext(ctx); k != nil {
+		return k.LimitMicroUSD
+	}
+	return nil
+}
+
+func keyLimitResetFromContext(ctx context.Context) string {
+	if k := apiKeyFromContext(ctx); k != nil {
+		return k.LimitReset
 	}
 	return ""
 }
@@ -220,6 +261,10 @@ type Server struct {
 	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries.
 	apiKeyCacheMu sync.RWMutex
 	apiKeyCache   map[string]apiKeyCacheEntry
+	// apiKeyCacheGen is bumped on every key mutation. A cached entry is only
+	// honored when its gen matches, so a single bump atomically invalidates the
+	// whole cache and closes the read-stale-after-mutation race.
+	apiKeyCacheGen uint64
 
 	// rateLimiter applies per-account token-bucket rate limits to consumer
 	// inference endpoints. Nil means unlimited (compatibility with old call
@@ -245,6 +290,13 @@ type Server struct {
 	// limiting for that tier. Service accounts use serviceTokenLimiter.
 	consumerTokenLimiter *ratelimit.TokenLimiter
 	serviceTokenLimiter  *ratelimit.TokenLimiter
+
+	// keyRPMLimiter / keyTokenLimiter enforce PER-KEY rate overrides (each key
+	// may carry a different ceiling) on top of the per-account limiters above.
+	// They only act when a key sets RPMLimit / ITPMLimit / OTPMLimit; otherwise
+	// the key inherits the account-level limits. Nil disables per-key limiting.
+	keyRPMLimiter   *ratelimit.Limiter
+	keyTokenLimiter *ratelimit.KeyTokenLimiter
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -273,6 +325,13 @@ func (s *Server) SetTokenLimiters(consumer, service *ratelimit.TokenLimiter) {
 	s.serviceTokenLimiter = service
 }
 
+// SetKeyLimiters configures the per-key (variable-rate) RPM and ITPM/OTPM
+// limiters used for per-key overrides. Pass nil to disable per-key limiting.
+func (s *Server) SetKeyLimiters(rpm *ratelimit.Limiter, tokens *ratelimit.KeyTokenLimiter) {
+	s.keyRPMLimiter = rpm
+	s.keyTokenLimiter = tokens
+}
+
 // applyTokenRateLimit enforces per-account ITPM/OTPM limits at request
 // admission using the upfront input estimate and the bounded max_tokens
 // (OpenAI-style upfront charge). It returns true when the request may proceed;
@@ -285,6 +344,8 @@ func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inp
 		return true
 	}
 
+	// Resolve the account-tier token limiter (nil = no account-level token limit
+	// for this caller, e.g. a service account with no service token limiter).
 	tl := s.consumerTokenLimiter
 	tier := "consumer"
 	if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
@@ -292,29 +353,56 @@ func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inp
 			tl = s.serviceTokenLimiter
 			tier = "service"
 		} else {
-			// Service account with no service token limiter configured: bypass.
-			return true
+			tl = nil
 		}
-	}
-	if tl == nil {
-		return true
 	}
 
-	allowed, dimension, retryAfter := tl.Allow(accountID, inputTokens, outputTokens)
-	setTokenRateLimitHeaders(w, tl, accountID)
-	if !allowed {
-		seconds := int(retryAfter.Seconds())
-		if seconds < 1 {
-			seconds = 1
+	keyID, inRPS, inBurst, outRPS, outBurst, keyEnforced := s.keyTokenParams(r)
+
+	// Peek BOTH the per-key override and the account-level limiter before
+	// consuming either. Only commit when both have capacity, so a rejection in
+	// one limiter never debits the other (a per-key request that the account
+	// bucket rejects must not drain the key's quota, and vice-versa).
+	if keyEnforced {
+		if ok, dim, retry := s.keyTokenLimiter.Peek(keyID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst); !ok {
+			s.writeTokenRateLimited(w, "key", dim, retry)
+			return false
 		}
-		w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		s.ddIncr("ratelimit.rejections", []string{"tier:" + tier, "dimension:" + dimension})
-		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-			fmt.Sprintf("%s rate limit exceeded — retry after %ds", dimension, seconds),
-			withCode("rate_limit_exceeded")))
-		return false
+	}
+	if tl != nil {
+		if ok, dim, retry := tl.Peek(accountID, inputTokens, outputTokens); !ok {
+			setTokenRateLimitHeaders(w, tl, accountID)
+			s.writeTokenRateLimited(w, tier, dim, retry)
+			return false
+		}
+	}
+
+	// Both dimensions have capacity — commit to each.
+	if keyEnforced {
+		s.keyTokenLimiter.Commit(keyID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst)
+	}
+	if tl != nil {
+		tl.Commit(accountID, inputTokens, outputTokens)
+		setTokenRateLimitHeaders(w, tl, accountID)
 	}
 	return true
+}
+
+// writeTokenRateLimited writes a 429 for a token-dimension rejection with a
+// Retry-After header and a dimension-specific message. tier is "consumer",
+// "service", or "key".
+func (s *Server) writeTokenRateLimited(w http.ResponseWriter, tier, dimension string, retryAfter time.Duration) {
+	seconds := int(retryAfter.Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	s.ddIncr("ratelimit.rejections", []string{"tier:" + tier, "dimension:" + dimension})
+	msg := fmt.Sprintf("%s rate limit exceeded — retry after %ds", dimension, seconds)
+	if tier == "key" {
+		msg = fmt.Sprintf("API key %s rate limit exceeded — retry after %ds", dimension, seconds)
+	}
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded", msg, withCode("rate_limit_exceeded")))
 }
 
 // setTokenRateLimitHeaders emits the standard input/output token rate-limit
@@ -331,6 +419,63 @@ func setTokenRateLimitHeaders(w http.ResponseWriter, tl *ratelimit.TokenLimiter,
 		h.Set("x-ratelimit-remaining-output-tokens", strconv.Itoa(out.Remaining))
 		h.Set("x-ratelimit-reset-output-tokens", strconv.Itoa(out.ResetSeconds)+"s")
 	}
+}
+
+// applyKeyRPMLimit enforces a per-key requests-per-minute override when the
+// authenticated key sets RPMLimit. Returns true (allow) when no key override
+// applies. On rejection it writes a 429 with Retry-After and returns false.
+func (s *Server) applyKeyRPMLimit(w http.ResponseWriter, r *http.Request) bool {
+	if s.keyRPMLimiter == nil {
+		return true
+	}
+	k := apiKeyFromContext(r.Context())
+	if k == nil || k.ID == "" || k.RPMLimit == nil || *k.RPMLimit <= 0 {
+		return true
+	}
+	rpm := *k.RPMLimit
+	burst := int(rpm)
+	if burst < 1 {
+		burst = 1
+	}
+	allowed, retryAfter := s.keyRPMLimiter.AllowNWithRate(k.ID, 1, float64(rpm)/60.0, burst)
+	if !allowed {
+		seconds := int(retryAfter.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		s.ddIncr("ratelimit.rejections", []string{"tier:key", "dimension:requests"})
+		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+			fmt.Sprintf("API key request rate limit exceeded — retry after %ds", seconds),
+			withCode("rate_limit_exceeded")))
+		return false
+	}
+	return true
+}
+
+// keyTokenParams resolves the per-key ITPM/OTPM override for the calling key.
+// enforced is false when no per-key token limit applies (no key, no limiter, or
+// no override set), in which case the other return values are zero.
+func (s *Server) keyTokenParams(r *http.Request) (keyID string, inRPS float64, inBurst int, outRPS float64, outBurst int, enforced bool) {
+	if s.keyTokenLimiter == nil {
+		return "", 0, 0, 0, 0, false
+	}
+	k := apiKeyFromContext(r.Context())
+	if k == nil || k.ID == "" {
+		return "", 0, 0, 0, 0, false
+	}
+	if k.ITPMLimit != nil && *k.ITPMLimit > 0 {
+		inRPS = float64(*k.ITPMLimit) / 60.0
+		inBurst = int(*k.ITPMLimit)
+	}
+	if k.OTPMLimit != nil && *k.OTPMLimit > 0 {
+		outRPS = float64(*k.OTPMLimit) / 60.0
+		outBurst = int(*k.OTPMLimit)
+	}
+	if inRPS <= 0 && outRPS <= 0 {
+		return "", 0, 0, 0, 0, false
+	}
+	return k.ID, inRPS, inBurst, outRPS, outBurst, true
 }
 
 // setRequestRateLimitHeaders emits the standard request-dimension rate-limit
@@ -1115,6 +1260,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/auth/keys", s.requirePrivyAuth(s.rateLimitFinancial(s.handleCreateKey)))
 	s.mux.HandleFunc("DELETE /v1/auth/keys", s.requirePrivyAuth(s.handleRevokeKey))
 
+	// Multi-key management (OpenRouter-shaped CRUD). One account may own many
+	// named, individually-limited keys. Management requires an interactive
+	// Privy session so a leaked inference key can't enumerate or mint keys.
+	s.mux.HandleFunc("GET /v1/keys", s.requirePrivyAuth(s.handleListAPIKeys))
+	s.mux.HandleFunc("POST /v1/keys", s.requirePrivyAuth(s.rateLimitFinancial(s.handleCreateAPIKey)))
+	s.mux.HandleFunc("GET /v1/keys/{id}", s.requirePrivyAuth(s.handleGetAPIKey))
+	s.mux.HandleFunc("PATCH /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleUpdateAPIKey)))
+	s.mux.HandleFunc("DELETE /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteAPIKey)))
+	s.mux.HandleFunc("POST /v1/keys/{id}/rotate", s.requirePrivyAuth(s.rateLimitFinancial(s.handleRotateAPIKey)))
+	// Metadata for the calling key (OpenRouter parity) — API key auth.
+	s.mux.HandleFunc("GET /v1/key", s.requireAuth(s.handleGetCallingKey))
+
 	// Consumer endpoints — API key auth required + per-account rate limit.
 	// Inference endpoints are wrapped in sealedTransport so senders can opt into
 	// sender→coordinator encryption by setting Content-Type:
@@ -1408,18 +1565,22 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 func (s *Server) lookupAPIKeyCache(token string) (apiKeyCacheEntry, bool) {
 	s.apiKeyCacheMu.RLock()
 	entry, ok := s.apiKeyCache[token]
+	gen := s.apiKeyCacheGen
 	s.apiKeyCacheMu.RUnlock()
-	if !ok || time.Since(entry.cachedAt) > apiKeyCacheTTL {
+	// Miss on absence, TTL expiry, or a stale generation (a key mutation has
+	// occurred since the entry was cached).
+	if !ok || entry.gen != gen || time.Since(entry.cachedAt) > apiKeyCacheTTL {
 		return apiKeyCacheEntry{}, false
 	}
 	return entry, true
 }
 
-// storeAPIKeyCache inserts a ValidateKeyFull result into the cache. If the
-// cache is at capacity, the oldest entry is evicted.
+// storeAPIKeyCache inserts an auth result into the cache, stamped with the
+// current generation. If the cache is at capacity, the oldest entry is evicted.
 func (s *Server) storeAPIKeyCache(token string, entry apiKeyCacheEntry) {
 	s.apiKeyCacheMu.Lock()
 	defer s.apiKeyCacheMu.Unlock()
+	entry.gen = s.apiKeyCacheGen
 	if len(s.apiKeyCache) >= apiKeyCacheMaxSize {
 		var oldest string
 		var oldestTime time.Time
@@ -1439,6 +1600,19 @@ func (s *Server) storeAPIKeyCache(token string, entry apiKeyCacheEntry) {
 func (s *Server) invalidateAPIKeyCache(token string) {
 	s.apiKeyCacheMu.Lock()
 	delete(s.apiKeyCache, token)
+	s.apiKeyCacheMu.Unlock()
+}
+
+// invalidateAllAPIKeyCache atomically invalidates every cached auth result by
+// bumping the cache generation (entries cached under an older generation are
+// ignored). Called BEFORE and AFTER a by-ID key mutation (update/revoke/rotate)
+// where we don't hold the raw token: the pre-bump drops any pre-existing entry,
+// and the post-bump drops any entry a concurrent request re-cached from
+// pre-commit state during the mutation — closing the read-stale race.
+func (s *Server) invalidateAllAPIKeyCache() {
+	s.apiKeyCacheMu.Lock()
+	s.apiKeyCacheGen++
+	s.apiKeyCache = make(map[string]apiKeyCacheEntry)
 	s.apiKeyCacheMu.Unlock()
 }
 
@@ -1481,57 +1655,80 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
-		var keyActive bool
-		var ownerAccountID string
+		var keyRec *store.APIKey
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
-			keyActive = cached.active
-			ownerAccountID = cached.ownerAccountID
+			keyRec = cached.key
 		} else {
-			// Cache miss — single DB query instead of separate ValidateKey + GetKeyAccount.
-			var err error
-			keyActive, ownerAccountID, err = s.store.ValidateKeyFull(token)
-			if err == nil {
-				s.storeAPIKeyCache(token, apiKeyCacheEntry{
-					active:         keyActive,
-					ownerAccountID: ownerAccountID,
-					cachedAt:       time.Now(),
-				})
+			// Cache miss — resolve the key (with its per-key limits) in one
+			// query. A disabled/expired/unknown key returns an error and falls
+			// through to the provider-token path below.
+			if k, err := s.store.AuthenticateKey(token); err == nil {
+				keyRec = k
+				// Throttled last-used update: cache misses happen at most once
+				// per TTL per active key, so this naturally rate-limits writes.
+				if k.ID != "" {
+					id := k.ID
+					saferun.Go(s.logger, "touch_api_key", func() {
+						s.store.TouchAPIKey(id, time.Now())
+					})
+				}
+				// Unlinked legacy key: its identity used to be the raw bearer
+				// token; it is now LegacyAccountID(token). Carry any balance from
+				// the old raw-token identity to the new one so a pre-existing
+				// funded legacy key doesn't suddenly read a zero balance. One-time
+				// and a no-op once moved; runs only on a cache miss (≈ once per
+				// TTL). The raw token is never logged.
+				if k.OwnerAccountID == "" {
+					if _, err := s.store.MigrateAccountBalance(token, store.LegacyAccountID(token)); err != nil {
+						s.logger.Warn("legacy key balance migration failed", "error", err)
+					}
+				}
+				// Cache the API-key result (positive or negative). Provider-token
+				// fallbacks are deliberately NOT cached below.
+				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: keyRec, cachedAt: time.Now()})
+			} else if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
+				// Provider device-login tokens authenticate as an account-scoped
+				// identity with no per-key limits (ID left empty). These are NOT
+				// cached: provider-token revocation has no api-key-cache
+				// invalidation hook, so caching would let a revoked token live
+				// until TTL. GetProviderToken is cheap and provider-token traffic
+				// is low-volume.
+				keyRec = &store.APIKey{OwnerAccountID: pt.AccountID}
+			} else {
+				// Unknown token — negative-cache to avoid hammering the DB.
+				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: nil, cachedAt: time.Now()})
 			}
 		}
 
-		// If the API key lookup failed, try provider tokens (eigeninference-pt-...).
-		// These are issued by the device-code login flow and stored in a
-		// separate table. Without this fallback, `darkbloom report` (which
-		// sends the device-login token) would get 401.
-		if !keyActive {
-			if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
-				keyActive = true
-				ownerAccountID = pt.AccountID
-				s.storeAPIKeyCache(token, apiKeyCacheEntry{
-					active:         true,
-					ownerAccountID: pt.AccountID,
-					cachedAt:       time.Now(),
-				})
-			}
+		// Re-check time-based expiry / disable on the cache-hit path: a key can
+		// expire while a positive entry is still within its TTL, and no mutation
+		// event clears the cache on a time-based expiry.
+		if keyRec != nil && (keyRec.Disabled || (keyRec.ExpiresAt != nil && time.Now().After(*keyRec.ExpiresAt))) {
+			keyRec = nil
 		}
 
-		if !keyActive {
+		if keyRec == nil {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid API key"))
 			return
 		}
 
-		// Resolve key → account. If the key is linked to a Privy account,
-		// use that account ID and load the user.
-		accountID := token
+		// Resolve key → account. If the key is linked to a Privy account, use
+		// that account ID and load the user. Unlinked legacy keys derive a
+		// stable, non-secret identity (legacy:<sha256>) instead of using the raw
+		// bearer token, so the secret never reaches balances.account_id, ledger
+		// references, or logs.
+		accountID := keyRec.OwnerAccountID
 		ctx := r.Context()
-		if ownerAccountID != "" {
-			accountID = ownerAccountID
-			if user, err := s.store.GetUserByAccountID(ownerAccountID); err == nil {
+		if accountID != "" {
+			if user, err := s.store.GetUserByAccountID(accountID); err == nil {
 				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 			}
+		} else {
+			accountID = store.LegacyAccountID(token)
 		}
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
+		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -1611,6 +1808,13 @@ func (s *Server) rateLimitWith(getLimiter func() *ratelimit.Limiter, next http.H
 // rejections in dashboards.
 func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Per-key RPM override applies to inference (consumer) traffic and is
+		// enforced regardless of whether the account-level limiter is set.
+		if tier == "consumer" {
+			if !s.applyKeyRPMLimit(w, r) {
+				return
+			}
+		}
 		rl := getLimiter()
 		if rl == nil {
 			next(w, r)

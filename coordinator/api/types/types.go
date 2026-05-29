@@ -7,6 +7,8 @@
 package types
 
 import (
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -201,6 +203,42 @@ type CreateKeyResponse struct {
 // RevokeKeyResponse is the DELETE /v1/auth/keys response.
 type RevokeKeyResponse struct {
 	Status string `json:"status"`
+}
+
+// ── Multi-key management (GET/POST/PATCH/DELETE /v1/keys) ────────────
+//
+// APIKeyResponse is the masked, non-secret representation of a single key,
+// returned by the list/get/update endpoints. Money is expressed in USD floats
+// for ergonomics; the wire never carries the secret after creation.
+type APIKeyResponse struct {
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Label         string     `json:"label"`
+	Disabled      bool       `json:"disabled"`
+	LimitUSD      *float64   `json:"limit_usd,omitempty"`
+	LimitReset    string     `json:"limit_reset"`
+	UsageUSD      float64    `json:"usage_usd"`
+	RemainingUSD  *float64   `json:"remaining_usd,omitempty"`
+	RPMLimit      *int64     `json:"rpm_limit,omitempty"`
+	ITPMLimit     *int64     `json:"itpm_limit,omitempty"`
+	OTPMLimit     *int64     `json:"otpm_limit,omitempty"`
+	AllowedModels []string   `json:"allowed_models,omitempty"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+}
+
+// APIKeyListResponse is the GET /v1/keys response.
+type APIKeyListResponse struct {
+	Object string           `json:"object"`
+	Data   []APIKeyResponse `json:"data"`
+}
+
+// CreateAPIKeyResponse is the POST /v1/keys (and rotate) response. The raw
+// secret is included exactly once, alongside the masked metadata.
+type CreateAPIKeyResponse struct {
+	Key  string         `json:"key"`
+	Data APIKeyResponse `json:"data"`
 }
 
 // HealthResponse is the GET /health response.

@@ -220,6 +220,15 @@ When adding code that mutates provider state or sends commands (`load_model`, et
 4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
 5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the 3x memory gate on the provider side.
 
+## Code Structure & Modularity
+
+Keep the codebase modular, never monolithic.
+
+- Prefer small, single-responsibility files over large catch-all ones. Split by concern: types, pure helpers, data/IO hooks, UI pieces, and a thin orchestrator that wires them together.
+- Group a feature's files into a dedicated module/folder with a thin entry point. Examples: the coordinator's top-level Go packages (`registry/`, `billing/`, `store/`), and `console-ui/src/components/api-keys/` (`constants`, `format`, `limits`, `Modal`, `KeyForm`, `KeyCard`, a `useApiKeys` data hook, and a thin `ApiKeysManager` orchestrator).
+- One file/component should do one thing. If a file mixes several concerns or grows past a few hundred lines, that's a signal to split it.
+- **At the end of every large piece of work, do a refactor pass to make it modular before calling it done.** Extract helpers/types/hooks into focused files, delete dead code, and keep the public entry point thin. The refactor must be behavior-preserving — build, lint, and tests stay green.
+
 ## Formatting
 
 A pre-commit hook in `.githooks/pre-commit` checks staged files only. It is enabled via:

@@ -1,16 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { CodeExample } from "@/components/CodeExample";
+import { ApiKeysManager } from "@/components/api-keys";
 import { trackEvent } from "@/lib/google-analytics";
 import {
-  Key,
-  Copy,
-  Check,
-  RefreshCw,
-  Eye,
-  EyeOff,
   ChevronDown,
   MessageSquare,
   List,
@@ -296,61 +291,12 @@ function EndpointRow({
 
 export default function ApiConsolePage() {
   const [apiKey, setApiKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [coordinatorUrl, setCoordinatorUrl] = useState(DEFAULT_COORDINATOR);
 
   useEffect(() => {
     setApiKey(getApiKey());
     setCoordinatorUrl(getCoordinatorUrl());
   }, []);
-
-  const maskedKey = apiKey
-    ? `${apiKey.slice(0, 8)}${"•".repeat(20)}${apiKey.slice(-4)}`
-    : "No API key generated";
-
-  const copyKey = useCallback(() => {
-    if (!apiKey) return;
-    navigator.clipboard.writeText(apiKey);
-    trackEvent("api_key_copied");
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [apiKey]);
-
-  const generateKey = useCallback(async () => {
-    const action = apiKey ? "regenerate" : "generate";
-    setGenerating(true);
-    trackEvent("api_key_generate_attempt", {
-      action,
-    });
-    try {
-      const res = await fetch("/api/auth/keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (res.ok) {
-        const { api_key } = await res.json();
-        localStorage.setItem(API_KEY_STORAGE, api_key);
-        setApiKey(api_key);
-        trackEvent("api_key_generate_success", {
-          action,
-        });
-      } else {
-        trackEvent("api_key_generate_failure", {
-          action,
-          status_code: res.status,
-        });
-      }
-    } catch {
-      trackEvent("api_key_generate_failure", {
-        action,
-        status_code: 0,
-      });
-    } finally {
-      setGenerating(false);
-    }
-  }, [apiKey]);
 
   const k = apiKey || "<YOUR_API_KEY>";
   const u = coordinatorUrl;
@@ -527,45 +473,7 @@ for model in models.data:
           </section>
 
           {/* API Key Management */}
-          <section>
-            <h2 className="text-lg font-semibold text-text-primary mb-4">API Key</h2>
-            <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
-              <div className="flex items-center gap-3">
-                <Key size={18} className="text-accent-brand shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-mono text-text-primary truncate">
-                    {showKey ? apiKey || "No key generated" : maskedKey}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setShowKey(!showKey)}
-                  className="p-2 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-secondary transition-colors"
-                  title={showKey ? "Hide key" : "Show key"}
-                >
-                  {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-                <button
-                  onClick={copyKey}
-                  disabled={!apiKey}
-                  className="p-2 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-secondary transition-colors disabled:opacity-30"
-                  title="Copy key"
-                >
-                  {copied ? <Check size={16} className="text-accent-green" /> : <Copy size={16} />}
-                </button>
-                <button
-                  onClick={generateKey}
-                  disabled={generating}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50"
-                >
-                  <RefreshCw size={14} className={generating ? "animate-spin" : ""} />
-                  {apiKey ? "Regenerate" : "Generate"}
-                </button>
-              </div>
-              <p className="mt-3 text-xs text-text-tertiary">
-                Use this key in the <code className="text-accent-brand">Authorization: Bearer</code> header for all authenticated requests.
-              </p>
-            </div>
-          </section>
+          <ApiKeysManager onConsoleKeyChange={setApiKey} />
 
           {/* SDK Setup */}
           <section>

@@ -12,7 +12,6 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -27,11 +26,23 @@ import (
 // Compile-time check that MemoryStore implements Store.
 var _ Store = (*MemoryStore)(nil)
 
+// keySpend tracks per-key spend for cap enforcement. Day buckets (UTC date →
+// micro-USD) let us answer daily/weekly/monthly windowed queries cheaply
+// (≤31 buckets retained); lifetime is a running total. Buckets older than the
+// retention horizon are pruned lazily on write.
+type keySpend struct {
+	lifetime int64
+	days     map[string]int64 // "2006-01-02" (UTC) → micro-USD
+}
+
+const keySpendRetentionDays = 40
+
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
 	mu            sync.RWMutex
-	keys          map[string]bool   // key → valid
-	keyAccounts   map[string]string // key → accountID (owner)
+	keyRecords    map[string]*APIKey // raw key → record (metadata + limits)
+	keysByID      map[string]string  // public key ID → raw key
+	keySpend      map[string]*keySpend
 	usage         []UsageRecord
 	payments      []PaymentRecord
 	balances      map[string]int64 // accountID → micro-USD
@@ -111,8 +122,9 @@ type MemoryStore struct {
 // pre-seeded as a valid API key for bootstrapping.
 func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
-		keys:                          make(map[string]bool),
-		keyAccounts:                   make(map[string]string),
+		keyRecords:                    make(map[string]*APIKey),
+		keysByID:                      make(map[string]string),
+		keySpend:                      make(map[string]*keySpend),
 		usage:                         make([]UsageRecord, 0),
 		payments:                      make([]PaymentRecord, 0),
 		balances:                      make(map[string]int64),
@@ -152,7 +164,14 @@ func NewMemory(scfg Config) *MemoryStore {
 		serialToProviderID:            make(map[string]string),
 	}
 	if scfg.AdminKey != "" {
-		s.keys[scfg.AdminKey] = true
+		s.keyRecords[scfg.AdminKey] = &APIKey{
+			ID:         "key_admin_seed",
+			Name:       "admin",
+			Label:      KeyLabel(scfg.AdminKey),
+			LimitReset: KeyResetNone,
+			CreatedAt:  time.Now(),
+		}
+		s.keysByID["key_admin_seed"] = scfg.AdminKey
 	}
 	return s
 }
@@ -204,49 +223,75 @@ func (s *MemoryStore) Prune(maxEntries int) {
 }
 
 // CreateKey generates a cryptographically random API key, stores it, and
-// returns it.
+// returns it. The key is unlinked to any account (legacy bootstrap helper).
 func (s *MemoryStore) CreateKey() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	key := "eigeninference-" + hex.EncodeToString(b)
-
-	s.mu.Lock()
-	s.keys[key] = true
-	s.mu.Unlock()
-
-	return key, nil
+	raw, _, err := s.CreateAPIKey("", APIKeyCreate{})
+	return raw, err
 }
 
 // CreateKeyForAccount generates a new API key linked to a specific account.
 func (s *MemoryStore) CreateKeyForAccount(accountID string) (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	key := "eigeninference-" + hex.EncodeToString(b)
-
-	s.mu.Lock()
-	s.keys[key] = true
-	s.keyAccounts[key] = accountID
-	s.mu.Unlock()
-
-	return key, nil
+	raw, _, err := s.CreateAPIKey(accountID, APIKeyCreate{})
+	return raw, err
 }
 
-// ValidateKey returns true if the given key exists and is valid.
+// CreateAPIKey mints a new API key with optional per-key limits.
+func (s *MemoryStore) CreateAPIKey(accountID string, opts APIKeyCreate) (string, *APIKey, error) {
+	raw, err := GenerateRawKey()
+	if err != nil {
+		return "", nil, err
+	}
+	id, err := GenerateKeyID()
+	if err != nil {
+		return "", nil, err
+	}
+	rec := &APIKey{
+		ID:             id,
+		OwnerAccountID: accountID,
+		Name:           opts.Name,
+		Label:          KeyLabel(raw),
+		KeyHash:        sha256Hex(raw),
+		LimitMicroUSD:  cloneInt64Ptr(opts.LimitMicroUSD),
+		LimitReset:     NormalizeResetWindow(opts.LimitReset),
+		RPMLimit:       cloneInt64Ptr(opts.RPMLimit),
+		ITPMLimit:      cloneInt64Ptr(opts.ITPMLimit),
+		OTPMLimit:      cloneInt64Ptr(opts.OTPMLimit),
+		AllowedModels:  append([]string(nil), opts.AllowedModels...),
+		ExpiresAt:      cloneTimePtr(opts.ExpiresAt),
+		CreatedAt:      time.Now().UTC(),
+	}
+	s.mu.Lock()
+	s.keyRecords[raw] = rec
+	s.keysByID[id] = raw
+	s.mu.Unlock()
+	out := *rec
+	return raw, &out, nil
+}
+
+// ValidateKey returns true if the given key exists, is active, and is not
+// expired. Expiry is enforced here (not just in AuthenticateKey) so callers
+// like telemetry attribution don't treat an expired key as a live account.
 func (s *MemoryStore) ValidateKey(key string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.keys[key]
+	rec, ok := s.keyRecords[key]
+	if !ok || rec.Disabled {
+		return false
+	}
+	if rec.ExpiresAt != nil && time.Now().After(*rec.ExpiresAt) {
+		return false
+	}
+	return true
 }
 
 // GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
 func (s *MemoryStore) GetKeyAccount(key string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.keyAccounts[key]
+	if rec, ok := s.keyRecords[key]; ok {
+		return rec.OwnerAccountID
+	}
+	return ""
 }
 
 // ValidateKeyFull returns the active status and owner account ID for an
@@ -254,22 +299,197 @@ func (s *MemoryStore) GetKeyAccount(key string) string {
 func (s *MemoryStore) ValidateKeyFull(key string) (bool, string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	active, ok := s.keys[key]
+	rec, ok := s.keyRecords[key]
 	if !ok {
 		return false, "", fmt.Errorf("key not found")
 	}
-	return active, s.keyAccounts[key], nil
+	return !rec.Disabled, rec.OwnerAccountID, nil
 }
 
-// RevokeKey removes a key from the store. Returns true if the key existed.
+// AuthenticateKey resolves a raw key to its active record for request auth.
+func (s *MemoryStore) AuthenticateKey(rawKey string) (*APIKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.keyRecords[rawKey]
+	if !ok {
+		return nil, fmt.Errorf("key not found")
+	}
+	if rec.Disabled {
+		return nil, fmt.Errorf("key disabled")
+	}
+	if rec.ExpiresAt != nil && time.Now().After(*rec.ExpiresAt) {
+		return nil, fmt.Errorf("key expired")
+	}
+	out := cloneAPIKey(rec)
+	return out, nil
+}
+
+// RevokeKey deactivates a key (soft-disable), matching PostgresStore semantics
+// and the Store interface contract ("deactivates a key"). The record is kept so
+// it still appears in ListAPIKeys as disabled. Returns true only if the key
+// existed AND was active (a second revoke returns false). By-ID deletion
+// (RevokeAPIKeyByID) is the hard-delete path.
 func (s *MemoryStore) RevokeKey(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.keys[key] {
-		delete(s.keys, key)
-		return true
+	rec, ok := s.keyRecords[key]
+	if !ok || rec.Disabled {
+		return false
 	}
-	return false
+	rec.Disabled = true
+	return true
+}
+
+// ListAPIKeys returns all keys owned by an account, newest first.
+func (s *MemoryStore) ListAPIKeys(accountID string) ([]APIKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]APIKey, 0)
+	for _, rec := range s.keyRecords {
+		if rec.OwnerAccountID != accountID || rec.ID == "" {
+			continue
+		}
+		out = append(out, *cloneAPIKey(rec))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+// GetAPIKeyByID returns a single key by ID, scoped to the owner.
+func (s *MemoryStore) GetAPIKeyByID(accountID, id string) (*APIKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	raw, ok := s.keysByID[id]
+	if !ok {
+		return nil, fmt.Errorf("key not found")
+	}
+	rec, ok := s.keyRecords[raw]
+	if !ok || rec.OwnerAccountID != accountID {
+		return nil, fmt.Errorf("key not found")
+	}
+	return cloneAPIKey(rec), nil
+}
+
+// UpdateAPIKey overwrites mutable fields of a key, scoped to the owner.
+func (s *MemoryStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*APIKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, ok := s.keysByID[id]
+	if !ok {
+		return nil, fmt.Errorf("key not found")
+	}
+	rec, ok := s.keyRecords[raw]
+	if !ok || rec.OwnerAccountID != accountID {
+		return nil, fmt.Errorf("key not found")
+	}
+	rec.Name = mutable.Name
+	rec.Disabled = mutable.Disabled
+	rec.LimitMicroUSD = cloneInt64Ptr(mutable.LimitMicroUSD)
+	rec.LimitReset = NormalizeResetWindow(mutable.LimitReset)
+	rec.RPMLimit = cloneInt64Ptr(mutable.RPMLimit)
+	rec.ITPMLimit = cloneInt64Ptr(mutable.ITPMLimit)
+	rec.OTPMLimit = cloneInt64Ptr(mutable.OTPMLimit)
+	rec.AllowedModels = append([]string(nil), mutable.AllowedModels...)
+	rec.ExpiresAt = cloneTimePtr(mutable.ExpiresAt)
+	return cloneAPIKey(rec), nil
+}
+
+// RevokeAPIKeyByID permanently deletes a key by ID, scoped to the owner.
+func (s *MemoryStore) RevokeAPIKeyByID(accountID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, ok := s.keysByID[id]
+	if !ok {
+		return fmt.Errorf("key not found")
+	}
+	rec, ok := s.keyRecords[raw]
+	if !ok || rec.OwnerAccountID != accountID {
+		return fmt.Errorf("key not found")
+	}
+	delete(s.keyRecords, raw)
+	delete(s.keysByID, id)
+	return nil
+}
+
+// RotateAPIKey atomically replaces a key (see Store interface).
+func (s *MemoryStore) RotateAPIKey(accountID, id string) (string, *APIKey, error) {
+	raw, err := GenerateRawKey()
+	if err != nil {
+		return "", nil, err
+	}
+	newID, err := GenerateKeyID()
+	if err != nil {
+		return "", nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	oldRaw, ok := s.keysByID[id]
+	if !ok {
+		return "", nil, fmt.Errorf("key not found")
+	}
+	old, ok := s.keyRecords[oldRaw]
+	if !ok || old.OwnerAccountID != accountID {
+		return "", nil, fmt.Errorf("key not found")
+	}
+	rec := &APIKey{
+		ID:             newID,
+		OwnerAccountID: accountID,
+		Name:           old.Name,
+		Label:          KeyLabel(raw),
+		KeyHash:        sha256Hex(raw),
+		Disabled:       old.Disabled,
+		LimitMicroUSD:  cloneInt64Ptr(old.LimitMicroUSD),
+		LimitReset:     NormalizeResetWindow(old.LimitReset),
+		RPMLimit:       cloneInt64Ptr(old.RPMLimit),
+		ITPMLimit:      cloneInt64Ptr(old.ITPMLimit),
+		OTPMLimit:      cloneInt64Ptr(old.OTPMLimit),
+		AllowedModels:  append([]string(nil), old.AllowedModels...),
+		ExpiresAt:      cloneTimePtr(old.ExpiresAt),
+		CreatedAt:      time.Now().UTC(),
+	}
+	delete(s.keyRecords, oldRaw)
+	delete(s.keysByID, id)
+	s.keyRecords[raw] = rec
+	s.keysByID[newID] = raw
+	return raw, cloneAPIKey(rec), nil
+}
+
+// TouchAPIKey records that a key was used at the given time.
+func (s *MemoryStore) TouchAPIKey(id string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, ok := s.keysByID[id]
+	if !ok {
+		return
+	}
+	if rec, ok := s.keyRecords[raw]; ok {
+		t := at.UTC()
+		rec.LastUsedAt = &t
+	}
+}
+
+// KeySpendSince returns total micro-USD charged to a key since `since` (UTC).
+func (s *MemoryStore) KeySpendSince(keyID string, since time.Time) int64 {
+	if keyID == "" {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ks, ok := s.keySpend[keyID]
+	if !ok {
+		return 0
+	}
+	if since.IsZero() {
+		return ks.lifetime
+	}
+	startDay := since.UTC().Format("2006-01-02")
+	var total int64
+	for day, amt := range ks.days {
+		if day >= startDay {
+			total += amt
+		}
+	}
+	return total
 }
 
 // RecordUsage appends a usage record to the in-memory log.
@@ -516,6 +736,13 @@ func (s *MemoryStore) RecordUsageWithCost(providerID, consumerKey, model, reques
 
 // RecordUsageWithCostAndLocation logs a usage event with request location (in-memory).
 func (s *MemoryStore) RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
+	s.RecordUsageFull(providerID, consumerKey, "", model, requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
+}
+
+// RecordUsageFull logs a usage event with full attribution (incl. API key ID)
+// and updates the per-key spend accumulator used for cap enforcement.
+func (s *MemoryStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
+	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var locCopy *ProviderLocation
@@ -526,14 +753,39 @@ func (s *MemoryStore) RecordUsageWithCostAndLocation(providerID, consumerKey, mo
 	s.usage = append(s.usage, UsageRecord{
 		ProviderID:       providerID,
 		ConsumerKey:      consumerKey,
+		KeyID:            keyID,
 		Model:            model,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		RequestLocation:  locCopy,
-		Timestamp:        time.Now(),
+		Timestamp:        now,
 		RequestID:        requestID,
 		CostMicroUSD:     costMicroUSD,
 	})
+	if keyID != "" && costMicroUSD > 0 {
+		s.addKeySpendLocked(keyID, costMicroUSD, now)
+	}
+}
+
+// addKeySpendLocked increments the per-key spend accumulator. Caller holds s.mu.
+func (s *MemoryStore) addKeySpendLocked(keyID string, amount int64, at time.Time) {
+	ks, ok := s.keySpend[keyID]
+	if !ok {
+		ks = &keySpend{days: make(map[string]int64)}
+		s.keySpend[keyID] = ks
+	}
+	ks.lifetime += amount
+	day := at.UTC().Format("2006-01-02")
+	ks.days[day] += amount
+	// Prune buckets older than the retention horizon to bound memory.
+	if len(ks.days) > keySpendRetentionDays {
+		cutoff := at.UTC().AddDate(0, 0, -keySpendRetentionDays).Format("2006-01-02")
+		for d := range ks.days {
+			if d < cutoff {
+				delete(ks.days, d)
+			}
+		}
+	}
 }
 
 // UsageLocationBuckets returns approximate request-origin aggregates (in-memory).
@@ -716,7 +968,13 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 func (s *MemoryStore) KeyCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.keys)
+	n := 0
+	for _, rec := range s.keyRecords {
+		if !rec.Disabled {
+			n++
+		}
+	}
+	return n
 }
 
 // GetBalance returns the current balance in micro-USD for an account.
@@ -812,6 +1070,51 @@ func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType Le
 		CreatedAt:      time.Now(),
 	})
 	return nil
+}
+
+// MigrateAccountBalance moves the full balance (and its withdrawable subset)
+// from one account ID to another, atomically under the store lock.
+func (s *MemoryStore) MigrateAccountBalance(from, to string) (bool, error) {
+	if from == "" || to == "" || from == to {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bal := s.balances[from]
+	wdr := s.withdrawable[from]
+	if bal == 0 && wdr == 0 {
+		return false, nil
+	}
+	now := time.Now()
+
+	// Debit the source to zero and credit the destination, recording both legs.
+	s.balances[from] = 0
+	s.withdrawable[from] = 0
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID:             s.ledgerSeq,
+		AccountID:      from,
+		Type:           LedgerMigration,
+		AmountMicroUSD: -bal,
+		BalanceAfter:   0,
+		Reference:      "migrate:out",
+		CreatedAt:      now,
+	})
+
+	s.balances[to] += bal
+	s.withdrawable[to] += wdr
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID:             s.ledgerSeq,
+		AccountID:      to,
+		Type:           LedgerMigration,
+		AmountMicroUSD: bal,
+		BalanceAfter:   s.balances[to],
+		Reference:      "migrate:in",
+		CreatedAt:      now,
+	})
+	return true, nil
 }
 
 // LedgerHistory returns ledger entries for an account, newest first.
@@ -1348,6 +1651,31 @@ func cloneTimePtr(t *time.Time) *time.Time {
 		return nil
 	}
 	cp := *t
+	return &cp
+}
+
+func cloneInt64Ptr(v *int64) *int64 {
+	if v == nil {
+		return nil
+	}
+	cp := *v
+	return &cp
+}
+
+// cloneAPIKey returns a deep copy of a key record so callers can never mutate
+// the store's internal state through the returned pointer.
+func cloneAPIKey(rec *APIKey) *APIKey {
+	if rec == nil {
+		return nil
+	}
+	cp := *rec
+	cp.LimitMicroUSD = cloneInt64Ptr(rec.LimitMicroUSD)
+	cp.RPMLimit = cloneInt64Ptr(rec.RPMLimit)
+	cp.ITPMLimit = cloneInt64Ptr(rec.ITPMLimit)
+	cp.OTPMLimit = cloneInt64Ptr(rec.OTPMLimit)
+	cp.ExpiresAt = cloneTimePtr(rec.ExpiresAt)
+	cp.LastUsedAt = cloneTimePtr(rec.LastUsedAt)
+	cp.AllowedModels = append([]string(nil), rec.AllowedModels...)
 	return &cp
 }
 

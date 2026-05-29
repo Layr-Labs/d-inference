@@ -1328,10 +1328,18 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	close(pr.CompleteCh)
 	close(pr.ErrorCh)
 
-	// Record job failure for reputation tracking.
-	// token_budget_exhausted is a capacity rejection, not a provider fault —
-	// skip the reputation penalty so the provider isn't unfairly penalised.
-	if !strings.Contains(msg.Error, "token_budget_exhausted") {
+	// Record job failure for reputation tracking, but carve out capacity
+	// rejections — those are not provider faults, just the provider declining
+	// work it cannot currently serve (the coordinator reroutes these). Counting
+	// them would unfairly penalise healthy providers shedding load. Capacity
+	// signals: HTTP 503 (service unavailable) / 429 (too many requests), an
+	// exhausted token budget, or an out-of-memory model-load reject.
+	loweredErr := strings.ToLower(msg.Error)
+	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
+		msg.StatusCode == http.StatusTooManyRequests ||
+		strings.Contains(loweredErr, "token_budget_exhausted") ||
+		strings.Contains(loweredErr, "insufficient memory")
+	if !capacityRejection {
 		s.registry.RecordJobFailure(providerID)
 	}
 

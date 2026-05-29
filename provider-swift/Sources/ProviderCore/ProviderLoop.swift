@@ -600,18 +600,40 @@ public actor ProviderLoop {
             return
         }
 
-        // 3. Send inference_accepted
+        // 3. Fast pre-accept admission check. The coordinator accepts fast and
+        // then waits for the first chunk with the full inference timeout, so we
+        // must REJECT (status 503) any request we are *certain* we cannot serve
+        // — letting the coordinator reroute — rather than accept-then-fail,
+        // which it counts as a provider fault (reputation penalty). This mirrors
+        // the real load-failure conditions WITHOUT loading anything and is
+        // deliberately conservative: when in doubt it admits and lets the
+        // post-accept load path below make the final call.
+        let modelId = chatRequest.model
+        if fastAdmissionReject(modelId: modelId) {
+            logger.warning("[\(requestId)] Pre-accept reject for '\(modelId)': insufficient capacity to load")
+            send.send(.inferenceError(
+                requestId: requestId,
+                error: "insufficient memory to load model '\(modelId)'",
+                statusCode: 503
+            ))
+            return
+        }
+
+        // 4. Send inference_accepted
         send.send(.inferenceAccepted(requestId: requestId))
 
-        // 4. Mark the request before loading so concurrent preloads cannot
+        // 5. Mark the request before loading so concurrent preloads cannot
         // evict the model this accepted request is waiting for.
-        let modelId = chatRequest.model
         requestToModel[requestId] = modelId
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
 
-        // 5. Ensure model is loaded
+        // 6. Ensure model is loaded. The fast check above only rules out
+        // certain failures; this stays authoritative for races (e.g. another
+        // request consuming the last slot or free memory between accept and
+        // load). Map the failure to a status code so capacity errors reroute
+        // (503) and missing models 404 instead of always counting as a fault.
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch {
@@ -622,7 +644,8 @@ public actor ProviderLoop {
             }
             await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
-            send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: 500))
+            let statusCode = Self.loadErrorStatusCode(for: error)
+            send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: statusCode))
             return
         }
 
@@ -647,7 +670,7 @@ public actor ProviderLoop {
         modelSlots[modelId]?.lastInferenceAt = .now
         syncWarmModelState()
 
-        // 6. Capture values for the spawned task
+        // 7. Capture values for the spawned task
         let responsePublicKeyData: Data = senderKey
         let kp = self.keyPair
         let sched = slot.scheduler
@@ -658,7 +681,7 @@ public actor ProviderLoop {
         let tokenizer = slot.tokenizer
         let modelType = loopConfig.models.first(where: { $0.id == modelId })?.modelType
 
-        // 7. Spawn inference task. The streaming pipeline now flows through
+        // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
         //   - `MultiModelBatchSchedulerEngine` adapts our `BatchScheduler` to
         //     the `MLXServerEngine` contract.
@@ -1415,8 +1438,11 @@ public actor ProviderLoop {
             // Budget enough headroom to warm the model. Per-request KV safety is
             // enforced later by BatchScheduler's live token budget, so this load
             // gate should not assume the engine's full adaptive slot ceiling is
-            // simultaneously filled with maximum-context requests.
-            let requiredGb = modelInfo.estimatedMemoryGb * 3.0
+            // simultaneously filled with maximum-context requests. A 2x (rather
+            // than 3x) multiple keeps a safety margin for KV-cache growth while
+            // still letting models load on boxes where other models are actively
+            // serving — the previous 3x rejected loads that would have fit.
+            let requiredGb = modelInfo.estimatedMemoryGb * 2.0
             try await evictUntilAvailable(requiredGb: requiredGb)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -1558,6 +1584,80 @@ public actor ProviderLoop {
 
             logger.info("Evicting idle model \(modelId) to free memory")
             await unloadModel(modelId)
+        }
+    }
+
+    /// Fast, non-mutating pre-accept admission check used by
+    /// ``handleInferenceRequest``. Returns `true` only when loading `modelId`
+    /// right now is *certain* to fail, so the coordinator can reroute instead
+    /// of us accepting-then-failing (which it counts as a provider fault).
+    ///
+    /// It mirrors the terminal failure points in ``ensureModelLoaded`` /
+    /// ``evictUntilAvailable`` WITHOUT loading anything and is deliberately
+    /// conservative: anything that *could* succeed (including via eviction of
+    /// an idle model) is admitted and left for the post-accept load path.
+    private func fastAdmissionReject(modelId: String) -> Bool {
+        // Already resident — definitely serviceable.
+        if modelSlots[modelId] != nil {
+            return false
+        }
+
+        // Without advertised model info we cannot size the load here; let the
+        // post-accept path surface the proper 404 rather than guessing.
+        guard let modelInfo = loopConfig.models.first(where: { $0.id == modelId }) else {
+            return false
+        }
+        let requiredGb = modelInfo.estimatedMemoryGb * 2.0
+
+        // An idle slot (loaded, no in-flight work, not already unloading) can be
+        // evicted to make room, so its presence means we must NOT pre-reject.
+        let modelsWithInflight = Set(requestToModel.values)
+        let hasEvictable = modelSlots.contains {
+            !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key)
+        }
+
+        // Mirrors evictUntilAvailable's terminal failure: not enough free
+        // memory and nothing idle to free.
+        if availableMemoryGb() < requiredGb && !hasEvictable {
+            return true
+        }
+
+        // Mirrors the slot-cap guard in ensureModelLoaded: all slots full and
+        // none idle to evict.
+        if modelSlots.count >= maxModelSlots && !hasEvictable {
+            return true
+        }
+
+        return false
+    }
+
+    /// Map a model-load failure to an HTTP status code so the coordinator can
+    /// react appropriately: transient capacity/memory pressure should reroute
+    /// (503) and genuinely missing/unadvertised models are 404; anything else
+    /// is treated as a real provider fault (500).
+    static func loadErrorStatusCode(for error: any Error) -> UInt16 {
+        guard let inferenceError = error as? InferenceError else {
+            return 500
+        }
+        switch inferenceError {
+        case .modelLoadFailed:
+            // Out-of-memory / eviction failure from evictUntilAvailable —
+            // transient capacity pressure, so let the coordinator reroute.
+            return 503
+        case .invalidModelDirectory(let message):
+            let lowered = message.lowercased()
+            if lowered.contains("slot") {
+                // "All N model slot(s) are active; cannot load ..." — transient
+                // capacity, not a fault.
+                return 503
+            }
+            if lowered.contains("not found") || lowered.contains("advertised") {
+                // Missing on disk or not in the advertised model list.
+                return 404
+            }
+            return 500
+        case .noModelLoaded, .generationFailed, .unsupportedRole:
+            return 500
         }
     }
 

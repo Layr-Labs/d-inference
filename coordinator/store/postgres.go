@@ -1798,9 +1798,9 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (account_id, privy_user_id, email)
-		 VALUES ($1, $2, $3)`,
-		user.AccountID, user.PrivyUserID, user.Email,
+		`INSERT INTO users (account_id, privy_user_id, email, role, platform_fee_percent)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		user.AccountID, user.PrivyUserID, user.Email, user.Role, user.PlatformFeePercent,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create user: %w", err)

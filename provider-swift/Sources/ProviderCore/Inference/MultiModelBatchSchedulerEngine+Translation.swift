@@ -90,7 +90,8 @@ extension OpenAIChatMessage {
                     "type": call.type,
                     "function": [
                         "name": call.function.name,
-                        "arguments": call.function.arguments,
+                        // Decode to an object so the chat template renders tool calls correctly (#249).
+                        "arguments": decodeToolCallArguments(call.function.arguments),
                     ] as [String: any Sendable],
                 ]
             }

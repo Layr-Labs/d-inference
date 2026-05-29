@@ -735,6 +735,72 @@ func TestRecordChallengeSuccess(t *testing.T) {
 	}
 }
 
+// TestRecordChallengeSuccessRecoversUntrusted verifies that a passing challenge
+// auto-heals a provider previously derouted by MarkUntrusted: status returns to
+// online and the onlineCount / model-provider counters are restored (reverse of
+// MarkUntrusted), without double-counting on repeat success or later disconnect.
+func TestRecordChallengeSuccessRecoversUntrusted(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	reg.Register("p1", nil, msg)
+
+	const modelID = "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+	// Baseline after registration: one online provider serving one model.
+	if got := reg.OnlineCount(); got != 1 {
+		t.Fatalf("OnlineCount = %d, want 1 after register", got)
+	}
+	if got := reg.ModelProviderSnapshot()[modelID]; got != 1 {
+		t.Fatalf("model provider count = %d, want 1 after register", got)
+	}
+
+	// Deroute the provider for missed challenges.
+	reg.MarkUntrusted("p1")
+	if got := reg.OnlineCount(); got != 0 {
+		t.Fatalf("OnlineCount = %d, want 0 after MarkUntrusted", got)
+	}
+	if got := reg.ModelProviderSnapshot()[modelID]; got != 0 {
+		t.Fatalf("model provider count = %d, want 0 after MarkUntrusted", got)
+	}
+	if p := reg.GetProvider("p1"); p.Status != StatusUntrusted {
+		t.Fatalf("status = %q, want %q after MarkUntrusted", p.Status, StatusUntrusted)
+	}
+
+	// A passing challenge must auto-recover the provider and restore the
+	// online / model-provider bookkeeping (reverse of MarkUntrusted).
+	reg.RecordChallengeSuccess("p1")
+
+	p := reg.GetProvider("p1")
+	if p.Status != StatusOnline {
+		t.Errorf("status = %q, want %q after challenge success", p.Status, StatusOnline)
+	}
+	if got := reg.OnlineCount(); got != 1 {
+		t.Errorf("OnlineCount = %d, want 1 after auto-recovery", got)
+	}
+	if got := reg.ModelProviderSnapshot()[modelID]; got != 1 {
+		t.Errorf("model provider count = %d, want 1 after auto-recovery", got)
+	}
+	if p.FailedChallenges != 0 {
+		t.Errorf("failed_challenges = %d, want 0 after success", p.FailedChallenges)
+	}
+
+	// Idempotency: a second success on an already-online provider must NOT
+	// double-increment the counters.
+	reg.RecordChallengeSuccess("p1")
+	if got := reg.OnlineCount(); got != 1 {
+		t.Errorf("OnlineCount = %d, want 1 (no double-increment)", got)
+	}
+	if got := reg.ModelProviderSnapshot()[modelID]; got != 1 {
+		t.Errorf("model provider count = %d, want 1 (no double-increment)", got)
+	}
+
+	// And a subsequent Disconnect must not double-decrement.
+	reg.Disconnect("p1")
+	if got := reg.OnlineCount(); got != 0 {
+		t.Errorf("OnlineCount = %d, want 0 after disconnect", got)
+	}
+}
+
 func TestRecordChallengeFailureTransient(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

@@ -199,10 +199,16 @@ public enum LocalDataCleanup: Sendable {
     /// Delete optional pieces of local Darkbloom state. Caller should ask for
     /// confirmation before invoking. Each removal is best-effort -- missing
     /// files are not an error.
+    ///
+    /// `secureEnclaveKey` (default true) also removes the persistent Secure
+    /// Enclave attestation signing key. This is what makes un-enroll /
+    /// re-enroll actually fix a bad or derouted key: without it, the same
+    /// keychain-backed key survives and the provider keeps failing challenges.
     public static func purge(
         configDirectory: Bool = true,
         legacyKeyFiles: Bool = true,
-        authToken: Bool = true
+        authToken: Bool = true,
+        secureEnclaveKey: Bool = true
     ) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let fm = FileManager.default
@@ -221,6 +227,14 @@ public enum LocalDataCleanup: Sendable {
         }
         if authToken {
             try? AuthTokenStore.delete()
+        }
+        if secureEnclaveKey {
+            // Remove the persistent Secure Enclave attestation signing key so a
+            // bad/derouted key is regenerated on the next enroll. Best-effort:
+            // missing entitlements or an absent key are not errors. Clear both
+            // the current (v2 = defaultLabel) and the legacy (v1) labels.
+            try? PersistentEnclaveKey.delete()
+            try? PersistentEnclaveKey.delete(label: PersistentEnclaveKey.legacyLabelV1)
         }
     }
 }

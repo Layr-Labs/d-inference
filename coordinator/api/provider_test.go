@@ -2289,6 +2289,63 @@ func TestHandleChunkRejectsMixedPlaintextAndEncryptedTextChunk(t *testing.T) {
 	}
 }
 
+// Issue #239: hitting the failure threshold via missed-challenge timeouts marks
+// the provider untrusted but *recoverable* (the challenge loop keeps probing it).
+func TestHandleChallengeFailureThresholdTransientIsRecoverable(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	p := reg.Register("p1", nil, &protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:   []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:  "mlx-swift",
+	})
+
+	for range registry.MaxFailedChallenges {
+		srv.handleChallengeFailure("p1", "timeout")
+	}
+
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("status = %q, want %q after %d timeouts", p.Status, registry.StatusUntrusted, registry.MaxFailedChallenges)
+	}
+	if p.ChallengeShouldStop() {
+		t.Error("ChallengeShouldStop = true, want false (timeout-threshold deroute must be recoverable)")
+	}
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d, want 0", reg.OnlineCount())
+	}
+}
+
+// Issue #239: a non-transient reason at the threshold is a hard deroute — the
+// challenge loop stops and it cannot self-recover.
+func TestHandleChallengeFailureThresholdSecurityIsHard(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	p := reg.Register("p1", nil, &protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:   []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:  "mlx-swift",
+	})
+
+	for range registry.MaxFailedChallenges {
+		srv.handleChallengeFailure("p1", "nonce mismatch")
+	}
+
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("status = %q, want %q", p.Status, registry.StatusUntrusted)
+	}
+	if !p.ChallengeShouldStop() {
+		t.Error("ChallengeShouldStop = false, want true (security-threshold deroute must be hard)")
+	}
+}
+
 // Verification: the coordinator's SSE output for a private text request contains
 // only the decrypted content — no raw ciphertext, no session keys, no encrypted
 // payloads leak into the consumer-visible HTTP response.

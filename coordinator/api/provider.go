@@ -484,10 +484,10 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			provider.Mu().Lock()
-			untrusted := provider.Status == registry.StatusUntrusted
-			provider.Mu().Unlock()
-			if untrusted {
+			// Stop only for a hard (non-recoverable) untrust. A transiently
+			// untrusted provider (missed-challenge timeouts) keeps being
+			// challenged so a later passing challenge can restore it.
+			if provider.ChallengeShouldStop() {
 				return
 			}
 			s.sendChallenge(ctx, conn, providerID, provider, tracker)
@@ -964,7 +964,14 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) {
 	severity := protocol.SeverityWarn
 	if failures >= registry.MaxFailedChallenges {
 		severity = protocol.SeverityError
-		s.registry.MarkUntrusted(providerID)
+		if transient {
+			// Missed-challenge timeouts (sleep / network blip) are recoverable:
+			// keep challenging and let a later passing challenge restore the
+			// provider without requiring a reconnect.
+			s.registry.MarkUntrustedTransient(providerID)
+		} else {
+			s.registry.MarkUntrusted(providerID)
+		}
 		if p := s.registry.GetProvider(providerID); p != nil {
 			s.sendTrustStatus(p, p.TrustLevel, string(registry.StatusUntrusted), reason)
 		}

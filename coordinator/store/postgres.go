@@ -283,6 +283,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			account_id TEXT PRIMARY KEY,
 			privy_user_id TEXT UNIQUE NOT NULL,
 			email TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT '',
+			platform_fee_percent BIGINT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN
@@ -553,6 +555,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_last4 TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_instant_eligible BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_stripe_account ON users(stripe_account_id) WHERE stripe_account_id != ''`,
+
+		// Account role + per-account platform fee override (service accounts, e.g. OpenRouter).
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_fee_percent BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
 
 		`CREATE TABLE IF NOT EXISTS stripe_withdrawals (
 			id TEXT PRIMARY KEY,
@@ -1792,9 +1798,9 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (account_id, privy_user_id, email)
-		 VALUES ($1, $2, $3)`,
-		user.AccountID, user.PrivyUserID, user.Email,
+		`INSERT INTO users (account_id, privy_user_id, email, role, platform_fee_percent)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		user.AccountID, user.PrivyUserID, user.Email, user.Role, user.PlatformFeePercent,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create user: %w", err)
@@ -1802,7 +1808,7 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	return nil
 }
 
-const userSelectColumns = `account_id, privy_user_id, email,
+const userSelectColumns = `account_id, privy_user_id, email, role, platform_fee_percent,
 	stripe_account_id, stripe_account_status, stripe_destination_type,
 	stripe_destination_last4, stripe_instant_eligible, created_at`
 
@@ -1810,7 +1816,7 @@ func scanUser(row interface {
 	Scan(...any) error
 }) (*User, error) {
 	var u User
-	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email,
+	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.Role, &u.PlatformFeePercent,
 		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeDestinationType,
 		&u.StripeDestinationLast4, &u.StripeInstantEligible, &u.CreatedAt); err != nil {
 		return nil, err
@@ -1885,6 +1891,43 @@ func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*User, e
 		return nil, fmt.Errorf("store: user with Stripe account %q not found: %w", stripeAccountID, err)
 	}
 	return u, nil
+}
+
+// SetUserRole sets the account role on a user record.
+func (s *PostgresStore) SetUserRole(accountID, role string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE users SET role = $2 WHERE account_id = $1`,
+		accountID, role,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set user role: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	return nil
+}
+
+// SetUserPlatformFeePercent sets (or clears, when nil) the per-account platform
+// fee override.
+func (s *PostgresStore) SetUserPlatformFeePercent(accountID string, feePercent *int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE users SET platform_fee_percent = $2 WHERE account_id = $1`,
+		accountID, feePercent,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set user platform fee: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	return nil
 }
 
 // GetUserByEmail returns the user for an email address.

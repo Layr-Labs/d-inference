@@ -129,7 +129,9 @@ func main() {
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
 
-	// Per-account rate limiter on consumer (inference) endpoints.
+	// Per-account rate limiter on consumer (inference) endpoints. The default
+	// is intentionally generous (20 rps / burst 120) — the fleet token-budget
+	// admission is the real capacity ceiling, so this is a fairness/abuse guard.
 	if cfg.RateLimitCfg.RPS > 0 {
 		rl := ratelimit.New(cfg.RateLimitCfg)
 		rl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "ratelimit_pruner") })
@@ -148,6 +150,44 @@ func main() {
 	} else {
 		logger.Warn("financial-endpoint rate limiter DISABLED (EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS=0)")
 	}
+
+	// Elevated request limiter for trusted service accounts (e.g. OpenRouter),
+	// which fan out many end-users behind a single key. Set the service RPS to
+	// 0 to drop the per-request ceiling for service accounts.
+	//
+	// Note: the service role is admin-provisioned only (PUT /v1/admin/users/role,
+	// admin-gated) — consumers cannot self-escalate into this tier. Disabling
+	// this request limiter does NOT make service traffic unbounded: it remains
+	// gated by the per-account token limits (ITPM/OTPM, below), the account's
+	// prepaid balance, and the fleet token-budget admission ceiling.
+	if cfg.ServiceRL.RPS > 0 {
+		srl := ratelimit.New(cfg.ServiceRL)
+		srl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_ratelimit_pruner") })
+		srv.SetServiceRateLimiter(srl)
+		logger.Info("service-account rate limiter enabled", "rps", cfg.ServiceRL.RPS, "burst", cfg.ServiceRL.Burst)
+	} else {
+		logger.Warn("service-account request rate limiter DISABLED — service accounts still bounded by token (ITPM/OTPM) limits, prepaid balance, and fleet admission")
+	}
+
+	// Per-account token-per-minute limiters (ITPM/OTPM) — the industry-standard
+	// token throttle alongside RPM. Per-minute limits are converted to
+	// tokens/second; bursts must be >= the largest single request (>= max
+	// context for input, >= max output for output). Set a tier's ITPM and OTPM
+	// both to 0 to disable token limiting for that tier.
+	consumerTok := cfg.ConsumerTokens
+	serviceTok := cfg.ServiceTokens
+	var consumerTokenLimiter, serviceTokenLimiter *ratelimit.TokenLimiter
+	if consumerTok.InputPerMinute > 0 || consumerTok.OutputPerMinute > 0 {
+		consumerTokenLimiter = ratelimit.NewTokenLimiter(consumerTok.InputPerMinute/60, consumerTok.InputBurst, consumerTok.OutputPerMinute/60, consumerTok.OutputBurst)
+		consumerTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "consumer_token_ratelimit_pruner") })
+		logger.Info("consumer token rate limiter enabled", "itpm", consumerTok.InputPerMinute, "otpm", consumerTok.OutputPerMinute)
+	}
+	if serviceTok.InputPerMinute > 0 || serviceTok.OutputPerMinute > 0 {
+		serviceTokenLimiter = ratelimit.NewTokenLimiter(serviceTok.InputPerMinute/60, serviceTok.InputBurst, serviceTok.OutputPerMinute/60, serviceTok.OutputBurst)
+		serviceTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_token_ratelimit_pruner") })
+		logger.Info("service token rate limiter enabled", "itpm", serviceTok.InputPerMinute, "otpm", serviceTok.OutputPerMinute)
+	}
+	srv.SetTokenLimiters(consumerTokenLimiter, serviceTokenLimiter)
 
 	// Coordinator self-telemetry emitter.
 	telemetryEmitter := telemetry.NewEmitter(logger, srv.Metrics(), telemetry.CoordinatorVersion)

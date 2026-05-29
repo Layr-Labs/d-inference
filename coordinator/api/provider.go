@@ -1112,19 +1112,42 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
 	s.registry.RecordJobSuccess(providerID, responseTime)
 
-	// Calculate cost — check provider's custom price, then platform DB price,
-	// then hardcoded defaults.
+	// Resolve the consumer once: platform-fee override (nil = global default)
+	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
+	// failed lookup (raw API-key account with no user row) falls back to
+	// defaults. Service accounts run on a 0% fee.
+	var feePercent *int64
+	isServiceConsumer := false
+	if u, err := s.store.GetUserByAccountID(pr.ConsumerKey); err == nil && u != nil {
+		feePercent = u.PlatformFeePercent
+		isServiceConsumer = u.Role == store.RoleService
+	}
+
+	// Calculate cost. Direct consumers: provider custom price, then platform DB
+	// price, then hardcoded defaults, with the per-request minimum applied.
+	// Service/wholesale traffic is billed at the advertised platform price
+	// (never a provider's higher custom price) and is exempt from the minimum,
+	// so the debit matches the published per-token OpenRouter feed exactly.
 	providerAccountForPricing := ""
 	if p := s.registry.GetProvider(providerID); p != nil {
 		providerAccountForPricing = providerPricingKeys(p)
 	}
-	customIn, customOut, hasCustom := s.store.GetModelPrice(providerAccountForPricing, pr.Model)
+	var customIn, customOut int64
+	var hasCustom bool
+	if !isServiceConsumer {
+		customIn, customOut, hasCustom = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
+	}
 	if !hasCustom {
 		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
 	}
-	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	var totalCost int64
+	if isServiceConsumer {
+		totalCost = payments.CalculateCostWithOverridesNoMinimum(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	} else {
+		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	}
 
-	providerPayout := payments.ProviderPayout(totalCost)
+	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
 	billingFinalized := true
 
 	// Settle billing against the pre-flight reservation. All balance
@@ -1192,7 +1215,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				pr.ReservedMicroUSD = totalCost
 			}
 			// Recompute payout after potential clamp.
-			providerPayout = payments.ProviderPayout(totalCost)
+			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
 		} else if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
 			start := time.Now()
@@ -1249,7 +1272,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		}
 
 		// Compute platform fee (needs referral lookup before spawning goroutines).
-		platformFee := payments.PlatformFee(totalCost)
+		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
 		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
 			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
 		}

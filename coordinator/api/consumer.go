@@ -575,9 +575,29 @@ func (s *Server) providerReservationCost(provider *registry.Provider, model stri
 	return s.reservationCost(model, promptTokens, maxTokens)
 }
 
+// isServiceConsumer reports whether the account is a service/wholesale account
+// (e.g. OpenRouter). Such accounts are billed at the advertised platform price,
+// so the provider-price reservation top-up and provider custom pricing are
+// skipped for them. A failed lookup falls back to false (normal consumer).
+func (s *Server) isServiceConsumer(accountID string) bool {
+	if accountID == "" {
+		return false
+	}
+	if u, err := s.store.GetUserByAccountID(accountID); err == nil && u != nil {
+		return u.Role == store.RoleService
+	}
+	return false
+}
+
 func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provider *registry.Provider) (int64, error) {
 	if pr == nil {
 		return 0, fmt.Errorf("pending request is required")
+	}
+	// Service/wholesale consumers are billed at the platform price at
+	// settlement, so don't top the reservation up to a provider's higher custom
+	// price — the base platform reservation already covers the actual charge.
+	if s.isServiceConsumer(pr.ConsumerKey) {
+		return pr.ReservedMicroUSD, nil
 	}
 	required := s.providerReservationCost(provider, pr.Model, pr.EstimatedPromptTokens, pr.RequestedMaxTokens)
 	if required <= pr.ReservedMicroUSD {
@@ -944,6 +964,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rawBody, _ = json.Marshal(providerParsed)
+	}
+
+	// Per-account token rate limiting (ITPM/OTPM) — the industry-standard
+	// token throttle alongside RPM. Charged upfront from the input estimate
+	// and the bounded max_tokens (OpenAI-style). Runs before the balance
+	// reservation so a throttled request never touches billing.
+	if !s.applyTokenRateLimit(w, r, estimatedPromptTokens, requestedMaxTokens) {
+		return
 	}
 
 	// Pre-flight balance reservation — atomically debit the worst-case cost
@@ -2990,31 +3018,14 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		capByModel[capacities[i].ModelID] = &capacities[i]
 	}
 
-	// Filter to only show models from the active catalog. Prefer the DB-backed
-	// registry; fall back to legacy supported_models only while old deployments
-	// still have rows there.
-	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	// Filter to only show models from the active catalog, and capture the richer
+	// registry entries used to populate the OpenRouter provider fields. These
+	// lookups are shared with the dedicated /v1/models/openrouter feed.
+	catalogByID, registryByID, err := s.activeCatalogLookups()
 	if err != nil {
 		s.logger.Error("model registry: failed to list active models", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
 		return
-	}
-	catalogByID := make(map[string]store.SupportedModel, len(registryRows))
-	if len(registryRows) > 0 {
-		for _, row := range registryRows {
-			cm := supportedModelFromRegistryRecord(&row)
-			if cm.Active {
-				catalogByID[cm.ID] = cm
-			}
-		}
-	} else {
-		catalogModels := s.store.ListSupportedModels()
-		catalogByID = make(map[string]store.SupportedModel, len(catalogModels))
-		for _, cm := range catalogModels {
-			if cm.Active && !IsRetiredProviderModel(cm) {
-				catalogByID[cm.ID] = cm
-			}
-		}
 	}
 
 	data := make([]types.ModelEntry, 0, len(models))
@@ -3050,13 +3061,31 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if inCatalog && cm.DisplayName != "" {
 			metadata.DisplayName = cm.DisplayName
 		}
-		data = append(data, types.ModelEntry{
-			ID:       m.ID,
-			Object:   "model",
-			Created:  0,
-			OwnedBy:  "eigeninference",
-			Metadata: metadata,
-		})
+
+		entry := types.ModelEntry{
+			ID:            m.ID,
+			Object:        "model",
+			Created:       0,
+			OwnedBy:       "eigeninference",
+			Name:          metadata.DisplayName,
+			HuggingFaceID: m.ID, // model IDs are HuggingFace paths
+			Metadata:      metadata,
+		}
+
+		// OpenRouter provider fields (quantization, per-token pricing, sampling
+		// params, and registry-sourced metadata), shared with the dedicated
+		// /v1/models/openrouter feed.
+		reg, hasReg := registryByID[m.ID]
+		s.openRouterModelFieldsFor(m.ID, m.Quantization, reg, hasReg).applyToModelEntry(&entry)
+
+		// Modalities are derived from the model's capabilities (text by default).
+		var caps []string
+		if hasReg {
+			caps = reg.Capabilities
+		}
+		entry.InputModalities, entry.OutputModalities = deriveModalities(m.ModelType, caps)
+
+		data = append(data, entry)
 	}
 
 	writeJSON(w, http.StatusOK, types.ModelListResponse{
@@ -3365,6 +3394,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
+
+	// Per-account token rate limiting (ITPM/OTPM), before the reservation.
+	if !s.applyTokenRateLimit(w, r, estimatedPromptTokens, requestedMaxTokens) {
+		return
+	}
 
 	// Pre-flight balance reservation — same worst-case-cost reservation as
 	// handleChatCompletions, using the byte-length upper bound for prompt

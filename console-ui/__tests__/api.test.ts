@@ -239,6 +239,45 @@ describe("fetchModels", () => {
     expect(result[0].min_ram_gb).toBe(24);
   });
 
+  it("surfaces OpenRouter provider fields (pricing, modalities, features)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      data: [
+        {
+          id: "mlx-community/Qwen3.5-9B-MLX-4bit",
+          object: "model",
+          name: "Qwen3.5 9B",
+          hugging_face_id: "mlx-community/Qwen3.5-9B-MLX-4bit",
+          created: 1735689600,
+          description: "Balanced general-purpose model.",
+          context_length: 262144,
+          quantization: "int4",
+          pricing: { prompt: "0.00000005", completion: "0.0000002", image: "0", request: "0", input_cache_read: "0" },
+          input_modalities: ["text"],
+          output_modalities: ["text"],
+          supported_features: ["tools", "reasoning"],
+          supported_sampling_parameters: ["temperature", "top_p", "max_tokens"],
+          metadata: {},
+        },
+      ],
+    }));
+
+    const result = await fetchModels();
+
+    expect(result).toHaveLength(1);
+    const m = result[0];
+    expect(m.name).toBe("Qwen3.5 9B");
+    expect(m.hugging_face_id).toBe("mlx-community/Qwen3.5-9B-MLX-4bit");
+    expect(m.created).toBe(1735689600);
+    expect(m.description).toBe("Balanced general-purpose model.");
+    expect(m.context_length).toBe(262144);
+    expect(m.pricing?.prompt).toBe("0.00000005");
+    expect(m.pricing?.completion).toBe("0.0000002");
+    expect(m.input_modalities).toEqual(["text"]);
+    expect(m.output_modalities).toEqual(["text"]);
+    expect(m.supported_features).toEqual(["tools", "reasoning"]);
+    expect(m.supported_sampling_parameters).toContain("temperature");
+  });
+
   it("throws on non-ok response", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 503));
     await expect(fetchModels()).rejects.toThrow("Failed to fetch models: 503");

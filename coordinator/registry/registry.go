@@ -1704,38 +1704,15 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 }
 
 // RecordChallengeSuccess records a successful challenge-response verification.
-//
-// A passing challenge also auto-heals a provider that was previously derouted
-// for missed challenges: if it is currently StatusUntrusted, it is restored to
-// StatusOnline with the onlineCount / modelProvider bookkeeping reversed,
-// exactly mirroring MarkUntrusted. This is the only self-recovery path — hard
-// security failures (RecordChallengeFailure with transientOnly=false) are not
-// undone here.
 func (r *Registry) RecordChallengeSuccess(providerID string) {
-	// Acquire the registry write lock (not RLock) so the counter bookkeeping
-	// below is atomic with the status flip. Lock ordering mirrors
-	// MarkUntrusted exactly: r.mu.Lock then p.mu.Lock.
-	r.mu.Lock()
+	r.mu.RLock()
 	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
 	if !ok {
-		r.mu.Unlock()
 		return
 	}
 
 	p.mu.Lock()
-	// Self-heal: a provider derouted for missed challenges has just proven it
-	// can sign again. Restore it to online and reverse exactly what
-	// MarkUntrusted subtracted (onlineCount +1, modelProviderInc per model).
-	if p.Status == StatusUntrusted {
-		r.onlineCount.Add(1)
-		for _, m := range p.Models {
-			r.modelProviderInc(m.ID)
-		}
-		p.Status = StatusOnline
-		r.logger.Info("provider auto-recovered after successful challenge",
-			"provider_id", providerID,
-		)
-	}
 	p.LastChallengeVerified = time.Now()
 	p.FailedChallenges = 0
 	if !p.ChallengeVerifiedSIP {
@@ -1743,7 +1720,6 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	}
 	p.Reputation.RecordChallengePass()
 	p.mu.Unlock()
-	r.mu.Unlock()
 
 	// Persist challenge state and reputation.
 	r.persistProviderNow(p)

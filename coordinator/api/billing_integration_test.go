@@ -42,9 +42,9 @@ func (s failingCreditStore) Credit(accountID string, amountMicroUSD int64, entry
 func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Ledger) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
 	ledger := srv.ledger
@@ -299,9 +299,9 @@ func TestIntegration_ConsumerBillingCharge(t *testing.T) {
 func TestIntegration_ConsumerInsufficientBalance(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	// Use a separate API key ("broke-key") with zero balance.
-	st := store.NewMemory("broke-key")
+	st := store.NewMemory(store.Config{AdminKey: "broke-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ledger := srv.ledger
 	billingSvc := billing.NewService(st, ledger, logger, billing.Config{MockMode: true})
@@ -343,9 +343,9 @@ func TestIntegration_ConsumerInsufficientBalance(t *testing.T) {
 // chunk is streamed — not after delivery with a silently-failed charge.
 func TestIntegration_StreamingReservationBlocksExploit(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("exploit-key")
+	st := store.NewMemory(store.Config{AdminKey: "exploit-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ledger := srv.ledger
 	billingSvc := billing.NewService(st, ledger, logger, billing.Config{MockMode: true})

@@ -327,9 +327,9 @@ func TestEdge_WrongHTTPMethod(t *testing.T) {
 
 func TestEdge_ProviderEmptyModels(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -350,9 +350,9 @@ func TestEdge_ProviderEmptyModels(t *testing.T) {
 
 func TestEdge_ProviderDuplicateModels(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -378,9 +378,9 @@ func TestEdge_ProviderDuplicateModels(t *testing.T) {
 
 func TestEdge_ProviderVeryLargeRegistration(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -412,9 +412,9 @@ func TestEdge_ProviderVeryLargeRegistration(t *testing.T) {
 
 func TestEdge_CatalogChangeDuringActiveProvider(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 100 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -542,9 +542,9 @@ func TestEdge_ProviderSendsVeryLargeChunk(t *testing.T) {
 
 func TestEdge_ConcurrentRequestsSameProvider(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -1215,9 +1215,9 @@ func TestEdge_ErrorResponseFormat(t *testing.T) {
 
 func TestEdge_ProviderDisconnectMidStream(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1413,9 +1413,9 @@ func TestEdge_VersionEndpointIncludesSwiftReleaseMetadata(t *testing.T) {
 
 func TestEdge_ProviderInvalidPublicKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

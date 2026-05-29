@@ -26,7 +26,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	s, err := NewPostgres(ctx, dbURL)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: dbURL})
 	if err != nil {
 		t.Fatalf("NewPostgres: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestPostgresStoreImplementsInterface(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	s, err := NewPostgres(ctx, dbURL)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: dbURL})
 	if err != nil {
 		t.Fatalf("NewPostgres: %v", err)
 	}

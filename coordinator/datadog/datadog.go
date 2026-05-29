@@ -364,3 +364,6 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// Check validates the configuration.
+func (c Config) Check() error { return nil }

@@ -138,11 +138,11 @@ func sendConcurrentRequests(t *testing.T, url, apiKey, model string, count, maxI
 func setupLoadTestServer(t *testing.T) (*httptest.Server, *registry.Registry, *store.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	// Replace the default queue (10 slots, 30s) with a larger one for load tests.
 	reg.SetQueue(registry.NewRequestQueue(200, 30*time.Second))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	return ts, reg, st

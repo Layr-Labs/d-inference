@@ -33,9 +33,9 @@ const knownGoodBinaryHashForTest = "0123456789abcdef0123456789abcdef0123456789ab
 
 func TestProviderWebSocketConnect(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -99,9 +99,9 @@ func TestProviderWebSocketConnect(t *testing.T) {
 
 func TestProviderWebSocketMultiple(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -156,9 +156,9 @@ func TestProviderWebSocketMultiple(t *testing.T) {
 
 func TestProviderInferenceError(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -367,9 +367,9 @@ func createTestAttestationJSONWithBinaryHash(t *testing.T, encryptionKey, binary
 // with a valid Secure Enclave attestation is marked as attested.
 func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -423,9 +423,9 @@ func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 
 func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
 
 	pubKey := testPublicKeyB64()
@@ -464,9 +464,9 @@ func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T
 
 func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
 
 	pubKey := testPublicKeyB64()
@@ -502,9 +502,9 @@ func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 
 func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{"not-a-sha256"})
 
 	pubKey := testPublicKeyB64()
@@ -544,9 +544,9 @@ func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
 
 func TestSyncBinaryHashesRejectsInvalidStoredReleaseHashWithoutFailingOpen(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	if err := st.SetRelease(&store.Release{
 		Version:    "1.0.0",
 		Platform:   "macos-arm64",
@@ -570,9 +570,9 @@ func TestSyncBinaryHashesRejectsInvalidStoredReleaseHashWithoutFailingOpen(t *te
 
 func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	manualHash := strings.Repeat("a", 64)
 	releaseHash := strings.Repeat("b", 64)
@@ -617,9 +617,9 @@ func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
 
 func TestBinaryHashPolicySnapshotConcurrentSync(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	manualHash := strings.Repeat("a", 64)
 	srv.AddKnownBinaryHashes([]string{manualHash})
 
@@ -671,9 +671,9 @@ func TestBinaryHashPolicySnapshotConcurrentSync(t *testing.T) {
 // with an invalid attestation is still registered but not marked as attested.
 func TestProviderRegistrationWithInvalidAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -721,9 +721,9 @@ func TestProviderRegistrationWithInvalidAttestation(t *testing.T) {
 // without an attestation still works in Open Mode.
 func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -768,9 +768,9 @@ func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 // Ported from master's coordinator/internal/api/provider_test.go (PR #99 regression).
 func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
 
 	regMsg := &protocol.RegisterMessage{
@@ -805,9 +805,9 @@ func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfi
 // attestation metadata.
 func TestListModelsWithAttestationInfo(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -886,9 +886,9 @@ func TestListModelsWithAttestationInfo(t *testing.T) {
 
 func TestAttestationRejectsMissingEncryptionKeyForRegisteredPublicKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -939,9 +939,9 @@ func TestAttestationRejectsMissingEncryptionKeyForRegisteredPublicKey(t *testing
 
 func TestAttestationRejectsMismatchedEncryptionKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -994,9 +994,9 @@ func TestAttestationRejectsMismatchedEncryptionKey(t *testing.T) {
 // coordinator sends challenge, provider responds, verification passes.
 func TestChallengeResponseSuccess(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	// Use a very short challenge interval for testing.
 	srv.challengeInterval = 200 * time.Millisecond
 
@@ -1073,9 +1073,9 @@ func TestChallengeResponseSuccess(t *testing.T) {
 
 func TestChallengeResponseAllowsRDMAEnabledWithoutHypervisor(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -1164,9 +1164,9 @@ func TestChallengeResponseAllowsRDMAEnabledWithoutHypervisor(t *testing.T) {
 
 func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
 
 	pubKey := testPublicKeyB64()
@@ -1212,9 +1212,9 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 
 func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	otherKnownHash := strings.Repeat("f", 64)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest, otherKnownHash})
 
@@ -1262,9 +1262,9 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 
 func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
 
 	pubKey := testPublicKeyB64()
@@ -1314,9 +1314,9 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 
 func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -1400,9 +1400,9 @@ func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 
 func TestChallengeResponseRejectsUnsignedBinaryHashWhenPolicyConfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
 
 	pubKey := testPublicKeyB64()
@@ -1448,9 +1448,9 @@ func TestChallengeResponseRejectsUnsignedBinaryHashWhenPolicyConfigured(t *testi
 
 func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -1565,9 +1565,9 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 
 func TestApplyACMETrustRequiresBoundEncryptionAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	msg := &protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
@@ -1602,9 +1602,9 @@ func TestApplyACMETrustRequiresBoundEncryptionAttestation(t *testing.T) {
 
 func TestApplyACMETrustUpgradesBoundEncryptionAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	attestationKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -1648,9 +1648,9 @@ func TestApplyACMETrustUpgradesBoundEncryptionAttestation(t *testing.T) {
 
 func TestApplyACMETrustRequiresMatchingAttestedSEKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	attestationKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey(attestation): %v", err)
@@ -1698,9 +1698,9 @@ func TestApplyACMETrustRequiresMatchingAttestedSEKey(t *testing.T) {
 
 func TestProviderBelowMinVersionStaysHiddenFromModelsAfterChallenge(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 	srv.minProviderVersion = "0.3.9"
 	srv.SetRuntimeManifest(&RuntimeManifest{})
@@ -1779,9 +1779,9 @@ func TestProviderBelowMinVersionStaysHiddenFromModelsAfterChallenge(t *testing.T
 // TestChallengeResponseWrongKey tests that a response with wrong public key fails.
 func TestChallengeResponseWrongKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -1859,9 +1859,9 @@ func TestChallengeResponseWrongKey(t *testing.T) {
 // is included in inference responses.
 func TestTrustLevelInResponseHeaders(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1961,9 +1961,9 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 // TestTrustLevelInModelsList verifies that /v1/models includes trust_level.
 func TestTrustLevelInModelsList(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -2028,9 +2028,9 @@ func TestTrustLevelInModelsList(t *testing.T) {
 
 func TestHandleChunkDecryptsEncryptedTextChunk(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	providerPublicKey := testPublicKeyB64()
 	provider := reg.Register("provider-1", nil, &protocol.RegisterMessage{
@@ -2087,9 +2087,9 @@ func TestHandleChunkDecryptsEncryptedTextChunk(t *testing.T) {
 
 func TestHandleChunkRejectsPlaintextTextChunk(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	providerPublicKey := testPublicKeyB64()
 	provider := reg.Register("provider-1", nil, &protocol.RegisterMessage{
@@ -2158,9 +2158,9 @@ func TestHandleChunkRejectsPlaintextTextChunk(t *testing.T) {
 
 func TestHandleChunkRejectsMixedPlaintextAndEncryptedTextChunk(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	providerPublicKey := testPublicKeyB64()
 	provider := reg.Register("provider-mixed", nil, &protocol.RegisterMessage{
@@ -2222,9 +2222,9 @@ func TestHandleChunkRejectsMixedPlaintextAndEncryptedTextChunk(t *testing.T) {
 // payloads leak into the consumer-visible HTTP response.
 func TestPrivateTextResponseContainsNoEncryptionArtifacts(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

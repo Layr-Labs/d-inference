@@ -101,8 +101,8 @@ func enrollTestServer(t *testing.T) *Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	reg := registry.New(logger)
-	st := store.NewMemory("")
-	return NewServer(reg, st, logger)
+	st := store.NewMemory(store.Config{})
+	return NewServer(reg, st, ServerConfig{}, logger)
 }
 
 func TestHandleEnrollEndpoint(t *testing.T) {

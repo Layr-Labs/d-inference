@@ -8,11 +8,11 @@ import (
 )
 
 func NewMemoryStore() store.Store {
-	return store.NewMemory("testbed-admin-key")
+	return store.NewMemory(store.Config{AdminKey: "testbed-admin-key"})
 }
 
 func NewPostgresStore(ctx context.Context, databaseURL string) (store.Store, error) {
-	pg, err := store.NewPostgres(ctx, databaseURL)
+	pg, err := store.NewPostgres(ctx, store.Config{DatabaseURL: databaseURL})
 	if err != nil {
 		return nil, fmt.Errorf("connect to postgres: %w", err)
 	}

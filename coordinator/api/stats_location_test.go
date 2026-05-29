@@ -18,8 +18,8 @@ import (
 func TestStatsAggregatesProviderLocationsWithPrivacyFloor(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
-	st := store.NewMemory("")
-	srv := NewServer(reg, st, logger)
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	addProviderForStats(t, reg, "sf-1", "hardware", &store.ProviderLocation{
 		City:        "San Francisco",
@@ -97,8 +97,8 @@ func TestStatsAggregatesProviderLocationsWithPrivacyFloor(t *testing.T) {
 func TestStatsAggregatesRequestLocationsWithPrivacyFloor(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
-	st := store.NewMemory("")
-	srv := NewServer(reg, st, logger)
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	sf := &store.ProviderLocation{
 		City:        "San Francisco",
@@ -172,8 +172,8 @@ func TestStatsAggregatesRequestLocationsWithPrivacyFloor(t *testing.T) {
 func TestStatsAggregatesRequestFlowsToProviderLocations(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
-	st := store.NewMemory("")
-	srv := NewServer(reg, st, logger)
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	providerLoc := &store.ProviderLocation{
 		City:        "San Francisco",

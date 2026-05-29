@@ -160,9 +160,9 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	payload := map[string]any{
 		"model_id":           "mlx-community/test",
 		"version":            "v1",
@@ -223,9 +223,9 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 
 func TestModelCatalogFallbackAndRegistryPreference(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	if err := st.SetSupportedModel(&store.SupportedModel{ID: "legacy", DisplayName: "Legacy", ModelType: "text", Active: true, WeightHash: testHash, SizeGB: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -272,10 +272,10 @@ func TestModelCatalogFallbackAndRegistryPreference(t *testing.T) {
 
 func TestModelRegistryListErrorSurfacesAndDoesNotFallback(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := &failingModelRegistryStore{MemoryStore: store.NewMemory(""), listErr: errors.New("database unavailable")}
+	st := &failingModelRegistryStore{MemoryStore: store.NewMemory(store.Config{}), listErr: errors.New("database unavailable")}
 	reg := registry.New(logger)
 	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "sentinel"}})
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	if err := st.SetSupportedModel(&store.SupportedModel{ID: "legacy", DisplayName: "Legacy", ModelType: "text", Active: true, WeightHash: testHash, SizeGB: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -301,8 +301,8 @@ func TestModelRegistryListErrorSurfacesAndDoesNotFallback(t *testing.T) {
 
 func TestPublishingAPIKeyStoreErrorSurfacesButBootstrapStillWorks(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := &failingModelRegistryStore{MemoryStore: store.NewMemory(""), keyErr: errors.New("database unavailable")}
-	srv := NewServer(registry.New(logger), st, logger)
+	st := &failingModelRegistryStore{MemoryStore: store.NewMemory(store.Config{}), keyErr: errors.New("database unavailable")}
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "")
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", nil)
@@ -325,7 +325,7 @@ func TestPublishingAPIKeyStoreErrorSurfacesButBootstrapStillWorks(t *testing.T) 
 }
 
 func TestRegisteringNewVersionPreservesRetiredStatus(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	entry := &store.ModelRegistryEntry{ID: "mlx-community/retired", DisplayName: "Retired", Status: "retired", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 32}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: entry.ID, Version: "v1", R2Prefix: modelR2Prefix(entry.ID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
@@ -368,7 +368,7 @@ func (s *failingModelRegistryStore) FindPublishingAPIKeysWithError() ([]store.Pu
 }
 
 func TestUpsertModelRegistryEntryPreservesExistingStatus(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	entry := &store.ModelRegistryEntry{ID: "mlx-community/upsert", DisplayName: "Upsert", Status: "retired", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 32}
 	if err := st.UpsertModelRegistryEntry(entry); err != nil {
 		t.Fatal(err)

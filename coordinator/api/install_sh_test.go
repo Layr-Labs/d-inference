@@ -112,9 +112,9 @@ func TestInstallScriptTemplating(t *testing.T) {
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	s := NewServer(reg, st, logger)
+	s := NewServer(reg, st, ServerConfig{}, logger)
 	if baseURL != "" {
 		s.SetBaseURL(baseURL)
 	}

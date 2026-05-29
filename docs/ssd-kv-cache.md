@@ -47,7 +47,7 @@ ciphertext is what's written.
                         │
               ┌─────────▼──────────┐
               │  Engine PrefixCache │   in-GPU blocks, blockSize=256,
-              │   (hashIndex / LRU) │   maxBlocks=4096, chain-hashed
+              │   (hashIndex / LRU) │   blockSize=256, memory-bounded, chain-hashed
               └─────────┬──────────┘
                    miss │ evict
               ┌─────────▼──────────────────────┐
@@ -88,8 +88,15 @@ The pieces actually on the live path are `EncryptedKVStore` +
 Set the env var on the provider process:
 
 ```bash
-DARKBLOOM_PREFIX_CACHE=1   # or =true (case-insensitive)
+DARKBLOOM_PREFIX_CACHE=1              # enable (default off); or =true
+DARKBLOOM_PREFIX_CACHE_MAX_GB=8       # optional: in-GPU block-cache budget (default = 1/8 physical RAM)
+DARKBLOOM_PREFIX_CACHE_DISK_GB=10     # optional: on-disk budget per model (default 10 GB; 0 = unlimited)
 ```
+
+`MAX_GB` bounds the in-memory block cache (the number of GPU blocks is
+derived from it + the model's per-token KV bytes, so a large model can't
+silently retain hundreds of GB outside admission control). `DISK_GB`
+bounds the encrypted SSD files per model (LRU sweep — see [§11](#11-on-disk-layout)).
 
 Wiring happens in `BatchScheduler.makeBatchedEngine` /
 `makeEncryptedPrefixPersistenceIfEnabled`
@@ -367,6 +374,9 @@ Everything fails closed to a cold prefill:
 | Layout shape ≠ model, bad byte length, bad array count, bad metaState | throw → cold miss |
 | Block pool saturated on a cold hit | block served for this request only |
 | Write failure mid-flush | best-effort; temp cleaned up, no partial promoted |
+| In-memory budget can't fit one block | cache disabled for that model (logged) |
+| On-disk files exceed `DISK_GB` | oldest `.darkbloom-kv` evicted (LRU) to fit |
+| Weights change under the same model id | new dir + binding ⇒ old KV not found (invalidated) |
 
 No path serves KV for the wrong prefix/model, and no malformed file crashes
 the provider.
@@ -377,14 +387,21 @@ the provider.
 
 ```
 ~/Library/Caches/darkbloom/kv/
-└── <modelKey>/                         # engine tier: sha256(modelId)[:12]
+└── <modelKey>/                         # engine tier: sha256(weightHash ?? modelId)[:12]
     ├── <blockHashHex>.darkbloom-kv     # one file per evicted block
     └── …
 ```
 
-`modelKey` namespaces by model so a model switch can't read another model's
-files (and MB-1 catches the 12-char-prefix collision case). The KEK lives
-in the Keychain, not on the cache disk.
+`modelKey` is derived from the **weight identity** (`weightHash` when the
+catalog provides it, else the model id), so a model switch — or a
+re-download of the **same id with different weights** — lands in a
+different directory and binding: stale KV is neither found nor passes MB-1.
+The KEK lives in the Keychain, not on the cache disk.
+
+The per-model directory is bounded by `DARKBLOOM_PREFIX_CACHE_DISK_GB`
+(default 10 GB): when a save pushes it over budget, the oldest
+`.darkbloom-kv` files are evicted (LRU by mtime), amortized so the
+directory scan doesn't run on every block. Set to 0 to disable the cap.
 
 To clear the cache: delete the `darkbloom/kv` directory. To invalidate all
 files cryptographically: rotate/`wipe()` the KEK (existing files become
@@ -404,10 +421,12 @@ opt-in via `DARKBLOOM_PREFIX_CACHE`, and ships only with an explicit
 operator threat-model sign-off. Flag off ⇒ no cache ⇒ no exposure. See the
 design doc's threat model for the full TB-007 analysis.
 
-Model binding currently uses the `modelId`, not a weight hash — a weight
-change under the same id won't invalidate cache files by metadata alone
-(the tensor-shape guard in §8 still catches shape changes; same-shape
-weight changes are a documented follow-up).
+Model binding uses the **weight hash** (`ModelInfo.weightHash`) when the
+catalog provides it, falling back to the `modelId` otherwise. So a
+re-download under the same id with different weights invalidates stale KV
+(new directory + new binding). When no weight hash is available the binding
+degrades to the model id; the tensor-shape guard (§8) still catches
+shape-changing weight swaps in that case.
 
 ---
 

@@ -279,17 +279,26 @@ trust_boundaries:
       SE-signed attestation blob and verified by the coordinator against its registry of
       blessed hashes. The hash is computed once at startup and not re-verified at runtime.
 
-      The SE P-256 signing key is now persistent and stored in the macOS keychain via
+      The SE P-256 key is now persistent and stored in the macOS keychain via
       the Security framework (PersistentEnclaveKey.swift). On first launch the key is
       created with kSecAttrIsPermanent=true, bound to the keychain access group
       SLDQ2GJ6TL.io.darkbloom.provider (team-scoped), and labeled
-      io.darkbloom.provider.attestation-signing.v1. Subsequent launches load the
-      existing key by access group and label query. The private key never leaves the
-      SE silicon; only signing operations are available. ProviderLoop tries the
-      persistent key first and falls back to an ephemeral CryptoKit key with a warning
-      if the persistent path fails (e.g. errSecMissingEntitlement=-34018, which fires
-      when a patched or unsigned binary lacks the keychain-access-groups entitlement,
-      effectively preventing impostor binaries from using the established identity).
+      io.darkbloom.provider.attestation-signing.v2 (the current defaultLabel; a
+      legacy v1 key from earlier builds is auto-migrated to v2 on load). Subsequent
+      launches load the existing key by access group and label query. The private key
+      never leaves the SE silicon. Two operations are performed with it: (1) ECDSA
+      signing of attestation blobs, and (2) ECIES unwrap/decryption — when the
+      encrypted SSD KV cache is enabled (DARKBLOOM_PREFIX_CACHE, default off), the
+      same key decrypts the wrapped per-provider KEK that protects on-disk KV
+      (PersistentEnclaveKey+ECIES.swift, SecureEnclaveKeyWrappingService.swift). This
+      grants entitled same-team binaries a decryption capability on this key, not only
+      signing — the keychain item to audit is the v2 label above. ProviderLoop tries
+      the persistent key first and falls back to an ephemeral CryptoKit key with a
+      warning if the persistent path fails (e.g. errSecMissingEntitlement=-34018, which
+      fires when a patched or unsigned binary lacks the keychain-access-groups
+      entitlement, effectively preventing impostor binaries from using the established
+      identity). Note: with the ephemeral fallback the KV cache cannot persist across
+      restarts and is disabled rather than using a non-persistent key.
 
       The X25519 encryption key pair is generated ephemerally in memory using libsodium
       (NodeKeyPair.swift). It is NOT persisted to disk. Legacy on-disk key paths
@@ -639,7 +648,8 @@ trust_boundaries:
       SE key lifecycle: PersistentEnclaveKey.swift creates or loads a persistent
       SecureEnclave P-256 signing key stored in the macOS keychain under access group
       SLDQ2GJ6TL.io.darkbloom.provider (team ID prefix) with label
-      io.darkbloom.provider.attestation-signing.v1 and kSecAttrIsPermanent=true.
+      io.darkbloom.provider.attestation-signing.v2 (legacy v1 keys are migrated to v2
+      on load) and kSecAttrIsPermanent=true.
       The same public key is reused across restarts, giving the provider a stable
       hardware-bound identity. The private key never leaves the SE silicon. The public
       key (raw 64-byte X||Y without 0x04 prefix, base64-encoded) is bound to the X25519
@@ -1582,7 +1592,7 @@ threats:
     title: Provider denies performing actions after key rotation
     description: >
       The SE key is now persistent across process restarts (keychain-backed, label
-      io.darkbloom.provider.attestation-signing.v1). Key rotation occurs only on
+      io.darkbloom.provider.attestation-signing.v2). Key rotation occurs only on
       explicit keychain deletion (factory reset, device wipe, or deliberate operator
       action). After rotation the new key is unlinked from prior attestations; audit
       trails tied to the old public key cannot be attributed to the new identity. A

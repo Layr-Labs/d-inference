@@ -1,5 +1,9 @@
 # SSD KV Cache — Design Doc
 
+> **Looking for how it actually works / loads?** See the as-built reference:
+> **[ssd-kv-cache.md](ssd-kv-cache.md)**. This doc is the design rationale,
+> threat model, and phased plan.
+
 > Status: **P0 landed (crypto primitives) + cacheability VERIFIED.**
 > Open questions are marked `[Q1]`, `[Q2]`, … and collected at the end.
 >

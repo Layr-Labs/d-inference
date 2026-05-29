@@ -90,7 +90,11 @@ extension OpenAIChatMessage {
                     "type": call.type,
                     "function": [
                         "name": call.function.name,
-                        "arguments": call.function.arguments,
+                        // Decode the JSON-string arguments into an object so the
+                        // chat template renders the `is mapping` branch. See
+                        // `decodeToolCallArguments` for why a raw string corrupts
+                        // Gemma multi-turn tool calls (double-brace rendering).
+                        "arguments": decodeToolCallArguments(call.function.arguments),
                     ] as [String: any Sendable],
                 ]
             }

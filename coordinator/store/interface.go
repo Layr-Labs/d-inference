@@ -252,6 +252,15 @@ type Store interface {
 	// Used by webhook handlers to route account.updated / payout.* events.
 	GetUserByStripeAccount(stripeAccountID string) (*User, error)
 
+	// SetUserRole sets the account role (e.g. "" or RoleService). Used by the
+	// admin API to grant a partner account elevated rate limits.
+	SetUserRole(accountID, role string) error
+
+	// SetUserPlatformFeePercent sets a per-account platform fee override.
+	// Pass nil to clear the override and fall back to the global default.
+	// A non-nil value of 0 waives the platform fee entirely.
+	SetUserPlatformFeePercent(accountID string, feePercent *int64) error
+
 	// --- Stripe Withdrawals (bank/card payouts via Stripe Connect) ---
 
 	// CreateStripeWithdrawal stores a new withdrawal record. The caller is
@@ -593,12 +602,31 @@ type ModelPrice struct {
 	OutputPrice int64  `json:"output_price"` // micro-USD per 1M tokens
 }
 
+// Account role values. The empty string is a normal consumer account.
+const (
+	// RoleService marks a trusted machine/partner account (e.g. an upstream
+	// aggregator such as OpenRouter). Service accounts get elevated or
+	// bypassed rate limits. They authenticate with a normal API key whose
+	// linked user carries this role.
+	RoleService = "service"
+)
+
 // User represents a consumer account linked to a Privy identity.
 type User struct {
 	AccountID   string    `json:"account_id"`      // internal account ID (used in ledger)
 	PrivyUserID string    `json:"privy_user_id"`   // Privy DID (e.g. "did:privy:abc123")
 	Email       string    `json:"email,omitempty"` // from Privy linked accounts
 	CreatedAt   time.Time `json:"created_at"`
+
+	// Role gates elevated capabilities. "" = normal consumer,
+	// RoleService = trusted partner/aggregator (elevated rate limits).
+	Role string `json:"role,omitempty"`
+
+	// PlatformFeePercent overrides the global platform routing fee for this
+	// account when non-nil. nil = use the global default. A value of 0 means
+	// the account pays no platform fee (the provider receives 100%). Used to
+	// waive the fee for wholesale partners such as OpenRouter.
+	PlatformFeePercent *int64 `json:"platform_fee_percent,omitempty"`
 
 	// Stripe Connect Express — for bank/card payouts via Stripe.
 	// StripeAccountStatus mirrors the readiness of payouts on the connected

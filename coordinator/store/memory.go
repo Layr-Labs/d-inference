@@ -1474,6 +1474,37 @@ func (s *MemoryStore) GetUserByEmail(email string) (*User, error) {
 	return nil, fmt.Errorf("user with email %q not found", email)
 }
 
+// SetUserRole sets the account role on a user record.
+func (s *MemoryStore) SetUserRole(accountID, role string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.usersByAccountID[accountID]
+	if !ok {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	u.Role = role
+	return nil
+}
+
+// SetUserPlatformFeePercent sets (or clears, when nil) the per-account
+// platform fee override. A fresh pointer is allocated so stored state is never
+// aliased by the caller.
+func (s *MemoryStore) SetUserPlatformFeePercent(accountID string, feePercent *int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.usersByAccountID[accountID]
+	if !ok {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	if feePercent == nil {
+		u.PlatformFeePercent = nil
+	} else {
+		v := *feePercent
+		u.PlatformFeePercent = &v
+	}
+	return nil
+}
+
 // --- Stripe Withdrawals ---
 
 func (s *MemoryStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {

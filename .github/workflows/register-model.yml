@@ -27,9 +27,9 @@ on:
         description: Quantization
         required: true
       capabilities_csv:
-        description: Comma-separated capabilities
+        description: Comma-separated capabilities (OpenRouter features, e.g. tools,reasoning,json_mode). Leave empty and opt in per model to avoid overstating capabilities.
         required: false
-        default: chat
+        default: ""
       max_context_length:
         description: Maximum context length
         required: true

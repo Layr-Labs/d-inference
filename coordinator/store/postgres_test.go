@@ -442,6 +442,47 @@ func TestPostgresSetUserStripeAccount(t *testing.T) {
 	}
 }
 
+// CreateUser must persist create-time Role and PlatformFeePercent (parity with
+// the in-memory store), so one-call provisioning of a service account survives.
+func TestPostgresCreateUserPersistsRoleAndFee(t *testing.T) {
+	s := testPostgresStore(t)
+
+	zero := int64(0)
+	u := &User{
+		AccountID:          "acct-pg-svc",
+		PrivyUserID:        "did:privy:pgsvc",
+		Email:              "svc@b",
+		Role:               RoleService,
+		PlatformFeePercent: &zero,
+	}
+	if err := s.CreateUser(u); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	got, err := s.GetUserByAccountID("acct-pg-svc")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.Role != RoleService {
+		t.Errorf("role = %q, want %q (dropped on insert)", got.Role, RoleService)
+	}
+	if got.PlatformFeePercent == nil || *got.PlatformFeePercent != 0 {
+		t.Errorf("platform_fee_percent = %v, want 0 (dropped on insert)", got.PlatformFeePercent)
+	}
+
+	// A plain user still round-trips with no role and a nil fee override.
+	if err := s.CreateUser(&User{AccountID: "acct-pg-plain", PrivyUserID: "did:privy:pgplain", Email: "p@b"}); err != nil {
+		t.Fatalf("create plain user: %v", err)
+	}
+	plain, err := s.GetUserByAccountID("acct-pg-plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Role != "" || plain.PlatformFeePercent != nil {
+		t.Errorf("plain user = role %q fee %v, want empty/nil", plain.Role, plain.PlatformFeePercent)
+	}
+}
+
 func TestPostgresSetUserStripeAccountUserNotFound(t *testing.T) {
 	s := testPostgresStore(t)
 	err := s.SetUserStripeAccount("nope", "acct_x", "pending", "", "", false)

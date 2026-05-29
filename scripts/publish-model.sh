@@ -100,7 +100,7 @@ Register with GitHub Actions:
     -f family="<family>" \
     -f architecture="<architecture>" \
     -f quantization="<quantization>" \
-    -f capabilities_csv="chat" \
+    -f capabilities_csv="tools,reasoning" \
     -f max_context_length="<max context tokens>" \
     -f max_output_length="<max output tokens>" \
     -f min_ram_gb="<minimum RAM GB>" \

@@ -721,8 +721,10 @@ func TestRecordChallengeSuccess(t *testing.T) {
 	reg.RecordChallengeFailure("p1", true)
 	reg.RecordChallengeFailure("p1", true)
 
-	// Now record success
-	reg.RecordChallengeSuccess("p1")
+	// Now record success (provider was never untrusted -> not a recovery)
+	if reg.RecordChallengeSuccess("p1") {
+		t.Error("RecordChallengeSuccess should report recovery=false for a non-untrusted provider")
+	}
 
 	if p.FailedChallenges != 0 {
 		t.Errorf("failed_challenges = %d, want 0 after success", p.FailedChallenges)
@@ -834,6 +836,209 @@ func TestHeartbeatDoesNotReviveUntrusted(t *testing.T) {
 	reg.Disconnect("p1")
 	if reg.OnlineCount() != 0 {
 		t.Errorf("OnlineCount = %d after disconnect, want 0 (no double-decrement)", reg.OnlineCount())
+	}
+}
+
+// --- Issue #239: reason-aware transient-deroute recovery ---
+
+const recoverTestModel = "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+// A transient (missed-challenge timeout) deroute is recoverable: the provider
+// returns to online on the next passing challenge, with all counts restored.
+func TestMarkUntrustedTransientRecovers(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	reg.MarkUntrustedTransient("p1")
+
+	if p.Status != StatusUntrusted {
+		t.Fatalf("status = %q, want %q", p.Status, StatusUntrusted)
+	}
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d, want 0 after transient deroute", reg.OnlineCount())
+	}
+	if got := reg.ModelProviderSnapshot()[recoverTestModel]; got != 0 {
+		t.Errorf("model provider count = %d, want 0 after transient deroute", got)
+	}
+	if p.ChallengeShouldStop() {
+		t.Error("ChallengeShouldStop = true, want false for a transiently-untrusted provider")
+	}
+
+	if !reg.RecordChallengeSuccess("p1") {
+		t.Error("RecordChallengeSuccess should report recovery for a transiently-untrusted provider")
+	}
+
+	if p.Status != StatusOnline {
+		t.Fatalf("status = %q, want %q after recovery", p.Status, StatusOnline)
+	}
+	if reg.OnlineCount() != 1 {
+		t.Errorf("OnlineCount = %d, want 1 after recovery", reg.OnlineCount())
+	}
+	if got := reg.ModelProviderSnapshot()[recoverTestModel]; got != 1 {
+		t.Errorf("model provider count = %d, want 1 after recovery", got)
+	}
+	if p.FailedChallenges != 0 {
+		t.Errorf("FailedChallenges = %d, want 0 after recovery", p.FailedChallenges)
+	}
+	if p.LastChallengeVerified.IsZero() {
+		t.Error("LastChallengeVerified should be set after recovery")
+	}
+	if p.untrustedRecoverable {
+		t.Error("untrustedRecoverable should be cleared after recovery")
+	}
+}
+
+// A hard/security deroute is never auto-recovered by a passing challenge.
+func TestMarkUntrustedHardNotRecovered(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	reg.MarkUntrusted("p1") // hard
+
+	if !p.ChallengeShouldStop() {
+		t.Error("ChallengeShouldStop = false, want true for a hard-untrusted provider")
+	}
+
+	if reg.RecordChallengeSuccess("p1") {
+		t.Error("RecordChallengeSuccess must not report recovery for a hard-untrusted provider")
+	}
+
+	if p.Status != StatusUntrusted {
+		t.Fatalf("status = %q, want %q (hard deroute must not auto-recover)", p.Status, StatusUntrusted)
+	}
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d, want 0 (hard deroute must stay derouted)", reg.OnlineCount())
+	}
+}
+
+// A later hard deroute downgrades a recoverable untrust; no double-decrement.
+func TestHardDerouteOverridesTransient(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	reg.MarkUntrustedTransient("p1") // recoverable...
+	reg.MarkUntrusted("p1")          // ...downgraded to hard
+
+	if !p.ChallengeShouldStop() {
+		t.Error("ChallengeShouldStop = false, want true after a hard deroute downgrades a transient one")
+	}
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d, want 0 (no double-decrement)", reg.OnlineCount())
+	}
+
+	reg.RecordChallengeSuccess("p1")
+	if p.Status != StatusUntrusted {
+		t.Fatalf("status = %q, want %q (downgraded hard deroute must not recover)", p.Status, StatusUntrusted)
+	}
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d, want 0 after non-recovery", reg.OnlineCount())
+	}
+}
+
+// A transient deroute must never *upgrade* an existing hard deroute to
+// recoverable (matters for an in-flight challenge timeout racing a hard mark).
+func TestTransientDoesNotUpgradeHard(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	reg.MarkUntrusted("p1")          // hard first
+	reg.MarkUntrustedTransient("p1") // must NOT upgrade to recoverable
+
+	if !p.ChallengeShouldStop() {
+		t.Error("ChallengeShouldStop = false, want true (transient must not upgrade a hard deroute)")
+	}
+	reg.RecordChallengeSuccess("p1")
+	if p.Status != StatusUntrusted {
+		t.Fatalf("status = %q, want %q (hard deroute must stay hard)", p.Status, StatusUntrusted)
+	}
+}
+
+// Full cycle register -> transient deroute -> recover -> disconnect balances counts.
+func TestRecoverThenDisconnectBalancesCounts(t *testing.T) {
+	reg := New(testLogger())
+	reg.Register("p1", nil, testRegisterMessage())
+
+	reg.MarkUntrustedTransient("p1")
+	reg.RecordChallengeSuccess("p1") // recover
+	if reg.OnlineCount() != 1 {
+		t.Fatalf("OnlineCount = %d, want 1 after recovery", reg.OnlineCount())
+	}
+	reg.Disconnect("p1")
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d, want 0 after disconnect", reg.OnlineCount())
+	}
+	if got := reg.ModelProviderSnapshot()[recoverTestModel]; got != 0 {
+		t.Errorf("model provider count = %d, want 0 after disconnect", got)
+	}
+}
+
+// Regression for the verifier's HIGH finding: a recovery that resolved the
+// provider before Disconnect removed it must not increment counts for the stale
+// pointer (which would leave OnlineCount > ProviderCount forever).
+func TestStaleRecoveryAfterDisconnectDoesNotCorruptCounts(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	reg.MarkUntrustedTransient("p1")
+	reg.Disconnect("p1")
+	if reg.OnlineCount() != 0 || reg.ProviderCount() != 0 {
+		t.Fatalf("pre-state OnlineCount=%d ProviderCount=%d, want 0/0", reg.OnlineCount(), reg.ProviderCount())
+	}
+
+	if reg.recoverIfTransientlyUntrusted("p1", p) {
+		t.Error("recoverIfTransientlyUntrusted recovered a disconnected (stale) provider")
+	}
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d, want 0 (stale recovery must not increment)", reg.OnlineCount())
+	}
+	if got := reg.ModelProviderSnapshot()[recoverTestModel]; got != 0 {
+		t.Errorf("model provider count = %d, want 0 (stale recovery must not increment)", got)
+	}
+}
+
+// Concurrency invariant (run with -race): after arbitrary interleavings of
+// transient/hard deroutes, recoveries, and disconnects, onlineCount must equal
+// the number of still-registered, non-untrusted providers — no drift, no panic,
+// no deadlock.
+func TestTransientRecoveryConcurrentRace(t *testing.T) {
+	reg := New(testLogger())
+	const n = 60
+	for i := range n {
+		reg.Register(fmt.Sprintf("p%d", i), nil, testRegisterMessage())
+	}
+
+	var wg sync.WaitGroup
+	for i := range n {
+		id := fmt.Sprintf("p%d", i)
+		ops := []func(){
+			func() { reg.MarkUntrustedTransient(id) },
+			func() { reg.RecordChallengeSuccess(id) },
+			func() { reg.MarkUntrusted(id) },
+			func() { reg.RecordChallengeSuccess(id) },
+		}
+		if i%3 == 0 {
+			// Also exercise the stale-recovery membership guard.
+			ops = append(ops, func() { reg.Disconnect(id) })
+		}
+		for _, op := range ops {
+			wg.Add(1)
+			go func(f func()) { defer wg.Done(); f() }(op)
+		}
+	}
+	wg.Wait()
+
+	var expectedOnline int64
+	for i := range n {
+		if p := reg.GetProvider(fmt.Sprintf("p%d", i)); p != nil {
+			p.Mu().Lock()
+			if p.Status != StatusUntrusted {
+				expectedOnline++
+			}
+			p.Mu().Unlock()
+		}
+	}
+	if got := reg.OnlineCount(); got != expectedOnline {
+		t.Errorf("OnlineCount = %d, want %d (must equal non-untrusted registered providers)", got, expectedOnline)
 	}
 }
 

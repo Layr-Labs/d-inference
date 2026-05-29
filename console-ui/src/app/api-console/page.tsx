@@ -104,16 +104,34 @@ const ENDPOINTS = [
     {
       "id": "${EXAMPLE_MODEL}",
       "object": "model",
-      "model_type": "chat",
-      "quantization": "8bit",
-      "provider_count": 2,
-      "trust_level": "hardware",
-      "attested": true,
-      "display_name": "Qwen3.5 27B"
+      "name": "Qwen3.5 27B",
+      "hugging_face_id": "${EXAMPLE_MODEL}",
+      "created": 1735689600,
+      "description": "Balanced general-purpose model.",
+      "input_modalities": ["text"],
+      "output_modalities": ["text"],
+      "quantization": "int8",
+      "context_length": 262144,
+      "max_output_length": 16384,
+      "pricing": {
+        "prompt": "0.00000005",
+        "completion": "0.0000002",
+        "image": "0",
+        "request": "0",
+        "input_cache_read": "0"
+      },
+      "supported_sampling_parameters": ["temperature", "top_p", "top_k", "stop", "seed", "max_tokens"],
+      "supported_features": ["tools", "reasoning"],
+      "metadata": {
+        "model_type": "chat",
+        "provider_count": 2,
+        "trust_level": "hardware",
+        "display_name": "Qwen3.5 27B"
+      }
     }
   ]
 }`,
-    notes: "Returns all models in the catalog. Models with provider_count > 0 are currently available for inference. The trust_level field indicates the attestation status of serving providers.",
+    notes: "OpenAI-compatible model list. Top-level fields follow the OpenRouter provider schema (per-token USD pricing strings, modalities, supported features). Darkbloom-native fields (trust_level, provider_count) live under metadata. A dedicated OpenRouter provider feed (pure schema, no metadata) is served at GET /v1/models/openrouter.",
   },
   {
     method: "GET",

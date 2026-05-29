@@ -484,10 +484,10 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			provider.Mu().Lock()
-			untrusted := provider.Status == registry.StatusUntrusted
-			provider.Mu().Unlock()
-			if untrusted {
+			// Stop only for a hard (non-recoverable) untrust. A transiently
+			// untrusted provider (missed-challenge timeouts) keeps being
+			// challenged so a later passing challenge can restore it.
+			if provider.ChallengeShouldStop() {
 				return
 			}
 			s.sendChallenge(ctx, conn, providerID, provider, tracker)
@@ -912,7 +912,17 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.Mu().Unlock()
 
 	// Challenge passed.
-	s.registry.RecordChallengeSuccess(providerID)
+	recovered := s.registry.RecordChallengeSuccess(providerID)
+	if recovered {
+		// The provider was transiently untrusted and is now back online. It was
+		// last told "untrusted" (handleChallengeFailure) and scheduled a 10-min
+		// diagnostic auto-report; push a fresh "online" trust_status so it clears
+		// that local state and cancels the report.
+		provider.Mu().Lock()
+		trustLevel := provider.TrustLevel
+		provider.Mu().Unlock()
+		s.sendTrustStatus(provider, trustLevel, "online", "recovered after transient deroute")
+	}
 	s.ddIncr("attestation.challenges", []string{"outcome:passed"})
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,
@@ -964,7 +974,14 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) {
 	severity := protocol.SeverityWarn
 	if failures >= registry.MaxFailedChallenges {
 		severity = protocol.SeverityError
-		s.registry.MarkUntrusted(providerID)
+		if transient {
+			// Missed-challenge timeouts (sleep / network blip) are recoverable:
+			// keep challenging and let a later passing challenge restore the
+			// provider without requiring a reconnect.
+			s.registry.MarkUntrustedTransient(providerID)
+		} else {
+			s.registry.MarkUntrusted(providerID)
+		}
 		if p := s.registry.GetProvider(providerID); p != nil {
 			s.sendTrustStatus(p, p.TrustLevel, string(registry.StatusUntrusted), reason)
 		}
@@ -1095,19 +1112,42 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
 	s.registry.RecordJobSuccess(providerID, responseTime)
 
-	// Calculate cost — check provider's custom price, then platform DB price,
-	// then hardcoded defaults.
+	// Resolve the consumer once: platform-fee override (nil = global default)
+	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
+	// failed lookup (raw API-key account with no user row) falls back to
+	// defaults. Service accounts run on a 0% fee.
+	var feePercent *int64
+	isServiceConsumer := false
+	if u, err := s.store.GetUserByAccountID(pr.ConsumerKey); err == nil && u != nil {
+		feePercent = u.PlatformFeePercent
+		isServiceConsumer = u.Role == store.RoleService
+	}
+
+	// Calculate cost. Direct consumers: provider custom price, then platform DB
+	// price, then hardcoded defaults, with the per-request minimum applied.
+	// Service/wholesale traffic is billed at the advertised platform price
+	// (never a provider's higher custom price) and is exempt from the minimum,
+	// so the debit matches the published per-token OpenRouter feed exactly.
 	providerAccountForPricing := ""
 	if p := s.registry.GetProvider(providerID); p != nil {
 		providerAccountForPricing = providerPricingKeys(p)
 	}
-	customIn, customOut, hasCustom := s.store.GetModelPrice(providerAccountForPricing, pr.Model)
+	var customIn, customOut int64
+	var hasCustom bool
+	if !isServiceConsumer {
+		customIn, customOut, hasCustom = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
+	}
 	if !hasCustom {
 		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
 	}
-	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	var totalCost int64
+	if isServiceConsumer {
+		totalCost = payments.CalculateCostWithOverridesNoMinimum(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	} else {
+		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	}
 
-	providerPayout := payments.ProviderPayout(totalCost)
+	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
 	billingFinalized := true
 
 	// Settle billing against the pre-flight reservation. All balance
@@ -1175,7 +1215,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				pr.ReservedMicroUSD = totalCost
 			}
 			// Recompute payout after potential clamp.
-			providerPayout = payments.ProviderPayout(totalCost)
+			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
 		} else if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
 			start := time.Now()
@@ -1232,7 +1272,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		}
 
 		// Compute platform fee (needs referral lookup before spawning goroutines).
-		platformFee := payments.PlatformFee(totalCost)
+		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
 		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
 			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
 		}
@@ -1328,10 +1368,18 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	close(pr.CompleteCh)
 	close(pr.ErrorCh)
 
-	// Record job failure for reputation tracking.
-	// token_budget_exhausted is a capacity rejection, not a provider fault —
-	// skip the reputation penalty so the provider isn't unfairly penalised.
-	if !strings.Contains(msg.Error, "token_budget_exhausted") {
+	// Record job failure for reputation tracking, but carve out capacity
+	// rejections — those are not provider faults, just the provider declining
+	// work it cannot currently serve (the coordinator reroutes these). Counting
+	// them would unfairly penalise healthy providers shedding load. Capacity
+	// signals: HTTP 503 (service unavailable) / 429 (too many requests), an
+	// exhausted token budget, or an out-of-memory model-load reject.
+	loweredErr := strings.ToLower(msg.Error)
+	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
+		msg.StatusCode == http.StatusTooManyRequests ||
+		strings.Contains(loweredErr, "token_budget_exhausted") ||
+		strings.Contains(loweredErr, "insufficient memory")
+	if !capacityRejection {
 		s.registry.RecordJobFailure(providerID)
 	}
 

@@ -214,3 +214,41 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         throw error
     }
 }
+
+// The default attestation label is the v2 label. Its presence in the
+// keychain is the migration marker for the deterministic v1 -> v2 key
+// migration (no test-sign, no attribute probing). This check needs no
+// Secure Enclave hardware or entitlements, so it always runs.
+@Test func persistentEnclaveKeyDefaultLabelIsV2() {
+    #expect(PersistentEnclaveKey.defaultLabel == "io.darkbloom.provider.attestation-signing.v2")
+    #expect(PersistentEnclaveKey.legacyLabelV1 == "io.darkbloom.provider.attestation-signing.v1")
+    #expect(PersistentEnclaveKey.defaultLabel != PersistentEnclaveKey.legacyLabelV1)
+}
+
+// A custom (non-default) label is pure find-or-create with no migration:
+// create once, then load returns the SAME key.
+@Test func persistentEnclaveKeyCustomLabelRoundTrips() throws {
+    guard PersistentEnclaveKey.isAvailable else {
+        print("Skipping: Secure Enclave not available")
+        return
+    }
+
+    let roundTripLabel = "io.darkbloom.provider.test-roundtrip.\(UUID().uuidString)"
+
+    let created: PersistentEnclaveKey
+    do {
+        created = try PersistentEnclaveKey.loadOrCreate(label: roundTripLabel)
+    } catch let error as PersistentEnclaveKeyError {
+        if case .missingEntitlement = error {
+            print("Skipping: missing keychain-access-groups entitlement")
+            return
+        }
+        throw error
+    }
+
+    defer { try? PersistentEnclaveKey.delete(label: roundTripLabel) }
+
+    let loaded = try PersistentEnclaveKey.loadOrCreate(label: roundTripLabel)
+    #expect(created.publicKeyRaw == loaded.publicKeyRaw)
+    #expect(created.publicKeyBase64 == loaded.publicKeyBase64)
+}

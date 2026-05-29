@@ -11,6 +11,7 @@ package ratelimit
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -77,28 +78,28 @@ func New(cfg Config) *Limiter {
 // reservation at all. We then peek at TokensAt for the Retry-After value,
 // which is read-only and doesn't perturb state.
 func (l *Limiter) Allow(accountID string) (bool, time.Duration) {
-	if accountID == "" {
+	return l.AllowN(accountID, 1)
+}
+
+// AllowN reports whether n units (requests or tokens) may be consumed now. Used
+// for token-per-minute limiting where one request consumes many units. If n
+// exceeds the bucket's burst the call can never succeed, so callers that meter
+// variable-size requests should clamp n to Burst() first.
+//
+// Empty accountID or n <= 0 is allowed unconditionally.
+func (l *Limiter) AllowN(accountID string, n int) (bool, time.Duration) {
+	if accountID == "" || n <= 0 {
 		return true, 0
 	}
 	now := time.Now()
+	e := l.bucketFor(accountID, now)
 
-	l.mu.Lock()
-	e, ok := l.buckets[accountID]
-	if !ok {
-		e = &entry{
-			limiter: rate.NewLimiter(rate.Limit(l.cfg.RPS), l.cfg.Burst),
-		}
-		l.buckets[accountID] = e
-	}
-	e.lastSeen = now
-	l.mu.Unlock()
-
-	if e.limiter.AllowN(now, 1) {
+	if e.limiter.AllowN(now, n) {
 		return true, 0
 	}
 	// Denied. Compute Retry-After from the token deficit. TokensAt is a
 	// pure read so this doesn't affect bucket state.
-	deficit := 1.0 - e.limiter.TokensAt(now)
+	deficit := float64(n) - e.limiter.TokensAt(now)
 	if deficit < 0 {
 		deficit = 0
 	}
@@ -110,6 +111,85 @@ func (l *Limiter) Allow(accountID string) (bool, time.Duration) {
 		retryAfter = maxRetryAfter
 	}
 	return false, retryAfter
+}
+
+// CanN reports whether n units are currently available for the account WITHOUT
+// consuming them. Used for cross-bucket peek-then-consume so a rejection in one
+// dimension doesn't debit another. Empty accountID or n <= 0 is always true.
+// An unseen account is treated as a full bucket.
+func (l *Limiter) CanN(accountID string, n int) bool {
+	if accountID == "" || n <= 0 {
+		return true
+	}
+	now := time.Now()
+	l.mu.Lock()
+	e, ok := l.buckets[accountID]
+	l.mu.Unlock()
+	if !ok {
+		return n <= l.cfg.Burst
+	}
+	return e.limiter.TokensAt(now) >= float64(n)
+}
+
+// bucketFor returns the account's bucket, lazily creating it.
+func (l *Limiter) bucketFor(accountID string, now time.Time) *entry {
+	l.mu.Lock()
+	e, ok := l.buckets[accountID]
+	if !ok {
+		e = &entry{
+			limiter: rate.NewLimiter(rate.Limit(l.cfg.RPS), l.cfg.Burst),
+		}
+		l.buckets[accountID] = e
+	}
+	e.lastSeen = now
+	l.mu.Unlock()
+	return e
+}
+
+// RPS returns the configured sustained rate (units per second).
+func (l *Limiter) RPS() float64 { return l.cfg.RPS }
+
+// Burst returns the configured bucket capacity.
+func (l *Limiter) Burst() int { return l.cfg.Burst }
+
+// Stat is a point-in-time snapshot of an account's limiter state, shaped for
+// the standard x-ratelimit-* response headers. LimitPerMinute reports the
+// sustained rate as a per-minute figure (RPS*60); Remaining is the current
+// bucket level; ResetSeconds is the time to fully replenish the bucket.
+type Stat struct {
+	LimitPerMinute int
+	Remaining      int
+	ResetSeconds   int
+}
+
+// Stat returns the current limiter snapshot for an account without consuming.
+func (l *Limiter) Stat(accountID string) Stat {
+	now := time.Now()
+	rem := float64(l.cfg.Burst)
+	if accountID != "" {
+		l.mu.Lock()
+		e, ok := l.buckets[accountID]
+		l.mu.Unlock()
+		if ok {
+			rem = e.limiter.TokensAt(now)
+		}
+	}
+	if rem < 0 {
+		rem = 0
+	}
+	deficit := float64(l.cfg.Burst) - rem
+	if deficit < 0 {
+		deficit = 0
+	}
+	resetSec := 0
+	if l.cfg.RPS > 0 {
+		resetSec = int(math.Ceil(deficit / l.cfg.RPS))
+	}
+	return Stat{
+		LimitPerMinute: int(math.Round(l.cfg.RPS * 60)),
+		Remaining:      int(rem),
+		ResetSeconds:   resetSec,
+	}
 }
 
 // Prune drops buckets that haven't been touched within IdleEvict.

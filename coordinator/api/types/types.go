@@ -104,12 +104,41 @@ type ModelMetadata struct {
 	CanAccept         bool              `json:"can_accept"`
 }
 
-// ModelEntry is a single model entry in the /v1/models response.
+// ModelPricing is the per-token pricing block in the /v1/models response.
+// All values are USD strings (per the OpenRouter provider schema) to avoid
+// floating-point precision issues. prompt/completion are per-token;
+// image/request are per-image / per-request; input_cache_read is per-token.
+type ModelPricing struct {
+	Prompt         string `json:"prompt"`
+	Completion     string `json:"completion"`
+	Image          string `json:"image"`
+	Request        string `json:"request"`
+	InputCacheRead string `json:"input_cache_read"`
+}
+
+// ModelEntry is a single model entry in the /v1/models response. The top-level
+// fields follow the OpenRouter provider schema; the nested `metadata` block is
+// retained for Darkbloom-native consumers (trust level, provider counts, etc.).
 type ModelEntry struct {
-	ID       string        `json:"id"`
-	Object   string        `json:"object"`
-	Created  int           `json:"created"`
-	OwnedBy  string        `json:"owned_by"`
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+
+	// OpenRouter provider fields.
+	Name                        string        `json:"name,omitempty"`
+	HuggingFaceID               string        `json:"hugging_face_id,omitempty"`
+	Description                 string        `json:"description,omitempty"`
+	InputModalities             []string      `json:"input_modalities,omitempty"`
+	OutputModalities            []string      `json:"output_modalities,omitempty"`
+	Quantization                string        `json:"quantization,omitempty"`
+	ContextLength               int           `json:"context_length,omitempty"`
+	MaxOutputLength             int           `json:"max_output_length,omitempty"`
+	Pricing                     *ModelPricing `json:"pricing,omitempty"`
+	SupportedSamplingParameters []string      `json:"supported_sampling_parameters,omitempty"`
+	SupportedFeatures           []string      `json:"supported_features,omitempty"`
+	DeprecationDate             string        `json:"deprecation_date,omitempty"`
+
 	Metadata ModelMetadata `json:"metadata"`
 }
 
@@ -117,6 +146,48 @@ type ModelEntry struct {
 type ModelListResponse struct {
 	Object string       `json:"object"`
 	Data   []ModelEntry `json:"data"`
+}
+
+// ── OpenRouter provider feed (GET /v1/models/openrouter) ─────────────
+//
+// These types implement OpenRouter's provider "List Models" schema exactly,
+// with no Darkbloom-internal fields. Required fields are emitted without
+// omitempty so the contract is stable for OpenRouter's validator.
+
+// OpenRouterSlug carries the marketplace slug suggestion.
+type OpenRouterSlug struct {
+	Slug string `json:"slug"`
+}
+
+// OpenRouterDatacenter is one serving location (ISO 3166-1 alpha-2 country).
+type OpenRouterDatacenter struct {
+	CountryCode string `json:"country_code"`
+}
+
+// OpenRouterModel is a single entry in the OpenRouter provider feed.
+type OpenRouterModel struct {
+	ID                          string                 `json:"id"`
+	HuggingFaceID               string                 `json:"hugging_face_id,omitempty"`
+	Name                        string                 `json:"name"`
+	Created                     int64                  `json:"created"`
+	InputModalities             []string               `json:"input_modalities"`
+	OutputModalities            []string               `json:"output_modalities"`
+	Quantization                string                 `json:"quantization,omitempty"`
+	ContextLength               int                    `json:"context_length"`
+	MaxOutputLength             int                    `json:"max_output_length"`
+	Pricing                     ModelPricing           `json:"pricing"`
+	SupportedSamplingParameters []string               `json:"supported_sampling_parameters"`
+	SupportedFeatures           []string               `json:"supported_features"`
+	Description                 string                 `json:"description,omitempty"`
+	DeprecationDate             string                 `json:"deprecation_date,omitempty"`
+	IsReady                     bool                   `json:"is_ready"`
+	OpenRouter                  *OpenRouterSlug        `json:"openrouter,omitempty"`
+	Datacenters                 []OpenRouterDatacenter `json:"datacenters,omitempty"`
+}
+
+// OpenRouterModelsResponse is the top-level /v1/models/openrouter response.
+type OpenRouterModelsResponse struct {
+	Data []OpenRouterModel `json:"data"`
 }
 
 // ── Small handler responses ─────────────────────────────────────────

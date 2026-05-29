@@ -240,21 +240,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		for k, v := range req.RuntimeParameters {
 			rec.RuntimeParameters[k] = v
 		}
-		entry := &store.ModelRegistryEntry{
-			ID:                rec.ID,
-			DisplayName:       rec.DisplayName,
-			Family:            rec.Family,
-			Architecture:      rec.Architecture,
-			Quantization:      rec.Quantization,
-			MaxContextLength:  rec.MaxContextLength,
-			MaxOutputLength:   rec.MaxOutputLength,
-			MinRAMGB:          rec.MinRAMGB,
-			Capabilities:      rec.Capabilities,
-			Status:            rec.Status,
-			Description:       rec.Description,
-			RuntimeParameters: rec.RuntimeParameters,
-			Metadata:          rec.Metadata,
-		}
+		entry := registryEntryFromRecord(rec)
 		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
 			s.writeModelRegistryStoreError(w, "update runtime_parameters", err)
 			return
@@ -265,9 +251,169 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			"model_id":           modelID,
 			"runtime_parameters": rec.RuntimeParameters,
 		})
+	case "capabilities":
+		var req struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+		if req.Capabilities == nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "capabilities is required (array of strings)"))
+			return
+		}
+		rec, err := s.store.GetModelRegistryRecord(modelID)
+		if err != nil {
+			s.writeModelRegistryStoreError(w, "get model for capabilities update", err)
+			return
+		}
+		// Replace capabilities wholesale (normalized: trimmed, de-duped, ordered).
+		caps := normalizeCapabilities(req.Capabilities)
+		entry := registryEntryFromRecord(rec)
+		entry.Capabilities = caps
+		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
+			s.writeModelRegistryStoreError(w, "update capabilities", err)
+			return
+		}
+		s.SyncModelCatalog()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":       "updated",
+			"model_id":     modelID,
+			"capabilities": caps,
+		})
+	case "deprecation":
+		// Sets (or clears) the OpenRouter deprecation_date in model metadata.
+		// An omitted/empty deprecation_date clears it — i.e. clear by default —
+		// so an empty body or {} removes any existing deprecation date.
+		var req struct {
+			DeprecationDate string `json:"deprecation_date"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+		date := strings.TrimSpace(req.DeprecationDate)
+		if date != "" {
+			if _, perr := time.Parse("2006-01-02", date); perr != nil {
+				writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+					"deprecation_date must be an ISO 8601 date (YYYY-MM-DD)", withParam("deprecation_date")))
+				return
+			}
+		}
+		rec, err := s.store.GetModelRegistryRecord(modelID)
+		if err != nil {
+			s.writeModelRegistryStoreError(w, "get model for deprecation update", err)
+			return
+		}
+		entry := registryEntryFromRecord(rec)
+		// Clone metadata before mutating so the stored record is never aliased.
+		meta := make(map[string]any, len(entry.Metadata))
+		for k, v := range entry.Metadata {
+			meta[k] = v
+		}
+		if date == "" {
+			delete(meta, "deprecation_date")
+		} else {
+			meta["deprecation_date"] = date
+		}
+		entry.Metadata = meta
+		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
+			s.writeModelRegistryStoreError(w, "update deprecation_date", err)
+			return
+		}
+		s.SyncModelCatalog()
+		resp := map[string]any{"status": "updated", "model_id": modelID}
+		if date == "" {
+			resp["deprecation_date"] = nil
+			resp["note"] = "deprecation date cleared"
+		} else {
+			resp["deprecation_date"] = date
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case "openrouter-slug":
+		// Sets (or clears) the OpenRouter marketplace slug in model metadata.
+		// An omitted/empty slug clears the override — clear by default — so the
+		// feed falls back to the model id. Use this to map a model onto an
+		// existing OpenRouter slug (e.g. "qwen/qwen3.5-9b").
+		var req struct {
+			Slug string `json:"slug"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+		slug := strings.TrimSpace(req.Slug)
+		rec, err := s.store.GetModelRegistryRecord(modelID)
+		if err != nil {
+			s.writeModelRegistryStoreError(w, "get model for openrouter-slug update", err)
+			return
+		}
+		entry := registryEntryFromRecord(rec)
+		meta := make(map[string]any, len(entry.Metadata))
+		for k, v := range entry.Metadata {
+			meta[k] = v
+		}
+		if slug == "" {
+			delete(meta, "openrouter_slug")
+		} else {
+			meta["openrouter_slug"] = slug
+		}
+		entry.Metadata = meta
+		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
+			s.writeModelRegistryStoreError(w, "update openrouter-slug", err)
+			return
+		}
+		s.SyncModelCatalog()
+		resp := map[string]any{"status": "updated", "model_id": modelID}
+		if slug == "" {
+			resp["openrouter_slug"] = nil
+			resp["note"] = "openrouter slug cleared — feed falls back to the model id"
+		} else {
+			resp["openrouter_slug"] = slug
+		}
+		writeJSON(w, http.StatusOK, resp)
 	default:
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model action not found"))
 	}
+}
+
+// registryEntryFromRecord copies the mutable model fields out of a stored
+// record into a fresh ModelRegistryEntry, so an in-place admin update can
+// change one field (e.g. capabilities or runtime parameters) and upsert it
+// without dropping the others.
+func registryEntryFromRecord(rec *store.ModelRegistryRecord) *store.ModelRegistryEntry {
+	return &store.ModelRegistryEntry{
+		ID:                rec.ID,
+		DisplayName:       rec.DisplayName,
+		Family:            rec.Family,
+		Architecture:      rec.Architecture,
+		Quantization:      rec.Quantization,
+		MaxContextLength:  rec.MaxContextLength,
+		MaxOutputLength:   rec.MaxOutputLength,
+		MinRAMGB:          rec.MinRAMGB,
+		Capabilities:      rec.Capabilities,
+		Status:            rec.Status,
+		Description:       rec.Description,
+		RuntimeParameters: rec.RuntimeParameters,
+		Metadata:          rec.Metadata,
+	}
+}
+
+// normalizeCapabilities trims, drops empties, and de-duplicates a capability
+// list while preserving first-seen order.
+func normalizeCapabilities(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, c := range in {
+		c = strings.TrimSpace(c)
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 func (s *Server) writeModelRegistryStoreError(w http.ResponseWriter, operation string, err error) {
@@ -301,6 +447,12 @@ func (s *Server) requirePublishingAPIKey(w http.ResponseWriter, r *http.Request)
 
 	if bootstrap := os.Getenv("MODEL_REGISTRY_PUBLISHING_KEY"); bootstrap != "" && constantTimeStringEqual(provided, bootstrap) {
 		return publishingActor{ID: "env-bootstrap", Name: "env-bootstrap"}, true
+	}
+	// The admin key (EIGENINFERENCE_ADMIN_KEY) is the highest privilege and is
+	// also accepted for any publishing/registry action (register, promote,
+	// status, runtime-parameters, capabilities).
+	if s.adminKey != "" && constantTimeStringEqual(provided, s.adminKey) {
+		return publishingActor{ID: "admin", Name: "admin"}, true
 	}
 	providedHash := publishingSHA256Hex(provided)
 	keys, err := s.store.FindPublishingAPIKeysWithError()
@@ -353,7 +505,7 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 	if rest == p || rest == "" {
 		return "", "", false
 	}
-	for _, action := range []string{"/promote", "/status", "/runtime-parameters"} {
+	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation", "/openrouter-slug"} {
 		if strings.HasSuffix(rest, action) {
 			modelID, err := url.PathUnescape(strings.TrimSuffix(rest, action))
 			if err != nil {
@@ -613,6 +765,7 @@ func verifyManifestFileHEAD(ctx context.Context, client *http.Client, baseURL, r
 func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]any {
 	supported := supportedModelFromRegistryRecord(rec)
 	version := rec.ActiveVersion
+	inputModalities, outputModalities := deriveModalities(supported.ModelType, rec.Capabilities)
 	model := map[string]any{
 		"id":                 supported.ID,
 		"s3_name":            supported.S3Name,
@@ -632,6 +785,17 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 		"runtime_parameters": rec.RuntimeParameters,
 		"metadata":           rec.Metadata,
 		"status":             rec.Status,
+
+		// OpenRouter-shaped fields (mirrors /v1/models) for UI consistency.
+		"name":                          supported.DisplayName,
+		"hugging_face_id":               supported.ID,
+		"input_modalities":              inputModalities,
+		"output_modalities":             outputModalities,
+		"supported_features":            supportedFeaturesFromCapabilities(rec.Capabilities),
+		"supported_sampling_parameters": defaultSamplingParameters(),
+	}
+	if !rec.CreatedAt.IsZero() {
+		model["created"] = rec.CreatedAt.Unix()
 	}
 	if version != nil {
 		model["version"] = version.Version

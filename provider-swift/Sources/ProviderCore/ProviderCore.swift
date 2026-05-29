@@ -16,5 +16,5 @@ public enum ProviderCore {
     /// vllm-mlx, ships only `darkbloom` + `darkbloom-enclave` +
     /// `mlx.metallib`. (`eigeninference-enclave` ships as a backward-
     /// compatibility symlink to `darkbloom-enclave`.)
-    public static let version = "0.5.13"
+    public static let version = "0.5.14"
 }

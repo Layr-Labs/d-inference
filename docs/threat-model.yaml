@@ -641,8 +641,12 @@ trust_boundaries:
       it with a UTC RFC3339 timestamp. The provider signs (nonce + timestamp) with the
       SE key — raw string concatenation with no delimiter. The coordinator verifies the
       ECDSA signature, checks nonce matches, and checks that SIPEnabled is not nil and
-      not false. SIP=false triggers immediate MarkUntrusted(); 3 consecutive timeouts or
-      signature failures trigger MarkUntrusted() via the 3-strike counter.
+      not false. SIP=false (and other security failures: bad signature, hash mismatch,
+      impersonation) trigger immediate, non-recoverable MarkUntrusted(). 3 consecutive
+      challenge *timeouts* (sleep / network blip) trigger MarkUntrustedTransient() via the
+      3-strike counter: the provider is derouted but the challenge loop keeps probing it,
+      and the next fully passing challenge restores it to online (RecordChallengeSuccess).
+      Signature/SIP/hash failures are never auto-recovered and still require a reconnect.
 
       Status signature (attestation.go:378–437): an extended canonical JSON payload
       covering nonce, timestamp, and all security status fields is signed separately.

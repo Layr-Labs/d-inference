@@ -971,9 +971,9 @@ func TestOpenAI_SDK_ChatCompletionNonStreaming(t *testing.T) {
 
 func TestModels_ExtendedFields(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1021,9 +1021,9 @@ func TestModels_ExtendedFields(t *testing.T) {
 
 func TestModels_PricingConversion(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1053,14 +1053,13 @@ func TestModels_PricingConversion(t *testing.T) {
 		}
 		p := m["pricing"].([]any)
 		tier := p[0].(map[string]any)
-		if tier["prompt"] != "0.0000001" {
-			t.Errorf("prompt = %q, want 0.0000001", tier["prompt"])
+		if tier["prompt"] != "0.00000005" {
+			t.Errorf("prompt = %q, want 0.00000005", tier["prompt"])
 		}
-		if tier["completion"] != "0.00000078" {
-			t.Errorf("completion = %q, want 0.00000078", tier["completion"])
+		if tier["completion"] != "0.0000002" {
+			t.Errorf("completion = %q, want 0.0000002", tier["completion"])
 		}
 		return
 	}
 	t.Fatal("model not found in response")
 }
-

@@ -3017,6 +3017,12 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build a lookup of registry records for per-model metadata (context length, etc.)
+	registryByID := make(map[string]*store.ModelRegistryRecord, len(registryRows))
+	for i := range registryRows {
+		registryByID[registryRows[i].ID] = &registryRows[i]
+	}
+
 	datacenters := []types.DatacenterDetail{
 		{ID: "darkbloom-us-west", Name: "Darkbloom Edge", Location: "US West", LatencyMs: 25},
 	}
@@ -3065,8 +3071,16 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			}
 			description = cm.Description
 		}
-		contextLen := modelContextLength(m.ID)
-		maxOutputLen := modelMaxOutputLength(m.ID)
+		contextLen := 32768
+		maxOutputLen := 4096
+		if rec, ok := registryByID[m.ID]; ok {
+			if rec.MaxContextLength > 0 {
+				contextLen = rec.MaxContextLength
+			}
+			if rec.MaxOutputLength > 0 {
+				maxOutputLen = rec.MaxOutputLength
+			}
+		}
 		pricing := buildPricing(m.ID)
 		inputMods, outputMods := modelModalities(m.ModelType)
 		isReady := false
@@ -3103,34 +3117,6 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		Object: "list",
 		Data:   data,
 	})
-}
-
-func modelContextLength(modelID string) int {
-	known := map[string]int{
-		"qwen3.5-27b-claude-opus-8bit":          131072,
-		"mlx-community/Trinity-Mini-8bit":       32768,
-		"mlx-community/gemma-4-26b-a4b-it-8bit": 131072,
-		"mlx-community/Qwen3.5-122B-A10B-8bit":  131072,
-		"mlx-community/MiniMax-M2.5-8bit":       131072,
-	}
-	if ctx, ok := known[modelID]; ok {
-		return ctx
-	}
-	return 32768
-}
-
-func modelMaxOutputLength(modelID string) int {
-	known := map[string]int{
-		"qwen3.5-27b-claude-opus-8bit":          4096,
-		"mlx-community/Trinity-Mini-8bit":       4096,
-		"mlx-community/gemma-4-26b-a4b-it-8bit": 8192,
-		"mlx-community/Qwen3.5-122B-A10B-8bit":  8192,
-		"mlx-community/MiniMax-M2.5-8bit":       4096,
-	}
-	if maxOut, ok := known[modelID]; ok {
-		return maxOut
-	}
-	return 4096
 }
 
 func modelModalities(modelType string) ([]string, []string) {

@@ -106,24 +106,24 @@ type ModelMetadata struct {
 
 // ModelEntry is a single model entry in the /v1/models response.
 type ModelEntry struct {
-	ID                          string            `json:"id"`
-	Object                      string            `json:"object"`
-	Created                     int               `json:"created"`
-	OwnedBy                     string            `json:"owned_by"`
-	Metadata                    ModelMetadata     `json:"metadata"`
-	Name                        string            `json:"name,omitempty"`
-	Description                 string            `json:"description,omitempty"`
-	ContextLength               int               `json:"context_length,omitempty"`
-	MaxOutputLength             int               `json:"max_output_length,omitempty"`
-	Quantization                string            `json:"quantization,omitempty"`
-	Pricing                     []PricingTier     `json:"pricing,omitempty"`
-	InputModalities             []string          `json:"input_modalities,omitempty"`
-	OutputModalities            []string          `json:"output_modalities,omitempty"`
-	SupportedSamplingParameters []string          `json:"supported_sampling_parameters,omitempty"`
-	SupportedFeatures           []string          `json:"supported_features,omitempty"`
-	HuggingFaceID               string            `json:"hugging_face_id,omitempty"`
-	DeprecationDate             *string           `json:"deprecation_date,omitempty"`
-	IsReady                     bool              `json:"is_ready,omitempty"`
+	ID                          string             `json:"id"`
+	Object                      string             `json:"object"`
+	Created                     int                `json:"created"`
+	OwnedBy                     string             `json:"owned_by"`
+	Metadata                    ModelMetadata      `json:"metadata"`
+	Name                        string             `json:"name,omitempty"`
+	Description                 string             `json:"description,omitempty"`
+	ContextLength               int                `json:"context_length,omitempty"`
+	MaxOutputLength             int                `json:"max_output_length,omitempty"`
+	Quantization                string             `json:"quantization,omitempty"`
+	Pricing                     []PricingTier      `json:"pricing,omitempty"`
+	InputModalities             []string           `json:"input_modalities,omitempty"`
+	OutputModalities            []string           `json:"output_modalities,omitempty"`
+	SupportedSamplingParameters []string           `json:"supported_sampling_parameters,omitempty"`
+	SupportedFeatures           []string           `json:"supported_features,omitempty"`
+	HuggingFaceID               string             `json:"hugging_face_id,omitempty"`
+	DeprecationDate             *string            `json:"deprecation_date,omitempty"`
+	IsReady                     bool               `json:"is_ready,omitempty"`
 	Datacenters                 []DatacenterDetail `json:"datacenters,omitempty"`
 }
 

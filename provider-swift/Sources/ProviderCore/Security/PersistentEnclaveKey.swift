@@ -189,6 +189,49 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         }
     }
 
+    // MARK: - Transient (non-persisted) key
+
+    /// Create a TRANSIENT Secure Enclave key: generated in the SE but
+    /// NOT stored in the keychain (`kSecAttrIsPermanent: false`, no
+    /// access group). Because nothing touches a keychain access group,
+    /// this needs **no `keychain-access-groups` entitlement** — so it
+    /// runs from unsigned/ad-hoc builds, unlike `loadOrCreate`.
+    ///
+    /// Use it to exercise the SE crypto itself (sign / ECIES wrap+unwrap)
+    /// on real hardware without code signing. The key is ephemeral —
+    /// it's gone when the returned object is released — so it does NOT
+    /// validate keychain persistence (that path is the same SecItem
+    /// storage the production attestation key already uses).
+    public static func makeTransient() throws -> PersistentEnclaveKey {
+        guard isAvailable else {
+            throw PersistentEnclaveKeyError.secureEnclaveUnavailable
+        }
+        var acError: Unmanaged<CFError>?
+        guard let accessControl = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            .privateKeyUsage,
+            &acError
+        ) else {
+            throw PersistentEnclaveKeyError.accessControlCreationFailed(
+                status: osStatus(from: acError))
+        }
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits as String: 256,
+            kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecPrivateKeyAttrs as String: [
+                kSecAttrIsPermanent as String: false,  // NOT stored → no access group → no entitlement
+                kSecAttrAccessControl as String: accessControl,
+            ],
+        ]
+        var createError: Unmanaged<CFError>?
+        guard let privateKey = SecKeyCreateRandomKey(attributes as CFDictionary, &createError) else {
+            throw PersistentEnclaveKeyError.keyCreationFailed(status: osStatus(from: createError))
+        }
+        return try PersistentEnclaveKey(privateKey: privateKey)
+    }
+
     // MARK: - Create New
 
     private static func createNew(

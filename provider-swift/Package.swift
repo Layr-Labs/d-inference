@@ -103,6 +103,20 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
+        // kv-se-harness: TEST-ONLY standalone executable validating the
+        // Secure-Enclave-wrapped KEK + Keychain round-trip on real SE
+        // hardware (the one path `swift test` can't reach — it needs a
+        // code-signed binary with a keychain-access-groups entitlement).
+        // Built + ad-hoc-signed by hand on a dev Mac; NOT a product, NOT
+        // shipped. See docs/ssd-kv-cache-design.md.
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "kv-se-harness",
+            dependencies: ["ProviderCore"],
+            path: "Sources/kv-se-harness"
+        ),
+
+        // ----------------------------------------------------------------
         // darkbloom-enclave: small CLI wrapper around the Secure Enclave
         // identity helpers in ProviderCore (Phase 3 merged the FFI bridge
         // from ../enclave). Used by install.sh to render an attestation

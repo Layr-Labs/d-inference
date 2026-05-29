@@ -282,6 +282,55 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			"model_id":     modelID,
 			"capabilities": caps,
 		})
+	case "deprecation":
+		// Sets (or clears) the OpenRouter deprecation_date in model metadata.
+		// An omitted/empty deprecation_date clears it — i.e. clear by default —
+		// so an empty body or {} removes any existing deprecation date.
+		var req struct {
+			DeprecationDate string `json:"deprecation_date"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+		date := strings.TrimSpace(req.DeprecationDate)
+		if date != "" {
+			if _, perr := time.Parse("2006-01-02", date); perr != nil {
+				writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+					"deprecation_date must be an ISO 8601 date (YYYY-MM-DD)", withParam("deprecation_date")))
+				return
+			}
+		}
+		rec, err := s.store.GetModelRegistryRecord(modelID)
+		if err != nil {
+			s.writeModelRegistryStoreError(w, "get model for deprecation update", err)
+			return
+		}
+		entry := registryEntryFromRecord(rec)
+		// Clone metadata before mutating so the stored record is never aliased.
+		meta := make(map[string]any, len(entry.Metadata)+1)
+		for k, v := range entry.Metadata {
+			meta[k] = v
+		}
+		if date == "" {
+			delete(meta, "deprecation_date")
+		} else {
+			meta["deprecation_date"] = date
+		}
+		entry.Metadata = meta
+		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
+			s.writeModelRegistryStoreError(w, "update deprecation_date", err)
+			return
+		}
+		s.SyncModelCatalog()
+		resp := map[string]any{"status": "updated", "model_id": modelID}
+		if date == "" {
+			resp["deprecation_date"] = nil
+			resp["note"] = "deprecation date cleared"
+		} else {
+			resp["deprecation_date"] = date
+		}
+		writeJSON(w, http.StatusOK, resp)
 	default:
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model action not found"))
 	}
@@ -414,7 +463,7 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 	if rest == p || rest == "" {
 		return "", "", false
 	}
-	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities"} {
+	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation"} {
 		if strings.HasSuffix(rest, action) {
 			modelID, err := url.PathUnescape(strings.TrimSuffix(rest, action))
 			if err != nil {

@@ -344,12 +344,8 @@ func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inp
 		return true
 	}
 
-	// Per-key ITPM/OTPM override (checked first so the binding per-key limit
-	// rejects before the account bucket is debited).
-	if !s.applyKeyTokenRateLimit(w, r, inputTokens, outputTokens) {
-		return false
-	}
-
+	// Resolve the account-tier token limiter (nil = no account-level token limit
+	// for this caller, e.g. a service account with no service token limiter).
 	tl := s.consumerTokenLimiter
 	tier := "consumer"
 	if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
@@ -357,29 +353,56 @@ func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inp
 			tl = s.serviceTokenLimiter
 			tier = "service"
 		} else {
-			// Service account with no service token limiter configured: bypass.
-			return true
+			tl = nil
 		}
-	}
-	if tl == nil {
-		return true
 	}
 
-	allowed, dimension, retryAfter := tl.Allow(accountID, inputTokens, outputTokens)
-	setTokenRateLimitHeaders(w, tl, accountID)
-	if !allowed {
-		seconds := int(retryAfter.Seconds())
-		if seconds < 1 {
-			seconds = 1
+	keyID, inRPS, inBurst, outRPS, outBurst, keyEnforced := s.keyTokenParams(r)
+
+	// Peek BOTH the per-key override and the account-level limiter before
+	// consuming either. Only commit when both have capacity, so a rejection in
+	// one limiter never debits the other (a per-key request that the account
+	// bucket rejects must not drain the key's quota, and vice-versa).
+	if keyEnforced {
+		if ok, dim, retry := s.keyTokenLimiter.Peek(keyID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst); !ok {
+			s.writeTokenRateLimited(w, "key", dim, retry)
+			return false
 		}
-		w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		s.ddIncr("ratelimit.rejections", []string{"tier:" + tier, "dimension:" + dimension})
-		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-			fmt.Sprintf("%s rate limit exceeded — retry after %ds", dimension, seconds),
-			withCode("rate_limit_exceeded")))
-		return false
+	}
+	if tl != nil {
+		if ok, dim, retry := tl.Peek(accountID, inputTokens, outputTokens); !ok {
+			setTokenRateLimitHeaders(w, tl, accountID)
+			s.writeTokenRateLimited(w, tier, dim, retry)
+			return false
+		}
+	}
+
+	// Both dimensions have capacity — commit to each.
+	if keyEnforced {
+		s.keyTokenLimiter.Commit(keyID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst)
+	}
+	if tl != nil {
+		tl.Commit(accountID, inputTokens, outputTokens)
+		setTokenRateLimitHeaders(w, tl, accountID)
 	}
 	return true
+}
+
+// writeTokenRateLimited writes a 429 for a token-dimension rejection with a
+// Retry-After header and a dimension-specific message. tier is "consumer",
+// "service", or "key".
+func (s *Server) writeTokenRateLimited(w http.ResponseWriter, tier, dimension string, retryAfter time.Duration) {
+	seconds := int(retryAfter.Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	s.ddIncr("ratelimit.rejections", []string{"tier:" + tier, "dimension:" + dimension})
+	msg := fmt.Sprintf("%s rate limit exceeded — retry after %ds", dimension, seconds)
+	if tier == "key" {
+		msg = fmt.Sprintf("API key %s rate limit exceeded — retry after %ds", dimension, seconds)
+	}
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded", msg, withCode("rate_limit_exceeded")))
 }
 
 // setTokenRateLimitHeaders emits the standard input/output token rate-limit
@@ -430,19 +453,17 @@ func (s *Server) applyKeyRPMLimit(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// applyKeyTokenRateLimit enforces per-key ITPM/OTPM overrides when the
-// authenticated key sets ITPMLimit/OTPMLimit. Returns true when no per-key
-// token override applies. On rejection it writes a 429 and returns false.
-func (s *Server) applyKeyTokenRateLimit(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int) bool {
+// keyTokenParams resolves the per-key ITPM/OTPM override for the calling key.
+// enforced is false when no per-key token limit applies (no key, no limiter, or
+// no override set), in which case the other return values are zero.
+func (s *Server) keyTokenParams(r *http.Request) (keyID string, inRPS float64, inBurst int, outRPS float64, outBurst int, enforced bool) {
 	if s.keyTokenLimiter == nil {
-		return true
+		return "", 0, 0, 0, 0, false
 	}
 	k := apiKeyFromContext(r.Context())
 	if k == nil || k.ID == "" {
-		return true
+		return "", 0, 0, 0, 0, false
 	}
-	var inRPS, outRPS float64
-	var inBurst, outBurst int
 	if k.ITPMLimit != nil && *k.ITPMLimit > 0 {
 		inRPS = float64(*k.ITPMLimit) / 60.0
 		inBurst = int(*k.ITPMLimit)
@@ -452,22 +473,9 @@ func (s *Server) applyKeyTokenRateLimit(w http.ResponseWriter, r *http.Request, 
 		outBurst = int(*k.OTPMLimit)
 	}
 	if inRPS <= 0 && outRPS <= 0 {
-		return true
+		return "", 0, 0, 0, 0, false
 	}
-	allowed, dimension, retryAfter := s.keyTokenLimiter.Allow(k.ID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst)
-	if !allowed {
-		seconds := int(retryAfter.Seconds())
-		if seconds < 1 {
-			seconds = 1
-		}
-		w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		s.ddIncr("ratelimit.rejections", []string{"tier:key", "dimension:" + dimension})
-		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-			fmt.Sprintf("API key %s rate limit exceeded — retry after %ds", dimension, seconds),
-			withCode("rate_limit_exceeded")))
-		return false
-	}
-	return true
+	return k.ID, inRPS, inBurst, outRPS, outBurst, true
 }
 
 // setRequestRateLimitHeaders emits the standard request-dimension rate-limit
@@ -1663,6 +1671,17 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 					saferun.Go(s.logger, "touch_api_key", func() {
 						s.store.TouchAPIKey(id, time.Now())
 					})
+				}
+				// Unlinked legacy key: its identity used to be the raw bearer
+				// token; it is now LegacyAccountID(token). Carry any balance from
+				// the old raw-token identity to the new one so a pre-existing
+				// funded legacy key doesn't suddenly read a zero balance. One-time
+				// and a no-op once moved; runs only on a cache miss (≈ once per
+				// TTL). The raw token is never logged.
+				if k.OwnerAccountID == "" {
+					if _, err := s.store.MigrateAccountBalance(token, store.LegacyAccountID(token)); err != nil {
+						s.logger.Warn("legacy key balance migration failed", "error", err)
+					}
 				}
 				// Cache the API-key result (positive or negative). Provider-token
 				// fallbacks are deliberately NOT cached below.

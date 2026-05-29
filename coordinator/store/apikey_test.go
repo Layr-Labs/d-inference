@@ -311,6 +311,44 @@ func TestLegacyAccountID(t *testing.T) {
 	}
 }
 
+func TestMigrateAccountBalance(t *testing.T) {
+	s := NewMemory(Config{})
+	from := "sk-db-rawtoken"
+	to := LegacyAccountID(from)
+
+	// Seed the old raw-token identity with a balance (mix of withdrawable).
+	if err := s.Credit(from, 5_000_000, LedgerDeposit, "seed"); err != nil {
+		t.Fatalf("Credit: %v", err)
+	}
+	if err := s.CreditWithdrawable(from, 2_000_000, LedgerAdminReward, "seed-wdr"); err != nil {
+		t.Fatalf("CreditWithdrawable: %v", err)
+	}
+	totalBal, totalWdr := s.GetBalanceWithWithdrawable(from)
+
+	moved, err := s.MigrateAccountBalance(from, to)
+	if err != nil {
+		t.Fatalf("MigrateAccountBalance: %v", err)
+	}
+	if !moved {
+		t.Fatal("expected moved=true")
+	}
+	// Source drained, destination credited with the full balance + withdrawable.
+	if b := s.GetBalance(from); b != 0 {
+		t.Errorf("source balance = %d, want 0", b)
+	}
+	if b, w := s.GetBalanceWithWithdrawable(to); b != totalBal || w != totalWdr {
+		t.Errorf("dest balance=%d/wdr=%d, want %d/%d", b, w, totalBal, totalWdr)
+	}
+	// Idempotent: a second migration is a no-op (source already empty).
+	if moved, _ := s.MigrateAccountBalance(from, to); moved {
+		t.Error("second migration should be a no-op")
+	}
+	// No-op for an account with no balance.
+	if moved, _ := s.MigrateAccountBalance("empty-acct", "dest"); moved {
+		t.Error("migrating an empty account should be a no-op")
+	}
+}
+
 func TestKeyLabelMasking(t *testing.T) {
 	raw := KeyPrefix + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	label := KeyLabel(raw)

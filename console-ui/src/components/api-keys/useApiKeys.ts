@@ -115,6 +115,14 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
   }, []);
 
   // Point the console's active key (and its tracked id) at a secret.
+  //
+  // The console is a browser app that calls the inference API with a bearer
+  // key, so its one active key necessarily lives in localStorage (same place
+  // useAuth auto-provisions it). This is the pre-existing, accepted SEC-003
+  // tradeoff — not new exposure from multi-key management. CodeQL flags the
+  // write below ("clear-text storage"); moving off localStorage would require
+  // re-architecting console auth to an HttpOnly-cookie/server-session model
+  // (tracked separately by SEC-003), out of scope here.
   const pointConsoleKeyAt = useCallback(
     (created: CreatedKey) => {
       if (typeof window === "undefined") return;

@@ -89,3 +89,53 @@ func TestKeyTokenLimiterUnlimitedWhenNoRates(t *testing.T) {
 		t.Error("no configured rates means unlimited")
 	}
 }
+
+// TestPeekDoesNotConsume verifies that Peek leaves the bucket untouched, so a
+// caller can peek multiple limiters and only commit when all pass — without
+// draining a limiter whose sibling later rejects (Codex P2).
+func TestPeekDoesNotConsume(t *testing.T) {
+	tl := NewTokenLimiter(60, 100, 60, 100) // 100 input + 100 output burst
+
+	// Many peeks must never reduce capacity.
+	for i := 0; i < 50; i++ {
+		if ok, _, _ := tl.Peek("acct", 100, 100); !ok {
+			t.Fatalf("peek %d rejected though nothing was consumed", i)
+		}
+	}
+	// A full charge still fits because no peek consumed anything.
+	if ok, _, _ := tl.Peek("acct", 100, 100); !ok {
+		t.Fatal("full charge should still fit after repeated peeks")
+	}
+	tl.Commit("acct", 100, 100)
+	// Now the bucket is drained: the next peek is rejected.
+	if ok, dim, _ := tl.Peek("acct", 100, 1); ok {
+		t.Errorf("expected rejection after commit drained input, got ok (dim=%q)", dim)
+	}
+}
+
+// TestKeyTokenPeekCommitNoDrainAcrossLimiters models the server's peek-both-then-
+// commit: when the account limiter would reject, the per-key limiter must not be
+// charged (its later peek must still pass).
+func TestKeyTokenPeekCommitNoDrainAcrossLimiters(t *testing.T) {
+	key := NewKeyTokenLimiter()
+	acct := NewTokenLimiter(60, 100, 60, 100)
+
+	// Exhaust the account input bucket so it will reject.
+	acct.Commit("a", 100, 0)
+	if ok, _, _ := acct.Peek("a", 100, 0); ok {
+		t.Fatal("account bucket should be exhausted")
+	}
+
+	// Server logic: peek key (passes), peek account (fails) -> reject, commit
+	// NEITHER. The key bucket must be untouched.
+	if ok, _, _ := key.Peek("k", 50, 0, 60, 100, 0, 0); !ok {
+		t.Fatal("per-key peek should pass")
+	}
+	if ok, _, _ := acct.Peek("a", 50, 0); ok {
+		t.Fatal("account peek should fail (exhausted)")
+	}
+	// Because we did NOT commit the key, its full quota remains available.
+	if ok, _, _ := key.Peek("k", 100, 0, 60, 100, 0, 0); !ok {
+		t.Error("per-key quota must be intact after an account-side rejection (no drain)")
+	}
+}

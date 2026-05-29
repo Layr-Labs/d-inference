@@ -363,7 +363,9 @@ func TestIntegration_StreamingReservationBlocksExploit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	consumerID := "exploit-key"
+	// The bearer token is the raw "exploit-key"; the ledger tracks it under the
+	// derived non-secret identity (the key is unlinked).
+	consumerID := store.LegacyAccountID("exploit-key")
 
 	// Seed the consumer with 1000 μUSD ($0.001) — well above the old
 	// MinimumCharge of 100 μUSD but below the reservation required for a
@@ -385,7 +387,7 @@ func TestIntegration_StreamingReservationBlocksExploit(t *testing.T) {
 	// must reject at the pre-flight reservation stage.
 	chatBody := `{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":8192}`
 	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(chatBody))
-	httpReq.Header.Set("Authorization", "Bearer "+consumerID)
+	httpReq.Header.Set("Authorization", "Bearer exploit-key")
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		t.Fatalf("http request: %v", err)

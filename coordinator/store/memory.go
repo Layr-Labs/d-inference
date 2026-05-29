@@ -1072,6 +1072,51 @@ func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType Le
 	return nil
 }
 
+// MigrateAccountBalance moves the full balance (and its withdrawable subset)
+// from one account ID to another, atomically under the store lock.
+func (s *MemoryStore) MigrateAccountBalance(from, to string) (bool, error) {
+	if from == "" || to == "" || from == to {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bal := s.balances[from]
+	wdr := s.withdrawable[from]
+	if bal == 0 && wdr == 0 {
+		return false, nil
+	}
+	now := time.Now()
+
+	// Debit the source to zero and credit the destination, recording both legs.
+	s.balances[from] = 0
+	s.withdrawable[from] = 0
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID:             s.ledgerSeq,
+		AccountID:      from,
+		Type:           LedgerMigration,
+		AmountMicroUSD: -bal,
+		BalanceAfter:   0,
+		Reference:      "migrate:out",
+		CreatedAt:      now,
+	})
+
+	s.balances[to] += bal
+	s.withdrawable[to] += wdr
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID:             s.ledgerSeq,
+		AccountID:      to,
+		Type:           LedgerMigration,
+		AmountMicroUSD: bal,
+		BalanceAfter:   s.balances[to],
+		Reference:      "migrate:in",
+		CreatedAt:      now,
+	})
+	return true, nil
+}
+
 // LedgerHistory returns ledger entries for an account, newest first.
 func (s *MemoryStore) LedgerHistory(accountID string) []LedgerEntry {
 	s.mu.RLock()

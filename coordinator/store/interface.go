@@ -188,6 +188,14 @@ type Store interface {
 	// LedgerHistory returns ledger entries for an account, newest first.
 	LedgerHistory(accountID string) []LedgerEntry
 
+	// MigrateAccountBalance atomically moves the entire balance (and its
+	// withdrawable subset) from one account ID to another, merging into the
+	// destination, and records ledger entries on both sides. Returns moved=true
+	// when funds were transferred; it is a no-op (moved=false) when the source
+	// has no balance. Used to carry an unlinked legacy key's funds from its old
+	// raw-token identity to the hashed identity (see LegacyAccountID).
+	MigrateAccountBalance(from, to string) (moved bool, err error)
+
 	// --- Referral System ---
 
 	// CreateReferrer registers an account as a referrer with the given code.
@@ -604,6 +612,7 @@ const (
 	LedgerRefund         LedgerEntryType = "refund"          // reservation refund (request failed before inference)
 	LedgerAdminCredit    LedgerEntryType = "admin_credit"    // admin-granted non-withdrawable credit
 	LedgerAdminReward    LedgerEntryType = "admin_reward"    // admin-granted withdrawable reward
+	LedgerMigration      LedgerEntryType = "migration"       // balance moved between account identities (e.g. legacy key re-keying)
 )
 
 // LedgerEntry is a single balance-changing event.

@@ -85,3 +85,49 @@ func (t *KeyTokenLimiter) Allow(key string, inputTokens, outputTokens int,
 	}
 	return true, "", 0
 }
+
+// Peek reports whether a charge would be admitted WITHOUT consuming tokens, so
+// the caller can peek this limiter and the account-level limiter together and
+// only Commit when both pass (no drain on the other's rejection).
+func (t *KeyTokenLimiter) Peek(key string, inputTokens, outputTokens int,
+	inRPS float64, inBurst int, outRPS float64, outBurst int) (ok bool, dimension string, retryAfter time.Duration) {
+	if key == "" {
+		return true, "", 0
+	}
+	inputEnforced := inRPS > 0 && inBurst > 0
+	outputEnforced := outRPS > 0 && outBurst > 0
+	if !inputEnforced && !outputEnforced {
+		return true, "", 0
+	}
+
+	lock := t.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if inputEnforced && !t.input.CanNWithRate(key, inputTokens, inRPS, inBurst) {
+		_, retry := t.input.AllowNWithRate(key, inputTokens, inRPS, inBurst)
+		return false, "input_tokens", retry
+	}
+	if outputEnforced && !t.output.CanNWithRate(key, outputTokens, outRPS, outBurst) {
+		_, retry := t.output.AllowNWithRate(key, outputTokens, outRPS, outBurst)
+		return false, "output_tokens", retry
+	}
+	return true, "", 0
+}
+
+// Commit consumes a charge that a prior Peek confirmed would fit.
+func (t *KeyTokenLimiter) Commit(key string, inputTokens, outputTokens int,
+	inRPS float64, inBurst int, outRPS float64, outBurst int) {
+	if key == "" {
+		return
+	}
+	lock := t.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+	if inRPS > 0 && inBurst > 0 {
+		t.input.AllowNWithRate(key, inputTokens, inRPS, inBurst)
+	}
+	if outRPS > 0 && outBurst > 0 {
+		t.output.AllowNWithRate(key, outputTokens, outRPS, outBurst)
+	}
+}

@@ -1726,6 +1726,78 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	return nil
 }
 
+// MigrateAccountBalance moves the full balance (and withdrawable subset) from
+// one account ID to another in a single transaction. No-op (false) when the
+// source has no balance row or a zero balance.
+func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
+	if from == "" || to == "" || from == to {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin migrate tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var bal, wdr int64
+	err = tx.QueryRow(ctx,
+		`SELECT balance_micro_usd, withdrawable_micro_usd FROM balances WHERE account_id = $1 FOR UPDATE`, from,
+	).Scan(&bal, &wdr)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: read source balance: %w", err)
+	}
+	if bal == 0 && wdr == 0 {
+		return false, nil
+	}
+
+	// Zero the source and record the outgoing leg.
+	if _, err := tx.Exec(ctx,
+		`UPDATE balances SET balance_micro_usd = 0, withdrawable_micro_usd = 0, updated_at = NOW() WHERE account_id = $1`, from,
+	); err != nil {
+		return false, fmt.Errorf("store: zero source balance: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, 0, 'migrate:out')`,
+		from, string(LedgerMigration), -bal,
+	); err != nil {
+		return false, fmt.Errorf("store: source migration ledger entry: %w", err)
+	}
+
+	// Credit the destination and record the incoming leg.
+	var destBalance int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
+		 VALUES ($1, $2, $3, NOW())
+		 ON CONFLICT (account_id) DO UPDATE SET
+		   balance_micro_usd = balances.balance_micro_usd + $2,
+		   withdrawable_micro_usd = balances.withdrawable_micro_usd + $3,
+		   updated_at = NOW()
+		 RETURNING balance_micro_usd`,
+		to, bal, wdr,
+	).Scan(&destBalance); err != nil {
+		return false, fmt.Errorf("store: credit destination balance: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, $4, 'migrate:in')`,
+		to, string(LedgerMigration), bal, destBalance,
+	); err != nil {
+		return false, fmt.Errorf("store: destination migration ledger entry: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit migrate: %w", err)
+	}
+	return true, nil
+}
+
 // DebitWithdrawable subtracts micro-USD from both the total balance and the
 // withdrawable balance atomically. Returns error if the withdrawable balance
 // is insufficient. This ensures withdrawal debits are symmetric with

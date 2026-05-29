@@ -196,7 +196,15 @@ public actor PrefixCacheManager {
             modelHash: binding.modelHash, tokens: tokens, boundaries: boundaries
         ) else { return nil }
 
-        let fileURL = cacheDir.appendingPathComponent(entry.relativePath)
+        // Path safety: the on-disk index JSON is plaintext and NOT
+        // authenticated, so a tampered entry.relativePath could contain
+        // "../" and escape cacheDir (an out-of-sandbox read). The path is
+        // written deterministically by flushToSSD, so reconstruct it from
+        // the trusted model binding + the index key (entry.digestHex, which
+        // findLongestCheckpoint already matched against a computed pure-hex
+        // digest) instead of trusting the stored path.
+        let relPath = "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)"
+        let fileURL = cacheDir.appendingPathComponent(relPath)
 
         // MB-1: validate metadata BEFORE unwrap/decrypt. A wrong-model
         // file decrypts cleanly (AAD is its own metadata), so the cipher
@@ -243,6 +251,10 @@ public actor PrefixCacheManager {
                     KVCacheLayout.self, from: Data(layoutJSON.utf8)) else {
                 throw KVCacheSerializerError.reconstructionFailed("missing/invalid layout in metaState")
             }
+            // Bind the actual KV tensor shapes (not just the metadata
+            // integers) to the live model before seeding attention.
+            try KVCacheSerializer.validateLayout(
+                layout, kvHeads: binding.kvHeads, headDim: binding.headDim)
             caches = try KVCacheSerializer.deserialize(chunks: chunks, layout: layout)
         } catch {
             stats.ssdReadErrors += 1

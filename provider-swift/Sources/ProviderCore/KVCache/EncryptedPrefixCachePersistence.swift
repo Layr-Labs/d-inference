@@ -102,9 +102,12 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unc
         // Prefix binding: the file authenticates under its OWN metadata
         // (AAD), so MB-1's model/shape check can't tell that a same-model
         // file holds a DIFFERENT prompt prefix (renamed/swapped file, hash
-        // collision). Require the file's prefix hash to equal the requested
-        // block hash, or treat it as a cold miss — never serve another
-        // prefix's KV.
+        // collision). This check detects an on-disk rename — the file at
+        // path <blockHash> must claim to be <blockHash> (saveBlock writes
+        // tokenPrefixHash == the file's own name). The substantive content
+        // binding is the GCM AAD (bytes <-> metadata) plus the shape
+        // validation below (bytes <-> live model); this guard closes the
+        // path<->claim gap on top of those.
         guard meta.tokenPrefixHash == blockHash.dbkvHexString else {
             logger.warning("block file prefix-hash mismatch — refusing \(blockHash.dbkvHexString, privacy: .public)")
             return nil
@@ -116,6 +119,10 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unc
                   let layout = try? JSONDecoder().decode(KVCacheLayout.self, from: Data(layoutJSON.utf8)) else {
                 return nil
             }
+            // Bind the actual KV tensor shapes to the live model before
+            // seeding attention (metadata integers alone don't bind bytes).
+            try KVCacheSerializer.validateLayout(
+                layout, kvHeads: binding.kvHeads, headDim: binding.headDim)
             let caches = try KVCacheSerializer.deserialize(chunks: chunks, layout: layout)
             // The engine's block cache is KVCacheSimple-only; every layer
             // must downcast or we refuse the whole block.

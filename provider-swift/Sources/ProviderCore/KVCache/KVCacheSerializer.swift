@@ -149,6 +149,12 @@ public enum KVCacheSerializer {
         guard chunks.count == expectedChunks else {
             throw KVCacheSerializerError.chunkCountMismatch(expected: expectedChunks, got: chunks.count)
         }
+        // chunkPlaintextSizes equality and GCM AAD already bind the bytes
+        // to the metadata; what they do NOT bind is that the metadata
+        // matches the model about to consume the KV. Callers serving KV
+        // MUST first call `validateLayout(_:kvHeads:headDim:)` so a
+        // self-consistent file whose shapes disagree with the live model
+        // is rejected (cold miss) rather than seeded.
 
         var caches: [any KVCache] = []
         var idx = 0
@@ -167,11 +173,76 @@ public enum KVCacheSerializer {
         return caches
     }
 
+    // MARK: - Validation
+
+    /// Verify a layout's KV tensor shapes match the model the caller is
+    /// about to serve. The load-path MB-1/shape guards only compare the
+    /// metadata *integers* (meta.kvHeads/headDim); the actual tensors that
+    /// seed attention come from `layout.layers[].arrays[].shape`, a
+    /// separate field never cross-checked. A file that is self-consistent
+    /// (and authenticates under its own GCM AAD) but whose layout shape
+    /// disagrees with the live model — e.g. weights changed under the same
+    /// model id, or a foreign file in the disk-tamper threat model — would
+    /// otherwise deserialize and seed wrong-shaped KV, corrupting
+    /// generation or trapping inside MLX. KV arrays are
+    /// [batch, kvHeads, seq, headDim]; bind dims 1 and 3 to the model.
+    public static func validateLayout(_ layout: KVCacheLayout, kvHeads: Int, headDim: Int) throws {
+        for (li, layer) in layout.layers.enumerated() {
+            for (ai, arr) in layer.arrays.enumerated() {
+                guard arr.shape.count == 4 else {
+                    throw KVCacheSerializerError.reconstructionFailed(
+                        "layer \(li) array \(ai): expected rank-4 KV tensor, got shape \(arr.shape)")
+                }
+                guard arr.shape[1] == kvHeads, arr.shape[3] == headDim else {
+                    throw KVCacheSerializerError.reconstructionFailed(
+                        "layer \(li) array \(ai): KV shape \(arr.shape) disagrees with model "
+                            + "(kvHeads=\(kvHeads), headDim=\(headDim))")
+                }
+            }
+        }
+    }
+
+    /// Validate a metaState array against the requirements of its cache
+    /// type's setter BEFORE assigning it. The engine's `metaState` setters
+    /// `fatalError` on malformed input (wrong count, non-integer fields,
+    /// maxSize=="None"), which a load-path do/catch cannot intercept — a
+    /// single stale/foreign file would crash the whole provider. Throwing
+    /// instead turns it into a recoverable cold miss.
+    private static func validateMetaState(className: String, _ m: [String]) throws {
+        switch className {
+        case "KVCache", "KVCacheSimple":
+            guard m.count == 1, m[0].isEmpty else {
+                throw KVCacheSerializerError.reconstructionFailed(
+                    "KVCacheSimple metaState must be [\"\"], got \(m.count) element(s)")
+            }
+        case "RotatingKVCache":
+            // [keep, maxSize, step, offset, idx] — all integers, maxSize != None.
+            guard m.count == 5 else {
+                throw KVCacheSerializerError.reconstructionFailed(
+                    "RotatingKVCache metaState must have 5 values, got \(m.count)")
+            }
+            guard Int(m[0]) != nil, Int(m[2]) != nil, Int(m[3]) != nil, Int(m[4]) != nil else {
+                throw KVCacheSerializerError.reconstructionFailed(
+                    "RotatingKVCache metaState has non-integer field(s)")
+            }
+            guard m[1] != "None", Int(m[1]) != nil else {
+                throw KVCacheSerializerError.reconstructionFailed(
+                    "RotatingKVCache requires an integer maxSize (got '\(m[1])')")
+            }
+        default:
+            throw KVCacheSerializerError.unsupportedCacheType(className)
+        }
+    }
+
     // MARK: - Reconstruction
 
     private static func reconstruct(
         className: String, arrays: [MLXArray], metaState: [String]
     ) throws -> any KVCache {
+        // Pre-validate metaState: the engine's setters fatalError on bad
+        // input (uncatchable), so a malformed stale/foreign file must
+        // become a throw (cold miss), never a process crash.
+        try validateMetaState(className: className, metaState)
         // Set state only when there is array data (an empty cache's
         // `state` setter would reject a 0-count array on some types).
         // metaState is always set: each type's setter accepts its own

@@ -179,40 +179,39 @@ func managerMB1RejectsCrossModelFile() async throws {
 
 @Test
 func managerMB1RejectsTamperedModelHashInIndex() async throws {
-    // Stronger MB-1: force the index to point model B at A's file (as a
-    // symlink/collision would), and confirm the metadata equality guard
-    // — not the crypto — rejects it.
+    // MB-1: two model ids that COLLIDE in the 12-char model-dir prefix share
+    // an on-disk cache directory, so model B's deterministic path resolves
+    // to model A's file. The metadata equality guard — not the crypto — must
+    // reject it. (loadFromSSD reconstructs the path from the binding, so a
+    // cross-dir pointer in the index can no longer be forged; the residual
+    // way a wrong-model file lands at B's path is this dir-prefix collision.)
     let dir = tmpDir()
     let kekStorage = InMemoryWrappedKEKStorage(identifier: "mb1b")
     let wrapper = InMemoryKeyWrappingService(key: .init(data: Data(repeating: 3, count: 32)), identifier: "mb1b")
     let indexURL = dir.appendingPathComponent("index.json")
     let tokens = prompt(10)
+    let modelA = "samedir01234A", modelB = "samedir01234B"  // share the 12-char modelDirComponent
 
-    // Write A's file + index entry.
     let mgrA = PrefixCacheManager(
-        binding: binding(model: "modelA"), ram: PrefixCacheRAM(),
+        binding: binding(model: modelA), ram: PrefixCacheRAM(),
         index: PrefixCacheIndex(fileURL: indexURL),
         kek: KVCacheKEK(wrapper: wrapper, storage: kekStorage),
         cacheDir: dir, ssdEnabled: true, boundaries: [4, 8], now: { 1000 }
     )
     await mgrA.store(tokens: tokens, checkpointLength: 8, caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
     _ = await mgrA.flushToSSD()
-    try await mgrA.indexSaveForTest()
 
-    // Build B's index entry pointing at A's actual file, under the
-    // digest B would compute for the same tokens (digests are model-
-    // independent, so they collide — exactly the symlink/collision case
-    // MB-1's metadata guard exists to catch).
+    // Model B references the same digest; its deterministic path (shared
+    // dir) resolves to A's file. relativePath is ignored by loadFromSSD.
     let bIndex = PrefixCacheIndex(fileURL: dir.appendingPathComponent("indexB.json"))
-    let aRel = try locateDBKV(in: dir)
-    let bDigest = PrefixDigest.digest(tokens: tokens, length: 8).dbkvHexString
+    let digest = PrefixDigest.digest(tokens: tokens, length: 8).dbkvHexString
     bIndex.record(PrefixIndexEntry(
-        modelHash: "modelB", digestHex: bDigest, tokenCount: 8,
-        relativePath: aRel, fileBytes: 0, createdAt: 1000, lastHitAt: 1000
+        modelHash: modelB, digestHex: digest, tokenCount: 8,
+        relativePath: "ignored", fileBytes: 0, createdAt: 1000, lastHitAt: 1000
     ))
 
     let mgrB = PrefixCacheManager(
-        binding: binding(model: "modelB"), ram: PrefixCacheRAM(),
+        binding: binding(model: modelB), ram: PrefixCacheRAM(),
         index: bIndex, kek: KVCacheKEK(wrapper: wrapper, storage: kekStorage),
         cacheDir: dir, ssdEnabled: true, boundaries: [4, 8], now: { 1000 }
     )
@@ -235,6 +234,7 @@ func managerRejectsStaleIndexPrefixHashMismatch() async throws {
 
     // mgrA writes a real file for tokensA@8 + its index entry.
     let tokensA = prompt(10)
+    let tokensB = Array(100..<110)
     let mgrA = PrefixCacheManager(
         binding: binding(model: "m"), ram: PrefixCacheRAM(),
         index: PrefixCacheIndex(fileURL: indexURL),
@@ -244,16 +244,22 @@ func managerRejectsStaleIndexPrefixHashMismatch() async throws {
     await mgrA.store(tokens: tokensA, checkpointLength: 8, caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
     _ = await mgrA.flushToSSD()
 
-    // Build an index (SAME model) pointing a DIFFERENT prompt's digest at
-    // A's file. Looking up that different prompt finds the entry, loads A's
-    // file (model + shape match), and the prefix-hash guard must reject it.
-    let tokensB = Array(100..<110)
-    let bIndex = PrefixCacheIndex(fileURL: dir.appendingPathComponent("indexB.json"))
-    let aRel = try locateDBKV(in: dir)
+    // On-disk swap: copy A's file to B's digest path WITHIN the same model
+    // dir, so B's deterministic path resolves to a file whose actual
+    // tokenPrefixHash is A's. (loadFromSSD reconstructs the path from the
+    // digest, so this same-dir swap — not a cross-file index pointer — is
+    // the residual way a wrong-prefix file reaches the load.)
+    let ext = EncryptedKVStore.fileExtension
+    let aDigest = PrefixDigest.digest(tokens: tokensA, length: 8).dbkvHexString
     let bDigest = PrefixDigest.digest(tokens: tokensB, length: 8).dbkvHexString
+    let aFile = dir.appendingPathComponent("m/\(aDigest).\(ext)")
+    let bFile = dir.appendingPathComponent("m/\(bDigest).\(ext)")
+    try FileManager.default.copyItem(at: aFile, to: bFile)
+
+    let bIndex = PrefixCacheIndex(fileURL: dir.appendingPathComponent("indexB.json"))
     bIndex.record(PrefixIndexEntry(
         modelHash: "m", digestHex: bDigest, tokenCount: 8,
-        relativePath: aRel, fileBytes: 0, createdAt: 1000, lastHitAt: 1000
+        relativePath: "ignored", fileBytes: 0, createdAt: 1000, lastHitAt: 1000
     ))
 
     let mgrB = PrefixCacheManager(
@@ -265,6 +271,50 @@ func managerRejectsStaleIndexPrefixHashMismatch() async throws {
     #expect(hit == nil, "stale-index prefix-hash mismatch must be rejected")
     let stats = await mgrB.snapshotStats()
     #expect(stats.prefixHashMismatches == 1, "the mismatch must be counted")
+}
+
+@Test
+func managerIgnoresMaliciousIndexRelativePath() async throws {
+    // The on-disk index JSON is plaintext and unauthenticated, so a tampered
+    // entry.relativePath could contain "../" and escape the cache dir. The
+    // manager must reconstruct the path deterministically from the trusted
+    // binding + digest and IGNORE the stored relativePath — so a poisoned
+    // path neither escapes the sandbox nor breaks a legitimate hit.
+    let dir = tmpDir()
+    let kekStorage = InMemoryWrappedKEKStorage(identifier: "trav")
+    let wrapper = InMemoryKeyWrappingService(key: .init(data: Data(repeating: 6, count: 32)), identifier: "trav")
+    let indexURL = dir.appendingPathComponent("index.json")
+    let tokens = prompt(10)
+
+    // Write a real file + index entry at the deterministic in-sandbox path.
+    let mgrA = PrefixCacheManager(
+        binding: binding(model: "m"), ram: PrefixCacheRAM(),
+        index: PrefixCacheIndex(fileURL: indexURL),
+        kek: KVCacheKEK(wrapper: wrapper, storage: kekStorage),
+        cacheDir: dir, ssdEnabled: true, boundaries: [4, 8], now: { 1000 }
+    )
+    await mgrA.store(tokens: tokens, checkpointLength: 8, caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgrA.flushToSSD()
+
+    // Poisoned index: same model/digest/tokenCount, but relativePath tries to
+    // escape the cache dir entirely.
+    let digest = PrefixDigest.digest(tokens: tokens, length: 8).dbkvHexString
+    let poison = PrefixCacheIndex(fileURL: dir.appendingPathComponent("poison.json"))
+    poison.record(PrefixIndexEntry(
+        modelHash: "m", digestHex: digest, tokenCount: 8,
+        relativePath: "../../../../../../etc/shadow", fileBytes: 0, createdAt: 1000, lastHitAt: 1000
+    ))
+
+    let mgrB = PrefixCacheManager(
+        binding: binding(model: "m"), ram: PrefixCacheRAM(),
+        index: poison, kek: KVCacheKEK(wrapper: wrapper, storage: kekStorage),
+        cacheDir: dir, ssdEnabled: true, boundaries: [4, 8], now: { 1000 }
+    )
+    // The deterministic path resolves to the real in-sandbox file → hit; the
+    // poisoned relativePath is never touched.
+    let hit = await mgrB.lookup(tokens: tokens)
+    #expect(hit != nil, "manager must serve from the deterministic in-sandbox path, ignoring relativePath")
+    #expect(await mgrB.snapshotStats().ssdReadErrors == 0, "must not attempt the escaped path")
 }
 
 @Test
@@ -289,21 +339,6 @@ func managerMissOnShortPrompt() async {
 }
 
 // MARK: - helpers
-
-private func locateDBKV(in dir: URL) throws -> String {
-    let fm = FileManager.default
-    let subdirs = try fm.contentsOfDirectory(atPath: dir.path)
-    for sub in subdirs {
-        let subPath = dir.appendingPathComponent(sub)
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: subPath.path, isDirectory: &isDir), isDir.boolValue else { continue }
-        let files = try fm.contentsOfDirectory(atPath: subPath.path)
-        if let f = files.first(where: { $0.hasSuffix(EncryptedKVStore.fileExtension) }) {
-            return "\(sub)/\(f)"
-        }
-    }
-    throw NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "no .darkbloom-kv file found"])
-}
 
 // Test-only helper to persist the index (the manager saves on flush, but
 // tests that build a second instance want an explicit save point).

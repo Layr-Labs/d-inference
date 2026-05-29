@@ -166,3 +166,68 @@ func serializerEndToEndThroughEncryptedStore() async throws {
     #expect(arraysEqual(restored.state, original.state),
             "KV survived serialize -> encrypt -> decrypt -> deserialize")
 }
+
+// MARK: - Shape binding (G1): layout shapes must match the live model
+
+@Test
+func validateLayoutAcceptsMatchingShapes() throws {
+    // simpleCache uses [1, H, n, D] => kvHeads=H, headDim=D.
+    let (_, layout) = try KVCacheSerializer.serialize([simpleCache(tokens: 6)])
+    try KVCacheSerializer.validateLayout(layout, kvHeads: H, headDim: D)  // must not throw
+}
+
+@Test
+func validateLayoutRejectsWrongKvHeadsOrHeadDim() throws {
+    let (_, layout) = try KVCacheSerializer.serialize([simpleCache(tokens: 6)])
+    // A self-consistent file whose shape disagrees with the live model must
+    // be refused before its KV is seeded into attention.
+    #expect(throws: KVCacheSerializerError.self) {
+        try KVCacheSerializer.validateLayout(layout, kvHeads: H + 1, headDim: D)
+    }
+    #expect(throws: KVCacheSerializerError.self) {
+        try KVCacheSerializer.validateLayout(layout, kvHeads: H, headDim: D + 1)
+    }
+}
+
+// MARK: - metaState validation (G2): malformed metaState throws, never fatalErrors
+
+@Test
+func deserializeRejectsWrongCountRotatingMetaState() throws {
+    let (chunks, layout) = try KVCacheSerializer.serialize([rotatingCache(feed: 3)])
+    // RotatingKVCache.metaState setter fatalErrors on count != 5; the
+    // serializer must throw (recoverable cold miss) instead of crashing.
+    let bad = KVCacheLayout(version: layout.version, layers: [
+        KVCacheLayerDescriptor(className: layout.layers[0].className,
+                               metaState: ["1", "2"], arrays: layout.layers[0].arrays)
+    ])
+    #expect(throws: KVCacheSerializerError.self) {
+        _ = try KVCacheSerializer.deserialize(chunks: chunks, layout: bad)
+    }
+}
+
+@Test
+func deserializeRejectsRotatingMaxSizeNone() throws {
+    let (chunks, layout) = try KVCacheSerializer.serialize([rotatingCache(feed: 3)])
+    var meta = layout.layers[0].metaState
+    meta[1] = "None"  // the setter fatalErrors on maxSize=="None"
+    let bad = KVCacheLayout(version: layout.version, layers: [
+        KVCacheLayerDescriptor(className: layout.layers[0].className,
+                               metaState: meta, arrays: layout.layers[0].arrays)
+    ])
+    #expect(throws: KVCacheSerializerError.self) {
+        _ = try KVCacheSerializer.deserialize(chunks: chunks, layout: bad)
+    }
+}
+
+@Test
+func deserializeRejectsNonEmptySimpleMetaState() throws {
+    let (chunks, layout) = try KVCacheSerializer.serialize([simpleCache(tokens: 4)])
+    // KVCacheSimple.metaState setter fatalErrors unless it is exactly [""].
+    let bad = KVCacheLayout(version: layout.version, layers: [
+        KVCacheLayerDescriptor(className: layout.layers[0].className,
+                               metaState: ["garbage"], arrays: layout.layers[0].arrays)
+    ])
+    #expect(throws: KVCacheSerializerError.self) {
+        _ = try KVCacheSerializer.deserialize(chunks: chunks, layout: bad)
+    }
+}

@@ -223,6 +223,51 @@ func managerMB1RejectsTamperedModelHashInIndex() async throws {
 }
 
 @Test
+func managerRejectsStaleIndexPrefixHashMismatch() async throws {
+    // Same model + same shape, but the index entry's digest does NOT match
+    // the file's actual prefix hash (stale/corrupt index, or a file moved
+    // under the wrong digest). The prefix-hash guard must drop it and
+    // cold-prefill rather than serve a different prompt's KV.
+    let dir = tmpDir()
+    let kekStorage = InMemoryWrappedKEKStorage(identifier: "ph")
+    let wrapper = InMemoryKeyWrappingService(key: .init(data: Data(repeating: 5, count: 32)), identifier: "ph")
+    let indexURL = dir.appendingPathComponent("index.json")
+
+    // mgrA writes a real file for tokensA@8 + its index entry.
+    let tokensA = prompt(10)
+    let mgrA = PrefixCacheManager(
+        binding: binding(model: "m"), ram: PrefixCacheRAM(),
+        index: PrefixCacheIndex(fileURL: indexURL),
+        kek: KVCacheKEK(wrapper: wrapper, storage: kekStorage),
+        cacheDir: dir, ssdEnabled: true, boundaries: [4, 8], now: { 1000 }
+    )
+    await mgrA.store(tokens: tokensA, checkpointLength: 8, caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgrA.flushToSSD()
+
+    // Build an index (SAME model) pointing a DIFFERENT prompt's digest at
+    // A's file. Looking up that different prompt finds the entry, loads A's
+    // file (model + shape match), and the prefix-hash guard must reject it.
+    let tokensB = Array(100..<110)
+    let bIndex = PrefixCacheIndex(fileURL: dir.appendingPathComponent("indexB.json"))
+    let aRel = try locateDBKV(in: dir)
+    let bDigest = PrefixDigest.digest(tokens: tokensB, length: 8).dbkvHexString
+    bIndex.record(PrefixIndexEntry(
+        modelHash: "m", digestHex: bDigest, tokenCount: 8,
+        relativePath: aRel, fileBytes: 0, createdAt: 1000, lastHitAt: 1000
+    ))
+
+    let mgrB = PrefixCacheManager(
+        binding: binding(model: "m"), ram: PrefixCacheRAM(),
+        index: bIndex, kek: KVCacheKEK(wrapper: wrapper, storage: kekStorage),
+        cacheDir: dir, ssdEnabled: true, boundaries: [4, 8], now: { 1000 }
+    )
+    let hit = await mgrB.lookup(tokens: tokensB)
+    #expect(hit == nil, "stale-index prefix-hash mismatch must be rejected")
+    let stats = await mgrB.snapshotStats()
+    #expect(stats.prefixHashMismatches == 1, "the mismatch must be counted")
+}
+
+@Test
 func managerSSDDisabledWhenBackingMissing() async {
     // ssdEnabled requested but no index/kek/dir → manager is RAM-only.
     let mgr = PrefixCacheManager(

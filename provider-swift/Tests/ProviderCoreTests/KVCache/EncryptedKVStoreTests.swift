@@ -306,6 +306,28 @@ func chunkNonceDiffersByFileIV() throws {
 }
 
 @Test
+func writeCreatesBrandNewFile() async throws {
+    // Codex flagged that the atomic-rename path might fail to CREATE a file
+    // that doesn't exist yet (replaceItemAt is replace-only on some
+    // platforms), which would make first-ever SSD writes a silent no-op.
+    // Prove the opposite: writing to a non-existent path creates it and
+    // round-trips. (Guards the create-or-replace fix in atomicWrite.)
+    let url = newTempURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect(!FileManager.default.fileExists(atPath: url.path), "precondition: target must not exist")
+
+    let kek = newKEK()
+    let pt = Data((0..<777).map { UInt8($0 & 0xFF) })
+    try await EncryptedKVStore.write(
+        to: url, metadata: makeMetadata(chunkSizes: [pt.count]), chunks: [pt], kek: kek
+    )
+    #expect(FileManager.default.fileExists(atPath: url.path), "first write must CREATE the file")
+
+    let (_, chunks) = try await EncryptedKVStore.read(from: url, kek: kek)
+    #expect(chunks == [pt])
+}
+
+@Test
 func chunkNonceRejectsWrongIVLength() {
     let dek = SymmetricKey(data: Data(repeating: 0x77, count: 32))
     let shortIV = Data(repeating: 0x33, count: 8)

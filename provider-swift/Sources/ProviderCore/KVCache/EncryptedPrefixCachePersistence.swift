@@ -99,6 +99,16 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unc
             try? FileManager.default.removeItem(at: url)
             return nil
         }
+        // Prefix binding: the file authenticates under its OWN metadata
+        // (AAD), so MB-1's model/shape check can't tell that a same-model
+        // file holds a DIFFERENT prompt prefix (renamed/swapped file, hash
+        // collision). Require the file's prefix hash to equal the requested
+        // block hash, or treat it as a cold miss — never serve another
+        // prefix's KV.
+        guard meta.tokenPrefixHash == blockHash.dbkvHexString else {
+            logger.warning("block file prefix-hash mismatch — refusing \(blockHash.dbkvHexString, privacy: .public)")
+            return nil
+        }
 
         do {
             let (readMeta, chunks) = try EncryptedKVStore.readSync(from: url, kekKey: kekKey)

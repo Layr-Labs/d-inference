@@ -357,7 +357,26 @@ public enum EncryptedKVStore {
             throw EncryptedKVStoreError.ioFailure("write tmp: \(error)")
         }
         do {
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
+            // Atomic create-or-replace. `replaceItemAt` is for REPLACING
+            // an existing item; on some platforms/filesystems it errors
+            // when the destination doesn't exist (the common first-write
+            // case). Use a plain rename to create, and only
+            // `replaceItemAt` when there's an existing file to swap —
+            // both are atomic within one filesystem. (On macOS/APFS
+            // replaceItemAt happens to create too — proven by the
+            // round-trip tests — but this is the portable, unambiguous
+            // form.)
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
+            } else {
+                do {
+                    try FileManager.default.moveItem(at: tmpURL, to: url)
+                } catch {
+                    // Lost a race: another writer created it between the
+                    // check and the move. Fall back to replace.
+                    _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
+                }
+            }
         } catch {
             try? FileManager.default.removeItem(at: tmpURL)
             throw EncryptedKVStoreError.ioFailure("atomic rename: \(error)")

@@ -112,6 +112,7 @@ public struct PrefixCacheManagerStats: Sendable, Equatable {
     public var ssdFlushes = 0
     public var modelMismatches = 0
     public var shapeMismatches = 0
+    public var prefixHashMismatches = 0
     public var ssdReadErrors = 0
 }
 
@@ -218,6 +219,17 @@ public actor PrefixCacheManager {
               meta.kvHeads == binding.kvHeads,
               meta.headDim == binding.headDim else {
             stats.shapeMismatches += 1
+            index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            return nil
+        }
+        // Prefix binding: the file authenticates under its OWN metadata, so
+        // a stale/corrupt index entry (or a same-model file at the wrong
+        // path) would otherwise decrypt cleanly and return KV for a
+        // DIFFERENT prompt prefix. Require the file's prefix hash to match
+        // the index entry's digest, or drop it and cold-prefill.
+        guard meta.tokenPrefixHash == entry.digestHex else {
+            stats.prefixHashMismatches += 1
+            logger.warning("SSD prefix-hash mismatch (index stale/corrupt) — dropping \(entry.digestHex, privacy: .public)")
             index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
             return nil
         }

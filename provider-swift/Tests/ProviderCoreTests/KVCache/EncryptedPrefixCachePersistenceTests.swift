@@ -143,3 +143,27 @@ func endToEndEvictionPersistsAndReloadsThroughRealPrefixCache() {
     #expect(fetched != nil, "evicted block A should reload from encrypted SSD on fetch")
     #expect(remaining.count < tokensA.count, "some prefix tokens should be served from cache")
 }
+
+@Test
+func loadBlockRefusesFileHoldingDifferentPrefix() throws {
+    // A same-model file at the wrong path (renamed/swapped, or a hash
+    // collision) authenticates under its OWN metadata, so the model/shape
+    // guard passes. The prefix-hash guard must still refuse it rather than
+    // serve a different prompt's KV under the requested block hash.
+    let kekKey = SymmetricKey(size: .bits256)
+    let dir = tmpDir()
+    let p = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2))
+
+    let hashA = Data("prefix-A".utf8)
+    let hashB = Data("prefix-B".utf8)
+    p.saveBlock(blockHash: hashA, layerCaches: block(layers: 2, tokens: 8))
+
+    // Simulate a renamed/swapped file: copy A's file onto B's path. Its
+    // metadata still says tokenPrefixHash == hashA.
+    let fileA = dir.appendingPathComponent("\(hashA.dbkvHexString).\(EncryptedKVStore.fileExtension)")
+    let fileB = dir.appendingPathComponent("\(hashB.dbkvHexString).\(EncryptedKVStore.fileExtension)")
+    try FileManager.default.copyItem(at: fileA, to: fileB)
+
+    #expect(p.loadBlock(blockHash: hashB) == nil, "wrong-prefix file must be refused")
+    #expect(p.loadBlock(blockHash: hashA) != nil, "correct-prefix file must still load")
+}

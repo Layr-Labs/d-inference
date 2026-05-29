@@ -240,21 +240,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		for k, v := range req.RuntimeParameters {
 			rec.RuntimeParameters[k] = v
 		}
-		entry := &store.ModelRegistryEntry{
-			ID:                rec.ID,
-			DisplayName:       rec.DisplayName,
-			Family:            rec.Family,
-			Architecture:      rec.Architecture,
-			Quantization:      rec.Quantization,
-			MaxContextLength:  rec.MaxContextLength,
-			MaxOutputLength:   rec.MaxOutputLength,
-			MinRAMGB:          rec.MinRAMGB,
-			Capabilities:      rec.Capabilities,
-			Status:            rec.Status,
-			Description:       rec.Description,
-			RuntimeParameters: rec.RuntimeParameters,
-			Metadata:          rec.Metadata,
-		}
+		entry := registryEntryFromRecord(rec)
 		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
 			s.writeModelRegistryStoreError(w, "update runtime_parameters", err)
 			return
@@ -284,21 +270,8 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		}
 		// Replace capabilities wholesale (normalized: trimmed, de-duped, ordered).
 		caps := normalizeCapabilities(req.Capabilities)
-		entry := &store.ModelRegistryEntry{
-			ID:                rec.ID,
-			DisplayName:       rec.DisplayName,
-			Family:            rec.Family,
-			Architecture:      rec.Architecture,
-			Quantization:      rec.Quantization,
-			MaxContextLength:  rec.MaxContextLength,
-			MaxOutputLength:   rec.MaxOutputLength,
-			MinRAMGB:          rec.MinRAMGB,
-			Capabilities:      caps,
-			Status:            rec.Status,
-			Description:       rec.Description,
-			RuntimeParameters: rec.RuntimeParameters,
-			Metadata:          rec.Metadata,
-		}
+		entry := registryEntryFromRecord(rec)
+		entry.Capabilities = caps
 		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
 			s.writeModelRegistryStoreError(w, "update capabilities", err)
 			return
@@ -311,6 +284,28 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		})
 	default:
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model action not found"))
+	}
+}
+
+// registryEntryFromRecord copies the mutable model fields out of a stored
+// record into a fresh ModelRegistryEntry, so an in-place admin update can
+// change one field (e.g. capabilities or runtime parameters) and upsert it
+// without dropping the others.
+func registryEntryFromRecord(rec *store.ModelRegistryRecord) *store.ModelRegistryEntry {
+	return &store.ModelRegistryEntry{
+		ID:                rec.ID,
+		DisplayName:       rec.DisplayName,
+		Family:            rec.Family,
+		Architecture:      rec.Architecture,
+		Quantization:      rec.Quantization,
+		MaxContextLength:  rec.MaxContextLength,
+		MaxOutputLength:   rec.MaxOutputLength,
+		MinRAMGB:          rec.MinRAMGB,
+		Capabilities:      rec.Capabilities,
+		Status:            rec.Status,
+		Description:       rec.Description,
+		RuntimeParameters: rec.RuntimeParameters,
+		Metadata:          rec.Metadata,
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // This file contains the mapping helpers that translate Darkbloom's internal
@@ -172,6 +174,122 @@ func (s *Server) resolvePlatformPricing(model string) (inputPerMillion, outputPe
 		return in, out
 	}
 	return payments.DefaultInputPricePerMillion, payments.DefaultOutputPricePerMillion
+}
+
+// activeCatalogLookups builds the two lookups that the model-listing endpoints
+// (/v1/models and /v1/models/openrouter) share: the active catalog keyed by
+// model ID, and the richer registry entry per model used to populate the
+// OpenRouter provider fields. It prefers the DB-backed model registry; when
+// that has no rows it falls back to legacy supported_models, which carry no
+// registry entry (so registryByID is empty in the fallback case). The error is
+// returned so each caller can log it with its own context and emit a 500.
+func (s *Server) activeCatalogLookups() (catalogByID map[string]store.SupportedModel, registryByID map[string]store.ModelRegistryEntry, err error) {
+	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	if err != nil {
+		return nil, nil, err
+	}
+	catalogByID = make(map[string]store.SupportedModel, len(registryRows))
+	registryByID = make(map[string]store.ModelRegistryEntry, len(registryRows))
+	if len(registryRows) > 0 {
+		for _, row := range registryRows {
+			cm := supportedModelFromRegistryRecord(&row)
+			if cm.Active {
+				catalogByID[cm.ID] = cm
+				registryByID[cm.ID] = row.ModelRegistryEntry
+			}
+		}
+		return catalogByID, registryByID, nil
+	}
+	for _, cm := range s.store.ListSupportedModels() {
+		if cm.Active && !IsRetiredProviderModel(cm) {
+			catalogByID[cm.ID] = cm
+		}
+	}
+	return catalogByID, registryByID, nil
+}
+
+// openRouterModelFields holds the OpenRouter-schema values that both the
+// /v1/models enrichment and the dedicated /v1/models/openrouter feed derive
+// identically from a model and its (optional) registry entry. Centralizing the
+// derivation keeps the two endpoints in lockstep; each maps these onto its own
+// response struct via the applyTo* helpers below.
+type openRouterModelFields struct {
+	Quantization                string
+	Pricing                     *types.ModelPricing
+	SupportedSamplingParameters []string
+	Created                     int64
+	Description                 string
+	ContextLength               int
+	MaxOutputLength             int
+	SupportedFeatures           []string
+	DeprecationDate             string
+}
+
+// openRouterModelFieldsFor derives the shared OpenRouter fields for a model.
+// Quantization, pricing and sampling parameters come from the model and the
+// platform price table; the remaining fields come from the registry entry and
+// are left at their zero values when hasReg is false (legacy supported_models
+// rows without a registry entry).
+func (s *Server) openRouterModelFieldsFor(m registry.AggregateModel, reg store.ModelRegistryEntry, hasReg bool) openRouterModelFields {
+	inPM, outPM := s.resolvePlatformPricing(m.ID)
+	f := openRouterModelFields{
+		Quantization:                mapQuantizationToOpenRouter(m.Quantization),
+		Pricing:                     buildModelPricing(inPM, outPM),
+		SupportedSamplingParameters: defaultSamplingParameters(),
+	}
+	if hasReg {
+		if !reg.CreatedAt.IsZero() {
+			f.Created = reg.CreatedAt.Unix()
+		}
+		f.Description = reg.Description
+		f.ContextLength = reg.MaxContextLength
+		f.MaxOutputLength = reg.MaxOutputLength
+		f.SupportedFeatures = supportedFeaturesFromCapabilities(reg.Capabilities)
+		f.DeprecationDate = deprecationDateFromMetadata(reg.Metadata)
+	}
+	return f
+}
+
+// applyToModelEntry copies the shared OpenRouter fields onto a /v1/models
+// ModelEntry (which also carries the Darkbloom metadata block). Modalities are
+// set by the caller, which derives them from the model's capabilities.
+func (f openRouterModelFields) applyToModelEntry(entry *types.ModelEntry) {
+	entry.Quantization = f.Quantization
+	entry.Pricing = f.Pricing
+	entry.SupportedSamplingParameters = f.SupportedSamplingParameters
+	entry.Created = f.Created
+	entry.Description = f.Description
+	entry.ContextLength = f.ContextLength
+	entry.MaxOutputLength = f.MaxOutputLength
+	entry.SupportedFeatures = f.SupportedFeatures
+	entry.DeprecationDate = f.DeprecationDate
+}
+
+// applyToFeed copies the shared OpenRouter fields onto a pure feed entry. The
+// feed emits required fields without omitempty, so an empty feature set is left
+// as the caller's pre-initialized []string{} (never nilled out), and modalities
+// / is_ready / slug remain the caller's responsibility.
+func (f openRouterModelFields) applyToFeed(entry *types.OpenRouterModel) {
+	entry.Quantization = f.Quantization
+	entry.Pricing = *f.Pricing
+	entry.SupportedSamplingParameters = f.SupportedSamplingParameters
+	entry.Created = f.Created
+	entry.Description = f.Description
+	entry.ContextLength = f.ContextLength
+	entry.MaxOutputLength = f.MaxOutputLength
+	if len(f.SupportedFeatures) > 0 {
+		entry.SupportedFeatures = f.SupportedFeatures
+	}
+	entry.DeprecationDate = f.DeprecationDate
+}
+
+// deprecationDateFromMetadata extracts the optional "deprecation_date" string
+// from a model's registry metadata, returning "" when it is absent or empty.
+func deprecationDateFromMetadata(meta map[string]any) string {
+	if dd, ok := meta["deprecation_date"].(string); ok {
+		return dd
+	}
+	return ""
 }
 
 func contains(s []string, v string) bool {

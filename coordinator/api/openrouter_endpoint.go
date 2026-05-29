@@ -17,28 +17,11 @@ import (
 func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Request) {
 	models := s.registry.ListModels()
 
-	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	catalogByID, registryByID, err := s.activeCatalogLookups()
 	if err != nil {
 		s.logger.Error("openrouter models: failed to list active models", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
 		return
-	}
-	catalogByID := make(map[string]store.SupportedModel, len(registryRows))
-	registryByID := make(map[string]store.ModelRegistryEntry, len(registryRows))
-	if len(registryRows) > 0 {
-		for _, row := range registryRows {
-			cm := supportedModelFromRegistryRecord(&row)
-			if cm.Active {
-				catalogByID[cm.ID] = cm
-				registryByID[cm.ID] = row.ModelRegistryEntry
-			}
-		}
-	} else {
-		for _, cm := range s.store.ListSupportedModels() {
-			if cm.Active && !IsRetiredProviderModel(cm) {
-				catalogByID[cm.ID] = cm
-			}
-		}
 	}
 
 	data := make([]types.OpenRouterModel, 0, len(models))
@@ -53,58 +36,57 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		}
 
 		reg, hasReg := registryByID[m.ID]
-
-		name := cm.DisplayName
-		if name == "" && hasReg {
-			name = reg.DisplayName
-		}
-		if name == "" {
-			name = m.ID
-		}
-
-		inPM, outPM := s.resolvePlatformPricing(m.ID)
 		entry := types.OpenRouterModel{
-			ID:                          m.ID,
-			HuggingFaceID:               m.ID, // our model IDs are HuggingFace paths
-			Name:                        name,
-			InputModalities:             []string{"text"},
-			OutputModalities:            []string{"text"},
-			Quantization:                mapQuantizationToOpenRouter(m.Quantization),
-			Pricing:                     *buildModelPricing(inPM, outPM),
-			SupportedSamplingParameters: defaultSamplingParameters(),
-			SupportedFeatures:           []string{},
-			IsReady:                     true,
+			ID:                m.ID,
+			HuggingFaceID:     m.ID, // our model IDs are HuggingFace paths
+			Name:              openRouterModelName(cm, reg, hasReg, m.ID),
+			InputModalities:   []string{"text"},
+			OutputModalities:  []string{"text"},
+			SupportedFeatures: []string{},
+			IsReady:           true,
 		}
+		s.openRouterModelFieldsFor(m, reg, hasReg).applyToFeed(&entry)
 
+		// is_ready is a launch/staging flag and the slug is per-model; both
+		// come from registry metadata (defaults apply for legacy rows).
 		if hasReg {
-			if !reg.CreatedAt.IsZero() {
-				entry.Created = reg.CreatedAt.Unix()
-			}
-			entry.Description = reg.Description
-			entry.ContextLength = reg.MaxContextLength
-			entry.MaxOutputLength = reg.MaxOutputLength
-			if f := supportedFeaturesFromCapabilities(reg.Capabilities); len(f) > 0 {
-				entry.SupportedFeatures = f
-			}
-			if dd, ok := reg.Metadata["deprecation_date"].(string); ok && dd != "" {
-				entry.DeprecationDate = dd
-			}
 			entry.IsReady = openRouterIsReady(reg.Metadata)
 			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(m.ID, reg.Metadata)}
 		} else {
 			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(m.ID, nil)}
 		}
-
-		// Datacenters from the country codes of providers serving this model.
-		if ccs := s.registry.ModelCountryCodes(m.ID); len(ccs) > 0 {
-			entry.Datacenters = make([]types.OpenRouterDatacenter, 0, len(ccs))
-			for _, cc := range ccs {
-				entry.Datacenters = append(entry.Datacenters, types.OpenRouterDatacenter{CountryCode: cc})
-			}
-		}
+		entry.Datacenters = s.modelDatacenters(m.ID)
 
 		data = append(data, entry)
 	}
 
 	writeJSON(w, http.StatusOK, types.OpenRouterModelsResponse{Data: data})
+}
+
+// openRouterModelName resolves the feed display name for a model: the catalog
+// display name, then the registry display name, then the model ID as a last
+// resort.
+func openRouterModelName(cm store.SupportedModel, reg store.ModelRegistryEntry, hasReg bool, modelID string) string {
+	if cm.DisplayName != "" {
+		return cm.DisplayName
+	}
+	if hasReg && reg.DisplayName != "" {
+		return reg.DisplayName
+	}
+	return modelID
+}
+
+// modelDatacenters maps the country codes of providers serving a model into the
+// OpenRouter "datacenters" shape, returning nil when none are known so the
+// omitempty field is omitted.
+func (s *Server) modelDatacenters(modelID string) []types.OpenRouterDatacenter {
+	ccs := s.registry.ModelCountryCodes(modelID)
+	if len(ccs) == 0 {
+		return nil
+	}
+	dcs := make([]types.OpenRouterDatacenter, 0, len(ccs))
+	for _, cc := range ccs {
+		dcs = append(dcs, types.OpenRouterDatacenter{CountryCode: cc})
+	}
+	return dcs
 }

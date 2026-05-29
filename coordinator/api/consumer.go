@@ -2998,36 +2998,14 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		capByModel[capacities[i].ModelID] = &capacities[i]
 	}
 
-	// Filter to only show models from the active catalog. Prefer the DB-backed
-	// registry; fall back to legacy supported_models only while old deployments
-	// still have rows there.
-	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	// Filter to only show models from the active catalog, and capture the richer
+	// registry entries used to populate the OpenRouter provider fields. These
+	// lookups are shared with the dedicated /v1/models/openrouter feed.
+	catalogByID, registryByID, err := s.activeCatalogLookups()
 	if err != nil {
 		s.logger.Error("model registry: failed to list active models", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
 		return
-	}
-	catalogByID := make(map[string]store.SupportedModel, len(registryRows))
-	// registryByID holds the richer registry entry (context length, output
-	// length, description, capabilities, created_at, metadata) used to populate
-	// the OpenRouter provider fields. Empty for legacy supported_models rows.
-	registryByID := make(map[string]store.ModelRegistryEntry, len(registryRows))
-	if len(registryRows) > 0 {
-		for _, row := range registryRows {
-			cm := supportedModelFromRegistryRecord(&row)
-			if cm.Active {
-				catalogByID[cm.ID] = cm
-				registryByID[cm.ID] = row.ModelRegistryEntry
-			}
-		}
-	} else {
-		catalogModels := s.store.ListSupportedModels()
-		catalogByID = make(map[string]store.SupportedModel, len(catalogModels))
-		for _, cm := range catalogModels {
-			if cm.Active && !IsRetiredProviderModel(cm) {
-				catalogByID[cm.ID] = cm
-			}
-		}
 	}
 
 	data := make([]types.ModelEntry, 0, len(models))
@@ -3074,32 +3052,18 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			Metadata:      metadata,
 		}
 
-		// Quantization mapped to the OpenRouter vocabulary.
-		entry.Quantization = mapQuantizationToOpenRouter(m.Quantization)
+		// OpenRouter provider fields (quantization, per-token pricing, sampling
+		// params, and registry-sourced metadata), shared with the dedicated
+		// /v1/models/openrouter feed.
+		reg, hasReg := registryByID[m.ID]
+		s.openRouterModelFieldsFor(m, reg, hasReg).applyToModelEntry(&entry)
 
-		// Per-token pricing (platform rate, falling back to global defaults).
-		inPM, outPM := s.resolvePlatformPricing(m.ID)
-		entry.Pricing = buildModelPricing(inPM, outPM)
-
-		// Sampling parameters are uniform across models (raw body pass-through).
-		entry.SupportedSamplingParameters = defaultSamplingParameters()
-
-		// Fields sourced from the richer registry entry when available.
-		if reg, ok := registryByID[m.ID]; ok {
-			if !reg.CreatedAt.IsZero() {
-				entry.Created = reg.CreatedAt.Unix()
-			}
-			entry.Description = reg.Description
-			entry.ContextLength = reg.MaxContextLength
-			entry.MaxOutputLength = reg.MaxOutputLength
-			entry.SupportedFeatures = supportedFeaturesFromCapabilities(reg.Capabilities)
-			entry.InputModalities, entry.OutputModalities = deriveModalities(m.ModelType, reg.Capabilities)
-			if dd, ok := reg.Metadata["deprecation_date"].(string); ok && dd != "" {
-				entry.DeprecationDate = dd
-			}
-		} else {
-			entry.InputModalities, entry.OutputModalities = deriveModalities(m.ModelType, nil)
+		// Modalities are derived from the model's capabilities (text by default).
+		var caps []string
+		if hasReg {
+			caps = reg.Capabilities
 		}
+		entry.InputModalities, entry.OutputModalities = deriveModalities(m.ModelType, caps)
 
 		data = append(data, entry)
 	}

@@ -26,10 +26,14 @@
 //                                           EWMA + adaptive cap,
 //                                           pending-summary cache
 
+import CryptoKit
 import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import os
+
+private let prefixCacheLogger = Logger(subsystem: "dev.darkbloom.provider", category: "prefix-cache-wiring")
 
 /// Continuous-batching scheduler. Wraps a single `MLXLMCommon.BatchedEngine`
 /// per loaded model. The engine owns the GPU step loop; this actor owns
@@ -148,7 +152,8 @@ public actor BatchScheduler {
             container: container,
             modelId: modelId,
             maxConcurrentRequests: maxConcurrentRequests,
-            eosTokenIds: snapshot.eosTokenIds
+            eosTokenIds: snapshot.eosTokenIds,
+            architecture: snapshot.architecture
         )
         // Re-check epoch after the engine.start suspension. If another
         // load/unload won the race, tear down the engine we just built
@@ -211,9 +216,27 @@ public actor BatchScheduler {
         container: ModelContainer,
         modelId: String,
         maxConcurrentRequests: Int,
-        eosTokenIds: Set<Int>
+        eosTokenIds: Set<Int>,
+        architecture: ModelArchitecture
     ) async -> BatchedEngine {
-        await container.perform { ctx -> BatchedEngine in
+        // TB-007: the engine prefix cache is OFF by default. When the
+        // operator sets DARKBLOOM_PREFIX_CACHE, we enable it with an
+        // ENCRYPTED-at-rest SSD backend (EncryptedPrefixCachePersistence).
+        // This still does NOT close the in-process cross-tenant sharing /
+        // TTFT side-channel (the provider can't see tenant identity), so
+        // it ships only behind this flag + an explicit threat-model
+        // sign-off. See docs/ssd-kv-cache-design.md.
+        let persistence = await makeEncryptedPrefixPersistenceIfEnabled(
+            modelId: modelId, architecture: architecture
+        )
+        return await container.perform { ctx -> BatchedEngine in
+            let prefixCache: PrefixCache? = persistence.map {
+                PrefixCache(
+                    config: PrefixCacheConfig(blockSize: 256, maxBlocks: 4096),
+                    modelName: modelId,
+                    persistence: $0
+                )
+            }
             let scheduler = Scheduler(
                 model: ctx.model,
                 tokenizer: ctx.tokenizer,
@@ -225,7 +248,7 @@ public actor BatchScheduler {
                     maxKVCacheTokens: 0  // unlimited — our kvBudget gates by bytes
                 ),
                 eosTokenIds: eosTokenIds,
-                prefixCache: nil  // SECURITY: TB-007
+                prefixCache: prefixCache  // nil unless DARKBLOOM_PREFIX_CACHE (TB-007)
             )
             return BatchedEngine(
                 scheduler: scheduler,
@@ -234,12 +257,71 @@ public actor BatchScheduler {
                 config: ContinuousBatchingConfig(
                     schedulerConfig: scheduler.config,
                     stepInterval: 0.001,
-                    prefixCacheConfig: nil,  // SECURITY: TB-007
+                    prefixCacheConfig: nil,  // cache lives on the scheduler above
                     mtpEnabled: false
                 ),
                 externalChatTemplate: nil
             )
         }
+    }
+
+    /// Build the encrypted SSD prefix-cache backend IFF the operator
+    /// opted in via `DARKBLOOM_PREFIX_CACHE`. Returns nil (cache stays
+    /// off) when the flag is unset, the model architecture is
+    /// incomplete, or the persisted KEK is unavailable (no Secure
+    /// Enclave / entitlement) — in the last case we refuse rather than
+    /// use an ephemeral key that wouldn't survive restart.
+    ///
+    /// SECURITY (TB-007): see makeBatchedEngine. modelId is used as the
+    /// model-binding key; weight-hash binding (to invalidate on a weight
+    /// change under the same id) is a documented follow-up.
+    private static func makeEncryptedPrefixPersistenceIfEnabled(
+        modelId: String,
+        architecture: ModelArchitecture
+    ) async -> EncryptedPrefixCachePersistence? {
+        let env = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE"]
+        guard env == "1" || env?.lowercased() == "true" else { return nil }
+
+        prefixCacheLogger.warning(
+            "DARKBLOOM_PREFIX_CACHE is ON — engine prefix cache enabled (TB-007: cross-tenant sharing / TTFT side-channel; encrypted-at-rest only)."
+        )
+
+        guard let numLayers = architecture.numLayers,
+              let kvHeads = architecture.kvHeads,
+              let headDim = architecture.headDim else {
+            prefixCacheLogger.warning("prefix cache disabled: incomplete model architecture")
+            return nil
+        }
+
+        // KEK must be SE-wrapped + Keychain-persisted so cache files
+        // survive restart. If unavailable, disable rather than fall back
+        // to an ephemeral key (which would silently break restart-reuse).
+        let kekKey: SymmetricKey
+        do {
+            let se = try PersistentEnclaveKey.loadOrCreate()
+            let kek = KVCacheKEK(
+                wrapper: SecureEnclaveKeyWrappingService(enclaveKey: se),
+                storage: KeychainWrappedKEKStorage()
+            )
+            kekKey = try await kek.loadOrCreate()
+        } catch {
+            prefixCacheLogger.warning("prefix cache disabled: KEK unavailable (\(String(describing: error)))")
+            return nil
+        }
+
+        let modelKey = SHA256.hash(data: Data(modelId.utf8))
+            .map { String(format: "%02x", $0) }.joined().prefix(12)
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = root.appendingPathComponent("darkbloom/kv/\(modelKey)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let binding = PrefixCacheModelBinding(
+            modelHash: modelId, modelDtype: "unknown", modelArch: "unknown",
+            vocabSize: 0, numLayers: numLayers, kvHeads: kvHeads, headDim: headDim
+        )
+        prefixCacheLogger.info("encrypted prefix cache active for \(modelId, privacy: .public) at \(dir.path, privacy: .public)")
+        return EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding)
     }
 
     /// Set the post-load budgets driven by architecture + physical

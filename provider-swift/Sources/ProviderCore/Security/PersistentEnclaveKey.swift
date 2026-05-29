@@ -191,6 +191,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
 
     // MARK: - Transient (non-persisted) key
 
+    #if DEBUG
     /// Create a TRANSIENT Secure Enclave key: generated in the SE but
     /// NOT stored in the keychain (`kSecAttrIsPermanent: false`, no
     /// access group). Because nothing touches a keychain access group,
@@ -202,6 +203,12 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     /// it's gone when the returned object is released — so it does NOT
     /// validate keychain persistence (that path is the same SecItem
     /// storage the production attestation key already uses).
+    ///
+    /// `#if DEBUG`-gated so it is COMPILED OUT of release builds — it's a
+    /// test-only helper (only `kv-se-harness` uses it), and excluding it
+    /// from release keeps the entitlement-free SE-key path out of shipped
+    /// binaries entirely (defense-in-depth; the real gate is coordinator-
+    /// side attestation, which a transient key can't satisfy anyway).
     public static func makeTransient() throws -> PersistentEnclaveKey {
         guard isAvailable else {
             throw PersistentEnclaveKeyError.secureEnclaveUnavailable
@@ -231,6 +238,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         }
         return try PersistentEnclaveKey(privateKey: privateKey)
     }
+    #endif
 
     // MARK: - Create New
 

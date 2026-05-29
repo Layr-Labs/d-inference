@@ -48,4 +48,27 @@ struct BatchSchedulerPrefixCacheConfigTests {
         #expect(BatchScheduler.prefixCacheMaxBlocks(
             kvBytesPerToken: 1, budgetBytes: Int.max / 2, blockSize: bs) == 4096)
     }
+
+    // #3 follow-up: the on-disk budget defaults to 50% of free volume space.
+    @Test("resolveDiskBudget: 50% of free, env override wins, never 'unlimited' from free")
+    func diskBudget() {
+        let gib = 1_073_741_824
+        // Default: half of the measured free bytes.
+        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 100 * gib) == 50 * gib)
+        // Explicit env override wins over free-space measurement.
+        #expect(BatchScheduler.resolveDiskBudget(envGB: 5, freeBytes: 100 * gib) == 5 * gib)
+        // Env 0 = unlimited (honored only via the env path).
+        #expect(BatchScheduler.resolveDiskBudget(envGB: 0, freeBytes: 100 * gib) == 0)
+        // A (near-)full disk yields a tiny POSITIVE budget — not 0/unlimited.
+        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 0) == 1)
+        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 1) == 1)
+        // Free space unknown ⇒ conservative 10 GB fallback.
+        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: nil) == 10 * gib)
+    }
+
+    @Test("volumeFreeBytes reads a positive capacity for a real directory")
+    func freeBytes() {
+        let free = BatchScheduler.volumeFreeBytes(at: FileManager.default.temporaryDirectory)
+        #expect(free != nil && free! > 0, "should read the temp volume's free capacity")
+    }
 }

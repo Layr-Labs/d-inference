@@ -353,9 +353,9 @@ public actor BatchScheduler {
             modelHash: bindingId, modelDtype: "unknown", modelArch: "unknown",
             vocabSize: 0, numLayers: numLayers, kvHeads: kvHeads, headDim: headDim
         )
-        let diskBudget = prefixCacheDiskBudgetBytes()
+        let diskBudget = prefixCacheDiskBudgetBytes(cacheDir: dir)
         prefixCacheLogger.info(
-            "encrypted prefix cache active for \(modelId, privacy: .public) (bound to \(weightHash == nil ? "modelId" : "weightHash", privacy: .public)) at \(dir.path, privacy: .public), disk budget \(diskBudget) bytes")
+            "encrypted prefix cache active for \(modelId, privacy: .public) (bound to \(weightHash == nil ? "modelId" : "weightHash", privacy: .public)) at \(dir.path, privacy: .public), disk budget \(diskBudget) bytes (default = 50% of free volume space)")
         return EncryptedPrefixCachePersistence(
             kekKey: kekKey, dir: dir, binding: binding, diskBudgetBytes: diskBudget)
     }
@@ -393,13 +393,40 @@ public actor BatchScheduler {
     }
 
     /// On-disk budget for persisted prefix files. Operator override:
-    /// DARKBLOOM_PREFIX_CACHE_DISK_GB; default = 10 GB. 0 disables the cap.
-    static func prefixCacheDiskBudgetBytes() -> Int {
-        if let s = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"],
-           let gb = Double(s), gb >= 0 {
-            return Int(gb * 1_073_741_824)
-        }
+    /// DARKBLOOM_PREFIX_CACHE_DISK_GB (0 = unlimited). Default = 50% of the
+    /// FREE space on the cache volume (measured live), so the cache scales
+    /// to the disk and never fills it; falls back to 10 GB if free space
+    /// can't be read.
+    static func prefixCacheDiskBudgetBytes(cacheDir: URL) -> Int {
+        let envGB = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]
+            .flatMap(Double.init)
+        return resolveDiskBudget(envGB: envGB, freeBytes: volumeFreeBytes(at: cacheDir))
+    }
+
+    /// Pure disk-budget policy (testable). An explicit env override wins
+    /// (including 0 = unlimited). Otherwise take HALF of the measured free
+    /// bytes — never 0, so a (near-)full disk yields a tiny positive budget
+    /// (evict-almost-everything) rather than the env's "0 = unlimited".
+    /// When free space is unknown, fall back to a conservative 10 GB.
+    static func resolveDiskBudget(envGB: Double?, freeBytes: Int?) -> Int {
+        if let gb = envGB, gb >= 0 { return Int(gb * 1_073_741_824) }
+        if let free = freeBytes { return max(1, free / 2) }
         return 10 * 1_073_741_824
+    }
+
+    /// Best-effort free capacity (bytes) of the volume containing `url`.
+    /// Prefers the "important usage" figure Apple recommends for storage
+    /// decisions, falling back to the raw available capacity.
+    static func volumeFreeBytes(at url: URL) -> Int? {
+        let keys: Set<URLResourceKey> = [
+            .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey,
+        ]
+        guard let v = try? url.resourceValues(forKeys: keys) else { return nil }
+        if let important = v.volumeAvailableCapacityForImportantUsage, important > 0 {
+            return Int(important)
+        }
+        if let plain = v.volumeAvailableCapacity, plain > 0 { return plain }
+        return nil
     }
 
     /// Set the post-load budgets driven by architecture + physical

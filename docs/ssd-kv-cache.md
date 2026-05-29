@@ -90,7 +90,7 @@ Set the env var on the provider process:
 ```bash
 DARKBLOOM_PREFIX_CACHE=1              # enable (default off); or =true
 DARKBLOOM_PREFIX_CACHE_MAX_GB=8       # optional: in-GPU block-cache budget (default = 1/8 physical RAM)
-DARKBLOOM_PREFIX_CACHE_DISK_GB=10     # optional: on-disk budget per model (default 10 GB; 0 = unlimited)
+DARKBLOOM_PREFIX_CACHE_DISK_GB=10     # optional: on-disk budget per model (default = 50% of free volume space; 0 = unlimited)
 ```
 
 `MAX_GB` bounds the in-memory block cache (the number of GPU blocks is
@@ -398,10 +398,14 @@ re-download of the **same id with different weights** — lands in a
 different directory and binding: stale KV is neither found nor passes MB-1.
 The KEK lives in the Keychain, not on the cache disk.
 
-The per-model directory is bounded by `DARKBLOOM_PREFIX_CACHE_DISK_GB`
-(default 10 GB): when a save pushes it over budget, the oldest
-`.darkbloom-kv` files are evicted (LRU by mtime), amortized so the
-directory scan doesn't run on every block. Set to 0 to disable the cap.
+The per-model directory is bounded by `DARKBLOOM_PREFIX_CACHE_DISK_GB`,
+defaulting to **50% of the free space on the cache volume** (measured live
+at model load, via `volumeAvailableCapacityForImportantUsage`): when a save
+pushes the directory over budget, the oldest `.darkbloom-kv` files are
+evicted (LRU by mtime), amortized so the directory scan doesn't run on
+every block. A (near-)full disk yields a tiny budget (evict almost
+everything) rather than unlimited; set the env var explicitly to override
+(0 = unlimited). If free space can't be read, it falls back to 10 GB.
 
 To clear the cache: delete the `darkbloom/kv` directory. To invalidate all
 files cryptographically: rotate/`wipe()` the KEK (existing files become

@@ -23,8 +23,6 @@ type accountEarningsResponse struct {
 	AvailableBalanceUSD      string                  `json:"available_balance_usd"`
 }
 
-
-
 func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	srv, st := testWithdrawServer(t)
 

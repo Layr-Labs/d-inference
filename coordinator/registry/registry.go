@@ -1761,12 +1761,17 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 // hash, model hash and runtime (see verifyChallengeResponse) before this is
 // called, so it doubles as the recovery trigger for a *transiently* untrusted
 // provider.
-func (r *Registry) RecordChallengeSuccess(providerID string) {
+//
+// Returns true iff this call recovered a transiently-untrusted provider back to
+// online. The caller (verifyChallengeResponse) uses that to push a fresh
+// "online" trust_status so the provider clears its local untrusted state and
+// cancels the pending diagnostic auto-report it scheduled at deroute time.
+func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
 	if !ok {
-		return
+		return false
 	}
 
 	recovered := r.recoverIfTransientlyUntrusted(providerID, p)
@@ -1791,6 +1796,8 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	// A newly verified (or newly recovered) provider may unlock queued requests
 	// for any model it serves.
 	r.drainQueuedRequestsForModels(providerModelIDs(p))
+
+	return recovered
 }
 
 // recoverIfTransientlyUntrusted promotes a transiently-untrusted provider back

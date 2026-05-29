@@ -912,7 +912,17 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.Mu().Unlock()
 
 	// Challenge passed.
-	s.registry.RecordChallengeSuccess(providerID)
+	recovered := s.registry.RecordChallengeSuccess(providerID)
+	if recovered {
+		// The provider was transiently untrusted and is now back online. It was
+		// last told "untrusted" (handleChallengeFailure) and scheduled a 10-min
+		// diagnostic auto-report; push a fresh "online" trust_status so it clears
+		// that local state and cancels the report.
+		provider.Mu().Lock()
+		trustLevel := provider.TrustLevel
+		provider.Mu().Unlock()
+		s.sendTrustStatus(provider, trustLevel, "online", "recovered after transient deroute")
+	}
 	s.ddIncr("attestation.challenges", []string{"outcome:passed"})
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,

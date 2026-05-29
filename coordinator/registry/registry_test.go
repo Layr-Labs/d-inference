@@ -721,8 +721,10 @@ func TestRecordChallengeSuccess(t *testing.T) {
 	reg.RecordChallengeFailure("p1", true)
 	reg.RecordChallengeFailure("p1", true)
 
-	// Now record success
-	reg.RecordChallengeSuccess("p1")
+	// Now record success (provider was never untrusted -> not a recovery)
+	if reg.RecordChallengeSuccess("p1") {
+		t.Error("RecordChallengeSuccess should report recovery=false for a non-untrusted provider")
+	}
 
 	if p.FailedChallenges != 0 {
 		t.Errorf("failed_challenges = %d, want 0 after success", p.FailedChallenges)
@@ -862,7 +864,9 @@ func TestMarkUntrustedTransientRecovers(t *testing.T) {
 		t.Error("ChallengeShouldStop = true, want false for a transiently-untrusted provider")
 	}
 
-	reg.RecordChallengeSuccess("p1")
+	if !reg.RecordChallengeSuccess("p1") {
+		t.Error("RecordChallengeSuccess should report recovery for a transiently-untrusted provider")
+	}
 
 	if p.Status != StatusOnline {
 		t.Fatalf("status = %q, want %q after recovery", p.Status, StatusOnline)
@@ -895,7 +899,9 @@ func TestMarkUntrustedHardNotRecovered(t *testing.T) {
 		t.Error("ChallengeShouldStop = false, want true for a hard-untrusted provider")
 	}
 
-	reg.RecordChallengeSuccess("p1")
+	if reg.RecordChallengeSuccess("p1") {
+		t.Error("RecordChallengeSuccess must not report recovery for a hard-untrusted provider")
+	}
 
 	if p.Status != StatusUntrusted {
 		t.Fatalf("status = %q, want %q (hard deroute must not auto-recover)", p.Status, StatusUntrusted)

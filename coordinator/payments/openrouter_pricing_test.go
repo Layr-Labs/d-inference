@@ -83,6 +83,17 @@ func TestCalculateCostNoMinimum(t *testing.T) {
 	if bigMin != bigNo {
 		t.Errorf("above-floor costs should match: withMin=%d noMin=%d", bigMin, bigNo)
 	}
+
+	// Nonzero usage must never be free: a 1-token request whose exact cost
+	// rounds to 0 micro-USD is floored to 1 (no-minimum path).
+	tiny := CalculateCostWithOverridesNoMinimum(model, 1, 0, 0, 0, false)
+	if tiny != 1 {
+		t.Errorf("1-token no-minimum cost = %d, want 1 (no free inference)", tiny)
+	}
+	// Genuinely zero usage stays zero.
+	if z := CalculateCostWithOverridesNoMinimum(model, 0, 0, 0, 0, false); z != 0 {
+		t.Errorf("zero-usage no-minimum cost = %d, want 0", z)
+	}
 }
 
 func TestPlatformFeeBackwardCompatible(t *testing.T) {

@@ -331,6 +331,48 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			resp["deprecation_date"] = date
 		}
 		writeJSON(w, http.StatusOK, resp)
+	case "openrouter-slug":
+		// Sets (or clears) the OpenRouter marketplace slug in model metadata.
+		// An omitted/empty slug clears the override — clear by default — so the
+		// feed falls back to the model id. Use this to map a model onto an
+		// existing OpenRouter slug (e.g. "qwen/qwen3.5-9b").
+		var req struct {
+			Slug string `json:"slug"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+		slug := strings.TrimSpace(req.Slug)
+		rec, err := s.store.GetModelRegistryRecord(modelID)
+		if err != nil {
+			s.writeModelRegistryStoreError(w, "get model for openrouter-slug update", err)
+			return
+		}
+		entry := registryEntryFromRecord(rec)
+		meta := make(map[string]any, len(entry.Metadata))
+		for k, v := range entry.Metadata {
+			meta[k] = v
+		}
+		if slug == "" {
+			delete(meta, "openrouter_slug")
+		} else {
+			meta["openrouter_slug"] = slug
+		}
+		entry.Metadata = meta
+		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
+			s.writeModelRegistryStoreError(w, "update openrouter-slug", err)
+			return
+		}
+		s.SyncModelCatalog()
+		resp := map[string]any{"status": "updated", "model_id": modelID}
+		if slug == "" {
+			resp["openrouter_slug"] = nil
+			resp["note"] = "openrouter slug cleared — feed falls back to the model id"
+		} else {
+			resp["openrouter_slug"] = slug
+		}
+		writeJSON(w, http.StatusOK, resp)
 	default:
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model action not found"))
 	}
@@ -463,7 +505,7 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 	if rest == p || rest == "" {
 		return "", "", false
 	}
-	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation"} {
+	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation", "/openrouter-slug"} {
 		if strings.HasSuffix(rest, action) {
 			modelID, err := url.PathUnescape(strings.TrimSuffix(rest, action))
 			if err != nil {

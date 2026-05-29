@@ -2175,8 +2175,10 @@ func (r *Registry) ListModels() []AggregateModel {
 
 // ModelCountryCodes returns the sorted, de-duplicated ISO 3166-1 alpha-2
 // country codes of online providers serving the given model. Used to populate
-// the OpenRouter "datacenters" field. Offline/untrusted providers and those
-// without a known location are skipped.
+// the OpenRouter "datacenters" field. Only routing-eligible providers count —
+// the same gates as ListModels (online, meets the minimum trust level, and
+// private-text ready) — so a country whose providers can't actually serve the
+// model is not advertised. Providers without a known location are skipped.
 func (r *Registry) ModelCountryCodes(modelID string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -2185,12 +2187,14 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 	for _, p := range r.providers {
 		p.mu.Lock()
 		status := p.Status
+		trust := p.TrustLevel
+		privateReady := providerSupportsPrivateTextLocked(p)
 		var cc string
 		if p.Location != nil {
 			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
 		}
 		serves := false
-		if cc != "" && status != StatusOffline && status != StatusUntrusted {
+		if cc != "" {
 			for i := range p.Models {
 				if p.Models[i].ID == modelID {
 					serves = true
@@ -2199,9 +2203,17 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 			}
 		}
 		p.mu.Unlock()
-		if serves {
-			seen[cc] = true
+		if !serves {
+			continue
 		}
+		// Apply the same routing-eligibility gates as ListModels.
+		if status == StatusOffline || status == StatusUntrusted {
+			continue
+		}
+		if !r.trustMeetsMinimum(trust) || !privateReady {
+			continue
+		}
+		seen[cc] = true
 	}
 	if len(seen) == 0 {
 		return nil

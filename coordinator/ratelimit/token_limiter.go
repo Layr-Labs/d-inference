@@ -2,9 +2,15 @@ package ratelimit
 
 import (
 	"context"
+	"hash/fnv"
 	"log/slog"
+	"sync"
 	"time"
 )
+
+// tokenLockShards bounds the per-account lock table. Accounts hash to a shard;
+// collisions only cause occasional, harmless extra serialization.
+const tokenLockShards = 64
 
 // TokenLimiter enforces per-account input-tokens-per-minute (ITPM) and
 // output-tokens-per-minute (OTPM) limits using two token buckets. This is the
@@ -13,11 +19,20 @@ import (
 //
 // Charges are clamped to each bucket's burst so a single large request can
 // never be permanently rejected (a request needing more than the burst would
-// otherwise never fit). Input is metered before output; if the input bucket
-// rejects, no output tokens are consumed.
+// otherwise never fit). The two-bucket peek+consume is serialized per account
+// (sharded locks) so concurrent same-account requests can't both pass the peek
+// and then over-admit or under-charge.
 type TokenLimiter struct {
 	input  *Limiter
 	output *Limiter
+	locks  [tokenLockShards]sync.Mutex
+}
+
+// lockFor returns the shard mutex guarding an account's peek+consume sequence.
+func (t *TokenLimiter) lockFor(accountID string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(accountID))
+	return &t.locks[h.Sum32()%tokenLockShards]
 }
 
 // NewTokenLimiter builds a TokenLimiter. Rates are in tokens per SECOND (the
@@ -50,6 +65,12 @@ func (t *TokenLimiter) Allow(accountID string, inputTokens, outputTokens int) (a
 	if accountID == "" {
 		return true, "", 0
 	}
+
+	// Serialize this account's peek+consume so two concurrent requests can't
+	// both pass the read-only CanN checks and then over-admit.
+	lock := t.lockFor(accountID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	var in, out int
 	if t.input != nil {

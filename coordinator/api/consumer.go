@@ -575,9 +575,29 @@ func (s *Server) providerReservationCost(provider *registry.Provider, model stri
 	return s.reservationCost(model, promptTokens, maxTokens)
 }
 
+// isServiceConsumer reports whether the account is a service/wholesale account
+// (e.g. OpenRouter). Such accounts are billed at the advertised platform price,
+// so the provider-price reservation top-up and provider custom pricing are
+// skipped for them. A failed lookup falls back to false (normal consumer).
+func (s *Server) isServiceConsumer(accountID string) bool {
+	if accountID == "" {
+		return false
+	}
+	if u, err := s.store.GetUserByAccountID(accountID); err == nil && u != nil {
+		return u.Role == store.RoleService
+	}
+	return false
+}
+
 func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provider *registry.Provider) (int64, error) {
 	if pr == nil {
 		return 0, fmt.Errorf("pending request is required")
+	}
+	// Service/wholesale consumers are billed at the platform price at
+	// settlement, so don't top the reservation up to a provider's higher custom
+	// price — the base platform reservation already covers the actual charge.
+	if s.isServiceConsumer(pr.ConsumerKey) {
+		return pr.ReservedMicroUSD, nil
 	}
 	required := s.providerReservationCost(provider, pr.Model, pr.EstimatedPromptTokens, pr.RequestedMaxTokens)
 	if required <= pr.ReservedMicroUSD {

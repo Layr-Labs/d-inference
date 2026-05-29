@@ -98,8 +98,15 @@ func calculateCost(model string, promptTokens, completionTokens int, customInput
 	outputCost := int64(completionTokens) * outputRate / 1_000_000
 	cost := inputCost + outputCost
 
-	if applyMinimum && cost < minimumChargeMicroUSD {
-		cost = minimumChargeMicroUSD
+	if applyMinimum {
+		if cost < minimumChargeMicroUSD {
+			cost = minimumChargeMicroUSD
+		}
+	} else if cost == 0 && (promptTokens > 0 || completionTokens > 0) {
+		// No per-request minimum (service/wholesale channel), but never give
+		// nonzero usage away for free: integer micro-USD rounding can floor a
+		// tiny request to 0, so charge at least 1 micro-USD.
+		cost = 1
 	}
 	return cost
 }

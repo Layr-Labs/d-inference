@@ -1,6 +1,8 @@
 package ratelimit
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -109,6 +111,31 @@ func TestTokenLimiterNoCrossDimensionDrain(t *testing.T) {
 	// With the old debit-then-check behavior it would have lost 50*6=300.
 	if ok, dim, _ := tl.Allow("a", 900, 0); !ok {
 		t.Fatalf("input should retain capacity after output rejections, got dim=%q", dim)
+	}
+}
+
+// Concurrent same-account requests must not over-admit past the bucket: with
+// the per-account lock, exactly burst/charge requests succeed. Run with -race.
+func TestTokenLimiterConcurrentNoOverAdmit(t *testing.T) {
+	// Output burst 100, ~no refill; each request charges 10 → exactly 10 admit.
+	tl := NewTokenLimiter(0, 0, 0.0001, 100)
+
+	const goroutines = 100
+	var wg sync.WaitGroup
+	var admitted int64
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if ok, _, _ := tl.Allow("acct", 0, 10); ok {
+				atomic.AddInt64(&admitted, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if admitted != 10 {
+		t.Fatalf("admitted = %d, want exactly 10 (burst 100 / charge 10) — over/under-admission means the peek+consume isn't atomic", admitted)
 	}
 }
 

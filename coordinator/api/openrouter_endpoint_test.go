@@ -226,9 +226,9 @@ func TestOpenRouterModelsStaging(t *testing.T) {
 			if m.IsReady {
 				t.Error("staged model should report is_ready=false")
 			}
-			// Slug should be the derived default.
-			if m.OpenRouter == nil || m.OpenRouter.Slug != "darkbloom/staged-model" {
-				t.Errorf("derived slug = %+v", m.OpenRouter)
+			// Slug defaults to the unique model id.
+			if m.OpenRouter == nil || m.OpenRouter.Slug != modelID {
+				t.Errorf("default slug = %+v, want the model id %q", m.OpenRouter, modelID)
 			}
 			return
 		}

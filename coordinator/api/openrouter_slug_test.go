@@ -2,38 +2,26 @@ package api
 
 import "testing"
 
-func TestSlugify(t *testing.T) {
-	cases := map[string]string{
-		"Qwen3.5-9B-MLX-4bit": "qwen3-5-9b-mlx-4bit",
-		"  Hello World  ":     "hello-world",
-		"a__b--c":             "a-b-c",
-		"UPPER":               "upper",
-		"":                    "",
-		"---":                 "",
-	}
-	for in, want := range cases {
-		if got := slugify(in); got != want {
-			t.Errorf("slugify(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestOpenRouterSlug(t *testing.T) {
-	// Metadata override wins.
-	if got := openRouterSlug("mlx-community/Qwen3.5-9B", map[string]any{"openrouter_slug": "darkbloom/qwen-9b"}); got != "darkbloom/qwen-9b" {
-		t.Errorf("override slug = %q", got)
+	const id = "mlx-community/Qwen3.5-9B-MLX-4bit"
+
+	// Metadata override wins (operator maps onto a canonical marketplace slug).
+	if got := openRouterSlug(id, map[string]any{"openrouter_slug": "qwen/qwen3.5-9b"}); got != "qwen/qwen3.5-9b" {
+		t.Errorf("override slug = %q, want qwen/qwen3.5-9b", got)
 	}
-	// Derived default uses the id tail, namespaced under darkbloom/.
-	if got := openRouterSlug("mlx-community/Qwen3.5-9B-MLX-4bit", nil); got != "darkbloom/qwen3-5-9b-mlx-4bit" {
-		t.Errorf("derived slug = %q, want darkbloom/qwen3-5-9b-mlx-4bit", got)
+	// Default is the unique model id (collision-free, doc-aligned slug==id).
+	if got := openRouterSlug(id, nil); got != id {
+		t.Errorf("default slug = %q, want the model id %q", got, id)
 	}
-	// Blank override falls back to derived.
-	if got := openRouterSlug("foo/bar", map[string]any{"openrouter_slug": "  "}); got != "darkbloom/bar" {
-		t.Errorf("blank override slug = %q, want darkbloom/bar", got)
+	// Blank override falls back to the id.
+	if got := openRouterSlug(id, map[string]any{"openrouter_slug": "  "}); got != id {
+		t.Errorf("blank override slug = %q, want the model id", got)
 	}
-	// No slash.
-	if got := openRouterSlug("solo", nil); got != "darkbloom/solo" {
-		t.Errorf("no-slash slug = %q", got)
+	// Two same-named repos under different owners get DISTINCT default slugs.
+	a := openRouterSlug("org-a/Foo-7B", nil)
+	b := openRouterSlug("org-b/Foo-7B", nil)
+	if a == b {
+		t.Errorf("default slugs must be unique per id: both = %q", a)
 	}
 }
 

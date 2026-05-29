@@ -337,38 +337,18 @@ func openRouterIsReady(meta map[string]any) bool {
 
 // openRouterSlug returns the OpenRouter marketplace slug for a model: an
 // operator override from registry metadata ("openrouter_slug") if present,
-// otherwise a derived "darkbloom/<slug>" default from the model id.
+// otherwise the model id itself.
+//
+// OpenRouter's provider spec leaves the slug underspecified and its own example
+// sets slug == id, so the id (a globally-unique HuggingFace path) is a safe,
+// collision-free default. Operators map a model onto an existing marketplace
+// slug (e.g. "qwen/qwen3.5-9b") explicitly via the openrouter_slug metadata
+// override / the admin openrouter-slug action.
 func openRouterSlug(modelID string, meta map[string]any) string {
 	if meta != nil {
 		if s, ok := meta["openrouter_slug"].(string); ok && strings.TrimSpace(s) != "" {
 			return strings.TrimSpace(s)
 		}
 	}
-	tail := modelID
-	if i := strings.LastIndex(modelID, "/"); i >= 0 && i+1 < len(modelID) {
-		tail = modelID[i+1:]
-	}
-	slug := slugify(tail)
-	if slug == "" {
-		slug = slugify(modelID)
-	}
-	return "darkbloom/" + slug
-}
-
-// slugify lowercases and replaces any run of non-alphanumeric characters with a
-// single hyphen, trimming leading/trailing hyphens.
-func slugify(s string) string {
-	s = strings.ToLower(s)
-	var b strings.Builder
-	prevHyphen := false
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			prevHyphen = false
-		} else if !prevHyphen {
-			b.WriteByte('-')
-			prevHyphen = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
+	return modelID
 }

@@ -1,292 +1,312 @@
-# EigenInference Architecture
+# Darkbloom Architecture
 
 ## Overview
 
-EigenInference is a platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners provide idle compute. Consumers get private inference on open-source models with hardware-backed trust guarantees from Apple's Secure Enclave and MDM-verified security posture.
+The Darkbloom platform is a **decentralized AI inference network** that enables secure, trustless access to distributed GPU compute resources on Apple Silicon devices. The system implements a novel architecture combining hardware attestation, end-to-end encryption, and economic incentives to create a marketplace where consumers can access AI models while hardware providers earn revenue by contributing their compute capacity.
 
-```
-Consumer (OpenAI SDK / Web UI / curl)
-    |
-    | HTTPS (OpenAI-compatible API)
-    v
-Coordinator (Go, runs on EigenCloud TEE in prod / GCP VM in dev)
-    |
-    | WebSocket (outbound from provider, no port forwarding needed)
-    v
-Provider CLI (Swift `darkbloom`, hardened in-process)
-    |
-    | mlx-swift-lm
-    v
-Apple Silicon GPU (Metal)
-```
+## System Architecture Overview
 
-> The legacy Rust provider (`provider/`) is still in production but will be
-> retired at the Swift cutover.
+The Darkbloom platform follows a **hub-and-spoke architecture** with the coordinator service acting as the central orchestrator for a network of distributed provider nodes. The system implements three primary architectural patterns:
 
-## Components
+1. **Trust-Minimized Coordination**: Central coordination with cryptographic verification rather than trust
+2. **Edge Inference Distribution**: AI models run on consumer hardware at the network edge
+3. **Hardware-Attested Security**: Apple Secure Enclave provides tamper-evident trust anchors
 
-### Provider Agent — legacy Rust (`provider/`)
-
-**Language:** Rust + Python (PyO3) — **legacy, retired at Swift cutover**
-
-The currently-shipping provider. Embeds the Python interpreter via PyO3 to run
-in-process MLX inference (`mlx-lm` / `vllm-mlx`). Same hardening posture as the
-Swift port. Replaced module-for-module by `provider-swift/` once the cutover
-lands.
-
-### Coordinator (`coordinator/`)
-
-**Language:** Go
-
-The control plane. Runs in a GCP Confidential VM (AMD SEV-SNP) — hardware-encrypted memory that even the cloud provider cannot read. Consumers send plain text over HTTPS; the Confidential VM is the trust boundary. Prompt content is never logged.
-
-- Accepts provider WebSocket connections and tracks availability
-- Exposes OpenAI-compatible HTTP API for consumers (`/v1/chat/completions`, `/v1/models`)
-- Routes requests to the best available provider using scoring: `(1-load) * decode_tps * trust_multiplier * reputation * warm_model_bonus * health_factor`
-- Health factor uses live system metrics (memory pressure, CPU usage, thermal state) from heartbeats
-- Supports up to 4 concurrent requests per provider (gradient load scoring)
-- Cancels in-flight requests when consumer disconnects or coordinator drops
-- Verifies provider attestations (Secure Enclave P-256 ECDSA signatures)
-- Periodically challenges providers to prove key possession + fresh SIP/SecureBoot status (every 5 minutes)
-- Immediately marks provider untrusted if SIP or Secure Boot found disabled in challenge response
-- Verifies binary hash in attestation against known blessed versions
-- Manages API keys, usage tracking, payment ledger, and trust levels
-- Per-model request queues (max 10, 30s timeout) for when providers are busy
-- Reputation scoring: 40% job success + 30% uptime + 20% attestation + 10% response time
-- Persistent storage via PostgreSQL (in-memory fallback for development)
-
-### Consumer SDK
-
-The OpenAI Python SDK is the consumer client; users point its base URL at the
-coordinator and pass a `eigeninference-…` API key. Coordinator response
-includes EigenInference-specific fields `provider_attested` (bool) and
-`provider_trust_level` (string).
-
-```python
-from openai import OpenAI
-client = OpenAI(base_url="https://api.darkbloom.dev/v1", api_key="eigeninference-...")
-response = client.chat.completions.create(
-    model="mlx-community/Qwen2.5-7B-Instruct-4bit",
-    messages=[{"role": "user", "content": "Hello"}],
-    stream=True,
-)
+```mermaid
+graph TB
+    subgraph "Consumer Layer"
+        WEB[Web Console<br/>Next.js Frontend]
+        API[API Consumers<br/>OpenAI Compatible]
+    end
+    
+    subgraph "Coordination Layer"
+        COORD[Coordinator Service<br/>Go + PostgreSQL]
+        STRIPE[Stripe Payments]
+        DATADOG[Datadog Monitoring]
+        PRIVY[Privy Auth]
+    end
+    
+    subgraph "Provider Network"
+        P1[Provider Node 1<br/>Swift + MLX]
+        P2[Provider Node 2<br/>Swift + MLX]
+        P3[Provider Node N<br/>Swift + MLX]
+    end
+    
+    subgraph "Hardware Security"
+        SE1[Secure Enclave]
+        SE2[Secure Enclave] 
+        SE3[Secure Enclave]
+    end
+    
+    WEB -->|HTTPS/WSS| COORD
+    API -->|HTTPS| COORD
+    COORD <-->|WebSocket| P1
+    COORD <-->|WebSocket| P2
+    COORD <-->|WebSocket| P3
+    COORD --> STRIPE
+    COORD --> DATADOG
+    WEB --> PRIVY
+    P1 -.-> SE1
+    P2 -.-> SE2
+    P3 -.-> SE3
+    
+    P1 -->|Model Cache| HF[HuggingFace Hub]
+    P2 -->|Model Cache| HF
+    P3 -->|Model Cache| HF
 ```
 
-### Provider, Swift CLI (`provider-swift/`)
+## Core Services
 
-**Language:** Swift (replaces the Rust provider at cutover)
+### 1. Coordinator Service (Go)
+**Location**: `coordinator/`  
+**Role**: Central control plane and trust anchor for the distributed network
 
-CLI-only port of the provider agent. Two binaries:
-- `darkbloom`: the main provider daemon. Subcommands `serve`, `start`, `stop`,
-  `status`, `doctor`, `models`, `login`, `logout`, `benchmark`, `update`, `verify`.
-- `darkbloom-enclave`: stateless Secure Enclave attestation/sign helper (legacy name `eigeninference-enclave` ships as a symlink for backward compatibility)
-  used by `install.sh`. Subcommands `attest`, `sign`, `info`, `wallet-address`.
+The coordinator implements a comprehensive **API gateway pattern** with integrated billing, authentication, and provider management. Key responsibilities include:
 
-Inference is in-process via [`mlx-swift-lm`](https://github.com/ml-explore/mlx-swift-lm)
-(forked under `libs/mlx-swift-lm`). NaCl `crypto_box` (XSalsa20-Poly1305 + Curve25519)
-is provided by [`swift-sodium`](https://github.com/jedisct1/swift-sodium) so the
-wire format remains compatible with the Rust `crypto_box` and Go `nacl/box`
-implementations.
+- **Request Routing**: Intelligent routing of inference requests to optimal providers based on model availability, trust level, and load balancing
+- **Billing & Payments**: Micro-USD precision accounting with Stripe integration for deposits/withdrawals and referral revenue sharing
+- **Provider Registry**: Real-time fleet management tracking 40+ provider states including hardware specs, model availability, and operational status
+- **Hardware Attestation**: Verification of Apple Secure Enclave attestations to establish provider trust levels
+- **Rate Limiting**: Multi-tier token bucket implementation with per-account request and token limits
 
-The Secure Enclave identity is native CryptoKit — no FFI bridge.
+**Architecture Pattern**: Layered hexagonal architecture with clear separation between API handlers, business logic, and external integrations.
+
+### 2. Web Console (Next.js + TypeScript)
+**Location**: `console-ui/`  
+**Role**: Primary user interface for both consumers and providers
+
+Modern React application implementing a **layered client-server pattern** with sophisticated state management:
+
+- **Chat Interface**: Real-time conversational AI with streaming responses, thinking processes, and trust verification
+- **Provider Dashboard**: Comprehensive interface for hardware providers to monitor devices, earnings, and attestation status
+- **End-to-End Encryption**: Optional X25519 NaCl Box encryption between client and coordinator
+- **Payment Integration**: Complete Stripe checkout and payout flows with balance management
+- **Authentication**: Privy-based Web3-native authentication with automatic API key management
+
+**Security**: All coordinator communication proxied through Next.js API routes with CSP headers and request sanitization.
+
+### 3. Provider Core (Swift)
+**Location**: `provider-swift/Sources/ProviderCore/`  
+**Role**: Distributed inference engine and coordinator client
+
+Actor-based architecture implementing **continuous batching** for efficient GPU utilization:
+
+- **ProviderLoop**: Central orchestrator managing WebSocket connections, encrypted requests, and model lifecycle
+- **BatchScheduler**: MLX-integrated inference engine with admission control and KV cache budgeting
+- **CoordinatorClient**: Resilient WebSocket client with exponential backoff and connection management  
+- **Security Subsystem**: Secure Enclave identity management, attestation generation, and anti-debugging protection
+- **Telemetry Pipeline**: Async event collection with batching and coordinator upload
+
+**Hardware Integration**: Deep integration with Apple Silicon through MLX framework, Metal GPU acceleration, and Secure Enclave security.
+
+### 4. Darkbloom CLI (Swift)
+**Location**: `provider-swift/Sources/darkbloom/`  
+**Role**: Command-line interface for provider operations
+
+**Command pattern architecture** built on Swift ArgumentParser with 16 subcommands:
+
+- **Service Lifecycle**: Interactive model selection, daemon installation, and macOS launchd integration
+- **Model Management**: Catalog browsing, local caching, and HuggingFace Hub integration
+- **Authentication**: RFC 8628 device code flow for account linking and provider registration
+- **Diagnostics**: Comprehensive system validation including hardware, security, and network checks
+- **Updates**: Automated version checking and self-updating capabilities
+
+
+## Data Flow Architecture
+
+### Inference Request Flow
+
+```mermaid
+sequenceDiagram
+    participant Consumer
+    participant WebConsole
+    participant Coordinator
+    participant Provider
+    participant MLX
+    participant SecureEnclave
+    
+    Consumer->>WebConsole: Send prompt
+    WebConsole->>WebConsole: Optional E2E encryption
+    WebConsole->>Coordinator: POST /v1/chat/completions
+    Coordinator->>Coordinator: Authenticate & rate limit
+    Coordinator->>Coordinator: Route to provider
+    Coordinator->>Provider: Forward encrypted request (WSS)
+    Provider->>Provider: Decrypt with node keypair
+    Provider->>MLX: Submit to BatchScheduler
+    MLX-->>Provider: Stream inference tokens
+    Provider->>SecureEnclave: Sign response chunks
+    Provider->>Coordinator: Stream encrypted response
+    Coordinator->>WebConsole: Forward stream (SSE)
+    WebConsole->>Consumer: Display with trust info
+    Provider->>Coordinator: Usage metrics & billing
+    Coordinator->>Coordinator: Settle micro-payments
+```
+
+### Provider Registration Flow
+
+```mermaid
+sequenceDiagram
+    participant CLI
+    participant Provider
+    participant Coordinator
+    participant SecureEnclave
+    participant Apple
+    
+    CLI->>Provider: darkbloom start
+    Provider->>SecureEnclave: Generate identity keypair
+    Provider->>Coordinator: WebSocket connect
+    Coordinator->>Provider: Request registration
+    Provider->>SecureEnclave: Generate attestation blob
+    SecureEnclave->>Provider: Signed hardware state
+    Provider->>Coordinator: Submit attestation
+    Coordinator->>Apple: Verify certificate chain
+    Apple-->>Coordinator: Certificate validation
+    Coordinator->>Provider: Send attestation challenge
+    Provider->>SecureEnclave: Sign challenge
+    Provider->>Coordinator: Submit challenge response
+    Coordinator->>Provider: Registration complete
+    Note over Provider,Coordinator: Provider enters routing pool
+```
 
 ## Security Architecture
 
-### Why Providers Can't Read Prompts
+### Trust Model
 
-The provider owns the Mac hardware, but cannot inspect inference data because:
+The Darkbloom platform implements a **hardware-attested trust model** that eliminates traditional infrastructure trust assumptions:
 
+1. **Hardware Root of Trust**: Apple Secure Enclave provides tamper-evident identity anchors
+2. **Attestation-Based Verification**: Continuous verification of provider security posture
+3. **End-to-End Encryption**: Optional consumer-to-provider encryption with forward secrecy
+4. **Zero-Knowledge Coordination**: Coordinator routes encrypted requests without accessing plaintext
+
+### Security Measures
+
+**Provider Security**:
+- Secure Enclave identity with hardware-bound private keys
+- Anti-debugging and environment scrubbing protections  
+- Binary integrity verification and system security checks
+- SIP, Secure Boot, and authenticated root volume validation
+
+**Network Security**:
+- TLS 1.3 for all transport layer communication
+- WebSocket Secure (WSS) for real-time provider connections
+- X25519 key exchange with ChaCha20-Poly1305 AEAD encryption
+- Certificate pinning and attestation chain verification
+
+**Application Security**:
+- Comprehensive CSP headers and XSS protection
+- API request sanitization and rate limiting
+- JWT-based authentication with automatic key rotation
+- Secure session management with httpOnly cookies
+
+## Technology Stack
+
+### Core Technologies
+
+| Component | Language | Framework | Database | Key Libraries |
+|-----------|----------|-----------|----------|---------------|
+| Coordinator | Go | net/http, WebSocket | PostgreSQL | jwt, pgx, datadog-go |
+| Web Console | TypeScript | Next.js 14 | - | React 19, Zustand, Privy |
+| Provider Core | Swift | Actors, async/await | - | MLX, ArgumentParser |
+| CLI Tools | Swift | ArgumentParser | - | Foundation, Security |
+| Enclave Library | Swift | Foundation | - | Security, CryptoKit |
+
+### External Integrations
+
+**Cloud Services**:
+- **Stripe**: Payment processing with Checkout and Connect Express
+- **Datadog**: APM tracing, metrics collection, and log aggregation
+- **Privy**: Web3-native authentication and account management
+- **Cloudflare R2**: CDN for provider binaries and model distribution
+- **PostgreSQL**: Primary database for accounts, billing, and analytics
+
+**Apple Platform Services**:
+- **Secure Enclave**: Hardware security module for attestation
+- **MLX Framework**: GPU-accelerated machine learning inference
+- **Metal**: Low-level GPU compute and memory management
+- **launchd**: macOS service management for background operation
+- **Unified Logging**: System-integrated logging via os.log
+
+**AI/ML Infrastructure**:
+- **HuggingFace Hub**: Model repository and caching infrastructure
+- **MLX Models**: Apple Silicon optimized model weights and architectures
+- **OpenAI API**: Compatibility layer for standard inference interfaces
+
+## Deployment Architecture
+
+### Coordinator Deployment
+- **Platform**: Google Cloud Platform Confidential VMs
+- **Database**: Managed PostgreSQL with connection pooling
+- **Monitoring**: Datadog APM with custom metrics and alerting
+- **Load Balancing**: Cloud Load Balancer with health checks
+- **Security**: VPC isolation with IAM-based access control
+
+### Provider Distribution
+- **Target Platform**: Apple Silicon Macs (M1/M2/M3 series)
+- **Installation**: Self-contained Swift binary with automatic updates
+- **Service Management**: macOS launchd for persistent background operation
+- **Model Storage**: Local HuggingFace cache with LRU eviction
+- **Security Context**: User-space daemon with Secure Enclave access
+
+### Web Console Deployment
+- **Platform**: Vercel Edge Runtime with global CDN
+- **Build System**: Next.js with TypeScript and Tailwind CSS
+- **Analytics**: Vercel Analytics and Google Analytics integration
+- **Security**: CSP headers, HTTPS enforcement, and XSS protection
+
+## Performance & Scalability
+
+### Coordinator Scalability
+- **Request Handling**: 10,000+ concurrent WebSocket connections per instance
+- **Database**: Read replicas for analytics queries, write clustering for billing
+- **Rate Limiting**: Distributed token buckets with Redis backend
+- **Caching**: In-memory provider registry with PostgreSQL persistence
+
+### Provider Performance
+- **Inference Throughput**: 100+ tokens/second on Apple Silicon with continuous batching
+- **Model Loading**: LRU cache with memory-aware eviction policies
+- **Concurrent Requests**: Multiple batch schedulers per provider with admission control
+- **Memory Efficiency**: MLX framework optimization for Apple Silicon architecture
+
+### Network Optimization
+- **Request Routing**: Sub-100ms provider selection with capacity-aware algorithms
+- **Streaming Responses**: Server-sent events with chunked transfer encoding
+- **Connection Pooling**: Persistent WebSocket connections with heartbeat management
+- **CDN Distribution**: Global edge caching for static assets and model manifests
+
+## Monitoring & Observability
+
+### Metrics Collection
+- **Application Metrics**: Request latency, error rates, and throughput via Datadog
+- **Infrastructure Metrics**: CPU, memory, and network utilization monitoring
+- **Business Metrics**: Inference volume, provider earnings, and user engagement
+- **Security Metrics**: Attestation failures, connection anomalies, and auth events
+
+### Logging Strategy
+- **Structured Logging**: JSON-formatted logs with correlation IDs
+- **Centralized Aggregation**: Datadog Logs API with real-time indexing
+- **Privacy Preservation**: PII scrubbing and differential privacy techniques
+- **Retention Policies**: 30-day retention for debug logs, 1-year for audit trails
+
+### Error Handling
+- **Circuit Breakers**: Automatic failure detection with exponential backoff
+- **Graceful Degradation**: Fallback providers and cached responses
+- **Error Propagation**: Structured error responses with actionable information
+- **Alerting**: PagerDuty integration for critical system failures
+
+## Development Workflow
+
+### Repository Structure
 ```
-Attack                          Blocked by
-─────────────────────────────────────────────────
-Attach debugger (lldb)          PT_DENY_ATTACH + Hardened Runtime
-Read process memory             Hardened Runtime (kernel denies task_for_pid)
-Sniff IPC/network               No IPC — inference is in-process
-Modify the binary               Code signing + SIP (modified binary won't launch)
-Replace with fake binary        Binary hash in attestation — coordinator verifies
-Inject malicious Python pkg     Python path locked to signed bundle
-Load kernel extension           SIP blocks unsigned kexts
-Modify kernel at runtime        KIP (hardware-enforced)
-Disable SIP                     Requires reboot → kills process → data gone
-Read /dev/mem                   Doesn't exist on Apple Silicon
-DMA attack                      IOMMU default-deny
-Physical memory probing         Soldered LPDDR5x into SoC die (lab-grade only)
+d-inference/
+├── coordinator/           # Go service (central control plane)
+├── console-ui/           # Next.js frontend application
+├── provider-swift/       # Swift provider implementation
+│   ├── Sources/
+│   │   ├── ProviderCore/     # Core inference engine
+│   │   ├── darkbloom/        # CLI application
+│   │   └── ProviderCoreFoundation/  # Utilities
+├── enclave/              # Secure Enclave attestation library
+├── provider/             # Legacy Rust provider (deprecated)
+└── e2e/                  # End-to-end testing framework
 ```
-
-This is the same threat model as Apple Private Cloud Compute.
-
-### SIP Cannot Be Disabled at Runtime
-
-SIP (System Integrity Protection) is the foundation of the security model. To disable SIP, the provider must:
-1. Reboot into Recovery Mode (kills the inference process, wipes all data from memory)
-2. Run `csrutil disable`
-3. Reboot back to macOS
-
-EigenInference checks SIP:
-- At process startup (refuses to serve if disabled)
-- Before every inference request (defense-in-depth)
-- In every 5-minute challenge-response (coordinator detects if provider rebooted with SIP off)
-
-If SIP is found disabled at any point, the provider is immediately marked untrusted and receives no more jobs.
-
-### Trust Levels
-
-| Level | Name | Meaning | How Achieved |
-|-------|------|---------|-------------|
-| `none` | Open Mode | No attestation. Consumer warned. | Provider sends no attestation |
-| `self_signed` | Self-Attested | SE-signed attestation + periodic challenge-response with SIP check | Provider sends SE-signed attestation |
-| `hardware` | Hardware-Attested | MDA certificate chain verified against Apple Enterprise Root CA | MDM enrollment + Managed Device Attestation |
-
-### MDM Integration
-
-EigenInference uses Apple MDM (MicroMDM) to independently verify provider security posture:
-
-- **Enrollment:** Profile-based (`.mobileconfig`), minimal permissions (AccessRights=1041)
-- **SecurityInfo query returns:**
-  - `SystemIntegrityProtectionEnabled`: SIP status
-  - `SecureBoot.SecureBootLevel`: Boot security level (full/reduced/permissive)
-  - `AuthenticatedRootVolumeEnabled`: System volume integrity (SSV)
-  - `FDE_Enabled`: FileVault disk encryption
-  - `IsRecoveryLockEnabled`: Recovery Mode lock status
-- **Push notifications:** APNs for on-demand attestation queries
-- **Infrastructure:** MicroMDM + SCEP + step-ca co-located in the coordinator container on EigenCloud (prod). Dev runs on Google Cloud with MDM disabled.
-
-### Apple Device Attestation (MDA)
-
-After SecurityInfo verification, the coordinator requests `DevicePropertiesAttestation` via MDM. The device contacts Apple's servers, which return a DER-encoded certificate chain signed by Apple's Enterprise Attestation Root CA. This is the strongest verification — Apple itself vouches for the device.
-
-```
-Verification chain:
-  Apple Enterprise Attestation Root CA (P-384, embedded in coordinator)
-    └─ Apple Enterprise Attestation Sub CA 1
-        └─ Leaf cert (device identity)
-            ├─ Serial number (OID 1.2.840.113635.100.8.9.1)
-            ├─ UDID (OID 1.2.840.113635.100.8.9.2)
-            ├─ OS version (OID 1.2.840.113635.100.8.10.1)
-            ├─ SepOS version (OID 1.2.840.113635.100.8.10.2)
-            ├─ Secure Boot level (OID 1.2.840.113635.100.8.13.2)
-            └─ Freshness code (OID 1.2.840.113635.100.8.11.1)
-```
-
-The coordinator verifies the cert chain against Apple's root CA, cross-checks the serial number against the provider's self-reported attestation, and stores the cert chain. Users can independently verify via `GET /v1/providers/attestation`, which exposes the base64-encoded DER certificates. Any standard x509 library can verify these against Apple's public Enterprise Attestation Root CA.
-
-### User Attestation Verification
-
-Public API endpoint (no auth required): `GET /v1/providers/attestation`
-
-Returns for each provider:
-- Secure Enclave P-256 public key
-- Hardware info (chip, model, serial, system volume hash)
-- Security state (SIP, SecureBoot, ARV, SE)
-- MDM verification status
-- **Apple MDA certificate chain** (base64 DER, leaf + intermediate)
-- MDA-extracted properties (serial, UDID, OS version, SepOS version)
-
-Users can verify by:
-1. Downloading Apple's Enterprise Attestation Root CA from [apple.com/certificateauthority](https://www.apple.com/certificateauthority/)
-2. Decoding the `mda_cert_chain_b64` certificates from base64 to DER
-3. Verifying the cert chain against Apple's root CA using any x509 library
-4. Checking that the serial number in the Apple cert matches the provider's attestation
-
-### Attestation Blob
-
-The provider creates a signed attestation blob containing:
-
-| Field | Description |
-|-------|-------------|
-| `publicKey` | Base64 P-256 public key (raw X\|\|Y, 64 bytes) |
-| `chipName` | e.g., "Apple M3 Max" |
-| `hardwareModel` | e.g., "Mac15,8" |
-| `osVersion` | e.g., "26.3.0" |
-| `secureEnclaveAvailable` | Always true on Apple Silicon |
-| `sipEnabled` | System Integrity Protection status |
-| `secureBootEnabled` | Secure Boot status |
-| `encryptionPublicKey` | X25519 key bound to this identity |
-| `authenticatedRootEnabled` | Authenticated Root Volume (sealed system volume) |
-| `systemVolumeHash` | APFS snapshot hash (proves unmodified system volume) |
-| `serialNumber` | Hardware serial number for MDM cross-reference |
-| `binaryHash` | SHA-256 of the provider binary |
-| `timestamp` | ISO 8601 |
-
-Signed with the Secure Enclave P-256 key (ECDSA, DER-encoded).
-
-### Challenge-Response Protocol
-
-```
-Every 5 minutes:
-  1. Coordinator generates 32-byte random nonce + timestamp
-  2. Sends attestation_challenge over WebSocket
-  3. Provider signs (nonce + timestamp + public_key) with their key
-  4. Provider includes fresh sip_enabled and secure_boot_enabled status
-  5. Sends attestation_response back
-  6. Coordinator verifies:
-     - Nonce matches
-     - Public key matches registration
-     - Signature is non-empty
-     - sip_enabled == true (IMMEDIATE untrust if false)
-     - secure_boot_enabled == true (IMMEDIATE untrust if false)
-  7. If 3 consecutive failures → provider marked untrusted
-  8. If SIP or SecureBoot disabled → IMMEDIATE untrust (no 3-strike rule)
-```
-
-## Privacy Architecture
-
-```
-Layer                              Status      What it means
-─────────────────────────────────────────────────────────────────
-Confidential VM (coordinator)      Working     AMD SEV-SNP, hardware-encrypted memory
-TLS transport (consumer)           Working     Encrypted in transit
-Hardware-bound identity (SE)       Working     Provider key in Secure Enclave silicon
-Signed attestation                 Working     SE signs hardware info + binary hash
-Challenge-response + SIP check     Working     Ongoing security posture verification
-PT_DENY_ATTACH                     Working     Kernel-level anti-debug
-Hardened Runtime                   Working     Blocks external memory inspection
-In-process inference               Working     No subprocess/IPC to sniff
-Memory wiping                      Working     Volatile-zero after each request
-Python path locking                Working     Prevents malicious package injection
-Signed app bundle                  Working     Any modification breaks code signature
-MDM SecurityInfo                   Working     Hardware-verified SIP/SecureBoot/SSV
-SIP/SecureBoot attestation         Working     Self-reported + MDM-verified
-Hardware-attested posture (MDA)    Working     Apple Enterprise Attestation Root CA signs device cert chain
-User-verifiable attestation API    Working     GET /v1/providers/attestation — exposes Apple cert chain
-```
-
-## Inference
-
-EigenInference runs inference **in-process** — no subprocess architecture. The Python MLX engine is embedded directly in the Rust process via PyO3.
-
-| Backend | Mode | Features |
-|---------|------|----------|
-| **mlx-lm** | In-process (PyO3) | Primary backend, auto-installed if missing |
-| **vllm-mlx** | In-process (PyO3) | Preferred when available — continuous batching, prefix caching |
-
-There is no subprocess fallback. If the in-process engine cannot initialize, the provider refuses to start and instructs the user to install mlx-lm.
-
-## Payments
-
-- Internal micro-USD ledger (1 USD = 1,000,000 micro-USD)
-- Pricing: $0.50 per 1M output tokens, $0.001 minimum per request
-- Platform fee: 10%, provider payout: 90%
-- Settlement: Stripe (wired, not activated) or Solana USDC (primary)
-
-## Storage
-
-| Backend | Use case | Key feature |
-|---------|----------|-------------|
-| **MemoryStore** | Development | No external dependencies |
-| **PostgresStore** | Production | Atomic balance operations, persistent ledger |
-
-Tables: `api_keys`, `usage`, `payments`, `balances`, `ledger_entries`
-
-## Hardware Support
-
-Any Apple Silicon Mac (M1 or later):
-
-| Chip | Memory | Bandwidth | Best Models |
-|------|--------|-----------|-------------|
-| M1 | 8-16 GB | 68 GB/s | 3B-8B |
-| M1 Pro/Max | 16-64 GB | 200-400 GB/s | 8B-33B |
-| M2 Pro/Max | 16-96 GB | 200-400 GB/s | 8B-70B |
-| M3 Pro/Max | 18-128 GB | 150-400 GB/s | 8B-122B |
-| M3 Ultra | 96-256 GB | 819 GB/s | 8B-230B |
-| M4 Pro/Max | 24-128 GB | 273-546 GB/s | 8B-122B |

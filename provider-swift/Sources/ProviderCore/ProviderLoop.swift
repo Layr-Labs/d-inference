@@ -1463,7 +1463,7 @@ public actor ProviderLoop {
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 kvBudget: kvBudget
             )
-            await scheduler.loadModel(container: container, modelId: modelId)
+            await scheduler.loadModel(container: container, modelId: modelId, weightHash: modelInfo.weightHash)
             if isShuttingDown || Task.isCancelled {
                 await scheduler.unloadModel()
                 throw CancellationError()

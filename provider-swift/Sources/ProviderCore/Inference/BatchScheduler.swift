@@ -124,7 +124,7 @@ public actor BatchScheduler {
 
     // MARK: - Model lifecycle
 
-    public func loadModel(container: ModelContainer, modelId: String) async {
+    public func loadModel(container: ModelContainer, modelId: String, weightHash: String? = nil) async {
         // Hard-fail if Metal is unavailable; CPU inference is not acceptable.
         do {
             _ = try GPUEnforcement.requireMetal()
@@ -151,6 +151,8 @@ public actor BatchScheduler {
         let engine = await Self.makeBatchedEngine(
             container: container,
             modelId: modelId,
+            weightHash: weightHash,
+            weightBytes: snapshot.bytes,
             maxConcurrentRequests: maxConcurrentRequests,
             eosTokenIds: snapshot.eosTokenIds,
             architecture: snapshot.architecture
@@ -215,6 +217,8 @@ public actor BatchScheduler {
     private static func makeBatchedEngine(
         container: ModelContainer,
         modelId: String,
+        weightHash: String?,
+        weightBytes: Int,
         maxConcurrentRequests: Int,
         eosTokenIds: Set<Int>,
         architecture: ModelArchitecture
@@ -226,16 +230,37 @@ public actor BatchScheduler {
         // TTFT side-channel (the provider can't see tenant identity), so
         // it ships only behind this flag + an explicit threat-model
         // sign-off. See docs/ssd-kv-cache-design.md.
+        //
+        // Memory guard: the block cache holds up to maxBlocks*blockSize
+        // tokens of KV OUTSIDE the scheduler's active kvBudget, so size it
+        // by a memory budget (not a fixed 4096) or a huge model would OOM.
+        let blockSize = 256
+        // Only built when the flag is on + KEK/arch available (nil otherwise),
+        // so the budget logging below can't mislead when the cache is off.
         let persistence = await makeEncryptedPrefixPersistenceIfEnabled(
-            modelId: modelId, architecture: architecture
+            modelId: modelId, weightHash: weightHash, architecture: architecture
+        )
+        let kvBytesPerToken = resolvedKVBytesPerToken(architecture: architecture, weightBytes: weightBytes)
+        let maxBlocks = prefixCacheMaxBlocks(
+            kvBytesPerToken: kvBytesPerToken,
+            budgetBytes: prefixCacheBudgetBytes(),
+            blockSize: blockSize
         )
         return await container.perform { ctx -> BatchedEngine in
-            let prefixCache: PrefixCache? = persistence.map {
-                PrefixCache(
-                    config: PrefixCacheConfig(blockSize: 256, maxBlocks: 4096),
-                    modelName: modelId,
-                    persistence: $0
-                )
+            var prefixCache: PrefixCache? = nil
+            if let p = persistence {
+                if maxBlocks >= 1 {
+                    prefixCacheLogger.info(
+                        "prefix cache sized to \(maxBlocks) blocks × \(blockSize) tok (~\(kvBytesPerToken) B/tok)")
+                    prefixCache = PrefixCache(
+                        config: PrefixCacheConfig(blockSize: blockSize, maxBlocks: maxBlocks),
+                        modelName: modelId,
+                        persistence: p
+                    )
+                } else {
+                    prefixCacheLogger.warning(
+                        "prefix cache disabled: model KV (\(kvBytesPerToken) B/tok) exceeds the memory budget for even one block")
+                }
             }
             let scheduler = Scheduler(
                 model: ctx.model,
@@ -272,11 +297,14 @@ public actor BatchScheduler {
     /// Enclave / entitlement) — in the last case we refuse rather than
     /// use an ephemeral key that wouldn't survive restart.
     ///
-    /// SECURITY (TB-007): see makeBatchedEngine. modelId is used as the
-    /// model-binding key; weight-hash binding (to invalidate on a weight
-    /// change under the same id) is a documented follow-up.
+    /// SECURITY (TB-007): see makeBatchedEngine. The cache is bound to the
+    /// WEIGHT identity (`weightHash`) when known, not just the mutable
+    /// model id — a re-download under the same id with different weights
+    /// must not serve stale KV. Falls back to modelId when no weight hash
+    /// is available (no worse than before).
     private static func makeEncryptedPrefixPersistenceIfEnabled(
         modelId: String,
+        weightHash: String?,
         architecture: ModelArchitecture
     ) async -> EncryptedPrefixCachePersistence? {
         let env = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE"]
@@ -309,7 +337,12 @@ public actor BatchScheduler {
             return nil
         }
 
-        let modelKey = SHA256.hash(data: Data(modelId.utf8))
+        // Bind both the on-disk directory key AND the metadata modelHash to
+        // the weight identity (weightHash) when available; fall back to the
+        // model id. A weight change under the same id then yields a new dir
+        // + new binding, so old KV is neither found nor passes MB-1.
+        let bindingId = prefixCacheBindingId(modelId: modelId, weightHash: weightHash)
+        let modelKey = SHA256.hash(data: Data(bindingId.utf8))
             .map { String(format: "%02x", $0) }.joined().prefix(12)
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -317,11 +350,56 @@ public actor BatchScheduler {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let binding = PrefixCacheModelBinding(
-            modelHash: modelId, modelDtype: "unknown", modelArch: "unknown",
+            modelHash: bindingId, modelDtype: "unknown", modelArch: "unknown",
             vocabSize: 0, numLayers: numLayers, kvHeads: kvHeads, headDim: headDim
         )
-        prefixCacheLogger.info("encrypted prefix cache active for \(modelId, privacy: .public) at \(dir.path, privacy: .public)")
-        return EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding)
+        let diskBudget = prefixCacheDiskBudgetBytes()
+        prefixCacheLogger.info(
+            "encrypted prefix cache active for \(modelId, privacy: .public) (bound to \(weightHash == nil ? "modelId" : "weightHash", privacy: .public)) at \(dir.path, privacy: .public), disk budget \(diskBudget) bytes")
+        return EncryptedPrefixCachePersistence(
+            kekKey: kekKey, dir: dir, binding: binding, diskBudgetBytes: diskBudget)
+    }
+
+    // MARK: - Prefix cache sizing/binding helpers (testable)
+
+    /// Cache identity: bind to the weight hash so a re-download under the
+    /// same model id with different weights invalidates old KV. Falls back
+    /// to the model id when no weight hash is known.
+    static func prefixCacheBindingId(modelId: String, weightHash: String?) -> String {
+        if let w = weightHash, !w.isEmpty { return w }
+        return modelId
+    }
+
+    /// Block count for the engine prefix cache, bounded by a memory budget.
+    /// The cache retains up to blocks*blockSize tokens of KV OUTSIDE the
+    /// scheduler's active kvBudget, so a fixed 4096 would OOM large models.
+    /// Returns 0 when even one block exceeds the budget (caller disables).
+    static func prefixCacheMaxBlocks(
+        kvBytesPerToken: Int, budgetBytes: Int, blockSize: Int, ceiling: Int = 4096
+    ) -> Int {
+        let perBlock = max(1, blockSize) * max(1, kvBytesPerToken)
+        let fromBudget = max(0, budgetBytes) / perBlock
+        return min(ceiling, fromBudget)
+    }
+
+    /// In-memory budget for the engine prefix cache. Operator override:
+    /// DARKBLOOM_PREFIX_CACHE_MAX_GB; default = 1/8 of physical memory.
+    static func prefixCacheBudgetBytes() -> Int {
+        if let s = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_MAX_GB"],
+           let gb = Double(s), gb > 0 {
+            return Int(gb * 1_073_741_824)
+        }
+        return Int(ProcessInfo.processInfo.physicalMemory) / 8
+    }
+
+    /// On-disk budget for persisted prefix files. Operator override:
+    /// DARKBLOOM_PREFIX_CACHE_DISK_GB; default = 10 GB. 0 disables the cap.
+    static func prefixCacheDiskBudgetBytes() -> Int {
+        if let s = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"],
+           let gb = Double(s), gb >= 0 {
+            return Int(gb * 1_073_741_824)
+        }
+        return 10 * 1_073_741_824
     }
 
     /// Set the post-load budgets driven by architecture + physical

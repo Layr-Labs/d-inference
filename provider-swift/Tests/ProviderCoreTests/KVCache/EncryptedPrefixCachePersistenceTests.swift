@@ -167,3 +167,40 @@ func loadBlockRefusesFileHoldingDifferentPrefix() throws {
     #expect(p.loadBlock(blockHash: hashB) == nil, "wrong-prefix file must be refused")
     #expect(p.loadBlock(blockHash: hashA) != nil, "correct-prefix file must still load")
 }
+
+@Test
+func persistenceEvictsOldestWhenDiskBudgetExceeded() throws {
+    // Without a disk budget the backend would accumulate a file per evicted
+    // block forever, filling the volume. With a budget, a save that pushes
+    // the directory over budget evicts oldest files until it's back under.
+    let kekKey = SymmetricKey(size: .bits256)
+    let dir = tmpDir()
+
+    // Measure one file's size, then set a ~2.5-file budget.
+    let probe = EncryptedPrefixCachePersistence(
+        kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2))
+    probe.saveBlock(blockHash: Data("probe".utf8), layerCaches: block(layers: 2, tokens: 64))
+    let probeURL = dir.appendingPathComponent(
+        "\(Data("probe".utf8).dbkvHexString).\(EncryptedKVStore.fileExtension)")
+    let fileSize = (try FileManager.default.attributesOfItem(atPath: probeURL.path)[.size] as? Int) ?? 0
+    #expect(fileSize > 0)
+    try FileManager.default.removeItem(at: probeURL)
+
+    let budget = (fileSize * 5) / 2  // ~2.5 files
+    let p = EncryptedPrefixCachePersistence(
+        kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2),
+        diskBudgetBytes: budget)
+
+    for i in 0..<6 {
+        p.saveBlock(blockHash: Data("blk-\(i)".utf8), layerCaches: block(layers: 2, tokens: 64))
+    }
+
+    let files = try FileManager.default
+        .contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])
+        .filter { $0.lastPathComponent.hasSuffix(".\(EncryptedKVStore.fileExtension)") }
+    let total = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+
+    #expect(total <= budget, "disk usage must stay within budget, got \(total) vs \(budget)")
+    #expect(files.count < 6, "older files must have been evicted")
+    #expect(!files.isEmpty, "the cache must still retain the most recent block(s)")
+}

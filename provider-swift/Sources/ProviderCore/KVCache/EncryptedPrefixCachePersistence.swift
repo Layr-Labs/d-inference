@@ -35,17 +35,30 @@ import os
 private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "encrypted-prefix-persistence")
 
 public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unchecked Sendable {
-    // All stored properties are immutable after init; the only side
-    // effects are independent file reads/writes — hence @unchecked
-    // Sendable is sound (no shared mutable state).
+    // The crypto/path properties are immutable after init. The only mutable
+    // state is the disk-budget bookkeeping (`bytesSinceSweep`), guarded by
+    // `sweepLock` — so @unchecked Sendable remains sound (all shared mutable
+    // access is serialized through the lock).
     private let kekKey: SymmetricKey
     private let dir: URL
     private let binding: PrefixCacheModelBinding
 
-    public init(kekKey: SymmetricKey, dir: URL, binding: PrefixCacheModelBinding) {
+    /// On-disk byte budget for this model's `.darkbloom-kv` files. When a
+    /// save pushes the directory over budget, the oldest files are evicted.
+    /// 0 = unlimited (no sweep). Without this the cache grows until the
+    /// volume fills, which breaks later cache writes and model downloads.
+    private let diskBudgetBytes: Int
+    private let sweepLock = NSLock()
+    private var bytesSinceSweep = 0
+
+    public init(
+        kekKey: SymmetricKey, dir: URL, binding: PrefixCacheModelBinding,
+        diskBudgetBytes: Int = 0
+    ) {
         self.kekKey = kekKey
         self.dir = dir
         self.binding = binding
+        self.diskBudgetBytes = max(0, diskBudgetBytes)
     }
 
     // MARK: - PrefixCachePersistence
@@ -72,7 +85,10 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unc
                 metaState: [layoutJSON],
                 chunkPlaintextSizes: chunks.map { $0.count }
             )
-            try EncryptedKVStore.writeSync(to: fileURL(blockHash), metadata: meta, chunks: chunks, kekKey: kekKey)
+            let url = fileURL(blockHash)
+            try EncryptedKVStore.writeSync(to: url, metadata: meta, chunks: chunks, kekKey: kekKey)
+            let written = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+            enforceDiskBudgetIfNeeded(addedBytes: written ?? 0)
         } catch {
             // Best-effort: a lost block just means a future cold prefill.
             logger.warning("saveBlock failed for \(blockHash.dbkvHexString, privacy: .public): \(String(describing: error))")
@@ -133,6 +149,52 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unc
             logger.warning("loadBlock decrypt failed for \(blockHash.dbkvHexString, privacy: .public): \(String(describing: error))")
             return nil
         }
+    }
+
+    // MARK: - Disk budget (LRU sweep)
+
+    /// Accumulate the just-written bytes and trigger a full scan+evict only
+    /// once we've added a meaningful fraction of the budget since the last
+    /// sweep — amortizing the directory scan over many writes rather than
+    /// scanning on every block. No-op when the budget is unlimited (0).
+    private func enforceDiskBudgetIfNeeded(addedBytes: Int) {
+        guard diskBudgetBytes > 0 else { return }
+        sweepLock.lock()
+        bytesSinceSweep += max(0, addedBytes)
+        let trigger = bytesSinceSweep >= max(addedBytes, diskBudgetBytes / 8)
+        sweepLock.unlock()
+        guard trigger else { return }
+        sweep()
+    }
+
+    /// Evict oldest `.darkbloom-kv` files (by modification time) until the
+    /// directory is within `diskBudgetBytes`. Best-effort.
+    private func sweep() {
+        sweepLock.lock()
+        defer { sweepLock.unlock() }
+        bytesSinceSweep = 0
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
+        ) else { return }
+
+        var files: [(url: URL, size: Int, mtime: Date)] = []
+        var total = 0
+        let suffix = ".\(EncryptedKVStore.fileExtension)"
+        for u in entries where u.lastPathComponent.hasSuffix(suffix) {
+            let v = try? u.resourceValues(forKeys: Set(keys))
+            let size = v?.fileSize ?? 0
+            files.append((u, size, v?.contentModificationDate ?? .distantPast))
+            total += size
+        }
+        guard total > diskBudgetBytes else { return }
+
+        for f in files.sorted(by: { $0.mtime < $1.mtime }) {
+            if total <= diskBudgetBytes { break }
+            if (try? fm.removeItem(at: f.url)) != nil { total -= f.size }
+        }
+        logger.info("prefix cache disk sweep: now \(total) bytes (budget \(self.diskBudgetBytes))")
     }
 
     // MARK: - Paths

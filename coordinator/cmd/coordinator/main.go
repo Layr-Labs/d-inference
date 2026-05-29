@@ -153,14 +153,20 @@ func main() {
 
 	// Elevated request limiter for trusted service accounts (e.g. OpenRouter),
 	// which fan out many end-users behind a single key. Set the service RPS to
-	// 0 to let service accounts bypass request rate limiting entirely.
+	// 0 to drop the per-request ceiling for service accounts.
+	//
+	// Note: the service role is admin-provisioned only (PUT /v1/admin/users/role,
+	// admin-gated) — consumers cannot self-escalate into this tier. Disabling
+	// this request limiter does NOT make service traffic unbounded: it remains
+	// gated by the per-account token limits (ITPM/OTPM, below), the account's
+	// prepaid balance, and the fleet token-budget admission ceiling.
 	if cfg.ServiceRL.RPS > 0 {
 		srl := ratelimit.New(cfg.ServiceRL)
 		srl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_ratelimit_pruner") })
 		srv.SetServiceRateLimiter(srl)
 		logger.Info("service-account rate limiter enabled", "rps", cfg.ServiceRL.RPS, "burst", cfg.ServiceRL.Burst)
 	} else {
-		logger.Warn("service-account rate limiter DISABLED — service accounts bypass rate limits")
+		logger.Warn("service-account request rate limiter DISABLED — service accounts still bounded by token (ITPM/OTPM) limits, prepaid balance, and fleet admission")
 	}
 
 	// Per-account token-per-minute limiters (ITPM/OTPM) — the industry-standard

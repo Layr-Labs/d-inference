@@ -49,6 +49,23 @@ struct BatchSchedulerPrefixCacheConfigTests {
             kvBytesPerToken: 1, budgetBytes: Int.max / 2, blockSize: bs) == 4096)
     }
 
+    // Memory budget: valid override wins; malformed/huge values must NOT
+    // crash (Int(Double) traps on inf/NaN/overflow) — fall back to RAM/8.
+    @Test("resolveMemoryBudget: valid override wins, malformed/huge falls back to RAM/8")
+    func memoryBudget() {
+        let gib = 1_073_741_824
+        let ram = 16 * gib
+        #expect(BatchScheduler.resolveMemoryBudget(envGB: 8, physicalMemory: ram) == 8 * gib)
+        #expect(BatchScheduler.resolveMemoryBudget(envGB: nil, physicalMemory: ram) == ram / 8)
+        // 0 / negative ⇒ default (memory has no "unlimited" mode).
+        #expect(BatchScheduler.resolveMemoryBudget(envGB: 0, physicalMemory: ram) == ram / 8)
+        #expect(BatchScheduler.resolveMemoryBudget(envGB: -5, physicalMemory: ram) == ram / 8)
+        // Non-finite / overflow must degrade, not trap.
+        #expect(BatchScheduler.resolveMemoryBudget(envGB: .infinity, physicalMemory: ram) == ram / 8)
+        #expect(BatchScheduler.resolveMemoryBudget(envGB: .nan, physicalMemory: ram) == ram / 8)
+        #expect(BatchScheduler.resolveMemoryBudget(envGB: 1e30, physicalMemory: ram) == ram / 8)
+    }
+
     // #3 follow-up: the on-disk budget defaults to 50% of free volume space.
     @Test("resolveDiskBudget: 50% of free, env override wins, never 'unlimited' from free")
     func diskBudget() {
@@ -64,6 +81,10 @@ struct BatchSchedulerPrefixCacheConfigTests {
         #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 1) == 1)
         // Free space unknown ⇒ conservative 10 GB fallback.
         #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: nil) == 10 * gib)
+        // Non-finite / overflow env must degrade to 50%-of-free, not trap.
+        #expect(BatchScheduler.resolveDiskBudget(envGB: .infinity, freeBytes: 100 * gib) == 50 * gib)
+        #expect(BatchScheduler.resolveDiskBudget(envGB: .nan, freeBytes: 100 * gib) == 50 * gib)
+        #expect(BatchScheduler.resolveDiskBudget(envGB: 1e30, freeBytes: 100 * gib) == 50 * gib)
     }
 
     @Test("volumeFreeBytes reads a positive capacity for a real directory")

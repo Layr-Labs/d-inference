@@ -116,7 +116,8 @@ When active you'll see, once per model load:
 
 ```
 DARKBLOOM_PREFIX_CACHE is ON — engine prefix cache enabled (TB-007: …)
-encrypted prefix cache active for <modelId> at <cachesDir>/darkbloom/kv/<key>
+encrypted prefix cache active for <modelId> (bound to weightHash|modelId) at <dir>, disk budget <N> bytes (default = 50% of free volume space)
+prefix cache sized to <maxBlocks> blocks × 256 tok (~<kvBytesPerToken> B/tok)
 ```
 
 ---
@@ -376,7 +377,8 @@ Everything fails closed to a cold prefill:
 | Write failure mid-flush | best-effort; temp cleaned up, no partial promoted |
 | In-memory budget can't fit one block | cache disabled for that model (logged) |
 | On-disk files exceed `DISK_GB` | oldest `.darkbloom-kv` evicted (LRU) to fit |
-| Weights change under the same model id | new dir + binding ⇒ old KV not found (invalidated) |
+| Weights change under the same model id | MB-1 rejects + deletes stale-weight files on access; rest aged out by the sweep |
+| A single block larger than the disk budget | write skipped (no churn) |
 
 No path serves KV for the wrong prefix/model, and no malformed file crashes
 the provider.
@@ -387,25 +389,39 @@ the provider.
 
 ```
 ~/Library/Caches/darkbloom/kv/
-└── <modelKey>/                         # engine tier: sha256(weightHash ?? modelId)[:12]
+└── <modelKey>/                         # engine tier: sha256(modelId)[:12]
     ├── <blockHashHex>.darkbloom-kv     # one file per evicted block
     └── …
 ```
 
-`modelKey` is derived from the **weight identity** (`weightHash` when the
-catalog provides it, else the model id), so a model switch — or a
-re-download of the **same id with different weights** — lands in a
-different directory and binding: stale KV is neither found nor passes MB-1.
-The KEK lives in the Keychain, not on the cache disk.
+`modelKey` is derived from the **model id** (stable across weight changes),
+so a re-download under the same id reuses the directory rather than
+orphaning it. The MB-1 **binding** (the file's `metadata.modelHash`) is
+keyed by the **weight identity** (`weightHash` when the catalog provides it,
+else the model id): a stale-weight file is rejected *and deleted* by
+`loadBlock` on access, and any not-yet-accessed stale file is aged out by
+the disk sweep — invalidation on weight change without leaking directories.
+A genuine model *switch* uses a different `sha256(modelId)` directory. The
+KEK lives in the Keychain, not on the cache disk.
 
 The per-model directory is bounded by `DARKBLOOM_PREFIX_CACHE_DISK_GB`,
 defaulting to **50% of the free space on the cache volume** (measured live
 at model load, via `volumeAvailableCapacityForImportantUsage`): when a save
 pushes the directory over budget, the oldest `.darkbloom-kv` files are
 evicted (LRU by mtime), amortized so the directory scan doesn't run on
-every block. A (near-)full disk yields a tiny budget (evict almost
-everything) rather than unlimited; set the env var explicitly to override
-(0 = unlimited). If free space can't be read, it falls back to 10 GB.
+every block. A (near-)full disk yields a tiny budget — and a block whose
+own size exceeds the budget is skipped entirely (no write-then-delete
+churn). Set the env var explicitly to override (0 = unlimited); if free
+space can't be read it falls back to 10 GB.
+
+**Bounding is per-model, not global, and measured once at load.** Each
+model directory gets its own 50%-of-free budget snapshotted at its load
+time; the sweep only scans its own directory. So with several distinct
+models cached, aggregate `darkbloom/kv` usage can exceed 50% of the
+original free space, and a budget doesn't shrink if the volume later fills
+from other writers (it's re-measured on the next model load). For a hard
+global cap, set `DARKBLOOM_PREFIX_CACHE_DISK_GB` to an explicit per-model
+value sized for the number of models served.
 
 To clear the cache: delete the `darkbloom/kv` directory. To invalidate all
 files cryptographically: rotate/`wipe()` the KEK (existing files become
@@ -426,11 +442,14 @@ operator threat-model sign-off. Flag off ⇒ no cache ⇒ no exposure. See the
 design doc's threat model for the full TB-007 analysis.
 
 Model binding uses the **weight hash** (`ModelInfo.weightHash`) when the
-catalog provides it, falling back to the `modelId` otherwise. So a
-re-download under the same id with different weights invalidates stale KV
-(new directory + new binding). When no weight hash is available the binding
-degrades to the model id; the tensor-shape guard (§8) still catches
-shape-changing weight swaps in that case.
+catalog provides it, falling back to the `modelId` otherwise. The on-disk
+directory stays keyed by the model id (so re-downloads don't orphan
+directories); the weight hash goes into the file's MB-1 binding, so a
+re-download under the same id with different weights makes every stale file
+fail MB-1 — rejected and deleted on access, the rest aged out by the sweep.
+When no weight hash is available the binding degrades to the model id; the
+tensor-shape guard (§8) still catches shape-changing weight swaps in that
+case.
 
 ---
 

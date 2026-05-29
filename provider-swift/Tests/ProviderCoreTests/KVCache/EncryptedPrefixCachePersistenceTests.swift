@@ -204,3 +204,40 @@ func persistenceEvictsOldestWhenDiskBudgetExceeded() throws {
     #expect(files.count < 6, "older files must have been evicted")
     #expect(!files.isEmpty, "the cache must still retain the most recent block(s)")
 }
+
+@Test
+func persistenceSkipsWriteWhenBlockExceedsDiskBudget() throws {
+    // A budget below one block's size must NOT produce a write-then-delete
+    // treadmill: the save is skipped entirely (no file written, no churn).
+    let kekKey = SymmetricKey(size: .bits256)
+    let dir = tmpDir()
+    let p = EncryptedPrefixCachePersistence(
+        kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2),
+        diskBudgetBytes: 16)  // 16 bytes — far below any real block
+    p.saveBlock(blockHash: Data("blk".utf8), layerCaches: block(layers: 2, tokens: 64))
+    let files = try FileManager.default
+        .contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        .filter { $0.lastPathComponent.hasSuffix(".\(EncryptedKVStore.fileExtension)") }
+    #expect(files.isEmpty, "a block larger than the budget must not be written at all")
+}
+
+@Test
+func loadBlockDeletesFileOnModelMismatch() throws {
+    // Weight-change invalidation relies on a stale-weight file (written
+    // under a different binding, same per-model directory) being rejected
+    // AND deleted by loadBlock on access — so it doesn't linger or leak.
+    let kekKey = SymmetricKey(size: .bits256)
+    let dir = tmpDir()
+    let hash = Data("blk".utf8)
+    let pA = EncryptedPrefixCachePersistence(
+        kekKey: kekKey, dir: dir, binding: binding(model: "weightA", layers: 2))
+    pA.saveBlock(blockHash: hash, layerCaches: block(layers: 2, tokens: 8))
+    let url = dir.appendingPathComponent("\(hash.dbkvHexString).\(EncryptedKVStore.fileExtension)")
+    #expect(FileManager.default.fileExists(atPath: url.path))
+
+    let pB = EncryptedPrefixCachePersistence(
+        kekKey: kekKey, dir: dir, binding: binding(model: "weightB", layers: 2))
+    #expect(pB.loadBlock(blockHash: hash) == nil, "stale-weight file must be refused")
+    #expect(!FileManager.default.fileExists(atPath: url.path),
+            "stale-weight file must be deleted on access (no leak)")
+}

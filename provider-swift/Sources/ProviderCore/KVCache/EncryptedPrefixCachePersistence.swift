@@ -69,6 +69,15 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unc
 
         do {
             let (chunks, layout) = try KVCacheSerializer.serialize(caches)
+            // If this block alone exceeds the disk budget, the sweep would
+            // delete it immediately after writing — skip the expensive
+            // encrypt+fsync+rename rather than churn (write-then-delete).
+            // (chunkBytes is plaintext; the file is slightly larger, so a
+            // file at/under budget still passes and is handled by the sweep.)
+            if diskBudgetBytes > 0 {
+                let chunkBytes = chunks.reduce(0) { $0 + $1.count }
+                if chunkBytes > diskBudgetBytes { return }
+            }
             let layoutJSON = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
             let tokenCount = layerCaches.first?.state.first?.dim(2) ?? 0
             let meta = EncryptedKVStoreMetadata(

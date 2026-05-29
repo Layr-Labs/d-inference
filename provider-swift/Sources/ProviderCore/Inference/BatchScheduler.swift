@@ -337,12 +337,16 @@ public actor BatchScheduler {
             return nil
         }
 
-        // Bind both the on-disk directory key AND the metadata modelHash to
-        // the weight identity (weightHash) when available; fall back to the
-        // model id. A weight change under the same id then yields a new dir
-        // + new binding, so old KV is neither found nor passes MB-1.
+        // The on-disk directory is keyed by the MODEL id (stable across
+        // weight changes) so a re-download under the same id reuses the dir
+        // instead of orphaning it. The MB-1 binding (metadata modelHash) is
+        // keyed by the WEIGHT identity, so a stale-weight file is rejected
+        // AND deleted by loadBlock on access, and any not-yet-accessed stale
+        // file is aged out by the disk sweep — invalidation without leaking
+        // directories. (Keying the dir by weightHash would create a fresh,
+        // never-swept directory on every re-download.)
         let bindingId = prefixCacheBindingId(modelId: modelId, weightHash: weightHash)
-        let modelKey = SHA256.hash(data: Data(bindingId.utf8))
+        let modelKey = SHA256.hash(data: Data(modelId.utf8))
             .map { String(format: "%02x", $0) }.joined().prefix(12)
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -384,13 +388,28 @@ public actor BatchScheduler {
 
     /// In-memory budget for the engine prefix cache. Operator override:
     /// DARKBLOOM_PREFIX_CACHE_MAX_GB; default = 1/8 of physical memory.
+    /// NOTE: this is read UNCONDITIONALLY at every model load (to size
+    /// maxBlocks) even when the cache is disabled, so a malformed value must
+    /// degrade — never crash. See resolveMemoryBudget.
     static func prefixCacheBudgetBytes() -> Int {
-        if let s = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_MAX_GB"],
-           let gb = Double(s), gb > 0 {
+        let envGB = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_MAX_GB"]
+            .flatMap(Double.init)
+        return resolveMemoryBudget(envGB: envGB, physicalMemory: Int(ProcessInfo.processInfo.physicalMemory))
+    }
+
+    /// Pure memory-budget policy (testable). A valid positive env override
+    /// wins; a non-finite or out-of-Int-range value is REJECTED back to the
+    /// physicalMemory/8 default rather than crashing (Int(Double) traps on
+    /// inf/NaN/overflow, and this is read even when the cache is off).
+    static func resolveMemoryBudget(envGB: Double?, physicalMemory: Int) -> Int {
+        if let gb = envGB, gb > 0, gb.isFinite, gb < gbToBytesCeiling {
             return Int(gb * 1_073_741_824)
         }
-        return Int(ProcessInfo.processInfo.physicalMemory) / 8
+        return max(1, physicalMemory / 8)
     }
+
+    /// Largest GB value that won't overflow Int when multiplied by 2^30.
+    private static var gbToBytesCeiling: Double { Double(Int.max) / 1_073_741_824 }
 
     /// On-disk budget for persisted prefix files. Operator override:
     /// DARKBLOOM_PREFIX_CACHE_DISK_GB (0 = unlimited). Default = 50% of the
@@ -409,7 +428,12 @@ public actor BatchScheduler {
     /// (evict-almost-everything) rather than the env's "0 = unlimited".
     /// When free space is unknown, fall back to a conservative 10 GB.
     static func resolveDiskBudget(envGB: Double?, freeBytes: Int?) -> Int {
-        if let gb = envGB, gb >= 0 { return Int(gb * 1_073_741_824) }
+        // A valid in-range override wins (0 = unlimited). A non-finite or
+        // overflowing value is rejected (Int(Double) would trap) and falls
+        // through to the free-space default.
+        if let gb = envGB, gb >= 0, gb.isFinite, gb < gbToBytesCeiling {
+            return Int(gb * 1_073_741_824)
+        }
         if let free = freeBytes { return max(1, free / 2) }
         return 10 * 1_073_741_824
     }

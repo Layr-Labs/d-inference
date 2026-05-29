@@ -13,7 +13,7 @@ import (
 // --- Store-level withdrawable balance tests ---
 
 func TestWithdrawableBalance_CreditIsNotWithdrawable(t *testing.T) {
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	_ = st.Credit("acct-1", 10_000_000, store.LedgerStripeDeposit, "stripe:123")
 
 	if bal := st.GetBalance("acct-1"); bal != 10_000_000 {
@@ -25,7 +25,7 @@ func TestWithdrawableBalance_CreditIsNotWithdrawable(t *testing.T) {
 }
 
 func TestWithdrawableBalance_CreditWithdrawableIncrementsBoth(t *testing.T) {
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	_ = st.CreditWithdrawable("acct-1", 10_000_000, store.LedgerPayout, "job-1")
 
 	if bal := st.GetBalance("acct-1"); bal != 10_000_000 {
@@ -37,7 +37,7 @@ func TestWithdrawableBalance_CreditWithdrawableIncrementsBoth(t *testing.T) {
 }
 
 func TestWithdrawableBalance_DebitConsumesCreditsFirst(t *testing.T) {
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	_ = st.Credit("acct-1", 20_000_000, store.LedgerStripeDeposit, "stripe:1")
 	_ = st.CreditWithdrawable("acct-1", 30_000_000, store.LedgerPayout, "job-1")
 
@@ -66,7 +66,7 @@ func TestWithdrawableBalance_DebitConsumesCreditsFirst(t *testing.T) {
 }
 
 func TestWithdrawableBalance_DebitAllEarnings(t *testing.T) {
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	_ = st.CreditWithdrawable("acct-1", 50_000_000, store.LedgerPayout, "job-1")
 
 	_ = st.Debit("acct-1", 25_000_000, store.LedgerCharge, "req-1")
@@ -81,7 +81,7 @@ func TestWithdrawableBalance_DebitAllEarnings(t *testing.T) {
 }
 
 func TestWithdrawableBalance_ProviderEarningIsWithdrawable(t *testing.T) {
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	u := &store.User{AccountID: "acct-provider", PrivyUserID: "did:privy:p1", Email: "p@test.com"}
 	_ = st.CreateUser(u)
 
@@ -100,7 +100,7 @@ func TestWithdrawableBalance_ProviderEarningIsWithdrawable(t *testing.T) {
 }
 
 func TestWithdrawableBalance_GetUserByEmail(t *testing.T) {
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	_ = st.CreateUser(&store.User{
 		AccountID:   "acct-email-1",
 		PrivyUserID: "did:privy:e1",
@@ -341,7 +341,7 @@ func TestAdminRewardThenWithdraw(t *testing.T) {
 // --- Provider wallet (unlinked) earnings are withdrawable ---
 
 func TestWithdrawableBalance_ProviderWalletIsWithdrawable(t *testing.T) {
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	_ = st.CreditProviderWallet(&store.ProviderPayout{
 		ProviderAddress: "wallet-addr-1",
 		AmountMicroUSD:  8_000_000,

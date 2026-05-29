@@ -3,7 +3,7 @@ package store
 import "testing"
 
 func TestSetUserRole(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	if err := s.CreateUser(&User{AccountID: "acct-1", PrivyUserID: "did:privy:1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestSetUserRole(t *testing.T) {
 }
 
 func TestSetUserPlatformFeePercent(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	if err := s.CreateUser(&User{AccountID: "acct-1", PrivyUserID: "did:privy:1"}); err != nil {
 		t.Fatal(err)
 	}

@@ -14,9 +14,9 @@ import (
 
 func TestAdminSetAndClearDeprecationDate(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetAdminKey("admin-key")
 
 	const modelID = "mlx-community/dep-model"
@@ -88,9 +88,9 @@ func TestAdminSetAndClearDeprecationDate(t *testing.T) {
 
 func TestAdminSetAndClearOpenRouterSlug(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetAdminKey("admin-key")
 
 	const modelID = "mlx-community/slug-model"

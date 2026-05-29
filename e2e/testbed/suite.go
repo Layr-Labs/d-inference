@@ -222,7 +222,7 @@ func (s *Suite) startCoordinator() error {
 	}
 	reg.SetModelCatalog(catalog)
 
-	srv := api.NewServer(reg, s.PgStore, s.Logger)
+	srv := api.NewServer(reg, s.PgStore, api.ServerConfig{}, s.Logger)
 	srv.SetAdminKey("testbed-admin-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)

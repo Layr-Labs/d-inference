@@ -73,7 +73,17 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     /// does NOT expand $(AppIdentifierPrefix) -- that's Xcode-only.
     public static let defaultAccessGroup = "SLDQ2GJ6TL.io.darkbloom.provider"
 
-    public static let defaultLabel = "io.darkbloom.provider.attestation-signing.v1"
+    /// Legacy v1 label. Keys stored under this label were created with the old
+    /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` policy, which becomes
+    /// inaccessible while the screen is locked (signing fails with OSStatus
+    /// -25308). `loadOrCreate` migrates them to `defaultLabel` (v2).
+    public static let legacyLabelV1 = "io.darkbloom.provider.attestation-signing.v1"
+
+    /// Current (v2) label. Keys here use
+    /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so background
+    /// challenge signing works while the screen is locked. The presence of a
+    /// key under this label is itself the migration marker.
+    public static let defaultLabel = "io.darkbloom.provider.attestation-signing.v2"
 
     /// Raw P-256 public key (64 bytes: X || Y, without the 0x04 prefix).
     public var publicKeyRaw: Data { _publicKeyRaw }
@@ -108,10 +118,23 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
 
     /// Load an existing persistent key from the keychain, or create one if not found.
     ///
-    /// Includes a one-time migration: keys created with the old
-    /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` policy are deleted and
-    /// recreated with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so
-    /// background signing works when the screen is locked.
+    /// Performs a deterministic, version-stamped migration off the legacy v1
+    /// key. Old keys (`legacyLabelV1`) were created with
+    /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, which becomes
+    /// inaccessible while the screen is locked — `SecKeyCreateSignature` then
+    /// returns OSStatus -25308 and the provider can no longer answer
+    /// attestation challenges. New keys are created under `defaultLabel` (v2)
+    /// with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.
+    ///
+    /// The migration is independent of lock state: the *presence of a v2 key*
+    /// IS the migration marker — there is no test-sign and no attribute
+    /// probing (the old approach only detected the bad policy while locked,
+    /// which is almost never the case at provider startup). When only a v1 key
+    /// exists, a brand-new v2 key is created under the new label. Creating
+    /// under a *new* label sidesteps the `errSecDuplicateItem` /
+    /// delete-while-locked trap entirely. The v1 key is then deleted on a
+    /// best-effort basis; an orphan left behind because deletion failed while
+    /// locked is harmless — it has a different label and is never used again.
     public static func loadOrCreate(
         accessGroup: String? = nil,
         label: String? = nil
@@ -125,22 +148,22 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         do {
             let existing = try findExisting(accessGroup: group, label: keyLabel)
             logger.info("Loaded existing persistent Secure Enclave key")
-
-            // Migration check: try a test sign to verify the key's access
-            // policy allows background usage. Keys created with the old
-            // WhenUnlockedThisDeviceOnly policy fail with -25308 when the
-            // screen is locked. Delete and recreate with the relaxed policy.
-            let testData = Data("darkbloom-key-migration-check".utf8)
-            do {
-                _ = try existing.sign(testData)
-                return existing
-            } catch PersistentEnclaveKeyError.signingFailed(let status, _) where status == -25308 {
-                logger.warning("SE key has restrictive access policy (WhenUnlockedOnly) — migrating to AfterFirstUnlock")
-                try? delete(accessGroup: group, label: keyLabel)
-                return try createNew(accessGroup: group, label: keyLabel)
-            }
+            return existing
         } catch PersistentEnclaveKeyError.keyLookupFailed(status: errSecItemNotFound) {
-            // No existing key — proceed to creation.
+            // No key under keyLabel — fall through to (migration +) creation.
+        }
+
+        // Migration only applies to the default (v2) label. A custom label
+        // (used by tests) is pure find-or-create with no migration. If a
+        // legacy v1 key exists, mint a fresh v2 key and retire the v1 key.
+        if keyLabel == defaultLabel,
+           (try? findExisting(accessGroup: group, label: legacyLabelV1)) != nil {
+            logger.warning("Found legacy v1 Secure Enclave key — migrating to v2 (AfterFirstUnlock)")
+            let migrated = try createNew(accessGroup: group, label: defaultLabel)
+            // Best-effort cleanup. If the v1 key is locked and cannot be
+            // deleted, the orphan is harmless: different label, never used.
+            try? delete(accessGroup: group, label: legacyLabelV1)
+            return migrated
         }
 
         return try createNew(accessGroup: group, label: keyLabel)

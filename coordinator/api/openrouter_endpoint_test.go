@@ -21,9 +21,9 @@ import (
 // is_ready, populated features, and no Darkbloom metadata block.
 func TestOpenRouterModelsEndpoint(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -136,9 +136,9 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 // 429s, not a reason to delist). Datacenters are empty in that case.
 func TestOpenRouterFeedSurvivesProviderOutage(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	const modelID = "mlx-community/orphan-model"
 	entry := &store.ModelRegistryEntry{
@@ -189,9 +189,9 @@ func TestOpenRouterFeedSurvivesProviderOutage(t *testing.T) {
 // Staged models (openrouter_is_ready=false) report is_ready=false.
 func TestOpenRouterModelsStaging(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

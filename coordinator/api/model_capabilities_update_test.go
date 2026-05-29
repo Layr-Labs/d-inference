@@ -18,9 +18,9 @@ import (
 func TestAdminUpdateModelCapabilities(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	const modelID = "mlx-community/gpt-oss-20b"
 	entry := &store.ModelRegistryEntry{
@@ -74,9 +74,9 @@ func TestAdminUpdateModelCapabilities(t *testing.T) {
 // The admin key also authorizes registry actions (capabilities update here).
 func TestAdminKeyAuthorizesCapabilitiesUpdate(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetAdminKey("admin-key")
 
 	const modelID = "mlx-community/gemma-4-26b"

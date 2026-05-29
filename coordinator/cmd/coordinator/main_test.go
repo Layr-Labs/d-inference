@@ -9,7 +9,7 @@ import (
 )
 
 func TestSeedModelCatalogRemovesRetiredProviderModels(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	retired := []store.SupportedModel{

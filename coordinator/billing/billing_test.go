@@ -11,7 +11,7 @@ import (
 
 func newTestService(t *testing.T) (*Service, store.Store) {
 	t.Helper()
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	ledger := payments.NewLedger(st)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
@@ -234,7 +234,7 @@ func TestIsExternalIDProcessed(t *testing.T) {
 // --- Store Integration Tests ---
 
 func TestBillingSessionLifecycle(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 
 	session := &store.BillingSession{
 		ID:             "session-1",
@@ -272,7 +272,7 @@ func TestBillingSessionLifecycle(t *testing.T) {
 }
 
 func TestReferrerStoreLifecycle(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 
 	if err := st.CreateReferrer("account-1", "EIGEN-ABC123"); err != nil {
 		t.Fatalf("create: %v", err)
@@ -295,7 +295,7 @@ func TestReferrerStoreLifecycle(t *testing.T) {
 }
 
 func TestReferralRecording(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	_ = st.CreateReferrer("referrer-1", "CODE1")
 
 	if err := st.RecordReferral("CODE1", "consumer-1"); err != nil {
@@ -319,7 +319,7 @@ func TestReferralRecording(t *testing.T) {
 }
 
 func TestReferralStatsStore(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	_ = st.CreateReferrer("referrer-1", "CODE1")
 	_ = st.RecordReferral("CODE1", "consumer-1")
 	_ = st.RecordReferral("CODE1", "consumer-2")
@@ -364,7 +364,7 @@ func TestStripeWebhookInvalidSignature(t *testing.T) {
 // --- User Store Tests ---
 
 func TestUserLifecycle(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 
 	user := &store.User{
 		AccountID:   "acct-123",

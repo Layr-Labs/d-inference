@@ -35,13 +35,6 @@ type PrivyAuth struct {
 	httpClient      *http.Client
 }
 
-// Config holds Privy authentication configuration.
-type Config struct {
-	AppID           string // Privy app ID (also used as JWT audience)
-	AppSecret       string // Privy app secret (for REST API basic auth)
-	VerificationKey string // PEM-encoded ES256 public key from Privy dashboard
-}
-
 // NewPrivyAuth creates a new Privy authenticator.
 func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, error) {
 	if cfg.AppID == "" || cfg.VerificationKey == "" {

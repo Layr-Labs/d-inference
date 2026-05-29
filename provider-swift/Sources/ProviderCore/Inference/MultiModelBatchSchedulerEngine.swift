@@ -168,9 +168,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             promptTokens = try tokenizer.inner.applyChatTemplate(
                 messages: messages, tools: toolSpecs, additionalContext: nil
             )
-        } catch let error as MultiModelBatchSchedulerEngineError {
+        } catch let MultiModelBatchSchedulerEngineError.templateRenderingFailed(message) {
+            // Trust boundary (review #248): only `.templateRenderingFailed`
+            // is passed through unchanged, to avoid double-wrapping its
+            // message. We deliberately do NOT pass through every typed
+            // engine error — the tokenizer is a distinct trust domain from
+            // the scheduler, so scheduler-origin admission errors
+            // (`queueFull`, `tokenBudgetExhausted`, `requestRejected`, ...)
+            // cannot originate here. Any other failure out of this render
+            // block is, by construction, a template problem and is wrapped
+            // below — so a future typed error thrown from the tokenizer
+            // path can't silently slip out with the wrong status code.
             await releaseBox.fire()
-            throw error
+            throw MultiModelBatchSchedulerEngineError.templateRenderingFailed(message)
         } catch {
             // #242: a defective `chat_template.jinja` (e.g. gemma-4-26b's
             // `X | upper` on an Undefined value when tools are present)
@@ -339,8 +349,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 tools: tools,
                 additionalContext: nil
             )
-        } catch let error as MultiModelBatchSchedulerEngineError {
-            throw error
+        } catch let MultiModelBatchSchedulerEngineError.templateRenderingFailed(message) {
+            // Trust boundary (review #248): only pass `.templateRenderingFailed`
+            // through unchanged; any other failure from this render block is
+            // wrapped below. See the matching note in `streamChatCompletion`.
+            throw MultiModelBatchSchedulerEngineError.templateRenderingFailed(message)
         } catch {
             // #242: same defensive wrap as `streamChatCompletion` so a
             // template that throws on tool definitions surfaces as a clean

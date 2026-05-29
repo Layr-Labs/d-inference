@@ -162,5 +162,18 @@ let package = Package(
             dependencies: ["ProviderCoreFoundation"],
             path: "Tests/ProviderCoreFoundationTests"
         ),
+
+        // ----------------------------------------------------------------
+        // DarkbloomCLITests — unit tests for the `darkbloom` executable
+        // target's pure helpers. The CLI's command types live in the
+        // executable target (which uses `@main`, so it is importable via
+        // `@testable import darkbloom`). Currently covers the `log` argv
+        // builders in LogsCommand.
+        // ----------------------------------------------------------------
+        .testTarget(
+            name: "DarkbloomCLITests",
+            dependencies: ["darkbloom"],
+            path: "Tests/DarkbloomCLITests"
+        ),
     ]
 )

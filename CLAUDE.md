@@ -242,9 +242,18 @@ Every new feature or non-trivial change must ship with tests. Don't rely on "the
 
 The goal is "next engineer can change this and CI tells them if they broke it," not "it worked on my machine today."
 
+## Code Structure & Modularity
+
+Keep the codebase modular, never monolithic.
+
+- Prefer small, single-responsibility files over large catch-all ones. Split by concern: types, pure helpers, data/IO hooks, UI pieces, and a thin orchestrator that wires them together.
+- Group a feature's files into a dedicated module/folder with a thin entry point. Examples: the coordinator's top-level Go packages (`registry/`, `billing/`, `store/`), and `console-ui/src/components/api-keys/` (`constants`, `format`, `limits`, `Modal`, `KeyForm`, `KeyCard`, a `useApiKeys` data hook, and a thin `ApiKeysManager` orchestrator).
+- One file/component should do one thing. If a file mixes several concerns or grows past a few hundred lines, that's a signal to split it.
+- **At the end of every large piece of work, do a refactor pass to make it modular before calling it done.** Extract helpers/types/hooks into focused files, delete dead code, and keep the public entry point thin. The refactor must be behavior-preserving — build, lint, and tests stay green.
+
 ## Quality Gate
 
-After completing each objective (task, plan phase, or discrete unit of work), spawn **both** reviewers in parallel:
+After completing each objective (task, plan phase, or discrete unit of work), first do a modular refactor pass on any large change (see **Code Structure & Modularity**), then spawn **both** reviewers in parallel:
 
 1. **Codex rescue subagent** (`codex:codex-rescue`) — reviews the diff for correctness, regressions, and build/test pass
 2. **Claude Code subagent** (`Agent` tool, general-purpose) — independently reviews the same diff for correctness, edge cases, and code quality

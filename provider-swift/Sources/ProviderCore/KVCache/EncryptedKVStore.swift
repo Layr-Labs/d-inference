@@ -185,98 +185,45 @@ public enum EncryptedKVStore {
         // into the wrap so tampering with it also breaks DEK unwrap.
         let (dek, wrappedDEK) = try await kek.freshDEK(aad: metadataJSON)
 
-        // Build the encrypted body: chunk sealed against DEK + AAD.
-        var body = Data()
-        body.reserveCapacity(estimatedBodySize(plaintextSizes: metadata.chunkPlaintextSizes))
-
-        // Chunk count.
-        body.append(uint32LE(UInt32(chunks.count)))
-
-        for (i, plaintext) in chunks.enumerated() {
-            let nonce = try deriveChunkNonce(
-                dek: dek, fileIV: fileIV, chunkIndex: UInt32(i)
-            )
-            let sealed: AES.GCM.SealedBox
-            do {
-                sealed = try AES.GCM.seal(
-                    plaintext, using: dek,
-                    nonce: AES.GCM.Nonce(data: nonce),
-                    authenticating: metadataJSON
-                )
-            } catch {
-                throw EncryptedKVStoreError.ioFailure(
-                    "AES.GCM.seal chunk \(i): \(error)"
-                )
-            }
-            // Wire form per chunk: [uint32 LE ct+tag length][ct][tag].
-            let ctPlusTag = sealed.ciphertext + sealed.tag
-            guard ctPlusTag.count == plaintext.count + gcmTagLength else {
-                throw EncryptedKVStoreError.ioFailure(
-                    "unexpected sealed size: ct+tag=\(ctPlusTag.count), pt=\(plaintext.count)"
-                )
-            }
-            guard ctPlusTag.count <= UInt32.max else {
-                throw EncryptedKVStoreError.sizeOverflow("chunk \(i) too large")
-            }
-            body.append(uint32LE(UInt32(ctPlusTag.count)))
-            body.append(ctPlusTag)
-        }
-
-        // Assemble the header.
-        var header = Data()
-        header.reserveCapacity(28 + wrappedDEK.count + metadataJSON.count)
-
-        header.append(contentsOf: magic)
-        header.append(uint16LE(formatVersion))
-        header.append(uint16LE(0))  // flags
-        header.append(fileIV)
-        guard wrappedDEK.count <= UInt32.max else {
-            throw EncryptedKVStoreError.sizeOverflow("wrapped DEK too large")
-        }
-        header.append(uint32LE(UInt32(wrappedDEK.count)))
-        header.append(wrappedDEK)
-        guard metadataJSON.count <= UInt32.max else {
-            throw EncryptedKVStoreError.sizeOverflow("metadata too large")
-        }
-        header.append(uint32LE(UInt32(metadataJSON.count)))
-        header.append(metadataJSON)
-
-        // Atomic write: tmp file → fsync → rename.
-        let tmpURL = url.appendingPathExtension("tmp-\(UUID().uuidString)")
-        let dir = url.deletingLastPathComponent()
-        try ensureDirectory(dir)
-
-        do {
-            FileManager.default.createFile(atPath: tmpURL.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: tmpURL)
-            defer { try? handle.close() }
-            try handle.write(contentsOf: header)
-            try handle.write(contentsOf: body)
-            try handle.synchronize()  // fsync before rename
-        } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
-            throw EncryptedKVStoreError.ioFailure("write tmp: \(error)")
-        }
-
-        do {
-            // POSIX rename is atomic within the same filesystem.
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
-        } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
-            throw EncryptedKVStoreError.ioFailure("atomic rename: \(error)")
-        }
-
-        // Durability: fsync the tmp file (above) flushes the file's data
-        // and inode, but the *directory entry* created by the rename is
-        // not durable until the containing directory is itself flushed.
-        // On Apple SSDs use F_FULLFSYNC for a true flush-to-media; a
-        // best-effort failure here only costs a cold prefill on the rare
-        // crash-after-rename, so we don't fail the write on it.
-        syncDirectory(dir)
-
+        let body = try buildBody(chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON)
+        let header = try assembleHeader(fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
+        try atomicWrite(header: header, body: body, to: url)
         storeLogger.debug(
             "wrote \(chunks.count, privacy: .public) chunks to \(url.lastPathComponent, privacy: .public)"
         )
+    }
+
+    /// Synchronous variant of `write` for callers that hold an
+    /// already-unwrapped KEK `SymmetricKey` and cannot await the
+    /// `KVCacheKEK` actor — notably the engine-step-loop persistence
+    /// backend (`EncryptedPrefixCachePersistence`). Produces an
+    /// identical on-disk file format; the only difference is the DEK is
+    /// wrapped with `kekKey` via synchronous AES-GCM rather than through
+    /// the actor.
+    public static func writeSync(
+        to url: URL,
+        metadata: EncryptedKVStoreMetadata,
+        chunks: [Data],
+        kekKey: SymmetricKey
+    ) throws {
+        guard chunks.count == metadata.chunkPlaintextSizes.count else {
+            throw EncryptedKVStoreError.malformedHeader(
+                "chunk count \(chunks.count) ≠ metadata.chunkPlaintextSizes \(metadata.chunkPlaintextSizes.count)"
+            )
+        }
+        for (i, c) in chunks.enumerated() where c.count != metadata.chunkPlaintextSizes[i] {
+            throw EncryptedKVStoreError.malformedHeader(
+                "chunk[\(i)] plaintext size \(c.count) ≠ metadata.chunkPlaintextSizes[\(i)] \(metadata.chunkPlaintextSizes[i])"
+            )
+        }
+        let metadataJSON = try canonicalEncode(metadata)
+        let fileIV = randomBytes(fileIVLength)
+        let dek = SymmetricKey(size: .bits256)
+        let wrappedDEK = try wrapDEKSync(dek: dek, kekKey: kekKey, aad: metadataJSON)
+
+        let body = try buildBody(chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON)
+        let header = try assembleHeader(fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
+        try atomicWrite(header: header, body: body, to: url)
     }
 
     // MARK: Read
@@ -294,24 +241,147 @@ public enum EncryptedKVStore {
             wrappedDEK: header.wrappedDEK,
             aad: header.metadataBytes
         )
+        let plaintexts = try decryptChunks(header: header, body: body, dek: dek)
+        return (header.metadata, plaintexts)
+    }
 
-        // Body: [uint32 LE chunk_count][per-chunk [length][ct+tag]]
+    /// Synchronous variant of `read` for callers holding an unwrapped
+    /// KEK `SymmetricKey` (see `writeSync`). Same format + auth checks.
+    public static func readSync(
+        from url: URL,
+        kekKey: SymmetricKey
+    ) throws -> (EncryptedKVStoreMetadata, [Data]) {
+        let (header, body) = try splitHeaderAndBody(at: url)
+        let dek = try unwrapDEKSync(wrapped: header.wrappedDEK, kekKey: kekKey, aad: header.metadataBytes)
+        let plaintexts = try decryptChunks(header: header, body: body, dek: dek)
+        return (header.metadata, plaintexts)
+    }
+
+    /// Parse only the metadata block — no DEK unwrap, no chunk
+    /// decrypt. Suitable for index rebuilds and prefix lookups where
+    /// we just need to know `token_count`, `model_hash`, etc.
+    public static func readMetadataOnly(from url: URL) throws -> EncryptedKVStoreMetadata {
+        let (header, _) = try splitHeaderAndBody(at: url)
+        return header.metadata
+    }
+
+    // MARK: - Shared body/header/write helpers (used by both async + sync paths)
+
+    /// Wrap a per-file DEK under the KEK key with AAD binding (sync).
+    private static func wrapDEKSync(dek: SymmetricKey, kekKey: SymmetricKey, aad: Data) throws -> Data {
+        let dekBytes = dek.withUnsafeBytes { Data($0) }
+        let sealed = try AES.GCM.seal(dekBytes, using: kekKey, authenticating: aad)
+        guard let combined = sealed.combined else {
+            throw EncryptedKVStoreError.ioFailure("DEK wrap produced no combined output")
+        }
+        return combined
+    }
+
+    private static func unwrapDEKSync(wrapped: Data, kekKey: SymmetricKey, aad: Data) throws -> SymmetricKey {
+        do {
+            let box = try AES.GCM.SealedBox(combined: wrapped)
+            let raw = try AES.GCM.open(box, using: kekKey, authenticating: aad)
+            guard raw.count == 32 else {
+                throw EncryptedKVStoreError.authenticationFailed("DEK unwrap: expected 32 bytes, got \(raw.count)")
+            }
+            return SymmetricKey(data: raw)
+        } catch let e as EncryptedKVStoreError {
+            throw e
+        } catch {
+            throw EncryptedKVStoreError.authenticationFailed("DEK unwrap: \(error)")
+        }
+    }
+
+    /// Build the encrypted body: `[uint32 LE chunk_count]` then each
+    /// chunk sealed against `dek` with `aad`, HKDF-derived per-chunk nonce.
+    private static func buildBody(chunks: [Data], dek: SymmetricKey, fileIV: Data, aad: Data) throws -> Data {
+        var body = Data()
+        body.reserveCapacity(estimatedBodySize(plaintextSizes: chunks.map { $0.count }))
+        body.append(uint32LE(UInt32(chunks.count)))
+        for (i, plaintext) in chunks.enumerated() {
+            let nonce = try deriveChunkNonce(dek: dek, fileIV: fileIV, chunkIndex: UInt32(i))
+            let sealed: AES.GCM.SealedBox
+            do {
+                sealed = try AES.GCM.seal(
+                    plaintext, using: dek, nonce: AES.GCM.Nonce(data: nonce), authenticating: aad)
+            } catch {
+                throw EncryptedKVStoreError.ioFailure("AES.GCM.seal chunk \(i): \(error)")
+            }
+            let ctPlusTag = sealed.ciphertext + sealed.tag
+            guard ctPlusTag.count == plaintext.count + gcmTagLength else {
+                throw EncryptedKVStoreError.ioFailure(
+                    "unexpected sealed size: ct+tag=\(ctPlusTag.count), pt=\(plaintext.count)")
+            }
+            guard ctPlusTag.count <= UInt32.max else {
+                throw EncryptedKVStoreError.sizeOverflow("chunk \(i) too large")
+            }
+            body.append(uint32LE(UInt32(ctPlusTag.count)))
+            body.append(ctPlusTag)
+        }
+        return body
+    }
+
+    private static func assembleHeader(fileIV: Data, wrappedDEK: Data, metadataJSON: Data) throws -> Data {
+        var header = Data()
+        header.reserveCapacity(28 + wrappedDEK.count + metadataJSON.count)
+        header.append(contentsOf: magic)
+        header.append(uint16LE(formatVersion))
+        header.append(uint16LE(0))  // flags
+        header.append(fileIV)
+        guard wrappedDEK.count <= UInt32.max else {
+            throw EncryptedKVStoreError.sizeOverflow("wrapped DEK too large")
+        }
+        header.append(uint32LE(UInt32(wrappedDEK.count)))
+        header.append(wrappedDEK)
+        guard metadataJSON.count <= UInt32.max else {
+            throw EncryptedKVStoreError.sizeOverflow("metadata too large")
+        }
+        header.append(uint32LE(UInt32(metadataJSON.count)))
+        header.append(metadataJSON)
+        return header
+    }
+
+    private static func atomicWrite(header: Data, body: Data, to url: URL) throws {
+        let tmpURL = url.appendingPathExtension("tmp-\(UUID().uuidString)")
+        let dir = url.deletingLastPathComponent()
+        try ensureDirectory(dir)
+        do {
+            FileManager.default.createFile(atPath: tmpURL.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: tmpURL)
+            defer { try? handle.close() }
+            try handle.write(contentsOf: header)
+            try handle.write(contentsOf: body)
+            try handle.synchronize()  // fsync before rename
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw EncryptedKVStoreError.ioFailure("write tmp: \(error)")
+        }
+        do {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw EncryptedKVStoreError.ioFailure("atomic rename: \(error)")
+        }
+        // Durability: flush the directory entry created by the rename
+        // (F_FULLFSYNC on Apple SSDs); best-effort, see syncDirectory.
+        syncDirectory(dir)
+    }
+
+    /// Decrypt the body chunks against `dek`, validating each plaintext
+    /// size against the metadata. Shared by `read` and `readSync`.
+    private static func decryptChunks(header: ParsedHeader, body: Data, dek: SymmetricKey) throws -> [Data] {
         var cursor = 0
         guard body.count >= 4 else {
             throw EncryptedKVStoreError.truncated("body shorter than chunk_count")
         }
         let chunkCount = readUInt32LE(body, at: cursor)
         cursor += 4
-
         guard Int(chunkCount) == header.metadata.chunkPlaintextSizes.count else {
             throw EncryptedKVStoreError.malformedHeader(
-                "chunk_count \(chunkCount) ≠ metadata.chunkPlaintextSizes.count \(header.metadata.chunkPlaintextSizes.count)"
-            )
+                "chunk_count \(chunkCount) ≠ metadata.chunkPlaintextSizes.count \(header.metadata.chunkPlaintextSizes.count)")
         }
-
         var plaintexts: [Data] = []
         plaintexts.reserveCapacity(Int(chunkCount))
-
         for i in 0..<Int(chunkCount) {
             guard cursor + 4 <= body.count else {
                 throw EncryptedKVStoreError.truncated("chunk \(i) length field")
@@ -328,17 +398,11 @@ public enum EncryptedKVStore {
             }
             let ciphertext = ctPlusTag.prefix(ctLen - gcmTagLength)
             let tag = ctPlusTag.suffix(gcmTagLength)
-
-            let nonce = try deriveChunkNonce(
-                dek: dek, fileIV: header.fileIV, chunkIndex: UInt32(i)
-            )
+            let nonce = try deriveChunkNonce(dek: dek, fileIV: header.fileIV, chunkIndex: UInt32(i))
             let box: AES.GCM.SealedBox
             do {
                 box = try AES.GCM.SealedBox(
-                    nonce: AES.GCM.Nonce(data: nonce),
-                    ciphertext: ciphertext,
-                    tag: tag
-                )
+                    nonce: AES.GCM.Nonce(data: nonce), ciphertext: ciphertext, tag: tag)
             } catch {
                 throw EncryptedKVStoreError.malformedHeader("chunk \(i) SealedBox: \(error)")
             }
@@ -346,26 +410,16 @@ public enum EncryptedKVStore {
                 let pt = try AES.GCM.open(box, using: dek, authenticating: header.metadataBytes)
                 guard pt.count == header.metadata.chunkPlaintextSizes[i] else {
                     throw EncryptedKVStoreError.authenticationFailed(
-                        "chunk \(i) decrypted size \(pt.count) ≠ metadata size \(header.metadata.chunkPlaintextSizes[i])"
-                    )
+                        "chunk \(i) decrypted size \(pt.count) ≠ metadata size \(header.metadata.chunkPlaintextSizes[i])")
                 }
                 plaintexts.append(pt)
+            } catch let e as EncryptedKVStoreError {
+                throw e
             } catch {
-                throw EncryptedKVStoreError.authenticationFailed(
-                    "AES.GCM.open chunk \(i): \(error)"
-                )
+                throw EncryptedKVStoreError.authenticationFailed("AES.GCM.open chunk \(i): \(error)")
             }
         }
-
-        return (header.metadata, plaintexts)
-    }
-
-    /// Parse only the metadata block — no DEK unwrap, no chunk
-    /// decrypt. Suitable for index rebuilds and prefix lookups where
-    /// we just need to know `token_count`, `model_hash`, etc.
-    public static func readMetadataOnly(from url: URL) throws -> EncryptedKVStoreMetadata {
-        let (header, _) = try splitHeaderAndBody(at: url)
-        return header.metadata
+        return plaintexts
     }
 
     // MARK: - Header parsing

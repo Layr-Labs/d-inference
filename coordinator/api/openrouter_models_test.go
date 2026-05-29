@@ -67,19 +67,29 @@ func TestSupportedFeaturesFromCapabilities(t *testing.T) {
 
 func TestDefaultSamplingParameters(t *testing.T) {
 	got := defaultSamplingParameters()
-	// Must be a subset of OpenRouter's valid sampling-parameter vocabulary.
-	valid := map[string]bool{
-		"temperature": true, "top_p": true, "top_k": true, "min_p": true,
-		"top_a": true, "frequency_penalty": true, "presence_penalty": true,
+	// Only parameters the Swift inference engine actually honors should be
+	// advertised; OpenRouter-valid-but-unhonored ones must be excluded.
+	honored := map[string]bool{
+		"temperature": true, "top_p": true, "top_k": true,
+		"frequency_penalty": true, "presence_penalty": true,
 		"repetition_penalty": true, "stop": true, "seed": true,
-		"max_tokens": true, "logit_bias": true,
+		"max_tokens": true,
 	}
 	if len(got) == 0 {
 		t.Fatal("expected non-empty sampling parameters")
 	}
+	gotSet := map[string]bool{}
 	for _, p := range got {
-		if !valid[p] {
-			t.Errorf("sampling parameter %q is not in OpenRouter's valid set", p)
+		gotSet[p] = true
+		if !honored[p] {
+			t.Errorf("advertised sampling parameter %q is not honored by the provider", p)
+		}
+	}
+	// These are OpenRouter-valid but NOT decoded by the Swift provider — must
+	// not be advertised.
+	for _, p := range []string{"min_p", "top_a", "logit_bias"} {
+		if gotSet[p] {
+			t.Errorf("must not advertise %q (provider silently ignores it)", p)
 		}
 	}
 }

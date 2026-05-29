@@ -122,6 +122,24 @@ func (l *Limiter) AllowN(accountID string, n int) (bool, time.Duration) {
 	return false, retryAfter
 }
 
+// CanN reports whether n units are currently available for the account WITHOUT
+// consuming them. Used for cross-bucket peek-then-consume so a rejection in one
+// dimension doesn't debit another. Empty accountID or n <= 0 is always true.
+// An unseen account is treated as a full bucket.
+func (l *Limiter) CanN(accountID string, n int) bool {
+	if accountID == "" || n <= 0 {
+		return true
+	}
+	now := time.Now()
+	l.mu.Lock()
+	e, ok := l.buckets[accountID]
+	l.mu.Unlock()
+	if !ok {
+		return n <= l.cfg.Burst
+	}
+	return e.limiter.TokensAt(now) >= float64(n)
+}
+
 // bucketFor returns the account's bucket, lazily creating it.
 func (l *Limiter) bucketFor(accountID string, now time.Time) *entry {
 	l.mu.Lock()

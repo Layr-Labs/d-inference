@@ -6,7 +6,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/payments"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -142,15 +141,16 @@ func supportedFeaturesFromCapabilities(capabilities []string) []string {
 	return out
 }
 
-// defaultSamplingParameters is the full set of sampling parameters the
-// coordinator forwards to providers. Because the raw request body is passed
-// through to the inference engine untouched, every OpenRouter-valid sampling
-// parameter is supported.
+// defaultSamplingParameters is the set of sampling parameters the Swift
+// inference engine actually decodes and applies (see ChatCompletionRequest in
+// provider-swift). We deliberately exclude OpenRouter-valid-but-unhonored
+// parameters (min_p, top_a, logit_bias) so the feed never advertises sampling
+// behavior the provider would silently ignore.
 func defaultSamplingParameters() []string {
 	return []string{
-		"temperature", "top_p", "top_k", "min_p", "top_a",
+		"temperature", "top_p", "top_k",
 		"frequency_penalty", "presence_penalty", "repetition_penalty",
-		"stop", "seed", "max_tokens", "logit_bias",
+		"stop", "seed", "max_tokens",
 	}
 }
 
@@ -226,14 +226,16 @@ type openRouterModelFields struct {
 }
 
 // openRouterModelFieldsFor derives the shared OpenRouter fields for a model.
-// Quantization, pricing and sampling parameters come from the model and the
-// platform price table; the remaining fields come from the registry entry and
-// are left at their zero values when hasReg is false (legacy supported_models
-// rows without a registry entry).
-func (s *Server) openRouterModelFieldsFor(m registry.AggregateModel, reg store.ModelRegistryEntry, hasReg bool) openRouterModelFields {
-	inPM, outPM := s.resolvePlatformPricing(m.ID)
+// Pricing and sampling parameters come from the platform price table; the
+// quantization is mapped from rawQuantization (the aggregate's value for
+// /v1/models, or the registry entry's value for the catalog-driven feed); the
+// remaining fields come from the registry entry and are left at their zero
+// values when hasReg is false (legacy supported_models rows without a registry
+// entry).
+func (s *Server) openRouterModelFieldsFor(modelID, rawQuantization string, reg store.ModelRegistryEntry, hasReg bool) openRouterModelFields {
+	inPM, outPM := s.resolvePlatformPricing(modelID)
 	f := openRouterModelFields{
-		Quantization:                mapQuantizationToOpenRouter(m.Quantization),
+		Quantization:                mapQuantizationToOpenRouter(rawQuantization),
 		Pricing:                     buildModelPricing(inPM, outPM),
 		SupportedSamplingParameters: defaultSamplingParameters(),
 	}
@@ -301,12 +303,14 @@ func contains(s []string, v string) bool {
 	return false
 }
 
-// isTextModelType reports whether a catalog model type should appear in the
-// text-only OpenRouter feed. Empty/text/chat/completion count as text;
-// embedding/tts/image/audio do not.
-func isTextModelType(modelType string) bool {
+// isNonTextModelType reports whether a model type is a KNOWN non-text modality
+// that must be excluded from the text-only OpenRouter feed. Unknown/empty and
+// text-ish types (text, chat, completion) are NOT excluded, so the filter only
+// drops models we're confident are not text generation (embeddings, audio,
+// image, rerank).
+func isNonTextModelType(modelType string) bool {
 	switch strings.ToLower(strings.TrimSpace(modelType)) {
-	case "", "text", "chat", "completion":
+	case "embedding", "embeddings", "tts", "stt", "speech", "audio", "image", "vision", "rerank", "reranker":
 		return true
 	default:
 		return false

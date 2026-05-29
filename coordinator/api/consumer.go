@@ -3056,7 +3056,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		// params, and registry-sourced metadata), shared with the dedicated
 		// /v1/models/openrouter feed.
 		reg, hasReg := registryByID[m.ID]
-		s.openRouterModelFieldsFor(m, reg, hasReg).applyToModelEntry(&entry)
+		s.openRouterModelFieldsFor(m.ID, m.Quantization, reg, hasReg).applyToModelEntry(&entry)
 
 		// Modalities are derived from the model's capabilities (text by default).
 		var caps []string

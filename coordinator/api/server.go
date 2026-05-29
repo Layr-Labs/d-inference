@@ -316,15 +316,17 @@ func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inp
 // setTokenRateLimitHeaders emits the standard input/output token rate-limit
 // headers from the limiter's current state.
 func setTokenRateLimitHeaders(w http.ResponseWriter, tl *ratelimit.TokenLimiter, accountID string) {
-	in := tl.InputStat(accountID)
-	out := tl.OutputStat(accountID)
 	h := w.Header()
-	h.Set("x-ratelimit-limit-input-tokens", strconv.Itoa(in.LimitPerMinute))
-	h.Set("x-ratelimit-remaining-input-tokens", strconv.Itoa(in.Remaining))
-	h.Set("x-ratelimit-reset-input-tokens", strconv.Itoa(in.ResetSeconds)+"s")
-	h.Set("x-ratelimit-limit-output-tokens", strconv.Itoa(out.LimitPerMinute))
-	h.Set("x-ratelimit-remaining-output-tokens", strconv.Itoa(out.Remaining))
-	h.Set("x-ratelimit-reset-output-tokens", strconv.Itoa(out.ResetSeconds)+"s")
+	if in, ok := tl.InputStat(accountID); ok {
+		h.Set("x-ratelimit-limit-input-tokens", strconv.Itoa(in.LimitPerMinute))
+		h.Set("x-ratelimit-remaining-input-tokens", strconv.Itoa(in.Remaining))
+		h.Set("x-ratelimit-reset-input-tokens", strconv.Itoa(in.ResetSeconds)+"s")
+	}
+	if out, ok := tl.OutputStat(accountID); ok {
+		h.Set("x-ratelimit-limit-output-tokens", strconv.Itoa(out.LimitPerMinute))
+		h.Set("x-ratelimit-remaining-output-tokens", strconv.Itoa(out.Remaining))
+		h.Set("x-ratelimit-reset-output-tokens", strconv.Itoa(out.ResetSeconds)+"s")
+	}
 }
 
 // setRequestRateLimitHeaders emits the standard request-dimension rate-limit
@@ -1597,14 +1599,19 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 			next(w, r)
 			return
 		}
-		// Service-role accounts (e.g. OpenRouter) get the elevated limiter, or
-		// bypass entirely when no service limiter is configured.
-		if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
-			if s.serviceRateLimiter == nil {
-				next(w, r)
-				return
+		// Service-role accounts (e.g. OpenRouter) get the elevated limiter (or
+		// bypass when none is configured) — but ONLY on the consumer/inference
+		// tier. Financial endpoints (deposits, withdrawals, key/invite/referral
+		// mutations) keep their stricter limiter for every account, since those
+		// are higher-value abuse targets regardless of role.
+		if tier == "consumer" {
+			if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
+				if s.serviceRateLimiter == nil {
+					next(w, r)
+					return
+				}
+				rl = s.serviceRateLimiter
 			}
-			rl = s.serviceRateLimiter
 		}
 		if allowed, retryAfter := rl.Allow(accountID); !allowed {
 			seconds := int(retryAfter.Seconds())

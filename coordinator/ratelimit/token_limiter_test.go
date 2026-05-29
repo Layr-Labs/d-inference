@@ -64,6 +64,54 @@ func TestTokenLimiterClampsToBurst(t *testing.T) {
 	}
 }
 
+// A zero/negative dimension must be treated as unlimited, not coerced to the
+// default 1 tok/s limiter.
+func TestTokenLimiterZeroDimensionUnlimited(t *testing.T) {
+	// Output disabled (0); input enforced.
+	tl := NewTokenLimiter(1000, 1000, 0, 0)
+	for i := 0; i < 50; i++ {
+		if ok, dim, _ := tl.Allow("a", 1, 1_000_000); !ok {
+			t.Fatalf("output should be unlimited, got dim=%q on iter %d", dim, i)
+		}
+	}
+	if _, ok := tl.OutputStat("a"); ok {
+		t.Error("OutputStat should report disabled when output is unlimited")
+	}
+	if _, ok := tl.InputStat("a"); !ok {
+		t.Error("InputStat should report enabled when input is limited")
+	}
+	// Input still enforced (burst 1000).
+	if ok, _, _ := tl.Allow("b", 1000, 0); !ok {
+		t.Fatal("first input request within burst should pass")
+	}
+	if ok, dim, _ := tl.Allow("b", 1000, 0); ok || dim != "input_tokens" {
+		t.Fatalf("input should still be enforced, got ok=%v dim=%q", ok, dim)
+	}
+}
+
+// An output-limited request must NOT debit the input bucket (peek-then-consume),
+// so repeated output rejections don't starve later input-bound requests.
+func TestTokenLimiterNoCrossDimensionDrain(t *testing.T) {
+	tl := NewTokenLimiter(0.01, 1000, 0.01, 100) // input burst 1000, output burst 100
+
+	// First request consumes input=50, output=100 (drains output).
+	if ok, _, _ := tl.Allow("a", 50, 100); !ok {
+		t.Fatal("first request should pass")
+	}
+	// Five output-limited requests: each must be rejected on output WITHOUT
+	// consuming input.
+	for i := 0; i < 5; i++ {
+		if ok, dim, _ := tl.Allow("a", 50, 100); ok || dim != "output_tokens" {
+			t.Fatalf("iter %d: expected output_tokens rejection, got ok=%v dim=%q", i, ok, dim)
+		}
+	}
+	// Input bucket should still hold ~950 (only the first request debited it).
+	// With the old debit-then-check behavior it would have lost 50*6=300.
+	if ok, dim, _ := tl.Allow("a", 900, 0); !ok {
+		t.Fatalf("input should retain capacity after output rejections, got dim=%q", dim)
+	}
+}
+
 func TestStat(t *testing.T) {
 	l := New(Config{RPS: 60, Burst: 60}) // 3600/min
 	st := l.Stat("fresh")

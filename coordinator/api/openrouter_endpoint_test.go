@@ -131,6 +131,61 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 	}
 }
 
+// The feed is catalog-driven: an active model stays listed even when NO provider
+// is currently online for it (transient capacity is OpenRouter's concern via
+// 429s, not a reason to delist). Datacenters are empty in that case.
+func TestOpenRouterFeedSurvivesProviderOutage(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	const modelID = "mlx-community/orphan-model"
+	entry := &store.ModelRegistryEntry{
+		ID: modelID, DisplayName: "Orphan", Quantization: "4bit",
+		MaxContextLength: 8192, MaxOutputLength: 2048, MinRAMGB: 8, Status: "active",
+		Capabilities: []string{"tools"},
+	}
+	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+	// Note: NO provider connected. registry.ListModels() is empty.
+
+	rec := httptest.NewRecorder()
+	srv.handleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var resp types.OpenRouterModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	var found *types.OpenRouterModel
+	for i := range resp.Data {
+		if resp.Data[i].ID == modelID {
+			found = &resp.Data[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("active model must remain in the feed with no provider online: %s", rec.Body.String())
+	}
+	if !found.IsReady {
+		t.Error("active model should be is_ready even with no provider")
+	}
+	if len(found.Datacenters) != 0 {
+		t.Errorf("datacenters should be empty with no provider, got %v", found.Datacenters)
+	}
+	if found.ContextLength != 8192 || !containsStr(found.SupportedFeatures, "tools") {
+		t.Errorf("registry-derived fields missing: ctx=%d feats=%v", found.ContextLength, found.SupportedFeatures)
+	}
+}
+
 // Staged models (openrouter_is_ready=false) report is_ready=false.
 func TestOpenRouterModelsStaging(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

@@ -24,42 +24,84 @@ type TokenLimiter struct {
 // caller converts per-minute limits, e.g. ITPM/60). Bursts are bucket
 // capacities and should be >= the largest single request's token count
 // (typically >= max context for input and >= max output length for output).
+//
+// A dimension with a non-positive rate or burst is treated as UNLIMITED (its
+// bucket is nil and that dimension is never enforced). This lets an operator
+// disable just one dimension (e.g. ITPM enabled, OTPM=0) without it silently
+// collapsing to New's default 1 tok/s.
 func NewTokenLimiter(inputTokPerSec float64, inputBurst int, outputTokPerSec float64, outputBurst int) *TokenLimiter {
-	return &TokenLimiter{
-		input:  New(Config{RPS: inputTokPerSec, Burst: inputBurst}),
-		output: New(Config{RPS: outputTokPerSec, Burst: outputBurst}),
+	t := &TokenLimiter{}
+	if inputTokPerSec > 0 && inputBurst > 0 {
+		t.input = New(Config{RPS: inputTokPerSec, Burst: inputBurst})
 	}
+	if outputTokPerSec > 0 && outputBurst > 0 {
+		t.output = New(Config{RPS: outputTokPerSec, Burst: outputBurst})
+	}
+	return t
 }
 
-// Allow consumes inputTokens from the input bucket and outputTokens from the
-// output bucket. Returns the tripped dimension ("input_tokens" or
-// "output_tokens") and a Retry-After hint when not allowed. Empty accountID is
-// allowed unconditionally.
+// Allow charges inputTokens to the input bucket and outputTokens to the output
+// bucket. It peeks BOTH dimensions first and only consumes when both have
+// capacity, so a rejection in one dimension never debits the other (an
+// output-limited request must not drain the input budget). Returns the tripped
+// dimension ("input_tokens" or "output_tokens") and a Retry-After hint when not
+// allowed. Nil dimensions are unlimited; empty accountID is always allowed.
 func (t *TokenLimiter) Allow(accountID string, inputTokens, outputTokens int) (allowed bool, dimension string, retryAfter time.Duration) {
 	if accountID == "" {
 		return true, "", 0
 	}
-	in := clampCharge(inputTokens, t.input.Burst())
-	if ok, retry := t.input.AllowN(accountID, in); !ok {
-		return false, "input_tokens", retry
+
+	var in, out int
+	if t.input != nil {
+		in = clampCharge(inputTokens, t.input.Burst())
+		if !t.input.CanN(accountID, in) {
+			_, retry := t.input.AllowN(accountID, in) // fails atomically, no debit; yields Retry-After
+			return false, "input_tokens", retry
+		}
 	}
-	out := clampCharge(outputTokens, t.output.Burst())
-	if ok, retry := t.output.AllowN(accountID, out); !ok {
-		return false, "output_tokens", retry
+	if t.output != nil {
+		out = clampCharge(outputTokens, t.output.Burst())
+		if !t.output.CanN(accountID, out) {
+			_, retry := t.output.AllowN(accountID, out)
+			return false, "output_tokens", retry
+		}
+	}
+	// Both dimensions have capacity — consume now.
+	if t.input != nil {
+		t.input.AllowN(accountID, in)
+	}
+	if t.output != nil {
+		t.output.AllowN(accountID, out)
 	}
 	return true, "", 0
 }
 
-// InputStat returns the input-token bucket snapshot for header emission.
-func (t *TokenLimiter) InputStat(accountID string) Stat { return t.input.Stat(accountID) }
+// InputStat returns the input-token bucket snapshot for header emission and
+// whether the dimension is enforced (false when unlimited).
+func (t *TokenLimiter) InputStat(accountID string) (Stat, bool) {
+	if t.input == nil {
+		return Stat{}, false
+	}
+	return t.input.Stat(accountID), true
+}
 
-// OutputStat returns the output-token bucket snapshot for header emission.
-func (t *TokenLimiter) OutputStat(accountID string) Stat { return t.output.Stat(accountID) }
+// OutputStat returns the output-token bucket snapshot and whether the dimension
+// is enforced (false when unlimited).
+func (t *TokenLimiter) OutputStat(accountID string) (Stat, bool) {
+	if t.output == nil {
+		return Stat{}, false
+	}
+	return t.output.Stat(accountID), true
+}
 
-// StartPruner launches idle-bucket pruning for both underlying buckets.
+// StartPruner launches idle-bucket pruning for any enforced dimensions.
 func (t *TokenLimiter) StartPruner(ctx context.Context, logger *slog.Logger, recoverFn func()) {
-	t.input.StartPruner(ctx, logger, recoverFn)
-	t.output.StartPruner(ctx, logger, recoverFn)
+	if t.input != nil {
+		t.input.StartPruner(ctx, logger, recoverFn)
+	}
+	if t.output != nil {
+		t.output.StartPruner(ctx, logger, recoverFn)
+	}
 }
 
 // clampCharge bounds a token charge to [0, burst] so a request larger than the

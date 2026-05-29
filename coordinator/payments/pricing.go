@@ -69,8 +69,22 @@ func CalculateCost(model string, promptTokens, completionTokens int) int64 {
 }
 
 // CalculateCostWithOverrides is like CalculateCost but uses custom per-account
-// prices if set, falling back to platform defaults.
+// prices if set, falling back to platform defaults. The per-request minimum
+// charge is applied.
 func CalculateCostWithOverrides(model string, promptTokens, completionTokens int, customInput, customOutput int64, hasCustom bool) int64 {
+	return calculateCost(model, promptTokens, completionTokens, customInput, customOutput, hasCustom, true)
+}
+
+// CalculateCostWithOverridesNoMinimum is like CalculateCostWithOverrides but
+// does NOT apply the per-request minimum charge. Used for service/wholesale
+// channels (e.g. OpenRouter) whose advertised pricing is purely per-token
+// (request price = 0), so the actual debit must match prompt*in + completion*out
+// exactly rather than being floored.
+func CalculateCostWithOverridesNoMinimum(model string, promptTokens, completionTokens int, customInput, customOutput int64, hasCustom bool) int64 {
+	return calculateCost(model, promptTokens, completionTokens, customInput, customOutput, hasCustom, false)
+}
+
+func calculateCost(model string, promptTokens, completionTokens int, customInput, customOutput int64, hasCustom, applyMinimum bool) int64 {
 	var inputRate, outputRate int64
 	if hasCustom {
 		inputRate = customInput
@@ -84,7 +98,7 @@ func CalculateCostWithOverrides(model string, promptTokens, completionTokens int
 	outputCost := int64(completionTokens) * outputRate / 1_000_000
 	cost := inputCost + outputCost
 
-	if cost < minimumChargeMicroUSD {
+	if applyMinimum && cost < minimumChargeMicroUSD {
 		cost = minimumChargeMicroUSD
 	}
 	return cost

@@ -55,15 +55,17 @@ func TestOpenRouterIsReady(t *testing.T) {
 	}
 }
 
-func TestIsTextModelType(t *testing.T) {
-	for _, mt := range []string{"", "text", "chat", "Completion"} {
-		if !isTextModelType(mt) {
-			t.Errorf("isTextModelType(%q) = false, want true", mt)
+func TestIsNonTextModelType(t *testing.T) {
+	// Text-ish and unknown types are NOT excluded (kept in the feed).
+	for _, mt := range []string{"", "text", "chat", "Completion", "test", "future-type"} {
+		if isNonTextModelType(mt) {
+			t.Errorf("isNonTextModelType(%q) = true, want false (should stay in feed)", mt)
 		}
 	}
-	for _, mt := range []string{"embedding", "tts", "image", "audio"} {
-		if isTextModelType(mt) {
-			t.Errorf("isTextModelType(%q) = true, want false", mt)
+	// Known non-text modalities are excluded.
+	for _, mt := range []string{"embedding", "tts", "image", "audio", "Rerank"} {
+		if !isNonTextModelType(mt) {
+			t.Errorf("isNonTextModelType(%q) = false, want true (should be excluded)", mt)
 		}
 	}
 }

@@ -308,7 +308,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		}
 		entry := registryEntryFromRecord(rec)
 		// Clone metadata before mutating so the stored record is never aliased.
-		meta := make(map[string]any, len(entry.Metadata)+1)
+		meta := make(map[string]any, len(entry.Metadata))
 		for k, v := range entry.Metadata {
 			meta[k] = v
 		}

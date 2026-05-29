@@ -54,6 +54,29 @@ func TestRateLimitServiceUsesElevatedLimiter(t *testing.T) {
 	}
 }
 
+// Service-role elevation must NOT apply to financial endpoints — those keep the
+// strict financial limiter for every account (abuse guard on balance mutations).
+func TestRateLimitFinancialNotElevatedForService(t *testing.T) {
+	s := &Server{
+		financialRateLimiter: ratelimit.New(ratelimit.Config{RPS: 0.001, Burst: 1}),
+		serviceRateLimiter:   ratelimit.New(ratelimit.Config{RPS: 1000, Burst: 1000}),
+	}
+	h := s.rateLimitFinancial(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	// A service account on a financial route: first request ok, second throttled
+	// by the strict financial limiter (not the elevated service limiter).
+	rec1 := httptest.NewRecorder()
+	h(rec1, serviceRequest("openrouter"))
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first financial request = %d, want 200", rec1.Code)
+	}
+	rec2 := httptest.NewRecorder()
+	h(rec2, serviceRequest("openrouter"))
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("service account on financial endpoint = %d, want 429 (strict limiter applies)", rec2.Code)
+	}
+}
+
 // With no service limiter configured, service accounts bypass rate limiting.
 func TestRateLimitServiceBypassesWhenNoServiceLimiter(t *testing.T) {
 	s := &Server{rateLimiter: ratelimit.New(ratelimit.Config{RPS: 0.001, Burst: 1})}

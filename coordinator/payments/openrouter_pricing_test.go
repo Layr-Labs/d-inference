@@ -58,6 +58,33 @@ func TestPlatformFeeWithPercent(t *testing.T) {
 	}
 }
 
+func TestCalculateCostNoMinimum(t *testing.T) {
+	const model = "m"
+	// A tiny request whose true token cost is below the 100 µUSD floor.
+	// 10 prompt + 10 completion tokens at default rates is far under the floor.
+	withMin := CalculateCostWithOverrides(model, 10, 10, 0, 0, false)
+	noMin := CalculateCostWithOverridesNoMinimum(model, 10, 10, 0, 0, false)
+
+	if withMin != MinimumCharge() {
+		t.Errorf("with-minimum cost = %d, want floor %d", withMin, MinimumCharge())
+	}
+	if noMin >= MinimumCharge() {
+		t.Errorf("no-minimum cost = %d, should be below the floor %d", noMin, MinimumCharge())
+	}
+	// No-minimum must equal the exact per-token math (no floor).
+	want := int64(10)*DefaultInputPricePerMillion/1_000_000 + int64(10)*DefaultOutputPricePerMillion/1_000_000
+	if noMin != want {
+		t.Errorf("no-minimum cost = %d, want exact %d", noMin, want)
+	}
+
+	// For a large request above the floor, both variants agree.
+	bigMin := CalculateCostWithOverrides(model, 1_000_000, 1_000_000, 0, 0, false)
+	bigNo := CalculateCostWithOverridesNoMinimum(model, 1_000_000, 1_000_000, 0, 0, false)
+	if bigMin != bigNo {
+		t.Errorf("above-floor costs should match: withMin=%d noMin=%d", bigMin, bigNo)
+	}
+}
+
 func TestPlatformFeeBackwardCompatible(t *testing.T) {
 	const total int64 = 2_000_000
 	if PlatformFee(total) != PlatformFeeWithPercent(total, nil) {

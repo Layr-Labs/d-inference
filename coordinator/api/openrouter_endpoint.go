@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -10,13 +11,16 @@ import (
 // handleListModelsOpenRouter handles GET /v1/models/openrouter.
 //
 // It emits the pure OpenRouter provider "List Models" schema (no Darkbloom
-// metadata block) for the models we want OpenRouter to sell. It reuses the same
-// field-mapping helpers as /v1/models but applies OpenRouter-specific rules:
-// text-only modalities, staging-based is_ready, marketplace slug, and a
-// text-only model filter. Required fields are always present.
+// metadata block) for the models we want OpenRouter to sell.
+//
+// The feed is driven by the active CATALOG, not by live provider availability:
+// a registered model stays listed even when no provider is momentarily
+// online/warm for it. That matches OpenRouter's model, where transient capacity
+// is handled by 429s and launch state by the is_ready flag — a provider restart
+// must not make the model vanish from the marketplace. Live provider data is
+// used only as supplemental signal (datacenters, and excluding a model whose
+// providers report a non-text aggregate type).
 func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Request) {
-	models := s.registry.ListModels()
-
 	catalogByID, registryByID, err := s.activeCatalogLookups()
 	if err != nil {
 		s.logger.Error("openrouter models: failed to list active models", "error", err)
@@ -24,38 +28,60 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	data := make([]types.OpenRouterModel, 0, len(models))
-	for _, m := range models {
-		cm, inCatalog := catalogByID[m.ID]
-		if len(catalogByID) > 0 && !inCatalog {
-			continue
+	// Provider-reported model types (when any provider is online) let us
+	// exclude non-text models even though the registry currently stores every
+	// model as "text".
+	aggTypeByID := make(map[string]string)
+	for _, m := range s.registry.ListModels() {
+		if m.ModelType != "" {
+			aggTypeByID[m.ID] = m.ModelType
 		}
-		// Text-only feed for now: exclude embedding/tts/image/audio models.
-		if inCatalog && !isTextModelType(cm.ModelType) {
+	}
+
+	// Stable output order.
+	ids := make([]string, 0, len(catalogByID))
+	for id := range catalogByID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	data := make([]types.OpenRouterModel, 0, len(ids))
+	for _, id := range ids {
+		cm := catalogByID[id]
+		// Text-only feed: prefer the provider-reported type, fall back to the
+		// catalog type. Excludes only known non-text modalities
+		// (embedding/tts/image/audio/rerank); text/chat/unknown stay listed.
+		modelType := cm.ModelType
+		if at, ok := aggTypeByID[id]; ok {
+			modelType = at
+		}
+		if isNonTextModelType(modelType) {
 			continue
 		}
 
-		reg, hasReg := registryByID[m.ID]
+		reg, hasReg := registryByID[id]
 		entry := types.OpenRouterModel{
-			ID:                m.ID,
-			HuggingFaceID:     m.ID, // our model IDs are HuggingFace paths
-			Name:              openRouterModelName(cm, reg, hasReg, m.ID),
+			ID:                id,
+			HuggingFaceID:     id, // our model IDs are HuggingFace paths
+			Name:              openRouterModelName(cm, reg, hasReg, id),
 			InputModalities:   []string{"text"},
 			OutputModalities:  []string{"text"},
 			SupportedFeatures: []string{},
 			IsReady:           true,
 		}
-		s.openRouterModelFieldsFor(m, reg, hasReg).applyToFeed(&entry)
+		// Quantization comes from the registry entry (the catalog row carries
+		// none); legacy rows simply omit it.
+		s.openRouterModelFieldsFor(id, reg.Quantization, reg, hasReg).applyToFeed(&entry)
 
 		// is_ready is a launch/staging flag and the slug is per-model; both
 		// come from registry metadata (defaults apply for legacy rows).
 		if hasReg {
 			entry.IsReady = openRouterIsReady(reg.Metadata)
-			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(m.ID, reg.Metadata)}
+			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(id, reg.Metadata)}
 		} else {
-			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(m.ID, nil)}
+			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(id, nil)}
 		}
-		entry.Datacenters = s.modelDatacenters(m.ID)
+		entry.Datacenters = s.modelDatacenters(id)
 
 		data = append(data, entry)
 	}

@@ -231,3 +231,56 @@ func deserializeRejectsNonEmptySimpleMetaState() throws {
         _ = try KVCacheSerializer.deserialize(chunks: chunks, layout: bad)
     }
 }
+
+// MARK: - Uncatchable-crash residuals: state-setter count + MLXArray init
+
+@Test
+func deserializeRejectsWrongStateArrayCount() throws {
+    // The state setter fatalErrors unless given exactly 2 arrays; deserialize
+    // only checks the aggregate chunk count. A layer with 1 array must throw
+    // (cold miss), not crash the process.
+    let (chunks, layout) = try KVCacheSerializer.serialize([simpleCache(tokens: 4)])
+    let bad = KVCacheLayout(version: layout.version, layers: [
+        KVCacheLayerDescriptor(className: layout.layers[0].className,
+                               metaState: layout.layers[0].metaState,
+                               arrays: [layout.layers[0].arrays[0]])  // 1 array, not 2
+    ])
+    #expect(throws: KVCacheSerializerError.self) {
+        _ = try KVCacheSerializer.deserialize(chunks: [chunks[0]], layout: bad)
+    }
+}
+
+@Test
+func deserializeRejectsShapeByteLengthMismatch() throws {
+    // MLXArray(data:shape:dtype:) hard-traps when shape*dtype != byte count.
+    // A descriptor whose shape disagrees with its chunk must throw first.
+    let (chunks, layout) = try KVCacheSerializer.serialize([simpleCache(tokens: 4)])
+    let good = layout.layers[0].arrays[0]
+    var badShape = good.shape
+    badShape[3] += 1  // inflate headDim so shape*dtype no longer matches the chunk
+    let bad = KVCacheLayout(version: layout.version, layers: [
+        KVCacheLayerDescriptor(
+            className: layout.layers[0].className, metaState: layout.layers[0].metaState,
+            arrays: [KVCacheArrayDescriptor(shape: badShape, dtype: good.dtype),
+                     layout.layers[0].arrays[1]])
+    ])
+    #expect(throws: KVCacheSerializerError.self) {
+        _ = try KVCacheSerializer.deserialize(chunks: chunks, layout: bad)
+    }
+}
+
+@Test
+func deserializeRejectsNegativeDimShape() throws {
+    // A negative dim would trap when computing shape.reduce(1, *); reject it.
+    let (chunks, layout) = try KVCacheSerializer.serialize([simpleCache(tokens: 4)])
+    let good = layout.layers[0].arrays[0]
+    let bad = KVCacheLayout(version: layout.version, layers: [
+        KVCacheLayerDescriptor(
+            className: layout.layers[0].className, metaState: layout.layers[0].metaState,
+            arrays: [KVCacheArrayDescriptor(shape: [1, H, -4, D], dtype: good.dtype),
+                     layout.layers[0].arrays[1]])
+    ])
+    #expect(throws: KVCacheSerializerError.self) {
+        _ = try KVCacheSerializer.deserialize(chunks: chunks, layout: bad)
+    }
+}

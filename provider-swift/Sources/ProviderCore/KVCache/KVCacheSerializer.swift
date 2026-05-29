@@ -165,12 +165,47 @@ public enum KVCacheSerializer {
                 guard let dt = dtypeByName[desc.dtype] else {
                     throw KVCacheSerializerError.unknownDType(desc.dtype)
                 }
+                // Bind the declared shape to the actual chunk byte length
+                // BEFORE constructing the MLXArray: its init has a hard
+                // precondition (an UNCATCHABLE trap) when
+                // shape.product*dtype.size != byteCount, and computing that
+                // product itself traps on a negative dim or Int overflow. A
+                // foreign/tampered descriptor could carry a shape that
+                // disagrees with its chunk; reject it as a cold miss.
+                let expected = try expectedByteCount(shape: desc.shape, dtype: dt)
+                guard chunks[idx].count == expected else {
+                    throw KVCacheSerializerError.reconstructionFailed(
+                        "chunk \(idx): \(chunks[idx].count) bytes != shape \(desc.shape) "
+                            + "x \(desc.dtype) (\(expected) bytes)")
+                }
                 arrays.append(MLXArray(chunks[idx], desc.shape, dtype: dt))
                 idx += 1
             }
             caches.append(try reconstruct(className: layer.className, arrays: arrays, metaState: layer.metaState))
         }
         return caches
+    }
+
+    /// Byte count for a declared shape+dtype, guarding the two ways a
+    /// foreign/tampered descriptor would otherwise hard-trap MLXArray's
+    /// init: a negative dim, or an Int-overflowing product.
+    private static func expectedByteCount(shape: [Int], dtype: DType) throws -> Int {
+        var elements = 1
+        for d in shape {
+            guard d >= 0 else {
+                throw KVCacheSerializerError.reconstructionFailed("negative dim in shape \(shape)")
+            }
+            let (p, overflow) = elements.multipliedReportingOverflow(by: d)
+            guard !overflow else {
+                throw KVCacheSerializerError.reconstructionFailed("shape \(shape) element count overflows")
+            }
+            elements = p
+        }
+        let (bytes, overflow) = elements.multipliedReportingOverflow(by: dtype.size)
+        guard !overflow else {
+            throw KVCacheSerializerError.reconstructionFailed("shape \(shape) byte count overflows")
+        }
+        return bytes
     }
 
     // MARK: - Validation
@@ -243,6 +278,14 @@ public enum KVCacheSerializer {
         // input (uncatchable), so a malformed stale/foreign file must
         // become a throw (cold miss), never a process crash.
         try validateMetaState(className: className, metaState)
+        // The state setters (KVCacheSimple/RotatingKVCache) ALSO fatalError
+        // unless given exactly 2 arrays; deserialize only checks the
+        // AGGREGATE chunk count, so a foreign file could place 1 or 3 arrays
+        // in one layer. Require 0 (empty cache → setter skipped below) or 2.
+        guard arrays.isEmpty || arrays.count == 2 else {
+            throw KVCacheSerializerError.reconstructionFailed(
+                "\(className) expects 0 or 2 state arrays, got \(arrays.count)")
+        }
         // Set state only when there is array data (an empty cache's
         // `state` setter would reject a 0-count array on some types).
         // metaState is always set: each type's setter accepts its own

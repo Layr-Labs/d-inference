@@ -26,9 +26,10 @@ extension MultiModelBatchSchedulerEngine {
     /// the upstream `OpenAIChatCompletionRequest` does not expose a
     /// `seed` field today (see
     /// `libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIProtocol.swift`).
-    /// The legacy `ChatCompletionRequest` shape (used by some pre-
-    /// MLXLMServer clients) does carry `seed`, but once it has been
-    /// lifted into the upstream type the field is unreachable here.
+    /// The internal `ChatCompletionRequest` shape does carry a `seed`
+    /// field, but inbound requests are decoded straight into the upstream
+    /// `OpenAIChatCompletionRequest` (which omits it), so the value never
+    /// reaches this translation step.
     /// The wire-level result is that seeded reproducibility is not
     /// available in OpenAI-compatible mode and the engine's default
     /// sampler RNG is used. Tracking upstream:

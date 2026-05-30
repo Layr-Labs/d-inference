@@ -1458,7 +1458,8 @@ response = client.chat.completions.create(
       return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
     });
   }
-  function usd(micro){ return "$" + (Number(micro || 0) / 1e6).toFixed(2); }
+  var priceFmt = new Intl.NumberFormat(navigator.language || "en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  function usd(micro){ return priceFmt.format(Number(micro || 0) / 1e6); }
   function subtitle(m){
     var bits = [];
     if (m.architecture) bits.push(m.architecture);

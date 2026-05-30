@@ -104,9 +104,11 @@ function modelSizeGB(model: Model): number {
 }
 
 function activeParamsGB(model: Model, sizeGB: number): number {
-  const text = `${model.id} ${model.architecture ?? ""}`;
-  const active = text.match(/A(\d{1,3})B/i) ?? text.match(/(\d{1,3})B\s+active/i);
-  if (active) return Number(active[1]);
+  // Search id, architecture, and description; accept decimal active counts
+  // ("A3.6B" or "3.6B active") before falling back to the size-based estimate.
+  const text = `${model.id} ${model.architecture ?? ""} ${model.description ?? ""}`;
+  const active = text.match(/A(\d{1,3}(?:\.\d+)?)B/i) ?? text.match(/(\d{1,3}(?:\.\d+)?)B\s+active/i);
+  if (active) return Math.max(1, Math.round(Number(active[1])));
   if (/moe/i.test(text)) return Math.max(3, Math.round(sizeGB * 0.15));
   return Math.max(1, Math.round(sizeGB));
 }

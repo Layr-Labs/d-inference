@@ -137,10 +137,11 @@ func TestPlatformFee(t *testing.T) {
 		totalCost int64
 		wantFee   int64
 	}{
-		{100_000, 5_000},    // 5% of $0.10
-		{1_000_000, 50_000}, // 5% of $1.00
-		{500_000, 25_000},   // 5% of $0.50
-		{1_000, 50},         // 5% of $0.001
+		// Default platform fee is 0% during the public alpha.
+		{100_000, 0},
+		{1_000_000, 0},
+		{500_000, 0},
+		{1_000, 0},
 		{0, 0},
 	}
 
@@ -157,9 +158,10 @@ func TestProviderPayout(t *testing.T) {
 		totalCost  int64
 		wantPayout int64
 	}{
-		{100_000, 95_000},    // 95% of $0.10
-		{1_000_000, 950_000}, // 95% of $1.00
-		{1_000, 950},         // 95% of $0.001
+		// Providers keep 100% during the public alpha (0% default fee).
+		{100_000, 100_000},
+		{1_000_000, 1_000_000},
+		{1_000, 1_000},
 		{0, 0},
 	}
 

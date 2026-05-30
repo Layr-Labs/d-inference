@@ -797,10 +797,10 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 
 	// Calculate expected amounts.
 	totalCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
-	expectedProviderPayout := payments.ProviderPayout(totalCost) // 95%
-	expectedPlatformFee := payments.PlatformFee(totalCost)       // 5%
+	expectedProviderPayout := payments.ProviderPayout(totalCost) // provider payout at the default fee
+	expectedPlatformFee := payments.PlatformFee(totalCost)       // platform fee at the default rate (0% during alpha)
 
-	// Referral share is 20% of the platform fee.
+	// Referral share is a percentage of the platform fee (0 while the fee is 0).
 	referralShare := expectedPlatformFee * referralSvc.SharePercent() / 100
 	expectedPlatformAfterReferral := expectedPlatformFee - referralShare
 
@@ -811,17 +811,17 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 		t.Errorf("consumer balance = %d, want %d (charged %d)", actualConsumerBalance, expectedConsumerBalance, totalCost)
 	}
 
-	// Verify provider got 95% of the charge credited to their account.
+	// Verify the provider got their payout credited to their account.
 	// setupProviderForBilling links the provider to an account via test-account-<id>.
 	if got := st.GetBalance(providerAccountID); got != expectedProviderPayout {
-		t.Errorf("provider account balance = %d, want %d (95%% of totalCost %d)",
+		t.Errorf("provider account balance = %d, want %d (payout of totalCost %d)",
 			got, expectedProviderPayout, totalCost)
 	}
 
 	// Verify referrer got their share.
 	referrerBalance := st.GetBalance(referrerAccountID)
 	if referrerBalance != referralShare {
-		t.Errorf("referrer balance = %d, want %d (20%% of platform fee %d)", referrerBalance, referralShare, expectedPlatformFee)
+		t.Errorf("referrer balance = %d, want %d (share of platform fee %d)", referrerBalance, referralShare, expectedPlatformFee)
 	}
 
 	// Verify platform got the remaining platform fee (after referral deduction).

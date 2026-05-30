@@ -1838,35 +1838,48 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 	}
 }
 
-// publicCORSPaths are unauthenticated, read-only endpoints that return public,
-// non-credentialed data. They are served with a wildcard CORS origin so the
-// marketing site (darkbloom.dev) and any third party can read them from the
-// browser. Keep this list to GET endpoints that never depend on an
-// Authorization header or cookies.
+// publicCORSPaths are endpoints whose GET is unauthenticated, read-only public
+// data. Their GET is served with a wildcard CORS origin so the marketing site
+// (darkbloom.dev) and any third party can read them from the browser. NOTE:
+// some of these paths (e.g. /v1/pricing) ALSO serve authenticated PUT/DELETE —
+// the wildcard applies only to GET; non-GET methods fall through to the
+// credentialed, single-origin CORS below.
 var publicCORSPaths = map[string]bool{
 	"/v1/models/catalog": true,
 	"/v1/pricing":        true,
 }
 
-// corsMiddleware sets CORS headers. Authenticated/credentialed endpoints are
+// corsMiddleware sets CORS headers. Authenticated/credentialed requests are
 // locked to a single origin derived from the CORS_ORIGIN environment variable
 // (defaulting to the production console domain); a wildcard is never used for
-// those. Public read-only endpoints (see publicCORSPaths) are readable from any
-// origin, without credentials, so a wildcard is safe and intended there.
+// those. A GET to a public read-only endpoint (see publicCORSPaths) is readable
+// from any origin, without credentials, so a wildcard is safe and intended.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	origin := s.corsOrigin
 	if origin == "" {
 		origin = "https://console.darkbloom.dev"
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if publicCORSPaths[r.URL.Path] {
+		// Resolve the effective method: for a preflight, the actual request
+		// method is in Access-Control-Request-Method (default GET if absent).
+		effectiveMethod := r.Method
+		if r.Method == http.MethodOptions {
+			if reqMethod := r.Header.Get("Access-Control-Request-Method"); reqMethod != "" {
+				effectiveMethod = reqMethod
+			} else {
+				effectiveMethod = http.MethodGet
+			}
+		}
+
+		if publicCORSPaths[r.URL.Path] && effectiveMethod == http.MethodGet {
+			// Public, non-credentialed GET — any origin may read it.
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			w.Header().Set("Vary", "Origin")
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}

@@ -58,9 +58,11 @@
     return match ? Number(match[1]) : 27;
   }
   function catalogActiveParamsGB(m, sizeGB) {
-    const text = `${m.id || ""} ${m.architecture || ""}`;
-    const active = text.match(/A(\d{1,3})B/i) || text.match(/(\d{1,3})B\s+active/i);
-    if (active) return Number(active[1]);
+    // Search id, architecture, and description; accept decimal active counts
+    // ("A3.6B" or "3.6B active") before falling back to the size-based estimate.
+    const text = `${m.id || ""} ${m.architecture || ""} ${m.description || ""}`;
+    const active = text.match(/A(\d{1,3}(?:\.\d+)?)B/i) || text.match(/(\d{1,3}(?:\.\d+)?)B\s+active/i);
+    if (active) return Math.max(1, Math.round(Number(active[1])));
     if (/moe/i.test(text)) return Math.max(3, Math.round(sizeGB * 0.15));
     return Math.max(1, Math.round(sizeGB));
   }
@@ -389,16 +391,18 @@
 
   function initPricingTableCurrency() {
     const locale = navigator.language || "en-US";
-    const fc = (n, d) =>
+    const fc = (n, min, max) =>
       new Intl.NumberFormat(locale, {
         style: "currency",
         currency: "USD",
-        minimumFractionDigits: d ?? 2,
-        maximumFractionDigits: d ?? 2,
+        minimumFractionDigits: min ?? 2,
+        maximumFractionDigits: max ?? min ?? 2,
       }).format(n);
+    // Model prices can be sub-cent (e.g. $0.015, $0.165), so allow up to 4
+    // fraction digits here instead of rounding to 2.
     document.querySelectorAll(".op,.cp").forEach((el) => {
       const m = el.textContent.trim().match(/^\$?([\d.]+)$/);
-      if (m) el.textContent = fc(+m[1]);
+      if (m) el.textContent = fc(+m[1], 2, 4);
     });
     document.querySelectorAll(".pmini .val").forEach((el) => {
       const r = el.textContent.trim();

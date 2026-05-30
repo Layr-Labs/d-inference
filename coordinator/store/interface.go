@@ -247,17 +247,6 @@ type Store interface {
 	// DeleteModelPrice removes a custom price override.
 	DeleteModelPrice(accountID, model string) error
 
-	// --- Supported Models (admin-managed catalog) ---
-
-	// SetSupportedModel adds or updates a supported model in the catalog.
-	SetSupportedModel(model *SupportedModel) error
-
-	// ListSupportedModels returns all supported models, ordered by min_ram_gb ascending.
-	ListSupportedModels() []SupportedModel
-
-	// DeleteSupportedModel removes a model from the catalog by ID.
-	DeleteSupportedModel(modelID string) error
-
 	// --- Model Registry (manifest-backed catalog) ---
 
 	UpsertModelRegistryEntry(entry *ModelRegistryEntry) error
@@ -776,15 +765,14 @@ type StripeWithdrawal struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// SupportedModel represents a model in the admin-managed catalog.
-// The coordinator is the single source of truth for which models providers can serve.
-// SupportedModel represents a model in the admin-managed catalog.
-// The coordinator is the single source of truth for which models providers can serve.
+// SupportedModel is the lightweight in-memory shape the model-listing and
+// routing code uses to describe a servable model. It is derived from the
+// canonical model_registry (see supportedModelFromRegistryRecord); it is no
+// longer a standalone persisted catalog. The coordinator remains the single
+// source of truth for which models providers can serve.
 //
 // ModelType determines routing: "text" for chat/completions, "embedding" for
-// vector search, etc. Only add models that produce output worth paying for —
-// small chat models (< 7B) are not useful, but small specialized models
-// (embeddings) can be best-in-class.
+// vector search, etc.
 type SupportedModel struct {
 	ID           string  `json:"id"`           // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
 	S3Name       string  `json:"s3_name"`      // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark script for Darkbloom inference API.
 
-Sends a complex reasoning question to Gemma 4 and Qwen 3.5 in parallel,
+Sends a complex reasoning question to Gemma 4 and GPT-OSS in parallel,
 measures latency and token throughput.
 """
 
@@ -19,8 +19,8 @@ if not API_KEY:
     raise SystemExit("Set DARKBLOOM_API_KEY (e.g. export DARKBLOOM_API_KEY=sk-db-...) before running this benchmark.")
 
 MODELS = [
-    "mlx-community/gemma-4-26b-a4b-it-8bit",
-    "qwen3.5-27b-claude-opus-8bit",
+    "gemma-4-26b",
+    "gpt-oss-20b",
 ]
 
 PROMPT = """\

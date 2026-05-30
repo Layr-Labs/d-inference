@@ -99,7 +99,7 @@ const ENDPOINTS = [
     {
       "id": "${EXAMPLE_MODEL}",
       "object": "model",
-      "name": "Qwen3.5 27B",
+      "name": "Gemma 4 26B",
       "hugging_face_id": "${EXAMPLE_MODEL}",
       "created": 1735689600,
       "description": "Balanced general-purpose model.",
@@ -121,7 +121,7 @@ const ENDPOINTS = [
         "model_type": "chat",
         "provider_count": 2,
         "trust_level": "hardware",
-        "display_name": "Qwen3.5 27B"
+        "display_name": "Gemma 4 26B"
       }
     }
   ]
@@ -172,7 +172,7 @@ const ENDPOINTS = [
     auth: false,
     response: `{
   "prices": [
-    {"model": "${EXAMPLE_MODEL}", "input_price": 100000, "output_price": 780000, "input_usd": "$0.10", "output_usd": "$0.78"}
+    {"model": "${EXAMPLE_MODEL}", "input_price": 50000, "output_price": 200000, "input_usd": "$0.05", "output_usd": "$0.20"}
   ]
 }`,
   },

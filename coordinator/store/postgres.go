@@ -100,6 +100,15 @@ func (s *PostgresStore) Close() {
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
+		// schema_migrations records one-time data migrations that must run at most
+		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
+		// EXISTS) does not need this; it exists to gate destructive one-shot DML
+		// cleanups (see the model_prices cleanup below) behind a marker id.
+		`CREATE TABLE IF NOT EXISTS schema_migrations (
+			id TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+
 		`CREATE TABLE IF NOT EXISTS providers (
 			id TEXT PRIMARY KEY,
 			hardware JSONB NOT NULL,
@@ -291,10 +300,28 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 
 		// Clean up wallet-keyed custom prices: with the removal of wallet-based
-		// payouts, model_prices rows keyed by Solana wallet addresses are unreachable.
-		// Providers must re-enter custom prices under their Stripe Connect account ID.
+		// payouts, model_prices rows keyed by Solana wallet addresses are
+		// unreachable. Providers must re-enter custom prices under their Stripe
+		// Connect account ID.
+		//
+		// This is a one-time, destructive cleanup, so it is gated on a
+		// schema_migrations marker and runs at most once instead of on every boot.
+		// Two further guards:
+		//   - Exclude the synthetic "platform" account. Platform-default per-model
+		//     pricing (set via PUT /v1/admin/pricing and at model registration) is
+		//     stored under account_id='platform', which is NEVER a row in users.
+		//     Without this guard the cleanup would wipe all platform pricing,
+		//     silently reverting billing to the fallback defaults.
+		//   - The marker is written only after a successful DELETE within the same
+		//     block, so a run that errors (e.g. users not yet created on a brand-new
+		//     DB) rolls back and is retried on the next boot.
 		`DO $$ BEGIN
-			DELETE FROM model_prices WHERE account_id NOT IN (SELECT account_id FROM users);
+			IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1') THEN
+				DELETE FROM model_prices
+				WHERE account_id NOT IN (SELECT account_id FROM users)
+				  AND account_id <> 'platform';
+				INSERT INTO schema_migrations (id) VALUES ('cleanup_wallet_model_prices_v1');
+			END IF;
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 
@@ -321,29 +348,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy ON users(privy_user_id)`,
 
-		// Supported models — admin-managed catalog
-		`CREATE TABLE IF NOT EXISTS supported_models (
-			id TEXT PRIMARY KEY,
-			s3_name TEXT NOT NULL DEFAULT '',
-			display_name TEXT NOT NULL DEFAULT '',
-			model_type TEXT NOT NULL DEFAULT 'text',
-			size_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
-			architecture TEXT NOT NULL DEFAULT '',
-			description TEXT NOT NULL DEFAULT '',
-			min_ram_gb INTEGER NOT NULL DEFAULT 0,
-			active BOOLEAN NOT NULL DEFAULT TRUE,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		// Add model_type column if upgrading from previous schema
-		`DO $$ BEGIN
-			ALTER TABLE supported_models ADD COLUMN IF NOT EXISTS model_type TEXT NOT NULL DEFAULT 'text';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		// Add weight_hash column for model integrity verification
-		`DO $$ BEGIN
-			ALTER TABLE supported_models ADD COLUMN IF NOT EXISTS weight_hash TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
+		// The legacy admin-managed supported_models catalog was replaced by the
+		// manifest-backed model_registry below. Drop the stale duplicate table if
+		// it is still present from an older deployment.
+		`DROP TABLE IF EXISTS supported_models`,
 
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
@@ -2456,68 +2464,6 @@ func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]St
 		return []StripeWithdrawal{}, nil
 	}
 	return out, nil
-}
-
-// --- Supported Models ---
-
-func (s *PostgresStore) SetSupportedModel(model *SupportedModel) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO supported_models (id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, weight_hash, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-		 ON CONFLICT (id) DO UPDATE SET
-		   s3_name = $2, display_name = $3, model_type = $4, size_gb = $5, architecture = $6,
-		   description = $7, min_ram_gb = $8, active = $9, weight_hash = $10, updated_at = NOW()`,
-		model.ID, model.S3Name, model.DisplayName, model.ModelType, model.SizeGB,
-		model.Architecture, model.Description, model.MinRAMGB, model.Active, model.WeightHash,
-	)
-	if err != nil {
-		return fmt.Errorf("store: set supported model: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) ListSupportedModels() []SupportedModel {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, weight_hash
-		 FROM supported_models ORDER BY model_type ASC, min_ram_gb ASC, size_gb ASC`,
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var models []SupportedModel
-	for rows.Next() {
-		var m SupportedModel
-		if err := rows.Scan(&m.ID, &m.S3Name, &m.DisplayName, &m.ModelType, &m.SizeGB,
-			&m.Architecture, &m.Description, &m.MinRAMGB, &m.Active, &m.WeightHash); err != nil {
-			continue
-		}
-		models = append(models, m)
-	}
-	return models
-}
-
-func (s *PostgresStore) DeleteSupportedModel(modelID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	tag, err := s.pool.Exec(ctx,
-		`DELETE FROM supported_models WHERE id = $1`, modelID,
-	)
-	if err != nil {
-		return fmt.Errorf("store: delete supported model: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("model %q not found", modelID)
-	}
-	return nil
 }
 
 // --- Releases ---

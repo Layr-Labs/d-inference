@@ -38,13 +38,50 @@
     { macType: "Mac Pro", chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 40, inferWatts: 120 },
   ];
 
-  const CATALOG_MODELS = [
-    { id: "qwen-27b", name: "Qwen3.5 27B Claude Opus", minRAMGB: 36, activeParamsGB: 27, modelSizeGB: 27, outputPriceMicro: 780_000, demandNote: "High demand — text/chat inference is the primary workload on the network." },
-    { id: "trinity-mini", name: "Trinity Mini", minRAMGB: 48, activeParamsGB: 3, modelSizeGB: 26, outputPriceMicro: 75_000, demandNote: "High demand — fast MoE model popular for agentic and coding tasks." },
-    { id: "gemma-4-26b", name: "Gemma 4 26B", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 200_000, demandNote: "High demand — Google's latest MoE, strong quality at fast speed." },
-    { id: "qwen-122b", name: "Qwen3.5 122B", minRAMGB: 128, activeParamsGB: 10, modelSizeGB: 122, outputPriceMicro: 1_040_000, demandNote: "High demand — premium quality attracts users willing to pay more per token." },
-    { id: "minimax-m2.5", name: "MiniMax M2.5", minRAMGB: 256, activeParamsGB: 11, modelSizeGB: 243, outputPriceMicro: 500_000, demandNote: "High demand — SOTA coding model, attracts power users and enterprises." },
+  const API_BASE = "https://api.darkbloom.dev";
+  const DEFAULT_OUTPUT_PRICE_MICRO = 200_000;
+
+  // CATALOG_MODELS is refreshed from the live coordinator catalog on load (see
+  // DOMContentLoaded below). These static entries are a fallback for when the
+  // API is unreachable; keep them to the currently-served lineup. Mirrors
+  // console-ui/src/app/earn/page.tsx (buildCatalogModels).
+  let CATALOG_MODELS = [
+    { id: "gpt-oss-20b", name: "GPT-OSS 20B", minRAMGB: 24, activeParamsGB: 4, modelSizeGB: 12, outputPriceMicro: DEFAULT_OUTPUT_PRICE_MICRO, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
+    { id: "gemma-4-26b", name: "Gemma 4 26B", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: DEFAULT_OUTPUT_PRICE_MICRO, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
   ];
+
+  // --- Live catalog → calculator model mapping (ported from console-ui) ---
+  function catalogModelSizeGB(m) {
+    if (m.size_gb && m.size_gb > 0) return m.size_gb;
+    if (m.size_bytes && m.size_bytes > 0) return m.size_bytes / 1e9;
+    const match = String(m.id || "").match(/(?:^|[^A-Za-z0-9])(\d{1,3})\s*[bB](?:[^A-Za-z0-9]|$)/);
+    return match ? Number(match[1]) : 27;
+  }
+  function catalogActiveParamsGB(m, sizeGB) {
+    const text = `${m.id || ""} ${m.architecture || ""}`;
+    const active = text.match(/A(\d{1,3})B/i) || text.match(/(\d{1,3})B\s+active/i);
+    if (active) return Number(active[1]);
+    if (/moe/i.test(text)) return Math.max(3, Math.round(sizeGB * 0.15));
+    return Math.max(1, Math.round(sizeGB));
+  }
+  function buildCatalogModels(models, pricing) {
+    const outputPrices = {};
+    if (pricing && Array.isArray(pricing.prices)) {
+      pricing.prices.forEach((p) => { outputPrices[p.model] = p.output_price; });
+    }
+    return models.map((m) => {
+      const size = Math.max(1, Math.round(catalogModelSizeGB(m)));
+      return {
+        id: m.id,
+        name: m.display_name || String(m.id || "").split("/").pop() || m.id,
+        minRAMGB: m.min_ram_gb || Math.ceil(size * 1.35),
+        demandNote: "Uses the live coordinator catalog and current/default per-token pricing.",
+        activeParamsGB: catalogActiveParamsGB(m, size),
+        modelSizeGB: size,
+        outputPriceMicro: outputPrices[m.id] != null ? outputPrices[m.id] : DEFAULT_OUTPUT_PRICE_MICRO,
+      };
+    });
+  }
 
   const REGION_ELEC = { US: 0.15, CA: 0.12, GB: 0.28, DE: 0.35, FR: 0.21, AU: 0.28, JP: 0.26, IN: 0.08, SG: 0.18, KR: 0.11 };
 
@@ -391,5 +428,25 @@
     }
     initPricingTableCurrency();
     render();
+
+    // Refresh the model list from the live coordinator catalog + pricing, then
+    // re-render. Falls back silently to the static CATALOG_MODELS on any error.
+    if (window.fetch) {
+      const getJSON = (path) =>
+        fetch(API_BASE + path, { headers: { Accept: "application/json" } })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(path + " " + r.status))));
+      Promise.all([getJSON("/v1/models/catalog"), getJSON("/v1/pricing")])
+        .then(([catalog, pricing]) => {
+          const models = (catalog && catalog.models) || [];
+          if (!models.length) return;
+          const built = buildCatalogModels(models, pricing || null);
+          if (built.length) {
+            CATALOG_MODELS = built;
+            state.selectedModelIds = [];
+            render();
+          }
+        })
+        .catch(() => { /* keep the static fallback CATALOG_MODELS */ });
+    }
   });
 })();

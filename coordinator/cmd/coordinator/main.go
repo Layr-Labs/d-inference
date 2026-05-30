@@ -459,23 +459,3 @@ func main() {
 
 	logger.Info("coordinator stopped")
 }
-
-// seedModelCatalog is retained only for stale tests during the registry
-// transition. Startup no longer calls it, and model registration is now backed
-// by DB rows plus R2 manifests rather than hardcoded coordinator seed data.
-func seedModelCatalog(st store.Store, logger *slog.Logger) {
-	removed := 0
-	for _, m := range st.ListSupportedModels() {
-		if !api.IsRetiredProviderModel(m) {
-			continue
-		}
-		if err := st.DeleteSupportedModel(m.ID); err != nil {
-			logger.Warn("failed to remove retired model", "id", m.ID, "error", err)
-		} else {
-			removed++
-		}
-	}
-	if removed > 0 {
-		logger.Info("retired model catalog entries removed", "removed", removed)
-	}
-}

@@ -221,26 +221,24 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 	}
 }
 
-func TestModelCatalogFallbackAndRegistryPreference(t *testing.T) {
+func TestModelCatalogRegistryDriven(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	if err := st.SetSupportedModel(&store.SupportedModel{ID: "legacy", DisplayName: "Legacy", ModelType: "text", Active: true, WeightHash: testHash, SizeGB: 1}); err != nil {
-		t.Fatal(err)
-	}
 
+	// With no registry rows the catalog is empty — there is no legacy fallback.
 	req := httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
-	var legacy struct {
-		Models []store.SupportedModel `json:"models"`
+	var empty struct {
+		Models []map[string]any `json:"models"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &legacy); err != nil {
-		t.Fatalf("decode legacy catalog: %v", err)
+	if err := json.Unmarshal(rec.Body.Bytes(), &empty); err != nil {
+		t.Fatalf("decode empty catalog: %v", err)
 	}
-	if len(legacy.Models) != 1 || legacy.Models[0].ID != "legacy" {
-		t.Fatalf("expected legacy fallback, got %#v", legacy.Models)
+	if len(empty.Models) != 0 {
+		t.Fatalf("expected empty catalog with no registry rows, got %#v", empty.Models)
 	}
 
 	entry := &store.ModelRegistryEntry{ID: "mlx-community/new", DisplayName: "New", Status: "active", MinRAMGB: 16, Metadata: map[string]any{}}
@@ -253,8 +251,8 @@ func TestModelCatalogFallbackAndRegistryPreference(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv.SyncModelCatalog()
-	if !reg.IsModelInCatalog(entry.ID) || reg.IsModelInCatalog("legacy") {
-		t.Fatal("expected synced routing catalog to prefer new registry rows")
+	if !reg.IsModelInCatalog(entry.ID) {
+		t.Fatal("expected synced routing catalog to contain the registry row")
 	}
 
 	rec = httptest.NewRecorder()
@@ -276,9 +274,6 @@ func TestModelRegistryListErrorSurfacesAndDoesNotFallback(t *testing.T) {
 	reg := registry.New(logger)
 	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "sentinel"}})
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	if err := st.SetSupportedModel(&store.SupportedModel{ID: "legacy", DisplayName: "Legacy", ModelType: "text", Active: true, WeightHash: testHash, SizeGB: 1}); err != nil {
-		t.Fatal(err)
-	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil)
 	rec := httptest.NewRecorder()

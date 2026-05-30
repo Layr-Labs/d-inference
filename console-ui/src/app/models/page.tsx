@@ -16,11 +16,8 @@ import {
 // Optional display-only market references. The catalog rows always come from
 // the coordinator; entries here only enable a comparison when IDs match.
 const baselinePricing: Record<string, { output: number; baseline: string; unit?: string }> = {
-  "qwen3.5-27b-claude-opus-8bit": { output: 1_560_000, baseline: "OpenRouter" },
-  "mlx-community/Trinity-Mini-8bit": { output: 150_000, baseline: "OpenRouter" },
-  "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, baseline: "OpenRouter" },
-  "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, baseline: "OpenRouter" },
-  "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, baseline: "OpenRouter" },
+  "gemma-4-26b": { output: 400_000, baseline: "OpenRouter" },
+  "gpt-oss-20b": { output: 400_000, baseline: "OpenRouter" },
 };
 
 // Build a unified pricing lookup from the coordinator's response

@@ -700,37 +700,19 @@ func (s *Server) SyncModelCatalog() {
 		s.logger.Error("model registry catalog sync failed", "error", err)
 		return
 	}
-	if len(registryRows) > 0 {
-		entries := make([]registry.CatalogEntry, 0, len(registryRows))
-		for _, row := range registryRows {
-			if row.ActiveVersion == nil {
-				continue
-			}
-			entries = append(entries, registry.CatalogEntry{
-				ID:         row.ID,
-				WeightHash: row.ActiveVersion.AggregateSHA256,
-				SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
-			})
+	entries := make([]registry.CatalogEntry, 0, len(registryRows))
+	for _, row := range registryRows {
+		if row.ActiveVersion == nil {
+			continue
 		}
-		s.registry.SetModelCatalog(entries)
-		s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
-		s.invalidateCatalogCache()
-		return
-	}
-
-	models := s.store.ListSupportedModels()
-	entries := make([]registry.CatalogEntry, 0, len(models))
-	for _, m := range models {
-		if m.Active && !IsRetiredProviderModel(m) {
-			entries = append(entries, registry.CatalogEntry{
-				ID:         m.ID,
-				WeightHash: m.WeightHash,
-				SizeGB:     m.SizeGB,
-			})
-		}
+		entries = append(entries, registry.CatalogEntry{
+			ID:         row.ID,
+			WeightHash: row.ActiveVersion.AggregateSHA256,
+			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
+		})
 	}
 	s.registry.SetModelCatalog(entries)
-	s.logger.Info("model catalog synced to registry", "active_models", len(entries))
+	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
 	s.invalidateCatalogCache()
 }
 
@@ -1372,10 +1354,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/admin/users/role", s.requireAuth(s.handleAdminSetUserRole))
 	s.mux.HandleFunc("PUT /v1/admin/users/platform-fee", s.requireAuth(s.handleAdminSetUserPlatformFee))
 
-	// Admin model catalog
-	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))
-	s.mux.HandleFunc("POST /v1/admin/models", s.requireAuth(s.handleAdminSetModel))
-	s.mux.HandleFunc("DELETE /v1/admin/models", s.requireAuth(s.handleAdminDeleteModel))
+	// Admin model registry (manifest-backed). The legacy supported_models CRUD
+	// (bare GET/POST/DELETE /v1/admin/models) was removed; the model_registry is
+	// the single source of truth. Use register + the per-model action endpoints.
 	s.mux.HandleFunc("POST /v1/admin/models/register", s.handleRegisterModel)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
@@ -1857,19 +1838,38 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 	}
 }
 
-// corsMiddleware sets CORS headers. The allowed origin is derived from the
-// CORS_ORIGIN environment variable; if unset it defaults to the production
-// console domain. Wildcard (*) is never used in production.
+// publicCORSPaths are unauthenticated, read-only endpoints that return public,
+// non-credentialed data. They are served with a wildcard CORS origin so the
+// marketing site (darkbloom.dev) and any third party can read them from the
+// browser. Keep this list to GET endpoints that never depend on an
+// Authorization header or cookies.
+var publicCORSPaths = map[string]bool{
+	"/v1/models/catalog": true,
+	"/v1/pricing":        true,
+}
+
+// corsMiddleware sets CORS headers. Authenticated/credentialed endpoints are
+// locked to a single origin derived from the CORS_ORIGIN environment variable
+// (defaulting to the production console domain); a wildcard is never used for
+// those. Public read-only endpoints (see publicCORSPaths) are readable from any
+// origin, without credentials, so a wildcard is safe and intended there.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	origin := s.corsOrigin
 	if origin == "" {
 		origin = "https://console.darkbloom.dev"
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		if publicCORSPaths[r.URL.Path] {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Vary", "Origin")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

@@ -13,8 +13,8 @@ if not API_KEY:
     raise SystemExit("Set DARKBLOOM_API_KEY (e.g. export DARKBLOOM_API_KEY=sk-db-...) before running this benchmark.")
 
 MODELS = [
-    "mlx-community/gemma-4-26b-a4b-it-8bit",
-    "qwen3.5-27b-claude-opus-8bit",
+    "gemma-4-26b",
+    "gpt-oss-20b",
 ]
 
 PROMPTS = [

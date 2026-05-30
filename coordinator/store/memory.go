@@ -62,9 +62,6 @@ type MemoryStore struct {
 	// Custom pricing
 	modelPrices map[string]ModelPrice // "accountID:model" → price
 
-	// Supported models (admin-managed catalog)
-	supportedModels map[string]*SupportedModel // modelID → model
-
 	// Model registry (manifest-backed catalog)
 	modelRegistry      map[string]*ModelRegistryEntry
 	modelVersions      map[string]*ModelVersion // modelID:version → version
@@ -136,7 +133,6 @@ func NewMemory(scfg Config) *MemoryStore {
 		referralCounts:                make(map[string]int),
 		billingSessions:               make(map[string]*BillingSession),
 		modelPrices:                   make(map[string]ModelPrice),
-		supportedModels:               make(map[string]*SupportedModel),
 		modelRegistry:                 make(map[string]*ModelRegistryEntry),
 		modelVersions:                 make(map[string]*ModelVersion),
 		modelVersionByID:              make(map[int64]*ModelVersion),
@@ -1360,47 +1356,6 @@ func (s *MemoryStore) DeleteModelPrice(accountID, model string) error {
 		return fmt.Errorf("no custom price for model %q", model)
 	}
 	delete(s.modelPrices, key)
-	return nil
-}
-
-// --- Supported Models ---
-
-func (s *MemoryStore) SetSupportedModel(model *SupportedModel) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cp := *model
-	s.supportedModels[model.ID] = &cp
-	return nil
-}
-
-func (s *MemoryStore) ListSupportedModels() []SupportedModel {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	models := make([]SupportedModel, 0, len(s.supportedModels))
-	for _, m := range s.supportedModels {
-		models = append(models, *m)
-	}
-	// Sort by MinRAMGB ascending
-	for i := 0; i < len(models); i++ {
-		for j := i + 1; j < len(models); j++ {
-			if models[j].MinRAMGB < models[i].MinRAMGB {
-				models[i], models[j] = models[j], models[i]
-			}
-		}
-	}
-	return models
-}
-
-func (s *MemoryStore) DeleteSupportedModel(modelID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.supportedModels[modelID]; !ok {
-		return fmt.Errorf("model %q not found", modelID)
-	}
-	delete(s.supportedModels, modelID)
 	return nil
 }
 

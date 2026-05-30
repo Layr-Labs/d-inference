@@ -758,3 +758,98 @@ func TestPoolExhaustion_AdequatePool(t *testing.T) {
 	}
 	t.Logf("pool_max_conns=20: all %d upserts succeeded", numProviders)
 }
+
+// TestPostgresWalletPriceCleanupPreservesPlatform guards against the regression
+// where the one-time model_prices cleanup wiped platform-default pricing. When
+// the cleanup runs it must remove orphan wallet-keyed rows (account_id not in
+// users) but preserve the synthetic account_id="platform" (which holds platform
+// pricing and is never a users row) and real user-backed prices. The marker is
+// cleared first so the guarded cleanup actually executes.
+func TestPostgresWalletPriceCleanupPreservesPlatform(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+
+	// model_prices and schema_migrations are not in the harness truncate list;
+	// reset them explicitly so the cleanup runs and assertions are deterministic.
+	if _, err := s.pool.Exec(ctx, "DELETE FROM model_prices"); err != nil {
+		t.Fatalf("clean model_prices: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, "DELETE FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1'"); err != nil {
+		t.Fatalf("clear migration marker: %v", err)
+	}
+
+	// A real, user-backed custom price (must survive the cleanup).
+	if err := s.CreateUser(&User{AccountID: "acct-real", PrivyUserID: "did:privy:real"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := s.SetModelPrice("acct-real", "gemma-4-26b", 65_000, 200_000); err != nil {
+		t.Fatalf("set user price: %v", err)
+	}
+	// Platform-default pricing (the bug under test — must survive).
+	if err := s.SetModelPrice("platform", "gpt-oss-20b", 50_000, 200_000); err != nil {
+		t.Fatalf("set platform price: %v", err)
+	}
+	// An orphan wallet-keyed price whose account is NOT in users (exactly what
+	// the cleanup is meant to remove).
+	if err := s.SetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b", 1, 2); err != nil {
+		t.Fatalf("set orphan wallet price: %v", err)
+	}
+
+	// Re-run migrations (simulated restart). With the marker cleared, the
+	// guarded cleanup executes exactly once.
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	if in, out, ok := s.GetModelPrice("platform", "gpt-oss-20b"); !ok || in != 50_000 || out != 200_000 {
+		t.Errorf("platform price = (%d, %d, %v), want (50000, 200000, true) — platform pricing must never be wiped", in, out, ok)
+	}
+	if in, out, ok := s.GetModelPrice("acct-real", "gemma-4-26b"); !ok || in != 65_000 || out != 200_000 {
+		t.Errorf("user price = (%d, %d, %v), want (65000, 200000, true)", in, out, ok)
+	}
+	if _, _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); ok {
+		t.Error("orphan wallet-keyed price should be removed by the cleanup")
+	}
+
+	// The cleanup must record its marker so it does not run again.
+	var marked bool
+	if err := s.pool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1')").Scan(&marked); err != nil {
+		t.Fatalf("check marker: %v", err)
+	}
+	if !marked {
+		t.Error("cleanup marker should be set after the cleanup runs")
+	}
+}
+
+// TestPostgresWalletPriceCleanupRunsOnce verifies the destructive cleanup is
+// gated behind its schema_migrations marker and does NOT run on every boot. Once
+// the marker is set, a subsequent migrate() leaves even orphan wallet-keyed rows
+// untouched — stopping the destructive DELETE from running repeatedly.
+func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+
+	if _, err := s.pool.Exec(ctx, "DELETE FROM model_prices"); err != nil {
+		t.Fatalf("clean model_prices: %v", err)
+	}
+	// Mark the cleanup as already done.
+	if _, err := s.pool.Exec(ctx,
+		"INSERT INTO schema_migrations (id) VALUES ('cleanup_wallet_model_prices_v1') ON CONFLICT (id) DO NOTHING"); err != nil {
+		t.Fatalf("set migration marker: %v", err)
+	}
+
+	// An orphan wallet-keyed row added after the marker is set must survive,
+	// because the guarded cleanup is skipped on subsequent boots.
+	if err := s.SetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b", 1, 2); err != nil {
+		t.Fatalf("set orphan wallet price: %v", err)
+	}
+
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	if _, _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); !ok {
+		t.Error("orphan row should survive when the cleanup marker is already set (run-once)")
+	}
+}

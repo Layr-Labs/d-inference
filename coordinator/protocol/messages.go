@@ -274,9 +274,9 @@ type CancelMessage struct {
 // inbound port required) and reply asynchronously with a
 // LoadModelStatusMessage when the load completes or fails.
 //
-// This is currently sent only to providers running the Swift runtime
-// (`backend == "mlx-swift"`); the legacy Rust provider does not handle
-// it and the coordinator filters accordingly.
+// This is sent only to providers running the Swift runtime
+// (`backend == "mlx-swift"`); the coordinator filters by backend
+// accordingly.
 type LoadModelMessage struct {
 	Type    string `json:"type"`
 	ModelID string `json:"model_id"`

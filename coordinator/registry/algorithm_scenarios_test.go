@@ -392,10 +392,9 @@ func TestAlgorithm_P4_LoadScaledTPSFlipsBatchedBigVsIdleSmall(t *testing.T) {
 // ---------------------------------------------------------------------
 // Warm vs cold provider (architectural regression guard)
 //
-// Providers run one vllm-mlx process per configured model (see
-// provider/src/main.rs:"one vllm-mlx process per model on sequential
-// ports"). Multiple models serve concurrently; they don't swap. A
-// per-slot warm vs idle_shutdown state is the real cost delta.
+// Providers run one vllm-mlx process per configured model. Multiple
+// models serve concurrently; they don't swap. A per-slot warm vs
+// idle_shutdown state is the real cost delta.
 // ---------------------------------------------------------------------
 
 // A provider whose slot for the requested model is "running" must win

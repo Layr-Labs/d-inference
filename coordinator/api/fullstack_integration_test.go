@@ -13,7 +13,7 @@ package api
 //   - mlx-community/Qwen3.5-0.8B-MLX-4bit downloaded (~0.5GB per instance)
 //   - ~1GB RAM per provider instance
 //
-// Gate: LIVE_FULLSTACK_TEST=1 cargo test (not run in CI)
+// Gate: LIVE_FULLSTACK_TEST=1 (not run in CI)
 //
 //     LIVE_FULLSTACK_TEST=1 go test ./internal/api/ -run TestFullStack -v -timeout=600s
 //

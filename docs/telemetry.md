@@ -6,7 +6,7 @@ already own: providers and the console post events over HTTPS to the
 coordinator, which persists them to Postgres.
 
 ```
-provider (Rust) ─┐
+provider (Swift)─┐
 macOS app ───────┤                    ┌─> Postgres `telemetry_events`
 image bridge ───►├─► coordinator ingest┤
 console UI ──────┤   /v1/telemetry/*   ├─> in-process metrics registry
@@ -15,7 +15,7 @@ coordinator ────►┘                     └─> admin UI (read-only)
 
 ## Wire protocol
 
-All three clients (Go, Rust, TypeScript) serialize the exact same JSON
+All three clients (Go, Swift, TypeScript) serialize the exact same JSON
 shape. A symmetry test in each language pins the enum casing and optional
 field omission so they can't drift.
 
@@ -131,14 +131,13 @@ Explicit emit sites:
   WebSocket read error.
 - Default metrics gauge `providers_online`.
 
-### Provider (Rust)
+### Provider (Swift)
 
-`provider/src/telemetry/` is a self-contained module.
+`provider-swift/Sources/ProviderCore/Telemetry/` is a self-contained module.
 
-- `panic_hook::install(client)` captures backtrace and forwards panics.
-- Backend health-check failure + restart failure (`backend/mod.rs`).
-- Coordinator reconnect storms (`coordinator.rs` at attempts 3/10/30…).
-- `telemetry::emit(event)` is a direct API for any subsystem.
+- `PanicHook.install()` captures the backtrace and forwards panics.
+- Coordinator reconnect storms (`CoordinatorClient` at attempts 3/10/30…).
+- `TelemetryClient.shared.emit(event)` is a direct API for any subsystem.
 
 The client spawns a background batcher that POSTs to the coordinator.
 On network failure events spill to `~/.darkbloom/telemetry-queue.jsonl`,
@@ -169,8 +168,8 @@ debounced flush and `navigator.sendBeacon` fallback on page unload.
 1. Pick the right `kind`. If none fit, use `custom` with a `component`
    field rather than inventing a new kind silently.
 2. Only put allowlisted keys in `fields`. If you need a new key, extend:
-   - `coordinator/internal/api/telemetry_handlers.go` (server allowlist),
-   - `provider/src/telemetry/layer.rs` (Rust filter),
+   - `coordinator/api/telemetry_handlers.go` (server allowlist),
+   - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift filter),
    - `console-ui/src/lib/telemetry-types.ts` (TS set).
 3. Keep `message` short and developer-authored. Never interpolate
    user-supplied strings into `message`.
@@ -182,8 +181,8 @@ debounced flush and `navigator.sendBeacon` fallback on page unload.
 Because three codebases serialize the same event shape, any change to the
 protocol requires updates in three places:
 
-- `coordinator/internal/protocol/telemetry.go`
-- `provider/src/telemetry/event.rs`
+- `coordinator/protocol/telemetry.go`
+- `provider-swift/Sources/ProviderCore/Telemetry/`
 - `console-ui/src/lib/telemetry-types.ts`
 
 Symmetry tests pin enum casing (`lowercase` / `snake_case`) and optional

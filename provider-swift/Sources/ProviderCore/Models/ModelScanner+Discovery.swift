@@ -135,7 +135,7 @@ extension ModelScanner {
                     ?? (json["vocab_size"] as? Int).map({ UInt64($0) })
                     ?? 32000
                 // Rough estimate: 12 * hidden^2 * layers + vocab * hidden
-                // The division then multiplication rounds to nearest million (matches Rust)
+                // The division then multiplication rounds to nearest million
                 parameters = 12 * hidden * hidden * layers / 1_000_000 * 1_000_000 + vocab * hidden
             }
         }

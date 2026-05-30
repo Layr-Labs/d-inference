@@ -1,6 +1,6 @@
 # `provider-swift` — Swift CLI provider
 
-CLI replacement for the legacy Rust provider. Builds two executables:
+CLI provider for Apple Silicon Macs. Builds two executables:
 
 | Binary | Purpose |
 |---|---|
@@ -101,7 +101,7 @@ Done in v0.5.0:
 - [x] Crypto cleanup: `CoordinatorClient` now base64-decodes the ciphertext + sender pubkey itself and yields `Data` to `ProviderLoop`, removing the previous round-trip-through-base64 dance.
 - [x] `mlx.metallib` self-hashed at startup, surfaced under `template_hashes["mlx_metallib"]` in registration + attestation responses; the release pipeline still bakes the metallib next to the binary.
 - [x] `ChatCompletionRequest` accepts `stop` (string or array) / `seed` / `tools` / `tool_choice` / `response_format` / `user`; the values round-trip through Codable (the inference engine is a no-op pass-through for tools and response_format today).
-- [x] `darkbloom doctor` and `darkbloom status` show a one-line update banner before printing state, matching the Rust provider's `check_for_update_alert` (skip with `DARKBLOOM_NO_UPDATE_CHECK=1`).
+- [x] `darkbloom doctor` and `darkbloom status` show a one-line update banner before printing state (skip with `DARKBLOOM_NO_UPDATE_CHECK=1`).
 - [x] Privacy capabilities cleaned up: `python_runtime_locked` and `dangerous_modules_blocked` now report `false` instead of lying.
 - [x] Dead code dropped: `Inference/InferenceEngine.swift` removed; `BatchScheduler` is the single inference path.
 

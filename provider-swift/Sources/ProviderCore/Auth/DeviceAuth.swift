@@ -5,8 +5,6 @@
 /// 2. User opens the verification_uri in their browser and enters the user_code.
 /// 3. Provider polls `/v1/device/token` until the user approves (or the code expires).
 /// 4. On approval, the coordinator returns an auth token which is saved to `~/.darkbloom/auth_token`.
-///
-/// Mirrors the Rust implementation in `provider/src/main.rs` (cmd_login / cmd_logout).
 
 import Foundation
 

@@ -17,7 +17,7 @@ public struct WeightHasher: Sendable {
 
     private static let logger = Logger(label: "darkbloom.WeightHasher")
 
-    /// Buffer size for streaming file reads (64 KB, matches Rust implementation).
+    /// Buffer size for streaming file reads (64 KB).
     private static let bufferSize = 65536
 
     // MARK: - Public API

@@ -654,7 +654,7 @@ public actor CoordinatorClient {
 
     // MARK: - Telemetry
 
-    /// Matches the Rust telemetry gate: emit at counts 3, 10, then every 30.
+    /// Telemetry gate: emit at counts 3, 10, then every 30.
     private func shouldEmitReconnectTelemetry(count: UInt64) -> Bool {
         count == 3 || count == 10 || count % 30 == 0
     }

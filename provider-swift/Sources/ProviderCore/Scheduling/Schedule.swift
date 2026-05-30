@@ -46,7 +46,7 @@ public struct ScheduleConfig: Codable, Sendable, Equatable {
 
 // MARK: - Day of week
 
-/// Days of the week, matching the Rust implementation.
+/// Days of the week.
 public enum DayOfWeek: Int, Sendable, CaseIterable {
     case monday = 0
     case tuesday = 1

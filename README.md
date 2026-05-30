@@ -149,8 +149,7 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 | Component | Language | Role |
 |-----------|----------|------|
 | Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
-| Provider, legacy (`provider/`) | Rust | Inference agent in production today; retired at the Swift cutover |
-| Provider, Swift (`provider-swift/`) | Swift | CLI-only Swift port; replaces `provider/` after cutover |
+| Provider (`provider-swift/`) | Swift | CLI inference agent for Apple Silicon Macs |
 | Console (`console-ui/`) | Next.js 16 | Web dashboard: chat, billing, provider verification |
 | Landing (`landing/`) | HTML | Static landing page |
 
@@ -159,9 +158,6 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 ```bash
 # Coordinator
 cd coordinator && go test ./...
-
-# Legacy Rust provider (set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 on Python 3.14+)
-cd provider && cargo test
 
 # Swift provider (CLI)
 cd provider-swift && swift test

@@ -32,7 +32,6 @@ fi
 CHANGED_FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git diff --name-only HEAD~1)
 
 HAS_GO=$(echo "$CHANGED_FILES" | grep -q '^coordinator/' && echo 1 || echo 0)
-HAS_RUST=$(echo "$CHANGED_FILES" | grep -q '^provider/' && echo 1 || echo 0)
 HAS_TS=$(echo "$CHANGED_FILES" | grep -q '^console-ui/' && echo 1 || echo 0)
 
 # ---------------------------------------------------------------------------
@@ -53,29 +52,6 @@ if [ "$HAS_GO" = "1" ]; then
     # timing-sensitive. They run in CI instead.
     if ! (cd coordinator && go test $(go list ./... | grep -v /internal/api) 2>&1 | tail -15); then
         echo "ERROR: Go tests failed."
-        FAILED=1
-    fi
-fi
-
-# ---------------------------------------------------------------------------
-# Rust — formatting + tests
-# ---------------------------------------------------------------------------
-if [ "$HAS_RUST" = "1" ]; then
-    echo ">> [pre-push] Rust formatting check..."
-    if ! (cd provider && cargo fmt --check 2>/dev/null); then
-        echo "ERROR: Rust files not formatted. Fix with: cd provider && cargo fmt"
-        FAILED=1
-    fi
-
-    echo ">> [pre-push] Rust build (no-default-features, same as CI release)..."
-    if ! (cd provider && cargo build --no-default-features 2>&1 | tail -15); then
-        echo "ERROR: Rust build failed with --no-default-features (CI will also fail)."
-        FAILED=1
-    fi
-
-    echo ">> [pre-push] Rust tests..."
-    if ! (cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test 2>&1 | tail -15); then
-        echo "ERROR: Rust tests failed."
         FAILED=1
     fi
 fi

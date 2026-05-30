@@ -38,14 +38,6 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 │   └── darkbloom-enclave-cli/         Secure Enclave attestation/sign helper
 └── Tests/
 
-provider/             Deprecated Rust provider (bridge auto-update to Swift bundles only)
-
-enclave/              Standalone Secure Enclave helper (legacy naming)
-├── Sources/EigenInferenceEnclave/      enclave key + attestation library + FFI bridge
-├── Sources/EigenInferenceEnclaveCLI/   CLI (attest, sign, info)
-├── Tests/EigenInferenceEnclaveTests/
-└── include/eigeninference_enclave.h
-
 console-ui/           Next.js 16 / React 19 frontend (chat, billing, models)
 ├── src/app/          Pages: chat (/), billing, models, stats, providers, settings, link, api-console, earn
 ├── src/app/api/      Proxy routes: chat, images, transcribe, auth/keys, payments/*, invite, models, health, pricing
@@ -65,8 +57,7 @@ scripts/
 
 docs/                 Architecture docs, deploy runbook, MDM/ACME notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
-                      Rust bridge release (release-rust-bridge.yml), model registration (register-model.yml),
-                      threat model review (threat-model-review.yml)
+                      model registration (register-model.yml), threat model review (threat-model-review.yml)
 ```
 
 ### External Dependencies (`.external/`)
@@ -125,7 +116,7 @@ go test ./e2e/... -run TestBenchmark -v    # load benchmarks
    - ..."
    ```
 4. **Push** the commit and tag: `git push origin master --tags`
-5. The Swift release workflow (`.github/workflows/release-swift.yml`) is triggered by tags shaped `vX.Y.Z-swift[.N]`. The Rust bridge release workflow (`release-rust-bridge.yml`) handles legacy provider auto-update to Swift bundles.
+5. The Swift release workflow (`.github/workflows/release-swift.yml`) is triggered by tags shaped `vX.Y.Z-swift[.N]`.
 
 ## Deploying
 
@@ -263,7 +254,7 @@ Each reviewer should:
 1. Read the diff of all changes made for that objective
 2. Verify correctness: does the implementation actually solve what was asked?
 3. Check for regressions: broken imports, missing protocol symmetry, untested edge cases
-4. Confirm builds/tests pass for affected components (run `go test`, `cargo test`, `npm run build`, etc. as appropriate)
+4. Confirm builds/tests pass for affected components (run `go test`, `swift test`, `npm run build`, etc. as appropriate)
 5. Report a pass/fail verdict with specific issues if any
 
 Only proceed to the next objective after both reviewers pass. If either flags issues, fix them before moving on.

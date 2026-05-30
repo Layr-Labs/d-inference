@@ -15,10 +15,11 @@ import (
 
 // TestBuildStatusCanonicalGoldenBytes is the cross-language wire-format
 // guard. The bytes asserted here MUST be identical to the bytes produced
-// by Rust's build_status_canonical for the same input. The matching Rust
-// test lives in provider/src/coordinator.rs (test_build_status_canonical_golden_bytes).
-// If either side drifts, both tests fail and you catch the protocol drift
-// before it ships.
+// by the Swift provider's StatusCanonical.build for the same input. The
+// matching Swift test lives in
+// provider-swift/Tests/ProviderCoreTests/SecurityTests.swift
+// (statusCanonicalMatchesCoordinatorGoldenBytes). If either side drifts,
+// both tests fail and you catch the protocol drift before it ships.
 func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
 	True := true
 	in := StatusCanonicalInput{
@@ -51,7 +52,7 @@ func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
 	expected := []byte(`{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}`)
 
 	if !bytes.Equal(got, expected) {
-		t.Fatalf("canonical bytes drifted from Rust golden — protocol break\nwant: %s\ngot:  %s", expected, got)
+		t.Fatalf("canonical bytes drifted from Swift golden — protocol break\nwant: %s\ngot:  %s", expected, got)
 	}
 }
 
@@ -95,9 +96,9 @@ func TestBuildStatusCanonicalFalseIsExplicit(t *testing.T) {
 
 // TestBuildStatusCanonicalUnicodeNonce guards against future protocol
 // changes that introduce non-ASCII into a signed field. Both Go's
-// encoding/json and Rust's serde_json escape control chars but pass
-// printable Unicode through as UTF-8 — verify the output is valid UTF-8
-// and doesn't double-escape.
+// encoding/json and the Swift provider's JSON encoder escape control
+// chars but pass printable Unicode through as UTF-8 — verify the output
+// is valid UTF-8 and doesn't double-escape.
 func TestBuildStatusCanonicalUnicodeNonce(t *testing.T) {
 	// Fictional unicode nonce — nonces are base64 in production, but if
 	// the protocol ever changed, we want the canonical to handle UTF-8

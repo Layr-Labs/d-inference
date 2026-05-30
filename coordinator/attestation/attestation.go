@@ -328,11 +328,11 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 
 // StatusCanonicalInput holds the fields covered by StatusSignature in
 // AttestationResponseMessage. It mirrors the canonical payload the
-// provider builds + signs in handle_attestation_challenge (Rust side).
+// provider builds + signs in handleAttestationChallenge (Swift side).
 //
 // The serialization is JSON with alphabetically-sorted keys (matching
-// Go's encoding/json map ordering and Rust's BTreeMap ordering, which
-// produce identical bytes for equivalent content).
+// Go's encoding/json map ordering and the Swift provider's canonical
+// encoder, which produce identical bytes for equivalent content).
 //
 // Fields that are absent on the provider side (e.g. hypervisor not
 // active, no model loaded yet) are omitted from the canonical payload —
@@ -360,7 +360,7 @@ type StatusCanonicalInput struct {
 // sequence used for StatusSignature. The result must be byte-for-byte
 // identical to the provider's canonical bytes.
 //
-// Conventions (must match Rust handle_attestation_challenge):
+// Conventions (must match the Swift provider's handleAttestationChallenge):
 //   - Keys are sorted alphabetically (Go encoding/json sorts map keys).
 //   - nil bool/empty string/empty map fields are OMITTED entirely.
 //   - Bool fields are JSON true/false.
@@ -469,9 +469,9 @@ var ErrStatusSignatureMissing = fmt.Errorf("status_signature missing — status 
 //
 // Closing the signature-scope gap requires a coordinated protocol change:
 // extend the signed payload to include canonical status fields, update both
-// provider/src/coordinator.rs (handle_attestation_challenge) and this file,
-// and migrate carefully (a hard switch would invalidate all in-fleet
-// providers). Tracked separately from this file's reliability work.
+// the Swift provider's handleAttestationChallenge (ProviderLoop.swift) and
+// this file, and migrate carefully (a hard switch would invalidate all
+// in-fleet providers). Tracked separately from this file's reliability work.
 func VerifyChallengeSignature(sePublicKeyB64, signatureB64, data string) error {
 	// Decode public key
 	pubKeyBytes, err := base64.StdEncoding.DecodeString(sePublicKeyB64)

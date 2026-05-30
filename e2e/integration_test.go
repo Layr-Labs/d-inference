@@ -20,6 +20,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/e2e/testbed"
 	tbassert "github.com/eigeninference/d-inference/e2e/testbed/assert"
+	tbprofile "github.com/eigeninference/d-inference/e2e/testbed/profile"
 )
 
 var httpTimeout = 300 * time.Second
@@ -259,7 +260,7 @@ func TestIntegration_MultipleRequestsAccounting(t *testing.T) {
 	require.Greater(t, successCount, 0, "no successful requests")
 
 	cfg := testbed.DefaultTestConfig()
-	p := profile.NewProfiler(cfg, buf)
+	p := tbprofile.NewProfiler(cfg, buf)
 	run := p.BuildProfile()
 	t.Logf("\n%s", run.SummaryTable())
 

@@ -16,8 +16,11 @@ import {
 // Optional display-only market references. The catalog rows always come from
 // the coordinator; entries here only enable a comparison when IDs match.
 const baselinePricing: Record<string, { output: number; baseline: string; unit?: string }> = {
-  "gemma-4-26b": { output: 400_000, baseline: "OpenRouter" },
-  "gpt-oss-20b": { output: 400_000, baseline: "OpenRouter" },
+  // OpenRouter list output prices (micro-USD per 1M tokens). Darkbloom prices
+  // target ~50% of these, so the comparison reads "50% lower" once platform
+  // pricing is set. Update if the OpenRouter rates change.
+  "gemma-4-26b": { output: 330_000, baseline: "OpenRouter" },
+  "gpt-oss-20b": { output: 140_000, baseline: "OpenRouter" },
 };
 
 // Build a unified pricing lookup from the coordinator's response

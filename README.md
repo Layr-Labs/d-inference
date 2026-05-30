@@ -136,10 +136,10 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 
 | Type | Rate |
 |------|------|
-| Text (Gemma 4 26B) | $0.05 / 1M input, $0.20 / 1M output |
-| Text (GPT-OSS 20B) | $0.05 / 1M input, $0.20 / 1M output |
+| Text (Gemma 4 26B) | $0.03 / 1M input, $0.165 / 1M output |
+| Text (GPT-OSS 20B) | $0.015 / 1M input, $0.07 / 1M output |
 
-Live per-model pricing is always available at `GET /v1/pricing`. During the public alpha there is a 0% platform fee — providers keep 100% of revenue.
+Per-token prices are set to roughly 50% of comparable OpenRouter list rates (e.g. Gemma 4 26B is $0.06/$0.33 and GPT-OSS 20B is $0.03/$0.14 on OpenRouter). Live per-model pricing is always available at `GET /v1/pricing`. During the public alpha there is a 0% platform fee — providers keep 100% of revenue.
 
 ## Architecture
 

@@ -46,8 +46,8 @@
   // API is unreachable; keep them to the currently-served lineup. Mirrors
   // console-ui/src/app/earn/page.tsx (buildCatalogModels).
   let CATALOG_MODELS = [
-    { id: "gpt-oss-20b", name: "GPT-OSS 20B", minRAMGB: 24, activeParamsGB: 4, modelSizeGB: 12, outputPriceMicro: DEFAULT_OUTPUT_PRICE_MICRO, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
-    { id: "gemma-4-26b", name: "Gemma 4 26B", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: DEFAULT_OUTPUT_PRICE_MICRO, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
+    { id: "gpt-oss-20b", name: "GPT-OSS 20B", minRAMGB: 24, activeParamsGB: 4, modelSizeGB: 12, outputPriceMicro: 70_000, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
+    { id: "gemma-4-26b", name: "Gemma 4 26B", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 165_000, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
   ];
 
   // --- Live catalog → calculator model mapping (ported from console-ui) ---

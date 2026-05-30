@@ -13,7 +13,9 @@
 //     and `{"type":"custom", ...}` tools;
 //   - messages that omit the `content` key (e.g. an assistant turn that
 //     carries only `tool_calls`);
-//   - the `developer` role (and the older `function` role spelling).
+//   - the `developer` role (and the older `function` role spelling);
+//   - a scalar `stop` string (OpenAI also allows the array form that the
+//     strict decoder requires).
 //
 // Policy:
 //   - Tools we cannot represent as the upstream `OpenAITool` are dropped.
@@ -70,6 +72,14 @@ enum InboundChatNormalization {
             // Hosted/builtin and custom tools are dropped — see the policy
             // note at the top of this file.
             root["tools"] = tools.filter(isRepresentableTool)
+        }
+
+        // OpenAI accepts a scalar `stop` string as well as an array; the
+        // strict `OpenAIChatCompletionRequest` decoder only accepts
+        // `[String]`. Wrap a lone string so it survives — mirrors the
+        // retired legacy `StopSequences.asArray` lift (#252).
+        if let stop = root["stop"] as? String {
+            root["stop"] = [stop]
         }
 
         return try JSONSerialization.data(withJSONObject: root)

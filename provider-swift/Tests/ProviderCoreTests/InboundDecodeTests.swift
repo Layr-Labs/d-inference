@@ -109,6 +109,35 @@ struct InboundDecodeTests {
         #expect(req.messages[0].textContent == "")
     }
 
+    // MARK: - Scalar stop (regression from retiring the legacy lift)
+
+    @Test("scalar stop string is wrapped into a one-element array")
+    func scalarStopStringIsWrapped() throws {
+        let req = try decode(#"""
+        {"model":"m","messages":[{"role":"user","content":"hi"}],"stop":"</s>"}
+        """#)
+        #expect(req.stop == ["</s>"])
+    }
+
+    @Test("array stop decodes unchanged on the fast path")
+    func arrayStopDecodes() throws {
+        let req = try decode(#"""
+        {"model":"m","messages":[{"role":"user","content":"hi"}],"stop":["</s>","<|eot|>"]}
+        """#)
+        #expect(req.stop == ["</s>", "<|eot|>"])
+    }
+
+    @Test("scalar stop composes with other cold-path repairs")
+    func scalarStopComposesWithOtherRepairs() throws {
+        // developer role forces the cold path; the scalar stop must also be
+        // repaired in the same pass.
+        let req = try decode(#"""
+        {"model":"m","messages":[{"role":"developer","content":"x"}],"stop":"\n\n"}
+        """#)
+        #expect(req.messages[0].role == .system)
+        #expect(req.stop == ["\n\n"])
+    }
+
     // MARK: - Roles
 
     @Test("developer role is aliased to system")

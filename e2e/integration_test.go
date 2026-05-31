@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/e2e/testbed"
 	tbassert "github.com/eigeninference/d-inference/e2e/testbed/assert"
 	tbprofile "github.com/eigeninference/d-inference/e2e/testbed/profile"
@@ -351,6 +352,16 @@ func TestIntegration_ProviderPayoutSplit(t *testing.T) {
 	s := startSuite(t)
 
 	accountID := "payout-user"
+	// The global default platform fee is 0% during the public alpha, so set an
+	// explicit non-zero per-account override to exercise the payout/fee split
+	// end-to-end (the settlement reads the consumer's PlatformFeePercent).
+	feePercent := int64(5)
+	require.NoError(t, s.PgStore.CreateUser(&store.User{
+		AccountID:          accountID,
+		PrivyUserID:        "did:privy:" + accountID,
+		PlatformFeePercent: &feePercent,
+	}), "should create payout user with a fee override")
+
 	apiKey, err := s.PgStore.CreateKeyForAccount(accountID)
 	require.NoError(t, err, "should create API key for payout user")
 
@@ -368,12 +379,17 @@ func TestIntegration_ProviderPayoutSplit(t *testing.T) {
 	refundTotal := sumAmounts(refunds)
 	totalCost := netCharge + refundTotal
 
-	expectedPayout := payments.ProviderPayout(totalCost)
-	expectedFee := payments.PlatformFee(totalCost)
+	expectedPayout := payments.ProviderPayoutWithPercent(totalCost, &feePercent)
+	expectedFee := payments.PlatformFeeWithPercent(totalCost, &feePercent)
 
 	require.GreaterOrEqual(t, expectedFee, int64(1), "platform fee should be at least 1 micro-USD (5%% of %d)", totalCost)
 	require.Equal(t, totalCost, expectedPayout+expectedFee,
 		"payout + fee should equal total cost")
+
+	// The override must take effect end-to-end: the platform ledger should show
+	// a fee for this request.
+	platformFees := queryLedgerEntries(t, s, "platform", "platform_fee")
+	require.NotEmpty(t, platformFees, "platform should receive a fee entry for the 5%% override")
 
 	assertAccounting(t, s)
 	t.Logf("payout split: total=%d provider=95%%(%d) platform=5%%(%d)", totalCost, expectedPayout, expectedFee)
@@ -662,6 +678,16 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 
 	require.NoError(t, s.PgStore.Credit(referrerKey, 0, "deposit", "seed"))
 	require.NoError(t, s.PgStore.Credit(consumerKey, 1_000_000, "deposit", "seed"))
+
+	// Referral rewards are funded from the platform fee, which defaults to 0%
+	// during the public alpha. Give the consumer an explicit non-zero fee
+	// override so there is a fee pool to distribute.
+	feePercent := int64(5)
+	require.NoError(t, s.PgStore.CreateUser(&store.User{
+		AccountID:          consumerKey,
+		PrivyUserID:        "did:privy:" + consumerKey,
+		PlatformFeePercent: &feePercent,
+	}), "should create referred consumer with a fee override")
 
 	consumerAPIKey, err := s.PgStore.CreateKeyForAccount(consumerKey)
 	require.NoError(t, err, "should create API key for referred consumer")

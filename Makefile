@@ -2,7 +2,6 @@
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         provider-build provider-test provider \
-        enclave-build enclave-test enclave \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
         test build all clean
@@ -35,16 +34,6 @@ provider-test: ## swift test for the Swift provider CLI
 
 provider: provider-build provider-test ## Build + test provider
 
-# ---- Enclave helper (Swift) -----------------------------------------------
-
-enclave-build: ## Release-build the Secure Enclave helper
-	cd enclave && swift build -c release
-
-enclave-test: ## swift test for the enclave helper
-	cd enclave && swift test
-
-enclave: enclave-build enclave-test ## Build + test enclave helper
-
 # ---- Console UI (Next.js 16) ----------------------------------------------
 
 ui-install: ## npm install for console-ui
@@ -74,12 +63,12 @@ e2e: e2e-integration ## Run the integration suite
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test provider-test enclave-test ui-test ## Run all unit tests
+test: coordinator-test provider-test ui-test ## Run all unit tests
 
-build: coordinator-build provider-build enclave-build ui-build ## Build all components
+build: coordinator-build provider-build ui-build ## Build all components
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -f coordinator/coordinator coordinator/coordinator-linux
-	rm -rf provider-swift/.build enclave/.build console-ui/.next console-ui/node_modules
+	rm -rf provider-swift/.build console-ui/.next console-ui/node_modules

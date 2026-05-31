@@ -57,12 +57,6 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 ├── Sources/darkbloom-enclave-cli/    Secure Enclave attestation/sign helper
 └── Tests/                            ProviderCore and ProviderCoreFoundation tests
 
-enclave/              Standalone Secure Enclave helper (legacy naming)
-├── Sources/EigenInferenceEnclave/      enclave key + attestation library + FFI bridge
-├── Sources/EigenInferenceEnclaveCLI/   CLI (attest, sign, info)
-├── Tests/EigenInferenceEnclaveTests/
-└── include/eigeninference_enclave.h
-
 console-ui/           Next.js 16 / React 19 frontend
 ├── src/app/          chat, billing, images, models, stats, providers, settings, link, api-console, earn
 ├── src/app/api/      chat, images, transcribe, auth/keys, payments/*, invite, models, health, pricing
@@ -125,13 +119,6 @@ make provider-test            # cd provider-swift && swift test
 make provider                 # build + test
 ```
 
-### Enclave Helper (Swift)
-```bash
-make enclave-build            # cd enclave && swift build -c release
-make enclave-test             # cd enclave && swift test
-make enclave                  # build + test
-```
-
 ### Console UI (Next.js 16)
 ```bash
 make ui-install               # npm install
@@ -150,7 +137,7 @@ make e2e-benchmark            # go test ./e2e/... -run TestBenchmark -v
 
 ### Aggregates
 ```bash
-make test                     # all unit tests (coordinator + provider + enclave + ui)
+make test                     # all unit tests (coordinator + provider + ui)
 make build                    # build all components
 make all                      # test + build everything
 make clean                    # remove built artifacts
@@ -242,5 +229,3 @@ git config core.hooksPath .githooks
 | Go (`coordinator/`) | `gofmt -l` | `gofmt -w <file>` |
 | Swift (`provider-swift/`) | no enforced formatter | `cd provider-swift && swift test` |
 | TypeScript (`console-ui/`) | `npx eslint src/` | `cd console-ui && npx eslint src/ --fix` |
-| Swift (`app/`, `enclave/`) | skipped | no enforced formatter |
-| Python (`tests/`) | no hook today | run `pytest` manually as needed |

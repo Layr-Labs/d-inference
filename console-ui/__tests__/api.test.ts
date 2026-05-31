@@ -7,6 +7,11 @@ import {
   fetchModels,
   fetchPricing,
   healthCheck,
+  listApiKeys,
+  createApiKey,
+  updateApiKey,
+  deleteApiKey,
+  rotateApiKey,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -319,6 +324,97 @@ describe("healthCheck", () => {
   it("throws on non-ok response", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
     await expect(healthCheck()).rejects.toThrow("Health check failed: 500");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// API key management client (Privy-authenticated, /api/keys proxy)
+// ---------------------------------------------------------------------------
+
+describe("API key management client", () => {
+  it("listApiKeys GETs /api/keys with a Bearer token and unwraps data", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ object: "list", data: [{ id: "key_1", name: "prod" }] })
+    );
+
+    const result = await listApiKeys("privy-tok");
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys");
+    expect(opts.headers.Authorization).toBe("Bearer privy-tok");
+    expect(opts.headers["x-api-key"]).toBeUndefined();
+    expect(result).toEqual([{ id: "key_1", name: "prod" }]);
+  });
+
+  it("listApiKeys throws the server error message on failure", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: "forbidden" } }, 403));
+    await expect(listApiKeys("t")).rejects.toThrow("forbidden");
+  });
+
+  it("createApiKey POSTs the body and returns the once-only secret", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ key: "sk-db-x", data: { id: "key_2" } }));
+
+    const result = await createApiKey("t", {
+      name: "prod",
+      limit_usd: 10,
+      limit_reset: "monthly",
+    });
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys");
+    expect(opts.method).toBe("POST");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+    expect(JSON.parse(opts.body)).toEqual({
+      name: "prod",
+      limit_usd: 10,
+      limit_reset: "monthly",
+    });
+    expect(result.key).toBe("sk-db-x");
+    expect(result.data.id).toBe("key_2");
+  });
+
+  it("updateApiKey PATCHes /api/keys/{id} and forwards null to clear a field", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: "key_2", disabled: true }));
+
+    await updateApiKey("t", "key_2", { disabled: true, limit_usd: null });
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys/key_2");
+    expect(opts.method).toBe("PATCH");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+    expect(JSON.parse(opts.body)).toEqual({ disabled: true, limit_usd: null });
+  });
+
+  it("deleteApiKey DELETEs /api/keys/{id}", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
+
+    await deleteApiKey("t", "key_2");
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys/key_2");
+    expect(opts.method).toBe("DELETE");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+  });
+
+  it("rotateApiKey POSTs /api/keys/{id}/rotate and returns the new secret", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ key: "sk-db-rot", data: { id: "key_2" } }));
+
+    const result = await rotateApiKey("t", "key_2");
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys/key_2/rotate");
+    expect(opts.method).toBe("POST");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+    expect(result.key).toBe("sk-db-rot");
+  });
+
+  it("URL-encodes the key id in management routes", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
+
+    await deleteApiKey("t", "key/with space");
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys/key%2Fwith%20space");
   });
 });
 

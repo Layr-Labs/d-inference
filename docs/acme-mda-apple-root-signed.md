@@ -235,7 +235,7 @@ for this use case - I wanted the response signing and encryption/decryption of t
 
 This is a sharp question and it cuts right to a fundamental constraint in your architecture.
 
-**The direct answer: No, you cannot use the ACME SE P-384 key for application-level signing or decryption from your provider process.** Third party apps and processes cannot access the identities that device management installs into the data protection keychain.  Your hardened Rust process, no matter how privileged, cannot call `SecItemCopyMatching` against that key. It's locked to Apple system services (VPN, WiFi, MDM client).
+**The direct answer: No, you cannot use the ACME SE P-384 key for application-level signing or decryption from your provider process.** Third party apps and processes cannot access the identities that device management installs into the data protection keychain.  Your hardened provider process, no matter how privileged, cannot call `SecItemCopyMatching` against that key. It's locked to Apple system services (VPN, WiFi, MDM client).
 
 But reading your paper, there's an elegant architecture that gives you what you actually want — the SE P-384 key doing real crypto work, not just sitting as an attestation artifact.
 

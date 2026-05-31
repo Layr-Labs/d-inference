@@ -445,8 +445,8 @@ struct Start: AsyncParsableCommand {
     }
 
     /// Fetches the model catalog from the coordinator, shows an interactive
-    /// terminal picker matching the Rust provider UX, downloads any missing
-    /// models, and returns the selected model IDs.
+    /// terminal picker, downloads any missing models, and returns the
+    /// selected model IDs.
     private func interactiveCatalogPicker(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,

@@ -31,8 +31,16 @@ const DefaultOutputPricePerMillion int64 = 200_000
 // Minimum charge per inference request in micro-USD ($0.0001).
 const minimumChargeMicroUSD int64 = 100
 
-// Platform fee percentage — Darkbloom retains 5% as a routing fee, provider receives 95%.
-const platformFeePercent int64 = 5
+// Platform fee percentage — the global default routing fee applied when an
+// account has no per-account override. Set to 0 for the public alpha so
+// providers keep 100% of revenue (matches the README / landing copy). Raise
+// this post-alpha; per-account overrides via PUT /v1/admin/users/platform-fee
+// still apply on top of the default.
+//
+// NOTE: the referral program pays out a share of this platform fee, so while
+// the default is 0 there is no fee pool to distribute (referrals are dormant
+// during the alpha).
+const platformFeePercent int64 = 0
 
 // MinimumCharge returns the minimum charge per inference request in micro-USD.
 func MinimumCharge() int64 {

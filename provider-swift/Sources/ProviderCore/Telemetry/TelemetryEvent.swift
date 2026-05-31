@@ -46,13 +46,13 @@ public enum TelemetryKind: String, Codable, Sendable {
 
 // MARK: - Event
 
-/// Single telemetry record. Serialization matches the Go `TelemetryEvent` and
-/// Rust `TelemetryEvent` wire shape exactly: snake_case keys, omitting empty
+/// Single telemetry record. Serialization matches the canonical Go
+/// `TelemetryEvent` wire shape exactly: snake_case keys, omitting empty
 /// optional fields.
 public struct TelemetryEvent: Codable, Sendable {
     public var id: String
-    /// ISO 8601 with fractional seconds, matching Go `time.Time` and Rust
-    /// `chrono::Utc::now().to_rfc3339_opts(Nanos, true)`.
+    /// ISO 8601 with fractional seconds, matching Go `time.Time`
+    /// (RFC 3339 with nanosecond precision).
     public var timestamp: String
     public var source: TelemetrySource
     public var severity: TelemetrySeverity

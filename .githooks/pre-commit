@@ -30,23 +30,6 @@ if [ -n "$GO_FILES" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Rust — cargo fmt --check in provider/ if any .rs files are staged
-# ---------------------------------------------------------------------------
-RS_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'provider/**.rs' | grep '\.rs$' || true)
-
-if [ -n "$RS_FILES" ]; then
-    echo ">> Checking Rust formatting (cargo fmt)..."
-    if ! (cd provider && cargo fmt --check 2>/dev/null); then
-        echo ""
-        echo "ERROR: Rust files in provider/ are not formatted."
-        echo ""
-        echo "Fix with:  cd provider && cargo fmt"
-        echo ""
-        FAILED=1
-    fi
-fi
-
-# ---------------------------------------------------------------------------
 # TypeScript — next lint in console-ui/ if any .ts/.tsx files are staged
 # ---------------------------------------------------------------------------
 TS_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'console-ui/**.ts' 'console-ui/**.tsx' | grep -E '\.(ts|tsx)$' || true)

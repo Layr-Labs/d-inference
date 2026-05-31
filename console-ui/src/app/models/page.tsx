@@ -16,11 +16,11 @@ import {
 // Optional display-only market references. The catalog rows always come from
 // the coordinator; entries here only enable a comparison when IDs match.
 const baselinePricing: Record<string, { output: number; baseline: string; unit?: string }> = {
-  "qwen3.5-27b-claude-opus-8bit": { output: 1_560_000, baseline: "OpenRouter" },
-  "mlx-community/Trinity-Mini-8bit": { output: 150_000, baseline: "OpenRouter" },
-  "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, baseline: "OpenRouter" },
-  "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, baseline: "OpenRouter" },
-  "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, baseline: "OpenRouter" },
+  // Typical hosted-API list output prices (micro-USD per 1M tokens). Darkbloom
+  // targets ~50% of these, so the comparison reads "50% lower" once platform
+  // pricing is set. Update if those baseline rates change.
+  "gemma-4-26b": { output: 330_000, baseline: "typical APIs" },
+  "gpt-oss-20b": { output: 140_000, baseline: "typical APIs" },
 };
 
 // Build a unified pricing lookup from the coordinator's response
@@ -208,7 +208,7 @@ export default function ModelsPage() {
                             <span className="text-xs font-medium text-accent-green">
                               {savingsPercent(eigenPricing[model.id].output, baselinePricing[model.id].output)}% cheaper
                             </span>
-                            <span className="text-xs text-text-tertiary opacity-50">against {baselinePricing[model.id].baseline} baseline</span>
+                            <span className="text-xs text-text-tertiary opacity-50">vs {baselinePricing[model.id].baseline}</span>
                           </div>
                         )}
                       </div>
@@ -292,7 +292,7 @@ export default function ModelsPage() {
                 </tbody>
               </table>
               <div className="px-4 py-2 text-xs text-text-tertiary bg-bg-tertiary/50">
-                Baseline prices from OpenRouter as of April 2026.
+                Baseline prices reflect typical hosted-API list rates as of April 2026.
               </div>
             </div>
           </div>

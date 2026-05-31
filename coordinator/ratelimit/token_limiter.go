@@ -97,6 +97,52 @@ func (t *TokenLimiter) Allow(accountID string, inputTokens, outputTokens int) (a
 	return true, "", 0
 }
 
+// Peek reports whether a charge would be admitted WITHOUT consuming any tokens.
+// Returns the tripped dimension + Retry-After when not. Use Peek across multiple
+// limiters first, then Commit on each only when all peeks pass, so a rejection
+// in one limiter never debits another. Empty accountID is always allowed.
+func (t *TokenLimiter) Peek(accountID string, inputTokens, outputTokens int) (ok bool, dimension string, retryAfter time.Duration) {
+	if accountID == "" {
+		return true, "", 0
+	}
+	lock := t.lockFor(accountID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if t.input != nil {
+		in := clampCharge(inputTokens, t.input.Burst())
+		if !t.input.CanN(accountID, in) {
+			_, retry := t.input.AllowN(accountID, in) // fails atomically, no debit; yields Retry-After
+			return false, "input_tokens", retry
+		}
+	}
+	if t.output != nil {
+		out := clampCharge(outputTokens, t.output.Burst())
+		if !t.output.CanN(accountID, out) {
+			_, retry := t.output.AllowN(accountID, out)
+			return false, "output_tokens", retry
+		}
+	}
+	return true, "", 0
+}
+
+// Commit consumes a charge that a prior Peek confirmed would fit. Charges are
+// clamped to each bucket's burst, matching Peek/Allow. Empty accountID is a no-op.
+func (t *TokenLimiter) Commit(accountID string, inputTokens, outputTokens int) {
+	if accountID == "" {
+		return
+	}
+	lock := t.lockFor(accountID)
+	lock.Lock()
+	defer lock.Unlock()
+	if t.input != nil {
+		t.input.AllowN(accountID, clampCharge(inputTokens, t.input.Burst()))
+	}
+	if t.output != nil {
+		t.output.AllowN(accountID, clampCharge(outputTokens, t.output.Burst()))
+	}
+}
+
 // InputStat returns the input-token bucket snapshot for header emission and
 // whether the dimension is enforced (false when unlimited).
 func (t *TokenLimiter) InputStat(accountID string) (Stat, bool) {

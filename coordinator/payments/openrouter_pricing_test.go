@@ -27,7 +27,7 @@ func TestFormatPerTokenUSD(t *testing.T) {
 func TestPlatformFeeWithPercent(t *testing.T) {
 	const total int64 = 1_000_000
 
-	// nil override → global default (5%).
+	// nil override → global default fee.
 	if got := PlatformFeeWithPercent(total, nil); got != total*DefaultPlatformFeePercent/100 {
 		t.Errorf("default fee = %d, want %d", got, total*DefaultPlatformFeePercent/100)
 	}

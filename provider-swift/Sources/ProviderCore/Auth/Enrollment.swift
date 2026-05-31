@@ -1,7 +1,6 @@
 /// Enrollment -- MDM device-attestation flow.
 ///
-/// Flow (mirrors Rust `cmd_enroll` / `cmd_unenroll` in
-/// `provider/src/main.rs`):
+/// Flow:
 ///
 ///   1. Read the hardware serial number via `ioreg`.
 ///   2. POST `{"serial_number": ...}` to `${coordinator}/v1/enroll`.

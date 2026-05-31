@@ -1,8 +1,9 @@
-// Telemetry wire types — mirror of
-// `coordinator/internal/protocol/telemetry.go` and `provider/src/telemetry/event.rs`.
+// Telemetry wire types — TypeScript mirror of the canonical Go definitions in
+// `coordinator/protocol/telemetry.go` (also mirrored in Swift under
+// `provider-swift/Sources/ProviderCore/Telemetry/`).
 //
-// Any change here MUST be reflected in the Go and Rust definitions.
-// A symmetry test runs against the Go canonical JSON in CI.
+// Any change here MUST be reflected in the Go canonical type and the Swift
+// mirror. A symmetry test runs against the Go canonical JSON in CI.
 
 export type TelemetrySource =
   | "coordinator"
@@ -48,9 +49,6 @@ export interface TelemetryEvent {
   stack?: string;
 }
 
-export interface TelemetryBatch {
-  events: TelemetryEvent[];
-}
 
 /** Server-enforced allowlist — keep in sync with the coordinator handler. */
 export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([

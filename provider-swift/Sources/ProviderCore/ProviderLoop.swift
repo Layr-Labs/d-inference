@@ -585,12 +585,13 @@ public actor ProviderLoop {
             return
         }
 
-        // 2. Parse the chat completion request. We accept the upstream
-        // `OpenAIChatCompletionRequest` shape and keep a fallback to our
-        // legacy `ChatCompletionRequest` so consumers that still send the
-        // pre-MLXLMServer payload shape (i.e. ones missing some of the
-        // newer optional fields) don't regress. JSON wire-format matches
-        // on the common fields between the two types.
+        // 2. Parse the chat completion request into the upstream
+        // `OpenAIChatCompletionRequest` shape. `decodeOpenAIRequest`
+        // strict-decodes on the fast path and, on failure, normalises a
+        // few valid-but-strictly-rejected OpenAI shapes (hosted/custom
+        // tools, content-less messages, the `developer` role) before
+        // retrying — surfacing the real decoder error on failure rather
+        // than a masked one (#252). See ProviderLoop+InboundDecode.swift.
         let chatRequest: OpenAIChatCompletionRequest
         do {
             chatRequest = try Self.decodeOpenAIRequest(decryptedData)
@@ -1838,11 +1839,11 @@ public actor ProviderLoop {
 
     // MARK: - Helpers
     //
-    // SSE parsing, error-status mapping, and legacy-request lifting
+    // SSE parsing, error-status mapping, and inbound request decoding
     // live in companion extension files for navigability:
     //   - ProviderLoop+SSEParser.swift     (StreamChunkExtract, parseStreamChunk, encodeToolCallsForHash)
     //   - ProviderLoop+ErrorMapping.swift  (mapInferenceErrorToStatus)
-    //   - ProviderLoop+LegacyDecode.swift  (decodeOpenAIRequest, liftLegacyRequest)
+    //   - ProviderLoop+InboundDecode.swift (decodeOpenAIRequest; see InboundChatNormalization)
 }
 
 // MARK: - Logger wrapper

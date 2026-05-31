@@ -25,8 +25,7 @@ See [CLAUDE.md](CLAUDE.md) for the full layout and architectural decisions. The 
 | Directory | Stack | What it is |
 |-----------|-------|------------|
 | `coordinator/` | Go | Central matchmaking server (runs on EigenCloud / GCP) |
-| `provider/` | Rust | Hardened daemon on Apple Silicon Macs (legacy, retired at Swift cutover) |
-| `provider-swift/` | Swift | CLI replacement for `provider/` (`darkbloom` + `darkbloom-enclave`) |
+| `provider-swift/` | Swift | Hardened CLI daemon on Apple Silicon Macs (`darkbloom` + `darkbloom-enclave`) |
 | `console-ui/` | Next.js 16 / React 19 | Web app (chat, billing, models) |
 
 ## Development setup
@@ -34,7 +33,7 @@ See [CLAUDE.md](CLAUDE.md) for the full layout and architectural decisions. The 
 ### Prerequisites
 
 - macOS on Apple Silicon (M1+) for full provider/app development; the coordinator and console UI can be developed on any platform.
-- Go 1.22+, Rust (stable), Node 20+, Python 3.11+, Swift 5.9+ (Xcode 15+).
+- Go 1.22+, Node 20+, Python 3.11+, Swift 5.9+ (Xcode 15+).
 - A working `git` config with `user.name` and `user.email`.
 
 ### First-time clone
@@ -51,10 +50,7 @@ git config core.hooksPath .githooks   # enables pre-commit + pre-push checks
 # Coordinator
 cd coordinator && go test ./...
 
-# Legacy Rust provider
-cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test
-
-# Swift provider (CLI replacement)
+# Swift provider (CLI)
 cd provider-swift && swift test
 
 # Console UI
@@ -89,7 +85,6 @@ Every non-trivial change ships with tests. From `CLAUDE.md`:
 ## Code style
 
 - **Go**: `gofmt` (enforced by the pre-commit hook).
-- **Rust**: `cargo fmt` (enforced).
 - **TypeScript**: ESLint clean (`npx eslint src/` from `console-ui/`).
 - **Swift**: no enforced formatter; match the surrounding file.
 - **Python**: PEP 8, 4-space indent, type hints encouraged.
@@ -106,7 +101,7 @@ Comments: explain *why*, not *what*. Don't add comments that just restate what t
 
 Several surfaces have to stay in sync. If you touch one, check the others:
 
-- **WebSocket protocol**: `provider/src/protocol.rs` (Rust) ↔ `coordinator/internal/protocol/messages.go` (Go).
+- **WebSocket protocol**: `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift) ↔ `coordinator/protocol/messages.go` (Go).
 - **Provider bundle**: `.github/workflows/release-swift.yml`, `scripts/install.sh` (and the embedded copy at `coordinator/internal/api/install.sh`), and `LatestProviderVersion` in `coordinator/internal/api/server.go`.
 - **Image generation**: coordinator consumer/provider handlers route to the standalone image-generation service; `provider-swift` does not handle images.
 - **Device linking**: coordinator device auth endpoints + provider `login`/`logout` commands.

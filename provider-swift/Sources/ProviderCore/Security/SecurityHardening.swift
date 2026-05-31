@@ -1,7 +1,7 @@
 /// SecurityHardening -- runtime protections for the provider process.
 ///
-/// Implements the same security hardening as the Rust provider (`security.rs`),
-/// ported to pure Swift with Darwin C bridging:
+/// Implements the provider's runtime security hardening in pure Swift with
+/// Darwin C bridging:
 ///
 ///   - PT_DENY_ATTACH: prevents debugger attachment (lldb, dtrace)
 ///   - SIP verification: checks System Integrity Protection is enabled
@@ -508,8 +508,7 @@ public func verifySecurityPosture(hypervisorActive _: Bool = false) throws -> Se
 /// Compute a SHA-256 hash and optional Secure Enclave signature over an
 /// inference response, for coordinator verification.
 ///
-/// The hash covers `requestId:completionTokens:responseBody` -- identical
-/// to the Rust provider's `compute_response_attestation`.
+/// The hash covers `requestId:completionTokens:responseBody`.
 public func computeResponseAttestation(
     identity: (any AttestationSigner)?,
     requestId: String,

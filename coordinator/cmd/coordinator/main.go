@@ -189,6 +189,17 @@ func main() {
 	}
 	srv.SetTokenLimiters(consumerTokenLimiter, serviceTokenLimiter)
 
+	// Per-key (variable-rate) limiters for per-key RPM and ITPM/OTPM overrides.
+	// Unlike the per-account limiters above, these only act when an individual
+	// key sets an override; otherwise the key inherits the account-level limits.
+	// They carry no global rate of their own (each call supplies the key's rate).
+	keyRPMLimiter := ratelimit.New(ratelimit.Config{RPS: ratelimit.DefaultRPS, Burst: ratelimit.DefaultBurst})
+	keyRPMLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "key_rpm_ratelimit_pruner") })
+	keyTokenLimiter := ratelimit.NewKeyTokenLimiter()
+	keyTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "key_token_ratelimit_pruner") })
+	srv.SetKeyLimiters(keyRPMLimiter, keyTokenLimiter)
+	logger.Info("per-key rate limiters enabled (RPM + ITPM/OTPM overrides)")
+
 	// Coordinator self-telemetry emitter.
 	telemetryEmitter := telemetry.NewEmitter(logger, srv.Metrics(), telemetry.CoordinatorVersion)
 	srv.SetEmitter(telemetryEmitter)
@@ -447,24 +458,4 @@ func main() {
 	}
 
 	logger.Info("coordinator stopped")
-}
-
-// seedModelCatalog is retained only for stale tests during the registry
-// transition. Startup no longer calls it, and model registration is now backed
-// by DB rows plus R2 manifests rather than hardcoded coordinator seed data.
-func seedModelCatalog(st store.Store, logger *slog.Logger) {
-	removed := 0
-	for _, m := range st.ListSupportedModels() {
-		if !api.IsRetiredProviderModel(m) {
-			continue
-		}
-		if err := st.DeleteSupportedModel(m.ID); err != nil {
-			logger.Warn("failed to remove retired model", "id", m.ID, "error", err)
-		} else {
-			removed++
-		}
-	}
-	if removed > 0 {
-		logger.Info("retired model catalog entries removed", "removed", removed)
-	}
 }

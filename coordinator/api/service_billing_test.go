@@ -16,7 +16,7 @@ func TestServiceAccountBilledAtPlatformPriceNoMinimum(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
 
 	const model = "service-billing-model"
-	const consumerID = "test-key" // seeded with $100 by the harness
+	consumerID := testConsumerID // seeded with $100 by the harness
 
 	// Mark the consumer as a service (OpenRouter) account.
 	if err := st.CreateUser(&store.User{AccountID: consumerID, PrivyUserID: "did:privy:or", Role: store.RoleService}); err != nil {

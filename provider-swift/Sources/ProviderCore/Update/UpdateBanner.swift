@@ -1,7 +1,6 @@
 /// UpdateBanner -- non-blocking pre-command update check.
 ///
-/// Mirrors `provider/src/main.rs` `check_for_update_alert`. Hits
-/// `${coordinator}/api/version` with a short timeout. If a newer
+/// Hits `${coordinator}/api/version` with a short timeout. If a newer
 /// version is published, prints a one-line stderr banner and returns;
 /// any failure (timeout, parse error, no banner update) is swallowed
 /// silently so the CLI start-up cost is bounded.

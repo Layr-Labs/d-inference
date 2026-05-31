@@ -134,9 +134,6 @@ export function revokeGoogleAnalyticsConsent() {
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
 
-export function getGoogleAnalyticsConsentStorageKey() {
-  return GA_CONSENT_STORAGE_KEY;
-}
 
 function getGtag() {
   const measurementId = getGoogleAnalyticsMeasurementId();

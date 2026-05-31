@@ -106,7 +106,8 @@ cmd_releases_latest() {
 }
 
 cmd_models_list() {
-    authed_curl "$COORDINATOR_URL/v1/admin/models" | python3 -m json.tool
+    # Public, registry-backed catalog (the legacy /v1/admin/models CRUD was removed).
+    curl -fsSL "$COORDINATOR_URL/v1/models/catalog" | python3 -m json.tool
 }
 
 cmd_raw() {

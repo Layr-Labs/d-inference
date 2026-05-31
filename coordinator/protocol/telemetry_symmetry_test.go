@@ -8,8 +8,8 @@ import (
 )
 
 // TestTelemetryJSONSymmetry checks that the Go canonical encoding of a
-// TelemetryEvent matches the Rust/TypeScript mirrors. Any change here must
-// also be reflected in `provider/src/telemetry/event.rs` and
+// TelemetryEvent matches the Swift/TypeScript mirrors. Any change here must
+// also be reflected in `provider-swift/Sources/ProviderCore/Telemetry/` and
 // `console-ui/src/lib/telemetry-types.ts` — those mirrors have their own
 // symmetry tests that assert the same invariants.
 func TestTelemetryJSONSymmetry(t *testing.T) {
@@ -40,7 +40,7 @@ func TestTelemetryJSONSymmetry(t *testing.T) {
 		}
 	}
 
-	// Optional-field omission contract (matches Rust skip_serializing_if)
+	// Optional-field omission contract (matches the Swift mirror's nil omission)
 	// NOTE: Go's `omitempty` is on all optional fields in our struct.
 	for _, forbidden := range []string{
 		`"machine_id":`,

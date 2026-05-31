@@ -13,7 +13,9 @@ import (
 )
 
 // TestCrossLanguageEncryption verifies that payloads encrypted by the Go
-// coordinator can be decrypted by the Rust provider's crypto_box crate.
+// coordinator can be decrypted by an independent Rust `crypto_box` reference
+// implementation — proving the E2E wire format interops with the
+// NaCl/libsodium crypto_box construction.
 //
 // It builds a minimal Rust decryptor from testdata/decrypt, encrypts a payload
 // using the Go e2e package, then shells out to the Rust binary and checks that

@@ -11,18 +11,15 @@ name: Release Provider Bundle (Swift)
 # `eigeninference-enclave` name to `darkbloom-enclave` for existing
 # installations that referenced the old binary name.
 #
-# No SwiftUI app, no DMG, no Rust toolchain, no Python runtime. The legacy
-# `release.yml` was deleted alongside `app/` and `enclave/` once we committed
-# to a CLI-only migration.
+# No SwiftUI app, no DMG, and no Python runtime — this is a pure Swift CLI
+# build. The legacy `release.yml` was deleted alongside `app/` once we
+# committed to a CLI-only migration.
 #
 # Swift cutover tag conventions:
 #   - vX.Y.Z           -> prod Swift release (reviewer approval required)
 #   - vX.Y.Z-dev.N     -> dev Swift release
 #   - vX.Y.Z-swift     -> accepted alias while the migration is in progress
 #   - vX.Y.Z-swift.N   -> accepted alias while the migration is in progress
-#
-# The one-time Rust migration bridge intentionally uses `rust-bridge-vX.Y.Z`
-# so it cannot be confused with the Swift cutover tags above.
 #
 # Repo secrets use DEV_/PROD_ prefixes so both environments live at repo
 # level without needing GitHub environments:

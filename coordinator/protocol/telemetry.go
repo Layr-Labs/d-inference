@@ -1,7 +1,7 @@
 package protocol
 
 // Telemetry wire types — shared between coordinator, providers, the macOS app,
-// and the console UI. All three implementations (Go, Rust, TypeScript) must
+// and the console UI. All three implementations (Go, Swift, TypeScript) must
 // agree on these JSON shapes.
 //
 // Design rules:
@@ -36,7 +36,7 @@ const (
 )
 
 // TelemetryKind is a coarse categorization used for filtering and grouping
-// in the admin UI. New kinds should be added here and mirrored in Rust/TS.
+// in the admin UI. New kinds should be added here and mirrored in Swift/TS.
 type TelemetryKind string
 
 const (

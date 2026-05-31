@@ -7,7 +7,8 @@
 // runs a MITM proxy on their own network.
 //
 // Uses NaCl Box (X25519 + XSalsa20-Poly1305) — the same primitives as
-// the provider's Rust crypto module, ensuring cross-language compatibility.
+// the provider's Swift crypto module (swift-sodium), ensuring
+// cross-language compatibility.
 //
 // Flow:
 //  1. Coordinator generates ephemeral X25519 key pair per request (forward secrecy)
@@ -60,7 +61,10 @@ func GenerateSessionKeys() (*SessionKeys, error) {
 // Returns an EncryptedPayload containing the ephemeral public key and ciphertext.
 //
 // The ciphertext format is: 24-byte nonce || NaCl Box encrypted data.
-// This is compatible with the Rust provider's crypto_box crate.
+// This is compatible with the libsodium/NaCl Box (`crypto_box`)
+// construction; an independent Rust `crypto_box` reference implementation
+// in internal/e2e/testdata/decrypt verifies cross-language interop
+// (see cross_compat_test.go).
 func Encrypt(plaintext []byte, recipientPublicKey [32]byte, session *SessionKeys) (*EncryptedPayload, error) {
 	// Generate random nonce
 	var nonce [24]byte

@@ -179,10 +179,9 @@ func (s *Server) resolvePlatformPricing(model string) (inputPerMillion, outputPe
 // activeCatalogLookups builds the two lookups that the model-listing endpoints
 // (/v1/models and /v1/models/openrouter) share: the active catalog keyed by
 // model ID, and the richer registry entry per model used to populate the
-// OpenRouter provider fields. It prefers the DB-backed model registry; when
-// that has no rows it falls back to legacy supported_models, which carry no
-// registry entry (so registryByID is empty in the fallback case). The error is
-// returned so each caller can log it with its own context and emit a 500.
+// OpenRouter provider fields, both sourced from the DB-backed model registry.
+// The error is returned so each caller can log it with its own context and emit
+// a 500.
 func (s *Server) activeCatalogLookups() (catalogByID map[string]store.SupportedModel, registryByID map[string]store.ModelRegistryEntry, err error) {
 	registryRows, err := s.store.ListActiveModelRegistryWithError()
 	if err != nil {
@@ -190,19 +189,11 @@ func (s *Server) activeCatalogLookups() (catalogByID map[string]store.SupportedM
 	}
 	catalogByID = make(map[string]store.SupportedModel, len(registryRows))
 	registryByID = make(map[string]store.ModelRegistryEntry, len(registryRows))
-	if len(registryRows) > 0 {
-		for _, row := range registryRows {
-			cm := supportedModelFromRegistryRecord(&row)
-			if cm.Active {
-				catalogByID[cm.ID] = cm
-				registryByID[cm.ID] = row.ModelRegistryEntry
-			}
-		}
-		return catalogByID, registryByID, nil
-	}
-	for _, cm := range s.store.ListSupportedModels() {
-		if cm.Active && !IsRetiredProviderModel(cm) {
+	for _, row := range registryRows {
+		cm := supportedModelFromRegistryRecord(&row)
+		if cm.Active {
 			catalogByID[cm.ID] = cm
+			registryByID[cm.ID] = row.ModelRegistryEntry
 		}
 	}
 	return catalogByID, registryByID, nil
@@ -230,8 +221,8 @@ type openRouterModelFields struct {
 // quantization is mapped from rawQuantization (the aggregate's value for
 // /v1/models, or the registry entry's value for the catalog-driven feed); the
 // remaining fields come from the registry entry and are left at their zero
-// values when hasReg is false (legacy supported_models rows without a registry
-// entry).
+// values when hasReg is false (a model present in routing but without a
+// registry record).
 func (s *Server) openRouterModelFieldsFor(modelID, rawQuantization string, reg store.ModelRegistryEntry, hasReg bool) openRouterModelFields {
 	inPM, outPM := s.resolvePlatformPricing(modelID)
 	f := openRouterModelFields{

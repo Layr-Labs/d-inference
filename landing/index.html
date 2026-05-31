@@ -1286,7 +1286,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model=<span class="str">"mlx-community/gemma-4-26b-a4b-it-8bit"</span>,
+    model=<span class="str">"gemma-4-26b"</span>,
     messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"Hello!"</span>}],
     stream=<span class="kw">True</span>
 )
@@ -1314,11 +1314,12 @@ response = client.chat.completions.create(
       <div class="rv" style="overflow-x:auto;">
         <table class="ptable">
           <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Typical API</th><th>vs typical API</th></tr></thead>
-          <tbody>
-            <tr><td class="mc">Gemma 4 26B<small>4B active, fast multimodal MoE</small></td><td class="op">$0.03</td><td class="op">$0.20</td><td class="cp">$0.40</td><td><span class="stag">50% lower</span></td></tr>
-            <tr><td class="mc">Qwen3.5 27B<small>Dense, frontier reasoning</small></td><td class="op">$0.10</td><td class="op">$0.78</td><td class="cp">$1.56</td><td><span class="stag">50% lower</span></td></tr>
-            <tr><td class="mc">Qwen3.5 122B MoE<small>10B active, best quality</small></td><td class="op">$0.13</td><td class="op">$1.04</td><td class="cp">$2.08</td><td><span class="stag">50% lower</span></td></tr>
-            <tr><td class="mc">MiniMax M2.5 239B<small>11B active, SOTA coding</small></td><td class="op">$0.06</td><td class="op">$0.50</td><td class="cp">$1.00</td><td><span class="stag">50% lower</span></td></tr>
+          <!-- Rows are populated live from the coordinator's public model
+               catalog + pricing on load (see the LIVE MODEL LINEUP script).
+               The static rows below are a fallback if that fetch fails. -->
+          <tbody id="pricing-rows">
+            <tr><td class="mc">Gemma 4 26B<small>MoE · 128K context</small></td><td class="op">$0.03</td><td class="op">$0.165</td><td class="cp">$0.33</td><td><span class="stag">50% lower</span></td></tr>
+            <tr><td class="mc">GPT-OSS 20B<small>MoE · 128K context</small></td><td class="op">$0.015</td><td class="op">$0.07</td><td class="cp">$0.14</td><td><span class="stag">50% lower</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -1441,6 +1442,63 @@ response = client.chat.completions.create(
 </footer>
 
 <script src="earn-calculator.js"></script>
+
+<!-- ============ LIVE MODEL LINEUP + PRICING ============ -->
+<!-- Sources the pricing table from the coordinator's public, registry-backed
+     catalog (/v1/models/catalog) + platform pricing (/v1/pricing) so the model
+     lineup is never stale. Falls back silently to the static rows on any error. -->
+<script>
+(function(){
+  var API = "https://api.darkbloom.dev";
+  var tbody = document.getElementById("pricing-rows");
+  if (!tbody || !window.fetch) return;
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
+    });
+  }
+  var priceFmt = new Intl.NumberFormat(navigator.language || "en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  function usd(micro){ return priceFmt.format(Number(micro || 0) / 1e6); }
+  function subtitle(m){
+    var bits = [];
+    if (m.architecture) bits.push(m.architecture);
+    if (m.max_context_length) bits.push(Math.round(m.max_context_length / 1024) + "K context");
+    return bits.join(" \u00b7 ");
+  }
+  function getJSON(path){
+    return fetch(API + path, { headers: { "Accept": "application/json" } })
+      .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error(path + " " + r.status)); });
+  }
+
+  Promise.all([getJSON("/v1/models/catalog"), getJSON("/v1/pricing")]).then(function(res){
+    var models = (res[0] && res[0].models) || [];
+    var pricing = res[1] || {};
+    if (!models.length) return; // keep the static fallback rows
+
+    var priceByModel = {};
+    (pricing.prices || []).forEach(function(p){ priceByModel[p.model] = p; });
+    var fbIn = pricing.fallback_input_price || 0;
+    var fbOut = pricing.fallback_output_price || 0;
+
+    models.sort(function(a, b){ return (a.size_gb || 0) - (b.size_gb || 0); });
+
+    var rows = models.map(function(m){
+      var p = priceByModel[m.id] || {};
+      var inP = p.input_price != null ? p.input_price : fbIn;
+      var outP = p.output_price != null ? p.output_price : fbOut;
+      var sub = subtitle(m);
+      return "<tr><td class=\"mc\">" + escapeHtml(m.display_name || m.id) +
+        (sub ? "<small>" + escapeHtml(sub) + "</small>" : "") + "</td>" +
+        "<td class=\"op\">" + usd(inP) + "</td>" +
+        "<td class=\"op\">" + usd(outP) + "</td>" +
+        "<td class=\"cp\">" + usd(outP * 2) + "</td>" +
+        "<td><span class=\"stag\">50% lower</span></td></tr>";
+    }).join("");
+    if (rows) tbody.innerHTML = rows;
+  }).catch(function(){ /* offline / API down — keep the static fallback rows */ });
+})();
+</script>
 
 <!-- ============ SCROLL REVEAL + ANALYTICS ============ -->
 <script>

@@ -38,14 +38,6 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 │   └── darkbloom-enclave-cli/         Secure Enclave attestation/sign helper
 └── Tests/
 
-provider/             Deprecated Rust provider (bridge auto-update to Swift bundles only)
-
-enclave/              Standalone Secure Enclave helper (legacy naming)
-├── Sources/EigenInferenceEnclave/      enclave key + attestation library + FFI bridge
-├── Sources/EigenInferenceEnclaveCLI/   CLI (attest, sign, info)
-├── Tests/EigenInferenceEnclaveTests/
-└── include/eigeninference_enclave.h
-
 console-ui/           Next.js 16 / React 19 frontend (chat, billing, models)
 ├── src/app/          Pages: chat (/), billing, models, stats, providers, settings, link, api-console, earn
 ├── src/app/api/      Proxy routes: chat, images, transcribe, auth/keys, payments/*, invite, models, health, pricing
@@ -65,8 +57,7 @@ scripts/
 
 docs/                 Architecture docs, deploy runbook, MDM/ACME notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
-                      Rust bridge release (release-rust-bridge.yml), model registration (register-model.yml),
-                      threat model review (threat-model-review.yml)
+                      model registration (register-model.yml), threat model review (threat-model-review.yml)
 ```
 
 ### External Dependencies (`.external/`)
@@ -125,7 +116,7 @@ go test ./e2e/... -run TestBenchmark -v    # load benchmarks
    - ..."
    ```
 4. **Push** the commit and tag: `git push origin master --tags`
-5. The Swift release workflow (`.github/workflows/release-swift.yml`) is triggered by tags shaped `vX.Y.Z-swift[.N]`. The Rust bridge release workflow (`release-rust-bridge.yml`) handles legacy provider auto-update to Swift bundles.
+5. The Swift release workflow (`.github/workflows/release-swift.yml`) is triggered by tags shaped `vX.Y.Z-swift[.N]`.
 
 ## Deploying
 
@@ -242,9 +233,18 @@ Every new feature or non-trivial change must ship with tests. Don't rely on "the
 
 The goal is "next engineer can change this and CI tells them if they broke it," not "it worked on my machine today."
 
+## Code Structure & Modularity
+
+Keep the codebase modular, never monolithic.
+
+- Prefer small, single-responsibility files over large catch-all ones. Split by concern: types, pure helpers, data/IO hooks, UI pieces, and a thin orchestrator that wires them together.
+- Group a feature's files into a dedicated module/folder with a thin entry point. Examples: the coordinator's top-level Go packages (`registry/`, `billing/`, `store/`), and `console-ui/src/components/api-keys/` (`constants`, `format`, `limits`, `Modal`, `KeyForm`, `KeyCard`, a `useApiKeys` data hook, and a thin `ApiKeysManager` orchestrator).
+- One file/component should do one thing. If a file mixes several concerns or grows past a few hundred lines, that's a signal to split it.
+- **At the end of every large piece of work, do a refactor pass to make it modular before calling it done.** Extract helpers/types/hooks into focused files, delete dead code, and keep the public entry point thin. The refactor must be behavior-preserving — build, lint, and tests stay green.
+
 ## Quality Gate
 
-After completing each objective (task, plan phase, or discrete unit of work), spawn **both** reviewers in parallel:
+After completing each objective (task, plan phase, or discrete unit of work), first do a modular refactor pass on any large change (see **Code Structure & Modularity**), then spawn **both** reviewers in parallel:
 
 1. **Codex rescue subagent** (`codex:codex-rescue`) — reviews the diff for correctness, regressions, and build/test pass
 2. **Claude Code subagent** (`Agent` tool, general-purpose) — independently reviews the same diff for correctness, edge cases, and code quality
@@ -254,7 +254,7 @@ Each reviewer should:
 1. Read the diff of all changes made for that objective
 2. Verify correctness: does the implementation actually solve what was asked?
 3. Check for regressions: broken imports, missing protocol symmetry, untested edge cases
-4. Confirm builds/tests pass for affected components (run `go test`, `cargo test`, `npm run build`, etc. as appropriate)
+4. Confirm builds/tests pass for affected components (run `go test`, `swift test`, `npm run build`, etc. as appropriate)
 5. Report a pass/fail verdict with specific issues if any
 
 Only proceed to the next objective after both reviewers pass. If either flags issues, fix them before moving on.

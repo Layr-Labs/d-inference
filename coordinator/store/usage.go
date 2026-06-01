@@ -147,6 +147,16 @@ const (
 	LeaderboardJobs     LeaderboardMetric = "jobs"
 )
 
+// NormalizeLeaderboardLimit clamps a requested leaderboard page size to the
+// supported range, defaulting out-of-range values (<=0 or >200) to 50. Both
+// store backends share it so the cap and default live in one place.
+func NormalizeLeaderboardLimit(limit int) int {
+	if limit <= 0 || limit > 200 {
+		return 50
+	}
+	return limit
+}
+
 // LeaderboardRow is a single account's aggregate across provider_earnings.
 // Pseudonyms are computed at the API layer from AccountID, never returned
 // from the store directly.

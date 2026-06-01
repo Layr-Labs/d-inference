@@ -38,14 +38,22 @@ func GenerateKeyID() (string, error) {
 	return "key_" + hex.EncodeToString(b), nil
 }
 
+// HashKey returns the hex-encoded SHA-256 digest of a raw API key or provider
+// token. It is the single canonical hashing function for both store backends:
+// a key hashed by one backend must resolve under the other, so all API-key and
+// provider-token hashing routes through here.
+func HashKey(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
 // LegacyAccountID derives a stable, NON-SECRET account identity for an unlinked
 // legacy API key (one with no owner account). Hashing the raw key keeps the
 // secret out of ledger references, balances.account_id, and logs while still
 // giving the key a consistent identity across requests. The "legacy:" prefix
 // namespaces it so it can never collide with a real Privy account ID.
 func LegacyAccountID(rawKey string) string {
-	h := sha256.Sum256([]byte(rawKey))
-	return "legacy:" + hex.EncodeToString(h[:])
+	return "legacy:" + HashKey(rawKey)
 }
 
 // KeyLabel returns a masked display label for a raw key showing the brand

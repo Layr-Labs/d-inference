@@ -15,8 +15,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -668,12 +666,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	return nil
 }
 
-// hashKey returns the SHA-256 hex digest of the given API key.
-func hashKey(key string) string {
-	h := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(h[:])
-}
-
 // apiKeyColumns is the canonical SELECT list for reading an api_keys row into
 // an APIKey via scanAPIKeyRow.
 const apiKeyColumns = `id, owner_account_id, name, raw_prefix, key_hash, active,
@@ -788,7 +780,7 @@ func (s *PostgresStore) CreateAPIKey(accountID string, opts APIKeyCreate) (strin
 		OwnerAccountID: accountID,
 		Name:           opts.Name,
 		Label:          KeyLabel(raw),
-		KeyHash:        hashKey(raw),
+		KeyHash:        HashKey(raw),
 		LimitMicroUSD:  opts.LimitMicroUSD,
 		LimitReset:     NormalizeResetWindow(opts.LimitReset),
 		RPMLimit:       opts.RPMLimit,
@@ -818,7 +810,7 @@ func (s *PostgresStore) SeedKey(rawKey string) error {
 		ID:         id,
 		Name:       "admin",
 		Label:      KeyLabel(rawKey),
-		KeyHash:    hashKey(rawKey),
+		KeyHash:    HashKey(rawKey),
 		LimitReset: KeyResetNone,
 		CreatedAt:  time.Now().UTC(),
 	}
@@ -833,7 +825,7 @@ func (s *PostgresStore) SeedKey(rawKey string) error {
 
 // GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
 func (s *PostgresStore) GetKeyAccount(key string) string {
-	h := hashKey(key)
+	h := HashKey(key)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -852,7 +844,7 @@ func (s *PostgresStore) GetKeyAccount(key string) string {
 // expired. Expiry is enforced here (not just in AuthenticateKey) so callers
 // like telemetry attribution don't treat an expired key as a live account.
 func (s *PostgresStore) ValidateKey(key string) bool {
-	h := hashKey(key)
+	h := HashKey(key)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -875,7 +867,7 @@ func (s *PostgresStore) ValidateKey(key string) bool {
 // ValidateKeyFull returns the active status and owner account ID for an
 // API key in a single query. Returns an error if the key does not exist.
 func (s *PostgresStore) ValidateKeyFull(key string) (bool, string, error) {
-	h := hashKey(key)
+	h := HashKey(key)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -893,7 +885,7 @@ func (s *PostgresStore) ValidateKeyFull(key string) (bool, string, error) {
 
 // AuthenticateKey resolves a raw key to its active record for request auth.
 func (s *PostgresStore) AuthenticateKey(rawKey string) (*APIKey, error) {
-	h := hashKey(rawKey)
+	h := HashKey(rawKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1020,7 +1012,7 @@ func (s *PostgresStore) RotateAPIKey(accountID, id string) (string, *APIKey, err
 		OwnerAccountID: accountID,
 		Name:           old.Name,
 		Label:          KeyLabel(raw),
-		KeyHash:        hashKey(raw),
+		KeyHash:        HashKey(raw),
 		Disabled:       old.Disabled,
 		LimitMicroUSD:  old.LimitMicroUSD,
 		LimitReset:     NormalizeResetWindow(old.LimitReset),
@@ -1085,7 +1077,7 @@ func (s *PostgresStore) KeySpendSince(keyID string, since time.Time) int64 {
 
 // RevokeKey deactivates a key. Returns true if the key existed and was active.
 func (s *PostgresStore) RevokeKey(key string) bool {
-	h := hashKey(key)
+	h := HashKey(key)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1102,7 +1094,7 @@ func (s *PostgresStore) RevokeKey(key string) bool {
 
 // RecordUsage inserts a usage record into PostgreSQL.
 func (s *PostgresStore) RecordUsage(providerID, consumerKey, model string, promptTokens, completionTokens int) {
-	h := hashKey(consumerKey)
+	h := HashKey(consumerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1123,7 +1115,7 @@ func (s *PostgresStore) RecordUsage(providerID, consumerKey, model string, promp
 
 // UsageByConsumer returns usage records for a specific consumer key.
 func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
-	h := hashKey(consumerKey)
+	h := HashKey(consumerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1161,7 +1153,7 @@ func (s *PostgresStore) RecordUsageWithCostAndLocation(providerID, consumerKey, 
 // RecordUsageFull inserts a usage record with full attribution including the
 // originating API key ID for per-key usage and spend tracking.
 func (s *PostgresStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
-	h := hashKey(consumerKey)
+	h := HashKey(consumerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2665,7 +2657,7 @@ func (s *PostgresStore) GetProviderToken(token string) (*ProviderToken, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	h := hashKey(token)
+	h := HashKey(token)
 	var pt ProviderToken
 	err := s.pool.QueryRow(ctx,
 		`SELECT token_hash, account_id, label, active, created_at
@@ -2681,7 +2673,7 @@ func (s *PostgresStore) RevokeProviderToken(token string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	h := hashKey(token)
+	h := HashKey(token)
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE provider_tokens SET active = FALSE WHERE token_hash = $1`, h,
 	)

@@ -12,8 +12,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -246,7 +244,7 @@ func (s *MemoryStore) CreateAPIKey(accountID string, opts APIKeyCreate) (string,
 		OwnerAccountID: accountID,
 		Name:           opts.Name,
 		Label:          KeyLabel(raw),
-		KeyHash:        sha256Hex(raw),
+		KeyHash:        HashKey(raw),
 		LimitMicroUSD:  cloneInt64Ptr(opts.LimitMicroUSD),
 		LimitReset:     NormalizeResetWindow(opts.LimitReset),
 		RPMLimit:       cloneInt64Ptr(opts.RPMLimit),
@@ -432,7 +430,7 @@ func (s *MemoryStore) RotateAPIKey(accountID, id string) (string, *APIKey, error
 		OwnerAccountID: accountID,
 		Name:           old.Name,
 		Label:          KeyLabel(raw),
-		KeyHash:        sha256Hex(raw),
+		KeyHash:        HashKey(raw),
 		Disabled:       old.Disabled,
 		LimitMicroUSD:  cloneInt64Ptr(old.LimitMicroUSD),
 		LimitReset:     NormalizeResetWindow(old.LimitReset),
@@ -1997,7 +1995,7 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	h := sha256Hex(token)
+	h := HashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
 		return nil, errors.New("provider token not found")
@@ -2013,7 +2011,7 @@ func (s *MemoryStore) RevokeProviderToken(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	h := sha256Hex(token)
+	h := HashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
 		return errors.New("provider token not found")
@@ -2632,10 +2630,4 @@ func (s *MemoryStore) GetLogReport(id int64) (*LogReport, error) {
 		}
 	}
 	return nil, fmt.Errorf("log report %d not found", id)
-}
-
-// sha256Hex returns the hex-encoded SHA-256 digest of s.
-func sha256Hex(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
 }

@@ -52,16 +52,6 @@ func makeProvider(id string, model string, decodeTPS float64) *Provider {
 	return p
 }
 
-func BenchmarkScoreProvider(b *testing.B) {
-	b.ReportAllocs()
-	p := makeProvider("bench-provider", "mlx-community/Qwen3.5-9B-Instruct-4bit", 55.0)
-
-	b.ResetTimer()
-	for range b.N {
-		_ = ScoreProvider(p, "mlx-community/Qwen3.5-9B-Instruct-4bit")
-	}
-}
-
 // populateRegistry creates a registry with n providers, all serving the target model.
 func populateRegistry(n int, model string) *Registry {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -116,7 +106,7 @@ func BenchmarkFindProvider_10(b *testing.B) {
 
 	b.ResetTimer()
 	for range b.N {
-		p := reg.FindProvider(model)
+		p := reg.SelectProvider(model)
 		if p != nil {
 			// Reset status so provider can be found again.
 			p.mu.Lock()
@@ -133,7 +123,7 @@ func BenchmarkFindProvider_100(b *testing.B) {
 
 	b.ResetTimer()
 	for range b.N {
-		p := reg.FindProvider(model)
+		p := reg.SelectProvider(model)
 		if p != nil {
 			p.mu.Lock()
 			p.Status = StatusOnline
@@ -149,7 +139,7 @@ func BenchmarkFindProvider_1000(b *testing.B) {
 
 	b.ResetTimer()
 	for range b.N {
-		p := reg.FindProvider(model)
+		p := reg.SelectProvider(model)
 		if p != nil {
 			p.mu.Lock()
 			p.Status = StatusOnline

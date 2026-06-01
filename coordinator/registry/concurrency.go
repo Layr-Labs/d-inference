@@ -1,5 +1,14 @@
 package registry
 
+// DefaultMaxConcurrent is the fallback concurrency limit for providers
+// that don't report backend capacity. Providers that report BackendCapacity
+// in heartbeats get a dynamic limit based on their total memory.
+const DefaultMaxConcurrent = 4
+
+// MaxConcurrentRequests is kept as an alias for backward compatibility
+// with tests and external code that reference the old constant name.
+const MaxConcurrentRequests = DefaultMaxConcurrent
+
 // MaxConcurrency returns the dynamic max concurrent request limit.
 // Uses hardware-based estimation when backend capacity is reported.
 // Falls back to DefaultMaxConcurrent for providers without capacity reporting.

@@ -458,7 +458,7 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 	makeProviderRoutable(reg)
 
 	// Verify provider A is routable.
-	pA := reg.FindProvider(model)
+	pA := reg.SelectProvider(model)
 	if pA == nil {
 		t.Fatal("provider A should be routable after registration + challenge")
 	}
@@ -514,7 +514,7 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 	makeProviderRoutable(reg)
 
 	// Verify provider B is routable.
-	pB := reg.FindProvider(model)
+	pB := reg.SelectProvider(model)
 	if pB == nil {
 		t.Fatal("provider B should be routable after deduplication + challenge")
 	}

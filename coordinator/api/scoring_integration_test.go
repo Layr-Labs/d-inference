@@ -71,7 +71,7 @@ func TestIntegration_ProviderEvictionRemovesFromRouting(t *testing.T) {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 	}
 
-	p := reg.FindProvider(model)
+	p := reg.SelectProvider(model)
 	if p == nil {
 		t.Fatal("provider should be routable before disconnect")
 	}
@@ -87,7 +87,7 @@ func TestIntegration_ProviderEvictionRemovesFromRouting(t *testing.T) {
 	if reg.ProviderCount() != 0 {
 		t.Errorf("ProviderCount = %d, want 0 after disconnect", reg.ProviderCount())
 	}
-	if reg.FindProvider(model) != nil {
+	if reg.SelectProvider(model) != nil {
 		t.Error("FindProvider should return nil after provider disconnects")
 	}
 }

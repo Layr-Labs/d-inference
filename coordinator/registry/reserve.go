@@ -13,6 +13,23 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 	return p
 }
 
+// SelectProvider returns the best hardware-routable provider for the model
+// using the live cost-based selection, WITHOUT reserving capacity. It is a
+// read-only view (used by tests and diagnostics) backed by the same selection
+// logic as ReserveProvider; the request path uses ReserveProvider, which
+// additionally registers the request in the provider's pending set. Providers
+// are filtered by the registry's configured MinTrustLevel.
+func (r *Registry) SelectProvider(model string, excludeIDs ...string) *Provider {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pr := &PendingRequest{RequestID: "select-readonly", Model: model, RequestedMaxTokens: defaultRequestedMaxTokens}
+	selected, _, _ := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	if selected == nil {
+		return nil
+	}
+	return selected.provider
+}
+
 // ReserveProviderEx is the metrics-aware variant of ReserveProvider. It
 // returns the same Provider plus a RoutingDecision describing the cost
 // breakdown of the winning candidate (or, on selection failure, an

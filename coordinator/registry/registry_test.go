@@ -1569,11 +1569,8 @@ func TestProviderEviction(t *testing.T) {
 func TestThermalCriticalBlocksRouting(t *testing.T) {
 	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
 
-	// When the critical provider is the only candidate, FindProvider still
-	// returns it because the sorting puts it first (it's the only one) and
-	// score=0 does not exclude it from the candidates list. The current
-	// implementation filters by status, trust, and challenge freshness, but
-	// not by score threshold.
+	// The live cost-based selection excludes a provider in critical thermal
+	// state (infinite routing cost), so a sole critical provider is not routable.
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	pReg := reg.Register("critical-provider", nil, msg)
@@ -1587,16 +1584,8 @@ func TestThermalCriticalBlocksRouting(t *testing.T) {
 		ThermalState:   "critical",
 	}
 
-	found := reg.SelectProvider(model)
-	// Document actual behavior: critical thermal does NOT exclude from routing.
-	// The provider has score=0 but is still the sole candidate.
-	if found == nil {
-		t.Log("FindProvider returned nil for sole critical provider — score=0 excludes from routing")
-	} else {
-		t.Log("FindProvider returned the critical provider — score=0 does not exclude from candidates")
-		if found.ID != "critical-provider" {
-			t.Errorf("expected critical-provider, got %q", found.ID)
-		}
+	if found := reg.SelectProvider(model); found != nil {
+		t.Errorf("sole critical-thermal provider should not be routable, got %q", found.ID)
 	}
 
 	// When a healthy provider is also available, it should always be preferred.

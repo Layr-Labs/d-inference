@@ -538,7 +538,8 @@ func TestMultiProvider_TrustLevelFiltering(t *testing.T) {
 	reg.SetTrustLevel(ids[1], registry.TrustSelfSigned)
 	reg.RecordChallengeSuccess(ids[1])
 
-	// FindProviderWithTrust for hardware should only return the hardware-trusted one
+	// With the default hardware trust floor, only the hardware-trusted provider
+	// is routable (the self_signed one is gated out).
 	p := reg.SelectProvider(model)
 	if p == nil {
 		t.Fatal("should find hardware-trusted provider")
@@ -547,12 +548,14 @@ func TestMultiProvider_TrustLevelFiltering(t *testing.T) {
 		t.Error("should return the hardware-trusted provider")
 	}
 
-	// Reset the first provider to idle
-	reg.SetProviderIdle(ids[0])
-
-	// FindProviderWithTrust for self_signed should return either (both meet minimum)
-	p2 := reg.SelectProvider(model)
+	// Lowering the trust floor to self_signed admits the self_signed provider:
+	// excluding the hardware one, the self_signed provider is now selectable.
+	reg.MinTrustLevel = registry.TrustSelfSigned
+	p2 := reg.SelectProvider(model, ids[0])
 	if p2 == nil {
-		t.Fatal("should find provider with self_signed trust minimum")
+		t.Fatal("self_signed provider should be selectable once the trust floor is lowered")
+	}
+	if p2.ID != ids[1] {
+		t.Errorf("expected self_signed provider %q, got %q", ids[1], p2.ID)
 	}
 }

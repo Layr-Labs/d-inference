@@ -147,6 +147,72 @@ func batchRotatingExtractMatchesIndependentSingleStreamReference() {
 }
 
 @Test
+func batchRotatingFromSingleRowResumeMatchesIndependentReference() {
+    // RESTORE-SIDE proof for the hybrid checkpoint tier: the full loop a
+    // restored SSD checkpoint takes — extract(row) → snapshot/restore (as
+    // KVCacheSerializer does) → fromSingleRow → decode as batch row 0 —
+    // must match an independent single-stream RotatingKVCache that was fed
+    // exactly row 0's tokens and never went through any batched/restore
+    // path. This proves fromSingleRow is a correct inverse of extract.
+    let rowTokens: [Float] = Array(0...9).map { Float($0) }
+    let cont: [Float] = [10, 11, 12]
+
+    // Independent reference: single-stream, fed row-0's tokens directly.
+    let ref = RotatingKVCache(maxSize: 4, keep: 0, step: 4)
+    for t in rowTokens {
+        let (k, v) = batched([[t]])
+        _ = ref.update(keys: k, values: v)
+        eval(ref.innerState())
+    }
+    let (kc, vc) = batched([cont])
+    let (kRef, vRef) = ref.update(keys: kc, values: vc)
+    eval(kRef, vRef)
+
+    // Restore path: batched → extract row 0 → snapshot/restore →
+    // fromSingleRow (B=1 batched) → decode the same continuation.
+    let bc = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
+    feedBatchedSingles(bc, bases: [0, 1000], count: 10)
+    let restored = snapshotRestore(bc.extract(0))
+    let b1 = BatchRotatingKVCache.fromSingleRow(restored)
+    let (kc2, vc2) = batched([cont])
+    let (kRes, vRes) = b1.update(keys: kc2, values: vc2)
+    eval(kRes, vRes)
+
+    #expect(kRes.shape == kRef.shape,
+            "fromSingleRow shape \(kRes.shape) != independent reference \(kRef.shape)")
+    #expect(kRes.asArray(Float.self) == kRef.asArray(Float.self),
+            "fromSingleRow keys diverged from independent single-stream reference")
+    #expect(vRes.asArray(Float.self) == vRef.asArray(Float.self),
+            "fromSingleRow values diverged from independent single-stream reference")
+}
+
+@Test
+func batchRotatingFromSingleRowPreWrapMatchesReference() {
+    // Pre-wrap case: only 3 tokens into a window of 4 (no rotation yet),
+    // so the restored cache is shorter than the window. fromSingleRow must
+    // continue correctly from the partial fill.
+    let rowTokens: [Float] = [0, 1, 2]
+    let cont: [Float] = [3, 4]
+
+    let ref = RotatingKVCache(maxSize: 4, keep: 0, step: 4)
+    for t in rowTokens {
+        let (k, v) = batched([[t]]); _ = ref.update(keys: k, values: v); eval(ref.innerState())
+    }
+    let (kc, vc) = batched([cont])
+    let (kRef, vRef) = ref.update(keys: kc, values: vc); eval(kRef, vRef)
+
+    let bc = BatchRotatingKVCache(maxSize: 4, leftPadding: [0])
+    feedBatchedSingles(bc, bases: [0], count: 3)
+    let b1 = BatchRotatingKVCache.fromSingleRow(snapshotRestore(bc.extract(0)))
+    let (kc2, vc2) = batched([cont])
+    let (kRes, vRes) = b1.update(keys: kc2, values: vc2); eval(kRes, vRes)
+
+    #expect(kRes.asArray(Float.self) == kRef.asArray(Float.self),
+            "pre-wrap fromSingleRow diverged from reference")
+    #expect(vRes.asArray(Float.self) == vRef.asArray(Float.self))
+}
+
+@Test
 func batchRotatingExtractThenRestoreThenSingleTokenMatches() {
     let bcA = BatchRotatingKVCache(maxSize: 4, leftPadding: [0, 0])
     feedBatchedSingles(bcA, bases: [0, 1000], count: 10)

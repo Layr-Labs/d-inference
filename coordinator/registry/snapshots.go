@@ -249,24 +249,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	for _, p := range r.providers {
 		p.mu.Lock()
 
-		// Apply the same gates as snapshotProviderLocked.
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
-			p.mu.Unlock()
-			continue
-		}
-		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-			p.mu.Unlock()
-			continue
-		}
-		if !p.RuntimeVerified {
-			p.mu.Unlock()
-			continue
-		}
-		if !providerSupportsPrivateTextLocked(p) {
-			p.mu.Unlock()
-			continue
-		}
-		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		// Provider-level structural gates (per-model catalog membership is
+		// checked below as this enumerates every model the provider serves).
+		if !r.providerEligibleLocked(p, now) {
 			p.mu.Unlock()
 			continue
 		}

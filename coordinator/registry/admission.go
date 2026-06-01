@@ -4,6 +4,40 @@ import (
 	"time"
 )
 
+// providerEligibleLocked runs the provider-level structural routing gates
+// (caller holds p.mu): the provider must be online+trusted, meet the minimum
+// trust level, be runtime-verified, support private text, and have a fresh
+// attestation challenge. It is model-independent — callers that route a
+// specific model additionally require providerServesCatalogModelLocked (see
+// providerRoutableLocked). It does NOT check capacity/headroom or slot state.
+func (r *Registry) providerEligibleLocked(p *Provider, now time.Time) bool {
+	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+		return false
+	}
+	if !p.RuntimeVerified {
+		return false
+	}
+	if !providerSupportsPrivateTextLocked(p) {
+		return false
+	}
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		return false
+	}
+	return true
+}
+
+// providerRoutableLocked reports whether p passes every structural routing gate
+// for model (caller holds p.mu): the provider-level gates of
+// providerEligibleLocked plus serving model from the active catalog. It does
+// NOT check capacity/headroom or slot state; callers that distinguish
+// structural vs capacity rejection apply those separately.
+func (r *Registry) providerRoutableLocked(p *Provider, model string, now time.Time) bool {
+	return r.providerEligibleLocked(p, now) && r.providerServesCatalogModelLocked(p, model)
+}
+
 // freeMemoryAdmits returns true when the provider has enough headroom.
 // Providers that report a token budget use budget-based admission;
 // legacy providers fall back to memory-based estimation.
@@ -85,19 +119,7 @@ func committedTokenBudget(snap routingSnapshot) int64 {
 }
 
 func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
-	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified {
-		return false
-	}
-	if !providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || time.Since(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return false
-	}
-	if !r.providerServesCatalogModelLocked(p, model) {
+	if !r.providerRoutableLocked(p, model, time.Now()) {
 		return false
 	}
 	if !p.hasConcurrencyHeadroomForModelLocked(model) {

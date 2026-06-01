@@ -10,22 +10,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !r.providerServesCatalogModelLocked(p, model) {
-		return routingSnapshot{}, false
-	}
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return routingSnapshot{}, false
-	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-		return routingSnapshot{}, false
-	}
-	if !p.RuntimeVerified {
-		return routingSnapshot{}, false
-	}
-	if !providerSupportsPrivateTextLocked(p) {
-		return routingSnapshot{}, false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+	if !r.providerRoutableLocked(p, model, now) {
 		return routingSnapshot{}, false
 	}
 

@@ -55,28 +55,8 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		p.mu.Lock()
 
-		// Structural gates (same as snapshotProviderLocked).
-		if !r.providerServesCatalogModelLocked(p, model) {
-			p.mu.Unlock()
-			continue
-		}
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
-			p.mu.Unlock()
-			continue
-		}
-		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-			p.mu.Unlock()
-			continue
-		}
-		if !p.RuntimeVerified {
-			p.mu.Unlock()
-			continue
-		}
-		if !providerSupportsPrivateTextLocked(p) {
-			p.mu.Unlock()
-			continue
-		}
-		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		// Structural gates (status, trust, runtime, privacy, challenge, catalog).
+		if !r.providerRoutableLocked(p, model, now) {
 			p.mu.Unlock()
 			continue
 		}

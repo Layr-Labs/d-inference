@@ -184,8 +184,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		var req struct {
 			Version string `json:"version"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		if !decodeJSONBody(w, r, &req) {
 			return
 		}
 		if req.Version == "" || strings.Contains(req.Version, "/") || containsTraversal(req.Version) {
@@ -202,8 +201,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		var req struct {
 			Status string `json:"status"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		if !decodeJSONBody(w, r, &req) {
 			return
 		}
 		if !validModelStatus(req.Status) {
@@ -220,8 +218,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		var req struct {
 			RuntimeParameters map[string]any `json:"runtime_parameters"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		if !decodeJSONBody(w, r, &req) {
 			return
 		}
 		if req.RuntimeParameters == nil {
@@ -255,8 +252,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		var req struct {
 			Capabilities []string `json:"capabilities"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		if !decodeJSONBody(w, r, &req) {
 			return
 		}
 		if req.Capabilities == nil {
@@ -435,10 +431,7 @@ func isModelRegistryNotFound(err error) bool {
 func (s *Server) requirePublishingAPIKey(w http.ResponseWriter, r *http.Request) (publishingActor, bool) {
 	provided := strings.TrimSpace(r.Header.Get("X-Darkbloom-Publishing-Key"))
 	if provided == "" {
-		authz := strings.TrimSpace(r.Header.Get("Authorization"))
-		if strings.HasPrefix(strings.ToLower(authz), "bearer ") {
-			provided = strings.TrimSpace(authz[len("Bearer "):])
-		}
+		provided = extractBearerToken(r)
 	}
 	if provided == "" {
 		writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing publishing API key"))

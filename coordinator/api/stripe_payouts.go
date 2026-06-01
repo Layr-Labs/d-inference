@@ -34,6 +34,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
@@ -236,8 +237,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		AmountUSD string `json:"amount_usd"`
 		Method    string `json:"method"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -262,7 +262,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			"amount_usd must be a positive number"))
 		return
 	}
-	grossMicroUSD := int64(amountFloat * 1_000_000)
+	grossMicroUSD := payments.USDToMicro(amountFloat)
 	if grossMicroUSD < billing.MinWithdrawMicroUSD {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
 			fmt.Sprintf("minimum withdrawal is $%.2f", float64(billing.MinWithdrawMicroUSD)/1_000_000)))
@@ -675,7 +675,7 @@ func stripeStatusForAccount(acct *billing.ExpressAccount) string {
 func microUSDToCents(microUSD int64) int64 { return microUSD / 10_000 }
 
 func formatUSD(microUSD int64) string {
-	return fmt.Sprintf("%.2f", float64(microUSD)/1_000_000)
+	return payments.FormatUSD(microUSD, 2)
 }
 
 func etaForMethod(method string) string {

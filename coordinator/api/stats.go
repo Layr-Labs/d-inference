@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
@@ -244,13 +243,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 		"request_flows": requestFlows,
 	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	s.writeCachedJSONResult(w, cacheKey, time.Minute, resp, "failed to encode stats")
 }
 
 // aggregateProviderLocations builds privacy-floored city and region

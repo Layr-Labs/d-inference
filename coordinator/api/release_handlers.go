@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -472,13 +471,7 @@ func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := json.Marshal(release)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode release"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	s.writeCachedJSONResult(w, cacheKey, time.Minute, release, "failed to encode release")
 }
 
 // handleAdminListReleases handles GET /v1/admin/releases.
@@ -506,8 +499,7 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		Version  string `json:"version"`
 		Platform string `json:"platform"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Version == "" {
@@ -535,25 +527,6 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// isAdminAuthorized checks if the request is from an admin.
-// Accepts either Privy admin (email in admin list) OR EIGENINFERENCE_ADMIN_KEY.
-func (s *Server) isAdminAuthorized(w http.ResponseWriter, r *http.Request) bool {
-	// Check admin key first (no Privy needed).
-	token := extractBearerToken(r)
-	if token != "" && s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
-		return true
-	}
-
-	// Check Privy admin.
-	user := auth.UserFromContext(r.Context())
-	if user != nil && s.isAdmin(user) {
-		return true
-	}
-
-	writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
-	return false
-}
-
 // handleAdminAuthInit handles POST /v1/admin/auth/init.
 // Sends an OTP code to the given email via Privy. Used by the admin CLI.
 func (s *Server) handleAdminAuthInit(w http.ResponseWriter, r *http.Request) {
@@ -565,8 +538,7 @@ func (s *Server) handleAdminAuthInit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON"))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Email == "" {
@@ -599,8 +571,7 @@ func (s *Server) handleAdminAuthVerify(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 		Code  string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON"))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Email == "" || req.Code == "" {

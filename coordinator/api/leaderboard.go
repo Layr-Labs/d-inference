@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -96,13 +95,7 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		"entries":    entries,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode response"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, 5*time.Minute)
-	writeCachedJSON(w, body)
+	s.writeCachedJSONResult(w, cacheKey, 5*time.Minute, resp, "failed to encode response")
 }
 
 func windowParamOrDefault(s string) string {
@@ -139,11 +132,5 @@ func (s *Server) handleNetworkTotals(w http.ResponseWriter, r *http.Request) {
 		"active_accounts":    totals.ActiveAccounts,
 		"updated_at":         time.Now().UTC().Format(time.RFC3339),
 	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode response"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	s.writeCachedJSONResult(w, cacheKey, time.Minute, resp, "failed to encode response")
 }

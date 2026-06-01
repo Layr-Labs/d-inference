@@ -17,10 +17,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"crypto/x509"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1167,13 +1165,7 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 			"template_hashes": s.knownRuntimeManifest.TemplateHashes,
 		}
 	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode manifest"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	s.writeCachedJSONResult(w, cacheKey, time.Minute, resp, "failed to encode manifest")
 }
 
 // HandleMDMWebhook processes a MicroMDM webhook callback.
@@ -1628,7 +1620,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Accept admin key (admin endpoints handle further authorization in-handler).
-		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
+		if s.adminKeyMatches(token) {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
 			next(w, r.WithContext(ctx))
 			return

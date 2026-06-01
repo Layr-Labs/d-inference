@@ -14,15 +14,12 @@ package api
 // read-only endpoints and inference.
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -43,8 +40,7 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 		Email        string `json:"email,omitempty"`
 		ReferralCode string `json:"referral_code,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -65,7 +61,7 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 	}
 
 	sessionID := uuid.New().String()
-	amountMicroUSD := int64(amountFloat * 1_000_000)
+	amountMicroUSD := payments.USDToMicro(amountFloat)
 
 	billingSession := &store.BillingSession{
 		ID:             sessionID,
@@ -235,8 +231,7 @@ func (s *Server) handleReferralRegister(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Code string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Code == "" {
@@ -268,8 +263,7 @@ func (s *Server) handleReferralApply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Code == "" {
@@ -370,8 +364,7 @@ func (s *Server) handleAdminPricing(w http.ResponseWriter, r *http.Request) {
 		InputPrice  int64  `json:"input_price"`
 		OutputPrice int64  `json:"output_price"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Model == "" {
@@ -417,8 +410,7 @@ func (s *Server) handleAdminSetUserRole(w http.ResponseWriter, r *http.Request) 
 		AccountID string `json:"account_id"`
 		Role      string `json:"role"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.AccountID == "" {
@@ -459,8 +451,7 @@ func (s *Server) handleAdminSetUserPlatformFee(w http.ResponseWriter, r *http.Re
 		AccountID          string `json:"account_id"`
 		PlatformFeePercent *int64 `json:"platform_fee_percent"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.AccountID == "" {
@@ -504,8 +495,7 @@ func (s *Server) handleSetPricing(w http.ResponseWriter, r *http.Request) {
 		InputPrice  int64  `json:"input_price"`
 		OutputPrice int64  `json:"output_price"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Model == "" {
@@ -543,8 +533,7 @@ func (s *Server) handleDeletePricing(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Model == "" {
@@ -582,35 +571,6 @@ func (s *Server) handleBillingMethods(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// resolveAccountID returns the internal account ID for the current request.
-// Prefers the Privy user's account ID, falls back to API key.
-func (s *Server) resolveAccountID(r *http.Request) string {
-	if user := auth.UserFromContext(r.Context()); user != nil {
-		return user.AccountID
-	}
-	return consumerKeyFromContext(r.Context())
-}
-
-// isAdmin checks if the user has admin privileges (email in admin list).
-func (s *Server) isAdmin(user *store.User) bool {
-	if user == nil || user.Email == "" || len(s.adminEmails) == 0 {
-		return false
-	}
-	return s.adminEmails[strings.ToLower(user.Email)]
-}
-
-// requirePrivyUser checks that the request is authenticated via Privy (not just API key).
-// Returns the user or writes a 401 error and returns nil.
-func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store.User {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error",
-			"this endpoint requires a Privy account — authenticate with a Privy access token"))
-		return nil
-	}
-	return user
-}
-
 // handleModelCatalog handles GET /v1/models/catalog.
 // Public endpoint — returns active models for providers and the install script.
 // Cached for 60s — the underlying DB query is fast but this endpoint is hit
@@ -643,13 +603,7 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	response := map[string]any{"models": models}
 
-	body, err := json.Marshal(response)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal catalog"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	s.writeCachedJSONResult(w, cacheKey, time.Minute, response, "failed to marshal catalog")
 }
 
 // handleAdminCredit handles POST /v1/admin/credit.
@@ -664,8 +618,7 @@ func (s *Server) handleAdminCredit(w http.ResponseWriter, r *http.Request) {
 		AmountUSD string `json:"amount_usd"`
 		Note      string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Email == "" {
@@ -677,7 +630,7 @@ func (s *Server) handleAdminCredit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
 		return
 	}
-	amountMicroUSD := int64(amountFloat * 1_000_000)
+	amountMicroUSD := payments.USDToMicro(amountFloat)
 
 	user, err := s.store.GetUserByEmail(req.Email)
 	if err != nil {
@@ -723,8 +676,7 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 		AmountUSD string `json:"amount_usd"`
 		Note      string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Email == "" {
@@ -736,7 +688,7 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
 		return
 	}
-	amountMicroUSD := int64(amountFloat * 1_000_000)
+	amountMicroUSD := payments.USDToMicro(amountFloat)
 
 	user, err := s.store.GetUserByEmail(req.Email)
 	if err != nil {
@@ -854,7 +806,7 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 
 	availableBalance, withdrawableBalance := s.store.GetBalanceWithWithdrawable(accountID)
 
-	body, err := json.Marshal(map[string]any{
+	s.writeCachedJSONResult(w, cacheKey, 20*time.Second, map[string]any{
 		"account_id":                     accountID,
 		"earnings":                       earnings,
 		"total_micro_usd":                summary.TotalMicroUSD,
@@ -866,11 +818,5 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		"available_balance_usd":          fmt.Sprintf("%.6f", float64(availableBalance)/1_000_000),
 		"withdrawable_balance_micro_usd": withdrawableBalance,
 		"withdrawable_balance_usd":       fmt.Sprintf("%.6f", float64(withdrawableBalance)/1_000_000),
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal earnings"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, 20*time.Second)
-	writeCachedJSON(w, body)
+	}, "failed to marshal earnings")
 }

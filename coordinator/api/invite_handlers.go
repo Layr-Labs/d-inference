@@ -2,40 +2,19 @@ package api
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// requireAdminKey checks that the request is from an admin (either admin key or Privy admin).
-// Returns true if authorized, false if it wrote an error response.
-func (s *Server) requireAdminKey(w http.ResponseWriter, r *http.Request) bool {
-	// Check 1: Bearer token matches admin key
-	token := extractBearerToken(r)
-	if token != "" && s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
-		return true
-	}
-
-	// Check 2: Privy admin
-	user := auth.UserFromContext(r.Context())
-	if user != nil && s.isAdmin(user) {
-		return true
-	}
-
-	writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
-	return false
-}
-
 // handleAdminCreateInviteCode handles POST /v1/admin/invite-codes.
 func (s *Server) handleAdminCreateInviteCode(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminKey(w, r) {
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
@@ -45,8 +24,7 @@ func (s *Server) handleAdminCreateInviteCode(w http.ResponseWriter, r *http.Requ
 		MaxUses   int     `json:"max_uses"`
 		ExpiresAt string  `json:"expires_at,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -63,7 +41,7 @@ func (s *Server) handleAdminCreateInviteCode(w http.ResponseWriter, r *http.Requ
 		code = "INV-" + strings.ToUpper(hex.EncodeToString(b))
 	}
 
-	amountMicroUSD := int64(req.AmountUSD * 1_000_000)
+	amountMicroUSD := payments.USDToMicro(req.AmountUSD)
 	if req.MaxUses < 0 {
 		req.MaxUses = 0
 	}
@@ -104,7 +82,7 @@ func (s *Server) handleAdminCreateInviteCode(w http.ResponseWriter, r *http.Requ
 
 // handleAdminListInviteCodes handles GET /v1/admin/invite-codes.
 func (s *Server) handleAdminListInviteCodes(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminKey(w, r) {
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
@@ -137,15 +115,14 @@ func (s *Server) handleAdminListInviteCodes(w http.ResponseWriter, r *http.Reque
 
 // handleAdminDeactivateInviteCode handles DELETE /v1/admin/invite-codes.
 func (s *Server) handleAdminDeactivateInviteCode(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminKey(w, r) {
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
 	var req struct {
 		Code string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON"))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Code == "" {
@@ -167,8 +144,7 @@ func (s *Server) handleRedeemInviteCode(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Code string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON"))
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 

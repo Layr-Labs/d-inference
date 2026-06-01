@@ -63,17 +63,7 @@ func OutputPricePerMillion(_ string) int64 {
 // job. Both input (prompt) and output (completion) tokens are billed.
 // A minimum charge of $0.0001 (100 micro-USD) applies to every request.
 func CalculateCost(model string, promptTokens, completionTokens int) int64 {
-	inputRate := InputPricePerMillion(model)
-	outputRate := OutputPricePerMillion(model)
-
-	inputCost := int64(promptTokens) * inputRate / 1_000_000
-	outputCost := int64(completionTokens) * outputRate / 1_000_000
-	cost := inputCost + outputCost
-
-	if cost < minimumChargeMicroUSD {
-		cost = minimumChargeMicroUSD
-	}
-	return cost
+	return calculateCost(model, promptTokens, completionTokens, 0, 0, false, true)
 }
 
 // CalculateCostWithOverrides is like CalculateCost but uses custom per-account

@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -166,9 +165,8 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 // POST /v1/device/approve
 // Requires Privy auth — the user must be logged in.
 func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "Privy authentication required")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "Privy authentication required"))
 		return
 	}
 

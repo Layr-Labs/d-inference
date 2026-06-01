@@ -21,14 +21,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -3165,10 +3163,8 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 // Requires Privy authentication. The key is linked to the user's account so
 // requests made with the key are billed to the same account.
 func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "API key creation requires a Privy account — authenticate with a Privy access token")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error",
-			"API key creation requires a Privy account — authenticate with a Privy access token"))
 		return
 	}
 
@@ -3187,9 +3183,8 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 // The caller must own the key (same account). Requires Privy auth so a
 // compromised API key cannot revoke legitimate keys.
 func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "authentication required")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
 		return
 	}
 
@@ -3231,12 +3226,6 @@ type createAPIKeyRequest struct {
 	ExpiresAt     *time.Time `json:"expires_at"`
 }
 
-// usdToMicro converts a USD dollar amount to micro-USD (rounded).
-func usdToMicro(usd float64) int64 { return int64(math.Round(usd * 1_000_000)) }
-
-// microToUSD converts micro-USD to a USD float.
-func microToUSD(micro int64) float64 { return float64(micro) / 1_000_000 }
-
 // apiKeyToResponse projects a stored key into its masked API representation,
 // computing the current-window spend and remaining budget.
 func (s *Server) apiKeyToResponse(k *store.APIKey) types.APIKeyResponse {
@@ -3256,15 +3245,15 @@ func (s *Server) apiKeyToResponse(k *store.APIKey) types.APIKeyResponse {
 	}
 	since := store.KeySpendWindowStart(resp.LimitReset, time.Now())
 	spent := s.store.KeySpendSince(k.ID, since)
-	resp.UsageUSD = microToUSD(spent)
+	resp.UsageUSD = payments.MicroToUSD(spent)
 	if k.LimitMicroUSD != nil {
-		limitUSD := microToUSD(*k.LimitMicroUSD)
+		limitUSD := payments.MicroToUSD(*k.LimitMicroUSD)
 		resp.LimitUSD = &limitUSD
 		remaining := *k.LimitMicroUSD - spent
 		if remaining < 0 {
 			remaining = 0
 		}
-		remUSD := microToUSD(remaining)
+		remUSD := payments.MicroToUSD(remaining)
 		resp.RemainingUSD = &remUSD
 	}
 	return resp
@@ -3331,16 +3320,15 @@ func (s *Server) checkKeySpendCap(ctx context.Context, additionalMicroUSD int64)
 			window = "total"
 		}
 		return fmt.Sprintf("API key spend limit reached (%s cap $%.2f, used $%.2f) — raise this key's limit or use another key",
-			window, microToUSD(*k.LimitMicroUSD), microToUSD(spent)), false
+			window, payments.MicroToUSD(*k.LimitMicroUSD), payments.MicroToUSD(spent)), false
 	}
 	return "", true
 }
 
 // handleListAPIKeys handles GET /v1/keys — lists the caller's keys (masked).
 func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "authentication required")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
 		return
 	}
 	keys, err := s.store.ListAPIKeys(user.AccountID)
@@ -3358,10 +3346,8 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 // handleCreateAPIKey handles POST /v1/keys — mints a new named, optionally
 // limited key. The raw secret is returned exactly once.
 func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "API key creation requires a Privy account — authenticate with a Privy access token")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error",
-			"API key creation requires a Privy account — authenticate with a Privy access token"))
 		return
 	}
 
@@ -3388,7 +3374,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:     req.ExpiresAt,
 	}
 	if req.LimitUSD != nil {
-		m := usdToMicro(*req.LimitUSD)
+		m := payments.USDToMicro(*req.LimitUSD)
 		opts.LimitMicroUSD = &m
 	}
 
@@ -3405,9 +3391,8 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 
 // handleGetAPIKey handles GET /v1/keys/{id}.
 func (s *Server) handleGetAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "authentication required")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
 		return
 	}
 	id := r.PathValue("id")
@@ -3434,9 +3419,8 @@ func (s *Server) handleGetCallingKey(w http.ResponseWriter, r *http.Request) {
 // handleUpdateAPIKey handles PATCH /v1/keys/{id} — sparse update of a key's
 // name, disabled flag, limits, reset window, expiry, and model allow-list.
 func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "authentication required")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
 		return
 	}
 	id := r.PathValue("id")
@@ -3510,7 +3494,7 @@ func applyKeyPatch(k *store.APIKey, patch map[string]json.RawMessage) string {
 			if usd < 0 {
 				return "limit_usd must be >= 0"
 			}
-			m := usdToMicro(usd)
+			m := payments.USDToMicro(usd)
 			k.LimitMicroUSD = &m
 		}
 	}
@@ -3558,9 +3542,8 @@ func applyKeyPatch(k *store.APIKey, patch map[string]json.RawMessage) string {
 
 // handleDeleteAPIKey handles DELETE /v1/keys/{id} — permanently deletes a key.
 func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "authentication required")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
 		return
 	}
 	id := r.PathValue("id")
@@ -3577,9 +3560,8 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 // carrying the same limits and metadata, then deletes the old key. The new
 // secret is returned exactly once.
 func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
+	user := s.requirePrivyUser(w, r, "authentication required")
 	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
 		return
 	}
 	id := r.PathValue("id")
@@ -3644,13 +3626,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 			DownloadURL: downloadURL,
 		}
 	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode version"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	s.writeCachedJSONResult(w, cacheKey, time.Minute, resp, "failed to encode version")
 }
 
 // --- payment handlers ---
@@ -3770,14 +3746,6 @@ func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) 
 }
 
 // --- helpers ---
-
-// writeJSON serializes v as JSON and writes it to the response with the
-// given HTTP status code. Sets Content-Type to application/json.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
 
 // handleCompletions handles POST /v1/completions.
 // Proxies OpenAI-compatible text completions to the provider's vllm-mlx server.
@@ -4267,37 +4235,3 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
 	}
 }
-
-// errorDetailOpt carries optional fields for OpenAI-compatible error responses.
-type errorDetailOpt struct {
-	param string // e.g. "model", "max_tokens"
-	code  string // e.g. "model_not_found", "insufficient_quota"
-}
-
-// errorResponse builds a standard OpenAI-compatible error response body.
-// By default, code is inferred from errType. Callers can override code or
-// set param via withParam / withCode helpers.
-func errorResponse(errType, message string, opts ...errorDetailOpt) map[string]any {
-	detail := map[string]any{
-		"type":    errType,
-		"message": message,
-		"code":    errType, // default: code mirrors type
-	}
-	for _, o := range opts {
-		if o.param != "" {
-			detail["param"] = o.param
-		}
-		if o.code != "" {
-			detail["code"] = o.code
-		}
-	}
-	return map[string]any{
-		"error": detail,
-	}
-}
-
-// withParam returns an option that sets the "param" field on an error response.
-func withParam(p string) errorDetailOpt { return errorDetailOpt{param: p} }
-
-// withCode returns an option that overrides the "code" field on an error response.
-func withCode(c string) errorDetailOpt { return errorDetailOpt{code: c} }

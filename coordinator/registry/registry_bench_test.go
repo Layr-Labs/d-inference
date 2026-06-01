@@ -10,48 +10,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// makeProvider creates a realistic provider for benchmarks.
-func makeProvider(id string, model string, decodeTPS float64) *Provider {
-	p := &Provider{
-		ID: id,
-		Hardware: protocol.Hardware{
-			MachineModel:       "Mac15,8",
-			ChipName:           "Apple M3 Max",
-			ChipFamily:         "M3",
-			ChipTier:           "Max",
-			MemoryGB:           64,
-			MemoryAvailableGB:  58.5,
-			CPUCores:           protocol.CPUCores{Total: 16, Performance: 12, Efficiency: 4},
-			GPUCores:           40,
-			MemoryBandwidthGBs: 400,
-		},
-		Models: []protocol.ModelInfo{
-			{ID: model, SizeBytes: 5_700_000_000, ModelType: "qwen3", Quantization: "4bit"},
-		},
-		Backend:         "vllm_mlx",
-		DecodeTPS:       decodeTPS,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Status:          StatusOnline,
-		LastHeartbeat:   time.Now(),
-		WarmModels:      []string{model},
-		CurrentModel:    model,
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.3,
-			CPUUsage:       0.2,
-			ThermalState:   "nominal",
-		},
-		Reputation:            NewReputation(),
-		LastChallengeVerified: time.Now(),
-		pendingReqs:           make(map[string]*PendingRequest),
-	}
-	// Seed some reputation history.
-	for range 50 {
-		p.Reputation.RecordJobSuccess(200 * time.Millisecond)
-	}
-	return p
-}
-
 // populateRegistry creates a registry with n providers, all serving the target model.
 func populateRegistry(n int, model string) *Registry {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

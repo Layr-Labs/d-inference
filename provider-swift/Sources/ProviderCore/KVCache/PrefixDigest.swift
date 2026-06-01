@@ -29,6 +29,32 @@ public enum PrefixDigest {
     /// hits the 1024 checkpoint and reuses 1024 of its prefill.
     public static let defaultCheckpoints: [Int] = [256, 512, 1024, 2048, 4096, 8192]
 
+    /// Checkpoint boundaries usable by a model whose smallest sliding-window
+    /// attention layer retains `slidingWindow` tokens. A whole-cache
+    /// checkpoint snapshot at length L only reproduces the full prefix when
+    /// every sliding layer still holds all L tokens, i.e. `L <= slidingWindow`
+    /// (a rotating window has physically discarded tokens older than its
+    /// window). So we keep only boundaries `<= slidingWindow`, and add the
+    /// window itself as the largest usable checkpoint.
+    ///
+    /// `slidingWindow <= 0` (no sliding layers / unknown) ⇒ the defaults
+    /// unchanged. Example: Gemma-4 (512) → [256, 512]; GPT-OSS (128) →
+    /// [64, 128] (so it gets *some* usable checkpoint despite the tiny
+    /// window — see docs/ssd-kv-cache-hybrid-models.md §3).
+    public static func checkpoints(forSlidingWindow slidingWindow: Int) -> [Int] {
+        guard slidingWindow > 0 else { return defaultCheckpoints }
+        var usable = defaultCheckpoints.filter { $0 <= slidingWindow }
+        if usable.last != slidingWindow {
+            usable.append(slidingWindow)
+        }
+        // For small windows the defaults may all be filtered out; ensure at
+        // least one sub-window boundary so the model gets a checkpoint.
+        if usable.first ?? Int.max > slidingWindow / 2, slidingWindow / 2 >= 1 {
+            usable.insert(slidingWindow / 2, at: 0)
+        }
+        return Array(Set(usable)).filter { $0 > 0 }.sorted()
+    }
+
     /// Domain-separation tag mixed in before any tokens.
     private static let domainTag = Data("dbkv-prefix-v1".utf8)
 

@@ -103,6 +103,67 @@ func serializerResumeEquivalenceRotatingWrapped() throws {
 }
 
 @Test
+func serializerMixedHybridLayersEndToEndThroughEncryptedStore() async throws {
+    // The checkpoint-tier scenario for Gemma-4 / GPT-OSS: a MIXED layer
+    // list (RotatingKVCache sliding-window layers + KVCacheSimple full
+    // layers) must survive serialize -> encrypt -> decrypt -> deserialize
+    // -> restore, and a subsequent multi-token prefill must match a
+    // never-snapshotted reference on EVERY layer. This is the foundational
+    // correctness proof the hybrid wiring depends on.
+    //
+    // Gemma-4 pattern: 4 sliding (every 5th full). maxSize 4, fed past the
+    // window so the rotating layers have wrapped (idx mid-buffer).
+    func buildLayers() -> [any KVCache] {
+        let r1 = rotatingCache(feed: 10, maxSize: 4)
+        let r2 = rotatingCache(feed: 10, maxSize: 4)
+        let s1 = simpleCache(tokens: 10)
+        let r3 = rotatingCache(feed: 10, maxSize: 4)
+        let s2 = simpleCache(tokens: 10)
+        return [r1, r2, s1, r3, s2]
+    }
+    let original = buildLayers()
+    let reference = buildLayers()  // identical construction → identical state
+
+    let (chunks, layout) = try KVCacheSerializer.serialize(original)
+    #expect(layout.layers.map { $0.className }
+        == ["RotatingKVCache", "RotatingKVCache", "KVCache", "RotatingKVCache", "KVCache"])
+    let layoutJSON = String(data: try JSONEncoder().encode(layout), encoding: .utf8)!
+
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dbkv-mixed-\(UUID().uuidString).darkbloom-kv")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let kek = KVCacheKEK(
+        wrapper: InMemoryKeyWrappingService(),
+        storage: InMemoryWrappedKEKStorage(identifier: UUID().uuidString))
+    let meta = EncryptedKVStoreMetadata(
+        modelHash: "sha256:hybrid", modelDtype: "float32", modelArch: "Gemma4",
+        vocabSize: 1000, numLayers: original.count, kvHeads: H, headDim: D,
+        tokenCount: 10, tokenPrefixHash: "sha256:mixed", kvCacheClass: "mixed",
+        metaState: [layoutJSON], chunkPlaintextSizes: chunks.map { $0.count })
+    try await EncryptedKVStore.write(to: url, metadata: meta, chunks: chunks, kek: kek)
+
+    let (readMeta, readChunks) = try await EncryptedKVStore.read(from: url, kek: kek)
+    let readLayout = try JSONDecoder().decode(KVCacheLayout.self, from: Data(readMeta.metaState[0].utf8))
+    let restored = try KVCacheSerializer.deserialize(chunks: readChunks, layout: readLayout)
+
+    #expect(restored.count == reference.count)
+    // Resume each layer with the SAME 3-token prefill; restored must equal
+    // the reference layer-for-layer (order + content), proving no layer was
+    // scrambled, swapped, or lost across the encrypted round-trip.
+    let k = MLXArray((0..<(H * 3 * D)).map { Float(100 + $0) }, [1, H, 3, D])
+    let v = MLXArray((0..<(H * 3 * D)).map { Float(200 + $0) }, [1, H, 3, D])
+    for (i, (res, ref)) in zip(restored, reference).enumerated() {
+        let (kr, vr) = res.update(keys: k, values: v); eval(kr, vr)
+        let (kf, vf) = ref.update(keys: k, values: v); eval(kf, vf)
+        #expect(kr.shape == kf.shape, "layer \(i) (\(layout.layers[i].className)) shape diverged")
+        #expect(kr.asArray(Float.self) == kf.asArray(Float.self),
+                "layer \(i) (\(layout.layers[i].className)) keys diverged after encrypted restore")
+        #expect(vr.asArray(Float.self) == vf.asArray(Float.self),
+                "layer \(i) (\(layout.layers[i].className)) values diverged after encrypted restore")
+    }
+}
+
+@Test
 func serializerRejectsMambaForSSD() {
     // Recurrent caches are RAM-tier only (their metaState setter traps;
     // reconstruction is internal to MLXLMCommon). The serializer must

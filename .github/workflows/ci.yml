@@ -55,6 +55,15 @@ jobs:
           key: spm-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v1-${{ runner.os }}-
+      - name: Build provider-swift
+        working-directory: provider-swift
+        run: swift build
+      - name: Extract mlx.metallib
+        run: |
+          python3 -m venv /tmp/mlxvenv
+          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
+          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
+             provider-swift/.build/debug/mlx.metallib
       - name: Run Swift tests
         working-directory: provider-swift
         run: swift test

@@ -252,5 +252,18 @@ path does not exist yet** — it must be built, carefully.
 - **Step 1 (DONE, zero-runtime):** `PrefixCacheStrategy.classify` +
   `.minSlidingWindow`, `PrefixDigest.checkpoints(forSlidingWindow:)`, and the
   mixed-layer encrypted round-trip proof. 16 unit tests.
-- **Steps 2–5 (PENDING, submodule + provider):** capture hook, single-row
-  mixed restore path, BatchScheduler wiring, live verification.
+- **Restore primitive (DONE):** `BatchRotatingKVCache.fromSingleRow` —
+  inverse of `extract`; resume matches an independent single-stream
+  reference (wrapped + pre-wrap). Submodule `f00c1a7`.
+- **Step 2 — capture hook (DONE, default-off/isolated):**
+  `CheckpointPrefillPlanner` (boundary-aligned chunking) +
+  `Scheduler.onCheckpointCapture`/`checkpointBoundaries`. Captures per-layer
+  single-row caches at exact boundaries, before `generate()` slides the
+  window; B==1 only. Adversarially reviewed for isolation. Submodule
+  `62bf9f2`. Nothing restores yet ⇒ no model output can change.
+- **Steps 3–5 (PENDING):** the restore-admit path
+  (`doCheckpointWarmAdmit` in the submodule, using `merge([c])` +
+  `fromSingleRow`), the BatchScheduler wiring (construct manager for
+  `.checkpoint` models, set the capture closure → `Task { store }`, do
+  `lookup` in `submit`), and the live `logits(warm)==logits(cold)`
+  verification on real Gemma-4 + GPT-OSS.

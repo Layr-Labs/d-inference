@@ -51,6 +51,42 @@ struct PrefixCacheStrategyTests {
     func onlyRotatingIsCheckpoint() {
         #expect(PrefixCacheStrategy.classify([RotatingKVCache(maxSize: 128)]) == .checkpoint)
     }
+
+    @Test("minSlidingWindow takes the smallest rotating window, ignores non-rotating layers")
+    func minSlidingWindow() {
+        // Gemma-4 shape: all sliding layers share window 512.
+        let gemma: [any KVCache] = [
+            RotatingKVCache(maxSize: 512), KVCacheSimple(), RotatingKVCache(maxSize: 512),
+        ]
+        #expect(PrefixCacheStrategy.minSlidingWindow(gemma) == 512)
+
+        // Mixed windows ⇒ the minimum (the binding constraint).
+        let mixed: [any KVCache] = [
+            RotatingKVCache(maxSize: 256), RotatingKVCache(maxSize: 128), KVCacheSimple(),
+        ]
+        #expect(PrefixCacheStrategy.minSlidingWindow(mixed) == 128)
+
+        // No rotating layers ⇒ nil (pure-attention; window doesn't apply).
+        #expect(PrefixCacheStrategy.minSlidingWindow([KVCacheSimple(), KVCacheSimple()]) == nil)
+        #expect(PrefixCacheStrategy.minSlidingWindow([]) == nil)
+    }
+
+    @Test("classify + minSlidingWindow → checkpoint boundaries (Gemma-4 / GPT-OSS end to end)")
+    func strategyToBoundaries() {
+        // Gemma-4: checkpoint strategy, window 512 → boundaries ≤ 512.
+        let gemma: [any KVCache] = [RotatingKVCache(maxSize: 512), KVCacheSimple()]
+        #expect(PrefixCacheStrategy.classify(gemma) == .checkpoint)
+        let gemmaBounds = PrefixDigest.checkpoints(
+            forSlidingWindow: PrefixCacheStrategy.minSlidingWindow(gemma) ?? 0)
+        #expect(gemmaBounds == [256, 512])
+
+        // GPT-OSS: checkpoint strategy, window 128 → a usable sub-window boundary.
+        let gptoss: [any KVCache] = [RotatingKVCache(maxSize: 128), KVCacheSimple()]
+        #expect(PrefixCacheStrategy.classify(gptoss) == .checkpoint)
+        let gptBounds = PrefixDigest.checkpoints(
+            forSlidingWindow: PrefixCacheStrategy.minSlidingWindow(gptoss) ?? 0)
+        #expect(!gptBounds.isEmpty && gptBounds.allSatisfy { $0 <= 128 })
+    }
 }
 
 // Step 2 (zero-runtime): checkpoint boundaries derived from the sliding

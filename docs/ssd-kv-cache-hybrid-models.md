@@ -170,3 +170,87 @@ logit-equivalence test passes on both.
 
 Steps 1–2 and the round-trip test land first (zero runtime effect), so the
 risky wiring (3–5) is built on a verified base.
+
+---
+
+## 7. Verified integration map (from a source audit of the submodule)
+
+A close read of `libs/mlx-swift-lm/.../ContinuousBatching/` (Scheduler,
+PromptProcessingBatch, GenerationBatch, BatchKVCache, Request, EngineCore)
+confirmed the approach and pinned three submodule changes that the
+"PrefixCacheManager is already built" framing understates. **The restore
+path does not exist yet** — it must be built, carefully.
+
+### 7.1 Confirmed facts (file:line)
+
+- **Capture point** = `Scheduler.advancePendingPrefill`, immediately before
+  each `pp.ppBatch.generate(...)` (Scheduler.swift:294 and :313, the
+  `maxRemaining == 0` transition). At that instant
+  `pp.ppBatch.promptCache: [any BatchedCache]` holds the full prefill KV.
+- **Capture must precede `generate()`**: `GenerationBatch.init` runs
+  `_ = step()` unconditionally (GenerationBatch.swift:109), i.e. one decode
+  step *before* `generate()` returns — which slides every rotating window by
+  one token. Capturing after would silently drop the L-th token's KV.
+- **Single-row extraction is sound and owns its storage**:
+  `BatchedCache.extractBatched(_ idx:) -> any KVCache` is public
+  (BatchKVCache.swift:25); `BatchKVCache.extract` → `KVCacheSimple`
+  (line 343, `eval`'d slice), `BatchRotatingKVCache.extract` →
+  `RotatingKVCache` with full `metaState` (line 726). Proven row-isolated by
+  `batchRotatingExtractIsolatesRow`.
+- **Restore is blocked on two KVCacheSimple-only assumptions**:
+  `doExternalPrefill` `precondition`s all-`KVCacheSimple` (Scheduler.swift:625,
+  :649) and the warm merge uses `BatchKVCache.merge([KVCacheSimple])`
+  (Scheduler.swift:541, BatchKVCache.swift:358). A mixed restored cache
+  crashes both. **A separate restore path is required** — do NOT relax the
+  existing guard (keep the engine tier's isolation intact).
+- **The restore scaffold already exists**: `cacheFactories`
+  (Scheduler.swift:597-615) is a per-layer type switch
+  (Mamba/Arrays/Rotating/Simple → matching `BatchedCache`). The inverse of
+  `extract` (seed a B=1 batched cache from a single-row cache) mirrors
+  `BatchKVCache.merge([c])`; the rotating analogue must be added.
+- **`GenerationBatch.init` already accepts `[any BatchedCache]`** and calls
+  the model via `promptCache.map { $0 as any KVCache }` (GenerationBatch.swift:335)
+  — mixed-tolerant. The suffix-prefill forward (`model(input, cache:)`,
+  Scheduler.swift:644) is also type-agnostic.
+- **Async/sync boundary**: `PrefixCacheManager` is an `actor`; the step loop
+  is a synchronous `engineQueue` (EngineCore.swift). Capture stores via
+  `Task { await manager.store(...) }`; restore `lookup` runs in the already
+  -async `BatchScheduler.submit` before `addRequest`. No await on the queue.
+- **Sliding window size** is NOT in `ModelArchitecture` (only the pattern +
+  layer_types). Read it from the live caches:
+  `PrefixCacheStrategy.minSlidingWindow(model.newCache())` =
+  `min RotatingKVCache.maxSize`. (Implemented in step 1.)
+
+### 7.2 Decisions taken (architect-recommended defaults)
+
+- **batchSize == 1 capture & restore first.** `extract` slices off
+  `leftPadding[idx]`, but extract-then-remerge at a *different* batch
+  position with non-zero left padding is untested → restrict to B=1 (left
+  padding always 0). Covers the dominant shared-system-prompt TTFT win;
+  multi-row is a separately-gated follow-up.
+- **Plumb via `Request.restoredCheckpoint: ([any KVCache], Int)?`** — least
+  invasive; `Request` already carries `promptCache` and flows through
+  `addRequest` unmodified.
+- **Debounce `flushToSSD()`** — `store()` updates RAM synchronously (cheap);
+  disk writes happen opportunistically, off the hot path.
+- **Reuse `DARKBLOOM_PREFIX_CACHE`** — same TB-007 sign-off, KEK, dir, budget;
+  the classifier guarantees one tier per model.
+
+### 7.3 Residual risks → the test that catches each
+
+| Risk | Catching test |
+|---|---|
+| Capture one token late (window already slid) | §5 live logit-equivalence; hook test capturing before `generate()` vs a never-decoded reference |
+| Rotating restored without `metaState` (scrambled order) | `RotatingKVCacheRestoreTests.omittingMetaStateOnRestoreCorruptsOrder` (already proves corruption); assert restored `metaState` == captured |
+| Left-padded extract / re-merge misalign mask | new ragged-batch test (`leftPadding=[2,0]`, extract row 1, restore, resume vs single-stream ref); mitigated by B==1 constraint |
+| Boundary > window → discarded tokens | `checkpoints(forSlidingWindow:)` unit test + GPT-OSS live test; `minSlidingWindow` read from real `RotatingKVCache.maxSize` |
+| Wrong-model / stale-weight served | `PrefixCacheManager` MB-1 guard + `validateLayout` (existing) |
+| Capture/restore data race vs step loop | extract materializes owned storage + actor-serialized `store`; TSan run of concurrent-submit test |
+
+### 7.4 Status
+
+- **Step 1 (DONE, zero-runtime):** `PrefixCacheStrategy.classify` +
+  `.minSlidingWindow`, `PrefixDigest.checkpoints(forSlidingWindow:)`, and the
+  mixed-layer encrypted round-trip proof. 16 unit tests.
+- **Steps 2–5 (PENDING, submodule + provider):** capture hook, single-row
+  mixed restore path, BatchScheduler wiring, live verification.

@@ -67,4 +67,17 @@ public enum PrefixCacheStrategy: String, Sendable, Equatable {
 
         return sawRotating ? .checkpoint : .engine
     }
+
+    /// Smallest sliding window across a model's `RotatingKVCache` layers,
+    /// or nil if there are none. This is the authoritative window size —
+    /// read from the live cache instances the model built, NOT guessed from
+    /// config.json (which `ModelArchitecture` doesn't even expose as an
+    /// integer). It caps the checkpoint boundaries: a snapshot at length L
+    /// is only restorable when every sliding layer still holds all L tokens
+    /// (L ≤ window). See `PrefixDigest.checkpoints(forSlidingWindow:)`.
+    public static func minSlidingWindow(_ caches: [any KVCache]) -> Int? {
+        // RotatingKVCache.maxSize is Int?; flatMap to drop both the
+        // non-rotating layers and any nil window.
+        caches.compactMap { ($0 as? RotatingKVCache)?.maxSize }.min()
+    }
 }

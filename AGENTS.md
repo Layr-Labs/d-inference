@@ -20,7 +20,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   └── server.go           route wiring, auth middleware, version gate
 ├── attestation/      Secure Enclave + MDA verification
 ├── auth/             Privy JWT integration
-├── billing/          Stripe, Solana USDC deposits, referrals
+├── billing/          Stripe, referrals
 ├── e2e/              X25519 request-encryption helpers
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing
@@ -83,52 +83,63 @@ docs/                 architecture, deploy runbooks, MDM/ACME notes, threat mode
 
 ## Current Surface Area
 
-- Coordinator HTTP routes include `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/messages`, `POST /v1/audio/transcriptions`, `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/capacity`, billing/pricing endpoints, invite flows, stats, enrollment, device authorization, and release registration endpoints.
+- Coordinator HTTP routes include `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/messages`, `GET /v1/models`, `GET /v1/models/capacity`, billing/pricing endpoints, invite flows, stats, enrollment, device authorization, and release registration endpoints.
 - Coordinator auth is split between Privy JWTs, API keys, and device-code login (RFC 8628) for provider machines.
 - Routing uses token-budget admission with engine-reported capacity, speculative TTFT dispatch, EWMA TPS tracking, and early 429 with Retry-After for OpenRouter compatibility.
-- Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, Solana USDC, referrals).
+- Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, referrals).
 - Providers serve text inference through the Swift `darkbloom` CLI with continuous batching via MLX-Swift.
 - Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
 - Observability: Datadog metrics (DogStatsD) for attestation, routing, billing, fleet version, and provider capacity. X-Timing header decomposes per-request latency.
 
 ## Building And Testing
 
+Toolchain versions (Go, Node, Swift, Python, plus `jq`/`gh`/`awscli`/`gcloud`)
+are pinned in [`mise.toml`](mise.toml). Build/test commands are wrapped in the
+root [`Makefile`](Makefile) — run `make` with no args to list all targets.
+
+### One-time setup
+```bash
+mise install            # installs every tool pinned in mise.toml
+make ui-install         # console-ui npm deps
+```
+
 ### Coordinator (Go)
 ```bash
-cd coordinator
-go test ./...
-go build ./cmd/coordinator
-
-# Linux deployment build
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator
+make coordinator-test         # cd coordinator && go test ./...
+make coordinator-build        # cd coordinator && go build ./cmd/coordinator
+make coordinator-build-linux  # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 build (EigenCloud)
+make coordinator              # test + build
 ```
 
 ### Provider (Swift)
 ```bash
-cd provider-swift
-swift build
-swift test
+make provider-build           # cd provider-swift && swift build
+make provider-test            # cd provider-swift && swift test
+make provider                 # build + test
 ```
 
 ### Console UI (Next.js 16)
 ```bash
-cd console-ui
-npm install
-npm run build
-npx eslint src/       # lint check
-npm test              # vitest
+make ui-install               # npm install
+make ui-build                 # npm run build
+make ui-lint                  # npx eslint src/
+make ui-test                  # vitest (npm test)
+make ui                       # install + lint + test + build
 ```
 
 ### E2E Integration Tests
 ```bash
-# Requires Postgres + Swift provider binary + MLX model downloaded
-go test ./e2e/... -run TestIntegration -v
-go test ./e2e/... -run TestBenchmark -v    # load benchmarks
+# Requires Postgres + Swift provider binary + MLX model downloaded.
+make e2e-integration          # go test ./e2e/... -run TestIntegration -v
+make e2e-benchmark            # go test ./e2e/... -run TestBenchmark -v
 ```
 
-### Root Python Tests
+### Aggregates
 ```bash
-python3 -m pytest tests/test_crypto_interop.py
+make test                     # all unit tests (coordinator + provider + ui)
+make build                    # build all components
+make all                      # test + build everything
+make clean                    # remove built artifacts
 ```
 
 ## Deploying
@@ -226,4 +237,3 @@ git config core.hooksPath .githooks
 | Go (`coordinator/`) | `gofmt -l` | `gofmt -w <file>` |
 | Swift (`provider-swift/`) | no enforced formatter | `cd provider-swift && swift test` |
 | TypeScript (`console-ui/`) | `npx eslint src/` | `cd console-ui && npx eslint src/ --fix` |
-| Python (`tests/`) | no hook today | run `pytest` manually as needed |

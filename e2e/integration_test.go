@@ -604,7 +604,7 @@ func TestIntegration_SwiftProviderRealRoutingGates(t *testing.T) {
 	}
 
 	model := s.PrimaryModelID()
-	found := s.Coordinator.Registry.FindProvider(model)
+	found := s.Coordinator.Registry.SelectProvider(model)
 	require.NotNil(t, found, "Swift provider should be routable after challenge success without ForceTrustProvider")
 
 	resp := postChatCompletions(t, s, "What is 1+1? Answer with just the number.", false, 20)

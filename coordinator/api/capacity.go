@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -28,13 +27,7 @@ func (s *Server) handleModelsCapacity(w http.ResponseWriter, r *http.Request) {
 		Models: capacities,
 	}
 
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode capacity"))
-		return
-	}
 	// Cache for 2 seconds — capacity data changes frequently but the
 	// endpoint may be polled aggressively by upstream routers.
-	s.readCache.Set(cacheKey, body, 2*time.Second)
-	writeCachedJSON(w, body)
+	s.writeCachedJSONResult(w, cacheKey, 2*time.Second, resp, "failed to encode capacity")
 }

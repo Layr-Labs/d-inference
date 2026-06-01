@@ -209,7 +209,7 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 	}
 
 	// Provider should be routable now.
-	p := reg.FindProvider(model)
+	p := reg.SelectProvider(model)
 	if p == nil {
 		t.Fatal("provider should be routable after passing challenge")
 	}
@@ -233,7 +233,7 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 
 	// Before handling the challenge, the provider should NOT be routable
 	// because LastChallengeVerified is zero.
-	p2 := reg.FindProvider(model)
+	p2 := reg.SelectProvider(model)
 	if p2 != nil {
 		t.Fatal("provider should NOT be routable before passing challenge after reconnect")
 	}
@@ -268,7 +268,7 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Now provider should be routable again.
-	p3 := reg.FindProvider(model)
+	p3 := reg.SelectProvider(model)
 	if p3 == nil {
 		t.Fatal("provider should be routable after passing challenge on reconnect")
 	}
@@ -331,7 +331,7 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 	}
 
 	// Verify routable after first challenge.
-	if p := reg.FindProvider(model); p == nil {
+	if p := reg.SelectProvider(model); p == nil {
 		t.Fatal("provider should be routable after first challenge")
 	}
 
@@ -376,7 +376,7 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 			t.Errorf("provider status = %v, want untrusted", status)
 		}
 	}
-	if found := reg.FindProvider(model); found != nil {
+	if found := reg.SelectProvider(model); found != nil {
 		t.Error("untrusted provider should not be routable")
 	}
 }
@@ -731,7 +731,7 @@ func TestIntegration_RequestQueueDrain(t *testing.T) {
 	}
 
 	// Verify provider is at max concurrency and not available.
-	if found := reg.FindProvider(model); found != nil {
+	if found := reg.SelectProvider(model); found != nil {
 		t.Fatal("provider at max concurrency should not be routable")
 	}
 

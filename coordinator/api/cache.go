@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
@@ -73,4 +74,19 @@ func writeCachedJSON(w http.ResponseWriter, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+// writeCachedJSONResult is the cache-miss tail shared by every cached read
+// endpoint: marshal v, store it under cacheKey for ttl, and write it. On marshal
+// failure it writes a 500 with encodeErrMsg (kept per-caller so the error body
+// stays byte-identical) and returns false.
+func (s *Server) writeCachedJSONResult(w http.ResponseWriter, cacheKey string, ttl time.Duration, v any, encodeErrMsg string) bool {
+	body, err := json.Marshal(v)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", encodeErrMsg))
+		return false
+	}
+	s.readCache.Set(cacheKey, body, ttl)
+	writeCachedJSON(w, body)
+	return true
 }

@@ -65,13 +65,13 @@ func TestMultiProvider_TwoProvidersSameModel(t *testing.T) {
 	}
 
 	// Both should be findable for the same model
-	p1 := reg.FindProvider(model)
+	p1 := reg.SelectProvider(model)
 	if p1 == nil {
 		t.Fatal("should find a provider for shared-model")
 	}
 
 	// Second FindProvider also returns a provider (both are available)
-	p2 := reg.FindProvider(model)
+	p2 := reg.SelectProvider(model)
 	if p2 == nil {
 		t.Fatal("should find provider on second call")
 	}
@@ -155,12 +155,12 @@ func TestMultiProvider_DifferentModels(t *testing.T) {
 	}
 
 	// Find provider for each model
-	pAlpha := reg.FindProvider("model-alpha")
+	pAlpha := reg.SelectProvider("model-alpha")
 	if pAlpha == nil {
 		t.Error("no provider found for model-alpha")
 	}
 
-	pBeta := reg.FindProvider("model-beta")
+	pBeta := reg.SelectProvider("model-beta")
 	if pBeta == nil {
 		t.Error("no provider found for model-beta")
 	}
@@ -171,7 +171,7 @@ func TestMultiProvider_DifferentModels(t *testing.T) {
 	}
 
 	// Non-existent model should return nil
-	pNone := reg.FindProvider("model-gamma")
+	pNone := reg.SelectProvider("model-gamma")
 	if pNone != nil {
 		t.Error("should not find provider for non-existent model")
 	}
@@ -220,7 +220,7 @@ func TestMultiProvider_ProviderLeavesOtherContinues(t *testing.T) {
 	}
 
 	// Provider 2 should still be findable
-	p := reg.FindProvider(model)
+	p := reg.SelectProvider(model)
 	if p == nil {
 		t.Error("remaining provider should still be findable")
 	}
@@ -320,7 +320,7 @@ func TestMultiProvider_CatalogFiltersDuringRegistration(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Should find a provider for the whitelisted model
-	p := reg.FindProvider("whitelisted-model")
+	p := reg.SelectProvider("whitelisted-model")
 	if p == nil {
 		t.Error("should find provider for whitelisted-model")
 	}
@@ -369,7 +369,7 @@ func TestMultiProvider_ManyProviders(t *testing.T) {
 
 	// Should be able to find providers for the model
 	for i := range numProviders {
-		p := reg.FindProvider(model)
+		p := reg.SelectProvider(model)
 		if p == nil {
 			t.Errorf("FindProvider returned nil on attempt %d", i)
 			break
@@ -491,7 +491,7 @@ func TestMultiProvider_SingleProviderMultipleModels(t *testing.T) {
 
 	// Should find provider for each model
 	for _, m := range models {
-		p := reg.FindProvider(m.ID)
+		p := reg.SelectProvider(m.ID)
 		if p == nil {
 			t.Errorf("no provider found for model %q", m.ID)
 		} else {
@@ -538,8 +538,9 @@ func TestMultiProvider_TrustLevelFiltering(t *testing.T) {
 	reg.SetTrustLevel(ids[1], registry.TrustSelfSigned)
 	reg.RecordChallengeSuccess(ids[1])
 
-	// FindProviderWithTrust for hardware should only return the hardware-trusted one
-	p := reg.FindProviderWithTrust(model, registry.TrustHardware)
+	// With the default hardware trust floor, only the hardware-trusted provider
+	// is routable (the self_signed one is gated out).
+	p := reg.SelectProvider(model)
 	if p == nil {
 		t.Fatal("should find hardware-trusted provider")
 	}
@@ -547,12 +548,14 @@ func TestMultiProvider_TrustLevelFiltering(t *testing.T) {
 		t.Error("should return the hardware-trusted provider")
 	}
 
-	// Reset the first provider to idle
-	reg.SetProviderIdle(ids[0])
-
-	// FindProviderWithTrust for self_signed should return either (both meet minimum)
-	p2 := reg.FindProviderWithTrust(model, registry.TrustSelfSigned)
+	// Lowering the trust floor to self_signed admits the self_signed provider:
+	// excluding the hardware one, the self_signed provider is now selectable.
+	reg.MinTrustLevel = registry.TrustSelfSigned
+	p2 := reg.SelectProvider(model, ids[0])
 	if p2 == nil {
-		t.Fatal("should find provider with self_signed trust minimum")
+		t.Fatal("self_signed provider should be selectable once the trust floor is lowered")
+	}
+	if p2.ID != ids[1] {
+		t.Errorf("expected self_signed provider %q, got %q", ids[1], p2.ID)
 	}
 }

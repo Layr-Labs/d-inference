@@ -1,0 +1,29 @@
+# TTFT benchmark — hybrid checkpoint KV cache, real Gemma-4 26B-A4B 8bit, M5 Max (128GB).
+# Commit 6c381267, 512-token shared prefix, n=12 samples each. 12/12 warm = cache hits.
+# Raw per-sample TTFT in milliseconds.
+condition,sample,ttft_ms
+cold,0,537
+cold,1,480
+cold,2,487
+cold,3,486
+cold,4,484
+cold,5,485
+cold,6,486
+cold,7,482
+cold,8,480
+cold,9,485
+cold,10,483
+cold,11,483
+warm,0,283
+warm,1,284
+warm,2,283
+warm,3,284
+warm,4,284
+warm,5,283
+warm,6,284
+warm,7,283
+warm,8,283
+warm,9,282
+warm,10,278
+warm,11,283
+# Summary: cold median 485ms, warm median 283ms, speedup 1.71x.

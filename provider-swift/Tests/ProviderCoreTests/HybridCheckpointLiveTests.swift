@@ -262,4 +262,133 @@ struct HybridCheckpointLiveTests {
         try await assertSSDLoadMatchesCold(
             modelID: "mlx-community/gemma-4-26b-a4b-it-8bit", checkpointL: 256)
     }
+
+    // 100k SSD ROUND-TRIP, INSTRUMENTED — answers "what's a 100k prefill cold
+    // vs with SSD caching?". This is the #267 scenario: cache a prefix far past
+    // the sliding window (1024), persist it encrypted, drop+reload, restore
+    // from disk, continue, and TIME every stage against the cold baseline.
+    // It deliberately bypasses the boundary-cap default (passes boundaries:
+    // [checkpointL] directly) to measure what long-prefix reuse WOULD cost if
+    // the cap were lifted — the disk size + read/decrypt/rebuild latency that
+    // determines the break-even. Slow (a 100k cold prefill is ~74s on M5), so
+    // it's its own gate.
+    @Test(.enabled(if:
+        LiveInferenceFixtures.gemmaTestsEnabled
+            && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_BIGKV"] != nil))
+    func gemma4SSD100kColdVsWarm() async throws {
+        let modelID = "mlx-community/gemma-4-26b-a4b-it-8bit"
+        let checkpointL = 100_000
+        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        do { loaded = try await LiveInferenceFixtures.loadScheduler(
+                modelID: modelID, memoryBudgetBytes: 110 * 1024 * 1024 * 1024) }
+        catch let skip as LiveFixtureSkip { print("SKIP100k \(modelID): \(skip)"); return }
+        defer { Task { await loaded.scheduler.unloadModel() } }
+        let container = loaded.container
+
+        let prompt = Array(0..<(checkpointL + 12)).map { ($0 % 64) + 5 }
+        let suffix = Array(prompt[checkpointL...])
+        let maxTokens = 8
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dbkv-100k-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Step 1: capability gate, shapes, COLD reference (timed), prefilled prefix.
+        struct Setup: @unchecked Sendable {
+            let cold: [Int]; let layerShapes: [[Int]]; let prefix: [any KVCache]
+            let coldPrefillSec: Double
+        }
+        let setup: Setup? = try await container.perform { ctx -> Setup? in
+            let model = ctx.model
+            guard PrefixCacheStrategy.classify(model.newCache(parameters: nil)) == .checkpoint,
+                  let layerShapes = BatchScheduler.probeLayerShapes(model: model)
+            else { print("SKIP100k \(modelID): not checkpoint / no shapes"); return nil }
+
+            // COLD: full 100k prefill (this is the ~74s baseline), timed to the
+            // first produced token.
+            let coldStart = Date()
+            let coldCache = model.newCache(parameters: nil)
+            let full = MLXArray(prompt.map { Int32($0) }).reshaped([1, prompt.count])
+            let coldSeed = model.callAsFunction(full, cache: coldCache)[.ellipsis, -1, 0...]
+            eval(coldSeed)
+            let coldPrefillSec = Date().timeIntervalSince(coldStart)
+            let cold = greedyContinue(model: model, cache: coldCache, seedLogits: coldSeed, maxTokens: maxTokens)
+
+            // Prefill the 100k prefix to capture as a checkpoint.
+            let prefixCache = model.newCache(parameters: nil)
+            let pfx = MLXArray(prompt.prefix(checkpointL).map { Int32($0) }).reshaped([1, checkpointL])
+            _ = model.callAsFunction(pfx, cache: prefixCache)
+            eval(prefixCache.flatMap { $0.innerState() })
+            return Setup(cold: cold, layerShapes: layerShapes, prefix: prefixCache, coldPrefillSec: coldPrefillSec)
+        }
+        guard let setup else { return }
+        print("BIGKV cold 100k prefill = \(String(format: "%.2f", setup.coldPrefillSec))s")
+
+        let binding = PrefixCacheModelBinding(
+            modelHash: modelID, modelDtype: "x", modelArch: "x", vocabSize: 0,
+            numLayers: setup.layerShapes.count,
+            kvHeads: setup.layerShapes.first?.first ?? 1, headDim: setup.layerShapes.first?.last ?? 1,
+            layerShapes: setup.layerShapes)
+        let sharedWrap = InMemoryKeyWrappingService(
+            key: SymmetricKey(data: Data(repeating: 0x5A, count: 32)), identifier: "bigkv")
+        let sharedStore = InMemoryWrappedKEKStorage(identifier: "bigkv")
+        func makeMgr() -> PrefixCacheManager {
+            PrefixCacheManager(
+                binding: binding, ram: PrefixCacheRAM(maxBytes: 0),  // RAM off → force SSD
+                index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
+                kek: KVCacheKEK(wrapper: sharedWrap, storage: sharedStore),
+                cacheDir: dir, ssdEnabled: true, boundaries: [checkpointL],
+                diskBudgetBytes: 0, now: { 1000 })
+        }
+
+        // Step 2: store → flush (encrypt+write), timed; record on-disk size.
+        let writer = makeMgr()
+        await writer.store(tokens: prompt, checkpointLength: checkpointL,
+                           caches: SendableKVCaches(setup.prefix))
+        let flushStart = Date()
+        _ = await writer.flushToSSD()
+        await writer.flushIndexNow()
+        let flushSec = Date().timeIntervalSince(flushStart)
+        let bytesOnDisk = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]))?
+            .compactMap { (try? $0.resourceValues(forKeys: [.fileSizeKey]))?.fileSize }
+            .reduce(0, +) ?? 0
+        print("BIGKV checkpoint on disk = \(bytesOnDisk) bytes (\(String(format: "%.1f", Double(bytesOnDisk) / 1_048_576))MB), flush(encrypt+write) = \(String(format: "%.2f", flushSec))s")
+
+        // Step 3: FRESH manager → reconcile → lookup (read+decrypt+rebuild), timed.
+        let reader = makeMgr()
+        await reader.reconcileWithDisk()
+        let loadStart = Date()
+        guard let hit = await reader.lookup(tokens: prompt) else {
+            Issue.record("BIGKV SSD lookup MISS at 100k for \(modelID)")
+            return
+        }
+        let loadSec = Date().timeIntervalSince(loadStart)
+        #expect(hit.tier == .ssd, "must load from the encrypted SSD file, got \(hit.tier)")
+        #expect(hit.tokenCount == checkpointL)
+        print("BIGKV SSD read+decrypt+rebuild = \(String(format: "%.2f", loadSec))s")
+
+        // Step 4: rebuild batched + prefill ONLY the suffix (timed) → continue;
+        // must equal cold. The warm TTFT ≈ loadSec + suffixSec.
+        let warmResult: (tokens: [Int], suffixSec: Double) = try await container.perform { ctx -> ([Int], Double) in
+            let model = ctx.model
+            let batched: [any KVCache] = hit.caches.map { layer in
+                if let rot = layer as? RotatingKVCache { return BatchRotatingKVCache.fromSingleRow(rot) }
+                return BatchKVCache.merge([layer as! KVCacheSimple])
+            }
+            let sStart = Date()
+            let sfx = MLXArray(suffix.map { Int32($0) }).reshaped([1, suffix.count])
+            let seed = model.callAsFunction(sfx, cache: batched)[.ellipsis, -1, 0...]
+            eval(seed)
+            let suffixSec = Date().timeIntervalSince(sStart)
+            let toks = greedyContinue(model: model, cache: batched, seedLogits: seed, maxTokens: maxTokens)
+            return (toks, suffixSec)
+        }
+        let warm = warmResult.tokens
+        let suffixSec = warmResult.suffixSec
+        let warmTTFT = loadSec + suffixSec
+        print("BIGKV suffix prefill = \(String(format: "%.2f", suffixSec))s")
+        print("BIGKV SUMMARY: cold_prefill=\(String(format: "%.2f", setup.coldPrefillSec))s  warm(load+suffix)=\(String(format: "%.2f", warmTTFT))s  speedup=\(String(format: "%.2f", setup.coldPrefillSec / max(warmTTFT, 0.001)))x  diskMB=\(String(format: "%.0f", Double(bytesOnDisk) / 1_048_576))  flush=\(String(format: "%.2f", flushSec))s")
+        #expect(warm == setup.cold,
+            "\(modelID) SSD-load restore@100k: warm \(warm) != cold \(setup.cold)")
+    }
 }

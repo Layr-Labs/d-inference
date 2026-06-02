@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import Testing
 @testable import MLX
@@ -183,12 +184,23 @@ struct HybridCheckpointLiveTests {
             numLayers: setup.layerShapes.count,
             kvHeads: setup.layerShapes.first?.first ?? 1, headDim: setup.layerShapes.first?.last ?? 1,
             layerShapes: setup.layerShapes)
+        // Writer and reader MUST resolve the SAME KEK — in production both
+        // tiers use the one SE-wrapped/Keychain-persisted backing.kek (and
+        // the identical key is reloaded across restart). Model that with a
+        // SHARED fixed wrapping key AND a SHARED storage instance: the writer
+        // generates+wraps+persists the KEK into the shared storage, and the
+        // reader unwraps that SAME persisted KEK. (Per-manager fresh
+        // wrapper+storage would mint different random KEKs → the reader
+        // couldn't unwrap the writer's DEK = authenticationFailure, a test
+        // artifact, not a product bug.)
+        let sharedWrap = InMemoryKeyWrappingService(
+            key: SymmetricKey(data: Data(repeating: 0x5A, count: 32)), identifier: "live")
+        let sharedStore = InMemoryWrappedKEKStorage(identifier: "live")
         func makeMgr() -> PrefixCacheManager {
             PrefixCacheManager(
                 binding: binding, ram: PrefixCacheRAM(),
                 index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
-                kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(),
-                                storage: InMemoryWrappedKEKStorage(identifier: "live")),
+                kek: KVCacheKEK(wrapper: sharedWrap, storage: sharedStore),
                 cacheDir: dir, ssdEnabled: true, boundaries: [checkpointL], now: { 1000 })
         }
         let writer = makeMgr()

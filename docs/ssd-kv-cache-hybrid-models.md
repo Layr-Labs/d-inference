@@ -22,7 +22,7 @@ KVCacheSimple }`). Gemma-4 and GPT-OSS produce **mixed** caches:
 
 | Model | `newCache()` (verified in source) |
 |---|---|
-| Gemma-4 (`Gemma4Text.swift:1083`) | `StandardKVCache`(=`KVCacheSimple`) on `full_attention` layers + `RotatingKVCache(maxSize: slidingWindow=512)` on `sliding_attention` (4 of every 5 layers) |
+| Gemma-4 (`Gemma4Text.swift:1083`) | `StandardKVCache`(=`KVCacheSimple`) on `full_attention` layers + `RotatingKVCache(maxSize: slidingWindow=1024)` on `sliding_attention` (4 of every 5 layers) |
 | GPT-OSS (`GPTOSS.swift:522`) | `KVCacheSimple` on full layers + `RotatingKVCache(maxSize: slidingWindow=128)` on sliding layers |
 | Qwen3.5 / Qwen3-Next | `KVCacheSimple` + `MambaCache` (recurrent) |
 
@@ -80,31 +80,68 @@ Why this is sound where blocks aren't:
   model itself produced after prefilling L tokens. Equivalent to "prefill
   L tokens, then continue."
 
-## 3. The window ≥ checkpoint constraint (critical for GPT-OSS)
+## 3. The window does NOT cap reusable prefix length (it bounds per-layer retention)
 
-A sliding layer physically retains only `maxSize` tokens. Capturing at
-checkpoint L is only *useful* (covers the whole prefix) when **L ≤
-maxSize** for every sliding layer — otherwise the snapshot has already
-forgotten tokens `[0, L-maxSize)` and a restore wouldn't reproduce
-full-attention layers' view of those tokens. Concretely:
+> **Correction (2026-06).** An earlier draft claimed a checkpoint at length
+> L is only sound when **L ≤ window** for every sliding layer — i.e. that the
+> window is a hard ceiling on the reusable prefix. **That is wrong**, and the
+> current implementation's conservatism is a *design choice*, not a
+> correctness requirement. The accurate picture:
+>
+> A correct hybrid prefix only needs, **per layer**:
+> - **full-attention layers** (`KVCacheSimple`): the KV for *all* L tokens —
+>   they retain everything, so they are never the limiting factor;
+> - **sliding layers** (`RotatingKVCache`): only the **last `window`** KV
+>   entries — which is *exactly* what the layer physically holds and *all it
+>   needs* for correct future decoding from position L.
+>
+> So a snapshot at **any** L faithfully represents the prefix: full layers
+> carry all L tokens, sliding layers carry their (valid) window. The window
+> bounds *how much KV a sliding layer must retain*, **not** the maximum
+> prefix that can be cached and reused. This is the same per-layer
+> intersection SGLang HiCache and the SSD-KV literature use.
 
-| Model | min sliding window | usable checkpoints |
+**Our serializer already does the per-layer-correct thing.**
+`KVCacheSerializer` snapshots each layer's `.state`: a full layer returns all
+L tokens; a `RotatingKVCache` returns its wrapped ring buffer (≈ last
+`window`) plus the `offset`/`idx` in `metaState`. `BatchRotatingKVCache.from
+SingleRow` restores that wrapped state with the absolute offset intact.
+
+**Empirically verified past the window.**
+`HybridCheckpointLiveTests.gemma4RestoreMatchesColdPastWindow` restores at
+**L = 2048 and 4096** — both > Gemma-4's **1024** window, so the sliding
+layers' ring buffer has wrapped — and asserts the continued greedy output is
+**bit-identical to a cold full run**. It passes. The wrapped-ring-buffer
+restore is exact, so reuse past the window is correct in this pipeline today.
+
+### What the window *does* still control
+
+The only place the window matters is `PrefixDigest.checkpoints(forSliding
+Window:)`, which today **deliberately** emits boundaries `≤ window`:
+
+| Model | min sliding window | default checkpoint boundaries (current) |
 |---|---|---|
-| Gemma-4 | 512 | 256, 512 |
-| GPT-OSS | **128** | **only < 128 → none of the default boundaries (smallest 256)** |
+| Gemma-4 | **1024** | 256, 512, 1024 |
+| GPT-OSS | **128** | 64, 128 |
 
-So with the default boundaries GPT-OSS would get **zero** usable
-checkpoints. Resolution: **derive the checkpoint boundaries from the
-model's sliding window** — only emit boundaries `≤ minSlidingWindow`. For
-GPT-OSS (window 128) add a 64/96-class boundary; for Gemma-4 keep
-256/512. `PrefixCacheManager` already takes `boundaries:` as an init
-parameter (`PrefixCacheManager.swift:146`) and `PrefixDigest` honors it —
-no engine change needed.
+This is a **conservative default**, kept because (a) past-window restore was
+unverified until the test above, and (b) a sliding layer that has wrapped
+holds *strictly less* benefit per extra token than a full layer, so the
+marginal value of a very long checkpoint is mostly from the full-attention
+layers. Now that past-window equivalence is proven, the cap **can be lifted**
+to allow long shared-prefix reuse (e.g. a 100k system prompt): the full
+layers would store 100k KV and the sliding layers their window. The cost is
+storage/IO (full-layer KV for the whole prefix on disk) and restore latency
+(decrypt + rebuild grows with prefix size), not correctness. Lifting it is
+tracked separately — see [#266](https://github.com/Layr-Labs/d-inference/issues/266)
+and the new follow-up issue for long-prefix checkpoints.
 
-> Honest tradeoff: a 128-token window means at most ~128 tokens of prefill
-> saved per hit for GPT-OSS's sliding layers — modest, but its full layers
-> still benefit, and TTFT on a shared system prompt still drops. We will
-> **measure** the actual saving and not over-claim.
+> Honest tradeoff at the current default: GPT-OSS's 128-token window means a
+> within-window checkpoint saves at most ~128 tokens of prefill on its
+> sliding layers — modest. Its full-attention layers and TTFT on a shared
+> system prompt still benefit (measured: 2.60× at a 96-tok prefix). Long
+> shared prefixes are not yet reused only because the boundary default caps
+> them, not because the KV cache can't represent them.
 
 ## 4. Isolation — how we guarantee other models are unaffected
 

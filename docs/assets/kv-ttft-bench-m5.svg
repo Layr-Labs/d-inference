@@ -23,7 +23,7 @@
   <rect x="176" y="227.1" width="56" height="117.9" fill="#3d9970" rx="3"/>
   <text x="204" y="220" font-size="12" font-weight="700" fill="#2e7d52" text-anchor="middle">283 ms</text>
   <text x="171" y="362" font-size="12" font-weight="600" fill="#333" text-anchor="middle">Gemma-4 26B</text>
-  <text x="171" y="376" font-size="9" fill="#999" text-anchor="middle">window 512 · 512-tok prefix</text>
+  <text x="171" y="376" font-size="9" fill="#999" text-anchor="middle">window 1024 · 512-tok prefix</text>
   <text x="171" y="392" font-size="12" font-weight="700" fill="#2e7d52" text-anchor="middle">1.71× faster</text>
 
   <!-- Gemma cold dots (537 outlier + cluster ~485) -->

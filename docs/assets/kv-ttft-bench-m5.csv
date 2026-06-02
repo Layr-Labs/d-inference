@@ -1,8 +1,11 @@
 # TTFT benchmark — hybrid checkpoint KV cache, M5 Max (128GB), real weights.
 # HybridCheckpointBenchLiveTests, n=12 samples/condition, 12/12 warm = cache hits.
-# Prefix length differs per model: it must stay <= the model's sliding window.
-#   gemma4: mlx-community/gemma-4-26b-a4b-it-8bit, window 512, prefix 512 tok
-#   gptoss: mlx-community/gpt-oss-20b-MXFP4-Q8,    window 128, prefix  96 tok
+# Prefix length here = the CURRENT checkpoint-boundary default (capped at the
+# sliding window). Past-window reuse is also correct (see hybrid-models doc S3 +
+# gemma4RestoreMatchesColdPastWindow); the cap is a conservative default, not a
+# correctness limit.
+#   gemma4: mlx-community/gemma-4-26b-a4b-it-8bit, window 1024, prefix 512 tok
+#   gptoss: mlx-community/gpt-oss-20b-MXFP4-Q8,    window  128, prefix  96 tok
 # Raw per-sample TTFT in milliseconds.
 model,condition,sample,ttft_ms
 gemma4,cold,0,537

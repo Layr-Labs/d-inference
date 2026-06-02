@@ -17,6 +17,12 @@ import Testing
 //   • GPT-OSS 20B (sliding window 128) — DARKBLOOM_LIVE_MLX_GPTOSS, prefix 96
 //     (must stay ≤ window so every sliding layer still holds the full prefix).
 //
+// There is also a PREFILL-LENGTH SWEEP (gemma4PrefillSweep) that holds the
+// model loaded and measures cold/warm at several prefix lengths, to show that
+// the TTFT win IS a prefill effect: cold grows with prefix length (more tokens
+// to prefill) while warm stays ~flat (it only ever prefills the short suffix),
+// so the speedup scales with how much prefill the checkpoint skips.
+//
 // Run ALONE: swift test --filter HybridCheckpointBenchLiveTests
 // Always requires DARKBLOOM_LIVE_MLX_TESTS.
 @Suite("Hybrid checkpoint TTFT bench", .serialized)
@@ -33,27 +39,20 @@ struct HybridCheckpointBenchLiveTests {
         return t
     }
 
-    /// Run the cold-vs-warm TTFT benchmark for one model at one checkpoint
-    /// boundary `prefixLen` (which MUST be ≤ the model's sliding window).
-    /// `tag` labels the emitted BENCH lines so multiple models can share one
-    /// log. Skips cleanly if the model isn't on disk / isn't a checkpoint model.
-    private func runBench(modelID: String, prefixLen: Int, tag: String) async throws {
-        setenv("DARKBLOOM_PREFIX_CACHE", "1", 1)
-        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
-        do { loaded = try await LiveInferenceFixtures.loadScheduler(modelID: modelID) }
-        catch let s as LiveFixtureSkip { print("SKIP \(tag): \(s)"); return }
-        let sched = loaded.scheduler
-        defer { Task { await sched.unloadModel() } }
-
-        // Inject an in-memory-KEK manager (unsigned test binary can't make the
-        // SE KEK); same wiring makeBatchedEngine does for a .checkpoint model.
+    /// Install a fresh in-memory-KEK checkpoint manager bound to `prefixLen`,
+    /// then measure `samples` cold (distinct full-prefill prefix) vs `samples`
+    /// warm (shared prefix → restore + 6-tok suffix) TTFTs. Returns the raw
+    /// per-sample arrays + the observed cache-hit count. A warm-up request
+    /// (not measured) absorbs Metal kernel compile and seeds the checkpoint.
+    private func measureColdVsWarm(
+        sched: BatchScheduler, container: ModelContainer, shapes: [[Int]],
+        modelID: String, prefixLen: Int
+    ) async throws -> (cold: [Double], warm: [Double], hits: Int) {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("dbkv-bench-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        guard let shapes = await loaded.container.perform({ ctx in BatchScheduler.probeLayerShapes(model: ctx.model) }) else {
-            print("SKIP \(tag): not a checkpoint model"); return
-        }
+
         let mgr = PrefixCacheManager(
             binding: PrefixCacheModelBinding(
                 modelHash: modelID, modelDtype: "x", modelArch: "x", vocabSize: 0,
@@ -75,31 +74,46 @@ struct HybridCheckpointBenchLiveTests {
             ((i * 10_000)..<(i * 10_000 + prefixLen)).map { $0 } + [7, 7, 7, 7, 7, 7]
         }
 
-        // Warm-up (absorb Metal kernel compile; not measured) + populate the
-        // shared-prefix checkpoint.
+        // Warm-up (absorb Metal kernel compile for this length; not measured)
+        // + populate the shared-prefix checkpoint.
         _ = await ttft(sched.submitTokenized(promptTokens: warmPrompt(0), maxTokens: 4, temperature: 0))
         try? await Task.sleep(nanoseconds: 700_000_000)  // let the capture Task land
-        let s0 = await mgr.snapshotStats()
-        print("BENCH[\(tag)] setup: stores=\(s0.stores) prefix=\(prefixLen)tok (shared prefix captured)")
 
         var cold: [Double] = []; var warm: [Double] = []
         for i in 1...Self.samples {
-            // COLD: distinct prefix → full prefix-len prefill.
             cold.append(await ttft(sched.submitTokenized(promptTokens: coldPrompt(i), maxTokens: 4, temperature: 0)))
-            // WARM: shared prefix → restore, prefill only the 6-token tail.
             warm.append(await ttft(sched.submitTokenized(promptTokens: warmPrompt(i), maxTokens: 4, temperature: 0)))
         }
-        let hits = (await mgr.snapshotStats()).ramHits + (await mgr.snapshotStats()).ssdHits
-        print("BENCH[\(tag)] hits=\(hits) over \(Self.samples) warm samples")
+        let s = await mgr.snapshotStats()
+        return (cold, warm, s.ramHits + s.ssdHits)
+    }
 
-        // Emit raw samples (ms) for charting.
-        for (i, t) in cold.enumerated() { print("BENCH,\(tag),cold,\(i),\(Int(t * 1000))") }
-        for (i, t) in warm.enumerated() { print("BENCH,\(tag),warm,\(i),\(Int(t * 1000))") }
-        func med(_ a: [Double]) -> Double { a.sorted()[a.count / 2] }
-        let cMed = med(cold) * 1000, wMed = med(warm) * 1000
+    private func median(_ a: [Double]) -> Double { a.sorted()[a.count / 2] }
+
+    /// Run the single-prefix cold-vs-warm benchmark for one model and emit the
+    /// raw samples (tagged) + a SUMMARY line for charting.
+    private func runBench(modelID: String, prefixLen: Int, tag: String) async throws {
+        setenv("DARKBLOOM_PREFIX_CACHE", "1", 1)
+        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        do { loaded = try await LiveInferenceFixtures.loadScheduler(modelID: modelID) }
+        catch let s as LiveFixtureSkip { print("SKIP \(tag): \(s)"); return }
+        let sched = loaded.scheduler
+        defer { Task { await sched.unloadModel() } }
+
+        guard let shapes = await loaded.container.perform({ ctx in BatchScheduler.probeLayerShapes(model: ctx.model) }) else {
+            print("SKIP \(tag): not a checkpoint model"); return
+        }
+        let r = try await measureColdVsWarm(
+            sched: sched, container: loaded.container, shapes: shapes,
+            modelID: modelID, prefixLen: prefixLen)
+        print("BENCH[\(tag)] hits=\(r.hits) over \(Self.samples) warm samples, prefix=\(prefixLen)tok")
+
+        for (i, t) in r.cold.enumerated() { print("BENCH,\(tag),cold,\(i),\(Int(t * 1000))") }
+        for (i, t) in r.warm.enumerated() { print("BENCH,\(tag),warm,\(i),\(Int(t * 1000))") }
+        let cMed = median(r.cold) * 1000, wMed = median(r.warm) * 1000
         print("BENCH SUMMARY[\(tag)]: cold_median_ms=\(Int(cMed)) warm_median_ms=\(Int(wMed)) speedup=\(String(format: "%.2f", cMed / max(wMed, 0.001)))x prefix=\(prefixLen)tok n=\(Self.samples)")
 
-        #expect(hits >= Self.samples - 1, "[\(tag)] warm samples must hit the cache")
+        #expect(r.hits >= Self.samples - 1, "[\(tag)] warm samples must hit the cache")
         #expect(wMed < cMed, "[\(tag)] warm-restore TTFT median must beat cold full-prefill")
     }
 
@@ -118,5 +132,36 @@ struct HybridCheckpointBenchLiveTests {
     func gptOssColdVsWarm() async throws {
         try await runBench(
             modelID: "mlx-community/gpt-oss-20b-MXFP4-Q8", prefixLen: 96, tag: "gptoss")
+    }
+
+    // PREFILL-LENGTH SWEEP — load Gemma-4 once, measure cold/warm at several
+    // prefix lengths (all ≤ window 512). Demonstrates the win is a prefill
+    // effect: cold TTFT rises with prefix length, warm stays ~flat (only the
+    // 6-tok suffix is ever prefilled), so speedup scales with skipped prefill.
+    @Test(.enabled(if: LiveInferenceFixtures.gemmaTestsEnabled))
+    func gemma4PrefillSweep() async throws {
+        setenv("DARKBLOOM_PREFIX_CACHE", "1", 1)
+        let modelID = "mlx-community/gemma-4-26b-a4b-it-8bit"
+        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        do { loaded = try await LiveInferenceFixtures.loadScheduler(modelID: modelID) }
+        catch let s as LiveFixtureSkip { print("SKIP sweep: \(s)"); return }
+        let sched = loaded.scheduler
+        defer { Task { await sched.unloadModel() } }
+        guard let shapes = await loaded.container.perform({ ctx in BatchScheduler.probeLayerShapes(model: ctx.model) }) else {
+            print("SKIP sweep: not a checkpoint model"); return
+        }
+
+        let lengths = [64, 128, 256, 384, 512]   // all ≤ Gemma-4 window (512)
+        print("SWEEP[gemma4] prefill-length cold vs warm TTFT (ms), n=\(Self.samples)/point")
+        for L in lengths {
+            let r = try await measureColdVsWarm(
+                sched: sched, container: loaded.container, shapes: shapes,
+                modelID: modelID, prefixLen: L)
+            let cMed = median(r.cold) * 1000, wMed = median(r.warm) * 1000
+            print("SWEEP,gemma4,\(L),\(Int(cMed)),\(Int(wMed)),\(String(format: "%.2f", cMed / max(wMed, 0.001)))")
+            print("SWEEP[gemma4] prefix=\(L): cold=\(Int(cMed))ms warm=\(Int(wMed))ms speedup=\(String(format: "%.2f", cMed / max(wMed, 0.001)))x hits=\(r.hits)")
+            #expect(r.hits >= Self.samples - 1, "sweep@\(L): warm must hit the cache")
+            #expect(wMed < cMed, "sweep@\(L): warm must beat cold")
+        }
     }
 }

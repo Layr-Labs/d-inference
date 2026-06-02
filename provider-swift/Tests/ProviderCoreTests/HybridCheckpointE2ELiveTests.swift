@@ -80,11 +80,34 @@ struct HybridCheckpointE2ELiveTests {
     // ---- 2. A shared-prefix request actually restores; TTFT not worse ----
     @Test(.enabled(if: LiveInferenceFixtures.gemmaTestsEnabled))
     func sharedPrefixRestoresAndIsNotSlower() async throws {
-        guard let (sched, _) = try await load(flagOn: true) else { return }
+        guard let (sched, container) = try await load(flagOn: true) else { return }
         defer { Task { await sched.unloadModel() } }
-        guard let mgr = await sched.checkpointManager else {
-            Issue.record("checkpoint manager not wired with flag on"); return
+        // Production wires the manager with an SE-wrapped Keychain KEK, which
+        // an unsigned `swift test` binary can't create (errSecMissingEntitlement)
+        // — so the auto-wired manager is nil here. Inject an equivalent manager
+        // with an in-memory KEK + the model's real per-layer shapes via the
+        // test seam, so the real submit→lookup→admit→capture path runs. (The
+        // SE-KEK wiring itself is covered by the makeBatchedEngine code path;
+        // signed-binary integration is a separate gate.)
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dbkv-e2e-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        guard let shapes = await container.perform({ ctx in BatchScheduler.probeLayerShapes(model: ctx.model) }) else {
+            print("SKIP: not a checkpoint model"); return
         }
+        let mgr = PrefixCacheManager(
+            binding: PrefixCacheModelBinding(
+                modelHash: Self.modelID, modelDtype: "x", modelArch: "x", vocabSize: 0,
+                numLayers: shapes.count, kvHeads: shapes.first?.first ?? 1,
+                headDim: shapes.first?.last ?? 1, layerShapes: shapes),
+            ram: PrefixCacheRAM(maxBytes: 0),
+            index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
+            kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(
+                key: SymmetricKey(data: Data(repeating: 0x5A, count: 32)), identifier: "e2e"),
+                storage: InMemoryWrappedKEKStorage(identifier: "e2e")),
+            cacheDir: dir, ssdEnabled: true, boundaries: [256], diskBudgetBytes: 0, now: { 1 })
+        await sched._installCheckpointManagerForTest(mgr, boundaries: [256])
 
         // Warm-up request with the shared 280-token prefix → captures @256.
         let warmup = await drain(sched.submitTokenized(promptTokens: prompt(tail: 1), maxTokens: 16, temperature: 0))

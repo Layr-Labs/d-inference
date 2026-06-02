@@ -254,6 +254,25 @@ public actor BatchScheduler {
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
     }
 
+    /// TEST SEAM: install a checkpoint manager + capture hook onto the live
+    /// engine, replicating exactly what `makeBatchedEngine` wires for a
+    /// `.checkpoint` model. Production builds the manager with an SE-wrapped
+    /// Keychain KEK, which an UNSIGNED `swift test` binary can't create
+    /// (errSecMissingEntitlement) — so the end-to-end serve-loop test injects
+    /// a manager with an in-memory KEK here to exercise the real
+    /// submit→lookup→admit→capture path that the SE gate otherwise blocks.
+    /// Must be called after `loadModel`. Not used in production.
+    func _installCheckpointManagerForTest(_ mgr: PrefixCacheManager, boundaries: [Int]) {
+        self.checkpointManager = mgr
+        self.checkpointBoundaries = boundaries
+        engine?.core.scheduler.checkpointBoundaries = boundaries
+        engine?.core.scheduler.onCheckpointCapture = { prefixTokens, length, caches in
+            let box = SendableKVCaches(caches)
+            Task { await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box)
+                   _ = await mgr.flushToSSD() }
+        }
+    }
+
     /// Result of building the engine: the engine itself plus the optional
     /// checkpoint-tier manager + its boundaries (non-nil only for hybrid
     /// `.checkpoint` models with the flag on). The caller stores the manager

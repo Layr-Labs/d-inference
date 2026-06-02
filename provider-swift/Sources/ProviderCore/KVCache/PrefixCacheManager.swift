@@ -244,12 +244,21 @@ public actor PrefixCacheManager {
             meta = try EncryptedKVStore.readMetadataOnly(from: fileURL)
         } catch {
             stats.ssdReadErrors += 1
+            // Truncated/corrupt header (e.g. crash mid-write): drop BOTH the
+            // index entry AND the unusable file, so it can't linger on disk
+            // (leaking + escaping the budget) and be re-read every lookup.
+            try? FileManager.default.removeItem(at: fileURL)
             index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
             return nil
         }
+        // The model-dir path is reconstructed from THIS model's binding, so a
+        // mismatching file here is genuinely stale/wrong for this model (e.g.
+        // a weight change under the same id) — drop the file too, not just the
+        // index entry, so it can't linger and escape the disk budget.
         guard meta.modelHash == binding.modelHash else {
             stats.modelMismatches += 1
             logger.warning("MB-1: prefix file model mismatch — dropping entry \(entry.digestHex, privacy: .public)")
+            try? FileManager.default.removeItem(at: fileURL)
             index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
             return nil
         }
@@ -257,6 +266,7 @@ public actor PrefixCacheManager {
               meta.kvHeads == binding.kvHeads,
               meta.headDim == binding.headDim else {
             stats.shapeMismatches += 1
+            try? FileManager.default.removeItem(at: fileURL)
             index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
             return nil
         }
@@ -268,6 +278,7 @@ public actor PrefixCacheManager {
         guard meta.tokenPrefixHash == entry.digestHex else {
             stats.prefixHashMismatches += 1
             logger.warning("SSD prefix-hash mismatch (index stale/corrupt) — dropping \(entry.digestHex, privacy: .public)")
+            try? FileManager.default.removeItem(at: fileURL)
             index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
             return nil
         }

@@ -20,6 +20,9 @@ Provider CLI (Swift `darkbloom`, hardened in-process)
 Apple Silicon GPU (Metal)
 ```
 
+Detailed Mermaid sequence diagrams for MDM provider registration, key binding,
+and inference encryption are in [system-workflows.md](system-workflows.md).
+
 ## Components
 
 ### Coordinator (`coordinator/`)

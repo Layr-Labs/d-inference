@@ -15,6 +15,13 @@ import Testing
 //   3. capture/store/hit stats reflect a real cache hit.
 //
 // Gated: DARKBLOOM_LIVE_MLX_TESTS + DARKBLOOM_LIVE_MLX_GEMMA. Skips cleanly.
+//
+// RUN THIS SUITE ALONE — `swift test --filter HybridCheckpointE2ELiveTests`.
+// Swift Testing parallelizes ACROSS suites (`.serialized` only orders within
+// one), so running it alongside the other Hybrid*LiveTests suites loads
+// several 26B models at once → memory contention → spurious request errors
+// and TTFT-comparison failures. The transparency/miss-path TTFT asserts here
+// are timing-sensitive and need an uncontended box.
 @Suite("Hybrid checkpoint live E2E", .serialized)
 struct HybridCheckpointE2ELiveTests {
 

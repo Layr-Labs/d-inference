@@ -1,0 +1,14 @@
+# Cold prefill TTFT scaling — Gemma-4 26B-A4B 8bit, M5 Max (128GB).
+# HybridCheckpointBenchLiveTests/gemma4LargePrefillScaling, commit ae5bb5ad.
+# Single distinct prompt per size (no cache); maxTokens=2; pendingTimeout=300s.
+# This is the per-request prefill cost a long-prefix KV cache would AVOID on a
+# warm hit. Super-linear growth (O(n^2) attention component): a repeated 100k
+# prefix costs ~74s every time without reuse.
+prompt_tokens,cold_prefill_ms,reps
+1024,371,3
+4096,1426,2
+16384,6286,3
+32768,14917,3
+65536,38673,1
+100000,74174,1
+# Runtime sliding window (Gemma-4) = 1024 tokens.

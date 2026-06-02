@@ -66,6 +66,17 @@ public actor BatchScheduler {
     var tokenizer: TokenizerHandle?
     var engine: BatchedEngine?
 
+    /// Checkpoint-tier KV cache for hybrid sliding-window models (Gemma-4,
+    /// GPT-OSS). Non-nil only when the model's caches classify as
+    /// `.checkpoint` AND `DARKBLOOM_PREFIX_CACHE` is on (mutually exclusive
+    /// with the engine block tier, which serves pure-attention `.engine`
+    /// models). Looked up in `submit` to seed a request's `restoredCheckpoint`;
+    /// stored to via the scheduler's capture hook. nil ⇒ feature off for this
+    /// model (today's behavior).
+    var checkpointManager: PrefixCacheManager?
+    /// Sliding-window-derived checkpoint boundaries for the current model.
+    var checkpointBoundaries: [Int] = []
+
     /// Admission control + token budget tracking. `nil` until `loadModel()`.
     var planner: BatchQueuePlanner?
 
@@ -148,7 +159,7 @@ public actor BatchScheduler {
         self.modelWeightBytes = snapshot.bytes
         self.tokenizer = snapshot.tokenizer
 
-        let engine = await Self.makeBatchedEngine(
+        let build = await Self.makeBatchedEngine(
             container: container,
             modelId: modelId,
             weightHash: weightHash,
@@ -157,6 +168,7 @@ public actor BatchScheduler {
             eosTokenIds: snapshot.eosTokenIds,
             architecture: snapshot.architecture
         )
+        let engine = build.engine
         // Re-check epoch after the engine.start suspension. If another
         // load/unload won the race, tear down the engine we just built
         // and bail before we overwrite the winner's state.
@@ -165,10 +177,16 @@ public actor BatchScheduler {
             return
         }
         self.engine = engine
+        self.checkpointManager = build.checkpointManager
+        self.checkpointBoundaries = build.checkpointBoundaries
         await engine.start()
         // Final epoch check after start() — start can suspend too.
         guard loadEpoch == generationEpoch else {
             self.engine = nil
+            // Keep checkpointManager consistent with engine (don't leave a
+            // stale manager pointing at the superseded model).
+            self.checkpointManager = nil
+            self.checkpointBoundaries = []
             await engine.stop()
             return
         }
@@ -214,6 +232,30 @@ public actor BatchScheduler {
     /// persists token sequences across requests in process memory.
     /// Cross-tenant data-leak risk; do not enable without a fresh
     /// threat model.
+    /// Checkpoint-tier lookup: on a hit, attach the restored per-layer caches
+    /// to the request so the scheduler decodes only the suffix. No-op when
+    /// the checkpoint manager is nil (engine/none models, or flag off). Done
+    /// in the async submit path because the engine step loop can't await the
+    /// manager actor. The tokenCount guard mirrors the scheduler's so a
+    /// degenerate hit (no suffix) is never attached.
+    private func maybeRestoreCheckpoint(_ req: Request, promptTokens: [Int]) async {
+        guard let mgr = checkpointManager else { return }
+        guard let hit = await mgr.lookup(tokens: promptTokens),
+              hit.tokenCount >= 1, hit.tokenCount < promptTokens.count
+        else { return }
+        req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
+    }
+
+    /// Result of building the engine: the engine itself plus the optional
+    /// checkpoint-tier manager + its boundaries (non-nil only for hybrid
+    /// `.checkpoint` models with the flag on). The caller stores the manager
+    /// on the actor and uses it for `submit`-time lookup.
+    struct EngineBuild {
+        let engine: BatchedEngine
+        let checkpointManager: PrefixCacheManager?
+        let checkpointBoundaries: [Int]
+    }
+
     private static func makeBatchedEngine(
         container: ModelContainer,
         modelId: String,
@@ -222,22 +264,20 @@ public actor BatchScheduler {
         maxConcurrentRequests: Int,
         eosTokenIds: Set<Int>,
         architecture: ModelArchitecture
-    ) async -> BatchedEngine {
-        // TB-007: the engine prefix cache is OFF by default. When the
-        // operator sets DARKBLOOM_PREFIX_CACHE, we enable it with an
-        // ENCRYPTED-at-rest SSD backend (EncryptedPrefixCachePersistence).
-        // This still does NOT close the in-process cross-tenant sharing /
-        // TTFT side-channel (the provider can't see tenant identity), so
-        // it ships only behind this flag + an explicit threat-model
-        // sign-off. See docs/ssd-kv-cache-design.md.
+    ) async -> EngineBuild {
+        // TB-007: the prefix cache is OFF by default. When the operator sets
+        // DARKBLOOM_PREFIX_CACHE we enable it with an ENCRYPTED-at-rest
+        // backend. This does NOT close the in-process cross-tenant sharing /
+        // TTFT side-channel, so it ships only behind this flag + a
+        // threat-model sign-off. See docs/ssd-kv-cache-design.md.
         //
-        // Memory guard: the block cache holds up to maxBlocks*blockSize
-        // tokens of KV OUTSIDE the scheduler's active kvBudget, so size it
-        // by a memory budget (not a fixed 4096) or a huge model would OOM.
+        // Two mutually-exclusive tiers, selected by the model's cache types
+        // (PrefixCacheStrategy): pure-attention (.engine) models use the
+        // in-GPU block PrefixCache; hybrid sliding-window (.checkpoint) models
+        // (Gemma-4, GPT-OSS) use the whole-cache exact-checkpoint
+        // PrefixCacheManager. Recurrent (.none) models get neither.
         let blockSize = 256
-        // Only built when the flag is on + KEK/arch available (nil otherwise),
-        // so the budget logging below can't mislead when the cache is off.
-        let persistence = await makeEncryptedPrefixPersistenceIfEnabled(
+        let backing = await makePrefixCacheBackingIfEnabled(
             modelId: modelId, weightHash: weightHash, architecture: architecture
         )
         let kvBytesPerToken = resolvedKVBytesPerToken(architecture: architecture, weightBytes: weightBytes)
@@ -246,22 +286,60 @@ public actor BatchScheduler {
             budgetBytes: prefixCacheBudgetBytes(),
             blockSize: blockSize
         )
-        return await container.perform { ctx -> BatchedEngine in
-            var prefixCache: PrefixCache? = nil
-            if let p = persistence {
-                if maxBlocks >= 1 {
+        // now() for the manager index timestamps — wall clock is fine here.
+        let nowFn: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970) }
+
+        return await container.perform { ctx -> EngineBuild in
+            // Classify from the model's own cache layout.
+            let strategy = backing == nil
+                ? PrefixCacheStrategy.none
+                : PrefixCacheStrategy.classify(ctx.model.newCache(parameters: nil))
+
+            var enginePrefixCache: PrefixCache? = nil
+            var checkpointManager: PrefixCacheManager? = nil
+            var boundaries: [Int] = []
+
+            if let backing {
+                switch strategy {
+                case .engine:
+                    if maxBlocks >= 1 {
+                        prefixCacheLogger.info(
+                            "engine prefix cache: \(maxBlocks) blocks × \(blockSize) tok (~\(kvBytesPerToken) B/tok)")
+                        enginePrefixCache = PrefixCache(
+                            config: PrefixCacheConfig(blockSize: blockSize, maxBlocks: maxBlocks),
+                            modelName: modelId,
+                            persistence: EncryptedPrefixCachePersistence(
+                                kekKey: backing.kekKey, dir: backing.dir,
+                                binding: backing.binding, diskBudgetBytes: backing.diskBudgetBytes))
+                    } else {
+                        prefixCacheLogger.warning(
+                            "prefix cache disabled: model KV (\(kvBytesPerToken) B/tok) exceeds the memory budget for even one block")
+                    }
+                case .checkpoint:
+                    // Boundaries capped at the smallest sliding window so a
+                    // snapshot never claims tokens a window has discarded.
+                    let window = PrefixCacheStrategy.minSlidingWindow(ctx.model.newCache(parameters: nil)) ?? 0
+                    boundaries = PrefixDigest.checkpoints(forSlidingWindow: window)
+                    checkpointManager = PrefixCacheManager(
+                        binding: backing.binding,
+                        // RAM tier respects the same memory budget as the
+                        // engine block tier (DARKBLOOM_PREFIX_CACHE_MAX_GB).
+                        ram: PrefixCacheRAM(maxBytes: prefixCacheBudgetBytes()),
+                        index: PrefixCacheIndex(
+                            fileURL: backing.dir.appendingPathComponent("index.json")),
+                        kek: backing.kek,
+                        cacheDir: backing.dir,
+                        ssdEnabled: true,
+                        boundaries: boundaries,
+                        now: nowFn)
                     prefixCacheLogger.info(
-                        "prefix cache sized to \(maxBlocks) blocks × \(blockSize) tok (~\(kvBytesPerToken) B/tok)")
-                    prefixCache = PrefixCache(
-                        config: PrefixCacheConfig(blockSize: blockSize, maxBlocks: maxBlocks),
-                        modelName: modelId,
-                        persistence: p
-                    )
-                } else {
+                        "checkpoint prefix cache: window \(window), boundaries \(boundaries)")
+                case .none:
                     prefixCacheLogger.warning(
-                        "prefix cache disabled: model KV (\(kvBytesPerToken) B/tok) exceeds the memory budget for even one block")
+                        "prefix cache disabled: model has recurrent/unsupported cache layers")
                 }
             }
+
             let scheduler = Scheduler(
                 model: ctx.model,
                 tokenizer: ctx.tokenizer,
@@ -273,40 +351,76 @@ public actor BatchScheduler {
                     maxKVCacheTokens: 0  // unlimited — our kvBudget gates by bytes
                 ),
                 eosTokenIds: eosTokenIds,
-                prefixCache: prefixCache  // nil unless DARKBLOOM_PREFIX_CACHE (TB-007)
+                prefixCache: enginePrefixCache  // nil unless .engine + flag (TB-007)
             )
-            return BatchedEngine(
-                scheduler: scheduler,
-                tokenizer: ctx.tokenizer,
-                modelName: modelId,
-                config: ContinuousBatchingConfig(
-                    schedulerConfig: scheduler.config,
-                    stepInterval: 0.001,
-                    prefixCacheConfig: nil,  // cache lives on the scheduler above
-                    mtpEnabled: false
+            // Wire the checkpoint capture hook: store snapshots to the manager
+            // out-of-band (the hook is sync on the engine queue; storing hops
+            // to the manager actor via a detached Task). nil-safe: only set
+            // when a manager exists, so .engine/.none models are untouched.
+            if let mgr = checkpointManager {
+                scheduler.checkpointBoundaries = boundaries
+                scheduler.onCheckpointCapture = { prefixTokens, length, caches in
+                    let box = SendableKVCaches(caches)
+                    // Store to RAM (fast) then flush to encrypted SSD so the
+                    // checkpoint survives restart — the whole point of the
+                    // at-rest tier. Both run off the engine queue in a detached
+                    // Task; flushToSSD is internally idempotent/skip-if-present.
+                    Task {
+                        await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box)
+                        _ = await mgr.flushToSSD()
+                    }
+                }
+            }
+            return EngineBuild(
+                engine: BatchedEngine(
+                    scheduler: scheduler,
+                    tokenizer: ctx.tokenizer,
+                    modelName: modelId,
+                    config: ContinuousBatchingConfig(
+                        schedulerConfig: scheduler.config,
+                        stepInterval: 0.001,
+                        prefixCacheConfig: nil,
+                        mtpEnabled: false
+                    ),
+                    externalChatTemplate: nil
                 ),
-                externalChatTemplate: nil
+                checkpointManager: checkpointManager,
+                checkpointBoundaries: boundaries
             )
         }
     }
 
-    /// Build the encrypted SSD prefix-cache backend IFF the operator
-    /// opted in via `DARKBLOOM_PREFIX_CACHE`. Returns nil (cache stays
-    /// off) when the flag is unset, the model architecture is
-    /// incomplete, or the persisted KEK is unavailable (no Secure
-    /// Enclave / entitlement) — in the last case we refuse rather than
-    /// use an ephemeral key that wouldn't survive restart.
+    /// Shared encrypted-cache backing (KEK + per-model dir + MB-1 binding +
+    /// disk budget) used by BOTH tiers: the engine block `PrefixCache`
+    /// (pure-attention models) and the checkpoint `PrefixCacheManager`
+    /// (hybrid models). Sendable: SymmetricKey/URL/struct/Int are all value
+    /// types safe to hand into `container.perform`.
+    struct PrefixCacheBacking: Sendable {
+        let kekKey: SymmetricKey
+        /// The KEK actor (already warmed via loadOrCreate) for the
+        /// checkpoint-tier PrefixCacheManager, which takes the actor form.
+        /// Shares the same persisted Keychain key as `kekKey`.
+        let kek: KVCacheKEK
+        let dir: URL
+        let binding: PrefixCacheModelBinding
+        let diskBudgetBytes: Int
+    }
+
+    /// Build the shared encrypted-cache backing IFF the operator opted in via
+    /// `DARKBLOOM_PREFIX_CACHE`. Returns nil (cache stays off) when the flag
+    /// is unset, the model architecture is incomplete, or the persisted KEK
+    /// is unavailable (no Secure Enclave / entitlement) — in the last case we
+    /// refuse rather than use an ephemeral key that wouldn't survive restart.
     ///
     /// SECURITY (TB-007): see makeBatchedEngine. The cache is bound to the
-    /// WEIGHT identity (`weightHash`) when known, not just the mutable
-    /// model id — a re-download under the same id with different weights
-    /// must not serve stale KV. Falls back to modelId when no weight hash
-    /// is available (no worse than before).
-    private static func makeEncryptedPrefixPersistenceIfEnabled(
+    /// WEIGHT identity (`weightHash`) when known, not just the mutable model
+    /// id — a re-download under the same id with different weights must not
+    /// serve stale KV. Falls back to modelId when no weight hash is available.
+    private static func makePrefixCacheBackingIfEnabled(
         modelId: String,
         weightHash: String?,
         architecture: ModelArchitecture
-    ) async -> EncryptedPrefixCachePersistence? {
+    ) async -> PrefixCacheBacking? {
         let env = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE"]
         guard env == "1" || env?.lowercased() == "true" else { return nil }
 
@@ -325,9 +439,10 @@ public actor BatchScheduler {
         // survive restart. If unavailable, disable rather than fall back
         // to an ephemeral key (which would silently break restart-reuse).
         let kekKey: SymmetricKey
+        let kek: KVCacheKEK
         do {
             let se = try PersistentEnclaveKey.loadOrCreate()
-            let kek = KVCacheKEK(
+            kek = KVCacheKEK(
                 wrapper: SecureEnclaveKeyWrappingService(enclaveKey: se),
                 storage: KeychainWrappedKEKStorage()
             )
@@ -360,8 +475,8 @@ public actor BatchScheduler {
         let diskBudget = prefixCacheDiskBudgetBytes(cacheDir: dir)
         prefixCacheLogger.info(
             "encrypted prefix cache active for \(modelId, privacy: .public) (bound to \(weightHash == nil ? "modelId" : "weightHash", privacy: .public)) at \(dir.path, privacy: .public), disk budget \(diskBudget) bytes (default = 50% of free volume space)")
-        return EncryptedPrefixCachePersistence(
-            kekKey: kekKey, dir: dir, binding: binding, diskBudgetBytes: diskBudget)
+        return PrefixCacheBacking(
+            kekKey: kekKey, kek: kek, dir: dir, binding: binding, diskBudgetBytes: diskBudget)
     }
 
     // MARK: - Prefix cache sizing/binding helpers (testable)
@@ -581,6 +696,7 @@ public actor BatchScheduler {
             prompt: promptTokens as AnyHashable,
             samplingParams: sp
         )
+        await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
         _ = await engine.core.addRequest(req)
 
         runBridge(
@@ -711,6 +827,7 @@ public actor BatchScheduler {
             prompt: promptTokens as AnyHashable,
             samplingParams: sp
         )
+        await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
         _ = await engine.core.addRequest(req)
 
         // Hand the per-request stream to the bridge extension. Bridge
@@ -800,6 +917,10 @@ public actor BatchScheduler {
         self.engine = nil
         modelContainer = nil
         tokenizer = nil
+        // Drop the checkpoint manager so a stale one can't serve the next
+        // model (the new model's loadModel reinstalls its own, or nil).
+        checkpointManager = nil
+        checkpointBoundaries = []
 
         let bridgeIds = Array(activeBridges.keys)
         for id in bridgeIds {

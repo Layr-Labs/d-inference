@@ -211,7 +211,8 @@ enum LiveInferenceFixtures {
     static func loadScheduler(
         modelID: String,
         maxConcurrentRequests: Int = 4,
-        memoryBudgetBytes: Int? = nil
+        memoryBudgetBytes: Int? = nil,
+        pendingTimeout: Duration = .seconds(60)
     ) async throws -> (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL) {
         guard ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
@@ -234,7 +235,7 @@ enum LiveInferenceFixtures {
 
         let scheduler = BatchScheduler(
             maxConcurrentRequests: maxConcurrentRequests,
-            pendingTimeout: .seconds(60),
+            pendingTimeout: pendingTimeout,
             defaultMaxTokens: 256
         )
         await scheduler.loadModel(container: container, modelId: modelID)

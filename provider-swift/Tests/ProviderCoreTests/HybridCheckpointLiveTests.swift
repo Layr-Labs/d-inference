@@ -114,7 +114,7 @@ struct HybridCheckpointLiveTests {
 
     @Test(.enabled(if: LiveInferenceFixtures.gemmaTestsEnabled))
     func gemma4RestoreMatchesCold() async throws {
-        // Gemma-4 sliding window 512 → checkpoint within window.
+        // Gemma-4 sliding window 1024 → checkpoint within window.
         try await assertRestoreMatchesCold(
             modelID: "mlx-community/gemma-4-26b-a4b-it-8bit", checkpointL: 256)
     }
@@ -126,6 +126,29 @@ struct HybridCheckpointLiveTests {
         // GPT-OSS window 128 → checkpoint within window.
         try await assertRestoreMatchesCold(
             modelID: "mlx-community/gpt-oss-20b-MXFP4-Q8", checkpointL: 64)
+    }
+
+    // PAST-WINDOW equivalence — the experiment that decides whether the
+    // PrefixDigest cap (checkpoints L ≤ window) is a FUNDAMENTAL correctness
+    // requirement or merely a conservative design choice.
+    //
+    // A hybrid prefix only needs, per layer: FULL KV for full-attention layers
+    // + the last `window` KV for sliding layers (the rotating ring buffer).
+    // Our serializer already snapshots each layer's `.state`, which is exactly
+    // that (RotatingKVCache.state returns the wrapped ring buffer past the
+    // window). So IF serialize→restore→continue stays numerically exact for
+    // L > window, the cap is over-conservative and long-prefix reuse works in
+    // this pipeline today. IF it diverges, the cap is protecting a real gap in
+    // our restore of a wrapped ring buffer. This test answers it on real
+    // weights at L = 2048 and 4096, both > Gemma-4's 1024 window.
+    @Test(.enabled(if: LiveInferenceFixtures.gemmaTestsEnabled))
+    func gemma4RestoreMatchesColdPastWindow() async throws {
+        // 2× and 4× the 1024 window: the sliding layers' ring buffer has
+        // wrapped, so this exercises exactly the wrapped-state restore.
+        try await assertRestoreMatchesCold(
+            modelID: "mlx-community/gemma-4-26b-a4b-it-8bit", checkpointL: 2048)
+        try await assertRestoreMatchesCold(
+            modelID: "mlx-community/gemma-4-26b-a4b-it-8bit", checkpointL: 4096)
     }
 
     /// FULL ENCRYPTED-SSD PATH: prefill prefix → real PrefixCacheManager

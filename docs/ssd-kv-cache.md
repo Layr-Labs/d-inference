@@ -414,6 +414,13 @@ own size exceeds the budget is skipped entirely (no write-then-delete
 churn). Set the env var explicitly to override (0 = unlimited); if free
 space can't be read it falls back to 10 GB.
 
+Both tiers enforce this budget: the engine block tier
+(`EncryptedPrefixCachePersistence`) sweeps on save, and the checkpoint tier
+(`PrefixCacheManager.flushToSSD`) evicts least-recently-hit checkpoints
+(file + index entry together) after each flush — so the per-model KV
+directory **and** its `index.json` are both bounded under sustained
+diverse-prompt traffic.
+
 **Bounding is per-model, not global, and measured once at load.** Each
 model directory gets its own 50%-of-free budget snapshotted at its load
 time; the sweep only scans its own directory. So with several distinct
@@ -422,6 +429,14 @@ original free space, and a budget doesn't shrink if the volume later fills
 from other writers (it's re-measured on the next model load). For a hard
 global cap, set `DARKBLOOM_PREFIX_CACHE_DISK_GB` to an explicit per-model
 value sized for the number of models served.
+
+**Known limitation (low):** a model directory is keyed by `sha256(modelId)`
+and is *not* deleted when that model is retired/unloaded, so directories
+from no-longer-served models linger (each still bounded by its own budget,
+but the parent `darkbloom/kv/` tree has no cross-model GC). Reclaim by
+deleting `darkbloom/kv` or stale `<modelKey>` subdirs out of band. Stale
+atomic-write temp files (`*.tmp-*`) from a process kill are swept on the
+next cache setup for that model.
 
 To clear the cache: delete the `darkbloom/kv` directory. To invalidate all
 files cryptographically: rotate/`wipe()` the KEK (existing files become

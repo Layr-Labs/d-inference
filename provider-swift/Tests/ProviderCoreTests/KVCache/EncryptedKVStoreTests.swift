@@ -373,3 +373,28 @@ func storeRejectsChunkSizeMismatch() async throws {
         )
     }
 }
+
+@Test
+func sweepStaleTempFilesRemovesOrphansKeepsRealFiles() throws {
+    // A process kill between atomic-write's createFile and rename leaves a
+    // <name>.tmp-<UUID> orphan with no normal cleanup. sweepStaleTempFiles
+    // must remove those while leaving real .darkbloom-kv files + index.json.
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory
+        .appendingPathComponent("dbkv-sweep-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: dir) }
+
+    let orphan1 = dir.appendingPathComponent("abc.\(EncryptedKVStore.fileExtension).tmp-\(UUID().uuidString)")
+    let orphan2 = dir.appendingPathComponent("def.\(EncryptedKVStore.fileExtension).tmp-\(UUID().uuidString)")
+    let real = dir.appendingPathComponent("abc.\(EncryptedKVStore.fileExtension)")
+    let index = dir.appendingPathComponent("index.json")
+    for u in [orphan1, orphan2, real, index] { fm.createFile(atPath: u.path, contents: Data([1, 2, 3])) }
+
+    EncryptedKVStore.sweepStaleTempFiles(in: dir)
+
+    #expect(!fm.fileExists(atPath: orphan1.path), "orphan temp 1 must be swept")
+    #expect(!fm.fileExists(atPath: orphan2.path), "orphan temp 2 must be swept")
+    #expect(fm.fileExists(atPath: real.path), "real cache file must be kept")
+    #expect(fm.fileExists(atPath: index.path), "index.json must be kept")
+}

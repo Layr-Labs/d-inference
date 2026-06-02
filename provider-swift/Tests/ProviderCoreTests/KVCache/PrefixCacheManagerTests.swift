@@ -56,6 +56,15 @@ private func makeManager(
 // A prompt whose first 8 tokens are a stable checkpoint.
 private func prompt(_ n: Int) -> [Int] { Array(0..<n) }
 
+// Lock-guarded incrementing clock for a @Sendable `now` closure in tests.
+private final class MonotonicClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var t: Int64
+    init(start: Int64) { t = start }
+    var value: Int64 { lock.lock(); defer { lock.unlock() }; return t }
+    func advance(_ by: Int64) { lock.lock(); t += by; lock.unlock() }
+}
+
 @Test
 func managerRamHitRoundtrip() async {
     let (mgr, _) = makeManager(model: "m", ssd: false)
@@ -110,6 +119,72 @@ func managerFullSSDRoundtrip() async throws {
     let stats = await mgr.snapshotStats()
     #expect(stats.ssdHits == 1)
     #expect(stats.ssdFlushes == 1)
+}
+
+@Test
+func managerEnforcesDiskBudgetWithLRUEviction() async throws {
+    // Partner-stability gate: the checkpoint SSD tier must bound on-disk
+    // usage under sustained diverse-prompt traffic, evicting least-recently
+    // -hit checkpoints (file + index entry) rather than growing forever.
+    let dir = tmpDir()
+    let ext = EncryptedKVStore.fileExtension
+    func fileCount() throws -> Int {
+        try FileManager.default
+            .contentsOfDirectory(at: dir.appendingPathComponent("m"),
+                                 includingPropertiesForKeys: [.fileSizeKey])
+            .filter { $0.lastPathComponent.hasSuffix(".\(ext)") }.count
+    }
+    func totalBytes() throws -> Int {
+        try FileManager.default
+            .contentsOfDirectory(at: dir.appendingPathComponent("m"),
+                                 includingPropertiesForKeys: [.fileSizeKey])
+            .filter { $0.lastPathComponent.hasSuffix(".\(ext)") }
+            .reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+
+    // First, measure one checkpoint file's size with an unbounded manager.
+    let probe = PrefixCacheManager(
+        binding: binding(model: "m"), ram: PrefixCacheRAM(),
+        index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("probe.json")),
+        kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(),
+                        storage: InMemoryWrappedKEKStorage(identifier: "probe")),
+        cacheDir: dir, ssdEnabled: true, boundaries: [8], diskBudgetBytes: 0, now: { 1 })
+    await probe.store(tokens: Array(0..<10), checkpointLength: 8,
+                      caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await probe.flushToSSD()
+    let oneFile = try totalBytes()
+    #expect(oneFile > 0)
+    // Clear the probe's files so the budgeted run starts clean.
+    try FileManager.default.removeItem(at: dir.appendingPathComponent("m"))
+
+    // Budgeted manager: hold ~2 files. now() increments so LRU order is
+    // well-defined (earlier stores are less-recently-hit).
+    let clock = MonotonicClock(start: 100)
+    let budget = oneFile * 2 + oneFile / 2  // 2.5 files
+    let mgr = PrefixCacheManager(
+        binding: binding(model: "m"), ram: PrefixCacheRAM(),
+        index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
+        kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(),
+                        storage: InMemoryWrappedKEKStorage(identifier: "budget")),
+        cacheDir: dir, ssdEnabled: true, boundaries: [8],
+        diskBudgetBytes: budget, now: { clock.value })
+
+    // Store + flush 5 DISTINCT prompts (distinct digests → distinct files).
+    for i in 0..<5 {
+        clock.advance(10)
+        let toks = Array((i * 100)..<(i * 100 + 10))
+        await mgr.store(tokens: toks, checkpointLength: 8,
+                        caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+        _ = await mgr.flushToSSD()
+    }
+
+    let bytes = try totalBytes()
+    let files = try fileCount()
+    #expect(bytes <= budget, "on-disk bytes \(bytes) must stay within budget \(budget)")
+    #expect(files < 5, "older checkpoints must have been evicted (got \(files))")
+    #expect(files >= 1, "the most-recent checkpoint(s) must survive")
+    let stats = await mgr.snapshotStats()
+    #expect(stats.diskEvictions > 0, "eviction must have run")
 }
 
 @Test

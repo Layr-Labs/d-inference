@@ -331,6 +331,10 @@ public actor BatchScheduler {
                         cacheDir: backing.dir,
                         ssdEnabled: true,
                         boundaries: boundaries,
+                        // Bound the on-disk checkpoint footprint (+ index.json)
+                        // so sustained diverse traffic can't fill the volume —
+                        // same 50%-of-free default as the block tier.
+                        diskBudgetBytes: backing.diskBudgetBytes,
                         now: nowFn)
                     prefixCacheLogger.info(
                         "checkpoint prefix cache: window \(window), boundaries \(boundaries)")
@@ -467,6 +471,10 @@ public actor BatchScheduler {
             ?? FileManager.default.temporaryDirectory
         let dir = root.appendingPathComponent("darkbloom/kv/\(modelKey)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Sweep any atomic-write temp files orphaned by a prior process kill
+        // (SIGKILL/OOM/power-loss between createFile and rename), so they
+        // can't accumulate across crashes.
+        EncryptedKVStore.sweepStaleTempFiles(in: dir)
 
         let binding = PrefixCacheModelBinding(
             modelHash: bindingId, modelDtype: "unknown", modelArch: "unknown",

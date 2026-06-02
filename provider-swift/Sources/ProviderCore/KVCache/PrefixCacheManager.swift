@@ -114,6 +114,7 @@ public struct PrefixCacheManagerStats: Sendable, Equatable {
     public var shapeMismatches = 0
     public var prefixHashMismatches = 0
     public var ssdReadErrors = 0
+    public var diskEvictions = 0
 }
 
 // MARK: - Manager
@@ -127,6 +128,11 @@ public actor PrefixCacheManager {
     private let cacheDir: URL?
     private let ssdEnabled: Bool
     private let boundaries: [Int]
+    /// On-disk budget (bytes) for this model's persisted checkpoints. After
+    /// each flush, LRU entries (file + index entry together) are evicted to
+    /// stay under it, so the SSD tier and index.json are both bounded under
+    /// sustained diverse traffic. 0 = unbounded (not recommended in prod).
+    private let diskBudgetBytes: Int
     private let now: @Sendable () -> Int64
 
     private var stats = PrefixCacheManagerStats()
@@ -144,6 +150,7 @@ public actor PrefixCacheManager {
         cacheDir: URL? = nil,
         ssdEnabled: Bool,
         boundaries: [Int] = PrefixDigest.defaultCheckpoints,
+        diskBudgetBytes: Int = 0,
         now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970) }
     ) {
         self.binding = binding
@@ -154,6 +161,7 @@ public actor PrefixCacheManager {
         // SSD requires all three backing pieces; otherwise RAM-only.
         self.ssdEnabled = ssdEnabled && index != nil && kek != nil && cacheDir != nil
         self.boundaries = boundaries
+        self.diskBudgetBytes = max(0, diskBudgetBytes)
         self.now = now
     }
 
@@ -259,6 +267,10 @@ public actor PrefixCacheManager {
         } catch {
             stats.ssdReadErrors += 1
             logger.warning("SSD prefix read failed for \(entry.digestHex, privacy: .public): \(String(describing: error))")
+            // Drop BOTH the index entry AND the unusable file (corrupt,
+            // truncated, KEK-unwrap failure) so it can't linger on disk
+            // forever consuming the budget and being re-read every lookup.
+            try? FileManager.default.removeItem(at: fileURL)
             index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
             return nil
         }
@@ -346,9 +358,32 @@ public actor PrefixCacheManager {
 
         if written > 0 {
             stats.ssdFlushes += written
+            enforceDiskBudget(index: index, cacheDir: cacheDir)
             try? index.save()
         }
         return written
+    }
+
+    /// Evict least-recently-hit checkpoints (file + index entry together)
+    /// until this model's on-disk usage is within `diskBudgetBytes`. Without
+    /// this, sustained diverse-prompt traffic grows the SSD cache and
+    /// index.json without bound and can fill the volume. 0 budget = no cap.
+    private func enforceDiskBudget(index: PrefixCacheIndex, cacheDir: URL) {
+        guard diskBudgetBytes > 0 else { return }
+        var total = index.bytes(modelHash: binding.modelHash)
+        guard total > diskBudgetBytes else { return }
+        for entry in index.entriesLRUFirst(modelHash: binding.modelHash) {
+            if total <= diskBudgetBytes { break }
+            let url = cacheDir.appendingPathComponent(
+                "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)")
+            try? FileManager.default.removeItem(at: url)
+            index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            // The RAM tier keeps its own byte/entry LRU budget; a now-stale
+            // RAM copy just serves from memory (no SSD file needed), so we
+            // don't force-evict it here — only the on-disk footprint is bounded.
+            total -= max(0, entry.fileBytes)
+            stats.diskEvictions += 1
+        }
     }
 
     // MARK: - Clear

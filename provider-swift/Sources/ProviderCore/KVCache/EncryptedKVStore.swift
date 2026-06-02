@@ -149,6 +149,21 @@ public enum EncryptedKVStore {
     public static let gcmTagLength = 16
     public static let chunkInfoPrefix = "dbkv-chunk-v1"
     public static let fileExtension = "darkbloom-kv"
+    /// Infix used for atomic-write temp files: `<name>.tmp-<UUID>`.
+    static let tempInfix = "tmp-"
+
+    /// Best-effort one-time sweep of orphaned atomic-write temp files in
+    /// `dir`. `atomicWrite` cleans its own temp on a normal error, but a
+    /// process KILL (SIGKILL/OOM/power-loss) between createFile and rename
+    /// leaves a `.tmp-<UUID>` orphan with no sweep. Call once at cache
+    /// setup so they can't accumulate across crashes. Never throws.
+    static func sweepStaleTempFiles(in dir: URL) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names where name.contains(".\(tempInfix)") {
+            try? fm.removeItem(at: dir.appendingPathComponent(name))
+        }
+    }
 
     // MARK: Write
 

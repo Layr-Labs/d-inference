@@ -445,6 +445,14 @@ from other writers (it's re-measured on the next model load). For a hard
 global cap, set `DARKBLOOM_PREFIX_CACHE_DISK_GB` to an explicit per-model
 value sized for the number of models served.
 
+> **Rollout guidance.** This is sufficient for a **low-churn / few-model**
+> deployment with an explicit `DARKBLOOM_PREFIX_CACHE_DISK_GB` set (e.g. cap
+> each model at 20 GB and serve ≤ 5 ⇒ aggregate ≤ 100 GB). A process-wide
+> **global** disk accountant (one ceiling across all models, cross-model LRU
+> eviction, retired-dir GC) is required before enabling the flag on a
+> **high-churn / many-model fleet** — tracked in
+> [#266](https://github.com/Layr-Labs/d-inference/issues/266).
+
 **Known limitation (low):** a model directory is keyed by `sha256(modelId)`
 and is *not* deleted when that model is retired/unloaded, so directories
 from no-longer-served models linger (each still bounded by its own budget,

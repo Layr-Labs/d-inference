@@ -191,6 +191,14 @@ public actor BatchScheduler {
             return
         }
 
+        // Crash-consistency: reconcile the on-disk checkpoint files against
+        // the index once, before serving. Reclaims orphans left by a crash
+        // inside the index save-coalescing window (so they count toward the
+        // disk budget and are reusable) and drops index entries whose files
+        // vanished. Safe here: no requests admitted yet, so no concurrent
+        // flush/lookup races the reconcile.
+        if let mgr = checkpointManager { await mgr.reconcileWithDisk() }
+
         applyPostLoadBudgets(snapshot: snapshot)
         // Apply the conservative startup cap before admitting any request,
         // otherwise the first few submits could run at the hard cap until

@@ -251,6 +251,53 @@ func managerSSDPersistsAcrossManagerInstances() async throws {
 }
 
 @Test
+func managerReconcileReindexesOrphanFilesAndDropsMissing() async throws {
+    // Crash-consistency: index save-coalescing means a crash can leave a
+    // .darkbloom-kv file on disk that index.json never recorded (orphan).
+    // reconcileWithDisk (run at load) must re-index such orphans so they
+    // (a) become reusable and (b) count toward the disk budget instead of
+    // leaking — and must drop index entries whose file vanished.
+    let dir = tmpDir()
+    let kekStorage = InMemoryWrappedKEKStorage(identifier: "reconcile")
+    let wrapper = InMemoryKeyWrappingService(key: .init(data: Data(repeating: 4, count: 32)), identifier: "reconcile")
+    let indexURL = dir.appendingPathComponent("index.json")
+    func mgr() -> PrefixCacheManager {
+        PrefixCacheManager(
+            binding: binding(model: "m"), ram: PrefixCacheRAM(),
+            index: PrefixCacheIndex(fileURL: indexURL),
+            kek: KVCacheKEK(wrapper: wrapper, storage: kekStorage),
+            cacheDir: dir, ssdEnabled: true, boundaries: [8], now: { 1000 })
+    }
+    let tokens = prompt(10)
+
+    // Write + persist a checkpoint, then DELETE index.json to simulate a
+    // crash inside the coalescing window (file fsynced, index not yet saved).
+    let writer = mgr()
+    await writer.store(tokens: tokens, checkpointLength: 8,
+                       caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await writer.flushToSSD()
+    await writer.flushIndexNow()
+    let kvFile = dir.appendingPathComponent("m/\(PrefixDigest.digest(tokens: tokens, length: 8).dbkvHexString).\(EncryptedKVStore.fileExtension)")
+    #expect(FileManager.default.fileExists(atPath: kvFile.path), "precondition: KV file written")
+    try FileManager.default.removeItem(at: indexURL)  // orphan the file
+
+    // Fresh manager reconciles at load → re-indexes the orphan → it serves.
+    let reader = mgr()
+    await reader.reconcileWithDisk()
+    let hit = await reader.lookup(tokens: tokens)
+    #expect(hit?.tier == .ssd, "reconcile must re-index the orphan file so it serves from SSD")
+    #expect(hit?.tokenCount == 8)
+
+    // Reverse: delete the file, reconcile again → stale index entry dropped,
+    // lookup is a clean miss (no crash, no dangling entry).
+    try FileManager.default.removeItem(at: kvFile)
+    await reader.clearRAM()
+    let reader2 = mgr()
+    await reader2.reconcileWithDisk()
+    #expect(await reader2.lookup(tokens: tokens) == nil, "missing-file entry must be dropped, lookup is a clean miss")
+}
+
+@Test
 func managerMB1RejectsCrossModelFile() async throws {
     // Write a file under model A, then point a model-B manager at the
     // SAME dir/index and confirm the MB-1 guard refuses A's file.

@@ -421,6 +421,18 @@ Both tiers enforce this budget: the engine block tier
 directory **and** its `index.json` are both bounded under sustained
 diverse-prompt traffic.
 
+**Crash consistency.** The checkpoint index save is *coalesced* (every N
+writes, not every flush) to keep the O(N) re-encode off the hot lookup
+path. To stay crash-safe, the manager **reconciles index ↔ on-disk files
+once at load** (`reconcileWithDisk`): files present but unindexed — orphans
+from a crash inside the coalescing window, or a corrupt/missing
+`index.json` — are re-indexed from their (unauthenticated) metadata header
+after validating model + prefix-hash binding, so they count toward the disk
+budget and are reusable instead of leaking; index entries whose file
+vanished are dropped; foreign/mislabeled files are deleted. So coalescing
+keeps its perf win without leaking disk or losing cache across restart. A
+graceful unload also `flushIndexNow()`s before dropping the manager.
+
 **Bounding is per-model, not global, and measured once at load.** Each
 model directory gets its own 50%-of-free budget snapshotted at its load
 time; the sweep only scans its own directory. So with several distinct

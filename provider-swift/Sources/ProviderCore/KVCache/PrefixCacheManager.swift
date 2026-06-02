@@ -385,8 +385,10 @@ public actor PrefixCacheManager {
             // threshold; flushIndexNow() forces a save on idle/shutdown.
             unsavedWrites += written
             if unsavedWrites >= Self.saveCoalesceThreshold {
-                try? index.save()
-                unsavedWrites = 0
+                // Only reset on a successful save; a transient I/O failure
+                // (ENOSPC/EACCES) must keep the counter so the next flush —
+                // or teardown — retries rather than dropping durability.
+                if (try? index.save()) != nil { unsavedWrites = 0 }
             }
         }
         return written
@@ -399,9 +401,70 @@ public actor PrefixCacheManager {
     public func flushIndexNow() {
         guard ssdEnabled, let index else { return }
         if unsavedWrites > 0 || index.isDirty {
-            try? index.save()
-            unsavedWrites = 0
+            // Only clear the unsaved counter if the save actually succeeded;
+            // otherwise a transient ENOSPC/EACCES would silently lose
+            // durability tracking and leave entries permanently unpersisted.
+            if (try? index.save()) != nil { unsavedWrites = 0 }
         }
+    }
+
+    /// Reconcile the on-disk `.darkbloom-kv` files with the index, ONCE at
+    /// startup. Two directions, both needed for crash-consistency:
+    ///   • files present but NOT in the index (orphans from a crash inside
+    ///     the save-coalescing window, or a corrupt/missing index.json) are
+    ///     re-indexed by reading their plaintext metadata header (no decrypt)
+    ///     and validating model + prefix-hash binding — so they count toward
+    ///     the disk budget AND are reusable instead of leaking forever;
+    ///   • index entries whose file is missing are dropped.
+    /// Files that fail header read / model-mismatch / prefix-hash mismatch
+    /// are deleted (unusable). Best-effort; never throws. Call ONCE right
+    /// after construction, before any flush/lookup, from the async setup path.
+    public func reconcileWithDisk() {
+        guard ssdEnabled, let index, let cacheDir else { return }
+        let modelDir = cacheDir.appendingPathComponent(modelDirComponent, isDirectory: true)
+        let fm = FileManager.default
+        let suffix = ".\(EncryptedKVStore.fileExtension)"
+
+        // Drop index entries whose backing file vanished.
+        for entry in index.entries(modelHash: binding.modelHash) {
+            let url = modelDir.appendingPathComponent("\(entry.digestHex)\(suffix)")
+            if !fm.fileExists(atPath: url.path) {
+                index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            }
+        }
+
+        // Re-index (or delete) on-disk files.
+        guard let names = try? fm.contentsOfDirectory(atPath: modelDir.path) else {
+            flushIndexNow(); return
+        }
+        for name in names where name.hasSuffix(suffix) && !name.contains(".\(EncryptedKVStore.tempInfix)") {
+            let digestHex = String(name.dropLast(suffix.count))
+            if index.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil { continue }
+            let url = modelDir.appendingPathComponent(name)
+            // Validate via the unauthenticated metadata header (cheap; the
+            // real decrypt-time MB-1 + prefix-hash + AAD checks still gate
+            // any later serve). Re-index only files that match this model
+            // and whose stored prefix hash equals the filename digest.
+            guard let meta = try? EncryptedKVStore.readMetadataOnly(from: url),
+                  meta.modelHash == binding.modelHash,
+                  meta.numLayers == binding.numLayers,
+                  meta.kvHeads == binding.kvHeads,
+                  meta.headDim == binding.headDim,
+                  meta.tokenPrefixHash == digestHex
+            else {
+                try? fm.removeItem(at: url)  // foreign / corrupt / mislabeled
+                continue
+            }
+            let bytes = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+            index.record(PrefixIndexEntry(
+                modelHash: binding.modelHash, digestHex: digestHex,
+                tokenCount: meta.tokenCount,
+                relativePath: "\(modelDirComponent)/\(name)",
+                fileBytes: bytes ?? 0, createdAt: meta.createdAt, lastHitAt: now()))
+        }
+        // Apply the budget to the reconciled set, then persist.
+        enforceDiskBudget(index: index, cacheDir: cacheDir)
+        flushIndexNow()
     }
 
     /// Evict least-recently-hit checkpoints (file + index entry together)

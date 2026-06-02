@@ -1,0 +1,11 @@
+# Prefill-length sweep — hybrid checkpoint KV cache, Gemma-4 26B-A4B 8bit, M5 Max (128GB).
+# HybridCheckpointBenchLiveTests/gemma4PrefillSweep, commit 43ac9095, n=12 samples/point.
+# Same model held loaded across all points; all lengths <= sliding window (512).
+# Shows the win is a PREFILL effect: cold grows with prefix length, warm stays ~flat
+# (only the 6-token suffix is ever prefilled on a warm hit).
+prefix_tokens,cold_median_ms,warm_median_ms,speedup
+64,341,270,1.26
+128,358,272,1.31
+256,401,277,1.45
+384,446,281,1.59
+512,493,286,1.72

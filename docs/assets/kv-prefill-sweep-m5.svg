@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400" font-family="-apple-system, Helvetica, Arial, sans-serif">
+  <rect width="640" height="400" fill="#ffffff"/>
+  <text x="30" y="30" font-size="17" font-weight="700" fill="#1a1a1a">The TTFT win is a prefill effect — Gemma-4 26B (M5 Max)</text>
+  <text x="30" y="49" font-size="11" fill="#666">TTFT vs shared-prefix length · n=12 samples/point · same model held loaded · commit 43ac9095</text>
+
+  <!-- plot area x 80..540, y 60..320 ; y: 0..600ms -> 320..60 (0.43333 px/ms) ; x: 64..512 tok -> 80..540 -->
+  <!-- y gridlines -->
+  <g font-size="10" fill="#999">
+    <line x1="80" y1="320" x2="540" y2="320" stroke="#eee"/><text x="50" y="324">0</text>
+    <line x1="80" y1="233.3" x2="540" y2="233.3" stroke="#eee"/><text x="44" y="237">200</text>
+    <line x1="80" y1="146.7" x2="540" y2="146.7" stroke="#eee"/><text x="44" y="151">400</text>
+    <line x1="80" y1="60" x2="540" y2="60" stroke="#eee"/><text x="44" y="64">600</text>
+  </g>
+  <line x1="80" y1="60" x2="80" y2="320" stroke="#999"/>
+  <line x1="80" y1="320" x2="540" y2="320" stroke="#999"/>
+  <text x="22" y="190" font-size="11" fill="#666" transform="rotate(-90 22 190)" text-anchor="middle">TTFT (ms)</text>
+  <text x="310" y="360" font-size="11" fill="#666" text-anchor="middle">shared-prefix length (tokens) — checkpoint skips this much prefill</text>
+
+  <!-- x ticks -->
+  <g font-size="10" fill="#999" text-anchor="middle">
+    <text x="80" y="336">64</text>
+    <text x="145.7" y="336">128</text>
+    <text x="277.1" y="336">256</text>
+    <text x="408.6" y="336">384</text>
+    <text x="540" y="336">512</text>
+  </g>
+
+  <!-- shaded region between cold and warm = prefill skipped by the checkpoint -->
+  <polygon points="80,172.2 145.7,164.9 277.1,146.3 408.6,126.8 540,106.4 540,196.1 408.6,198.2 277.1,200.0 145.7,202.1 80,203.0"
+           fill="#3d9970" opacity="0.10"/>
+
+  <!-- COLD line (rises with prefill) -->
+  <polyline points="80,172.2 145.7,164.9 277.1,146.3 408.6,126.8 540,106.4"
+            fill="none" stroke="#c0392b" stroke-width="2.5"/>
+  <g fill="#c0392b">
+    <circle cx="80" cy="172.2" r="3.5"/><circle cx="145.7" cy="164.9" r="3.5"/>
+    <circle cx="277.1" cy="146.3" r="3.5"/><circle cx="408.6" cy="126.8" r="3.5"/>
+    <circle cx="540" cy="106.4" r="3.5"/>
+  </g>
+  <g font-size="9.5" fill="#c0392b" font-weight="600" text-anchor="middle">
+    <text x="80" y="163">341</text><text x="145.7" y="156">358</text>
+    <text x="277.1" y="137">401</text><text x="408.6" y="118">446</text>
+    <text x="540" y="97">493</text>
+  </g>
+  <text x="470" y="92" font-size="11" font-weight="700" fill="#c0392b">cold (full prefill)</text>
+
+  <!-- WARM line (flat: only the 6-tok suffix is ever prefilled) -->
+  <polyline points="80,203.0 145.7,202.1 277.1,200.0 408.6,198.2 540,196.1"
+            fill="none" stroke="#2e7d52" stroke-width="2.5"/>
+  <g fill="#2e7d52">
+    <circle cx="80" cy="203.0" r="3.5"/><circle cx="145.7" cy="202.1" r="3.5"/>
+    <circle cx="277.1" cy="200.0" r="3.5"/><circle cx="408.6" cy="198.2" r="3.5"/>
+    <circle cx="540" cy="196.1" r="3.5"/>
+  </g>
+  <g font-size="9.5" fill="#2e7d52" font-weight="600" text-anchor="middle">
+    <text x="80" y="218">270</text><text x="145.7" y="217">272</text>
+    <text x="277.1" y="215">277</text><text x="408.6" y="213">281</text>
+    <text x="540" y="211">286</text>
+  </g>
+  <text x="120" y="232" font-size="11" font-weight="700" fill="#2e7d52">warm (checkpoint restore + suffix)</text>
+
+  <!-- speedup annotations under x positions -->
+  <g font-size="9" fill="#777" text-anchor="middle">
+    <text x="80" y="349">1.26×</text><text x="145.7" y="349">1.31×</text>
+    <text x="277.1" y="349">1.45×</text><text x="408.6" y="349">1.59×</text>
+    <text x="540" y="349">1.72×</text>
+  </g>
+
+  <!-- takeaway -->
+  <text x="80" y="384" font-size="11" fill="#444">Cold climbs ~0.34 ms/token (more to prefill); warm is ~flat (only the 6-tok suffix) → speedup grows with the cached prefix.</text>
+</svg>

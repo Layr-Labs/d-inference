@@ -1,83 +1,107 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="420" viewBox="0 0 760 420" font-family="-apple-system, Helvetica, Arial, sans-serif">
-  <rect width="760" height="420" fill="#ffffff"/>
-  <text x="30" y="34" font-size="18" font-weight="700" fill="#1a1a1a">Hybrid checkpoint KV cache — TTFT on real Gemma-4 26B (M5 Max)</text>
-  <text x="30" y="54" font-size="12" fill="#666">512-token shared prefix · n=12 samples/condition · 12/12 warm = cache hits · commit 6c381267</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="440" viewBox="0 0 820 440" font-family="-apple-system, Helvetica, Arial, sans-serif">
+  <rect width="820" height="440" fill="#ffffff"/>
+  <text x="30" y="32" font-size="18" font-weight="700" fill="#1a1a1a">Hybrid checkpoint KV cache — TTFT on real hybrid models (M5 Max)</text>
+  <text x="30" y="52" font-size="12" fill="#666">n=12 samples/condition · 12/12 warm = cache hits · shared prefix ≤ model sliding window · commits 6c381267 / 41d19060</text>
 
-  <!-- ===== Left panel: TTFT bars + per-sample dots ===== -->
-  <!-- plot area: x 70..360, y 90..340 ; y: 0..600 ms -> 340..90 (250px for 600ms) -->
-  <!-- axes -->
-  <line x1="70" y1="340" x2="360" y2="340" stroke="#999" stroke-width="1"/>
-  <line x1="70" y1="90" x2="70" y2="340" stroke="#999" stroke-width="1"/>
-  <!-- y gridlines + labels (0,200,400,600 ms) -->
+  <!-- ===== Left panel: TTFT bars (2 models × cold/warm) + per-sample dots =====
+       plot area x 70..420, y 95..345 ; y maps 0..600ms -> 345..95 (scale 0.41667 px/ms) -->
+  <line x1="70" y1="345" x2="420" y2="345" stroke="#999" stroke-width="1"/>
+  <line x1="70" y1="95" x2="70" y2="345" stroke="#999" stroke-width="1"/>
   <g font-size="10" fill="#888">
-    <line x1="70" y1="340" x2="360" y2="340" stroke="#eee"/><text x="40" y="344">0</text>
-    <line x1="70" y1="256.7" x2="360" y2="256.7" stroke="#eee"/><text x="34" y="261">200</text>
-    <line x1="70" y1="173.3" x2="360" y2="173.3" stroke="#eee"/><text x="34" y="178">400</text>
-    <line x1="70" y1="90" x2="360" y2="90" stroke="#eee"/><text x="34" y="94">600</text>
+    <line x1="70" y1="345" x2="420" y2="345" stroke="#eee"/><text x="40" y="349">0</text>
+    <line x1="70" y1="261.7" x2="420" y2="261.7" stroke="#eee"/><text x="34" y="266">200</text>
+    <line x1="70" y1="178.3" x2="420" y2="178.3" stroke="#eee"/><text x="34" y="183">400</text>
+    <line x1="70" y1="95" x2="420" y2="95" stroke="#eee"/><text x="34" y="99">600</text>
   </g>
-  <text x="20" y="220" font-size="11" fill="#666" transform="rotate(-90 20 220)" text-anchor="middle">TTFT (ms)</text>
+  <text x="20" y="222" font-size="11" fill="#666" transform="rotate(-90 20 222)" text-anchor="middle">TTFT (ms)</text>
 
-  <!-- COLD bar: median 485ms -> height 485*0.41667=202.1, top y=340-202.1=137.9 -->
-  <rect x="120" y="137.9" width="80" height="202.1" fill="#e07a5f" rx="3"/>
-  <text x="160" y="131" font-size="13" font-weight="700" fill="#c0392b" text-anchor="middle">485 ms</text>
-  <text x="160" y="358" font-size="12" fill="#444" text-anchor="middle">cold</text>
-  <text x="160" y="372" font-size="9" fill="#888" text-anchor="middle">(full 512-tok prefill)</text>
+  <!-- Gemma-4 group (cold 485, warm 283) -->
+  <!-- cold: h=202.1 top=142.9 -->
+  <rect x="110" y="142.9" width="56" height="202.1" fill="#e07a5f" rx="3"/>
+  <text x="138" y="136" font-size="12" font-weight="700" fill="#c0392b" text-anchor="middle">485 ms</text>
+  <!-- warm: h=117.9 top=227.1 -->
+  <rect x="176" y="227.1" width="56" height="117.9" fill="#3d9970" rx="3"/>
+  <text x="204" y="220" font-size="12" font-weight="700" fill="#2e7d52" text-anchor="middle">283 ms</text>
+  <text x="171" y="362" font-size="12" font-weight="600" fill="#333" text-anchor="middle">Gemma-4 26B</text>
+  <text x="171" y="376" font-size="9" fill="#999" text-anchor="middle">window 512 · 512-tok prefix</text>
+  <text x="171" y="392" font-size="12" font-weight="700" fill="#2e7d52" text-anchor="middle">1.71× faster</text>
 
-  <!-- WARM bar: median 283ms -> height 117.9, top y=222.1 -->
-  <rect x="240" y="222.1" width="80" height="117.9" fill="#3d9970" rx="3"/>
-  <text x="280" y="215" font-size="13" font-weight="700" fill="#2e7d52" text-anchor="middle">283 ms</text>
-  <text x="280" y="358" font-size="12" fill="#444" text-anchor="middle">warm</text>
-  <text x="280" y="372" font-size="9" fill="#888" text-anchor="middle">(restore + 6-tok suffix)</text>
-
-  <!-- per-sample dots (real samples; cold around 480-487 + one 537 warmup-ish; warm ~278-284) -->
-  <!-- cold dots x jittered around 160 -->
+  <!-- Gemma cold dots (537 outlier + cluster ~485) -->
   <g fill="#922b21" opacity="0.7">
-    <circle cx="150" cy="116.2" r="2.5"/>
-    <circle cx="158" cy="139.9" r="2.5"/><circle cx="166" cy="137.1" r="2.5"/><circle cx="152" cy="137.5" r="2.5"/>
-    <circle cx="170" cy="138.3" r="2.5"/><circle cx="156" cy="137.9" r="2.5"/><circle cx="164" cy="137.5" r="2.5"/>
-    <circle cx="172" cy="139.2" r="2.5"/><circle cx="148" cy="139.9" r="2.5"/><circle cx="168" cy="137.9" r="2.5"/>
-    <circle cx="154" cy="138.8" r="2.5"/><circle cx="162" cy="138.8" r="2.5"/>
+    <circle cx="132" cy="121.2" r="2.3"/>
+    <circle cx="140" cy="145.0" r="2.3"/><circle cx="148" cy="142.1" r="2.3"/><circle cx="126" cy="142.5" r="2.3"/>
+    <circle cx="152" cy="143.3" r="2.3"/><circle cx="136" cy="142.9" r="2.3"/><circle cx="144" cy="142.5" r="2.3"/>
+    <circle cx="130" cy="144.2" r="2.3"/><circle cx="150" cy="145.0" r="2.3"/><circle cx="142" cy="142.9" r="2.3"/>
+    <circle cx="134" cy="143.8" r="2.3"/><circle cx="146" cy="143.8" r="2.3"/>
   </g>
-  <!-- warm dots x jittered around 280 -->
+  <!-- Gemma warm dots (~283) -->
   <g fill="#1e5e3f" opacity="0.7">
-    <circle cx="270" cy="222.1" r="2.5"/><circle cx="278" cy="221.7" r="2.5"/><circle cx="286" cy="222.1" r="2.5"/>
-    <circle cx="272" cy="221.7" r="2.5"/><circle cx="290" cy="221.7" r="2.5"/><circle cx="276" cy="222.1" r="2.5"/>
-    <circle cx="284" cy="221.7" r="2.5"/><circle cx="268" cy="222.1" r="2.5"/><circle cx="288" cy="222.1" r="2.5"/>
-    <circle cx="274" cy="222.5" r="2.5"/><circle cx="282" cy="224.2" r="2.5"/><circle cx="266" cy="222.1" r="2.5"/>
+    <circle cx="198" cy="227.1" r="2.3"/><circle cx="206" cy="226.7" r="2.3"/><circle cx="214" cy="227.1" r="2.3"/>
+    <circle cx="192" cy="226.7" r="2.3"/><circle cx="216" cy="226.7" r="2.3"/><circle cx="202" cy="227.1" r="2.3"/>
+    <circle cx="210" cy="226.7" r="2.3"/><circle cx="194" cy="227.1" r="2.3"/><circle cx="212" cy="227.1" r="2.3"/>
+    <circle cx="200" cy="227.5" r="2.3"/><circle cx="208" cy="229.2" r="2.3"/><circle cx="196" cy="227.1" r="2.3"/>
   </g>
 
-  <!-- speedup callout -->
-  <text x="215" y="392" font-size="14" font-weight="700" fill="#2e7d52" text-anchor="middle">1.71× faster TTFT (median)</text>
+  <!-- GPT-OSS group (cold 174, warm 67) -->
+  <!-- cold: h=72.5 top=272.5 -->
+  <rect x="280" y="272.5" width="56" height="72.5" fill="#e07a5f" rx="3"/>
+  <text x="308" y="265" font-size="12" font-weight="700" fill="#c0392b" text-anchor="middle">174 ms</text>
+  <!-- warm: h=27.9 top=317.1 -->
+  <rect x="346" y="317.1" width="56" height="27.9" fill="#3d9970" rx="3"/>
+  <text x="374" y="310" font-size="12" font-weight="700" fill="#2e7d52" text-anchor="middle">67 ms</text>
+  <text x="341" y="362" font-size="12" font-weight="600" fill="#333" text-anchor="middle">GPT-OSS 20B</text>
+  <text x="341" y="376" font-size="9" fill="#999" text-anchor="middle">window 128 · 96-tok prefix</text>
+  <text x="341" y="392" font-size="12" font-weight="700" fill="#2e7d52" text-anchor="middle">2.60× faster</text>
+
+  <!-- GPT cold dots (236 outlier + cluster ~174) -->
+  <g fill="#922b21" opacity="0.7">
+    <circle cx="302" cy="246.7" r="2.3"/>
+    <circle cx="310" cy="270.8" r="2.3"/><circle cx="318" cy="270.8" r="2.3"/><circle cx="296" cy="272.5" r="2.3"/>
+    <circle cx="322" cy="272.5" r="2.3"/><circle cx="306" cy="272.5" r="2.3"/><circle cx="314" cy="272.5" r="2.3"/>
+    <circle cx="300" cy="273.3" r="2.3"/><circle cx="320" cy="273.8" r="2.3"/><circle cx="312" cy="272.5" r="2.3"/>
+    <circle cx="304" cy="273.3" r="2.3"/><circle cx="316" cy="273.3" r="2.3"/>
+  </g>
+  <!-- GPT warm dots (~67) -->
+  <g fill="#1e5e3f" opacity="0.7">
+    <circle cx="368" cy="316.2" r="2.3"/><circle cx="376" cy="317.9" r="2.3"/><circle cx="384" cy="317.1" r="2.3"/>
+    <circle cx="362" cy="316.7" r="2.3"/><circle cx="386" cy="317.1" r="2.3"/><circle cx="372" cy="317.5" r="2.3"/>
+    <circle cx="380" cy="317.5" r="2.3"/><circle cx="364" cy="317.5" r="2.3"/><circle cx="382" cy="317.1" r="2.3"/>
+    <circle cx="370" cy="317.1" r="2.3"/><circle cx="378" cy="317.5" r="2.3"/><circle cx="366" cy="317.1" r="2.3"/>
+  </g>
+
+  <!-- legend -->
+  <g font-size="10" fill="#555">
+    <rect x="110" y="104" width="11" height="11" fill="#e07a5f" rx="2"/><text x="126" y="113">cold (full prefill)</text>
+    <rect x="240" y="104" width="11" height="11" fill="#3d9970" rx="2"/><text x="256" y="113">warm (checkpoint restore + tail)</text>
+  </g>
 
   <!-- ===== Right panel: resource bounding (real stress numbers) ===== -->
-  <text x="430" y="92" font-size="13" font-weight="700" fill="#1a1a1a">Resource budgets held (real 55 MB KV blobs)</text>
+  <text x="490" y="100" font-size="13" font-weight="700" fill="#1a1a1a">Resource budgets held (Gemma-4, 55 MB KV blobs)</text>
 
   <!-- disk -->
-  <text x="430" y="124" font-size="11" fill="#444">Disk (12 stores, 192 MB budget)</text>
-  <rect x="430" y="132" width="290" height="20" fill="#eee" rx="3"/>
-  <!-- used 165MB of 192MB -> 290*165/192 = 249.2 -->
-  <rect x="430" y="132" width="249.2" height="20" fill="#3d9970" rx="3"/>
-  <line x1="720" y1="128" x2="720" y2="156" stroke="#c0392b" stroke-width="2"/>
-  <text x="436" y="146" font-size="10" fill="#fff" font-weight="600">165 MB used</text>
-  <text x="718" y="168" font-size="9" fill="#c0392b" text-anchor="end">192 MB cap · 45 evictions</text>
+  <text x="490" y="132" font-size="11" fill="#444">Disk (12 stores, 192 MB budget)</text>
+  <rect x="490" y="140" width="290" height="20" fill="#eee" rx="3"/>
+  <rect x="490" y="140" width="249.2" height="20" fill="#3d9970" rx="3"/>
+  <line x1="780" y1="136" x2="780" y2="164" stroke="#c0392b" stroke-width="2"/>
+  <text x="496" y="154" font-size="10" fill="#fff" font-weight="600">165 MB used</text>
+  <text x="778" y="176" font-size="9" fill="#c0392b" text-anchor="end">192 MB cap · 45 evictions</text>
 
   <!-- ram -->
-  <text x="430" y="200" font-size="11" fill="#444">RAM (10 inserts, 137 MB budget)</text>
-  <rect x="430" y="208" width="290" height="20" fill="#eee" rx="3"/>
-  <!-- used 110MB of 137MB -> 290*110/137 = 232.8 -->
-  <rect x="430" y="208" width="232.8" height="20" fill="#3d9970" rx="3"/>
-  <line x1="720" y1="204" x2="720" y2="232" stroke="#c0392b" stroke-width="2"/>
-  <text x="436" y="222" font-size="10" fill="#fff" font-weight="600">110 MB used</text>
-  <text x="718" y="244" font-size="9" fill="#c0392b" text-anchor="end">137 MB cap · 8 evictions</text>
+  <text x="490" y="208" font-size="11" fill="#444">RAM (10 inserts, 137 MB budget)</text>
+  <rect x="490" y="216" width="290" height="20" fill="#eee" rx="3"/>
+  <rect x="490" y="216" width="232.8" height="20" fill="#3d9970" rx="3"/>
+  <line x1="780" y1="212" x2="780" y2="240" stroke="#c0392b" stroke-width="2"/>
+  <text x="496" y="230" font-size="10" fill="#fff" font-weight="600">110 MB used</text>
+  <text x="778" y="252" font-size="9" fill="#c0392b" text-anchor="end">137 MB cap · 8 evictions</text>
 
-  <!-- concurrency -->
-  <text x="430" y="284" font-size="11" fill="#444">Concurrency / integrity</text>
+  <!-- concurrency / integrity -->
+  <text x="490" y="292" font-size="11" fill="#444">Concurrency / integrity</text>
   <g font-size="11" fill="#2e7d52">
-    <text x="430" y="306">✓ 16 concurrent flushes — 0 read/decrypt errors</text>
-    <text x="430" y="324">✓ 16/16 checkpoints reload + decrypt correctly</text>
-    <text x="430" y="342">✓ restore output == cold (bit-exact, Gemma-4 + GPT-OSS)</text>
-    <text x="430" y="360">✓ corrupt / wrong-KEK / crash-orphan → clean cold miss</text>
+    <text x="490" y="314">✓ 16 concurrent flushes — 0 read/decrypt errors</text>
+    <text x="490" y="332">✓ 16/16 checkpoints reload + decrypt correctly</text>
+    <text x="490" y="350">✓ restore output == cold (bit-exact, Gemma-4 + GPT-OSS)</text>
+    <text x="490" y="368">✓ corrupt / wrong-KEK / crash-orphan → clean cold miss</text>
   </g>
 
-  <text x="70" y="408" font-size="9" fill="#aaa">Source: HybridCheckpoint{Bench,Stress,Chaos,E2E}LiveTests on M5 Max (128GB), real Gemma-4 / GPT-OSS weights.</text>
+  <text x="70" y="424" font-size="9" fill="#aaa">Source: HybridCheckpoint{Bench,Stress,Chaos,E2E}LiveTests on M5 Max (128GB) — real gemma-4-26b-a4b-it-8bit / gpt-oss-20b-MXFP4-Q8 weights.</text>
 </svg>

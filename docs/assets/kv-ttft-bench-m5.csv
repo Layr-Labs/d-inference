@@ -1,29 +1,56 @@
-# TTFT benchmark — hybrid checkpoint KV cache, real Gemma-4 26B-A4B 8bit, M5 Max (128GB).
-# Commit 6c381267, 512-token shared prefix, n=12 samples each. 12/12 warm = cache hits.
+# TTFT benchmark — hybrid checkpoint KV cache, M5 Max (128GB), real weights.
+# HybridCheckpointBenchLiveTests, n=12 samples/condition, 12/12 warm = cache hits.
+# Prefix length differs per model: it must stay <= the model's sliding window.
+#   gemma4: mlx-community/gemma-4-26b-a4b-it-8bit, window 512, prefix 512 tok
+#   gptoss: mlx-community/gpt-oss-20b-MXFP4-Q8,    window 128, prefix  96 tok
 # Raw per-sample TTFT in milliseconds.
-condition,sample,ttft_ms
-cold,0,537
-cold,1,480
-cold,2,487
-cold,3,486
-cold,4,484
-cold,5,485
-cold,6,486
-cold,7,482
-cold,8,480
-cold,9,485
-cold,10,483
-cold,11,483
-warm,0,283
-warm,1,284
-warm,2,283
-warm,3,284
-warm,4,284
-warm,5,283
-warm,6,284
-warm,7,283
-warm,8,283
-warm,9,282
-warm,10,278
-warm,11,283
-# Summary: cold median 485ms, warm median 283ms, speedup 1.71x.
+model,condition,sample,ttft_ms
+gemma4,cold,0,537
+gemma4,cold,1,480
+gemma4,cold,2,487
+gemma4,cold,3,486
+gemma4,cold,4,484
+gemma4,cold,5,485
+gemma4,cold,6,486
+gemma4,cold,7,482
+gemma4,cold,8,480
+gemma4,cold,9,485
+gemma4,cold,10,483
+gemma4,cold,11,483
+gemma4,warm,0,283
+gemma4,warm,1,284
+gemma4,warm,2,283
+gemma4,warm,3,284
+gemma4,warm,4,284
+gemma4,warm,5,283
+gemma4,warm,6,284
+gemma4,warm,7,283
+gemma4,warm,8,283
+gemma4,warm,9,282
+gemma4,warm,10,278
+gemma4,warm,11,283
+gptoss,cold,0,236
+gptoss,cold,1,178
+gptoss,cold,2,178
+gptoss,cold,3,174
+gptoss,cold,4,174
+gptoss,cold,5,174
+gptoss,cold,6,174
+gptoss,cold,7,172
+gptoss,cold,8,171
+gptoss,cold,9,174
+gptoss,cold,10,172
+gptoss,cold,11,172
+gptoss,warm,0,69
+gptoss,warm,1,65
+gptoss,warm,2,67
+gptoss,warm,3,68
+gptoss,warm,4,67
+gptoss,warm,5,66
+gptoss,warm,6,66
+gptoss,warm,7,66
+gptoss,warm,8,67
+gptoss,warm,9,66
+gptoss,warm,10,67
+gptoss,warm,11,66
+# Summary: gemma4 cold 485ms -> warm 283ms (1.71x); gptoss cold 174ms -> warm 67ms (2.60x).

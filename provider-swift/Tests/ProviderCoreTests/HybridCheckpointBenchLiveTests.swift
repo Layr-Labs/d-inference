@@ -164,4 +164,62 @@ struct HybridCheckpointBenchLiveTests {
             #expect(wMed < cMed, "sweep@\(L): warm must beat cold")
         }
     }
+
+    // LARGE-PREFILL SCALING — the answer to "what about a 100k prefill?".
+    // Hybrid models cap the checkpoint at the SLIDING WINDOW (a rotating
+    // window physically discards older KV), so the cache can only ever remove
+    // the first `window` tokens of any prefill. This measures the COLD prefill
+    // TTFT at increasing prompt sizes up to 100k to show (a) prefill cost grows
+    // with size and (b) what fraction of a 100k prefill a window-sized
+    // checkpoint can remove (window/100000 → a few %, not the bulk). Cold-only;
+    // big prompts are expensive so n is small.
+    @Test(.enabled(if: LiveInferenceFixtures.gemmaTestsEnabled))
+    func gemma4LargePrefillScaling() async throws {
+        setenv("DARKBLOOM_PREFIX_CACHE", "1", 1)
+        let modelID = "mlx-community/gemma-4-26b-a4b-it-8bit"
+        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        do { loaded = try await LiveInferenceFixtures.loadScheduler(
+                modelID: modelID, memoryBudgetBytes: 100 * 1024 * 1024 * 1024) }
+        catch let s as LiveFixtureSkip { print("SKIP scaling: \(s)"); return }
+        let sched = loaded.scheduler
+        defer { Task { await sched.unloadModel() } }
+
+        // Report the model's authoritative runtime sliding window — the hard
+        // cap on a restorable checkpoint.
+        let window = await loaded.container.perform { ctx in
+            PrefixCacheStrategy.minSlidingWindow(ctx.model.newCache(parameters: nil))
+        }
+        print("SCALE[gemma4] runtime sliding window = \(window.map(String.init) ?? "none")")
+
+        // Distinct large prompts, each prefilled cold (no shared prefix).
+        func bigPrompt(_ n: Int, salt: Int) -> [Int] {
+            (0..<n).map { ((($0 &+ salt &* 131) % 250) + 5) }
+        }
+        let sizes = [1_024, 4_096, 16_384, 32_768, 65_536, 100_000]
+        let reps = 3
+        print("SCALE[gemma4] cold prefill TTFT (ms) by prompt size, n=\(reps)/point")
+        var coldBySize: [Int: Double] = [:]
+        for n in sizes {
+            var ts: [Double] = []
+            for r in 0..<reps {
+                ts.append(await ttft(sched.submitTokenized(
+                    promptTokens: bigPrompt(n, salt: r + 1), maxTokens: 2, temperature: 0)))
+            }
+            let m = median(ts) * 1000
+            coldBySize[n] = m
+            print("SCALE,gemma4,\(n),\(Int(m))")
+            print("SCALE[gemma4] size=\(n): cold prefill median=\(Int(m))ms")
+            #expect(m > 0, "scaling@\(n): must produce a token")
+        }
+
+        // What can the checkpoint cache remove from a 100k prefill? Only the
+        // first `window` tokens (≈ cold prefill of `window`). Express it as a
+        // fraction so the ceiling at large context is explicit.
+        if let w = window, let c100k = coldBySize[100_000], let cWin = coldBySize[1_024] {
+            // cWin is the ~1k prefill; window is 1024 for Gemma-4, so cWin is a
+            // fair proxy for the time a window-sized checkpoint removes.
+            let pct = cWin / c100k * 100
+            print("SCALE[gemma4] CEILING: window=\(w)tok; a checkpoint removes ~\(Int(cWin))ms of the \(Int(c100k))ms 100k prefill ≈ \(String(format: "%.1f", pct))% (the rest must be prefilled every time)")
+        }
+    }
 }

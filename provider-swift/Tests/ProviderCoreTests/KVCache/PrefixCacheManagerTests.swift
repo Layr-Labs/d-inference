@@ -188,6 +188,37 @@ func managerEnforcesDiskBudgetWithLRUEviction() async throws {
 }
 
 @Test
+func managerCoalescesIndexSavesButFlushIndexNowForces() async throws {
+    // index.save() is O(N) (full re-encode + atomic write + fsync) and must
+    // NOT run on every flush (it head-of-line-blocks lookups on the actor).
+    // A handful of flushes below the coalesce threshold leave index.json
+    // unwritten; flushIndexNow() forces durability (called on teardown).
+    let dir = tmpDir()
+    let indexURL = dir.appendingPathComponent("index.json")
+    func mgr() -> PrefixCacheManager {
+        PrefixCacheManager(
+            binding: binding(model: "m"), ram: PrefixCacheRAM(),
+            index: PrefixCacheIndex(fileURL: indexURL),
+            kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(),
+                            storage: InMemoryWrappedKEKStorage(identifier: "coalesce")),
+            cacheDir: dir, ssdEnabled: true, boundaries: [8], now: { 1000 })
+    }
+    let m = mgr()
+    // Two distinct writes (< threshold 8) → files written, index NOT yet saved.
+    for i in 0..<2 {
+        await m.store(tokens: Array((i * 50)..<(i * 50 + 10)), checkpointLength: 8,
+                      caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+        _ = await m.flushToSSD()
+    }
+    #expect(!FileManager.default.fileExists(atPath: indexURL.path),
+            "index.json must NOT be written before the coalesce threshold")
+
+    await m.flushIndexNow()
+    #expect(FileManager.default.fileExists(atPath: indexURL.path),
+            "flushIndexNow must force the index to disk")
+}
+
+@Test
 func managerSSDPersistsAcrossManagerInstances() async throws {
     // Simulate a restart: flush with one manager, then a fresh manager
     // (same dir) must find the entry on SSD.
@@ -419,7 +450,9 @@ func managerMissOnShortPrompt() async {
 // tests that build a second instance want an explicit save point).
 extension PrefixCacheManager {
     func indexSaveForTest() async throws {
-        // flushToSSD already calls index.save(); this is a no-op hook kept
-        // for clarity in restart-style tests.
+        // Index saves are now COALESCED (every N writes) to keep the O(N)
+        // re-encode off the hot path; restart-style tests must force the
+        // durability barrier that production calls on teardown.
+        await flushIndexNow()
     }
 }

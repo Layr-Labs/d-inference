@@ -137,6 +137,20 @@ public actor PrefixCacheManager {
 
     private var stats = PrefixCacheManagerStats()
 
+    /// Digests currently being written by an in-flight flushToSSD. The
+    /// capture hook fires one detached `Task { store; flushToSSD }` per
+    /// checkpoint, so multiple flushToSSD run concurrently on this actor and
+    /// interleave at the `await` inside the write loop. Without this guard
+    /// two of them can both pass the "already persisted?" check for the same
+    /// digest and redundantly serialize+encrypt+fsync the same (large) blob.
+    /// Actor-isolated, so check-and-insert before the await is atomic.
+    private var inFlightWrites: Set<String> = []
+    /// Writes accumulated since the last index.save(), to amortize the O(N)
+    /// full-index re-encode + atomic write + fsync away from every flush.
+    private var unsavedWrites = 0
+    /// Save the index after this many new writes (or on shutdown/idle flush).
+    private static let saveCoalesceThreshold = 8
+
     /// 12-char model-hash prefix used as the per-model SSD subdirectory.
     private var modelDirComponent: String {
         String(binding.modelHash.replacingOccurrences(of: "sha256:", with: "").prefix(12))
@@ -315,12 +329,17 @@ public actor PrefixCacheManager {
         var written = 0
         for snap in ram.entriesForFlush(modelHash: binding.modelHash) {
             let digestHex = snap.key.digest.dbkvHexString
-            // Skip entries already persisted.
+            // Skip entries already persisted OR being written right now by a
+            // concurrent flush (reentrancy: the dedup check + the write are
+            // separated by an await, so without the in-flight set two flushes
+            // would both serialize+encrypt+fsync the same large blob).
             if index.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil { continue }
+            if inFlightWrites.contains(digestHex) { continue }
             // Only serialize SSD-capable stacks (defensive; ssdEnabled
             // should already guarantee this for the model).
             guard KVCacheSerializer.areSupported(snap.caches) else { continue }
 
+            inFlightWrites.insert(digestHex)
             do {
                 let (chunks, layout) = try KVCacheSerializer.serialize(snap.caches)
                 let layoutJSON = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
@@ -354,14 +373,35 @@ public actor PrefixCacheManager {
             } catch {
                 logger.warning("flushToSSD: failed to persist \(digestHex, privacy: .public): \(String(describing: error))")
             }
+            inFlightWrites.remove(digestHex)
         }
 
         if written > 0 {
             stats.ssdFlushes += written
             enforceDiskBudget(index: index, cacheDir: cacheDir)
-            try? index.save()
+            // Coalesce the O(N) full-index re-encode + atomic write + fsync:
+            // saving on EVERY flush head-of-line-blocks lookups on this actor
+            // and is amplified by concurrent flushes. Save once per
+            // threshold; flushIndexNow() forces a save on idle/shutdown.
+            unsavedWrites += written
+            if unsavedWrites >= Self.saveCoalesceThreshold {
+                try? index.save()
+                unsavedWrites = 0
+            }
         }
         return written
+    }
+
+    /// Force-persist the index if there are unsaved writes (call on idle /
+    /// before teardown so coalesced entries aren't lost). The in-memory RAM
+    /// tier already serves them this session; this is durability across
+    /// restart for the entries written since the last coalesced save.
+    public func flushIndexNow() {
+        guard ssdEnabled, let index else { return }
+        if unsavedWrites > 0 || index.isDirty {
+            try? index.save()
+            unsavedWrites = 0
+        }
     }
 
     /// Evict least-recently-hit checkpoints (file + index entry together)

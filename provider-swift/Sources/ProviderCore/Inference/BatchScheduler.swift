@@ -925,6 +925,9 @@ public actor BatchScheduler {
         self.engine = nil
         modelContainer = nil
         tokenizer = nil
+        // Persist any coalesced index writes before dropping the manager, so
+        // checkpoints written since the last coalesced save survive restart.
+        if let mgr = checkpointManager { await mgr.flushIndexNow() }
         // Drop the checkpoint manager so a stale one can't serve the next
         // model (the new model's loadModel reinstalls its own, or nil).
         checkpointManager = nil

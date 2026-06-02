@@ -598,11 +598,19 @@ public actor BatchScheduler {
     /// Largest GB value that won't overflow Int when multiplied by 2^30.
     private static var gbToBytesCeiling: Double { Double(Int.max) / 1_073_741_824 }
 
+    /// Conservative per-model on-disk default (bytes) when the operator sets
+    /// no explicit `DARKBLOOM_PREFIX_CACHE_DISK_GB`. Deliberately a small
+    /// FIXED cap, NOT a fraction of free space: the budget is PER MODEL (see
+    /// docs / issue #266), so a "50% of free" default lets N models
+    /// collectively fill the disk. A fixed cap keeps "just set
+    /// DARKBLOOM_PREFIX_CACHE=1" safe out of the box for a low-churn /
+    /// few-model rollout (≈ N × 10 GB aggregate); operators raise it
+    /// explicitly when they have the headroom.
+    static let defaultDiskBudgetBytes = 10 * 1_073_741_824
+
     /// On-disk budget for persisted prefix files. Operator override:
-    /// DARKBLOOM_PREFIX_CACHE_DISK_GB (0 = unlimited). Default = 50% of the
-    /// FREE space on the cache volume (measured live), so the cache scales
-    /// to the disk and never fills it; falls back to 10 GB if free space
-    /// can't be read.
+    /// DARKBLOOM_PREFIX_CACHE_DISK_GB (0 = unlimited). Default = a fixed
+    /// 10 GB per model, clamped down to 50% of free space on a tight volume.
     static func prefixCacheDiskBudgetBytes(cacheDir: URL) -> Int {
         let envGB = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]
             .flatMap(Double.init)
@@ -610,19 +618,19 @@ public actor BatchScheduler {
     }
 
     /// Pure disk-budget policy (testable). An explicit env override wins
-    /// (including 0 = unlimited). Otherwise take HALF of the measured free
-    /// bytes — never 0, so a (near-)full disk yields a tiny positive budget
-    /// (evict-almost-everything) rather than the env's "0 = unlimited".
-    /// When free space is unknown, fall back to a conservative 10 GB.
+    /// (including 0 = unlimited; non-finite/overflowing values are rejected
+    /// back to the default). Otherwise use a FIXED conservative cap
+    /// (`defaultDiskBudgetBytes`, per model) so multiple models can't each
+    /// claim a large fraction of free space — but clamp to half of measured
+    /// free so a near-full volume yields a smaller (still positive) budget
+    /// rather than over-committing. When free space is unknown, use the
+    /// fixed default directly.
     static func resolveDiskBudget(envGB: Double?, freeBytes: Int?) -> Int {
-        // A valid in-range override wins (0 = unlimited). A non-finite or
-        // overflowing value is rejected (Int(Double) would trap) and falls
-        // through to the free-space default.
         if let gb = envGB, gb >= 0, gb.isFinite, gb < gbToBytesCeiling {
             return Int(gb * 1_073_741_824)
         }
-        if let free = freeBytes { return max(1, free / 2) }
-        return 10 * 1_073_741_824
+        guard let free = freeBytes else { return defaultDiskBudgetBytes }
+        return max(1, min(defaultDiskBudgetBytes, free / 2))
     }
 
     /// Best-effort free capacity (bytes) of the volume containing `url`.

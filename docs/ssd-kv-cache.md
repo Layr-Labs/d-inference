@@ -93,7 +93,7 @@ Set the env var on the provider process:
 ```bash
 DARKBLOOM_PREFIX_CACHE=1              # enable (default off); or =true
 DARKBLOOM_PREFIX_CACHE_MAX_GB=8       # optional: in-GPU block-cache budget (default = 1/8 physical RAM)
-DARKBLOOM_PREFIX_CACHE_DISK_GB=10     # optional: on-disk budget per model (default = 50% of free volume space; 0 = unlimited)
+DARKBLOOM_PREFIX_CACHE_DISK_GB=10     # optional: on-disk budget per model (default = 10 GB, clamped to 50% of free; 0 = unlimited)
 ```
 
 `MAX_GB` bounds the in-memory block cache (the number of GPU blocks is
@@ -119,7 +119,7 @@ When active you'll see, once per model load:
 
 ```
 DARKBLOOM_PREFIX_CACHE is ON — engine prefix cache enabled (TB-007: …)
-encrypted prefix cache active for <modelId> (bound to weightHash|modelId) at <dir>, disk budget <N> bytes (default = 50% of free volume space)
+encrypted prefix cache active for <modelId> (bound to weightHash|modelId) at <dir>, disk budget <N> bytes (default = 10 GB per model)
 prefix cache sized to <maxBlocks> blocks × 256 tok (~<kvBytesPerToken> B/tok)
 ```
 
@@ -408,14 +408,17 @@ A genuine model *switch* uses a different `sha256(modelId)` directory. The
 KEK lives in the Keychain, not on the cache disk.
 
 The per-model directory is bounded by `DARKBLOOM_PREFIX_CACHE_DISK_GB`,
-defaulting to **50% of the free space on the cache volume** (measured live
-at model load, via `volumeAvailableCapacityForImportantUsage`): when a save
+defaulting to a **fixed 10 GB per model** (clamped down to 50% of free
+space on a tight volume, measured at model load via
+`volumeAvailableCapacityForImportantUsage`). The default is a fixed cap, not
+a fraction of free space, *because the budget is per-model*: a "50% of free"
+default would let several models each claim half the disk and collectively
+fill it (see the per-model limitation below + issue #266). When a save
 pushes the directory over budget, the oldest `.darkbloom-kv` files are
 evicted (LRU by mtime), amortized so the directory scan doesn't run on
-every block. A (near-)full disk yields a tiny budget — and a block whose
-own size exceeds the budget is skipped entirely (no write-then-delete
-churn). Set the env var explicitly to override (0 = unlimited); if free
-space can't be read it falls back to 10 GB.
+every block. A block whose own size exceeds the budget is skipped entirely
+(no write-then-delete churn). Set the env var explicitly to raise/lower it
+(0 = unlimited).
 
 Both tiers enforce this budget: the engine block tier
 (`EncryptedPrefixCachePersistence`) sweeps on save, and the checkpoint tier
@@ -436,21 +439,22 @@ vanished are dropped; foreign/mislabeled files are deleted. So coalescing
 keeps its perf win without leaking disk or losing cache across restart. A
 graceful unload also `flushIndexNow()`s before dropping the manager.
 
-**Bounding is per-model, not global, and measured once at load.** Each
-model directory gets its own 50%-of-free budget snapshotted at its load
-time; the sweep only scans its own directory. So with several distinct
-models cached, aggregate `darkbloom/kv` usage can exceed 50% of the
-original free space, and a budget doesn't shrink if the volume later fills
-from other writers (it's re-measured on the next model load). For a hard
-global cap, set `DARKBLOOM_PREFIX_CACHE_DISK_GB` to an explicit per-model
-value sized for the number of models served.
+**Bounding is per-model, not global.** Each model directory gets its own
+budget; the sweep only scans its own directory. The default is a fixed
+10 GB per model (not a fraction of free space) specifically so several
+cached models can't each claim a large slice and collectively fill the
+volume — aggregate worst case ≈ (models cached) × the per-model cap. A
+budget is measured once at load and doesn't shrink if the volume later
+fills from other writers (it's re-measured on the next model load).
 
-> **Rollout guidance.** This is sufficient for a **low-churn / few-model**
-> deployment with an explicit `DARKBLOOM_PREFIX_CACHE_DISK_GB` set (e.g. cap
-> each model at 20 GB and serve ≤ 5 ⇒ aggregate ≤ 100 GB). A process-wide
-> **global** disk accountant (one ceiling across all models, cross-model LRU
-> eviction, retired-dir GC) is required before enabling the flag on a
-> **high-churn / many-model fleet** — tracked in
+> **Rollout guidance.** Out of the box (`DARKBLOOM_PREFIX_CACHE=1`, nothing
+> else) each model is capped at 10 GB on disk — safe for a **low-churn /
+> few-model** deployment (e.g. ≤ 5 models ⇒ ≤ 50 GB aggregate). Raise
+> `DARKBLOOM_PREFIX_CACHE_DISK_GB` when you have headroom; lower it / count
+> your models if the volume is tight. A process-wide **global** disk
+> accountant (one ceiling across all models, cross-model LRU eviction,
+> retired-dir GC) is required before enabling the flag on a **high-churn /
+> many-model fleet** — tracked in
 > [#266](https://github.com/Layr-Labs/d-inference/issues/266).
 
 **Known limitation (low):** a model directory is keyed by `sha256(modelId)`

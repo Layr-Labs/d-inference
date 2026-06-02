@@ -67,24 +67,29 @@ struct BatchSchedulerPrefixCacheConfigTests {
     }
 
     // #3 follow-up: the on-disk budget defaults to 50% of free volume space.
-    @Test("resolveDiskBudget: 50% of free, env override wins, never 'unlimited' from free")
+    @Test("resolveDiskBudget: fixed 10GB default (clamped on tight disk), env override wins")
     func diskBudget() {
         let gib = 1_073_741_824
-        // Default: half of the measured free bytes.
-        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 100 * gib) == 50 * gib)
-        // Explicit env override wins over free-space measurement.
+        let dflt = BatchScheduler.defaultDiskBudgetBytes  // fixed 10 GB per model
+        // Default with ample free: the FIXED per-model cap (NOT 50%-of-free),
+        // so N models can't each claim a large fraction of the disk (#266).
+        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 100 * gib) == dflt)
+        #expect(dflt == 10 * gib)
+        // Explicit env override wins over the default.
         #expect(BatchScheduler.resolveDiskBudget(envGB: 5, freeBytes: 100 * gib) == 5 * gib)
+        #expect(BatchScheduler.resolveDiskBudget(envGB: 50, freeBytes: 100 * gib) == 50 * gib)
         // Env 0 = unlimited (honored only via the env path).
         #expect(BatchScheduler.resolveDiskBudget(envGB: 0, freeBytes: 100 * gib) == 0)
-        // A (near-)full disk yields a tiny POSITIVE budget — not 0/unlimited.
+        // Tight volume: default clamps DOWN to 50% of free (still positive).
+        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 4 * gib) == 2 * gib)
         #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 0) == 1)
         #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: 1) == 1)
-        // Free space unknown ⇒ conservative 10 GB fallback.
-        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: nil) == 10 * gib)
-        // Non-finite / overflow env must degrade to 50%-of-free, not trap.
-        #expect(BatchScheduler.resolveDiskBudget(envGB: .infinity, freeBytes: 100 * gib) == 50 * gib)
-        #expect(BatchScheduler.resolveDiskBudget(envGB: .nan, freeBytes: 100 * gib) == 50 * gib)
-        #expect(BatchScheduler.resolveDiskBudget(envGB: 1e30, freeBytes: 100 * gib) == 50 * gib)
+        // Free space unknown ⇒ the fixed default.
+        #expect(BatchScheduler.resolveDiskBudget(envGB: nil, freeBytes: nil) == dflt)
+        // Non-finite / overflow env must degrade to the default, not trap.
+        #expect(BatchScheduler.resolveDiskBudget(envGB: .infinity, freeBytes: 100 * gib) == dflt)
+        #expect(BatchScheduler.resolveDiskBudget(envGB: .nan, freeBytes: 100 * gib) == dflt)
+        #expect(BatchScheduler.resolveDiskBudget(envGB: 1e30, freeBytes: 100 * gib) == dflt)
     }
 
     @Test("volumeFreeBytes reads a positive capacity for a real directory")

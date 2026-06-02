@@ -261,9 +261,23 @@ path does not exist yet** — it must be built, carefully.
   single-row caches at exact boundaries, before `generate()` slides the
   window; B==1 only. Adversarially reviewed for isolation. Submodule
   `62bf9f2`. Nothing restores yet ⇒ no model output can change.
-- **Steps 3–5 (PENDING):** the restore-admit path
-  (`doCheckpointWarmAdmit` in the submodule, using `merge([c])` +
-  `fromSingleRow`), the BatchScheduler wiring (construct manager for
-  `.checkpoint` models, set the capture closure → `Task { store }`, do
-  `lookup` in `submit`), and the live `logits(warm)==logits(cold)`
-  verification on real Gemma-4 + GPT-OSS.
+- **Step 3 — restore-admit (DONE):** `admitRestoredCheckpoint` rebuilds a
+  B==1 batched cache (`merge([simple])` + `fromSingleRow(rotating)`) from a
+  `Request.restoredCheckpoint` and decodes only the suffix; per-position
+  layer-type validation + cold fallback. Numeric-equivalence gated
+  (restore==cold, with a negative control). Submodule `8c2e2ce`.
+- **Step 4 — BatchScheduler wiring (DONE):** `makeBatchedEngine` classifies
+  the model and builds the matching tier; `.checkpoint` models get a
+  `PrefixCacheManager` + capture closure (store→flushToSSD via Task) +
+  `submit`-time `lookup`. Shared KEK/dir/binding; RAM tier respects
+  `MAX_GB`; manager cleared on teardown/epoch-race. Reviewed for isolation.
+  Provider `22fc60c2`.
+- **Step 5 — live verification (DONE, env-gated):**
+  `HybridCheckpointLiveTests` proves restore@L greedy == cold greedy on REAL
+  Gemma-4 / GPT-OSS weights (real bf16 KV, head dims, windows, layer counts)
+  through the actual serialize→deserialize→rebuild pipeline. Gated on
+  `DARKBLOOM_LIVE_MLX_TESTS` + `_GEMMA`/`_GPTOSS`; skips cleanly in CI.
+
+**Feature complete** behind the default-off `DARKBLOOM_PREFIX_CACHE` flag,
+pending: the submodule PR merge, the TB-007 sign-off, and a run of the live
+gate on real weights.

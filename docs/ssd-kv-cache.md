@@ -69,14 +69,17 @@ attention is hybrid (sliding-window / recurrent layers — Gemma-4 MoE,
 GPT-OSS-20B, Qwen3.5-class MoE) are not served by this tier because their
 per-layer caches aren't all `KVCacheSimple`.
 
-**Built but NOT wired into the serve path:** the checkpoint-level
+**Wired (behind the flag) for hybrid models:** the checkpoint-level
 `PrefixCacheManager` + `PrefixCacheIndex` + `PrefixDigest` + `PrefixCacheRAM`.
 This is an exact-checkpoint cache (hash the prompt at fixed lengths 256,
 512, 1024, …) that supports both `KVCacheSimple` and `RotatingKVCache` via
-`KVCacheSerializer`. It shares the same on-disk format and crypto, and has
-the same load-path guards, but nothing constructs it in production yet
-(only tests). It's documented here because it ships in the binary and is
-the intended next integration step.
+`KVCacheSerializer`, so it serves the **hybrid sliding-window** models
+(Gemma-4, GPT-OSS) the engine block tier excludes. `BatchScheduler`
+constructs it for `.checkpoint`-strategy models; capture happens at
+checkpoint boundaries during prefill, restore on a matching `submit`. It
+shares the same on-disk format, crypto, and load-path guards as the block
+tier. See **[ssd-kv-cache-hybrid-models.md](ssd-kv-cache-hybrid-models.md)**
+for the full capture/restore design and verification.
 
 The pieces actually on the live path are `EncryptedKVStore` +
 `KVCacheSerializer` + `KVCacheKEK` + `EncryptedPrefixCachePersistence`.

@@ -126,4 +126,105 @@ struct HybridCheckpointLiveTests {
         try await assertRestoreMatchesCold(
             modelID: "mlx-community/gpt-oss-20b-MXFP4-Q8", checkpointL: 64)
     }
+
+    /// FULL ENCRYPTED-SSD PATH: prefill prefix → real PrefixCacheManager
+    /// store → flushToSSD (writes encrypted file) → DROP the manager → FRESH
+    /// manager + reconcileWithDisk → lookup (reads SSD, decrypts, per-layer
+    /// validateLayout) → rebuild B==1 batched → suffix → greedy == cold.
+    /// This is the test that proves the encrypted SSD cache actually LOADS
+    /// for a real heterogeneous model (Gemma-4: sliding [8,256] + full
+    /// [2,512]) — the path the bypass equivalence test above does NOT cover.
+    private func assertSSDLoadMatchesCold(modelID: String, checkpointL: Int) async throws {
+        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        do { loaded = try await LiveInferenceFixtures.loadScheduler(modelID: modelID) }
+        catch let skip as LiveFixtureSkip { print("SKIP \(modelID): \(skip)"); return }
+        defer { Task { await loaded.scheduler.unloadModel() } }
+        let container = loaded.container
+
+        let prompt = Array(0..<(checkpointL + 12)).map { ($0 % 64) + 5 }
+        let suffix = Array(prompt[checkpointL...])
+        let maxTokens = 8
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dbkv-live-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Step 1 (in model context): capability gate, per-layer shapes, COLD
+        // reference output, and the prefilled prefix caches to persist.
+        struct Setup: @unchecked Sendable {
+            let cold: [Int]; let layerShapes: [[Int]]; let prefix: [any KVCache]
+        }
+        let setup: Setup? = try await container.perform { ctx -> Setup? in
+            let model = ctx.model
+            guard PrefixCacheStrategy.classify(model.newCache(parameters: nil)) == .checkpoint,
+                  let layerShapes = BatchScheduler.probeLayerShapes(model: model)
+            else { print("SKIP \(modelID): not checkpoint / no shapes"); return nil }
+            let distinct = Set(layerShapes.map { "\($0)" })
+            print("LAYER SHAPES \(modelID): \(distinct.count) distinct -> \(distinct.sorted())")
+
+            let coldCache = model.newCache(parameters: nil)
+            let full = MLXArray(prompt.map { Int32($0) }).reshaped([1, prompt.count])
+            let coldSeed = model.callAsFunction(full, cache: coldCache)[.ellipsis, -1, 0...]
+            let cold = greedyContinue(model: model, cache: coldCache, seedLogits: coldSeed, maxTokens: maxTokens)
+
+            let prefixCache = model.newCache(parameters: nil)
+            let pfx = MLXArray(prompt.prefix(checkpointL).map { Int32($0) }).reshaped([1, checkpointL])
+            _ = model.callAsFunction(pfx, cache: prefixCache)
+            eval(prefixCache.flatMap { $0.innerState() })
+            return Setup(cold: cold, layerShapes: layerShapes, prefix: prefixCache)
+        }
+        guard let setup else { return }  // skipped
+
+        // Step 2 (actor context): store → flush (encrypt to SSD) → DROP the
+        // manager → FRESH manager → reconcile + lookup (reads SSD, decrypts,
+        // PER-LAYER validateLayout). This is the real encrypted-SSD load.
+        let binding = PrefixCacheModelBinding(
+            modelHash: modelID, modelDtype: "x", modelArch: "x", vocabSize: 0,
+            numLayers: setup.layerShapes.count,
+            kvHeads: setup.layerShapes.first?.first ?? 1, headDim: setup.layerShapes.first?.last ?? 1,
+            layerShapes: setup.layerShapes)
+        func makeMgr() -> PrefixCacheManager {
+            PrefixCacheManager(
+                binding: binding, ram: PrefixCacheRAM(),
+                index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
+                kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(),
+                                storage: InMemoryWrappedKEKStorage(identifier: "live")),
+                cacheDir: dir, ssdEnabled: true, boundaries: [checkpointL], now: { 1000 })
+        }
+        let writer = makeMgr()
+        await writer.store(tokens: prompt, checkpointLength: checkpointL,
+                           caches: SendableKVCaches(setup.prefix))
+        _ = await writer.flushToSSD()
+        await writer.flushIndexNow()
+
+        let reader = makeMgr()  // fresh, empty RAM
+        await reader.reconcileWithDisk()
+        guard let hit = await reader.lookup(tokens: prompt) else {
+            Issue.record("SSD lookup MISS — encrypted checkpoint failed to load for \(modelID)")
+            return
+        }
+        #expect(hit.tier == .ssd, "must load from the encrypted SSD file, got \(hit.tier)")
+        #expect(hit.tokenCount == checkpointL)
+
+        // Step 3 (model context): rebuild batched from the SSD-loaded caches,
+        // forward the suffix, greedy — must equal the cold reference.
+        let warm: [Int] = try await container.perform { ctx -> [Int] in
+            let model = ctx.model
+            let batched: [any KVCache] = hit.caches.map { layer in
+                if let rot = layer as? RotatingKVCache { return BatchRotatingKVCache.fromSingleRow(rot) }
+                return BatchKVCache.merge([layer as! KVCacheSimple])
+            }
+            let sfx = MLXArray(suffix.map { Int32($0) }).reshaped([1, suffix.count])
+            let seed = model.callAsFunction(sfx, cache: batched)[.ellipsis, -1, 0...]
+            return greedyContinue(model: model, cache: batched, seedLogits: seed, maxTokens: maxTokens)
+        }
+        #expect(warm == setup.cold,
+            "\(modelID) SSD-load restore@\(checkpointL): warm \(warm) != cold \(setup.cold)")
+    }
+
+    @Test(.enabled(if: LiveInferenceFixtures.gemmaTestsEnabled))
+    func gemma4SSDLoadMatchesCold() async throws {
+        try await assertSSDLoadMatchesCold(
+            modelID: "mlx-community/gemma-4-26b-a4b-it-8bit", checkpointL: 256)
+    }
 }

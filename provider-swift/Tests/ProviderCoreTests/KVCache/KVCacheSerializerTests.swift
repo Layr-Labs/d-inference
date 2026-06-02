@@ -250,6 +250,54 @@ func validateLayoutRejectsWrongKvHeadsOrHeadDim() throws {
     }
 }
 
+@Test
+func validateLayoutPerLayerAcceptsHeterogeneousModel() throws {
+    // REGRESSION (real Gemma-4 shape): the model interleaves sliding layers
+    // [kvHeads=8, headDim=256] and full layers [kvHeads=2, headDim=512]. A
+    // single (kvHeads, headDim) pair CANNOT describe it — the scalar guard
+    // would reject the model's own files and silently disable the SSD cache.
+    // Build a mixed 3-layer cache and validate per-layer.
+    func cache(kv: Int, hd: Int) -> KVCacheSimple {
+        let c = KVCacheSimple()
+        let k = MLXArray((0..<(kv * 5 * hd)).map { Float($0 % 7) }, [1, kv, 5, hd])
+        let v = MLXArray((0..<(kv * 5 * hd)).map { Float($0 % 9) }, [1, kv, 5, hd])
+        _ = c.update(keys: k, values: v); eval(c.innerState())
+        return c
+    }
+    let layers: [any KVCache] = [cache(kv: 8, hd: 256), cache(kv: 2, hd: 512), cache(kv: 8, hd: 256)]
+    let (_, layout) = try KVCacheSerializer.serialize(layers)
+    let shapes = [[8, 256], [2, 512], [8, 256]]
+
+    // Per-layer guard accepts the heterogeneous model.
+    try KVCacheSerializer.validateLayout(layout, layerShapes: shapes)
+
+    // The OLD scalar guard would WRONGLY reject it (proves the bug existed):
+    #expect(throws: KVCacheSerializerError.self) {
+        try KVCacheSerializer.validateLayout(layout, kvHeads: 8, headDim: 256)
+    }
+}
+
+@Test
+func validateLayoutPerLayerRejectsMismatchAndCount() throws {
+    func cache(kv: Int, hd: Int) -> KVCacheSimple {
+        let c = KVCacheSimple()
+        let k = MLXArray(Array(repeating: Float(1), count: kv * 3 * hd), [1, kv, 3, hd])
+        _ = c.update(keys: k, values: k); eval(c.innerState())
+        return c
+    }
+    let (_, layout) = try KVCacheSerializer.serialize([cache(kv: 8, hd: 256), cache(kv: 2, hd: 512)])
+    // Wrong per-layer shape (swapped order) → reject.
+    #expect(throws: KVCacheSerializerError.self) {
+        try KVCacheSerializer.validateLayout(layout, layerShapes: [[2, 512], [8, 256]])
+    }
+    // Layer-count mismatch (foreign file) → reject.
+    #expect(throws: KVCacheSerializerError.self) {
+        try KVCacheSerializer.validateLayout(layout, layerShapes: [[8, 256]])
+    }
+    // Correct → accept.
+    try KVCacheSerializer.validateLayout(layout, layerShapes: [[8, 256], [2, 512]])
+}
+
 // MARK: - metaState validation (G2): malformed metaState throws, never fatalErrors
 
 @Test

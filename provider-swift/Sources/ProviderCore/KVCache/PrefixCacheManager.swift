@@ -51,10 +51,17 @@ public struct PrefixCacheModelBinding: Sendable {
     public let numLayers: Int
     public let kvHeads: Int
     public let headDim: Int
+    /// Per-layer reference KV shape `[kvHeads, headDim]` captured from the
+    /// live `model.newCache()`. REQUIRED for heterogeneous models (e.g.
+    /// Gemma-4 interleaves sliding `[8,256]` and full `[2,512]` layers); the
+    /// scalar `kvHeads`/`headDim` above cannot describe them and would make
+    /// the load-time shape guard reject the model's own files. nil ⇒ fall
+    /// back to the scalar check (uniform models / older callers / tests).
+    public let layerShapes: [[Int]]?
 
     public init(
         modelHash: String, modelDtype: String, modelArch: String, vocabSize: Int,
-        numLayers: Int, kvHeads: Int, headDim: Int
+        numLayers: Int, kvHeads: Int, headDim: Int, layerShapes: [[Int]]? = nil
     ) {
         self.modelHash = modelHash
         self.modelDtype = modelDtype
@@ -63,6 +70,7 @@ public struct PrefixCacheModelBinding: Sendable {
         self.numLayers = numLayers
         self.kvHeads = kvHeads
         self.headDim = headDim
+        self.layerShapes = layerShapes
     }
 }
 
@@ -275,8 +283,14 @@ public actor PrefixCacheManager {
             }
             // Bind the actual KV tensor shapes (not just the metadata
             // integers) to the live model before seeding attention.
-            try KVCacheSerializer.validateLayout(
-                layout, kvHeads: binding.kvHeads, headDim: binding.headDim)
+            // Per-layer shape validation for heterogeneous models (Gemma-4);
+            // fall back to the scalar check when no per-layer reference.
+            if let layerShapes = binding.layerShapes {
+                try KVCacheSerializer.validateLayout(layout, layerShapes: layerShapes)
+            } else {
+                try KVCacheSerializer.validateLayout(
+                    layout, kvHeads: binding.kvHeads, headDim: binding.headDim)
+            }
             caches = try KVCacheSerializer.deserialize(chunks: chunks, layout: layout)
         } catch {
             stats.ssdReadErrors += 1

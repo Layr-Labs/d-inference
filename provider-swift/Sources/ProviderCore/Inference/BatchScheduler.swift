@@ -328,8 +328,23 @@ public actor BatchScheduler {
                     // snapshot never claims tokens a window has discarded.
                     let window = PrefixCacheStrategy.minSlidingWindow(ctx.model.newCache(parameters: nil)) ?? 0
                     boundaries = PrefixDigest.checkpoints(forSlidingWindow: window)
+                    // Capture PER-LAYER [kvHeads, headDim] ground truth from a
+                    // 1-token probe prefill. Heterogeneous models (Gemma-4:
+                    // sliding [8,256] + full [2,512]) need this — a single
+                    // (kvHeads, headDim) pair can't describe them and the
+                    // load-time shape guard would reject the model's own files.
+                    let layerShapes = Self.probeLayerShapes(model: ctx.model)
+                    let checkpointBinding = PrefixCacheModelBinding(
+                        modelHash: backing.binding.modelHash,
+                        modelDtype: backing.binding.modelDtype,
+                        modelArch: backing.binding.modelArch,
+                        vocabSize: backing.binding.vocabSize,
+                        numLayers: backing.binding.numLayers,
+                        kvHeads: backing.binding.kvHeads,
+                        headDim: backing.binding.headDim,
+                        layerShapes: layerShapes)
                     checkpointManager = PrefixCacheManager(
-                        binding: backing.binding,
+                        binding: checkpointBinding,
                         // RAM tier respects the same memory budget as the
                         // engine block tier (DARKBLOOM_PREFIX_CACHE_MAX_GB).
                         ram: PrefixCacheRAM(maxBytes: prefixCacheBudgetBytes()),
@@ -496,6 +511,28 @@ public actor BatchScheduler {
     }
 
     // MARK: - Prefix cache sizing/binding helpers (testable)
+
+    /// Per-layer `[kvHeads, headDim]` ground truth for a model, derived by
+    /// running a tiny 1-token prefill through a throwaway cache so every
+    /// layer materializes its KV (the cache state is empty before any
+    /// update). Needed because heterogeneous models (Gemma-4: sliding
+    /// `[8,256]` + full `[2,512]` layers) can't be described by a single
+    /// (kvHeads, headDim), and the load-time shape guard validates per layer.
+    /// Returns nil on any failure (caller falls back to the scalar guard).
+    static func probeLayerShapes(model: any LanguageModel) -> [[Int]]? {
+        let caches = model.newCache(parameters: nil)
+        guard !caches.isEmpty else { return nil }
+        let probe = MLXArray([Int32(0)]).reshaped([1, 1])
+        _ = model.callAsFunction(probe, cache: caches)
+        for c in caches { eval(c.innerState()) }
+        var shapes: [[Int]] = []
+        shapes.reserveCapacity(caches.count)
+        for c in caches {
+            guard let k = c.state.first, k.shape.count == 4 else { return nil }
+            shapes.append([k.dim(1), k.dim(3)])  // [kvHeads, headDim]
+        }
+        return shapes
+    }
 
     /// Cache identity: bind to the weight hash so a re-download under the
     /// same model id with different weights invalidates old KV. Falls back

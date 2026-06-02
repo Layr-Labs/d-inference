@@ -237,6 +237,39 @@ public enum KVCacheSerializer {
         }
     }
 
+    /// Per-layer shape validation for HETEROGENEOUS models. `layerShapes[i]`
+    /// is the expected `[kvHeads, headDim]` for layer i (from the live
+    /// `model.newCache()`). Gemma-4 interleaves sliding `[8,256]` and full
+    /// `[2,512]` layers, so a single (kvHeads, headDim) pair cannot describe
+    /// it — using the scalar overload there would reject the model's OWN
+    /// freshly-written files and silently disable the SSD cache. Requires the
+    /// layer COUNT to match too (a layer-count mismatch is a wrong/foreign
+    /// file). Each KV array is [batch, kvHeads, seq, headDim] → dims 1 and 3.
+    public static func validateLayout(_ layout: KVCacheLayout, layerShapes: [[Int]]) throws {
+        guard layout.layers.count == layerShapes.count else {
+            throw KVCacheSerializerError.reconstructionFailed(
+                "layer count \(layout.layers.count) disagrees with model (\(layerShapes.count))")
+        }
+        for (li, layer) in layout.layers.enumerated() {
+            let expected = layerShapes[li]  // [kvHeads, headDim]
+            guard expected.count == 2 else {
+                throw KVCacheSerializerError.reconstructionFailed(
+                    "layer \(li): malformed reference shape \(expected)")
+            }
+            for (ai, arr) in layer.arrays.enumerated() {
+                guard arr.shape.count == 4 else {
+                    throw KVCacheSerializerError.reconstructionFailed(
+                        "layer \(li) array \(ai): expected rank-4 KV tensor, got shape \(arr.shape)")
+                }
+                guard arr.shape[1] == expected[0], arr.shape[3] == expected[1] else {
+                    throw KVCacheSerializerError.reconstructionFailed(
+                        "layer \(li) array \(ai): KV shape \(arr.shape) disagrees with model layer "
+                            + "(kvHeads=\(expected[0]), headDim=\(expected[1]))")
+                }
+            }
+        }
+    }
+
     /// Validate a metaState array against the requirements of its cache
     /// type's setter BEFORE assigning it. The engine's `metaState` setters
     /// `fatalError` on malformed input (wrong count, non-integer fields,

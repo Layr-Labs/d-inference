@@ -372,6 +372,11 @@ struct HybridCheckpointLiveTests {
             acc + cache.innerState().reduce(0) { $0 + $1.nbytes }
         }
         print("BIGKV checkpoint in-memory size = \(String(format: "%.2f", Double(checkpointBytes) / 1_073_741_824))GB")
+        // Re-eval caches right before store to ensure MLX hasn't freed them.
+        // The caches were constructed inside container.perform, eval'd there,
+        // then returned. MLX's memory budget may have freed the backing arrays
+        // between then and now. Re-evaluating ensures they're materialized.
+        eval(setup.prefix.flatMap { $0.innerState() })
         let writer = makeMgr()
         let writerSeesBytes = await writer.computeByteSizeOfCaches(setup.prefix)
         print("BIGKV DEBUG: manager computes \(String(format: "%.2f", Double(writerSeesBytes) / 1_073_741_824))GB for the same caches (test computed \(String(format: "%.2f", Double(checkpointBytes) / 1_073_741_824))GB)")

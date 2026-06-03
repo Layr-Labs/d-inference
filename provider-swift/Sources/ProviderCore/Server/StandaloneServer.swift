@@ -99,11 +99,6 @@ public actor StandaloneServer {
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
     static let schedulerDefaultMaxTokens = 4096
-    /// Free-memory headroom required to admit a model load, as a multiple of
-    /// the model's estimated weight footprint. 2x leaves room for KV-cache
-    /// growth without blocking loads when other models are actively serving on
-    /// the same machine (3x was too conservative and rejected loads that fit).
-    static let modelLoadMemoryMultiplier = 2.0
 
     /// Map a scheduler-side admission error message to an HTTP status. Used
     /// by tests and by any custom error-mapping middleware. Retained here
@@ -496,7 +491,9 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             try await evictIfNeededForLoad()
             try await ensureMemoryHeadroomForLoad(
-                requiredGb: modelInfo.estimatedMemoryGb * Self.modelLoadMemoryMultiplier
+                requiredGb: ModelLoadAdmission.requiredToLoadGb(
+                    weightsGb: modelInfo.estimatedMemoryGb,
+                    headroomGb: ModelLoadAdmission.defaultLoadHeadroomGb)
             )
             try Task.checkCancellation()
             let container = try await LLMModelFactory.shared.loadContainer(

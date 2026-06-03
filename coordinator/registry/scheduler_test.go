@@ -962,6 +962,26 @@ func TestQuickCapacityCheckReportsModelTooLarge(t *testing.T) {
 	}
 }
 
+// TestModelFitUsesProviderMultiplier guards the 2.4x gate: a 28 GB-weight model
+// passes a naive 2.0x check (56 ≤ 64) but the provider actually needs ~2.4x
+// (≈67 GB) and rejects it at load on a 64 GB box. The coordinator must surface
+// model_too_large rather than dispatch a model the provider can never load.
+func TestModelFitUsesProviderMultiplier(t *testing.T) {
+	reg := New(testLogger())
+	model := "fit-multiplier-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28}})
+	p := makeSchedulerProvider(t, reg, "box64", model, 80)
+	p.mu.Lock()
+	p.BackendCapacity.TotalMemoryGB = 64
+	p.BackendCapacity.Slots[0].State = "idle_shutdown" // cold: gate applies
+	p.mu.Unlock()
+
+	_, _, tooLarge := reg.QuickCapacityCheck(model, 100, 128)
+	if tooLarge != 1 {
+		t.Fatalf("28GB model on 64GB box: want modelTooLarge=1 (needs ~67GB at 2.4x), got %d", tooLarge)
+	}
+}
+
 func TestPerSlotMaxConcurrencyUsesBackendReportedLoad(t *testing.T) {
 	reg := New(testLogger())
 	model := "backend-loaded-model"

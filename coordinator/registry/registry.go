@@ -614,11 +614,17 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	// the "registry says hardware but the live verdict is self_signed" drift.
 	// The challenge-success path (verifyChallengeResponse) re-upgrades to
 	// hardware once the live legs pass.
-	p.TrustLevel = TrustLevel(rec.TrustLevel)
-	if trustRank(p.TrustLevel) > trustRank(TrustSelfSigned) {
+	if r := trustRank(TrustLevel(rec.TrustLevel)); r > trustRank(TrustSelfSigned) {
 		p.TrustLevel = TrustSelfSigned
-		p.Attested = false
 	} else {
+		p.TrustLevel = TrustLevel(rec.TrustLevel)
+	}
+	// Do NOT clobber a fresh live attestation: verifyProviderAttestation runs
+	// just before this and may have already set Attested=true (self_signed) from
+	// a passing SE attestation. Only fall back to the stored flag when we don't
+	// already have a fresh one — otherwise consumers/stats would see
+	// X-Provider-Attested:false despite a successful live attestation.
+	if !p.Attested {
 		p.Attested = rec.Attested
 	}
 	p.MDAVerified = rec.MDAVerified

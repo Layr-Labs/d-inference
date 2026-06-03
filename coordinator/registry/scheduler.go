@@ -81,6 +81,7 @@ type routingSnapshot struct {
 	gpuMemoryActiveGB  float64
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
+	minRAMGb           int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
 	modelLoaded        bool    // true when the requested model is the currently-running slot
 	availableOnDisk    bool    // model is in provider's Models list but not currently loaded
 
@@ -117,33 +118,33 @@ const (
 	rejectModelTooLarge
 )
 
-// modelMemoryHeadroomFactor approximates a model's resident GPU footprint as a
-// multiple of its CATALOG on-disk weight size (SizeGB = TotalSizeBytes/1e9).
-// It must match what the provider actually requires at load time so the
-// coordinator never dispatches a model the provider will reject:
-//
-//	provider estimatedMemoryGb = weightGiB * 1.2   (ModelScanner overhead)
-//	provider requiredGb        = estimatedMemoryGb * 2.0   (ensureModelLoaded)
-//	                           ≈ weight * 2.4
-//
-// So 2.4, not 2.0: at 2.0 a ~28 GB-weight model passes here (28*2=56 ≤ 64) but
-// the provider needs 28*2.4≈67 GB and rejects it at load on a 64 GB Mac. This
-// gate only runs for COLD loads — a resident ("running"/"idle") model is
-// exempted by the caller, so a slightly conservative factor can't wrongly evict
-// a model that already fit.
-const modelMemoryHeadroomFactor = 2.4
+// modelMemoryHeadroomFactor is the FALLBACK multiple of the on-disk weight size
+// used to estimate a model's resident footprint ONLY when the catalog has no
+// authoritative min_ram_gb. Prefer min_ram_gb (see modelFitsHardware): a
+// synthetic multiple of the raw weight does not match what the operator
+// published or what the provider actually loads, and at 2.x it wrongly rejected
+// catalog-qualified nodes (e.g. gpt-oss-20b min_ram_gb=24 vs 12.1*2.x>24, and
+// gemma-4-26b min_ram_gb=36 vs 28*2.x rejecting the whole 64 GB tier).
+const modelMemoryHeadroomFactor = 2.0
 
-// modelFitsHardware reports whether a model of the given on-disk weight size
-// (GB) can plausibly load on a node with the given total unified memory (GB).
-// It fails OPEN when either input is unknown (<=0): callers that need a hard
-// "definitely cannot fit" signal must check sizeGB>0 themselves. Shared by the
-// consumer-routing admission gate (freeMemoryAdmits) and the pre-warm gate
-// (eligibleProviderPendingCount) so the two can never drift.
-func modelFitsHardware(modelSizeGB, totalMemoryGB float64) bool {
-	if modelSizeGB <= 0 || totalMemoryGB <= 0 {
+// modelFitsHardware reports whether a model can run on a node with the given
+// total unified memory (GB). It prefers the catalog's authoritative min_ram_gb
+// (the operator-published requirement) and only falls back to a heuristic
+// multiple of the on-disk weight size when min_ram_gb is unknown. Fails OPEN
+// when nothing is known. The provider still performs the final precise check at
+// load time; this gate only filters models that clearly cannot fit per the
+// catalog's own contract.
+func modelFitsHardware(minRAMGb int, modelSizeGB, totalMemoryGB float64) bool {
+	if totalMemoryGB <= 0 {
 		return true
 	}
-	return modelSizeGB*modelMemoryHeadroomFactor <= totalMemoryGB
+	if minRAMGb > 0 {
+		return float64(minRAMGb) <= totalMemoryGB
+	}
+	if modelSizeGB > 0 {
+		return modelSizeGB*modelMemoryHeadroomFactor <= totalMemoryGB
+	}
+	return true
 }
 
 // costBreakdown decomposes the routing cost so callers can log or
@@ -444,6 +445,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 		prefillTPS:    resolvedPrefillTPS(p),
 		totalMemoryGB: float64(p.Hardware.MemoryGB),
 		modelSizeGB:   r.catalogSizeGBLocked(model),
+		minRAMGb:      r.catalogMinRAMGbLocked(model),
 	}
 
 	for _, pr := range p.pendingReqs {
@@ -602,7 +604,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// idle-but-loaded provider would be wrongly excluded. Reported as
 	// rejectModelTooLarge (permanent, not capacity).
 	modelResident := snap.slotState == "running" || snap.slotState == "idle"
-	if !modelResident && !modelFitsHardware(snap.modelSizeGB, snap.totalMemoryGB) {
+	if !modelResident && !modelFitsHardware(snap.minRAMGb, snap.modelSizeGB, snap.totalMemoryGB) {
 		return nil, rejectModelTooLarge, false
 	}
 
@@ -907,6 +909,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 			totalPending:  p.pendingCount(),
 			totalMemoryGB: float64(p.Hardware.MemoryGB),
 			modelSizeGB:   r.catalogSizeGBLocked(model),
+			minRAMGb:      r.catalogMinRAMGbLocked(model),
 		}
 		for _, pending := range p.pendingReqs {
 			if pending.Model != model {
@@ -943,7 +946,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 		// Skipped for a resident ("running"/"idle") model, which has demonstrably
 		// fit.
 		modelResident := snap.slotState == "running" || snap.slotState == "idle"
-		if !modelResident && !modelFitsHardware(snap.modelSizeGB, snap.totalMemoryGB) {
+		if !modelResident && !modelFitsHardware(snap.minRAMGb, snap.modelSizeGB, snap.totalMemoryGB) {
 			modelTooLarge++
 			continue
 		}

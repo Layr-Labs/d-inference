@@ -962,23 +962,53 @@ func TestQuickCapacityCheckReportsModelTooLarge(t *testing.T) {
 	}
 }
 
-// TestModelFitUsesProviderMultiplier guards the 2.4x gate: a 28 GB-weight model
-// passes a naive 2.0x check (56 ≤ 64) but the provider actually needs ~2.4x
-// (≈67 GB) and rejects it at load on a 64 GB box. The coordinator must surface
-// model_too_large rather than dispatch a model the provider can never load.
-func TestModelFitUsesProviderMultiplier(t *testing.T) {
+// TestModelFitPrefersCatalogMinRAM is the core fix: the fit gate must use the
+// catalog's authoritative min_ram_gb, NOT a synthetic multiple of the weight.
+// A 28 GB-weight model (gemma-like) with min_ram_gb=36 must be ADMITTED on a
+// 64 GB box (a multiplier of 2.x would have wrongly rejected the whole 64 GB
+// tier), and REJECTED on a 24 GB box (below the published minimum).
+func TestModelFitPrefersCatalogMinRAM(t *testing.T) {
+	model := "gemma-like"
+	// Qualifies on 64 GB (min_ram_gb=36 ≤ 64).
 	reg := New(testLogger())
-	model := "fit-multiplier-model"
-	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28}})
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28, MinRAMGB: 36}})
 	p := makeSchedulerProvider(t, reg, "box64", model, 80)
 	p.mu.Lock()
 	p.BackendCapacity.TotalMemoryGB = 64
 	p.BackendCapacity.Slots[0].State = "idle_shutdown" // cold: gate applies
 	p.mu.Unlock()
+	if _, _, tooLarge := reg.QuickCapacityCheck(model, 100, 128); tooLarge != 0 {
+		t.Fatalf("min_ram_gb=36 on 64GB box must be admitted, got modelTooLarge=%d", tooLarge)
+	}
 
-	_, _, tooLarge := reg.QuickCapacityCheck(model, 100, 128)
-	if tooLarge != 1 {
-		t.Fatalf("28GB model on 64GB box: want modelTooLarge=1 (needs ~67GB at 2.4x), got %d", tooLarge)
+	// Rejected on 24 GB (below min_ram_gb=36).
+	reg2 := New(testLogger())
+	reg2.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28, MinRAMGB: 36}})
+	small := makeSchedulerProvider(t, reg2, "box24", model, 80)
+	small.mu.Lock()
+	small.BackendCapacity.TotalMemoryGB = 24
+	small.BackendCapacity.Slots[0].State = "idle_shutdown"
+	small.mu.Unlock()
+	if _, _, tooLarge := reg2.QuickCapacityCheck(model, 100, 128); tooLarge != 1 {
+		t.Fatalf("min_ram_gb=36 on 24GB box must be model_too_large, got %d", tooLarge)
+	}
+}
+
+// TestModelFitGptOssOn24GB is the operator-facing case: gpt-oss-20b
+// (min_ram_gb=24) must be ADMITTED on a 24 GB box — the catalog says it
+// qualifies, and a weight×multiplier gate (12.1×2.x > 24) would wrongly reject
+// it and starve every 24 GB node of traffic.
+func TestModelFitGptOssOn24GB(t *testing.T) {
+	reg := New(testLogger())
+	model := "gpt-oss-20b"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 12.1, MinRAMGB: 24}})
+	p := makeSchedulerProvider(t, reg, "box24", model, 80)
+	p.mu.Lock()
+	p.BackendCapacity.TotalMemoryGB = 24
+	p.BackendCapacity.Slots[0].State = "idle_shutdown"
+	p.mu.Unlock()
+	if _, _, tooLarge := reg.QuickCapacityCheck(model, 100, 128); tooLarge != 0 {
+		t.Fatalf("gpt-oss-20b (min_ram_gb=24) on a 24GB box must be admitted, got modelTooLarge=%d", tooLarge)
 	}
 }
 

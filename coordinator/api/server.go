@@ -719,6 +719,7 @@ func (s *Server) SyncModelCatalog() {
 			ID:         row.ID,
 			WeightHash: row.ActiveVersion.AggregateSHA256,
 			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
+			MinRAMGB:   row.MinRAMGB,
 		})
 	}
 	s.registry.SetModelCatalog(entries)

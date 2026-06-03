@@ -823,6 +823,10 @@ type CatalogEntry struct {
 	ID         string
 	WeightHash string  // expected SHA-256 weight fingerprint (empty = not enforced)
 	SizeGB     float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
+	// MinRAMGB is the catalog's authoritative minimum unified memory (GB) to run
+	// this model — the operator-published requirement. The hardware-fit gate
+	// prefers this over any heuristic multiple of SizeGB. Zero = unknown.
+	MinRAMGB int
 }
 
 // SetModelCatalog updates the set of active models. Only models in this
@@ -919,6 +923,15 @@ func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) b
 func (r *Registry) catalogSizeGBLocked(model string) float64 {
 	if e, ok := r.modelCatalog[model]; ok {
 		return e.SizeGB
+	}
+	return 0
+}
+
+// catalogMinRAMGbLocked returns the model's authoritative minimum-RAM
+// requirement (GB) from the catalog, or 0 when unknown. Caller must hold r.mu.
+func (r *Registry) catalogMinRAMGbLocked(model string) int {
+	if e, ok := r.modelCatalog[model]; ok {
+		return e.MinRAMGB
 	}
 	return 0
 }
@@ -1488,13 +1501,15 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 
-	// Memory gate: reject providers that cannot physically load the model.
-	// Shares modelFitsHardware with the consumer-routing admission gate
-	// (freeMemoryAdmits) so the two heuristics can never drift. This prevents
-	// the coordinator from sending load_model commands to machines that will
-	// always OOM-reject them.
-	if entry, ok := r.modelCatalog[model]; ok && entry.SizeGB > 0 {
-		if !modelFitsHardware(entry.SizeGB, float64(p.Hardware.MemoryGB)) {
+	// Memory gate: reject providers that cannot run the model per the catalog's
+	// authoritative min_ram_gb (falling back to the weight heuristic only when
+	// unknown). Shares modelFitsHardware with the consumer-routing admission
+	// gate so the two can never drift. This prevents the coordinator from
+	// sending load_model commands to machines that clearly cannot fit it, while
+	// trusting the operator-published requirement rather than a synthetic
+	// multiple that would exclude catalog-qualified nodes.
+	if entry, ok := r.modelCatalog[model]; ok && (entry.MinRAMGB > 0 || entry.SizeGB > 0) {
+		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
 			return 0, false
 		}
 	}

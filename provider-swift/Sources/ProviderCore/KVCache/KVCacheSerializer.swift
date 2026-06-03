@@ -35,6 +35,17 @@
 /// Byte round-trip uses `MLXArray.asData(access: .copy)` (contiguous
 /// raw bytes + shape + dtype) and `MLXArray(data:shape:dtype:)` — dtype-
 /// agnostic, so bf16 round-trips exactly.
+///
+/// DO NOT "dedup K==V" for Gemma's `attention_k_eq_v` layers to halve the
+/// on-disk size. That flag shares the *projection weights* (V reuses K's
+/// raw projection, so there is no separate `v_proj`), NOT the cached
+/// tensors. Verified in `Gemma4Text.swift`: the cached K = `RoPE(kNorm(kRaw))`
+/// (full RMSNorm WITH learned scale + rotary), while V = `vNorm(kRaw)`
+/// (`RMSNormNoScale`, NO scale, NO rotary). K and V are therefore
+/// numerically DIFFERENT tensors; storing one and aliasing it as the other
+/// would silently corrupt V on restore. The only lever for smaller
+/// endpoints is lossy fp8/int8 KV (which breaks bit-exact restore) — a
+/// separate, opt-in decision, not a free dedup.
 
 import Foundation
 import MLX

@@ -110,7 +110,31 @@ type candidateRejection int
 const (
 	rejectNone candidateRejection = iota
 	rejectCapacity
+	// rejectModelTooLarge means the model's resident footprint cannot fit in
+	// this provider's total memory under any load state. Unlike rejectCapacity
+	// (transient "full, retry later") this is permanent for this provider, so
+	// it must NOT inflate the busy/429 signal.
+	rejectModelTooLarge
 )
+
+// modelMemoryHeadroomFactor approximates a model's resident GPU footprint
+// (weights + KV cache + activations) as a multiple of its on-disk weight
+// size. The provider uses 2.0 (ensureModelLoaded); the coordinator uses a
+// slightly looser 2.5 and lets the provider make the final call.
+const modelMemoryHeadroomFactor = 2.5
+
+// modelFitsHardware reports whether a model of the given on-disk weight size
+// (GB) can plausibly load on a node with the given total unified memory (GB).
+// It fails OPEN when either input is unknown (<=0): callers that need a hard
+// "definitely cannot fit" signal must check sizeGB>0 themselves. Shared by the
+// consumer-routing admission gate (freeMemoryAdmits) and the pre-warm gate
+// (eligibleProviderPendingCount) so the two can never drift.
+func modelFitsHardware(modelSizeGB, totalMemoryGB float64) bool {
+	if modelSizeGB <= 0 || totalMemoryGB <= 0 {
+		return true
+	}
+	return modelSizeGB*modelMemoryHeadroomFactor <= totalMemoryGB
+}
 
 // costBreakdown decomposes the routing cost so callers can log or
 // expose individual contributions. The numeric values match the terms
@@ -141,9 +165,14 @@ type RoutingDecision struct {
 	HealthMs           float64 // memory/CPU/thermal/GPU-util contribution
 	EffectiveQueue     int     // max(pendingForModel, backendRunning+backendWaiting)
 	CandidateCount     int     // total candidates that passed all gates
-	CapacityRejections int     // candidates rejected by the free-memory admission gate
-	EffectiveTPS       float64 // load-scaled decode TPS used in cost (Phase 4)
-	StaticTPS          float64 // benchmarked decode TPS before load scaling
+	CapacityRejections int     // candidates rejected by the free-memory admission gate (transient: full)
+	// ModelTooLargeRejections counts providers that serve the model but whose
+	// total memory can never fit it (permanent). Kept separate from
+	// CapacityRejections so callers don't emit a 429/"over capacity, retry"
+	// signal for a model that will never fit anywhere of this size.
+	ModelTooLargeRejections int
+	EffectiveTPS            float64 // load-scaled decode TPS used in cost (Phase 4)
+	StaticTPS               float64 // benchmarked decode TPS before load scaling
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -174,12 +203,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	selected, candidateCount, capacityRejections := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	selected, candidateCount, capacityRejections, tooLargeRejections := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if selected == nil {
 		return nil, RoutingDecision{
-			Model:              model,
-			CandidateCount:     candidateCount,
-			CapacityRejections: capacityRejections,
+			Model:                   model,
+			CandidateCount:          candidateCount,
+			CapacityRejections:      capacityRejections,
+			ModelTooLargeRejections: tooLargeRejections,
 		}
 	}
 
@@ -191,9 +221,10 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// changed the pending set between snapshot and reservation.
 	if !r.providerCanAdmitLocked(p, model) {
 		return nil, RoutingDecision{
-			Model:              model,
-			CandidateCount:     candidateCount,
-			CapacityRejections: capacityRejections,
+			Model:                   model,
+			CandidateCount:          candidateCount,
+			CapacityRejections:      capacityRejections,
+			ModelTooLargeRejections: tooLargeRejections,
 		}
 	}
 
@@ -205,20 +236,21 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 
 	bd := selected.breakdown
 	decision := RoutingDecision{
-		ProviderID:         p.ID,
-		Model:              model,
-		CostMs:             bd.Total,
-		StateMs:            bd.StateMs,
-		QueueMs:            bd.QueueMs,
-		PendingMs:          bd.PendingMs,
-		BacklogMs:          bd.BacklogMs,
-		ThisReqMs:          bd.ThisReqMs,
-		HealthMs:           bd.HealthMs,
-		EffectiveQueue:     selected.effectiveQueue,
-		CandidateCount:     candidateCount,
-		CapacityRejections: capacityRejections,
-		EffectiveTPS:       selected.effectiveTPS,
-		StaticTPS:          selected.snapshot.decodeTPS,
+		ProviderID:              p.ID,
+		Model:                   model,
+		CostMs:                  bd.Total,
+		StateMs:                 bd.StateMs,
+		QueueMs:                 bd.QueueMs,
+		PendingMs:               bd.PendingMs,
+		BacklogMs:               bd.BacklogMs,
+		ThisReqMs:               bd.ThisReqMs,
+		HealthMs:                bd.HealthMs,
+		EffectiveQueue:          selected.effectiveQueue,
+		CandidateCount:          candidateCount,
+		CapacityRejections:      capacityRejections,
+		ModelTooLargeRejections: tooLargeRejections,
+		EffectiveTPS:            selected.effectiveTPS,
+		StaticTPS:               selected.snapshot.decodeTPS,
 	}
 	return p, decision
 }
@@ -229,7 +261,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // distinguish "no provider serves this model" from "every fitting
 // provider is over-subscribed", which is the difference between the
 // no_provider and over_capacity outcome counters.
-func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int) {
+func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int) {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -248,6 +280,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	candidates := make([]*routingCandidate, 0, len(r.providers))
 	candidateCount := 0
 	capacityRejections := 0
+	tooLargeRejections := 0
 	for _, p := range r.providers {
 		if len(allowedSerials) > 0 {
 			if !providerMatchesAllowedSerial(p, allowedSerials) {
@@ -263,8 +296,11 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 		candidate, reason, ok := r.buildCandidateWithReason(snap, pr)
 		if !ok {
-			if reason == rejectCapacity {
+			switch reason {
+			case rejectCapacity:
 				capacityRejections++
+			case rejectModelTooLarge:
+				tooLargeRejections++
 			}
 			continue
 		}
@@ -273,7 +309,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	}
 
 	if len(candidates) == 0 {
-		return nil, candidateCount, capacityRejections
+		return nil, candidateCount, capacityRejections, tooLargeRejections
 	}
 
 	var best *routingCandidate
@@ -316,7 +352,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount, capacityRejections
+	return winner, candidateCount, capacityRejections, tooLargeRejections
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -538,6 +574,20 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	reqPrompt := pr.EstimatedPromptTokens
 	if reqPrompt < 0 {
 		reqPrompt = 0
+	}
+
+	// Absolute hardware-fit gate (cold-load only, both admission modes). A model
+	// whose footprint can never fit in this node's total memory must not be
+	// routed here regardless of advertised token budget — otherwise the provider
+	// 503s at load time ("Insufficient memory … need Y GB") and the request
+	// bounces. This is the hole that let a 93.7 GB model get dispatched to 48/64
+	// GB boxes: the token-budget admission path below never checked physical fit.
+	// Only applies when the model is NOT already resident — modelFitsHardware
+	// uses a conservative *2.5 cold-load headroom estimate, so a model that is
+	// already loaded and serving (and therefore demonstrably fits) must not be
+	// rejected by it. Reported as rejectModelTooLarge (permanent, not capacity).
+	if !snap.modelLoaded && !modelFitsHardware(snap.modelSizeGB, snap.totalMemoryGB) {
+		return nil, rejectModelTooLarge, false
 	}
 
 	// Free-memory admission gate (Phase 1). A provider that claims to

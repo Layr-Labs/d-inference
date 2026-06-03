@@ -143,6 +143,12 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
+// errModelTooLarge is the dispatch error returned when providers serve the
+// requested model but none of them has enough total memory to ever load it.
+// Distinct from "no provider available" so the caller rejects fast instead of
+// queuing for 120s — queueing can't help a model that will never fit.
+const errModelTooLarge = "model too large for any available provider"
+
 // dispatchOneProvider encrypts and sends an inference request to a single
 // provider. It returns the pending request and provider on success, or an
 // error string on failure. The excludeProviders set is updated on failure.
@@ -198,6 +204,11 @@ func (s *Server) dispatchOneProvider(
 
 	provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
 	if provider == nil {
+		// Providers serve this model but none can physically fit it: don't make
+		// the caller queue/retry for something that will never load.
+		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
+			return nil, nil, decision, errModelTooLarge, http.StatusServiceUnavailable
+		}
 		return nil, nil, decision, "no provider available", http.StatusServiceUnavailable
 	}
 	pendingCleanup := true
@@ -1134,6 +1145,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			isResponsesAPI, timing, excludeProviders,
 		)
 		if provider == nil {
+			// No online provider has enough memory to ever fit this model.
+			// Retrying and queueing are both pointless — reject immediately
+			// with a clear, non-retryable error.
+			if dispatchErr == errModelTooLarge {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+				lastErr = dispatchErr
+				lastErrCode = dispatchErrCode
+				break
+			}
+
 			// dispatchOneProvider may have found a provider but rejected it
 			// (payout destination missing, insufficient funds, encryption
 			// missing). In that case it already added the provider to

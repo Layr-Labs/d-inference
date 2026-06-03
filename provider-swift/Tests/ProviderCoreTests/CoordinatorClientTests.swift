@@ -138,16 +138,22 @@ import Testing
     #expect(status.mismatches.first?.component == "runtime")
 }
 
-@Test func exponentialBackoffDoublesUntilMaximumAndResets() {
+@Test func exponentialBackoffDoublesWithJitterUntilMaximumAndResets() {
     var backoff = ExponentialBackoff(base: 1, max: 4)
 
-    #expect(backoff.nextDelay() == 1)
-    #expect(backoff.nextDelay() == 2)
-    #expect(backoff.nextDelay() == 4)
-    #expect(backoff.nextDelay() == 4)
+    // Equal jitter: each delay is in [deterministic/2, deterministic], where the
+    // deterministic component doubles (1, 2, 4, 4) and caps at max. We sample
+    // each step and assert the bounds hold (and the cap is respected).
+    func inRange(_ v: Double, _ det: Double) -> Bool { v >= det / 2 && v <= det }
+
+    #expect(inRange(backoff.nextDelay(), 1))
+    #expect(inRange(backoff.nextDelay(), 2))
+    #expect(inRange(backoff.nextDelay(), 4))
+    let capped = backoff.nextDelay()
+    #expect(capped >= 2 && capped <= 4) // still capped at max even with jitter
 
     backoff.reset()
-    #expect(backoff.nextDelay() == 1)
+    #expect(inRange(backoff.nextDelay(), 1))
 }
 
 private func clientSampleHardware() -> HardwareInfo {

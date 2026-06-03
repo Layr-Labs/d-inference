@@ -261,11 +261,15 @@ public actor ProviderLoop {
 
         if PersistentEnclaveKey.isAvailable {
             do {
-                let key = try PersistentEnclaveKey.loadOrCreate()
+                // loadOrCreateVerified proves the key can actually sign (and
+                // auto-repairs a poisoned/locked key once) before we commit to
+                // it. A key that loads but can't sign would otherwise fail every
+                // attestation challenge silently and pin the box untrusted.
+                let key = try PersistentEnclaveKey.loadOrCreateVerified()
                 log.info("Using persistent keychain-backed Secure Enclave key for attestation")
                 return key
             } catch {
-                log.warning("Persistent SE key unavailable (\(error)), falling back to ephemeral")
+                log.warning("Persistent SE key unavailable or unusable (\(error)), falling back to ephemeral")
             }
         }
 
@@ -794,6 +798,14 @@ public actor ProviderLoop {
             var fullResponseText = ""
             var promptTokens = 0
             var completionTokens = 0
+            // Defense-in-depth for the billing-zero leak: count SSE frames that
+            // carried visible output. If the usage chunk is lost entirely
+            // (parser drift / upstream regression), this is a conservative
+            // lower-bound floor for completion tokens so a request that clearly
+            // produced output never settles at 0 (which the coordinator would
+            // fully refund). MLX streams ~1 token per frame, so this slightly
+            // under-counts vs. true tokenization but never bills $0 for work.
+            var contentFrameCount = 0
 
             do {
                 for try await frame in frames {
@@ -828,14 +840,21 @@ public actor ProviderLoop {
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
                     if let parsed = Self.parseStreamChunk(frame) {
+                        var frameHadContent = false
                         if let content = parsed.contentDelta {
                             fullResponseText += content
+                            frameHadContent = true
                         }
                         if let reasoning = parsed.reasoningDelta {
                             fullResponseText += reasoning
+                            frameHadContent = true
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
+                            frameHadContent = true
+                        }
+                        if frameHadContent {
+                            contentFrameCount += 1
                         }
                         if let usage = parsed.usage {
                             promptTokens = usage.promptTokens
@@ -882,13 +901,28 @@ public actor ProviderLoop {
             // capacity), so we cannot fall back to engine-authoritative
             // counts here without expanding its public surface.
             if promptTokens == 0 || completionTokens == 0 {
-                log.warning(
-                    "[\(requestId)] CRITICAL: usage chunk missing or zero "
-                    + "(promptTokens=\(promptTokens), "
-                    + "completionTokens=\(completionTokens)). "
-                    + "Billing will be undercounted. Check upstream "
-                    + "MLXOpenAIService.streamChatCompletionFrames behavior."
-                )
+                // Fallback: if completion tokens are missing/zero but we
+                // streamed visible output, bill the observed content-frame
+                // count instead of $0. This caps the revenue leak even if the
+                // usage chunk is lost entirely. Prompt tokens have no in-loop
+                // proxy, so a zero there is still only logged.
+                if completionTokens == 0 && contentFrameCount > 0 {
+                    completionTokens = contentFrameCount
+                    log.warning(
+                        "[\(requestId)] usage chunk missing/zero completion tokens; "
+                        + "billing \(contentFrameCount) observed content frames as a floor. "
+                        + "Check upstream MLXOpenAIService.streamChatCompletionFrames behavior."
+                    )
+                } else {
+                    log.warning(
+                        "[\(requestId)] CRITICAL: usage chunk missing or zero "
+                        + "(promptTokens=\(promptTokens), "
+                        + "completionTokens=\(completionTokens), "
+                        + "contentFrames=\(contentFrameCount)). "
+                        + "Billing will be undercounted. Check upstream "
+                        + "MLXOpenAIService.streamChatCompletionFrames behavior."
+                    )
+                }
             }
 
             // Update stats

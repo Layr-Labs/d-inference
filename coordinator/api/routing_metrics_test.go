@@ -309,8 +309,23 @@ func TestRoutingMetrics_OverCapacityOutcome(t *testing.T) {
 		t.Fatal("expected nil — 64GB provider can't fit 128GB model")
 	}
 
+	// A model that can never fit must be classified as model_too_large, NOT
+	// over_capacity. over_capacity emits a 429 + Retry-After telling the client
+	// to retry, which is pointless when the model will never fit on this box —
+	// the client would retry forever. The absolute-fit gate reports it via
+	// ModelTooLargeRejections (permanent), separate from CapacityRejections
+	// (transient: full now, retry later).
+	if decision.ModelTooLargeRejections == 0 {
+		t.Fatalf("expected ModelTooLargeRejections > 0 for a 128GB model on a 64GB provider; decision=%+v", decision)
+	}
+	if decision.CapacityRejections != 0 {
+		t.Fatalf("a too-large model must not count as transient capacity pressure; got CapacityRejections=%d", decision.CapacityRejections)
+	}
+
 	outcome := "no_provider"
-	if decision.CapacityRejections > 0 && decision.CandidateCount == 0 {
+	if decision.ModelTooLargeRejections > 0 && decision.CandidateCount == 0 {
+		outcome = "model_too_large"
+	} else if decision.CapacityRejections > 0 && decision.CandidateCount == 0 {
 		outcome = "over_capacity"
 	}
 	srv.ddIncr("routing.decisions", []string{"model:" + model, "outcome:" + outcome})
@@ -318,8 +333,8 @@ func TestRoutingMetrics_OverCapacityOutcome(t *testing.T) {
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
 
-	if !hasMetric(packets, "outcome:over_capacity") {
-		t.Errorf("expected over_capacity outcome when provider too small; got packets: %v", packets)
+	if !hasMetric(packets, "outcome:model_too_large") {
+		t.Errorf("expected model_too_large outcome when provider too small; got packets: %v", packets)
 	}
 }
 

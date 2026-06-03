@@ -607,9 +607,20 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Restore trust level (will be re-verified via fresh attestation)
+	// Restore trust level, but NEVER above self_signed. Hardware trust must be
+	// re-earned via a fresh live challenge + MDM/ACME on every (re)connection.
+	// Resurrecting a stored "hardware" level would route real traffic to a
+	// provider that has not yet passed a live challenge, and is the source of
+	// the "registry says hardware but the live verdict is self_signed" drift.
+	// The challenge-success path (verifyChallengeResponse) re-upgrades to
+	// hardware once the live legs pass.
 	p.TrustLevel = TrustLevel(rec.TrustLevel)
-	p.Attested = rec.Attested
+	if trustRank(p.TrustLevel) > trustRank(TrustSelfSigned) {
+		p.TrustLevel = TrustSelfSigned
+		p.Attested = false
+	} else {
+		p.Attested = rec.Attested
+	}
 	p.MDAVerified = rec.MDAVerified
 	p.ACMEVerified = rec.ACMEVerified
 
@@ -1472,16 +1483,12 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	}
 
 	// Memory gate: reject providers that cannot physically load the model.
-	// The provider applies a 2x multiplier on model weight size when deciding
-	// whether to load (ensureModelLoaded uses estimatedMemoryGb * 2.0 for
-	// headroom). Use the catalog SizeGB * 2.5 as the coordinator-side gate
-	// (slightly less conservative since the provider will reject anyway if
-	// it truly doesn't fit). This prevents the coordinator from sending
-	// load_model commands to machines that will always OOM-reject them.
+	// Shares modelFitsHardware with the consumer-routing admission gate
+	// (freeMemoryAdmits) so the two heuristics can never drift. This prevents
+	// the coordinator from sending load_model commands to machines that will
+	// always OOM-reject them.
 	if entry, ok := r.modelCatalog[model]; ok && entry.SizeGB > 0 {
-		requiredGB := entry.SizeGB * 2.5
-		providerMemGB := float64(p.Hardware.MemoryGB)
-		if providerMemGB > 0 && requiredGB > providerMemGB {
+		if !modelFitsHardware(entry.SizeGB, float64(p.Hardware.MemoryGB)) {
 			return 0, false
 		}
 	}

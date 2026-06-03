@@ -256,6 +256,15 @@ type Server struct {
 	// Logs API event forwarding. Nil when DD is not configured.
 	dd *datadog.Client
 
+	// pendingACME holds the connect-time ACME (mTLS device-cert) verification
+	// result per provider so the trust upgrade can be retried after the first
+	// passing challenge. applyACMETrust runs at registration BEFORE the first
+	// challenge response sets AttestationResult, so its binding checks fail
+	// purely on ordering and the provider stays self_signed forever. Cleared on
+	// successful upgrade or disconnect.
+	pendingACMEMu sync.Mutex
+	pendingACME   map[string]*ACMEVerificationResult
+
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
 	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries.
@@ -504,6 +513,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		readCache:            newTTLCache(),
 		geoResolver:          newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:          make(map[string]apiKeyCacheEntry),
+		pendingACME:          make(map[string]*ACMEVerificationResult),
 	}
 	s.registerDefaultGauges()
 	s.routes()

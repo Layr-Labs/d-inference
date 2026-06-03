@@ -377,9 +377,7 @@ struct HybridCheckpointLiveTests {
         let writer = makeMgr()
         let stored = await writer.store(tokens: prompt, checkpointLength: checkpointL,
                            caches: SendableKVCaches(setup.prefix))
-        // TRACE (remove once 100k flush is green): pin down where the entry goes.
-        let ramAfterStore = await writer.ramTierStats()
-        print("BIGKV TRACE store→\(stored)  ramStats after store: entries=\(ramAfterStore.entries) bytes=\(ramAfterStore.bytes) inserts=\(ramAfterStore.inserts) evictions=\(ramAfterStore.evictions) rejects=\(ramAfterStore.rejects)")
+        #expect(stored, "the 100k checkpoint must be accepted by the RAM tier")
         let flushStart = Date()
         let written = await writer.flushToSSD()
         await writer.flushIndexNow()

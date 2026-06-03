@@ -364,8 +364,8 @@ public enum EncryptedKVStore {
             FileManager.default.createFile(atPath: tmpURL.path, contents: nil)
             let handle = try FileHandle(forWritingTo: tmpURL)
             defer { try? handle.close() }
-            try handle.write(contentsOf: header)
-            try handle.write(contentsOf: body)
+            try writeInBoundedSegments(handle, header)
+            try writeInBoundedSegments(handle, body)
             try handle.synchronize()  // fsync before rename
         } catch {
             try? FileManager.default.removeItem(at: tmpURL)
@@ -399,6 +399,26 @@ public enum EncryptedKVStore {
         // Durability: flush the directory entry created by the rename
         // (F_FULLFSYNC on Apple SSDs); best-effort, see syncDirectory.
         syncDirectory(dir)
+    }
+
+    /// `FileHandle.write(contentsOf:)` issues a SINGLE `write(2)` syscall for
+    /// the whole `Data`. On Darwin a single `write` of more than `INT_MAX`
+    /// (2_147_483_647) bytes fails with EINVAL ("Invalid argument") — so a
+    /// large checkpoint body (e.g. a ~2.4GB hybrid KV snapshot at 100k tokens)
+    /// can never be persisted in one call, and the throw is swallowed by the
+    /// flush loop's catch → written=0, no file. Split the write into segments
+    /// strictly below that limit. Segments are sliced as contiguous subranges
+    /// (no extra copy of the whole buffer).
+    private static let maxWriteSegment = 1 << 30  // 1 GiB, well under INT_MAX
+    private static func writeInBoundedSegments(_ handle: FileHandle, _ data: Data) throws {
+        guard !data.isEmpty else { return }
+        var offset = data.startIndex
+        while offset < data.endIndex {
+            let end = data.index(offset, offsetBy: maxWriteSegment, limitedBy: data.endIndex)
+                ?? data.endIndex
+            try handle.write(contentsOf: data[offset..<end])
+            offset = end
+        }
     }
 
     /// Decrypt the body chunks against `dek`, validating each plaintext

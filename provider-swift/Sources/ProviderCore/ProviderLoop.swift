@@ -843,9 +843,16 @@ public actor ProviderLoop {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
                             fullResponseText += content
-                            frameHadContent = true
+                            // Count only NON-empty content toward the billing
+                            // floor: parseStreamChunk returns a non-nil but empty
+                            // contentDelta for SSE frames carrying "content":""
+                            // (role/terminal deltas), which produce no visible
+                            // output and must not be billed.
+                            if !content.isEmpty {
+                                frameHadContent = true
+                            }
                         }
-                        if let reasoning = parsed.reasoningDelta {
+                        if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
                             fullResponseText += reasoning
                             frameHadContent = true
                         }

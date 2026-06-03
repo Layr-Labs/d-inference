@@ -1623,7 +1623,10 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	// temporarily at capacity (capacityRejections > 0), the requests
 	// should wait — those providers may finish current work and become
 	// available.
-	candidates, capacityRejections := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
+	// modelTooLarge is intentionally ignored here: a model that can never fit
+	// any provider should NOT keep its queued requests waiting (they'd time out
+	// after 120s) — fall through to fail them fast.
+	candidates, capacityRejections, _ := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
 	if candidates > 0 || capacityRejections > 0 {
 		return
 	}

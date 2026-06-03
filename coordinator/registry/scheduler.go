@@ -821,7 +821,12 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 // capacityRejections > 0, providers exist but are all at capacity (429).
 // If candidateCount == 0 && capacityRejections == 0, no provider serves
 // the model at all (404/503).
-func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, allowedSerials ...string) (candidateCount, capacityRejections int) {
+//
+//   - modelTooLarge: providers that serve the model but whose memory can never
+//     fit it. Kept separate from capacityRejections so the caller does NOT 429
+//     a model that will never fit (the client would retry forever) — it should
+//     surface model_too_large / 503 instead.
+func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
 	// Use a dummy PendingRequest with the caller's actual token estimates
 	// for the admission gate (freeMemoryAdmits).
 	if estimatedPromptTokens <= 0 {
@@ -927,6 +932,17 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		p.mu.Unlock()
 
+		// Absolute hardware-fit gate (mirrors buildCandidateWithReason). A model
+		// that can never fit this node is a permanent miss, not transient
+		// capacity pressure — count it separately so the caller never 429s it.
+		// Skipped for a resident ("running"/"idle") model, which has demonstrably
+		// fit.
+		modelResident := snap.slotState == "running" || snap.slotState == "idle"
+		if !modelResident && !modelFitsHardware(snap.modelSizeGB, snap.totalMemoryGB) {
+			modelTooLarge++
+			continue
+		}
+
 		// Slot state gate (crashed/reloading are ineligible).
 		if _, eligible := slotStatePenalty(snap.slotState); !eligible {
 			continue
@@ -940,7 +956,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		candidateCount++
 	}
-	return candidateCount, capacityRejections
+	return candidateCount, capacityRejections, modelTooLarge
 }
 
 // DrainQueuedRequestsForModel attempts to assign queued requests for a

@@ -1093,7 +1093,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// If not, return 429 immediately rather than queueing for up to 120s.
 	// OpenRouter treats 429 as "rate limited" (no uptime penalty) vs 503
 	// which counts as downtime. Fast 429s also preserve our TTFT metrics.
-	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
+		// Providers serve this model but none can ever fit it — non-retryable.
+		// Surface a clear 503 instead of a 429 the client would retry forever.
+		refundReservation()
+		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q is too large for any currently available provider", model),
+			withCode("model_unavailable")))
+		return
+	}
 	if candidateCount == 0 && capacityRejections > 0 {
 		// Providers exist for this model but ALL are at capacity.
 		retryAfter := s.estimateRetryAfter(model)
@@ -1947,7 +1957,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
-			_, capRej := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+			_, capRej, _ := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
 			if capRej > 0 {
 				statusCode = http.StatusTooManyRequests
 			} else {
@@ -3914,7 +3924,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Pre-flight capacity check (same logic as handleChatCompletions).
-	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
+		refundReservation()
+		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q is too large for any currently available provider", model),
+			withCode("model_unavailable")))
+		return
+	}
 	if candidateCount == 0 && capacityRejections > 0 {
 		retryAfter := s.estimateRetryAfter(model)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))

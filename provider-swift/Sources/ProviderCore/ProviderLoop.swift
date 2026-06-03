@@ -1436,14 +1436,18 @@ public actor ProviderLoop {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
-            // Budget enough headroom to warm the model. Per-request KV safety is
-            // enforced later by BatchScheduler's live token budget, so this load
-            // gate should not assume the engine's full adaptive slot ceiling is
-            // simultaneously filled with maximum-context requests. A 2x (rather
-            // than 3x) multiple keeps a safety margin for KV-cache growth while
-            // still letting models load on boxes where other models are actively
-            // serving — the previous 3x rejected loads that would have fit.
-            let requiredGb = modelInfo.estimatedMemoryGb * 2.0
+            // Load gate: require room for the WEIGHTS plus headroom for ONE
+            // request, not a full-concurrency multiple. Concurrency beyond one
+            // request is sized dynamically at runtime by the live token budget +
+            // GlobalKVCacheBudget (which strictly rejects any request whose KV
+            // won't fit real free memory, so this looser gate cannot OOM — worst
+            // case a box serves one request at a time). The old `× 2.0` here,
+            // combined with the `× 0.7` discount in availableMemoryGb, demanded
+            // free ≥ weights × 2.86 and left every small/mid machine unable to
+            // load a model it could actually serve.
+            let requiredGb = ModelLoadAdmission.requiredToLoadGb(
+                weightsGb: modelInfo.estimatedMemoryGb,
+                headroomGb: Self.loadHeadroomGb)
             try await evictUntilAvailable(requiredGb: requiredGb)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -1544,15 +1548,22 @@ public actor ProviderLoop {
         }
     }
 
+    /// Physical memory (GB) available to LOAD a model. No 0.7 KV-safety discount
+    /// here — weights are a known one-time allocation, and the 0.7 runtime
+    /// safety is already enforced per request by GlobalKVCacheBudget. Applying it
+    /// twice was the double-count that kept capable machines from ever loading a
+    /// model they could serve.
     private func availableMemoryGb() -> Double {
-        let total = ProcessInfo.processInfo.physicalMemory
-        let active = UInt64(MLX.GPU.activeMemory)
-        let cache = UInt64(MLX.GPU.cacheMemory)
-        let reserve = Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB)
-        let used = Self.saturatingAdd(active, cache, reserve)
-        let usable = total > used ? total - used : 0
-        return Double(usable) * 0.7 / (1024.0 * 1024.0 * 1024.0)
+        ModelLoadAdmission.freeForLoadGb(
+            totalBytes: ProcessInfo.processInfo.physicalMemory,
+            gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+            gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+            reserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
     }
+
+    /// Headroom (GB) reserved above the weights at load time for ONE request.
+    /// Concurrency beyond that is grown dynamically by the runtime token budget.
+    static let loadHeadroomGb = ModelLoadAdmission.defaultLoadHeadroomGb
 
     private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
         var total: UInt64 = 0
@@ -1608,7 +1619,9 @@ public actor ProviderLoop {
         guard let modelInfo = loopConfig.models.first(where: { $0.id == modelId }) else {
             return false
         }
-        let requiredGb = modelInfo.estimatedMemoryGb * 2.0
+        let requiredGb = ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: modelInfo.estimatedMemoryGb,
+            headroomGb: Self.loadHeadroomGb)
 
         // An idle slot (loaded, no in-flight work, not already unloading) can be
         // evicted to make room, so its presence means we must NOT pre-reject.

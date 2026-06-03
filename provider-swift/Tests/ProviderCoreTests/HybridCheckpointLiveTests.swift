@@ -375,6 +375,9 @@ struct HybridCheckpointLiveTests {
         let writer = makeMgr()
         await writer.store(tokens: prompt, checkpointLength: checkpointL,
                            caches: SendableKVCaches(setup.prefix))
+        // DIAGNOSTIC: check RAM tier state after store
+        let ramStats = await writer.ramTierStats()
+        print("BIGKV DEBUG: After store -> RAM entries=\(ramStats.entries) bytes=\(String(format: "%.2f", Double(ramStats.bytes) / 1_073_741_824))GB inserts=\(ramStats.inserts) rejects=\(ramStats.rejects)")
         let flushStart = Date()
         let written = await writer.flushToSSD()
         await writer.flushIndexNow()

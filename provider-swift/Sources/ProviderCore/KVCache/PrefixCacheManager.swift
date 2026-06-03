@@ -189,6 +189,7 @@ public actor PrefixCacheManager {
 
     public var isSSDEnabled: Bool { ssdEnabled }
     public func snapshotStats() -> PrefixCacheManagerStats { stats }
+    public func ramTierStats() -> PrefixCacheRAMStats { ram.snapshotStats() }
 
     // MARK: - Lookup
 

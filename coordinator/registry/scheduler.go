@@ -587,11 +587,17 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// 503s at load time ("Insufficient memory … need Y GB") and the request
 	// bounces. This is the hole that let a 93.7 GB model get dispatched to 48/64
 	// GB boxes: the token-budget admission path below never checked physical fit.
-	// Only applies when the model is NOT already resident — modelFitsHardware
-	// uses a conservative *2.5 cold-load headroom estimate, so a model that is
-	// already loaded and serving (and therefore demonstrably fits) must not be
-	// rejected by it. Reported as rejectModelTooLarge (permanent, not capacity).
-	if !snap.modelLoaded && !modelFitsHardware(snap.modelSizeGB, snap.totalMemoryGB) {
+	//
+	// Skip the gate whenever the model is already RESIDENT — a resident model has
+	// demonstrably fit, so the heuristic must never reject it. The provider
+	// reports "running" while actively serving and "idle" when loaded with no
+	// in-flight requests (BatchScheduler+Telemetry: activeRequests>0 ? running :
+	// idle); BOTH mean the weights are in GPU memory. `snap.modelLoaded` only
+	// tracks "running", so we check the slot state directly here — otherwise an
+	// idle-but-loaded provider would be wrongly excluded. Reported as
+	// rejectModelTooLarge (permanent, not capacity).
+	modelResident := snap.slotState == "running" || snap.slotState == "idle"
+	if !modelResident && !modelFitsHardware(snap.modelSizeGB, snap.totalMemoryGB) {
 		return nil, rejectModelTooLarge, false
 	}
 

@@ -166,4 +166,113 @@ struct HybridCheckpointE2ELiveTests {
         #expect(on.ttft <= off.ttft * 2 + 0.5,
             "flag-on miss TTFT \(on.ttft)s must not be pathologically worse than flag-off \(off.ttft)s")
     }
+
+    // ---- 4. Phase-1 admission policy: RAM-first, 2nd-use promotion ----
+    @Test(.enabled(if: LiveInferenceFixtures.gemmaTestsEnabled))
+    func admissionRamFirstThenPromotesOnSecondUse() async throws {
+        guard let (sched, container) = try await load(flagOn: true) else { return }
+        defer { Task { await sched.unloadModel() } }
+
+        // Set up a manager with a SMALL minPersistTokens (64) so a ~70-token prompt
+        // crosses one checkpoint boundary and is eligible for promotion.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dbkv-admission-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        guard let shapes = await container.perform({ ctx in BatchScheduler.probeLayerShapes(model: ctx.model) }) else {
+            print("SKIP: not a checkpoint model"); return
+        }
+        let mgr = PrefixCacheManager(
+            binding: PrefixCacheModelBinding(
+                modelHash: Self.modelID, modelDtype: "x", modelArch: "x", vocabSize: 0,
+                numLayers: shapes.count, kvHeads: shapes.first?.first ?? 1,
+                headDim: shapes.first?.last ?? 1, layerShapes: shapes),
+            ram: PrefixCacheRAM(maxBytes: 0),
+            index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
+            kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(
+                key: SymmetricKey(data: Data(repeating: 0x5A, count: 32)), identifier: "admission"),
+                storage: InMemoryWrappedKEKStorage(identifier: "admission")),
+            cacheDir: dir, ssdEnabled: true, boundaries: [64], diskBudgetBytes: 0,
+            minPersistTokens: 64, now: { 1 })
+        await sched._installCheckpointManagerForTest(mgr, boundaries: [64])
+
+        // Helper: recursively scan for .darkbloom-kv files
+        func findKVFiles() -> [URL] {
+            guard let enumerator = FileManager.default.enumerator(
+                at: dir, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]) else { return [] }
+            var found: [URL] = []
+            for case let fileURL as URL in enumerator {
+                if fileURL.pathExtension == EncryptedKVStore.fileExtension {
+                    found.append(fileURL)
+                }
+            }
+            return found
+        }
+
+        // Helper: poll for file appearance/absence with timeout
+        func pollForFile(shouldExist: Bool, timeout: TimeInterval) async throws -> Bool {
+            let start = Date()
+            while Date().timeIntervalSince(start) < timeout {
+                let files = findKVFiles()
+                if shouldExist && !files.isEmpty { return true }
+                if !shouldExist && files.isEmpty { continue }
+                if !shouldExist && !files.isEmpty { return false }
+                try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
+            }
+            return shouldExist ? false : (findKVFiles().isEmpty)
+        }
+
+        // A ~70-token prompt that crosses the 64-token boundary
+        let sharedPrefix = Array(0..<70).map { ($0 % 64) + 5 }
+
+        // Request #1: capture → RAM-only (no SSD file yet)
+        print("Admission test: submitting req #1 (capture)")
+        let r1 = await drain(sched.submitTokenized(
+            promptTokens: sharedPrefix + [1, 1], maxTokens: 8, temperature: 0))
+        _ = r1
+
+        // Wait ~1s to give any (incorrect) eager flush time to land, then assert NO file
+        print("Admission test: polling for NO file (RAM-only capture)")
+        let noFileYet = try await pollForFile(shouldExist: false, timeout: 1.0)
+        #expect(noFileYet, "Request #1 capture must be RAM-only — NO .darkbloom-kv file should exist yet")
+        print("Admission test: confirmed NO .darkbloom-kv file after req #1 (RAM-only)")
+
+        // Assert stats show a store happened and it's RAM-resident
+        let afterR1 = await mgr.snapshotStats()
+        let ramAfterR1 = await mgr.ramTierStats()
+        print("Admission test: after req #1: stores=\(afterR1.stores) ramEntries=\(ramAfterR1.entries)")
+        #expect(afterR1.stores >= 1, "Request #1 must have STORED a checkpoint")
+        #expect(ramAfterR1.entries >= 1, "Request #1 checkpoint must be RAM-resident")
+
+        // Request #2: RAM-hit → triggers 2nd-use promotion (detached persist)
+        print("Admission test: submitting req #2 (shared prefix → promotion)")
+        let r2 = await drain(sched.submitTokenized(
+            promptTokens: sharedPrefix + [2, 2], maxTokens: 8, temperature: 0))
+        _ = r2
+
+        // Poll up to 10s for the .darkbloom-kv file to APPEAR
+        print("Admission test: polling for .darkbloom-kv file (2nd-use promotion)")
+        let fileAppeared = try await pollForFile(shouldExist: true, timeout: 10.0)
+        #expect(fileAppeared, "Request #2 (2nd use) must trigger promotion → .darkbloom-kv file should appear")
+        let files = findKVFiles()
+        print("Admission test: confirmed .darkbloom-kv file appeared after req #2 (promotion): \(files.map { $0.lastPathComponent })")
+
+        // Assert RAM hit was recorded
+        let afterR2 = await mgr.snapshotStats()
+        let ramAfterR2 = await mgr.ramTierStats()
+        print("Admission test: after req #2: ramHits=\(afterR2.ramHits) stores=\(afterR2.stores)")
+        #expect(afterR2.ramHits >= 1, "Request #2 must have RAM-HIT the shared prefix")
+
+        // (Optional bit-exact check: clear RAM, submit req #3, should load from SSD)
+        print("Admission test: clearing RAM and submitting req #3 (SSD restore)")
+        await mgr.clearRAM()
+        let r3 = await drain(sched.submitTokenized(
+            promptTokens: sharedPrefix + [3, 3], maxTokens: 8, temperature: 0))
+        print("Admission test: req #3 (SSD restore) produced output.len=\(r3.text.count)")
+        #expect(!r3.text.isEmpty, "Request #3 (SSD restore after clearRAM) must produce valid output")
+        let afterR3 = await mgr.snapshotStats()
+        print("Admission test: after req #3: ssdHits=\(afterR3.ssdHits)")
+        #expect(afterR3.ssdHits >= 1, "Request #3 must have SSD-HIT the promoted checkpoint")
+    }
 }

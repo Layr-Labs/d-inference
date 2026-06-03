@@ -24,6 +24,30 @@ import Testing
 @Suite("Hybrid checkpoint live equivalence", .serialized)
 struct HybridCheckpointLiveTests {
 
+    /// Prefill `tokens` through `cache` in chunks of `chunk` to avoid
+    /// materializing one giant attention-score matrix. A single-shot 100k
+    /// forward needs ~320GB for the 100k×100k×heads scores and traps in Metal
+    /// (max buffer ~86GB) — the engine ALWAYS chunks prefill for this reason.
+    /// Causal attention makes chunked prefill numerically identical to a
+    /// single-shot call. Returns last-position logits; evals the cache between
+    /// chunks to bound peak memory.
+    private func chunkedPrefill(
+        model: any LanguageModel, cache: [any KVCache], tokens: [Int], chunk: Int
+    ) -> MLXArray {
+        var lastLogits = MLXArray(0)
+        var i = 0
+        while i < tokens.count {
+            let end = min(i + chunk, tokens.count)
+            let piece = Array(tokens[i..<end])
+            let arr = MLXArray(piece.map { Int32($0) }).reshaped([1, piece.count])
+            lastLogits = model.callAsFunction(arr, cache: cache)[.ellipsis, -1, 0...]
+            eval(lastLogits)
+            eval(cache.flatMap { $0.innerState() })  // materialize → free graph
+            i = end
+        }
+        return lastLogits
+    }
+
     /// Greedy-decode `maxTokens` from a model + seeded cache, returning the
     /// produced token ids. Mirrors the engine's continue-from-cache path.
     private func greedyContinue(
@@ -305,19 +329,19 @@ struct HybridCheckpointLiveTests {
             else { print("SKIP100k \(modelID): not checkpoint / no shapes"); return nil }
 
             // COLD: full 100k prefill (this is the ~74s baseline), timed to the
-            // first produced token.
+            // first produced token. Chunked — a single-shot 100k forward traps
+            // Metal (320GB scores); the engine chunks for exactly this reason.
+            let prefillChunk = 2048
             let coldStart = Date()
             let coldCache = model.newCache(parameters: nil)
-            let full = MLXArray(prompt.map { Int32($0) }).reshaped([1, prompt.count])
-            let coldSeed = model.callAsFunction(full, cache: coldCache)[.ellipsis, -1, 0...]
-            eval(coldSeed)
+            let coldSeed = chunkedPrefill(model: model, cache: coldCache, tokens: prompt, chunk: prefillChunk)
             let coldPrefillSec = Date().timeIntervalSince(coldStart)
             let cold = greedyContinue(model: model, cache: coldCache, seedLogits: coldSeed, maxTokens: maxTokens)
 
-            // Prefill the 100k prefix to capture as a checkpoint.
+            // Prefill the 100k prefix to capture as a checkpoint (chunked too).
             let prefixCache = model.newCache(parameters: nil)
-            let pfx = MLXArray(prompt.prefix(checkpointL).map { Int32($0) }).reshaped([1, checkpointL])
-            _ = model.callAsFunction(pfx, cache: prefixCache)
+            _ = chunkedPrefill(model: model, cache: prefixCache,
+                               tokens: Array(prompt.prefix(checkpointL)), chunk: prefillChunk)
             eval(prefixCache.flatMap { $0.innerState() })
             return Setup(cold: cold, layerShapes: layerShapes, prefix: prefixCache, coldPrefillSec: coldPrefillSec)
         }
@@ -330,29 +354,49 @@ struct HybridCheckpointLiveTests {
             kvHeads: setup.layerShapes.first?.first ?? 1, headDim: setup.layerShapes.first?.last ?? 1,
             layerShapes: setup.layerShapes)
         let sharedWrap = InMemoryKeyWrappingService(
-            key: SymmetricKey(data: Data(repeating: 0x5A, count: 32)), identifier: "bigkv")
-        let sharedStore = InMemoryWrappedKEKStorage(identifier: "bigkv")
+            key: SymmetricKey(data: Data(repeating: 0x5A, count: 32)), identifier: "live")
+        let sharedStore = InMemoryWrappedKEKStorage(identifier: "live")
         func makeMgr() -> PrefixCacheManager {
             PrefixCacheManager(
-                binding: binding, ram: PrefixCacheRAM(maxBytes: 0),  // RAM off → force SSD
+                binding: binding, ram: PrefixCacheRAM(),
                 index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
                 kek: KVCacheKEK(wrapper: sharedWrap, storage: sharedStore),
-                cacheDir: dir, ssdEnabled: true, boundaries: [checkpointL],
-                diskBudgetBytes: 0, now: { 1000 })
+                cacheDir: dir, ssdEnabled: true, boundaries: [checkpointL], now: { 1000 })
         }
 
         // Step 2: store → flush (encrypt+write), timed; record on-disk size.
+        // In-memory checkpoint size — the full-attention layers carry all L
+        // tokens, the sliding layers only their window, so this is the real
+        // hybrid footprint (≈2.4GB for Gemma-4 at 100k).
+        let checkpointBytes = setup.prefix.reduce(0) { acc, cache in
+            acc + cache.innerState().reduce(0) { $0 + $1.nbytes }
+        }
+        print("BIGKV checkpoint in-memory size = \(String(format: "%.2f", Double(checkpointBytes) / 1_073_741_824))GB")
         let writer = makeMgr()
         await writer.store(tokens: prompt, checkpointLength: checkpointL,
                            caches: SendableKVCaches(setup.prefix))
         let flushStart = Date()
-        _ = await writer.flushToSSD()
+        let written = await writer.flushToSSD()
         await writer.flushIndexNow()
         let flushSec = Date().timeIntervalSince(flushStart)
-        let bytesOnDisk = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]))?
-            .compactMap { (try? $0.resourceValues(forKeys: [.fileSizeKey]))?.fileSize }
-            .reduce(0, +) ?? 0
-        print("BIGKV checkpoint on disk = \(bytesOnDisk) bytes (\(String(format: "%.1f", Double(bytesOnDisk) / 1_048_576))MB), flush(encrypt+write) = \(String(format: "%.2f", flushSec))s")
+        #expect(written == 1, "the 100k checkpoint must be flushed to SSD (wrote \(written))")
+        // Recursively sum file sizes — checkpoints live in a model subdir
+        // (<dir>/<modelDirComponent>/<digest>.darkbloom-kv), so a non-recursive
+        // scan of `dir` would report 0.
+        func recursiveDirSize(at url: URL) -> Int {
+            guard let enumerator = FileManager.default.enumerator(
+                at: url, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]) else { return 0 }
+            var total = 0
+            for case let fileURL as URL in enumerator {
+                guard let attrs = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                      attrs.isRegularFile == true, let size = attrs.fileSize else { continue }
+                total += size
+            }
+            return total
+        }
+        let bytesOnDisk = recursiveDirSize(at: dir)
+        print("BIGKV checkpoint on disk = \(String(format: "%.2f", Double(bytesOnDisk) / 1_073_741_824))GB, flush(encrypt+write) = \(String(format: "%.2f", flushSec))s")
 
         // Step 3: FRESH manager → reconcile → lookup (read+decrypt+rebuild), timed.
         let reader = makeMgr()

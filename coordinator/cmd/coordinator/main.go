@@ -384,6 +384,14 @@ func main() {
 		})
 
 		srv.SetMDMClient(mdmClient)
+		// Optional shared secret for the MicroMDM webhook. Defense-in-depth on
+		// top of the mandatory solicited-command (CommandUUID) gate: configure
+		// MicroMDM's command-webhook-url with ?token=<secret> and set this to
+		// the same value to reject any caller that lacks it.
+		if webhookSecret := os.Getenv("EIGENINFERENCE_MDM_WEBHOOK_SECRET"); webhookSecret != "" {
+			srv.SetMDMWebhookSecret(webhookSecret)
+			logger.Info("MDM webhook shared-secret auth enabled")
+		}
 		logger.Info("MDM verification enabled", "url", mdmCfg.URL)
 	}
 

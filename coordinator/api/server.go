@@ -168,6 +168,7 @@ type Server struct {
 	adminEmails            map[string]bool   // emails that have admin access
 	adminKey               string            // EIGENINFERENCE_ADMIN_KEY for admin endpoints
 	mdmClient              *mdm.Client       // MicroMDM client for provider security verification
+	mdmWebhookSecret       string            // optional shared secret MicroMDM must present on the webhook
 	stepCARootCert         *x509.Certificate // step-ca root CA for ACME cert verification
 	stepCAIntermediateCert *x509.Certificate // step-ca intermediate CA
 
@@ -702,6 +703,16 @@ func (s *Server) SetMDMClient(client *mdm.Client) {
 	s.mdmClient = client
 }
 
+// SetMDMWebhookSecret configures an optional shared secret that MicroMDM must
+// present (as ?token= or the X-Webhook-Token header) when calling the webhook.
+// When empty, the webhook relies solely on the solicited-command (CommandUUID)
+// gate in the MDM client; when set, callers lacking the secret are rejected
+// before the body is read. MicroMDM is co-located with the coordinator, so this
+// secret never traverses the public network.
+func (s *Server) SetMDMWebhookSecret(secret string) {
+	s.mdmWebhookSecret = secret
+}
+
 // SyncModelCatalog reads active models from the store and updates the
 // registry's model catalog. Call this at startup and after admin catalog changes.
 func (s *Server) SyncModelCatalog() {
@@ -1187,9 +1198,29 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 	writeCachedJSON(w, body)
 }
 
+// maxMDMWebhookBodyBytes caps the MicroMDM webhook body. SecurityInfo /
+// DevicePropertiesAttestation responses are a few KB; 1 MiB is generous headroom
+// while preventing an unauthenticated caller from exhausting memory via an
+// unbounded body.
+const maxMDMWebhookBodyBytes = 1 << 20 // 1 MiB
+
 // HandleMDMWebhook processes a MicroMDM webhook callback.
 // Mount this on the webhook URL configured in MicroMDM.
+//
+// Defense layers (the endpoint is reachable but cannot forge trust):
+//  1. Body cap — bounds memory for the unauthenticated path.
+//  2. Optional shared secret — when configured, rejects callers without it
+//     before reading the body.
+//  3. Solicited-command gate (in mdm.Client.HandleWebhook) — only responses
+//     whose CommandUUID matches a command the coordinator actually issued are
+//     acted on, so a forged SecurityInfo can never drive a trust upgrade.
 func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
+	if s.mdmWebhookSecret != "" && !s.mdmWebhookTokenValid(r) {
+		s.logger.Warn("mdm webhook rejected: missing/invalid shared secret", "remote_addr", r.RemoteAddr)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxMDMWebhookBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -1200,6 +1231,18 @@ func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 		s.mdmClient.HandleWebhook(body)
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// mdmWebhookTokenValid reports whether the request carries the configured MDM
+// webhook secret, via either the X-Webhook-Token header or a ?token= query
+// param. Comparison is constant-time. Only called when a secret is configured.
+func (s *Server) mdmWebhookTokenValid(r *http.Request) bool {
+	token := r.Header.Get("X-Webhook-Token")
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+	return token != "" &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(s.mdmWebhookSecret)) == 1
 }
 
 //go:embed install.sh

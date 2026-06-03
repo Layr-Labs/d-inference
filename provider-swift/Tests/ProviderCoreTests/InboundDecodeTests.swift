@@ -195,4 +195,33 @@ struct InboundDecodeTests {
             _ = try decode("[]")
         }
     }
+
+    // MARK: - reasoning_effort extraction
+
+    private func effort(_ json: String) -> String? {
+        ProviderLoop.extractReasoningEffort(from: Data(json.utf8))
+    }
+
+    @Test("reasoning_effort is extracted verbatim")
+    func reasoningEffortExtracted() {
+        #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":"high"}"#) == "high")
+        #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":"low"}"#) == "low")
+    }
+
+    @Test("reasoning_effort absent or blank yields nil")
+    func reasoningEffortAbsentOrBlank() {
+        #expect(effort(#"{"model":"m","messages":[]}"#) == nil)
+        #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":""}"#) == nil)
+        #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":"  "}"#) == nil)
+    }
+
+    @Test("reasoning_effort is trimmed")
+    func reasoningEffortTrimmed() {
+        #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":"  medium  "}"#) == "medium")
+    }
+
+    @Test("non-string reasoning_effort is ignored")
+    func reasoningEffortNonString() {
+        #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":3}"#) == nil)
+    }
 }

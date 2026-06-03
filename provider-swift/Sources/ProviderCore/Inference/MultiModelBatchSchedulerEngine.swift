@@ -71,18 +71,30 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private let releaseModel: @Sendable (String) async -> Void
     private let defaultMaxTokens: Int
 
+    /// OpenAI `reasoning_effort` for this request (`low`/`medium`/`high`
+    /// for gpt-oss; model-specific otherwise). Injected verbatim into the
+    /// chat template's render context under the `reasoning_effort` key so
+    /// templates that read it (gpt-oss / Harmony) emit the matching
+    /// `Reasoning: <effort>` system directive. `nil` leaves the template
+    /// at its built-in default. We do not validate the value here — the
+    /// allowed set is model-specific and lives in each model's Jinja
+    /// template, so passing through is the format-agnostic choice.
+    private let reasoningEffort: String?
+
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
         ensureLoaded: @escaping @Sendable (String) async throws -> Void = { _ in },
         reserveModel: @escaping @Sendable (String) async -> Void = { _ in },
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
-        defaultMaxTokens: Int = 4096
+        defaultMaxTokens: Int = 4096,
+        reasoningEffort: String? = nil
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
         self.reserveModel = reserveModel
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
+        self.reasoningEffort = reasoningEffort
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -114,6 +126,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reserveModel = { _ in }
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
+        self.reasoningEffort = nil
     }
 
     // MARK: - MLXServerEngine
@@ -163,10 +176,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // lossy `translate()` → `ChatMessage` path that drops tool fields.
         let messages = request.messages.map { $0.templateMessageDict() }
         let toolSpecs = request.tools?.map { $0.toolSpec() }
+        // Surface `reasoning_effort` to the Jinja render context. Templates
+        // that don't reference the key (most models) ignore the extra
+        // variable; gpt-oss / Harmony reads it to emit `Reasoning: <effort>`.
+        let additionalContext: [String: any Sendable]?
+        if let reasoningEffort {
+            additionalContext = ["reasoning_effort": reasoningEffort]
+        } else {
+            additionalContext = nil
+        }
         let promptTokens: [Int]
         do {
             promptTokens = try tokenizer.inner.applyChatTemplate(
-                messages: messages, tools: toolSpecs, additionalContext: nil
+                messages: messages, tools: toolSpecs, additionalContext: additionalContext
             )
         } catch {
             await releaseBox.fire()

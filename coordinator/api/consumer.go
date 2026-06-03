@@ -2463,10 +2463,7 @@ func writeResponsesStreamOutput(w http.ResponseWriter, flusher http.Flusher, pr 
 		outputIndex++
 	}
 
-	reasoningTokens := uint64(0)
-	if msg.Reasoning != "" {
-		reasoningTokens = uint64(usage.CompletionTokens)
-	}
+	reasoningTokens := resolveReasoningTokens(usage, msg.Reasoning)
 	writeResponsesSSE(w, flusher, map[string]any{
 		"type": "response.completed",
 		"response": map[string]any{
@@ -2522,13 +2519,15 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 						// Complete responses have object=chat.completion or
 						// object=response. Delta chunks have object=chat.completion.chunk.
 						if objType == "chat.completion" || objType == "response" {
+							var completeUsage protocol.UsageInfo
 							select {
-							case _, ok := <-pr.CompleteCh:
+							case u, ok := <-pr.CompleteCh:
 								if !ok {
 									s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
 									writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
 									return
 								}
+								completeUsage = u
 							case <-ctx.Done():
 								s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 								writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
@@ -2536,6 +2535,11 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 							}
 							if objType == "chat.completion" {
 								normalizeCompleteChatResponse(obj, pr.Model)
+								// Keep the passthrough path consistent with the
+								// SSE-reconstruction path: surface the provider's
+								// accurate reasoning-token count if its raw usage
+								// object didn't already carry one.
+								injectReasoningDetailIntoRawUsage(obj, completeUsage)
 								if pr.IsResponsesAPI {
 									var chatResp types.ChatCompletionResponse
 									b, err := json.Marshal(obj)
@@ -2918,6 +2922,50 @@ func extractMessage(chunks []string) extractedMessage {
 	return msg
 }
 
+// resolveReasoningTokens returns the reasoning-token count to report.
+// It prefers the provider's tokenizer-accurate count
+// (UsageInfo.ReasoningTokens) and falls back to the coarse "all
+// completion tokens" estimate only for older providers that emit
+// reasoning content without a count — so a reasoning response never
+// reports zero reasoning tokens, while up-to-date providers report the
+// real split.
+// injectReasoningDetailIntoRawUsage splices
+// completion_tokens_details.reasoning_tokens into a passthrough
+// chat.completion object when the provider reported an accurate
+// reasoning-token count (UsageInfo.ReasoningTokens) and the raw usage
+// object didn't already carry the detail. It never overrides a value the
+// provider already supplied, and is a no-op when there is no reasoning
+// count or no usage object.
+func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageInfo) {
+	if usage.ReasoningTokens <= 0 {
+		return
+	}
+	usageObj, ok := obj["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	details, _ := usageObj["completion_tokens_details"].(map[string]any)
+	if details == nil {
+		details = map[string]any{}
+	}
+	if _, exists := details["reasoning_tokens"]; exists {
+		return
+	}
+	details["reasoning_tokens"] = usage.ReasoningTokens
+	usageObj["completion_tokens_details"] = details
+	obj["usage"] = usageObj
+}
+
+func resolveReasoningTokens(usage protocol.UsageInfo, reasoning string) uint64 {
+	if usage.ReasoningTokens > 0 {
+		return uint64(usage.ReasoningTokens)
+	}
+	if reasoning != "" {
+		return uint64(usage.CompletionTokens)
+	}
+	return 0
+}
+
 func buildResponsesUsage(promptTokens, completionTokens uint64, reasoningTokens uint64) types.ResponsesUsage {
 	return types.ResponsesUsage{
 		InputTokens:        int(promptTokens),
@@ -2989,10 +3037,7 @@ func appendResponsesOutputItems(output []any, requestID string, msg extractedMes
 }
 
 func buildResponsesResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, seSignature, responseHash string) types.ResponsesResponse {
-	reasoningTokens := uint64(0)
-	if msg.Reasoning != "" {
-		reasoningTokens = uint64(usage.CompletionTokens)
-	}
+	reasoningTokens := resolveReasoningTokens(usage, msg.Reasoning)
 	resp := types.ResponsesResponse{
 		ID:        "resp_" + strings.ReplaceAll(requestID, "-", ""),
 		Object:    "response",
@@ -3017,7 +3062,9 @@ func firstChoice(resp types.ChatCompletionResponse) *types.ChatCompletionChoice 
 
 func chatUsageToResponsesUsage(resp types.ChatCompletionResponse, reasoning string) types.ResponsesUsage {
 	reasoningTokens := 0
-	if reasoning != "" {
+	if d := resp.Usage.CompletionTokensDetails; d != nil && d.ReasoningTokens > 0 {
+		reasoningTokens = d.ReasoningTokens
+	} else if reasoning != "" {
 		reasoningTokens = resp.Usage.CompletionTokens
 	}
 	return buildResponsesUsage(uint64(resp.Usage.PromptTokens), uint64(resp.Usage.CompletionTokens), uint64(reasoningTokens))
@@ -3090,6 +3137,15 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 			CompletionTokens: usage.CompletionTokens,
 			TotalTokens:      usage.PromptTokens + usage.CompletionTokens,
 		},
+	}
+
+	// Surface the OpenAI-standard reasoning-token breakdown when present
+	// so non-streaming chat-completions consumers can read it (the
+	// streaming path carries it on the provider's verbatim usage chunk).
+	if rt := resolveReasoningTokens(usage, msg.Reasoning); rt > 0 {
+		resp.Usage.CompletionTokensDetails = &types.CompletionTokensDetails{
+			ReasoningTokens: int(rt),
+		}
 	}
 
 	if seSignature != "" {

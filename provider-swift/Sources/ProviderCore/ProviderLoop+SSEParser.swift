@@ -143,6 +143,50 @@ extension ProviderLoop {
         )
     }
 
+    /// Inject `usage.completion_tokens_details.reasoning_tokens` into a
+    /// final SSE chunk that already carries a `usage` block.
+    ///
+    /// Upstream's `OpenAIUsage` only models `prompt_tokens` /
+    /// `completion_tokens`, so we can't add the detail by re-encoding a
+    /// typed value. Instead we edit the JSON payload generically: decode
+    /// the `data:` line to a dictionary, splice the OpenAI-standard
+    /// `completion_tokens_details` object onto the existing `usage`, and
+    /// re-serialize. This preserves every other field (id, model, choices,
+    /// finish_reason, the existing token counts) untouched.
+    ///
+    /// The consumer-facing chat-completions usage object is the wire
+    /// surface OpenAI clients read for reasoning-token accounting; the
+    /// coordinator forwards this chunk verbatim, so editing it here is the
+    /// single source of truth for the streaming path. On any parse/encode
+    /// failure we return the original frame unchanged — a missing detail is
+    /// strictly better than a corrupted usage chunk (which would break
+    /// billing extraction downstream).
+    internal static func injectReasoningTokens(
+        into frame: String, reasoningTokens: Int
+    ) -> String {
+        guard reasoningTokens > 0,
+              let payload = joinedDataPayload(frame),
+              let bytes = payload.data(using: .utf8),
+              var obj = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              var usage = obj["usage"] as? [String: Any]
+        else {
+            return frame
+        }
+        // Merge into any existing details object rather than clobbering it.
+        var details = usage["completion_tokens_details"] as? [String: Any] ?? [:]
+        details["reasoning_tokens"] = reasoningTokens
+        usage["completion_tokens_details"] = details
+        obj["usage"] = usage
+        guard let out = try? JSONSerialization.data(
+                withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]
+              ),
+              let json = String(data: out, encoding: .utf8)
+        else {
+            return frame
+        }
+        return "data: \(json)\n\n"
+    }
+
     /// TB-007 P2 #2: deterministic serialization of a `tool_calls`
     /// delta for inclusion in the response-hash accumulator.
     ///

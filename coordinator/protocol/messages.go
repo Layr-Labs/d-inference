@@ -202,6 +202,13 @@ type InferenceResponseChunkMessage struct {
 type UsageInfo struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	// ReasoningTokens is the subset of CompletionTokens spent on
+	// reasoning/analysis content (gpt-oss analysis channel, <think>
+	// blocks, etc.), counted with the model tokenizer on the provider.
+	// 0 when the response carried no reasoning content. Mirrors
+	// `reasoningTokens` in the Swift UsageInfo. omitempty keeps the wire
+	// shape unchanged for non-reasoning responses and older providers.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // InferenceCompleteMessage signals the provider finished generating.

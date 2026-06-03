@@ -614,6 +614,14 @@ public actor ProviderLoop {
             return
         }
 
+        // `reasoning_effort` is not part of the upstream
+        // `OpenAIChatCompletionRequest` shape, so decode it directly from
+        // the request body and thread it into the chat template's render
+        // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
+        // Harmony reads it to set the reasoning budget; other models
+        // ignore the extra template variable.
+        let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
+
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
         // then waits for the first chunk with the full inference timeout, so we
         // must REJECT (status 503) any request we are *certain* we cannot serve
@@ -753,7 +761,8 @@ public actor ProviderLoop {
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },
                 releaseModel: { _ in },
-                defaultMaxTokens: Self.schedulerDefaultMaxTokens
+                defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+                reasoningEffort: reasoningEffort
             )
 
             // Force-stream so we get SSE frames even if the original request
@@ -815,6 +824,12 @@ public actor ProviderLoop {
             // fully refund). MLX streams ~1 token per frame, so this slightly
             // under-counts vs. true tokenization but never bills $0 for work.
             var contentFrameCount = 0
+            // Accumulated `reasoning_content` deltas (gpt-oss analysis
+            // channel, Qwen3/DeepSeek <think>, Gemma4 channels). Re-tokenized
+            // at completion to report an accurate `reasoning_tokens` count —
+            // upstream's usage block only carries the total completion count.
+            var reasoningText = ""
+            var reasoningTokens = 0
 
             do {
                 for try await frame in frames {
@@ -848,6 +863,7 @@ public actor ProviderLoop {
                     //   real assistant output on `delta.tool_calls`; a
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
+                    var frameToEmit = frame
                     if let parsed = Self.parseStreamChunk(frame) {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
@@ -864,6 +880,7 @@ public actor ProviderLoop {
                         if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
                             fullResponseText += reasoning
                             frameHadContent = true
+                            reasoningText += reasoning
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
@@ -875,9 +892,32 @@ public actor ProviderLoop {
                         if let usage = parsed.usage {
                             promptTokens = usage.promptTokens
                             completionTokens = usage.completionTokens
+                            // The usage block rides the final chunk, after all
+                            // reasoning deltas, so `reasoningText` is complete
+                            // here. Re-tokenize it for an accurate count and
+                            // surface it to chat-completions consumers via
+                            // `usage.completion_tokens_details.reasoning_tokens`
+                            // (OpenAI shape). The coordinator forwards this
+                            // chunk verbatim, so no coordinator change is
+                            // needed for the streaming path.
+                            if !reasoningText.isEmpty {
+                                // Re-tokenizing detokenized text isn't a perfect
+                                // identity (whitespace/special-token merges), so
+                                // clamp to the engine's completion count — a
+                                // reasoning subset can never exceed the total.
+                                reasoningTokens = min(
+                                    tokenizer.inner.encode(
+                                        text: reasoningText, addSpecialTokens: false
+                                    ).count,
+                                    max(0, completionTokens)
+                                )
+                                frameToEmit = Self.injectReasoningTokens(
+                                    into: frame, reasoningTokens: reasoningTokens
+                                )
+                            }
                         }
                     }
-                    if !emitSSE(frame) { return }
+                    if !emitSSE(frameToEmit) { return }
                 }
             } catch {
                 // P1 #2: CancellationError raised by `try await
@@ -961,7 +1001,8 @@ public actor ProviderLoop {
             )
             let usageInfo = UsageInfo(
                 promptTokens: UInt64(max(0, promptTokens)),
-                completionTokens: UInt64(max(0, completionTokens))
+                completionTokens: UInt64(max(0, completionTokens)),
+                reasoningTokens: UInt64(max(0, reasoningTokens))
             )
             send.send(.inferenceComplete(
                 requestId: requestId,

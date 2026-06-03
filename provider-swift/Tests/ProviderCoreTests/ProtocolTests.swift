@@ -386,6 +386,28 @@ private func samplePrivacyCapabilities() -> PrivacyCapabilities {
     )
 }
 
+@Test func usageInfoEncodesReasoningTokensAndDecodesLegacyPayload() throws {
+    // Encoding includes the snake_case reasoning_tokens key.
+    let usage = UsageInfo(promptTokens: 10, completionTokens: 30, reasoningTokens: 12)
+    let encoded = try JSONEncoder().encode(usage)
+    let obj = try jsonObject(encoded)
+    #expect((obj["prompt_tokens"] as? Int) == 10)
+    #expect((obj["completion_tokens"] as? Int) == 30)
+    #expect((obj["reasoning_tokens"] as? Int) == 12)
+
+    // Round-trips.
+    let decoded = try JSONDecoder().decode(UsageInfo.self, from: encoded)
+    #expect(decoded == usage)
+
+    // Backward-compat: a legacy payload without reasoning_tokens decodes
+    // with the field defaulting to 0.
+    let legacy = #"{"prompt_tokens":5,"completion_tokens":7}"#
+    let legacyDecoded = try JSONDecoder().decode(UsageInfo.self, from: Data(legacy.utf8))
+    #expect(legacyDecoded.promptTokens == 5)
+    #expect(legacyDecoded.completionTokens == 7)
+    #expect(legacyDecoded.reasoningTokens == 0)
+}
+
 private func jsonObject(_ data: Data) throws -> [String: Any] {
     guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         throw TestFailure.notJSONObject

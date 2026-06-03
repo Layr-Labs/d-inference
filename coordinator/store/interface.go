@@ -443,6 +443,23 @@ type Store interface {
 	// UpdateProviderRuntime persists runtime integrity verification state.
 	UpdateProviderRuntime(ctx context.Context, id string, verified bool, pythonHash, runtimeHash string) error
 
+	// OpenProviderSession records the start of a provider connection (one row per
+	// websocket session). serial/account may be empty at connect time and are
+	// backfilled by TouchProviderSession once attestation/linking completes.
+	OpenProviderSession(ctx context.Context, sessionID, serial, accountID string) error
+
+	// TouchProviderSession updates the open session's last_seen heartbeat and
+	// backfills serial/account if they were unknown at open time.
+	TouchProviderSession(ctx context.Context, sessionID, serial, accountID string, lastSeen time.Time) error
+
+	// CloseProviderSession marks the open session for sessionID as ended.
+	CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error
+
+	// CloseOpenProviderSessions closes any sessions still marked open (used at
+	// startup to reconcile sessions orphaned by a previous coordinator process).
+	// Returns the number of sessions closed.
+	CloseOpenProviderSessions(ctx context.Context) (int, error)
+
 	// --- Provider Reputation Persistence ---
 
 	// UpsertReputation creates or updates a provider's reputation record.
@@ -1013,6 +1030,22 @@ type ProviderRecord struct {
 	LastSessionTokensGenerated int64             `json:"last_session_tokens_generated"`
 	RegisteredAt               time.Time         `json:"registered_at"`
 	LastSeen                   time.Time         `json:"last_seen"`
+}
+
+// ProviderSession is one connect→disconnect lifecycle of a provider machine.
+// connected_at/disconnected_at bound the session; last_seen is the most recent
+// heartbeat within it. disconnected_at == nil means the session is still open.
+// These rows are the durable source for uptime/downtime history (the providers
+// table only keeps a single mutable last_seen).
+type ProviderSession struct {
+	ID               int64      `json:"id"`
+	SessionID        string     `json:"session_id"` // providers.id for this connection
+	SerialNumber     string     `json:"serial_number"`
+	AccountID        string     `json:"account_id"`
+	ConnectedAt      time.Time  `json:"connected_at"`
+	LastSeen         time.Time  `json:"last_seen"`
+	DisconnectedAt   *time.Time `json:"disconnected_at,omitempty"`
+	DisconnectReason string     `json:"disconnect_reason"`
 }
 
 // ProviderLocation captures approximate geographic location for a provider or

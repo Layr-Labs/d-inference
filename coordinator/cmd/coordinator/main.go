@@ -119,6 +119,21 @@ func main() {
 		})
 	}
 
+	// Reconcile provider sessions left open by a previous coordinator process
+	// (durable uptime history). Best-effort + time-bounded — neither an error nor
+	// a slow/unresponsive DB must block startup. Assumes a single active
+	// coordinator (the prod blue-green deploy model); if the DB were ever shared
+	// by two live instances this would close the other instance's open sessions.
+	func() {
+		rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
+		defer rcancel()
+		if n, err := st.CloseOpenProviderSessions(rctx); err != nil {
+			logger.Warn("failed to reconcile open provider sessions", "error", err)
+		} else if n > 0 {
+			logger.Info("reconciled orphaned provider sessions", "closed", n)
+		}
+	}()
+
 	reg := registry.New(logger)
 
 	// Set minimum trust level for routing.

@@ -808,6 +808,12 @@ func (r *Registry) persistProviderNow(p *Provider) {
 		if err := r.store.UpsertProvider(ctx, rec); err != nil {
 			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
 		}
+
+		// Keep this connection's session row fresh and backfill serial/account
+		// once attestation/linking has populated them.
+		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, rec.LastSeen); err != nil {
+			r.logger.Warn("failed to touch provider session", "provider_id", rec.ID, "error", err)
+		}
 	})
 }
 
@@ -1171,6 +1177,20 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		r.modelProviderInc(m.ID)
 	}
 	r.mu.Unlock()
+
+	// Open a session row for this connection (async; durable uptime history).
+	// serial/account are empty here (set after attestation/linking) and are
+	// backfilled by the throttled TouchProviderSession in persistProviderNow.
+	if r.store != nil {
+		sessionID := p.ID
+		saferun.Go(r.logger, "registry.openSession", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := r.store.OpenProviderSession(ctx, sessionID, "", ""); err != nil {
+				r.logger.Warn("failed to open provider session", "provider_id", sessionID, "error", err)
+			}
+		})
+	}
 
 	r.logger.Info("provider registered",
 		"provider_id", id,
@@ -1768,6 +1788,18 @@ func (r *Registry) Disconnect(id string) {
 	}
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.mu.Unlock()
+
+	// Close this connection's session row (async; durable uptime history).
+	// Covers both graceful disconnects and evictStale (which calls Disconnect).
+	if r.store != nil {
+		saferun.Go(r.logger, "registry.closeSession", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := r.store.CloseProviderSession(ctx, id, "disconnect", time.Now()); err != nil {
+				r.logger.Warn("failed to close provider session", "provider_id", id, "error", err)
+			}
+		})
+	}
 
 	r.logger.Info("provider disconnected", "provider_id", id)
 }

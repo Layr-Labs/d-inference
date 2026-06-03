@@ -659,6 +659,28 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_log_reports_serial ON provider_log_reports(serial_number, created_at DESC)`,
+
+		// Provider sessions — durable connect→disconnect history for uptime/downtime.
+		// One row per websocket connection; disconnected_at IS NULL while open.
+		// session_id is UNIQUE so the async open/close paths are order-independent
+		// (open = INSERT ON CONFLICT DO NOTHING; close = upsert) — a fast
+		// connect→disconnect where close races ahead of open cannot leave a
+		// permanently-open row.
+		`CREATE TABLE IF NOT EXISTS provider_sessions (
+			id BIGSERIAL PRIMARY KEY,
+			session_id TEXT NOT NULL UNIQUE,
+			serial_number TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			disconnected_at TIMESTAMPTZ,
+			disconnect_reason TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_serial ON provider_sessions(serial_number, connected_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_connected ON provider_sessions(connected_at DESC)`,
+		// Partial index over still-open sessions — speeds the online-now count and
+		// the startup reconcile. (session_id lookups use the UNIQUE index.)
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_open ON provider_sessions(connected_at) WHERE disconnected_at IS NULL`,
 	}
 
 	for _, m := range migrations {
@@ -3569,4 +3591,73 @@ func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
 		return nil, fmt.Errorf("store: log report %d not found: %w", id, err)
 	}
 	return &r, nil
+}
+
+// OpenProviderSession records the start of a provider connection. Idempotent:
+// ON CONFLICT DO NOTHING so a duplicate register, or an open that races behind a
+// close (fast connect→disconnect), never creates a second or reopened row.
+func (s *PostgresStore) OpenProviderSession(ctx context.Context, sessionID, serial, accountID string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_sessions (session_id, serial_number, account_id)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (session_id) DO NOTHING`,
+		sessionID, serial, accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: open provider session: %w", err)
+	}
+	return nil
+}
+
+// TouchProviderSession updates the open session's last_seen and backfills
+// serial/account if they were unknown at open time.
+func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, serial, accountID string, lastSeen time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_sessions
+		    SET last_seen = $2,
+		        serial_number = CASE WHEN serial_number = '' THEN $3 ELSE serial_number END,
+		        account_id    = CASE WHEN account_id = ''    THEN $4 ELSE account_id    END
+		  WHERE session_id = $1 AND disconnected_at IS NULL`,
+		sessionID, lastSeen, serial, accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: touch provider session: %w", err)
+	}
+	return nil
+}
+
+// CloseProviderSession marks the session for sessionID as ended. Implemented as
+// an upsert so it is correct regardless of whether the async OpenProviderSession
+// has landed yet: if the row is missing (close raced ahead of open on a fast
+// connect→disconnect) it inserts an already-closed row; if open, it closes it;
+// if already closed, it leaves the original disconnect timestamp/reason intact.
+func (s *PostgresStore) CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_sessions (session_id, connected_at, last_seen, disconnected_at, disconnect_reason)
+		 VALUES ($1, $3, $3, $3, $2)
+		 ON CONFLICT (session_id) DO UPDATE
+		    SET disconnected_at = COALESCE(provider_sessions.disconnected_at, EXCLUDED.disconnected_at),
+		        disconnect_reason = CASE WHEN provider_sessions.disconnected_at IS NULL
+		                                 THEN EXCLUDED.disconnect_reason
+		                                 ELSE provider_sessions.disconnect_reason END`,
+		sessionID, reason, when,
+	)
+	if err != nil {
+		return fmt.Errorf("store: close provider session: %w", err)
+	}
+	return nil
+}
+
+// CloseOpenProviderSessions closes any sessions still open (orphaned by a prior
+// coordinator process), setting disconnected_at to the last heartbeat seen.
+func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE provider_sessions
+		    SET disconnected_at = last_seen, disconnect_reason = 'coordinator_restart'
+		  WHERE disconnected_at IS NULL`,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: close open provider sessions: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }

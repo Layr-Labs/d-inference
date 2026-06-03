@@ -488,15 +488,19 @@ func (c *Client) HandleWebhook(body []byte) {
 		return
 	}
 
-	// Log what the plist contains for debugging
+	// Log what the plist contains. The raw preview is kept at Debug only: it
+	// echoes the device response verbatim, which includes the CommandUUID — and
+	// UUID secrecy is what the solicited-command gate relies on, so it must not
+	// be emitted at Info where it could leak the gate's secret to anyone with
+	// log access.
 	hasSecInfo := bytes.Contains(plistData, []byte("SecurityInfo"))
 	hasDeviceAttest := bytes.Contains(plistData, []byte("DevicePropertiesAttestation"))
 	c.logger.Info("mdm webhook plist content",
 		"size", len(plistData),
 		"has_security_info", hasSecInfo,
 		"has_device_attestation", hasDeviceAttest,
-		"preview", string(plistData[:min(len(plistData), 2000)]),
 	)
+	c.logger.Debug("mdm webhook plist preview", "preview", string(plistData[:min(len(plistData), 2000)]))
 
 	// Parse the plist for SecurityInfo
 	secInfo := parseSecurityInfoPlist(plistData)

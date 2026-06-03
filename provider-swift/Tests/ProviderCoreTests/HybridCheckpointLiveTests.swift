@@ -406,32 +406,49 @@ struct HybridCheckpointLiveTests {
             Issue.record("BIGKV SSD lookup MISS at 100k for \(modelID)")
             return
         }
+        // loadSec = file read (mmap'd) + AES-GCM decrypt + eager MLXArray
+        // construction (KVCacheSerializer.deserialize copies bytes eagerly).
+        // CAVEAT (measurement validity): the file was fsync-written by THIS
+        // process moments ago, so the OS unified buffer cache likely serves the
+        // read from RAM, not NVMe. loadSec is therefore a WARM-page-cache lower
+        // bound. The realistic worst case adds a true cold-disk read; on M-series
+        // NVMe (~5 GB/s) a `bytesOnDisk` read is well under a second, so even
+        // cold it's tiny next to the ~78s cold prefill. We print the cold-disk
+        // upper-bound estimate alongside so the speedup isn't overstated.
         let loadSec = Date().timeIntervalSince(loadStart)
         #expect(hit.tier == .ssd, "must load from the encrypted SSD file, got \(hit.tier)")
         #expect(hit.tokenCount == checkpointL)
-        print("BIGKV SSD read+decrypt+rebuild = \(String(format: "%.2f", loadSec))s")
 
-        // Step 4: rebuild batched + prefill ONLY the suffix (timed) → continue;
-        // must equal cold. The warm TTFT ≈ loadSec + suffixSec.
-        let warmResult: (tokens: [Int], suffixSec: Double) = try await container.perform { ctx -> ([Int], Double) in
+        // Step 4: rebuild batched (timed separately — fromSingleRow/merge build
+        // lazy MLXArray graphs that only materialize under eval, so this is NOT
+        // inside loadSec) + prefill ONLY the suffix (timed). warmTTFT ≈ loadSec
+        // + rebuildSec + suffixSec.
+        let warmResult: (tokens: [Int], rebuildSec: Double, suffixSec: Double) =
+            try await container.perform { ctx -> ([Int], Double, Double) in
             let model = ctx.model
+            let rStart = Date()
             let batched: [any KVCache] = hit.caches.map { layer in
                 if let rot = layer as? RotatingKVCache { return BatchRotatingKVCache.fromSingleRow(rot) }
                 return BatchKVCache.merge([layer as! KVCacheSimple])
             }
+            eval(batched.flatMap { $0.innerState() })  // force the rebuild graph
+            let rebuildSec = Date().timeIntervalSince(rStart)
             let sStart = Date()
             let sfx = MLXArray(suffix.map { Int32($0) }).reshaped([1, suffix.count])
             let seed = model.callAsFunction(sfx, cache: batched)[.ellipsis, -1, 0...]
             eval(seed)
             let suffixSec = Date().timeIntervalSince(sStart)
             let toks = greedyContinue(model: model, cache: batched, seedLogits: seed, maxTokens: maxTokens)
-            return (toks, suffixSec)
+            return (toks, rebuildSec, suffixSec)
         }
         let warm = warmResult.tokens
-        let suffixSec = warmResult.suffixSec
-        let warmTTFT = loadSec + suffixSec
-        print("BIGKV suffix prefill = \(String(format: "%.2f", suffixSec))s")
-        print("BIGKV SUMMARY: cold_prefill=\(String(format: "%.2f", setup.coldPrefillSec))s  warm(load+suffix)=\(String(format: "%.2f", warmTTFT))s  speedup=\(String(format: "%.2f", setup.coldPrefillSec / max(warmTTFT, 0.001)))x  diskMB=\(String(format: "%.0f", Double(bytesOnDisk) / 1_048_576))  flush=\(String(format: "%.2f", flushSec))s")
+        let warmTTFT = loadSec + warmResult.rebuildSec + warmResult.suffixSec
+        // Cold-disk read upper bound: assume a pessimistic 3 GB/s effective
+        // NVMe read if the page cache were fully evicted.
+        let coldDiskReadEst = Double(bytesOnDisk) / (3.0 * 1_073_741_824)
+        print("BIGKV stages: load(read+decrypt+build)=\(String(format: "%.2f", loadSec))s [warm-cache] rebuild=\(String(format: "%.2f", warmResult.rebuildSec))s suffix=\(String(format: "%.2f", warmResult.suffixSec))s")
+        print("BIGKV SUMMARY: cold_prefill=\(String(format: "%.1f", setup.coldPrefillSec))s  warm(load+rebuild+suffix)=\(String(format: "%.2f", warmTTFT))s  speedup≈\(String(format: "%.0f", setup.coldPrefillSec / max(warmTTFT, 0.001)))x  diskGB=\(String(format: "%.2f", Double(bytesOnDisk) / 1_073_741_824))  flush=\(String(format: "%.1f", flushSec))s  cold_disk_read_upper_bound≈\(String(format: "%.2f", coldDiskReadEst))s")
+        print("BIGKV NOTE: loadSec is a warm-page-cache read (same-process write→read); add ≈\(String(format: "%.2f", coldDiskReadEst))s for a fully-cold disk. n=1 — speedup is an order-of-magnitude estimate, not a precise figure.")
         #expect(warm == setup.cold,
             "\(modelID) SSD-load restore@100k: warm \(warm) != cold \(setup.cold)")
     }

@@ -31,6 +31,9 @@ public enum CoordinatorEvent: Sendable {
 public final class AtomicProviderStats: Sendable {
     private let _requestsServed = ManagedAtomic<UInt64>(0)
     private let _tokensGenerated = ManagedAtomic<UInt64>(0)
+    // Count of completed requests whose usage chunk was missing/zero. Surfaced
+    // in the daemon state file so `doctor` can flag a billing under-count.
+    private let _usageGaps = ManagedAtomic<UInt64>(0)
 
     public init() {}
 
@@ -44,12 +47,21 @@ public final class AtomicProviderStats: Sendable {
         set { _tokensGenerated.store(newValue) }
     }
 
+    public var usageGaps: UInt64 {
+        get { _usageGaps.load() }
+        set { _usageGaps.store(newValue) }
+    }
+
     public func incrementRequestsServed() {
         _requestsServed.add(1)
     }
 
     public func addTokensGenerated(_ count: UInt64) {
         _tokensGenerated.add(count)
+    }
+
+    public func incrementUsageGaps() {
+        _usageGaps.add(1)
     }
 }
 

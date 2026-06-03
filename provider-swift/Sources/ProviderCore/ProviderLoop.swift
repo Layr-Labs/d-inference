@@ -163,6 +163,15 @@ public actor ProviderLoop {
     /// Task for the delayed auto-report (10 minutes after learning trust status).
     private var autoReportTask: Task<Void, Never>?
 
+    /// Diagnostics: the most recent trust_status from the coordinator and the
+    /// most recent model-load failure, plus the daemon start time. Persisted to
+    /// the daemon state file so `darkbloom status`/`doctor` can show the
+    /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
+    /// (not ContinuousClock) so it survives across the CLI process boundary.
+    private var lastTrustStatus: DaemonState.Trust?
+    private var lastModelLoadError: DaemonState.ModelLoadError?
+    private let startedAtEpoch: Double = Date().timeIntervalSince1970
+
     /// Keeps the network stack alive during sleep for APN push notifications.
     /// Held for the entire provider session so MDM SecurityInfo commands
     /// can be delivered even when the Mac is sleeping.
@@ -930,6 +939,10 @@ public actor ProviderLoop {
                         + "MLXOpenAIService.streamChatCompletionFrames behavior."
                     )
                 }
+                // Surface the usage-chunk anomaly to the operator via `doctor`
+                // (recorded even when the content-frame floor recovered billing,
+                // since a missing/zero usage chunk is itself the signal).
+                providerStats.incrementUsageGaps()
             }
 
             // Update stats
@@ -1062,8 +1075,51 @@ public actor ProviderLoop {
     /// Handle a trust_status message from the coordinator. If the provider
     /// learns it is self_signed or untrusted, schedule a one-time auto-report
     /// of unified logs after 10 minutes.
+    /// Assembles the current daemon state and writes it to the state file so the
+    /// CLI (`status`/`doctor`) can read live state + the latest trust reason.
+    /// Best-effort and cheap; safe to call from the trust handler and the
+    /// periodic capacity loop.
+    private func writeDaemonState() {
+        let cap = state.backendCapacity
+        let snapshot = DaemonState(
+            pid: getpid(),
+            version: ProviderCore.version,
+            writtenAt: Date().timeIntervalSince1970,
+            startedAt: startedAtEpoch,
+            trust: lastTrustStatus,
+            currentModel: state.currentModel,
+            warmModels: state.warmModels,
+            inferenceActive: state.inferenceActive,
+            stats: DaemonState.Stats(
+                requestsServed: stats.requestsServed,
+                tokensGenerated: stats.tokensGenerated,
+                usageGaps: stats.usageGaps
+            ),
+            capacity: cap.map {
+                DaemonState.Capacity(totalMemoryGb: $0.totalMemoryGb, gpuMemoryActiveGb: $0.gpuMemoryActiveGb)
+            },
+            lastModelLoadError: lastModelLoadError
+        )
+        DaemonStateFile.write(snapshot)
+    }
+
+    /// Records a model-load failure for the diagnostics state file so the
+    /// operator sees the exact "Insufficient memory …" text in `doctor`.
+    private func recordModelLoadError(model: String, message: String) {
+        lastModelLoadError = DaemonState.ModelLoadError(
+            model: model, message: message, at: Date().timeIntervalSince1970)
+        writeDaemonState()
+    }
+
     private func handleTrustStatus(trustLevel: String, status: String, reason: String) {
         logger.info("Trust status update: level=\(trustLevel) status=\(status) reason=\(reason)")
+
+        // Cache + persist so `darkbloom status`/`doctor` can show the operator
+        // the coordinator's reason (otherwise it is only in the logs).
+        lastTrustStatus = DaemonState.Trust(
+            trustLevel: trustLevel, status: status, reason: reason,
+            receivedAt: Date().timeIntervalSince1970)
+        writeDaemonState()
 
         let needsReport = trustLevel == "self_signed" || status == "untrusted"
         guard needsReport, !didAutoReport else {
@@ -1304,10 +1360,16 @@ public actor ProviderLoop {
         let pollInterval = Duration.seconds(Int64(max(1, heartbeatInterval / 2)))
         let me = self
         capacityRefreshTask = Task {
+            // Write once immediately so `status`/`doctor` have a fresh file soon
+            // after the daemon starts, before the first poll interval elapses.
+            await me.writeDaemonState()
             while !Task.isCancelled {
                 try? await Task.sleep(for: pollInterval)
                 if Task.isCancelled { break }
                 await me.updateAggregateCapacity()
+                // Refresh the diagnostics state file on the same cadence so
+                // `status`/`doctor` see current model, stats, and capacity.
+                await me.writeDaemonState()
             }
         }
     }
@@ -1491,7 +1553,14 @@ public actor ProviderLoop {
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: modelInfo.estimatedMemoryGb,
                 headroomGb: Self.loadHeadroomGb)
-            try await evictUntilAvailable(requiredGb: requiredGb)
+            do {
+                try await evictUntilAvailable(requiredGb: requiredGb)
+            } catch let InferenceError.modelLoadFailed(message) {
+                // Record for diagnostics so `doctor` shows the operator the exact
+                // "Insufficient memory …" reason, then rethrow unchanged.
+                recordModelLoadError(model: modelId, message: message)
+                throw InferenceError.modelLoadFailed(message)
+            }
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 

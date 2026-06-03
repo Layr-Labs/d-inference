@@ -391,6 +391,11 @@ func main() {
 		if webhookSecret := os.Getenv("EIGENINFERENCE_MDM_WEBHOOK_SECRET"); webhookSecret != "" {
 			srv.SetMDMWebhookSecret(webhookSecret)
 			logger.Info("MDM webhook shared-secret auth enabled")
+		} else {
+			// The solicited-command (CommandUUID) gate still protects the
+			// webhook, but the shared secret is the recommended extra layer.
+			// Warn so a misconfigured deployment is visible at startup.
+			logger.Warn("EIGENINFERENCE_MDM_WEBHOOK_SECRET not set — MDM webhook relies solely on the CommandUUID gate; set it + keep MicroMDM bound to localhost for defense in depth")
 		}
 		logger.Info("MDM verification enabled", "url", mdmCfg.URL)
 	}

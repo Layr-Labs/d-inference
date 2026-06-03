@@ -81,6 +81,25 @@ import Testing
     #expect(d.level == .pass)
 }
 
+@Test func usableInferenceGbMatchesProviderAccounting() {
+    // (total − reserve − gpuActive − cache) × 0.7. Must match
+    // ProviderLoop.availableMemoryGb() so doctor and the provider agree.
+    // 32 GB box, 4 GB reserve, idle: (32 − 4) × 0.7 = 19.6.
+    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4) - 19.6) < 0.001)
+    // With 5 GB GPU active: (32 − 4 − 5) × 0.7 = 16.1.
+    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, gpuActiveGb: 5) - 16.1) < 0.001)
+    // Never negative.
+    #expect(ModelFitDiagnostic.usableInferenceGb(totalGb: 8, reserveGb: 16) == 0)
+}
+
+@Test func modelFitUsesProviderUsableMemoryNotRawAvailable() {
+    // Regression for the review finding: a 9 GB-weight model (needs 18 GB) on a
+    // 24 GB box must FAIL — usable is (24−4)×0.7 = 14 GB, NOT the raw 20 GB.
+    let usable = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4)
+    let d = ModelFitDiagnostic.diagnose(modelID: "mid", weightGb: 9.0, usableGb: usable)
+    #expect(d.level == .fail, "must reflect the provider's 0.7 gate, not total−reserve")
+}
+
 @Test func modelFitSuggestsFittingAlternatives() {
     let alts = [
         ModelFitDiagnostic.ModelOption(id: "small", weightGb: 5.0),

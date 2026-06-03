@@ -11,9 +11,30 @@ public enum ModelFitDiagnostic {
     /// activations). A model "fits" when weightGb * factor <= usable RAM.
     public static let memoryHeadroomFactor = 2.0
 
+    /// Fraction of free unified memory the provider actually allows inference to
+    /// use (the rest is headroom for the OS / cache growth). MUST match
+    /// `ProviderLoop.availableMemoryGb()` so `doctor`'s verdict matches what the
+    /// running provider will actually do — otherwise doctor can say "fits" for a
+    /// model the provider then refuses to load.
+    public static let inferenceUsableFraction = 0.7
+
     /// Resident memory a model needs to load, from its on-disk weight size.
     public static func requiredGb(weightGb: Double) -> Double {
         weightGb * memoryHeadroomFactor
+    }
+
+    /// The usable-for-inference memory the provider computes:
+    /// (total − reserve − GPU active − GPU cache) × inferenceUsableFraction.
+    /// Shared by `ProviderLoop.availableMemoryGb()` and `doctor` so they can
+    /// never disagree on whether a model fits.
+    public static func usableInferenceGb(
+        totalGb: Double,
+        reserveGb: Double,
+        gpuActiveGb: Double = 0,
+        gpuCacheGb: Double = 0
+    ) -> Double {
+        let free = totalGb - reserveGb - gpuActiveGb - gpuCacheGb
+        return max(0, free) * inferenceUsableFraction
     }
 
     /// A candidate model the operator could serve instead, with its size.

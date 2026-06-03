@@ -1674,6 +1674,10 @@ public actor ProviderLoop {
     ///   2. KV already promised to in-flight requests
     ///      (`kvBudget.outstandingReservedBytes`) is subtracted, so a concurrent
     ///      load can't consume memory a mid-decode request is counting on.
+    ///
+    /// `doctor`'s model-fit check shares the SAME arithmetic via
+    /// `ModelLoadAdmission`, so the operator-facing verdict can never drift from
+    /// what this method enforces at load time.
     private func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
         return ModelLoadAdmission.freeForLoadGb(

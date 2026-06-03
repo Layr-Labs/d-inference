@@ -132,8 +132,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
 
     public func ageSeconds(now: Double) -> Double { max(0, now - writtenAt) }
 
-    /// Live fields are stale if the snapshot is older than 3× the heartbeat
-    /// (~90s). A stale-but-present file still carries useful last-known trust.
+    /// Live fields are stale if the snapshot is older than 90s — many write
+    /// cycles (the daemon rewrites every ~half-heartbeat), so this comfortably
+    /// distinguishes "running" from "wedged". A stale-but-present file still
+    /// carries useful last-known trust.
     public func isStale(now: Double, maxAge: Double = 90) -> Bool {
         ageSeconds(now: now) > maxAge
     }

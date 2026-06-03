@@ -46,7 +46,15 @@ enum DoctorRunner {
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
         if let hw = snapshot.hardware {
-            let usableGb = Double(hw.memoryAvailableGb > 0 ? hw.memoryAvailableGb : hw.memoryGb)
+            // Use the SAME accounting the provider enforces at load time
+            // (total − reserve − GPU − cache) × 0.7, not the raw available RAM —
+            // otherwise doctor reports "fits" for a model the provider refuses.
+            // When the daemon is up, subtract its live GPU-active memory.
+            let gpuActiveGb = (daemonUp ? state?.capacity?.gpuMemoryActiveGb : nil) ?? 0
+            let usableGb = ModelFitDiagnostic.usableInferenceGb(
+                totalGb: Double(hw.memoryGb),
+                reserveGb: Double(snapshot.config.provider.memoryReserveGB),
+                gpuActiveGb: gpuActiveGb)
             let targetID = state?.currentModel ?? snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first
             let alternatives = snapshot.models.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)

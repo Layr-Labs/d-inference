@@ -373,13 +373,13 @@ struct HybridCheckpointLiveTests {
         }
         print("BIGKV checkpoint in-memory size = \(String(format: "%.2f", Double(checkpointBytes) / 1_073_741_824))GB")
         // Re-eval caches right before store to ensure MLX hasn't freed them.
-        // The caches were constructed inside container.perform, eval'd there,
-        // then returned. MLX's memory budget may have freed the backing arrays
-        // between then and now. Re-evaluating ensures they're materialized.
         eval(setup.prefix.flatMap { $0.innerState() })
         let writer = makeMgr()
-        await writer.store(tokens: prompt, checkpointLength: checkpointL,
+        let stored = await writer.store(tokens: prompt, checkpointLength: checkpointL,
                            caches: SendableKVCaches(setup.prefix))
+        // TRACE (remove once 100k flush is green): pin down where the entry goes.
+        let ramAfterStore = await writer.ramTierStats()
+        print("BIGKV TRACE store→\(stored)  ramStats after store: entries=\(ramAfterStore.entries) bytes=\(ramAfterStore.bytes) inserts=\(ramAfterStore.inserts) evictions=\(ramAfterStore.evictions) rejects=\(ramAfterStore.rejects)")
         let flushStart = Date()
         let written = await writer.flushToSSD()
         await writer.flushIndexNow()

@@ -72,9 +72,11 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"reason":            {},
 	"runtime_component": {},
 	// Connectivity
-	"reconnect_count": {},
-	"last_error":      {},
-	"ws_state":        {},
+	"reconnect_count":   {},
+	"last_error":        {},
+	"ws_state":          {},
+	"network_reachable": {}, // distinguishes "coordinator down" from "box offline"
+	"coordinator_url":   {},
 	// Billing (booleans/enums only — no dollar amounts)
 	"billing_method": {},
 	"payment_failed": {},

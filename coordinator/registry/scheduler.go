@@ -118,10 +118,15 @@ const (
 )
 
 // modelMemoryHeadroomFactor approximates a model's resident GPU footprint
-// (weights + KV cache + activations) as a multiple of its on-disk weight
-// size. The provider uses 2.0 (ensureModelLoaded); the coordinator uses a
-// slightly looser 2.5 and lets the provider make the final call.
-const modelMemoryHeadroomFactor = 2.5
+// (weights + KV cache + activations) as a multiple of its on-disk weight size.
+// It matches the provider's own load threshold (ensureModelLoaded uses
+// estimatedMemoryGb * 2.0), so this is a HARD "could the provider ever load
+// this" floor — NOT a conservative comfort margin. Using a larger factor (e.g.
+// 2.5) would reject models the provider can actually load: e.g. a model already
+// resident-but-idle on a 64 GB box (loaded at 2.0x) would be wrongly excluded
+// once it left the "running" slot state. Let the provider make the final call;
+// only gate the cases it could never accept.
+const modelMemoryHeadroomFactor = 2.0
 
 // modelFitsHardware reports whether a model of the given on-disk weight size
 // (GB) can plausibly load on a node with the given total unified memory (GB).

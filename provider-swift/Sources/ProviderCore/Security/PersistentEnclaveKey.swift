@@ -205,10 +205,9 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         label: String? = nil
     ) throws -> PersistentEnclaveKey {
         let key = try loadOrCreate(accessGroup: accessGroup, label: label)
-        if key.selfTestSign() == nil {
+        guard let status = key.selfTestSign() else {
             return key
         }
-        let status = key.selfTestSign() ?? errSecInternalError
         logger.warning("Persistent SE key failed self-test sign (OSStatus \(status)) — attempting auto-repair (delete + re-mint)")
 
         let group = resolveAccessGroup(accessGroup)

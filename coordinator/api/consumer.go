@@ -3997,6 +3997,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		break
 	}
 	if provider == nil {
+		// No online provider can physically fit this model — queueing/retrying
+		// can't help, so fast-fail with a clear, non-retryable error instead of
+		// blocking for 120s then 503-ing. Mirrors the streaming dispatch path.
+		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				withCode("model_unavailable")))
+			return
+		}
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  requestID,
 			Model:      model,

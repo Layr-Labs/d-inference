@@ -268,8 +268,8 @@ public actor BatchScheduler {
         engine?.core.scheduler.checkpointBoundaries = boundaries
         engine?.core.scheduler.onCheckpointCapture = { prefixTokens, length, caches in
             let box = SendableKVCaches(caches)
-            Task { await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box)
-                   _ = await mgr.flushToSSD() }
+            // TB-016 sub-feature B: test seam also RAM-only (no eager flush).
+            Task { await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box) }
         }
     }
 
@@ -346,7 +346,16 @@ public actor BatchScheduler {
                     // Boundaries capped at the smallest sliding window so a
                     // snapshot never claims tokens a window has discarded.
                     let window = PrefixCacheStrategy.minSlidingWindow(ctx.model.newCache(parameters: nil)) ?? 0
-                    boundaries = PrefixDigest.checkpoints(forSlidingWindow: window)
+                    // TB-016 sub-feature A: lift ladder past window for proven
+                    // families. Use modelId as the arch string (safe fallback;
+                    // proven=false for unmatched families keeps today's ladder).
+                    let maxContext = architecture.maxContextLength ?? 0
+                    let proven = PrefixCachePastWindow.isProven(arch: modelId)
+                    boundaries = PrefixDigest.checkpoints(
+                        forSlidingWindow: window,
+                        maxContext: maxContext,
+                        pastWindowProven: proven
+                    )
                     // Capture PER-LAYER [kvHeads, headDim] ground truth from a
                     // 1-token probe prefill. Heterogeneous models (Gemma-4:
                     // sliding [8,256] + full [2,512]) need this — a single
@@ -377,6 +386,9 @@ public actor BatchScheduler {
                         // so sustained diverse traffic can't fill the volume —
                         // same 50%-of-free default as the block tier.
                         diskBudgetBytes: backing.diskBudgetBytes,
+                        // TB-016 sub-feature B: min persist threshold (16384
+                        // for Gemma, 0 otherwise). Env override available.
+                        minPersistTokens: Self.prefixCacheMinPersistTokens(arch: modelId),
                         now: nowFn)
                     prefixCacheLogger.info(
                         "checkpoint prefix cache: window \(window), boundaries \(boundaries)")
@@ -407,13 +419,12 @@ public actor BatchScheduler {
                 scheduler.checkpointBoundaries = boundaries
                 scheduler.onCheckpointCapture = { prefixTokens, length, caches in
                     let box = SendableKVCaches(caches)
-                    // Store to RAM (fast) then flush to encrypted SSD so the
-                    // checkpoint survives restart — the whole point of the
-                    // at-rest tier. Both run off the engine queue in a detached
-                    // Task; flushToSSD is internally idempotent/skip-if-present.
+                    // TB-016 sub-feature B: capture = RAM-ONLY. Store to RAM
+                    // (fast); 2nd-use promotion handles SSD persistence when the
+                    // prefix is re-accessed (RAM-first admission stops the write
+                    // storm). No eager flushToSSD.
                     Task {
                         await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box)
-                        _ = await mgr.flushToSSD()
                     }
                 }
             }
@@ -646,6 +657,19 @@ public actor BatchScheduler {
         }
         if let plain = v.volumeAvailableCapacity, plain > 0 { return plain }
         return nil
+    }
+
+    /// TB-016 sub-feature B: Minimum token count for SSD persistence.
+    /// Default: 16384 for Gemma family (proven past-window restore),
+    /// 0 otherwise (all checkpoints persist). Env override:
+    /// DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS.
+    static func prefixCacheMinPersistTokens(arch: String) -> Int {
+        if let env = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS"],
+           let val = Int(env), val >= 0 {
+            return val
+        }
+        // Default: 16384 for Gemma, 0 otherwise.
+        return PrefixCachePastWindow.isProven(arch: arch) ? 16384 : 0
     }
 
     /// Set the post-load budgets driven by architecture + physical

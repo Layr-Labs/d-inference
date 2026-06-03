@@ -141,6 +141,16 @@ public actor PrefixCacheManager {
     /// stay under it, so the SSD tier and index.json are both bounded under
     /// sustained diverse traffic. 0 = unbounded (not recommended in prod).
     private let diskBudgetBytes: Int
+    /// TB-016 sub-feature B: Minimum token count for SSD persistence. Gates
+    /// PERSISTENCE only, not RAM admission (short within-window prefixes
+    /// still cache in RAM). 0 = today's behavior (all checkpoints persist).
+    private let minPersistTokens: Int
+    /// Prefill cost per token (ms) for benefit-per-byte eviction scoring.
+    /// TB-016 sub-feature C: drives the benefit numerator.
+    private let prefillCostPerToken: Double
+    /// Half-life (seconds) for recency decay in benefit-per-byte scoring.
+    /// TB-016 sub-feature C: freshly-promoted entries stay hot.
+    private let evictionHalfLifeSeconds: Double
     private let now: @Sendable () -> Int64
 
     private var stats = PrefixCacheManagerStats()
@@ -158,6 +168,10 @@ public actor PrefixCacheManager {
     private var unsavedWrites = 0
     /// Save the index after this many new writes (or on shutdown/idle flush).
     private static let saveCoalesceThreshold = 8
+    /// TB-016 sub-feature B: pinned digests are always eligible for
+    /// persistence regardless of minPersistTokens. Internal-only (no
+    /// public pin() API this phase).
+    private var pinnedDigests: Set<String> = []
 
     /// 12-char model-hash prefix used as the per-model SSD subdirectory.
     private var modelDirComponent: String {
@@ -173,6 +187,9 @@ public actor PrefixCacheManager {
         ssdEnabled: Bool,
         boundaries: [Int] = PrefixDigest.defaultCheckpoints,
         diskBudgetBytes: Int = 0,
+        minPersistTokens: Int = 0,
+        prefillCostPerToken: Double = 1.0,
+        evictionHalfLifeSeconds: Double = 86400,
         now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970) }
     ) {
         self.binding = binding
@@ -184,6 +201,9 @@ public actor PrefixCacheManager {
         self.ssdEnabled = ssdEnabled && index != nil && kek != nil && cacheDir != nil
         self.boundaries = boundaries
         self.diskBudgetBytes = max(0, diskBudgetBytes)
+        self.minPersistTokens = minPersistTokens
+        self.prefillCostPerToken = prefillCostPerToken
+        self.evictionHalfLifeSeconds = evictionHalfLifeSeconds
         self.now = now
     }
 
@@ -207,6 +227,17 @@ public actor PrefixCacheManager {
         for cp in checkpoints.reversed() {
             if let hit = ram.get(modelHash: binding.modelHash, digest: cp.digest) {
                 stats.ramHits += 1
+                // TB-016 sub-feature B: 2nd-use promotion. If this RAM hit is
+                // above the persist threshold and NOT already on SSD, schedule
+                // a detached promotion (no blocking the lookup actor).
+                let digestHex = cp.digest.dbkvHexString
+                if ssdEnabled,
+                   hit.tokenCount >= minPersistTokens,
+                   index?.entry(modelHash: binding.modelHash, digestHex: digestHex) == nil {
+                    Task.detached { [weak self] in
+                        await self?.persistDigest(cp.digest)
+                    }
+                }
                 return PrefixLookupResult(caches: hit.caches, tokenCount: hit.tokenCount, tier: .ram)
             }
         }
@@ -351,6 +382,10 @@ public actor PrefixCacheManager {
     /// SSD, encrypt them, and record them in the index. Best-effort: a
     /// per-entry failure is logged and skipped. No-op when SSD disabled.
     /// Returns the number of entries newly written.
+    ///
+    /// TB-016 sub-feature B: skips entries with tokenCount <
+    /// minPersistTokens UNLESS pinned (defensive so a stray bulk-flush
+    /// caller can't persist sub-threshold one-offs).
     @discardableResult
     public func flushToSSD() async -> Int {
         guard ssdEnabled, let index, let kek, let cacheDir else { return 0 }
@@ -358,6 +393,11 @@ public actor PrefixCacheManager {
         var written = 0
         for snap in ram.entriesForFlush(modelHash: binding.modelHash) {
             let digestHex = snap.key.digest.dbkvHexString
+            // TB-016: skip sub-threshold entries unless pinned.
+            if snap.tokenCount < minPersistTokens,
+               !pinnedDigests.contains(digestHex) {
+                continue
+            }
             // Skip entries already persisted OR being written right now by a
             // concurrent flush (reentrancy: the dedup check + the write are
             // separated by an await, so without the in-flight set two flushes
@@ -496,15 +536,92 @@ public actor PrefixCacheManager {
         flushIndexNow()
     }
 
+    /// TB-016 sub-feature B: persist a single digest from RAM to SSD.
+    /// Reuses the flushToSSD dedup + enforceDiskBudget + save-coalescing.
+    /// Called by 2nd-use promotion (detached Task, non-blocking).
+    /// Returns true if successfully persisted, false otherwise.
+    @discardableResult
+    private func persistDigest(_ digest: Data) async -> Bool {
+        guard ssdEnabled, let index, let kek, let cacheDir else { return false }
+        let digestHex = digest.dbkvHexString
+
+        // Already persisted or in flight.
+        if index.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil { return false }
+        if inFlightWrites.contains(digestHex) { return false }
+
+        // Find the RAM entry (if it still exists).
+        guard let snap = ram.entriesForFlush(modelHash: binding.modelHash)
+            .first(where: { $0.key.digest == digest }) else {
+            return false
+        }
+
+        // Only serialize SSD-capable stacks.
+        guard KVCacheSerializer.areSupported(snap.caches) else { return false }
+
+        inFlightWrites.insert(digestHex)
+        defer { inFlightWrites.remove(digestHex) }
+
+        do {
+            let (chunks, layout) = try KVCacheSerializer.serialize(snap.caches)
+            let layoutJSON = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
+            let relativePath = "\(modelDirComponent)/\(digestHex).\(EncryptedKVStore.fileExtension)"
+            let fileURL = cacheDir.appendingPathComponent(relativePath)
+            let meta = EncryptedKVStoreMetadata(
+                modelHash: binding.modelHash,
+                modelDtype: binding.modelDtype,
+                modelArch: binding.modelArch,
+                vocabSize: binding.vocabSize,
+                numLayers: binding.numLayers,
+                kvHeads: binding.kvHeads,
+                headDim: binding.headDim,
+                tokenCount: snap.tokenCount,
+                tokenPrefixHash: digestHex,
+                kvCacheClass: "mixed",
+                metaState: [layoutJSON],
+                chunkPlaintextSizes: chunks.map { $0.count },
+                createdAt: now()
+            )
+            try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
+
+            let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+            let fileBytes = (attrs?[.size] as? Int) ?? 0
+            index.record(PrefixIndexEntry(
+                modelHash: binding.modelHash, digestHex: digestHex,
+                tokenCount: snap.tokenCount, relativePath: relativePath,
+                fileBytes: fileBytes, createdAt: now(), lastHitAt: now()
+            ))
+
+            stats.ssdFlushes += 1
+            enforceDiskBudget(index: index, cacheDir: cacheDir)
+
+            unsavedWrites += 1
+            if unsavedWrites >= Self.saveCoalesceThreshold {
+                if (try? index.save()) != nil { unsavedWrites = 0 }
+            }
+            return true
+        } catch {
+            logger.warning("persistDigest: failed for \(digestHex, privacy: .public): \(String(describing: error))")
+            return false
+        }
+    }
+
     /// Evict least-recently-hit checkpoints (file + index entry together)
     /// until this model's on-disk usage is within `diskBudgetBytes`. Without
     /// this, sustained diverse-prompt traffic grows the SSD cache and
     /// index.json without bound and can fill the volume. 0 budget = no cap.
+    ///
+    /// TB-016 sub-feature C: Uses benefit-per-byte scoring instead of LRU.
     private func enforceDiskBudget(index: PrefixCacheIndex, cacheDir: URL) {
         guard diskBudgetBytes > 0 else { return }
         var total = index.bytes(modelHash: binding.modelHash)
         guard total > diskBudgetBytes else { return }
-        for entry in index.entriesLRUFirst(modelHash: binding.modelHash) {
+        // Evict LOWEST-score entries first (benefit-per-byte, recency-weighted).
+        for entry in index.entriesByScoreAscending(
+            modelHash: binding.modelHash,
+            now: now(),
+            prefillCostPerToken: prefillCostPerToken,
+            halfLifeSeconds: evictionHalfLifeSeconds
+        ) {
             if total <= diskBudgetBytes { break }
             let url = cacheDir.appendingPathComponent(
                 "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)")

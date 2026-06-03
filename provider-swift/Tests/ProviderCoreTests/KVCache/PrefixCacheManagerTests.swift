@@ -122,10 +122,12 @@ func managerFullSSDRoundtrip() async throws {
 }
 
 @Test
-func managerEnforcesDiskBudgetWithLRUEviction() async throws {
+func managerEnforcesDiskBudgetWithEviction() async throws {
     // Partner-stability gate: the checkpoint SSD tier must bound on-disk
-    // usage under sustained diverse-prompt traffic, evicting least-recently
-    // -hit checkpoints (file + index entry) rather than growing forever.
+    // usage under sustained diverse-prompt traffic, evicting low-value
+    // checkpoints (file + index entry) rather than growing forever. (As of
+    // TB-016 eviction is benefit-per-byte, not pure LRU; for these fixtures
+    // the lowest-benefit entries coincide with the least-recently-hit ones.)
     let dir = tmpDir()
     let ext = EncryptedKVStore.fileExtension
     func fileCount() throws -> Int {

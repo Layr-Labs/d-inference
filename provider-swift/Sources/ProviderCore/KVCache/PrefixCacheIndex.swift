@@ -192,6 +192,49 @@ public final class PrefixCacheIndex {
         }
     }
 
+    /// TB-016 sub-feature C: Benefit-per-byte score for eviction
+    /// prioritization. Higher score = more valuable = evict LAST.
+    /// Lowest-score entries are evicted first.
+    ///
+    /// Benefit = (hitCount + 1) × tokenCount × prefillCostPerToken
+    /// Recency = halfLifeSeconds / (halfLifeSeconds + age)
+    /// Score = (benefit / bytes) × recency
+    ///
+    /// GUARD: fileBytes can be 0 (defensive).
+    public static func benefitScore(
+        _ e: PrefixIndexEntry,
+        now: Int64,
+        prefillCostPerToken: Double,
+        halfLifeSeconds: Double
+    ) -> Double {
+        let bytes = Double(max(1, e.fileBytes))
+        let benefit = Double(e.hitCount + 1) * Double(max(0, e.tokenCount))
+            * max(0.0, prefillCostPerToken)
+        let age = Double(max(0, now - e.lastHitAt))
+        let recency = halfLifeSeconds / (halfLifeSeconds + age)
+        return (benefit / bytes) * recency
+    }
+
+    /// Entries ordered by score ascending (LOWEST score = evict first).
+    /// Deterministic tie-break: when scores are equal, evict older entry
+    /// first (smaller lastHitAt), then by digestHex.
+    public func entriesByScoreAscending(
+        modelHash: String,
+        now: Int64,
+        prefillCostPerToken: Double,
+        halfLifeSeconds: Double
+    ) -> [PrefixIndexEntry] {
+        entries(modelHash: modelHash)
+            .map { ($0, Self.benefitScore($0, now: now, prefillCostPerToken: prefillCostPerToken, halfLifeSeconds: halfLifeSeconds)) }
+            .sorted { lhs, rhs in
+                let (l, ls) = lhs
+                let (r, rs) = rhs
+                // LOWEST score first; tie-break by (lastHitAt, digestHex).
+                return (ls, l.lastHitAt, l.digestHex) < (rs, r.lastHitAt, r.digestHex)
+            }
+            .map { $0.0 }
+    }
+
     public var isDirty: Bool { dirty }
 
     // MARK: - Persistence

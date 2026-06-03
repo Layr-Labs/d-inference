@@ -55,6 +55,38 @@ public enum PrefixDigest {
         return Array(Set(usable)).filter { $0 > 0 }.sorted()
     }
 
+    /// Coarse past-window ladder (TB-016 sub-feature A). Extends the
+    /// fine in-window ladder to 32k for PROVEN model families (Gemma)
+    /// where KV restore past the sliding window is bit-exact. Ceiling:
+    /// 32768 (human decision, balancing reuse vs write amplification).
+    static let pastWindowLadder = [2048, 4096, 8192, 16384, 32768]
+
+    /// NEW overload for TB-016: returns the in-window ladder PLUS the
+    /// coarse past-window tail when `pastWindowProven` is true AND
+    /// `maxContext > inWindow.last`. If `maxContext == 0` OR
+    /// `pastWindowProven == false`, returns the unchanged in-window
+    /// ladder (safe; GPT-OSS & unknown models keep today's behavior).
+    ///
+    /// The caller wires `pastWindowProven` from
+    /// `PrefixCachePastWindow.isProven(arch:)` (true only for Gemma),
+    /// and `maxContext` from the model's `architecture.maxContextLength`.
+    ///
+    /// IMPORTANT: This overload does NOT change the existing
+    /// `checkpoints(forSlidingWindow:)` — that stays within-window-only.
+    /// Existing callers and tests remain byte-identical.
+    public static func checkpoints(
+        forSlidingWindow window: Int,
+        maxContext: Int,
+        pastWindowProven: Bool
+    ) -> [Int] {
+        let inWindow = checkpoints(forSlidingWindow: window)
+        guard pastWindowProven, maxContext > (inWindow.last ?? 0) else {
+            return inWindow
+        }
+        let tail = pastWindowLadder.filter { $0 > (inWindow.last ?? 0) && $0 <= maxContext }
+        return Array(Set(inWindow + tail)).filter { $0 > 0 }.sorted()
+    }
+
     /// Domain-separation tag mixed in before any tokens.
     private static let domainTag = Data("dbkv-prefix-v1".utf8)
 

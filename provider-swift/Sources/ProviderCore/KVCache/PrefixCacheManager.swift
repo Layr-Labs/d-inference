@@ -332,14 +332,17 @@ public actor PrefixCacheManager {
     /// Store a freshly-extracted snapshot in the RAM tier, keyed by the
     /// checkpoint digest of `tokens[0..<checkpointLength]`. SSD
     /// persistence happens later via `flushToSSD` (write-back).
-    public func store(tokens: [Int], checkpointLength: Int, caches: SendableKVCaches) {
-        guard checkpointLength > 0, checkpointLength <= tokens.count else { return }
+    /// Returns true if stored, false if rejected (e.g., exceeds maxBytes).
+    @discardableResult
+    public func store(tokens: [Int], checkpointLength: Int, caches: SendableKVCaches) -> Bool {
+        guard checkpointLength > 0, checkpointLength <= tokens.count else { return false }
         let digest = PrefixDigest.digest(tokens: tokens, length: checkpointLength)
-        ram.put(
+        let stored = ram.put(
             modelHash: binding.modelHash, digest: digest,
             caches: caches.caches, tokenCount: checkpointLength
         )
-        stats.stores += 1
+        if stored { stats.stores += 1 }
+        return stored
     }
 
     // MARK: - Flush (write-back to SSD)

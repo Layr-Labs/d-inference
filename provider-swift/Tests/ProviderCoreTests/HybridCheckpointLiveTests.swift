@@ -378,13 +378,8 @@ struct HybridCheckpointLiveTests {
         // between then and now. Re-evaluating ensures they're materialized.
         eval(setup.prefix.flatMap { $0.innerState() })
         let writer = makeMgr()
-        let writerSeesBytes = await writer.computeByteSizeOfCaches(setup.prefix)
-        print("BIGKV DEBUG: manager computes \(String(format: "%.2f", Double(writerSeesBytes) / 1_073_741_824))GB for the same caches (test computed \(String(format: "%.2f", Double(checkpointBytes) / 1_073_741_824))GB)")
-        let stored = await writer.store(tokens: prompt, checkpointLength: checkpointL,
+        await writer.store(tokens: prompt, checkpointLength: checkpointL,
                            caches: SendableKVCaches(setup.prefix))
-        // DIAGNOSTIC: check RAM tier state after store
-        let ramStats = await writer.ramTierStats()
-        print("BIGKV DEBUG: store returned=\(stored), RAM entries=\(ramStats.entries) bytes=\(String(format: "%.2f", Double(ramStats.bytes) / 1_073_741_824))GB inserts=\(ramStats.inserts) rejects=\(ramStats.rejects)")
         let flushStart = Date()
         let written = await writer.flushToSSD()
         await writer.flushIndexNow()

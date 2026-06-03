@@ -190,9 +190,6 @@ public actor PrefixCacheManager {
     public var isSSDEnabled: Bool { ssdEnabled }
     public func snapshotStats() -> PrefixCacheManagerStats { stats }
     public func ramTierStats() -> PrefixCacheRAMStats { ram.snapshotStats() }
-    public func computeByteSizeOfCaches(_ caches: [any KVCache]) -> Int {
-        PrefixCacheRAM.byteSize(of: caches)
-    }
 
     // MARK: - Lookup
 

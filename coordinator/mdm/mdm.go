@@ -98,10 +98,14 @@ type outstandingCommand struct {
 }
 
 // outstandingCommandTTL bounds how long an issued command UUID stays valid for
-// matching a webhook response. Comfortably longer than the 90s SecurityInfo
-// wait to allow for late (Power Nap / APN) delivery, short enough to bound the
-// forge window if a UUID ever leaked.
-const outstandingCommandTTL = 10 * time.Minute
+// matching a webhook response. It must comfortably exceed the worst-case APN /
+// Power Nap delivery delay (a sleeping Mac wakes on roughly a ~15-minute Power
+// Nap cadence — see the late-SecurityInfo callback in cmd/coordinator/main.go),
+// otherwise the UUID expires before a genuine SecurityInfo response arrives,
+// consumeCommand drops it as stale, and the self_signed→hardware recovery path
+// never fires. 30 minutes covers that delay while still bounding the forge
+// window if a (random, localhost-only) UUID ever leaked.
+const outstandingCommandTTL = 30 * time.Minute
 
 // NewClient creates an MDM client.
 func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {

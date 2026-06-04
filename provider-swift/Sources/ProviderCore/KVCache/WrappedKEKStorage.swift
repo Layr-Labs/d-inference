@@ -26,6 +26,18 @@ public protocol WrappedKEKStorage: Sendable {
     /// Persist the wrapped KEK bytes, replacing any prior entry.
     func save(_ wrapped: Data) throws
 
+    /// CODEX-R5 MEDIUM: atomic create-if-absent. Persist `wrapped` ONLY if no
+    /// entry exists yet, and return the AUTHORITATIVE bytes now in storage —
+    /// the just-saved `wrapped` if we won the create, or the pre-existing entry
+    /// if another writer got there first. This closes the first-use KEK race:
+    /// two concurrent `KVCacheKEK.loadOrCreate()` calls on a fresh machine each
+    /// generate a different KEK; with plain `save` (delete-then-add) the later
+    /// one silently overwrote the earlier, stranding files the earlier owner
+    /// had already written under its now-orphaned KEK. With saveIfAbsent the
+    /// FIRST write wins and the loser adopts it, so a single KEK governs all
+    /// files. Never overwrites an existing entry.
+    func saveIfAbsent(_ wrapped: Data) throws -> Data
+
     /// Remove any persisted entry. Idempotent.
     func delete() throws
 
@@ -132,6 +144,36 @@ public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
         }
     }
 
+    public func saveIfAbsent(_ wrapped: Data) throws -> Data {
+        // Atomic create: SecItemAdd fails with errSecDuplicateItem if an entry
+        // already exists. No pre-delete (which would make this a clobbering
+        // upsert and reopen the race). On duplicate, adopt the existing entry.
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrSynchronizable as String: false,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecValueData as String: wrapped,
+        ]
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        switch status {
+        case errSecSuccess:
+            return wrapped
+        case errSecDuplicateItem:
+            // Another writer created it first. Adopt the persisted value; never
+            // overwrite. If the read somehow finds nothing (deleted in between),
+            // fall back to our bytes rather than returning stale.
+            if let existing = try load() { return existing }
+            return wrapped
+        case -34018:
+            throw WrappedKEKStorageError.missingEntitlement
+        default:
+            throw WrappedKEKStorageError.writeFailed(detail: "OSStatus \(status)")
+        }
+    }
+
     public func delete() throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -176,6 +218,15 @@ public final class InMemoryWrappedKEKStorage: WrappedKEKStorage, @unchecked Send
     public func save(_ wrapped: Data) throws {
         lock.lock(); defer { lock.unlock() }
         stored = wrapped
+    }
+
+    public func saveIfAbsent(_ wrapped: Data) throws -> Data {
+        // Atomic under the lock: create only if absent; otherwise adopt the
+        // existing value (first writer wins). Mirrors the Keychain semantics.
+        lock.lock(); defer { lock.unlock() }
+        if let existing = stored { return existing }
+        stored = wrapped
+        return wrapped
     }
 
     public func delete() throws {

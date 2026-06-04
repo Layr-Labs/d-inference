@@ -189,6 +189,17 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// digest and redundantly serialize+encrypt+fsync the same (large) blob.
     /// Actor-isolated, so check-and-insert before the await is atomic.
     private var inFlightWrites: Set<String> = []
+    /// CODEX-R5 HIGH: continuations parked by `deregisterFromAccountant` while
+    /// in-flight writes drain. A write that lands the LAST in-flight file (so
+    /// `inFlightWrites` becomes empty) resumes them. This lets teardown await
+    /// quiescence: every file the old manager will ever write is on disk before
+    /// `deregisterFromAccountant` returns — hence before `loadModel` constructs
+    /// and reconciles a new same-modelKey manager (loadModel awaits
+    /// stopCurrentEngine -> deregisterFromAccountant fully first). Without this,
+    /// a stale write whose atomic rename lands AFTER the new manager's one-shot
+    /// reconcileWithDisk leaves an orphan: on disk, in no index, and skipped by
+    /// tick() (owned dir) until the NEXT unload — invisible to the global budget.
+    private var drainContinuations: [CheckedContinuation<Void, Never>] = []
     /// Writes accumulated since the last index.save(), to amortize the O(N)
     /// full-index re-encode + atomic write + fsync away from every flush.
     private var unsavedWrites = 0
@@ -254,6 +265,20 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     func _indexHasEntryForTest(digestHex: String) -> Bool {
         index?.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil
     }
+    /// CODEX-R4/R5 test seam: set `closed` WITHOUT the full deregister drain.
+    /// The C1 test fires this from `_afterWriteHookForTest` (i.e. from INSIDE an
+    /// in-flight write); calling the real `deregisterFromAccountant()` there
+    /// would self-deadlock — its `drainInFlightWrites()` awaits the very write
+    /// that is parked in the hook. Production never does this: deregister runs
+    /// on the BatchScheduler task while the write is suspended off-actor, so the
+    /// drain parks, the actor frees, the write resumes/bails/finishes, and the
+    /// drain wakes. This seam reproduces only the `closed=true` precondition.
+    func _markClosedForTest() { closed = true }
+    /// CODEX-R5 test seam: number of teardown waiters currently parked in
+    /// `drainInFlightWrites`. Lets the drain test confirm deregister actually
+    /// blocked on the drain (rather than passing trivially because no write was
+    /// in flight).
+    func _drainWaiterCountForTest() -> Int { drainContinuations.count }
     #endif
 
     // MARK: - Lookup
@@ -297,6 +322,28 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         return nil
     }
 
+    /// CODEX-R5 MEDIUM: drop an unusable SSD file (corrupt header, wrong model/
+    /// shape/prefix, or undecryptable) discovered during a lookup — removing the
+    /// file AND its index entry, then refreshing durable + accountant state.
+    /// Before this, the five `loadFromSSD` removal sites dropped file+entry but
+    /// left the index unsaved and the accountant still counting the deleted
+    /// bytes, so enforcement could evict against phantom entries until a later
+    /// write happened to republish usage. Persist the now-dirty index and notify
+    /// the accountant — but ONLY if `!closed` (R4-C1 cross-actor discipline: a
+    /// deregistered manager must not save its index or push usage, lest it
+    /// clobber a reloaded same-modelKey manager's index.json or resurrect usage).
+    private func dropUnusableSSDFile(_ fileURL: URL, digestHex: String, index: PrefixCacheIndex) async {
+        try? FileManager.default.removeItem(at: fileURL)
+        index.remove(modelHash: binding.modelHash, digestHex: digestHex)
+        guard !closed else { return }
+        // The removal made the index dirty; persist it now (a single-entry drop
+        // is cheap, and leaving it only in memory would let a crash resurrect the
+        // stale entry → another failed lookup → re-drop). notifyAccountant pushes
+        // the corrected (smaller) footprint so enforcement stops counting it.
+        if index.isDirty { _ = try? index.save() }
+        await notifyAccountant()
+    }
+
     private func loadFromSSD(tokens: [Int]) async -> PrefixLookupResult? {
         guard let index, let kek, let cacheDir else { return nil }
         guard let entry = index.findLongestCheckpoint(
@@ -324,8 +371,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             // Truncated/corrupt header (e.g. crash mid-write): drop BOTH the
             // index entry AND the unusable file, so it can't linger on disk
             // (leaking + escaping the budget) and be re-read every lookup.
-            try? FileManager.default.removeItem(at: fileURL)
-            index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
         // The model-dir path is reconstructed from THIS model's binding, so a
@@ -335,16 +381,14 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         guard meta.modelHash == binding.modelHash else {
             stats.modelMismatches += 1
             logger.warning("MB-1: prefix file model mismatch — dropping entry \(entry.digestHex, privacy: .public)")
-            try? FileManager.default.removeItem(at: fileURL)
-            index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
         guard meta.numLayers == binding.numLayers,
               meta.kvHeads == binding.kvHeads,
               meta.headDim == binding.headDim else {
             stats.shapeMismatches += 1
-            try? FileManager.default.removeItem(at: fileURL)
-            index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
         // Prefix binding: the file authenticates under its OWN metadata, so
@@ -355,8 +399,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         guard meta.tokenPrefixHash == entry.digestHex else {
             stats.prefixHashMismatches += 1
             logger.warning("SSD prefix-hash mismatch (index stale/corrupt) — dropping \(entry.digestHex, privacy: .public)")
-            try? FileManager.default.removeItem(at: fileURL)
-            index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
 
@@ -386,8 +429,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             // Drop BOTH the index entry AND the unusable file (corrupt,
             // truncated, KEK-unwrap failure) so it can't linger on disk
             // forever consuming the budget and being re-read every lookup.
-            try? FileManager.default.removeItem(at: fileURL)
-            index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
 
@@ -441,7 +483,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         if inFlightWrites.contains(digestHex) { return false }
 
         inFlightWrites.insert(digestHex)
-        defer { inFlightWrites.remove(digestHex) }
+        defer { finishWrite(digestHex) }
 
         do {
             let (chunks, layout) = try KVCacheSerializer.serialize(caches.caches)
@@ -562,7 +604,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                 // reclaim (never cross-actor live-deleted). Drop the in-flight
                 // marker and break the loop (no more writes after close).
                 if closed {
-                    inFlightWrites.remove(digestHex)
+                    finishWrite(digestHex)
                     break
                 }
 
@@ -577,7 +619,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             } catch {
                 logger.warning("flushToSSD: failed to persist \(digestHex, privacy: .public): \(String(describing: error))")
             }
-            inFlightWrites.remove(digestHex)
+            finishWrite(digestHex)
         }
 
         // CODEX-R4 HIGH (C1): if we were deregistered mid-loop, do NOT run the
@@ -708,7 +750,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         guard KVCacheSerializer.areSupported(snap.caches) else { return false }
 
         inFlightWrites.insert(digestHex)
-        defer { inFlightWrites.remove(digestHex) }
+        defer { finishWrite(digestHex) }
 
         do {
             let (chunks, layout) = try KVCacheSerializer.serialize(snap.caches)
@@ -940,9 +982,43 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// same modelKey (same modelId). No-op when accountant is nil.
     public func deregisterFromAccountant() async {
         closed = true
+        // CODEX-R5 HIGH: drain in-flight writes BEFORE deregistering. A detached
+        // capture/promotion Task may be suspended inside EncryptedKVStore.write;
+        // its file lands on the atomic rename when it resumes. loadModel awaits
+        // stopCurrentEngine() -> this method fully before it constructs and
+        // reconciles a new same-modelKey manager, so waiting for quiescence here
+        // guarantees every such file is on disk before the new manager's one-shot
+        // reconcileWithDisk runs (which re-indexes it). Without the drain, a late
+        // rename orphans the file: in no index, and tick() skips the now-owned
+        // dir until the next unload. The post-write `closed` bail still prevents
+        // the stale Task from recording/notifying (cross-actor safety); this only
+        // makes teardown WAIT for the bytes to land so reconcile can reclaim them.
+        await drainInFlightWrites()
         guard let accountant, let token = accountantToken else { return }
         await accountant.deregister(token)
         accountantToken = nil
+    }
+
+    /// Suspend until `inFlightWrites` is empty (all in-flight write Tasks have
+    /// completed their EncryptedKVStore.write, so their files have landed). Each
+    /// write's `finishWrite` resumes parked waiters when it empties the set.
+    private func drainInFlightWrites() async {
+        guard !inFlightWrites.isEmpty else { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            drainContinuations.append(cont)
+        }
+    }
+
+    /// Remove a digest from `inFlightWrites` and, if that drained the set, resume
+    /// any teardown waiters parked in `drainInFlightWrites`. Replaces bare
+    /// `inFlightWrites.remove(_:)` at every write-completion site.
+    private func finishWrite(_ digestHex: String) {
+        inFlightWrites.remove(digestHex)
+        if inFlightWrites.isEmpty, !drainContinuations.isEmpty {
+            let waiters = drainContinuations
+            drainContinuations.removeAll()
+            for w in waiters { w.resume() }
+        }
     }
 
     // MARK: - Clear

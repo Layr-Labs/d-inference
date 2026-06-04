@@ -231,3 +231,52 @@ func kekRoundtripsViaKeychainStorage() async throws {
     #expect(raw1 == raw2)
     try await kek2.wipe()
 }
+
+// MARK: - CODEX-R5 MEDIUM: first-use KEK race (saveIfAbsent first-writer-wins)
+
+@Test
+func kekConcurrentFirstUseAdoptsSingleKEK() async throws {
+    // CODEX-R5 MEDIUM regression: two KVCacheKEK instances sharing the SAME
+    // storage (e.g. two model loads on a fresh machine) must converge on ONE
+    // KEK. Before the fix, loadOrCreate used a clobbering save(): both generated
+    // different KEKs and the later overwrote the earlier, stranding files the
+    // earlier owner had written. After the fix, save goes through saveIfAbsent
+    // (atomic create-if-absent): the first writer wins and the second ADOPTS it.
+    // Revert-guard: switch loadOrCreate back to storage.save() and the two KEKs
+    // diverge → this test fails.
+    let wrapper = InMemoryKeyWrappingService()  // shared so both can unwrap
+    let storage = InMemoryWrappedKEKStorage(identifier: UUID().uuidString)
+    let kekA = KVCacheKEK(wrapper: wrapper, storage: storage)
+    let kekB = KVCacheKEK(wrapper: wrapper, storage: storage)
+
+    // Both create concurrently against empty storage.
+    async let a = kekA.loadOrCreate()
+    async let b = kekB.loadOrCreate()
+    let rawA = try await a.withUnsafeBytes { Data($0) }
+    let rawB = try await b.withUnsafeBytes { Data($0) }
+
+    #expect(rawA == rawB,
+        "CODEX-R5-MEDIUM: concurrent first-use must converge on a single KEK (first writer wins, loser adopts)")
+
+    // And it matches what actually persisted (the winner), so files written by
+    // either instance decrypt after a restart.
+    let persisted = try #require(try storage.load())
+    let unwrapped = try wrapper.unwrap(persisted)
+    #expect(unwrapped == rawA, "the persisted KEK must equal the adopted in-memory KEK")
+}
+
+@Test
+func saveIfAbsentDoesNotOverwriteExisting() async throws {
+    // Unit-level guarantee for the storage primitive: saveIfAbsent never clobbers
+    // an existing entry and returns the pre-existing bytes.
+    let storage = InMemoryWrappedKEKStorage(identifier: UUID().uuidString)
+    let first = Data([0x01, 0x02, 0x03])
+    let second = Data([0xAA, 0xBB, 0xCC])
+
+    let r1 = try storage.saveIfAbsent(first)
+    #expect(r1 == first, "first saveIfAbsent persists and returns its own bytes")
+
+    let r2 = try storage.saveIfAbsent(second)
+    #expect(r2 == first, "second saveIfAbsent must return the EXISTING bytes, not overwrite")
+    #expect(try storage.load() == first, "storage must still hold the first writer's bytes")
+}

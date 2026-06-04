@@ -111,16 +111,42 @@ public actor KVCacheKEK {
         } catch {
             throw KVCacheKEKError.wrappingFailed(String(describing: error))
         }
+        // CODEX-R5 MEDIUM: atomic create-if-absent, NOT a clobbering save. If a
+        // concurrent first-use (another model load on a fresh machine) already
+        // persisted a different KEK, `saveIfAbsent` returns THAT one and we adopt
+        // it — so every cache file in the process is governed by a single KEK
+        // instead of the loser stranding files under an overwritten key.
+        let authoritative: Data
         do {
-            try storage.save(wrapped)
+            authoritative = try storage.saveIfAbsent(wrapped)
         } catch {
             throw KVCacheKEKError.storageError(String(describing: error))
         }
-        loadedKEK = newKEK
+        if authoritative == wrapped {
+            loadedKEK = newKEK
+            logger.info(
+                "Generated and persisted new KV cache KEK (wrapper=\(self.wrapper.identifier, privacy: .public), storage=\(self.storage.identifier, privacy: .public))"
+            )
+            return newKEK
+        }
+        // We lost the create race; adopt the winner by unwrapping its bytes.
+        let adopted: Data
+        do {
+            adopted = try wrapper.unwrap(authoritative)
+        } catch {
+            throw KVCacheKEKError.unwrappingFailed(String(describing: error))
+        }
+        guard adopted.count == 32 else {
+            throw KVCacheKEKError.unwrappingFailed(
+                "expected 32-byte KEK, got \(adopted.count) bytes — storage entry may be corrupt"
+            )
+        }
+        let key = SymmetricKey(data: adopted)
+        loadedKEK = key
         logger.info(
-            "Generated and persisted new KV cache KEK (wrapper=\(self.wrapper.identifier, privacy: .public), storage=\(self.storage.identifier, privacy: .public))"
+            "Adopted existing KV cache KEK after concurrent first-use (wrapper=\(self.wrapper.identifier, privacy: .public), storage=\(self.storage.identifier, privacy: .public))"
         )
-        return newKEK
+        return key
     }
 
     /// Generate a fresh per-file DEK and return it together with its

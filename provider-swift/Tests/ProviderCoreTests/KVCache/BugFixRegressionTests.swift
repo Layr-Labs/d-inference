@@ -30,6 +30,27 @@ private final class MutableIntHolder: @unchecked Sendable {
     func set(_ newValue: Int) { lock.lock(); v = newValue; lock.unlock() }
 }
 
+/// CODEX-R5 test helper: a one-shot async gate. A task `await gate.wait()`s and
+/// parks until another task calls `release()`. `isWaiting()` lets the driver
+/// confirm a waiter has actually parked (deterministic, no fixed sleeps).
+private actor TestGate {
+    private var waiting = false
+    private var released = false
+    private var cont: CheckedContinuation<Void, Never>?
+    func isWaiting() -> Bool { waiting }
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            waiting = true
+            cont = c
+        }
+    }
+    func release() {
+        released = true
+        if let c = cont { cont = nil; waiting = false; c.resume() }
+    }
+}
+
 private func tmpKVRoot() -> URL {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("dbkv-bugfix-\(UUID().uuidString)", isDirectory: true)
@@ -825,10 +846,14 @@ func codexR4High_writeAfterDeregisterIsNotRecorded() async {
                     caches: SendableKVCaches(attnBlock(layers: 2, tokens: 8)))
     let digestHex = PrefixDigest.digest(tokens: tokens, length: 8).dbkvHexString
 
-    // Arm the seam: when the write completes, deregister (sets closed=true)
-    // BEFORE the C1 re-check. Runs on the manager actor → completes in-line.
+    // Arm the seam: when the write completes, mark the manager closed BEFORE
+    // the C1 re-check. We use _markClosedForTest (not deregisterFromAccountant)
+    // because the hook runs FROM INSIDE the in-flight write; the real deregister
+    // now drains in-flight writes (R5 fix) and would self-deadlock awaiting this
+    // very write. _markClosedForTest reproduces just the closed=true precondition
+    // the C1 bail checks. (The drain itself is covered by the dedicated R5 test.)
     await mgr._setAfterWriteHookForTest { [weak mgr] in
-        await mgr?.deregisterFromAccountant()
+        await mgr?._markClosedForTest()
     }
 
     let written = await mgr.flushToSSD()
@@ -854,7 +879,127 @@ func codexR4High_writeAfterDeregisterIsNotRecorded() async {
     #expect(await fresh._indexHasEntryForTest(digestHex: digestHex) == true,
         "CODEX-R4-C1: a fresh manager's reconcile must reclaim the left-behind file")
 }
+
+@Test
+func codexR5High_deregisterDrainsInFlightWritesBeforeReturning() async {
+    // CODEX-R5 HIGH regression: deregisterFromAccountant() must WAIT for in-flight
+    // writes to land on disk before returning, so a new same-modelKey manager's
+    // one-shot reconcileWithDisk (which loadModel runs only AFTER stopCurrentEngine
+    // -> deregister fully returns) sees every file and re-indexes it. Without the
+    // drain, a late atomic rename orphans the file (in no index; tick() skips the
+    // owned dir) until the next unload.
+    //
+    // We gate a write inside _afterWriteHookForTest so it is provably in flight,
+    // then run deregister concurrently and assert: (1) deregister BLOCKS in the
+    // drain while the write is parked (waiter count > 0), (2) once the write is
+    // released it lands and deregister returns (no deadlock), (3) the file is on
+    // disk afterward. Revert-guard: remove `await drainInFlightWrites()` from
+    // deregisterFromAccountant and step (1) fails (deregister returns immediately,
+    // waiter count stays 0) — and the file may not yet be on disk when it returns.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 40, freeBytes: { _ in 1 << 40 })
+    let (mgr, modelDir) = await makeCkptMgrWithSSD(kvRoot: kvRoot, modelKey: "m1", accountant: accountant)
+    await mgr.registerWithAccountant()
+
+    // A gate the write parks on (inside the after-write hook) until released.
+    let gate = TestGate()
+    await mgr._setAfterWriteHookForTest { await gate.wait() }
+
+    // Stage a checkpoint in RAM, then start the SSD write on a separate Task.
+    // The write reaches the hook (file already renamed into place) and parks.
+    let tokens = Array(0..<10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnBlock(layers: 2, tokens: 8)))
+    let writeTask = Task { _ = await mgr.flushToSSD() }
+
+    // Wait until the write is parked in the hook (inFlightWrites non-empty ⇒ the
+    // file's atomic rename has already happened, we're suspended in the hook).
+    var parked = false
+    for _ in 0..<200 where !parked {
+        try? await Task.sleep(for: .milliseconds(10))
+        if await gate.isWaiting() { parked = true }
+    }
+    #expect(parked, "precondition: the write must be parked in the after-write hook")
+
+    // Run deregister concurrently; it must BLOCK in drainInFlightWrites.
+    let deregTask = Task { await mgr.deregisterFromAccountant() }
+
+    // Confirm deregister actually parked in the drain (didn't return early).
+    var drained = false
+    for _ in 0..<200 where !drained {
+        try? await Task.sleep(for: .milliseconds(10))
+        if await mgr._drainWaiterCountForTest() > 0 { drained = true }
+    }
+    #expect(drained, "CODEX-R5-HIGH: deregister must BLOCK in the drain while a write is in flight")
+
+    // Release the write → it lands/bails, finishWrite empties inFlightWrites,
+    // the drain wakes, deregister returns. If the drain were missing this would
+    // not be a meaningful ordering; with it, deregister cannot return first.
+    await gate.release()
+    await writeTask.value
+    await deregTask.value  // must COMPLETE (no deadlock)
+
+    func onDiskFileCount(_ dir: URL) -> Int {
+        guard let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else { return 0 }
+        var n = 0
+        for case let u as URL in en where u.pathExtension == EncryptedKVStore.fileExtension { n += 1 }
+        return n
+    }
+    #expect(onDiskFileCount(modelDir) == 1,
+        "CODEX-R5-HIGH: after deregister returns, the in-flight write's file is on disk (drained)")
+}
 #endif
+
+@Test
+func codexR5Medium_lookupDropOfCorruptFileRefreshesAccountant() async {
+    // CODEX-R5 MEDIUM regression: when a lookup discovers a corrupt/unusable SSD
+    // file and drops it (file + index entry), it must also refresh the accountant
+    // so the deleted bytes stop being counted. Before the fix the five loadFromSSD
+    // removal sites left the accountant counting the ghost until a later write
+    // republished. Revert-guard: drop the `await notifyAccountant()` (or the whole
+    // post-removal refresh) in dropUnusableSSDFile and the accountant keeps the
+    // stale byte count → this test's "usage dropped" assertion fails.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 40, freeBytes: { _ in 1 << 40 })
+    let (mgr, modelDir) = await makeCkptMgrWithSSD(kvRoot: kvRoot, modelKey: "m1", accountant: accountant)
+    await mgr.registerWithAccountant()
+
+    // Persist a checkpoint to SSD and publish its bytes to the accountant.
+    let tokens = Array(0..<10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnBlock(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()
+    await mgr.publishUsageToAccountant()
+    let before = await accountant._usageForTest(modelKey: "m1") ?? 0
+    #expect(before > 0, "precondition: accountant counts the persisted checkpoint bytes")
+
+    // Locate the persisted file by walking the model dir (it nests under a
+    // <modelHash[:12]> subdir; don't reconstruct the private path component).
+    func findKVFile(_ dir: URL) -> URL? {
+        guard let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else { return nil }
+        for case let u as URL in en where u.pathExtension == EncryptedKVStore.fileExtension { return u }
+        return nil
+    }
+    guard let fileURL = findKVFile(modelDir) else {
+        #expect(Bool(false), "precondition: a persisted .darkbloom-kv file must exist")
+        return
+    }
+    // Overwrite with garbage (bad magic) so the header parse throws.
+    try? Data(repeating: 0xEE, count: 32).write(to: fileURL)
+
+    // Clear RAM so the next lookup must hit SSD (and the corrupt-drop path).
+    await mgr.clearRAM()
+    _ = await mgr.lookup(tokens: tokens)  // triggers dropUnusableSSDFile
+
+    // The corrupt file is gone AND the accountant no longer counts its bytes.
+    #expect(!FileManager.default.fileExists(atPath: fileURL.path),
+        "the corrupt file must be removed on lookup")
+    let after = await accountant._usageForTest(modelKey: "m1") ?? -1
+    #expect(after == 0,
+        "CODEX-R5-MEDIUM: dropping a corrupt file on lookup must refresh accountant usage to 0 (was \(after))")
+}
 
 @Test
 func codexR3High2_loadModelCleanupIdentityChecked() async throws {

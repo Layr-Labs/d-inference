@@ -47,6 +47,18 @@ public actor GlobalKVCacheBudget {
         reservations.removeValue(forKey: requestID)
     }
 
+    /// Total KV bytes currently promised to in-flight requests. The model-load
+    /// gate subtracts this so a new model's weights can't be loaded into memory
+    /// already reserved for a request that is mid-decode (those bytes may not
+    /// yet show up in MLX.active/cache, so the load gate would otherwise treat
+    /// promised memory as free and risk an OOM).
+    public func outstandingReservedBytes() -> UInt64 {
+        reservations.values.reduce(UInt64(0)) { partial, value in
+            let (sum, overflow) = partial.addingReportingOverflow(value)
+            return overflow ? UInt64.max : sum
+        }
+    }
+
     private func availableReservationBytes() -> UInt64 {
         let (total, active, cache) = memorySnapshot()
         let usedBeforeReservations = Self.saturatingAdd(active, cache, reserveBytes)

@@ -610,7 +610,7 @@ public actor ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
-        if fastAdmissionReject(modelId: modelId) {
+        if await fastAdmissionReject(modelId: modelId) {
             logger.warning("[\(requestId)] Pre-accept reject for '\(modelId)': insufficient capacity to load")
             send.send(.inferenceError(
                 requestId: requestId,
@@ -1441,10 +1441,12 @@ public actor ProviderLoop {
             // request is sized dynamically at runtime by the live token budget +
             // GlobalKVCacheBudget (which strictly rejects any request whose KV
             // won't fit real free memory, so this looser gate cannot OOM — worst
-            // case a box serves one request at a time). The old `× 2.0` here,
-            // combined with the `× 0.7` discount in availableMemoryGb, demanded
-            // free ≥ weights × 2.86 and left every small/mid machine unable to
-            // load a model it could actually serve.
+            // case a box serves one request at a time). The old gate demanded
+            // free ≥ weights × 2.86 (a `× 2.0` here on top of a `× 0.7` discount
+            // in availableMemoryGb) and left every small/mid machine unable to
+            // load a model it could actually serve. `availableMemoryGb` now
+            // clamps to real OS-available memory and subtracts in-flight KV
+            // reservations, so dropping the multiplier here is still OOM-safe.
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: modelInfo.estimatedMemoryGb,
                 headroomGb: Self.loadHeadroomGb)
@@ -1553,12 +1555,24 @@ public actor ProviderLoop {
     /// safety is already enforced per request by GlobalKVCacheBudget. Applying it
     /// twice was the double-count that kept capable machines from ever loading a
     /// model they could serve.
-    private func availableMemoryGb() -> Double {
-        ModelLoadAdmission.freeForLoadGb(
+    ///
+    /// Two OOM-safety clamps make the looser gate sound:
+    ///   1. The free figure is clamped to what the OS actually reports available
+    ///      (`SystemMemory.availableBytes`), not just `total − MLX.active −
+    ///      MLX.cache`, which over-reports whenever the OS/other processes hold
+    ///      RAM.
+    ///   2. KV already promised to in-flight requests
+    ///      (`kvBudget.outstandingReservedBytes`) is subtracted, so a concurrent
+    ///      load can't consume memory a mid-decode request is counting on.
+    private func availableMemoryGb() async -> Double {
+        let outstanding = await kvBudget.outstandingReservedBytes()
+        return ModelLoadAdmission.freeForLoadGb(
             totalBytes: ProcessInfo.processInfo.physicalMemory,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
+            reserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB),
+            outstandingReservationBytes: outstanding)
     }
 
     /// Headroom (GB) reserved above the weights at load time for ONE request.
@@ -1580,14 +1594,14 @@ public actor ProviderLoop {
     /// eviction since `await unloadModel` is a suspension point.
     /// Throws if the memory target cannot be met after exhausting evictable models.
     private func evictUntilAvailable(requiredGb: Double) async throws {
-        while availableMemoryGb() < requiredGb {
+        while await availableMemoryGb() < requiredGb {
             let modelsWithInflight = Set(requestToModel.values)
             let candidate = modelSlots
                 .filter { !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key) }
                 .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
 
             guard let (modelId, _) = candidate else {
-                let available = String(format: "%.1f", availableMemoryGb())
+                let available = String(format: "%.1f", await availableMemoryGb())
                 let required = String(format: "%.1f", requiredGb)
                 throw InferenceError.modelLoadFailed(
                     "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
@@ -1608,7 +1622,7 @@ public actor ProviderLoop {
     /// ``evictUntilAvailable`` WITHOUT loading anything and is deliberately
     /// conservative: anything that *could* succeed (including via eviction of
     /// an idle model) is admitted and left for the post-accept load path.
-    private func fastAdmissionReject(modelId: String) -> Bool {
+    private func fastAdmissionReject(modelId: String) async -> Bool {
         // Already resident — definitely serviceable.
         if modelSlots[modelId] != nil {
             return false
@@ -1623,6 +1637,19 @@ public actor ProviderLoop {
             weightsGb: modelInfo.estimatedMemoryGb,
             headroomGb: Self.loadHeadroomGb)
 
+        // Sample live memory FIRST — this is the only suspension point in the
+        // method (it awaits the KV-budget actor). Reading all the actor-local
+        // slot/in-flight state AFTER the await means the decision below is made
+        // atomically with respect to this actor: nothing can mutate slots
+        // between the reads and the verdict, so there is no TOCTOU window.
+        let available = await availableMemoryGb()
+
+        // Re-check residency after the suspension: the model may have been
+        // loaded by a concurrent request while we were awaiting memory.
+        if modelSlots[modelId] != nil {
+            return false
+        }
+
         // An idle slot (loaded, no in-flight work, not already unloading) can be
         // evicted to make room, so its presence means we must NOT pre-reject.
         let modelsWithInflight = Set(requestToModel.values)
@@ -1632,7 +1659,7 @@ public actor ProviderLoop {
 
         // Mirrors evictUntilAvailable's terminal failure: not enough free
         // memory and nothing idle to free.
-        if availableMemoryGb() < requiredGb && !hasEvictable {
+        if available < requiredGb && !hasEvictable {
             return true
         }
 

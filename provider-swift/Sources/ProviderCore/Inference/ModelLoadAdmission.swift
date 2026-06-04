@@ -23,20 +23,37 @@ public enum ModelLoadAdmission {
     /// from whatever is left. Tunable via provider config.
     public static let defaultLoadHeadroomGb: Double = 2.0
 
-    /// Physical memory (GB) available to load a model: total minus the OS
-    /// reserve and whatever MLX already has resident (active + cache). NOTE:
-    /// deliberately NO 0.7 safety discount — weights are a known allocation, and
-    /// the 0.7 runtime safety is already applied per-request by
-    /// GlobalKVCacheBudget. Discounting here too is the double-count that kept
-    /// capable machines idle.
+    /// Physical memory (GB) available to load a model: the real free memory
+    /// (clamped to what the OS actually reports available, not just total minus
+    /// MLX's resident set) minus the OS reserve and any KV already promised to
+    /// in-flight requests. NOTE: deliberately NO 0.7 safety discount — weights
+    /// are a known allocation, and the 0.7 runtime safety is already applied
+    /// per-request by GlobalKVCacheBudget. Discounting here too is the
+    /// double-count that kept capable machines idle.
+    /// - Parameters:
+    ///   - systemAvailableBytes: real OS-reported available memory (free +
+    ///     reclaimable). Pass `.max` when unavailable to fall back to the
+    ///     MLX-only view. The result is clamped to this so the gate can never
+    ///     count memory the OS or other processes have already taken — the fix
+    ///     for the OOM hole where `total − MLX.active − MLX.cache` over-reports.
+    ///   - outstandingReservationBytes: KV bytes already promised to in-flight
+    ///     requests (`GlobalKVCacheBudget`). Subtracted so a concurrent load
+    ///     can't claim memory a mid-decode request is counting on.
     public static func freeForLoadGb(
         totalBytes: UInt64,
+        systemAvailableBytes: UInt64 = .max,
         gpuActiveBytes: UInt64,
         gpuCacheBytes: UInt64,
-        reserveBytes: UInt64
+        reserveBytes: UInt64,
+        outstandingReservationBytes: UInt64 = 0
     ) -> Double {
-        let used = saturatingAdd(gpuActiveBytes, gpuCacheBytes, reserveBytes)
-        let usable = totalBytes > used ? totalBytes - used : 0
+        let mlxUsed = saturatingAdd(gpuActiveBytes, gpuCacheBytes)
+        let mlxFree = totalBytes > mlxUsed ? totalBytes - mlxUsed : 0
+        // The OS view and the MLX view can each be the tighter bound; take the
+        // smaller so we never over-count free memory.
+        let realFree = min(mlxFree, systemAvailableBytes)
+        let committed = saturatingAdd(reserveBytes, outstandingReservationBytes)
+        let usable = realFree > committed ? realFree - committed : 0
         return Double(usable) / bytesPerGb
     }
 
@@ -51,11 +68,19 @@ public enum ModelLoadAdmission {
         weightsGb: Double,
         headroomGb: Double,
         totalBytes: UInt64,
+        systemAvailableBytes: UInt64 = .max,
         gpuActiveBytes: UInt64,
         gpuCacheBytes: UInt64,
-        reserveBytes: UInt64
+        reserveBytes: UInt64,
+        outstandingReservationBytes: UInt64 = 0
     ) -> Bool {
-        let free = freeForLoadGb(totalBytes: totalBytes, gpuActiveBytes: gpuActiveBytes, gpuCacheBytes: gpuCacheBytes, reserveBytes: reserveBytes)
+        let free = freeForLoadGb(
+            totalBytes: totalBytes,
+            systemAvailableBytes: systemAvailableBytes,
+            gpuActiveBytes: gpuActiveBytes,
+            gpuCacheBytes: gpuCacheBytes,
+            reserveBytes: reserveBytes,
+            outstandingReservationBytes: outstandingReservationBytes)
         return requiredToLoadGb(weightsGb: weightsGb, headroomGb: headroomGb) <= free
     }
 

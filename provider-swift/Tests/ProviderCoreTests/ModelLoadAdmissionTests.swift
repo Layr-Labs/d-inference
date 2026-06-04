@@ -66,3 +66,70 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     // free = 64-31-4 = 29; required = 33.3 → false
     #expect(!ok)
 }
+
+// OOM-safety #1: the free figure is clamped to what the OS actually reports
+// available, NOT just total − MLX.active − MLX.cache. MLX may be holding almost
+// nothing while another process (or the OS) has eaten most of RAM.
+@Test func freeIsClampedToRealSystemAvailable() {
+    // 64 GB box, MLX holding nothing → MLX view says ~60 GB free, but the OS
+    // reports only 10 GB actually available. We must take the OS figure.
+    let free = ModelLoadAdmission.freeForLoadGb(
+        totalBytes: 64 * gib,
+        systemAvailableBytes: 10 * gib,
+        gpuActiveBytes: 0, gpuCacheBytes: 0,
+        reserveBytes: 4 * gib)
+    // realFree = min(64, 10) = 10; minus 4 reserve → 6
+    #expect(abs(free - 6.0) < 0.001)
+}
+
+@Test func systemClampBlocksLoadThatMlxViewWouldAllow() {
+    // gpt-oss (13.5 GB) on a 64 GB box looks fine to the MLX view, but if the OS
+    // only has 12 GB free right now the load must be rejected, not OOM'd.
+    let ok = ModelLoadAdmission.canLoad(
+        weightsGb: 13.5, headroomGb: 2.0,
+        totalBytes: 64 * gib,
+        systemAvailableBytes: 12 * gib,
+        gpuActiveBytes: 0, gpuCacheBytes: 0,
+        reserveBytes: 4 * gib)
+    // realFree = min(64,12)=12; minus 4 → 8 usable; required 15.5 → reject
+    #expect(!ok, "must reject when the OS, not MLX, is the binding constraint")
+}
+
+// OOM-safety #2: KV already promised to in-flight requests is subtracted, so a
+// concurrent cold-load can't claim memory a mid-decode request is counting on.
+@Test func outstandingReservationsReduceFree() {
+    // 32 GB box, 4 GB reserve, 6 GB of KV promised to in-flight requests.
+    let free = ModelLoadAdmission.freeForLoadGb(
+        totalBytes: 32 * gib,
+        gpuActiveBytes: 0, gpuCacheBytes: 0,
+        reserveBytes: 4 * gib,
+        outstandingReservationBytes: 6 * gib)
+    // 32 - 4 reserve - 6 reserved → 22
+    #expect(abs(free - 22.0) < 0.001)
+}
+
+@Test func outstandingReservationsCanBlockASecondLoad() {
+    // 24 GB box serving gpt-oss: weights resident (13.5 GB ≈ active) plus 6 GB of
+    // promised KV. A second cold-load of another ~13.5 GB model must be rejected.
+    let ok = ModelLoadAdmission.canLoad(
+        weightsGb: 13.5, headroomGb: 2.0,
+        totalBytes: 24 * gib,
+        gpuActiveBytes: 13 * gib, gpuCacheBytes: 0,
+        reserveBytes: 4 * gib,
+        outstandingReservationBytes: 6 * gib)
+    // realFree (MLX) = 24-13 = 11; minus 4 reserve minus 6 reserved → 1; need 15.5
+    #expect(!ok, "promised KV must block a competing cold-load")
+}
+
+// The headline win MUST survive the new clamps: an idle box with low OS usage
+// and no reservations still loads gpt-oss on 24 GB.
+@Test func idleBoxStillLoadsGptOssWithClamps() {
+    let ok = ModelLoadAdmission.canLoad(
+        weightsGb: 13.5, headroomGb: 2.0,
+        totalBytes: 24 * gib,
+        systemAvailableBytes: 21 * gib,   // OS reports plenty free
+        gpuActiveBytes: 0, gpuCacheBytes: 0,
+        reserveBytes: 4 * gib,
+        outstandingReservationBytes: 0)
+    #expect(ok, "the core fix must still hold under the OOM-safety clamps")
+}

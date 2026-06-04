@@ -165,6 +165,90 @@ struct HybridCheckpointBenchLiveTests {
         }
     }
 
+    /// Cold-vs-warm at ONE prefix length with a caller-chosen sample count
+    /// (size-aware: large prefixes use n=1-2 to bound wall-clock). Returns
+    /// median cold/warm ms + hit count. Mirrors measureColdVsWarm but lets the
+    /// caller scale `samples` per size (the full sweep needs cheap small sizes
+    /// at high n and expensive 100k at n=1).
+    private func measureColdVsWarmN(
+        sched: BatchScheduler, container: ModelContainer, shapes: [[Int]],
+        modelID: String, prefixLen: Int, samples: Int
+    ) async throws -> (coldMs: Double, warmMs: Double, hits: Int) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dbkv-fullsweep-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let mgr = PrefixCacheManager(
+            binding: PrefixCacheModelBinding(
+                modelHash: modelID, modelDtype: "x", modelArch: "x", vocabSize: 0,
+                numLayers: shapes.count, kvHeads: shapes.first?.first ?? 1,
+                headDim: shapes.first?.last ?? 1, layerShapes: shapes),
+            ram: PrefixCacheRAM(maxBytes: 32 * 1024 * 1024 * 1024),  // hold one big checkpoint
+            index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
+            kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(
+                key: SymmetricKey(data: Data(repeating: 0x5A, count: 32)), identifier: "fullsweep"),
+                storage: InMemoryWrappedKEKStorage(identifier: "fullsweep")),
+            cacheDir: dir, ssdEnabled: true, boundaries: [prefixLen], diskBudgetBytes: 0, now: { 1 })
+        await sched._installCheckpointManagerForTest(mgr, boundaries: [prefixLen])
+
+        let sharedPrefix = (0..<prefixLen).map { ($0 % 64) + 5 }
+        func warmPrompt(_ i: Int) -> [Int] { sharedPrefix + [900 + i, 901, 902, 903, 904, 905] }
+        func coldPrompt(_ i: Int) -> [Int] {
+            ((i * 200_000)..<(i * 200_000 + prefixLen)).map { $0 } + [7, 7, 7, 7, 7, 7]
+        }
+        // Warm-up: absorb Metal compile for this length + seed the checkpoint.
+        _ = await ttft(sched.submitTokenized(promptTokens: warmPrompt(0), maxTokens: 2, temperature: 0))
+        try? await Task.sleep(nanoseconds: 700_000_000)
+
+        var cold: [Double] = []; var warm: [Double] = []
+        for i in 1...samples {
+            let c = await ttft(sched.submitTokenized(promptTokens: coldPrompt(i), maxTokens: 2, temperature: 0))
+            if c > 0 { cold.append(c) }
+            let w = await ttft(sched.submitTokenized(promptTokens: warmPrompt(i), maxTokens: 2, temperature: 0))
+            if w > 0 { warm.append(w) }
+        }
+        let s = await mgr.snapshotStats()
+        let cMs = cold.isEmpty ? -1 : median(cold) * 1000
+        let wMs = warm.isEmpty ? -1 : median(warm) * 1000
+        return (cMs, wMs, s.ramHits + s.ssdHits)
+    }
+
+    // FULL PROMPT-SIZE SWEEP — cold vs warm TTFT across small→100k on real
+    // Gemma-4, one model load. The chart of "what reuse buys at each prompt
+    // size". Cold rises super-linearly (O(n²) attention); warm (checkpoint
+    // restore + short suffix) stays low, so speedup grows with prompt size.
+    // Size-aware sample counts (cheap small sizes at high n, 100k at n=1).
+    @Test(.enabled(if:
+        LiveInferenceFixtures.gemmaTestsEnabled
+            && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_BIGKV"] != nil))
+    func gemma4FullPromptSizeSweep() async throws {
+        setenv("DARKBLOOM_PREFIX_CACHE", "1", 1)
+        let modelID = "mlx-community/gemma-4-26b-a4b-it-8bit"
+        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        do { loaded = try await LiveInferenceFixtures.loadScheduler(
+                modelID: modelID, memoryBudgetBytes: 110 * 1024 * 1024 * 1024,
+                pendingTimeout: .seconds(300)) }
+        catch let s as LiveFixtureSkip { print("SKIP fullsweep: \(s)"); return }
+        let sched = loaded.scheduler
+        defer { Task { await sched.unloadModel() } }
+        guard let shapes = await loaded.container.perform({ ctx in BatchScheduler.probeLayerShapes(model: ctx.model) }) else {
+            print("SKIP fullsweep: not a checkpoint model"); return
+        }
+        // Sizes from small (within window) to 100k. n shrinks as size grows.
+        let points: [(size: Int, n: Int)] = [
+            (256, 8), (1024, 5), (4096, 3), (16384, 3), (32768, 2), (65536, 1), (100_000, 1),
+        ]
+        print("FULLSWEEP[gemma4] prompt-size cold vs warm TTFT (ms)")
+        for p in points {
+            let r = try await measureColdVsWarmN(
+                sched: sched, container: loaded.container, shapes: shapes,
+                modelID: modelID, prefixLen: p.size, samples: p.n)
+            let spd = (r.coldMs > 0 && r.warmMs > 0) ? r.coldMs / r.warmMs : -1
+            print("FULLSWEEP,gemma4,\(p.size),\(Int(r.coldMs)),\(Int(r.warmMs)),\(String(format: "%.2f", spd))")
+            print("FULLSWEEP[gemma4] size=\(p.size): cold=\(Int(r.coldMs))ms warm=\(Int(r.warmMs))ms speedup=\(String(format: "%.1f", spd))x hits=\(r.hits) (n=\(p.n))")
+        }
+    }
+
     // LARGE-PREFILL SCALING — context for "what about a 100k prefill?".
     // Measures COLD prefill TTFT at increasing prompt sizes to show prefill
     // cost growth (super-linear: attention is O(n²)). This is the cost a

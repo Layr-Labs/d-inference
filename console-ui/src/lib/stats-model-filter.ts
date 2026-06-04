@@ -15,6 +15,12 @@ export interface CatalogModelSummary {
   family?: string;
   quantization?: string;
   capabilities?: string[];
+  // OpenRouter provider schema fields.
+  name?: string;
+  description?: string;
+  supportedFeatures?: string[];
+  inputModalities?: string[];
+  outputModalities?: string[];
 }
 
 export interface CapacityModelSummary {
@@ -109,6 +115,11 @@ export function catalogModelsFromResponse(payload: unknown): CatalogModelSummary
         family: asString(model.family ?? metadata.family),
         quantization: asString(model.quantization ?? metadata.quantization),
         capabilities: asStringArray(model.capabilities ?? metadata.capabilities),
+        name: asString(model.name ?? model.display_name ?? metadata.display_name),
+        description: asString(model.description ?? metadata.description),
+        supportedFeatures: asStringArray(model.supported_features),
+        inputModalities: asStringArray(model.input_modalities),
+        outputModalities: asStringArray(model.output_modalities),
       });
     });
 }

@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "DarkbloomProvider",
     // macOS 14 (Sonoma) — matches libs/mlx-swift-lm and libs/mlx-swift declared
-    // platforms. Keeps the same install base as the legacy Rust provider.
+    // platforms.
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "ProviderCoreFoundation", targets: ["ProviderCoreFoundation"]),
@@ -118,8 +118,8 @@ let package = Package(
 
         // ----------------------------------------------------------------
         // darkbloom-enclave: small CLI wrapper around the Secure Enclave
-        // identity helpers in ProviderCore (Phase 3 merged the FFI bridge
-        // from ../enclave). Used by install.sh to render an attestation
+        // identity helpers in ProviderCore (the Secure Enclave FFI bridge
+        // lives in ProviderCore/Security). Used by install.sh to render an attestation
         // blob before the main provider is running. The legacy binary
         // name `eigeninference-enclave` is kept as a symlink in
         // install.sh for backward compatibility with already-installed
@@ -175,6 +175,19 @@ let package = Package(
             name: "ProviderCoreFoundationTests",
             dependencies: ["ProviderCoreFoundation"],
             path: "Tests/ProviderCoreFoundationTests"
+        ),
+
+        // ----------------------------------------------------------------
+        // DarkbloomCLITests — unit tests for the `darkbloom` executable
+        // target's pure helpers. The CLI's command types live in the
+        // executable target (which uses `@main`, so it is importable via
+        // `@testable import darkbloom`). Currently covers the `log` argv
+        // builders in LogsCommand.
+        // ----------------------------------------------------------------
+        .testTarget(
+            name: "DarkbloomCLITests",
+            dependencies: ["darkbloom"],
+            path: "Tests/DarkbloomCLITests"
         ),
     ]
 )

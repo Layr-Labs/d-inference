@@ -383,7 +383,7 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 
 // TestIntegration_E2EEncryptionRoundtrip tests that the coordinator's
 // encryption can be decrypted by Go code using the same NaCl Box primitives
-// that the Rust provider uses.
+// that the Swift provider uses.
 func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})

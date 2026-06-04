@@ -25,6 +25,7 @@
 package attestation
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
@@ -328,11 +329,11 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 
 // StatusCanonicalInput holds the fields covered by StatusSignature in
 // AttestationResponseMessage. It mirrors the canonical payload the
-// provider builds + signs in handle_attestation_challenge (Rust side).
+// provider builds + signs in handleAttestationChallenge (Swift side).
 //
 // The serialization is JSON with alphabetically-sorted keys (matching
-// Go's encoding/json map ordering and Rust's BTreeMap ordering, which
-// produce identical bytes for equivalent content).
+// Go's encoding/json map ordering and the Swift provider's canonical
+// encoder, which produce identical bytes for equivalent content).
 //
 // Fields that are absent on the provider side (e.g. hypervisor not
 // active, no model loaded yet) are omitted from the canonical payload —
@@ -360,7 +361,7 @@ type StatusCanonicalInput struct {
 // sequence used for StatusSignature. The result must be byte-for-byte
 // identical to the provider's canonical bytes.
 //
-// Conventions (must match Rust handle_attestation_challenge):
+// Conventions (must match the Swift provider's handleAttestationChallenge):
 //   - Keys are sorted alphabetically (Go encoding/json sorts map keys).
 //   - nil bool/empty string/empty map fields are OMITTED entirely.
 //   - Bool fields are JSON true/false.
@@ -413,7 +414,22 @@ func BuildStatusCanonical(in StatusCanonicalInput) ([]byte, error) {
 	if len(in.ModelHashes) > 0 {
 		m["model_hashes"] = in.ModelHashes
 	}
-	return json.Marshal(m)
+	// Encode WITHOUT Go's HTML escaping so the bytes match the Swift provider's
+	// JSONEncoder (which never escapes <, >, &). With the default json.Marshal,
+	// any field value containing <, >, or & would serialize as < / > /
+	// & on the Go side but raw on the Swift side, producing a canonical
+	// mismatch and a spurious status-signature failure. For base64/hex values
+	// (the only ones in use today) the output is byte-identical, so this is a
+	// no-op for current providers and a fix for the latent divergence.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return nil, err
+	}
+	// json.Encoder.Encode appends a trailing newline; strip it so the canonical
+	// bytes match Swift's JSONEncoder output exactly.
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // VerifyStatusSignature verifies that statusSigB64 is a valid SE P-256
@@ -469,9 +485,9 @@ var ErrStatusSignatureMissing = fmt.Errorf("status_signature missing — status 
 //
 // Closing the signature-scope gap requires a coordinated protocol change:
 // extend the signed payload to include canonical status fields, update both
-// provider/src/coordinator.rs (handle_attestation_challenge) and this file,
-// and migrate carefully (a hard switch would invalidate all in-fleet
-// providers). Tracked separately from this file's reliability work.
+// the Swift provider's handleAttestationChallenge (ProviderLoop.swift) and
+// this file, and migrate carefully (a hard switch would invalidate all
+// in-fleet providers). Tracked separately from this file's reliability work.
 func VerifyChallengeSignature(sePublicKeyB64, signatureB64, data string) error {
 	// Decode public key
 	pubKeyBytes, err := base64.StdEncoding.DecodeString(sePublicKeyB64)

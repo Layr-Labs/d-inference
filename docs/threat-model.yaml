@@ -676,8 +676,12 @@ trust_boundaries:
       it with a UTC RFC3339 timestamp. The provider signs (nonce + timestamp) with the
       SE key — raw string concatenation with no delimiter. The coordinator verifies the
       ECDSA signature, checks nonce matches, and checks that SIPEnabled is not nil and
-      not false. SIP=false triggers immediate MarkUntrusted(); 3 consecutive timeouts or
-      signature failures trigger MarkUntrusted() via the 3-strike counter.
+      not false. SIP=false (and other security failures: bad signature, hash mismatch,
+      impersonation) trigger immediate, non-recoverable MarkUntrusted(). 3 consecutive
+      challenge *timeouts* (sleep / network blip) trigger MarkUntrustedTransient() via the
+      3-strike counter: the provider is derouted but the challenge loop keeps probing it,
+      and the next fully passing challenge restores it to online (RecordChallengeSuccess).
+      Signature/SIP/hash failures are never auto-recovered and still require a reconnect.
 
       Status signature (attestation.go:378–437): an extended canonical JSON payload
       covering nonce, timestamp, and all security status fields is signed separately.
@@ -952,23 +956,25 @@ threats:
     stride: Denial_of_Service
     title: In-flight inference cancellation not propagated to inference engine
     description: >
-      When the coordinator sends a cancel message, the Rust provider creates a
-      cancellation token but does not wire it into the in-process inference task.
-      The task continues consuming GPU and memory after cancellation.
+      On a coordinator cancel message the provider must stop the in-flight
+      inference task, or it keeps consuming GPU and memory after cancellation.
+      This was an open gap in the now-removed legacy provider (SEC-020),
+      which created a cancellation token but never wired it into the in-process
+      task. The Swift provider wires InferenceCancellation into the generation
+      loop; the residual "cannot interrupt an active GPU forward pass"
+      limitation is tracked under T-008.
     adversaries: [ADV-002]
     affected_assets: [A-009]
     affected_files:
-      - provider/src/main.rs
+      - provider-swift/Sources/ProviderCore/ProviderLoop.swift
     mitigations:
       - description: Swift provider wires InferenceCancellation into the generation loop.
         status: implemented
-      - description: Legacy Rust provider cancellation is not properly wired (SEC-020).
-        status: open
-    open_findings: [SEC-020]
+    open_findings: []
     severity: medium
     detection_hint: >
-      Changes to cancellation handling in ProviderLoop.swift or the Rust coordinator.rs
-      should verify the cancel signal reaches the inference loop and aborts generation.
+      Changes to cancellation handling in ProviderLoop.swift should verify the
+      cancel signal reaches the inference loop and aborts generation.
 
   # ── TB-003: Provider Operator vs Process ─────────────────────
 
@@ -985,7 +991,6 @@ threats:
     affected_assets: [A-003, A-001]
     affected_files:
       - provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift
-      - provider/src/config.rs
     mitigations:
       - description: XSalsa20-Poly1305 encryption provides no forward secrecy; past sessions are safe.
         status: implemented
@@ -1072,7 +1077,6 @@ threats:
     affected_files:
       - provider-swift/Sources/ProviderCore/Security/AntiDebug.swift
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
-      - provider/src/security.rs
     mitigations:
       - description: PT_DENY_ATTACH applied at startup; kernel denies task_for_pid.
         status: implemented

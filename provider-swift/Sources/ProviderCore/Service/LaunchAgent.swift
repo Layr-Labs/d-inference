@@ -4,8 +4,6 @@
 /// `darkbloom start` or the macOS app's "Go Online" toggle.
 /// It does NOT auto-start on login or auto-restart after crashes.
 /// The user is always in control of when their GPU is being used.
-///
-/// Mirrors the Rust implementation in `provider/src/service.rs`.
 
 import Foundation
 

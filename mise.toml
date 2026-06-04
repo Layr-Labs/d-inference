@@ -1,0 +1,29 @@
+[tools]
+# Coordinator (Go control plane). Source of truth: go.mod `go 1.25.0`.
+go = "1.25.0"
+
+# Console UI (Next.js 16 / React 19). Matches `node-version: '22'` in
+# .github/workflows/ci.yml.
+node = "22"
+
+# Provider (Swift 6.1, Apple Silicon). Source of truth:
+# provider-swift/Package.swift `// swift-tools-version: 6.1`.
+# mise installs swiftly toolchains; on macOS the system Xcode swift is also
+# acceptable — this pin ensures a consistent CLI for non-Xcode shells / Linux
+# cross builds of ProviderCoreFoundation.
+swift = "6.1"
+
+# Python is used by helper scripts (scripts/benchmark-models.py,
+# scripts/mlx_lm_batch_bench.py) and to fetch the MLX metallib in CI
+# (.github/workflows/integration.yml). MLX 0.31.x wheels target 3.10–3.12.
+python = "3.12"
+
+# Common CLIs the repo's scripts shell out to.
+jq = "latest"           # scripts/calibrate-routing.sh, scripts/smoke-dev.sh
+gh = "latest"           # release + admin tooling
+awscli = "latest"       # R2 uploads in release-swift.yml
+gcloud = "latest"       # dev coordinator on GCP (gcloud logging read ...)
+
+[env]
+# Keep pip/uv from polluting the user site when running benchmark scripts.
+PIP_REQUIRE_VIRTUALENV = "true"

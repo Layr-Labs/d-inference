@@ -112,9 +112,12 @@ extension BatchScheduler {
                             completionTokens: output.completionTokens,
                             success: true
                         )
+                        // Emit the authoritative (max of observed-vs-terminal)
+                        // counts from recordFinish, not the raw terminal output
+                        // — the terminal can under-report and zero out billing.
                         continuation.yield(.info(
-                            promptTokens: output.promptTokens,
-                            completionTokens: output.completionTokens,
+                            promptTokens: usage.promptTokens,
+                            completionTokens: usage.completionTokens,
                             tokensPerSecond: usage.tps
                         ))
                     }
@@ -178,28 +181,36 @@ extension BatchScheduler {
         promptTokens: Int,
         completionTokens: Int,
         success: Bool
-    ) async -> (tps: Double, durationSeconds: Double) {
+    ) async -> (tps: Double, durationSeconds: Double, promptTokens: Int, completionTokens: Int) {
         guard var bridge = activeBridges.removeValue(forKey: requestId) else {
-            return (0, 0)
+            return (0, 0, 0, 0)
         }
         let finishedAt = ContinuousClock.now
         bridge.lastTokenAt = finishedAt
-        bridge.completionTokens = completionTokens
+        // Billing-zero fix: a terminal RequestOutput sometimes reports fewer
+        // tokens (often 0) than were already observed streaming via
+        // recordProgress. Previously we OVERWROTE the live count with the
+        // terminal value, so a completed request could settle at (0,0) — the
+        // coordinator then bills $0 and fully refunds. max() means the terminal
+        // can only ever raise the count, never zero an observed one.
+        bridge.completionTokens = max(bridge.completionTokens, completionTokens)
         bridge.promptTokens = max(bridge.promptTokens, promptTokens)
+        let finalCompletion = bridge.completionTokens
+        let finalPrompt = bridge.promptTokens
 
         let tps: Double
-        if let firstTokenAt = bridge.firstTokenAt, completionTokens > 1 {
+        if let firstTokenAt = bridge.firstTokenAt, finalCompletion > 1 {
             let elapsed = finishedAt - firstTokenAt
             let elapsedSeconds = Double(elapsed.components.seconds)
                 + Double(elapsed.components.attoseconds) / 1e18
             tps = elapsedSeconds > 0
-                ? Double(completionTokens - 1) / elapsedSeconds : 0
+                ? Double(finalCompletion - 1) / elapsedSeconds : 0
         } else {
             let elapsed = finishedAt - bridge.submittedAt
             let elapsedSeconds = Double(elapsed.components.seconds)
                 + Double(elapsed.components.attoseconds) / 1e18
             tps = elapsedSeconds > 0
-                ? Double(completionTokens) / elapsedSeconds : 0
+                ? Double(finalCompletion) / elapsedSeconds : 0
         }
 
         if success, tps > 0 {
@@ -224,7 +235,7 @@ extension BatchScheduler {
             return Double(elapsed.components.seconds)
                 + Double(elapsed.components.attoseconds) / 1e18
         }()
-        return (tps, durationSeconds)
+        return (tps, durationSeconds, finalPrompt, finalCompletion)
     }
 
     /// Stream closed without a terminal output (engine torn down

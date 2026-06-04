@@ -129,7 +129,9 @@ func main() {
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
 
-	// Per-account rate limiter on consumer (inference) endpoints.
+	// Per-account rate limiter on consumer (inference) endpoints. The default
+	// is intentionally generous (20 rps / burst 120) — the fleet token-budget
+	// admission is the real capacity ceiling, so this is a fairness/abuse guard.
 	if cfg.RateLimitCfg.RPS > 0 {
 		rl := ratelimit.New(cfg.RateLimitCfg)
 		rl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "ratelimit_pruner") })
@@ -148,6 +150,55 @@ func main() {
 	} else {
 		logger.Warn("financial-endpoint rate limiter DISABLED (EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS=0)")
 	}
+
+	// Elevated request limiter for trusted service accounts (e.g. OpenRouter),
+	// which fan out many end-users behind a single key. Set the service RPS to
+	// 0 to drop the per-request ceiling for service accounts.
+	//
+	// Note: the service role is admin-provisioned only (PUT /v1/admin/users/role,
+	// admin-gated) — consumers cannot self-escalate into this tier. Disabling
+	// this request limiter does NOT make service traffic unbounded: it remains
+	// gated by the per-account token limits (ITPM/OTPM, below), the account's
+	// prepaid balance, and the fleet token-budget admission ceiling.
+	if cfg.ServiceRL.RPS > 0 {
+		srl := ratelimit.New(cfg.ServiceRL)
+		srl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_ratelimit_pruner") })
+		srv.SetServiceRateLimiter(srl)
+		logger.Info("service-account rate limiter enabled", "rps", cfg.ServiceRL.RPS, "burst", cfg.ServiceRL.Burst)
+	} else {
+		logger.Warn("service-account request rate limiter DISABLED — service accounts still bounded by token (ITPM/OTPM) limits, prepaid balance, and fleet admission")
+	}
+
+	// Per-account token-per-minute limiters (ITPM/OTPM) — the industry-standard
+	// token throttle alongside RPM. Per-minute limits are converted to
+	// tokens/second; bursts must be >= the largest single request (>= max
+	// context for input, >= max output for output). Set a tier's ITPM and OTPM
+	// both to 0 to disable token limiting for that tier.
+	consumerTok := cfg.ConsumerTokens
+	serviceTok := cfg.ServiceTokens
+	var consumerTokenLimiter, serviceTokenLimiter *ratelimit.TokenLimiter
+	if consumerTok.InputPerMinute > 0 || consumerTok.OutputPerMinute > 0 {
+		consumerTokenLimiter = ratelimit.NewTokenLimiter(consumerTok.InputPerMinute/60, consumerTok.InputBurst, consumerTok.OutputPerMinute/60, consumerTok.OutputBurst)
+		consumerTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "consumer_token_ratelimit_pruner") })
+		logger.Info("consumer token rate limiter enabled", "itpm", consumerTok.InputPerMinute, "otpm", consumerTok.OutputPerMinute)
+	}
+	if serviceTok.InputPerMinute > 0 || serviceTok.OutputPerMinute > 0 {
+		serviceTokenLimiter = ratelimit.NewTokenLimiter(serviceTok.InputPerMinute/60, serviceTok.InputBurst, serviceTok.OutputPerMinute/60, serviceTok.OutputBurst)
+		serviceTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_token_ratelimit_pruner") })
+		logger.Info("service token rate limiter enabled", "itpm", serviceTok.InputPerMinute, "otpm", serviceTok.OutputPerMinute)
+	}
+	srv.SetTokenLimiters(consumerTokenLimiter, serviceTokenLimiter)
+
+	// Per-key (variable-rate) limiters for per-key RPM and ITPM/OTPM overrides.
+	// Unlike the per-account limiters above, these only act when an individual
+	// key sets an override; otherwise the key inherits the account-level limits.
+	// They carry no global rate of their own (each call supplies the key's rate).
+	keyRPMLimiter := ratelimit.New(ratelimit.Config{RPS: ratelimit.DefaultRPS, Burst: ratelimit.DefaultBurst})
+	keyRPMLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "key_rpm_ratelimit_pruner") })
+	keyTokenLimiter := ratelimit.NewKeyTokenLimiter()
+	keyTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "key_token_ratelimit_pruner") })
+	srv.SetKeyLimiters(keyRPMLimiter, keyTokenLimiter)
+	logger.Info("per-key rate limiters enabled (RPM + ITPM/OTPM overrides)")
 
 	// Coordinator self-telemetry emitter.
 	telemetryEmitter := telemetry.NewEmitter(logger, srv.Metrics(), telemetry.CoordinatorVersion)
@@ -333,6 +384,19 @@ func main() {
 		})
 
 		srv.SetMDMClient(mdmClient)
+		// Optional shared secret for the MicroMDM webhook. Defense-in-depth on
+		// top of the mandatory solicited-command (CommandUUID) gate: configure
+		// MicroMDM's command-webhook-url with ?token=<secret> and set this to
+		// the same value to reject any caller that lacks it.
+		if webhookSecret := os.Getenv("EIGENINFERENCE_MDM_WEBHOOK_SECRET"); webhookSecret != "" {
+			srv.SetMDMWebhookSecret(webhookSecret)
+			logger.Info("MDM webhook shared-secret auth enabled")
+		} else {
+			// The solicited-command (CommandUUID) gate still protects the
+			// webhook, but the shared secret is the recommended extra layer.
+			// Warn so a misconfigured deployment is visible at startup.
+			logger.Warn("EIGENINFERENCE_MDM_WEBHOOK_SECRET not set — MDM webhook relies solely on the CommandUUID gate; set it + keep MicroMDM bound to localhost for defense in depth")
+		}
 		logger.Info("MDM verification enabled", "url", mdmCfg.URL)
 	}
 
@@ -407,24 +471,4 @@ func main() {
 	}
 
 	logger.Info("coordinator stopped")
-}
-
-// seedModelCatalog is retained only for stale tests during the registry
-// transition. Startup no longer calls it, and model registration is now backed
-// by DB rows plus R2 manifests rather than hardcoded coordinator seed data.
-func seedModelCatalog(st store.Store, logger *slog.Logger) {
-	removed := 0
-	for _, m := range st.ListSupportedModels() {
-		if !api.IsRetiredProviderModel(m) {
-			continue
-		}
-		if err := st.DeleteSupportedModel(m.ID); err != nil {
-			logger.Warn("failed to remove retired model", "id", m.ID, "error", err)
-		} else {
-			removed++
-		}
-	}
-	if removed > 0 {
-		logger.Info("retired model catalog entries removed", "removed", removed)
-	}
 }

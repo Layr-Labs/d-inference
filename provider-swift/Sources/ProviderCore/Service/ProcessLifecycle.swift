@@ -2,10 +2,9 @@
 /// that every long-running provider process needs (PID file, caffeinate
 /// sleep prevention).
 ///
-/// Mirrors the side-effects in `provider/src/main.rs` `cmd_serve`
-/// (lines ~2243-2350): write a PID file, kill any existing provider that
-/// matches, and spawn `caffeinate -s -i -w <pid>` so the system doesn't
-/// sleep mid-inference.
+/// On `darkbloom serve` these helpers write a PID file, kill any existing
+/// provider that matches, and spawn `caffeinate -s -i -w <pid>` so the
+/// system doesn't sleep mid-inference.
 
 import Foundation
 #if canImport(Darwin)
@@ -142,8 +141,6 @@ public enum ProcessLifecycle {
     /// kickstart cycle so launchd picks up the new binary. Otherwise,
     /// falls back to `execCurrentProcess()` (execv) which replaces the
     /// process image in-place.
-    ///
-    /// Mirrors the Rust provider's auto-update restart logic.
     public static func restartAfterUpdate() throws -> Never {
         if LaunchAgent.isLoaded() {
             // Launchd-managed: stop the current service, then re-bootstrap

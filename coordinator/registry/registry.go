@@ -25,6 +25,8 @@ import (
 	"log/slog"
 	"math"
 	"math/rand"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,10 +69,19 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
-	RequestID        string
-	ProviderID       string
-	Model            string
-	ConsumerKey      string
+	RequestID   string
+	ProviderID  string
+	Model       string
+	ConsumerKey string
+	// KeyID is the public ID of the API key that originated the request, used
+	// for per-key usage and spend attribution. Empty for account-scoped/legacy
+	// callers (Privy JWT, admin, provider tokens, unlinked keys without an ID).
+	KeyID string
+	// KeyLimitMicroUSD / KeyLimitReset carry the originating key's spend cap so
+	// the per-key cap can be re-enforced when a provider's custom price tops up
+	// the reservation above the platform rate. Nil limit = no per-key cap.
+	KeyLimitMicroUSD *int64
+	KeyLimitReset    string
 	ConsumerLocation *store.ProviderLocation
 	// IsResponsesAPI tracks requests received through /v1/responses so the
 	// coordinator can translate provider chat-completions output back into
@@ -97,7 +108,14 @@ type PendingRequest struct {
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
-	ReservedMicroUSD     int64
+	ReservedMicroUSD int64
+	// BaseReservedMicroUSD is the shared base reservation (platform price)
+	// charged once per request. ReservedMicroUSD may exceed it after a
+	// provider-specific top-up; the difference (the per-attempt "extra") must
+	// be refunded if this attempt is abandoned (speculative loser, retry,
+	// timeout). The base itself is refunded once globally or settled by the
+	// winning attempt.
+	BaseReservedMicroUSD int64
 	reservationMu        sync.Mutex
 	reservationFinalized bool
 
@@ -213,6 +231,13 @@ type Provider struct {
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges      int       // consecutive failed challenges
 
+	// untrustedRecoverable marks an untrust as a *transient* missed-challenge
+	// deroute (timeout / no-response) that may self-recover on the next passing
+	// challenge. It is false for every hard/security deroute. In-memory only —
+	// never persisted, because recoverability is meaningless without a live
+	// WebSocket and a running challenge loop.
+	untrustedRecoverable bool
+
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
 }
@@ -324,6 +349,16 @@ func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 // fields like Status atomically. Prefer dedicated getters where available.
 func (p *Provider) Mu() *sync.Mutex {
 	return &p.mu
+}
+
+// ChallengeShouldStop reports whether the attestation challenge loop should
+// stop for this provider. It stops only for a *hard* (non-recoverable) untrust;
+// a transiently-untrusted provider keeps being challenged so a later passing
+// challenge can restore it via RecordChallengeSuccess. Thread-safe.
+func (p *Provider) ChallengeShouldStop() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Status == StatusUntrusted && !p.untrustedRecoverable
 }
 
 // SetAttestationResult stores the parsed attestation result (thread-safe).
@@ -572,9 +607,26 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Restore trust level (will be re-verified via fresh attestation)
-	p.TrustLevel = TrustLevel(rec.TrustLevel)
-	p.Attested = rec.Attested
+	// Restore trust level, but NEVER above self_signed. Hardware trust must be
+	// re-earned via a fresh live challenge + MDM/ACME on every (re)connection.
+	// Resurrecting a stored "hardware" level would route real traffic to a
+	// provider that has not yet passed a live challenge, and is the source of
+	// the "registry says hardware but the live verdict is self_signed" drift.
+	// The challenge-success path (verifyChallengeResponse) re-upgrades to
+	// hardware once the live legs pass.
+	if r := trustRank(TrustLevel(rec.TrustLevel)); r > trustRank(TrustSelfSigned) {
+		p.TrustLevel = TrustSelfSigned
+	} else {
+		p.TrustLevel = TrustLevel(rec.TrustLevel)
+	}
+	// Do NOT clobber a fresh live attestation: verifyProviderAttestation runs
+	// just before this and may have already set Attested=true (self_signed) from
+	// a passing SE attestation. Only fall back to the stored flag when we don't
+	// already have a fresh one — otherwise consumers/stats would see
+	// X-Provider-Attested:false despite a successful live attestation.
+	if !p.Attested {
+		p.Attested = rec.Attested
+	}
 	p.MDAVerified = rec.MDAVerified
 	p.ACMEVerified = rec.ACMEVerified
 
@@ -771,6 +823,10 @@ type CatalogEntry struct {
 	ID         string
 	WeightHash string  // expected SHA-256 weight fingerprint (empty = not enforced)
 	SizeGB     float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
+	// MinRAMGB is the catalog's authoritative minimum unified memory (GB) to run
+	// this model — the operator-published requirement. The hardware-fit gate
+	// prefers this over any heuristic multiple of SizeGB. Zero = unknown.
+	MinRAMGB int
 }
 
 // SetModelCatalog updates the set of active models. Only models in this
@@ -867,6 +923,15 @@ func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) b
 func (r *Registry) catalogSizeGBLocked(model string) float64 {
 	if e, ok := r.modelCatalog[model]; ok {
 		return e.SizeGB
+	}
+	return 0
+}
+
+// catalogMinRAMGbLocked returns the model's authoritative minimum-RAM
+// requirement (GB) from the catalog, or 0 when unknown. Caller must hold r.mu.
+func (r *Registry) catalogMinRAMGbLocked(model string) int {
+	if e, ok := r.modelCatalog[model]; ok {
+		return e.MinRAMGB
 	}
 	return 0
 }
@@ -1436,17 +1501,15 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 
-	// Memory gate: reject providers that cannot physically load the model.
-	// The provider applies a 2x multiplier on model weight size when deciding
-	// whether to load (ensureModelLoaded uses estimatedMemoryGb * 2.0 for
-	// headroom). Use the catalog SizeGB * 2.5 as the coordinator-side gate
-	// (slightly less conservative since the provider will reject anyway if
-	// it truly doesn't fit). This prevents the coordinator from sending
-	// load_model commands to machines that will always OOM-reject them.
-	if entry, ok := r.modelCatalog[model]; ok && entry.SizeGB > 0 {
-		requiredGB := entry.SizeGB * 2.5
-		providerMemGB := float64(p.Hardware.MemoryGB)
-		if providerMemGB > 0 && requiredGB > providerMemGB {
+	// Memory gate: reject providers that cannot run the model per the catalog's
+	// authoritative min_ram_gb (falling back to the weight heuristic only when
+	// unknown). Shares modelFitsHardware with the consumer-routing admission
+	// gate so the two can never drift. This prevents the coordinator from
+	// sending load_model commands to machines that clearly cannot fit it, while
+	// trusting the operator-published requirement rather than a synthetic
+	// multiple that would exclude catalog-qualified nodes.
+	if entry, ok := r.modelCatalog[model]; ok && (entry.MinRAMGB > 0 || entry.SizeGB > 0) {
+		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
 			return 0, false
 		}
 	}
@@ -1581,7 +1644,10 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	// temporarily at capacity (capacityRejections > 0), the requests
 	// should wait — those providers may finish current work and become
 	// available.
-	candidates, capacityRejections := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
+	// modelTooLarge is intentionally ignored here: a model that can never fit
+	// any provider should NOT keep its queued requests waiting (they'd time out
+	// after 120s) — fall through to fail them fast.
+	candidates, capacityRejections, _ := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
 	if candidates > 0 || capacityRejections > 0 {
 		return
 	}
@@ -1659,10 +1725,41 @@ func (r *Registry) GetProvider(id string) *Provider {
 	return r.providers[id]
 }
 
-// MarkUntrusted sets a provider's status to untrusted, preventing it from
-// receiving new jobs. This is called when a provider fails too many
-// challenge-response verifications.
+// MarkUntrusted sets a provider's status to untrusted for a hard/security
+// reason (bad encrypted chunk, MDM/MDA failure, SIP disabled, binary or model
+// hash mismatch, serial impersonation, attestation failure). The deroute is
+// non-recoverable: the provider stays untrusted until it reconnects and
+// re-registers. This is the default for every direct deroute call site.
 func (r *Registry) MarkUntrusted(providerID string) {
+	r.markUntrusted(providerID, false)
+}
+
+// MarkUntrustedTransient sets a provider's status to untrusted for a *transient*
+// reason — MaxFailedChallenges consecutive missed-challenge timeouts (screen
+// sleep, network blip, momentary Secure Enclave inaccessibility). Unlike
+// MarkUntrusted, the provider remains eligible to self-recover: the challenge
+// loop keeps challenging it (see ChallengeShouldStop), and a subsequent fully
+// passing challenge (RecordChallengeSuccess) restores it to online.
+//
+// A passing challenge re-verifies signature, SIP, secure boot, binary hash,
+// model hash and runtime before RecordChallengeSuccess is reached, so using it
+// as the recovery trigger is safe.
+func (r *Registry) MarkUntrustedTransient(providerID string) {
+	r.markUntrusted(providerID, true)
+}
+
+// markUntrusted is the shared implementation. recoverable=true marks the untrust
+// as transiently recoverable; recoverable=false is a hard deroute.
+//
+// Transition rules:
+//   - not untrusted -> untrusted: decrement online/model counts, set status and
+//     the recoverable flag.
+//   - already untrusted + hard (recoverable=false): clear the flag. A hard
+//     reason always overrides/downgrades a previously-recoverable untrust.
+//   - already untrusted + transient (recoverable=true): leave the flag as-is, so
+//     a transient timeout can never *upgrade* a hard deroute to recoverable
+//     (matters for an in-flight challenge timeout that races a hard deroute).
+func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 	r.mu.Lock()
 	p, ok := r.providers[providerID]
 	if !ok {
@@ -1676,14 +1773,19 @@ func (r *Registry) MarkUntrusted(providerID string) {
 		for _, m := range p.Models {
 			r.modelProviderDec(m.ID)
 		}
+		p.Status = StatusUntrusted
+		p.untrustedRecoverable = recoverable
+	} else if !recoverable {
+		p.untrustedRecoverable = false
 	}
-	p.Status = StatusUntrusted
+	failed := p.FailedChallenges // read under p.mu (the old code read this unlocked)
 	p.mu.Unlock()
 	r.mu.Unlock()
 
 	r.logger.Warn("provider marked as untrusted",
 		"provider_id", providerID,
-		"failed_challenges", p.FailedChallenges,
+		"failed_challenges", failed,
+		"recoverable", recoverable,
 	)
 }
 
@@ -1704,13 +1806,24 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 }
 
 // RecordChallengeSuccess records a successful challenge-response verification.
-func (r *Registry) RecordChallengeSuccess(providerID string) {
+// A fully passing challenge re-verifies signature, SIP, secure boot, binary
+// hash, model hash and runtime (see verifyChallengeResponse) before this is
+// called, so it doubles as the recovery trigger for a *transiently* untrusted
+// provider.
+//
+// Returns true iff this call recovered a transiently-untrusted provider back to
+// online. The caller (verifyChallengeResponse) uses that to push a fresh
+// "online" trust_status so the provider clears its local untrusted state and
+// cancels the pending diagnostic auto-report it scheduled at deroute time.
+func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
 	if !ok {
-		return
+		return false
 	}
+
+	recovered := r.recoverIfTransientlyUntrusted(providerID, p)
 
 	p.mu.Lock()
 	p.LastChallengeVerified = time.Now()
@@ -1725,8 +1838,60 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	r.persistProviderNow(p)
 	r.persistReputation(p)
 
-	// A newly verified provider may unlock queued requests for any model it serves.
+	if recovered {
+		r.logger.Info("provider recovered from transient deroute", "provider_id", providerID)
+	}
+
+	// A newly verified (or newly recovered) provider may unlock queued requests
+	// for any model it serves.
 	r.drainQueuedRequestsForModels(providerModelIDs(p))
+
+	return recovered
+}
+
+// recoverIfTransientlyUntrusted promotes a transiently-untrusted provider back
+// to online, mirroring markUntrusted's bookkeeping in reverse. Returns true iff
+// a transition occurred. It acquires r.mu (write) then p.mu — the same order as
+// markUntrusted/Register/Disconnect — so online/model counts stay consistent and
+// the path is deadlock-free.
+func (r *Registry) recoverIfTransientlyUntrusted(providerID string, p *Provider) bool {
+	// Cheap pre-check under p.mu only, so the common (non-recovery) success path
+	// never contends on the registry write lock.
+	p.mu.Lock()
+	eligible := p.Status == StatusUntrusted && p.untrustedRecoverable
+	p.mu.Unlock()
+	if !eligible {
+		return false
+	}
+
+	r.mu.Lock()
+	// Re-verify membership: RecordChallengeSuccess looked p up under RLock and
+	// released it, so Disconnect may have removed (or replaced) it since. A
+	// transiently-untrusted provider was already decremented out of the counts,
+	// and Disconnect does not decrement an untrusted provider, so incrementing a
+	// stale/removed pointer here would permanently corrupt onlineCount and
+	// modelProviders. Only recover the provider still registered under this ID.
+	if cur, ok := r.providers[providerID]; !ok || cur != p {
+		r.mu.Unlock()
+		return false
+	}
+	p.mu.Lock()
+	// Re-check under the write lock: a hard deroute may have intervened and
+	// cleared the recoverable flag between the pre-check and here.
+	if p.Status != StatusUntrusted || !p.untrustedRecoverable {
+		p.mu.Unlock()
+		r.mu.Unlock()
+		return false
+	}
+	r.onlineCount.Add(1)
+	for _, m := range p.Models {
+		r.modelProviderInc(m.ID)
+	}
+	p.Status = StatusOnline
+	p.untrustedRecoverable = false
+	p.mu.Unlock()
+	r.mu.Unlock()
+	return true
 }
 
 // RecordChallengeFailure records a failed challenge-response. Returns the
@@ -2169,6 +2334,59 @@ func (r *Registry) ListModels() []AggregateModel {
 	}
 
 	return models
+}
+
+// ModelCountryCodes returns the sorted, de-duplicated ISO 3166-1 alpha-2
+// country codes of online providers serving the given model. Used to populate
+// the OpenRouter "datacenters" field. Only routing-eligible providers count —
+// the same gates as ListModels (online, meets the minimum trust level, and
+// private-text ready) — so a country whose providers can't actually serve the
+// model is not advertised. Providers without a known location are skipped.
+func (r *Registry) ModelCountryCodes(modelID string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		privateReady := providerSupportsPrivateTextLocked(p)
+		var cc string
+		if p.Location != nil {
+			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
+		}
+		serves := false
+		if cc != "" {
+			for i := range p.Models {
+				if p.Models[i].ID == modelID {
+					serves = true
+					break
+				}
+			}
+		}
+		p.mu.Unlock()
+		if !serves {
+			continue
+		}
+		// Apply the same routing-eligibility gates as ListModels.
+		if status == StatusOffline || status == StatusUntrusted {
+			continue
+		}
+		if !r.trustMeetsMinimum(trust) || !privateReady {
+			continue
+		}
+		seen[cc] = true
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for c := range seen {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // trustRank returns a numeric rank for trust levels (higher = more trusted).

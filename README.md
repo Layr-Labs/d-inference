@@ -2,7 +2,7 @@
 
 > **Public Alpha** -- Darkbloom is a decentralized private inference network for Apple Silicon. Currently in public alpha -- expect rough edges, breaking changes, and downtime.
 
-AI compute today flows through three layers of markup — GPU manufacturers to hyperscalers to API providers to end users. Meanwhile, over 100 million Apple Silicon Macs sit idle most of each day with 64–512 GB of unified memory and up to 819 GB/s memory bandwidth, capable of running models with up to 500 billion parameters at interactive speeds. Darkbloom connects this idle capacity directly to demand. The core technical challenge is that the machine owner has root access and physical custody — they should not be able to see user prompts or model responses. We solve this by eliminating every software path through which inference data could be observed: the inference engine runs in-process (no subprocess, no local server, no IPC), debuggers are denied at the kernel level (PT_DENY_ATTACH), memory-reading APIs are blocked by Hardened Runtime, and these protections are provably immutable for the process lifetime because disabling SIP requires a reboot that terminates the process. A four-layer attestation architecture — Secure Enclave signatures, MDM-based independent verification, Apple Managed Device Attestation with Apple-signed certificate chains, and periodic challenge-response — verifies that each machine's security posture has not been tampered with. The result: the only remaining attack is physically probing memory chips soldered into the SoC package, the same residual threat model accepted by Apple's Private Cloud Compute for Siri and Apple Intelligence. The API is OpenAI-compatible. Operators keep 95% of revenue.
+AI compute today flows through three layers of markup — GPU manufacturers to hyperscalers to API providers to end users. Meanwhile, over 100 million Apple Silicon Macs sit idle most of each day with 64–512 GB of unified memory and up to 819 GB/s memory bandwidth, capable of running models with up to 500 billion parameters at interactive speeds. Darkbloom connects this idle capacity directly to demand. The core technical challenge is that the machine owner has root access and physical custody — they should not be able to see user prompts or model responses. We solve this by eliminating every software path through which inference data could be observed: the inference engine runs in-process (no subprocess, no local server, no IPC), debuggers are denied at the kernel level (PT_DENY_ATTACH), memory-reading APIs are blocked by Hardened Runtime, and these protections are provably immutable for the process lifetime because disabling SIP requires a reboot that terminates the process. A four-layer attestation architecture — Secure Enclave signatures, MDM-based independent verification, Apple Managed Device Attestation with Apple-signed certificate chains, and periodic challenge-response — verifies that each machine's security posture has not been tampered with. The result: the only remaining attack is physically probing memory chips soldered into the SoC package, the same residual threat model accepted by Apple's Private Cloud Compute for Siri and Apple Intelligence. The API is OpenAI-compatible. During the public alpha, operators keep 100% of revenue (0% platform fee).
 
 ## How It Works
 
@@ -32,11 +32,10 @@ Models are selected from a curated catalog. The coordinator only routes requests
 
 | Model | Architecture | Size | Min RAM | Notes |
 |-------|-------------|------|---------|-------|
-| Gemma 4 26B 8-bit | 26B MoE, 4B active | 28 GB | 36 GB | Google's latest MoE, fast multimodal |
-| Qwen3.5 27B Claude Opus 8-bit | 27B dense | 27 GB | 36 GB | Frontier-quality reasoning, Claude Opus distilled |
-| Trinity Mini 8-bit | 27B Adaptive MoE | 26 GB | 48 GB | Fast agentic inference |
-| Qwen3.5 122B MoE 8-bit | 122B MoE, 10B active | 122 GB | 128 GB | Best quality reasoning |
-| MiniMax M2.5 8-bit | 239B MoE, 11B active | 243 GB | 256 GB | SOTA coding, ~100 tok/s |
+| Gemma 4 26B 8-bit | 26B MoE, 4B active | 28 GB | 36 GB | Google's latest MoE, multimodal |
+| GPT-OSS 20B | 21B MoE, 3.6B active | 12 GB | 24 GB | OpenAI open-weight reasoning model |
+
+The list above reflects the current lineup; the live catalog is always available at `GET /v1/models` (or `GET /v1/models/catalog`).
 
 ## Use the API
 
@@ -52,7 +51,7 @@ client = OpenAI(
 
 # Chat completion
 response = client.chat.completions.create(
-    model="qwen3.5-27b-claude-opus-8bit",
+    model="gemma-4-26b",
     messages=[{"role": "user", "content": "Hello"}],
     stream=True
 )
@@ -137,20 +136,17 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 
 | Type | Rate |
 |------|------|
-| Text (Gemma 4 26B) | $0.065 / 1M input, $0.20 / 1M output |
-| Text (Qwen3.5 27B) | $0.10 / 1M input, $0.78 / 1M output |
-| Text (Qwen3.5 122B) | $0.13 / 1M input, $1.04 / 1M output |
-| Text (MiniMax M2.5) | $0.06 / 1M input, $0.50 / 1M output |
+| Text (Gemma 4 26B) | $0.03 / 1M input, $0.165 / 1M output |
+| Text (GPT-OSS 20B) | $0.015 / 1M input, $0.07 / 1M output |
 
-0% platform fee. Providers keep 100%.
+Per-token prices are set to roughly 50% of typical hosted-API list rates for comparable models. Live per-model pricing is always available at `GET /v1/pricing`. During the public alpha there is a 0% platform fee — providers keep 100% of revenue.
 
 ## Architecture
 
 | Component | Language | Role |
 |-----------|----------|------|
 | Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
-| Provider, legacy (`provider/`) | Rust | Inference agent in production today; retired at the Swift cutover |
-| Provider, Swift (`provider-swift/`) | Swift | CLI-only Swift port; replaces `provider/` after cutover |
+| Provider (`provider-swift/`) | Swift | CLI inference agent for Apple Silicon Macs |
 | Console (`console-ui/`) | Next.js 16 | Web dashboard: chat, billing, provider verification |
 | Landing (`landing/`) | HTML | Static landing page |
 
@@ -159,9 +155,6 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 ```bash
 # Coordinator
 cd coordinator && go test ./...
-
-# Legacy Rust provider (set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 on Python 3.14+)
-cd provider && cargo test
 
 # Swift provider (CLI)
 cd provider-swift && swift test

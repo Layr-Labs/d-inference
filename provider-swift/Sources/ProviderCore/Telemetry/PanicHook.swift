@@ -2,7 +2,7 @@
 /// flushes any pending telemetry to disk, and emits a structured panic
 /// event before re-raising.
 ///
-/// macOS Swift has no `panic_hook` like Rust. The closest equivalents:
+/// macOS Swift has no built-in crash/`panic` hook. The closest equivalents:
 ///   * NSSetUncaughtExceptionHandler -- catches Objective-C exceptions
 ///     (rare in pure Swift, but the bridges call into them).
 ///   * `signal(2)` on SIGSEGV / SIGBUS / SIGILL / SIGABRT -- catches
@@ -17,8 +17,6 @@
 ///      in-memory buffer to disk too.
 ///   4. Re-raises the signal with the default handler so launchd /
 ///      CrashReporter sees the real exit status.
-///
-/// Mirrors `provider/src/telemetry/panic_hook.rs`.
 
 import Foundation
 #if canImport(Darwin)
@@ -59,7 +57,6 @@ public enum PanicHook {
 /// C-callable signal handler. Must be `@convention(c)` and only call
 /// async-signal-safe functions in principle. We call into Swift telemetry
 /// here -- technically unsafe -- but the alternative is a silent crash.
-/// The Rust provider's panic_hook makes the same trade-off.
 private func panicSignalHandler(_ signo: Int32) {
     let name: String
     switch signo {

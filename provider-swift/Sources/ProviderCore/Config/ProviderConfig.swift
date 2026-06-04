@@ -202,7 +202,7 @@ public enum ConfigManager: Sendable {
     ///
     /// 1. `~/.config/darkbloom/provider.toml`  (canonical, new installs)
     /// 2. `~/Library/Application Support/darkbloom/provider.toml`
-    /// 3. `~/.config/eigeninference/provider.toml`  (legacy, Rust-CLI era)
+    /// 3. `~/.config/eigeninference/provider.toml`  (legacy install path)
     /// 4. `~/Library/Application Support/eigeninference/provider.toml`
     ///
     /// If none of those files exist yet, we return path #1 so first-time
@@ -307,7 +307,7 @@ public enum ConfigManager: Sendable {
         }
     }
 
-    /// Serialize a ProviderConfig to TOML matching the Rust CLI format.
+    /// Serialize a ProviderConfig to the provider's TOML config format.
     public static func serialize(_ config: ProviderConfig) -> String {
         do {
             return try TOMLEncoder().encode(config)

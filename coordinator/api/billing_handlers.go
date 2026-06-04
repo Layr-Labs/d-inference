@@ -406,6 +406,93 @@ func (s *Server) handleAdminPricing(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAdminSetUserRole handles PUT /v1/admin/users/role.
+// Grants or clears an account role (e.g. RoleService for OpenRouter). Admin only.
+func (s *Server) handleAdminSetUserRole(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+
+	var req struct {
+		AccountID string `json:"account_id"`
+		Role      string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.AccountID == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "account_id is required", withParam("account_id")))
+		return
+	}
+	// Only known roles are accepted. "" clears the role back to a normal account.
+	if req.Role != "" && req.Role != store.RoleService {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			fmt.Sprintf("invalid role %q — allowed: %q or \"\"", req.Role, store.RoleService), withParam("role")))
+		return
+	}
+
+	if err := s.store.SetUserRole(req.AccountID, req.Role); err != nil {
+		s.logger.Error("admin set role: failed", "account_id", req.AccountID, "error", err)
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "user not found or update failed"))
+		return
+	}
+
+	s.logger.Info("admin: user role updated", "account_id", req.AccountID, "role", req.Role)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "role_updated",
+		"account_id": req.AccountID,
+		"role":       req.Role,
+	})
+}
+
+// handleAdminSetUserPlatformFee handles PUT /v1/admin/users/platform-fee.
+// Sets a per-account platform fee override (0–100). Omit platform_fee_percent
+// (or send null) to clear the override and fall back to the global default.
+// Admin only.
+func (s *Server) handleAdminSetUserPlatformFee(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+
+	var req struct {
+		AccountID          string `json:"account_id"`
+		PlatformFeePercent *int64 `json:"platform_fee_percent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.AccountID == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "account_id is required", withParam("account_id")))
+		return
+	}
+	if req.PlatformFeePercent != nil && (*req.PlatformFeePercent < 0 || *req.PlatformFeePercent > 100) {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"platform_fee_percent must be between 0 and 100", withParam("platform_fee_percent")))
+		return
+	}
+
+	if err := s.store.SetUserPlatformFeePercent(req.AccountID, req.PlatformFeePercent); err != nil {
+		s.logger.Error("admin set platform fee: failed", "account_id", req.AccountID, "error", err)
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "user not found or update failed"))
+		return
+	}
+
+	resp := map[string]any{
+		"status":     "platform_fee_updated",
+		"account_id": req.AccountID,
+	}
+	if req.PlatformFeePercent != nil {
+		resp["platform_fee_percent"] = *req.PlatformFeePercent
+	} else {
+		resp["platform_fee_percent"] = nil
+		resp["note"] = "override cleared — using global default"
+	}
+	s.logger.Info("admin: user platform fee updated", "account_id", req.AccountID, "fee", req.PlatformFeePercent)
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handleSetPricing handles PUT /v1/pricing.
 // Providers set custom prices for models they serve. Requires Privy auth.
 func (s *Server) handleSetPricing(w http.ResponseWriter, r *http.Request) {
@@ -524,121 +611,6 @@ func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store
 	return user
 }
 
-// --- Admin Model Catalog ---
-
-// handleAdminListModels handles GET /v1/admin/models.
-// Returns the full supported model catalog. Requires admin auth.
-func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
-		return
-	}
-
-	models := s.store.ListSupportedModels()
-	if models == nil {
-		models = []store.SupportedModel{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": models})
-}
-
-// handleAdminSetModel handles POST /v1/admin/models.
-// Adds or updates a model in the catalog. Requires admin auth.
-// If input_price and output_price are provided, sets platform pricing too.
-func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
-		return
-	}
-
-	var req struct {
-		store.SupportedModel
-		InputPrice  int64 `json:"input_price"`  // optional, micro-USD per 1M tokens
-		OutputPrice int64 `json:"output_price"` // optional, micro-USD per 1M tokens
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-	if req.ID == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "id is required"))
-		return
-	}
-	if req.DisplayName == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "display_name is required"))
-		return
-	}
-
-	model := req.SupportedModel
-	if err := s.store.SetSupportedModel(&model); err != nil {
-		s.logger.Error("admin: set model failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save model"))
-		return
-	}
-
-	// Set platform pricing if provided.
-	resp := map[string]any{
-		"status": "model_saved",
-		"model":  model,
-	}
-	if req.InputPrice > 0 && req.OutputPrice > 0 {
-		if err := s.store.SetModelPrice("platform", model.ID, req.InputPrice, req.OutputPrice); err != nil {
-			s.logger.Error("admin: set model price failed", "model_id", model.ID, "error", err)
-			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "model saved but failed to set pricing"))
-			return
-		}
-		resp["input_price"] = req.InputPrice
-		resp["output_price"] = req.OutputPrice
-		s.logger.Info("admin: model pricing set",
-			"model_id", model.ID,
-			"input_price", req.InputPrice,
-			"output_price", req.OutputPrice,
-		)
-	}
-
-	// Sync the updated catalog to the registry so routing reflects the change.
-	s.SyncModelCatalog()
-
-	s.logger.Info("admin: model catalog updated",
-		"model_id", model.ID,
-		"display_name", model.DisplayName,
-		"active", model.Active,
-	)
-
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// handleAdminDeleteModel handles DELETE /v1/admin/models.
-// Removes a model from the catalog. Requires admin auth.
-func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
-		return
-	}
-
-	var req struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-	if req.ID == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "id is required"))
-		return
-	}
-
-	if err := s.store.DeleteSupportedModel(req.ID); err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
-		return
-	}
-
-	// Sync the updated catalog to the registry so routing reflects the change.
-	s.SyncModelCatalog()
-
-	s.logger.Info("admin: model removed from catalog", "model_id", req.ID)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "model_deleted",
-		"model_id": req.ID,
-	})
-}
-
 // handleModelCatalog handles GET /v1/models/catalog.
 // Public endpoint — returns active models for providers and the install script.
 // Cached for 60s — the underlying DB query is fast but this endpoint is hit
@@ -656,41 +628,20 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var response any
-
 	registryRows, err := s.store.ListActiveModelRegistryWithError()
 	if err != nil {
 		s.logger.Error("model registry: failed to list active models", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch model catalog"))
 		return
 	}
-	if len(registryRows) > 0 {
-		models := make([]map[string]any, 0, len(registryRows))
-		if typeFilter == "" || typeFilter == "text" {
-			for i := range registryRows {
-				models = append(models, catalogModelFromRegistryRecord(&registryRows[i]))
-			}
+	// The catalog is text-only today; an explicit non-text filter yields nothing.
+	models := make([]map[string]any, 0, len(registryRows))
+	if typeFilter == "" || typeFilter == "text" {
+		for i := range registryRows {
+			models = append(models, catalogModelFromRegistryRecord(&registryRows[i]))
 		}
-		response = map[string]any{"models": models}
-	} else {
-		allModels := s.store.ListSupportedModels()
-
-		// Filter to active models only (and by type if specified)
-		var active []store.SupportedModel
-		for _, m := range allModels {
-			if !m.Active || IsRetiredProviderModel(m) {
-				continue
-			}
-			if typeFilter != "" && m.ModelType != typeFilter {
-				continue
-			}
-			active = append(active, m)
-		}
-		if active == nil {
-			active = []store.SupportedModel{}
-		}
-		response = map[string]any{"models": active}
 	}
+	response := map[string]any{"models": models}
 
 	body, err := json.Marshal(response)
 	if err != nil {

@@ -16,11 +16,11 @@ import {
 // Optional display-only market references. The catalog rows always come from
 // the coordinator; entries here only enable a comparison when IDs match.
 const baselinePricing: Record<string, { output: number; baseline: string; unit?: string }> = {
-  "qwen3.5-27b-claude-opus-8bit": { output: 1_560_000, baseline: "OpenRouter" },
-  "mlx-community/Trinity-Mini-8bit": { output: 150_000, baseline: "OpenRouter" },
-  "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, baseline: "OpenRouter" },
-  "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, baseline: "OpenRouter" },
-  "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, baseline: "OpenRouter" },
+  // Typical hosted-API list output prices (micro-USD per 1M tokens). Darkbloom
+  // targets ~50% of these, so the comparison reads "50% lower" once platform
+  // pricing is set. Update if those baseline rates change.
+  "gemma-4-26b": { output: 330_000, baseline: "typical APIs" },
+  "gpt-oss-20b": { output: 140_000, baseline: "typical APIs" },
 };
 
 // Build a unified pricing lookup from the coordinator's response
@@ -48,6 +48,12 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`;
   return `${bytes} B`;
+}
+
+function formatContextLength(tokens?: number): string {
+  if (!tokens || tokens <= 0) return "";
+  if (tokens >= 1000) return `${Math.round(tokens / 1000)}K`;
+  return `${tokens}`;
 }
 
 function TrustIndicator({ level }: { level?: string }) {
@@ -176,6 +182,11 @@ export default function ModelsPage() {
                           {formatBytes(model.size_bytes)}
                         </span>
                       )}
+                      {(model.context_length ?? model.max_context_length) ? (
+                        <span className="px-2 py-0.5 rounded bg-bg-elevated text-xs font-mono text-text-tertiary shadow-sm">
+                          {formatContextLength(model.context_length ?? model.max_context_length)} ctx
+                        </span>
+                      ) : null}
                     </div>
 
                     {/* Pricing */}
@@ -197,7 +208,7 @@ export default function ModelsPage() {
                             <span className="text-xs font-medium text-accent-green">
                               {savingsPercent(eigenPricing[model.id].output, baselinePricing[model.id].output)}% cheaper
                             </span>
-                            <span className="text-xs text-text-tertiary opacity-50">against {baselinePricing[model.id].baseline} baseline</span>
+                            <span className="text-xs text-text-tertiary opacity-50">vs {baselinePricing[model.id].baseline}</span>
                           </div>
                         )}
                       </div>
@@ -281,7 +292,7 @@ export default function ModelsPage() {
                 </tbody>
               </table>
               <div className="px-4 py-2 text-xs text-text-tertiary bg-bg-tertiary/50">
-                Baseline prices from OpenRouter as of April 2026.
+                Baseline prices reflect typical hosted-API list rates as of April 2026.
               </div>
             </div>
           </div>

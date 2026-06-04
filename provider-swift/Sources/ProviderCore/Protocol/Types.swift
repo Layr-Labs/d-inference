@@ -417,7 +417,7 @@ extension RawJSON: Codable {
 
 /// Minimal JSON value type for capturing arbitrary JSON without structure loss.
 /// Used both for RawJSON (attestation blobs) and for the InferenceRequest body
-/// field which is an opaque serde_json::Value in the Rust source.
+/// field, which is an opaque JSON value on the wire.
 public enum JSONValue: Codable, Sendable, Equatable {
     case null
     case bool(Bool)

@@ -15,7 +15,6 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -101,6 +100,15 @@ func (s *PostgresStore) Close() {
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
+		// schema_migrations records one-time data migrations that must run at most
+		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
+		// EXISTS) does not need this; it exists to gate destructive one-shot DML
+		// cleanups (see the model_prices cleanup below) behind a marker id.
+		`CREATE TABLE IF NOT EXISTS schema_migrations (
+			id TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+
 		`CREATE TABLE IF NOT EXISTS providers (
 			id TEXT PRIMARY KEY,
 			hardware JSONB NOT NULL,
@@ -181,10 +189,27 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS owner_account_id TEXT NOT NULL DEFAULT '';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
+		// Multi-key support: per-key id, name, limits, expiry, last-used.
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS limit_micro_usd BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS limit_reset TEXT NOT NULL DEFAULT 'none'; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS rpm_limit BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS itpm_limit BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS otpm_limit BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS allowed_models TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
+		// Backfill stable IDs for legacy rows (deterministic from the hash so
+		// it is stable across restarts and idempotent).
+		`UPDATE api_keys SET id = 'key_' || substr(md5(key_hash), 1, 24) WHERE id IS NULL OR id = ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_id ON api_keys(id) WHERE id <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner_account_id) WHERE owner_account_id <> ''`,
 		`CREATE TABLE IF NOT EXISTS usage (
 			id BIGSERIAL PRIMARY KEY,
 			provider_id TEXT NOT NULL,
 			consumer_key_hash TEXT NOT NULL,
+			key_id TEXT NOT NULL DEFAULT '',
 			model TEXT NOT NULL,
 			prompt_tokens INTEGER NOT NULL,
 			completion_tokens INTEGER NOT NULL,
@@ -193,10 +218,14 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			cost_micro_usd BIGINT NOT NULL DEFAULT 0,
 			request_location JSONB
 		)`,
+		// Per-key usage attribution — ALTER for DBs upgrading from a usage
+		// table created before key_id existed. Must run AFTER CREATE TABLE usage.
+		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS key_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		// Indexes for usage queries (stats, billing, per-consumer history).
 		`CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_consumer ON usage(consumer_key_hash, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage(provider_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_key ON usage(key_id, created_at DESC) WHERE key_id <> ''`,
 
 		`CREATE TABLE IF NOT EXISTS payments (
 			id BIGSERIAL PRIMARY KEY,
@@ -271,10 +300,28 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 
 		// Clean up wallet-keyed custom prices: with the removal of wallet-based
-		// payouts, model_prices rows keyed by Solana wallet addresses are unreachable.
-		// Providers must re-enter custom prices under their Stripe Connect account ID.
+		// payouts, model_prices rows keyed by Solana wallet addresses are
+		// unreachable. Providers must re-enter custom prices under their Stripe
+		// Connect account ID.
+		//
+		// This is a one-time, destructive cleanup, so it is gated on a
+		// schema_migrations marker and runs at most once instead of on every boot.
+		// Two further guards:
+		//   - Exclude the synthetic "platform" account. Platform-default per-model
+		//     pricing (set via PUT /v1/admin/pricing and at model registration) is
+		//     stored under account_id='platform', which is NEVER a row in users.
+		//     Without this guard the cleanup would wipe all platform pricing,
+		//     silently reverting billing to the fallback defaults.
+		//   - The marker is written only after a successful DELETE within the same
+		//     block, so a run that errors (e.g. users not yet created on a brand-new
+		//     DB) rolls back and is retried on the next boot.
 		`DO $$ BEGIN
-			DELETE FROM model_prices WHERE account_id NOT IN (SELECT account_id FROM users);
+			IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1') THEN
+				DELETE FROM model_prices
+				WHERE account_id NOT IN (SELECT account_id FROM users)
+				  AND account_id <> 'platform';
+				INSERT INTO schema_migrations (id) VALUES ('cleanup_wallet_model_prices_v1');
+			END IF;
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 
@@ -283,6 +330,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			account_id TEXT PRIMARY KEY,
 			privy_user_id TEXT UNIQUE NOT NULL,
 			email TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT '',
+			platform_fee_percent BIGINT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN
@@ -299,29 +348,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy ON users(privy_user_id)`,
 
-		// Supported models — admin-managed catalog
-		`CREATE TABLE IF NOT EXISTS supported_models (
-			id TEXT PRIMARY KEY,
-			s3_name TEXT NOT NULL DEFAULT '',
-			display_name TEXT NOT NULL DEFAULT '',
-			model_type TEXT NOT NULL DEFAULT 'text',
-			size_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
-			architecture TEXT NOT NULL DEFAULT '',
-			description TEXT NOT NULL DEFAULT '',
-			min_ram_gb INTEGER NOT NULL DEFAULT 0,
-			active BOOLEAN NOT NULL DEFAULT TRUE,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		// Add model_type column if upgrading from previous schema
-		`DO $$ BEGIN
-			ALTER TABLE supported_models ADD COLUMN IF NOT EXISTS model_type TEXT NOT NULL DEFAULT 'text';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		// Add weight_hash column for model integrity verification
-		`DO $$ BEGIN
-			ALTER TABLE supported_models ADD COLUMN IF NOT EXISTS weight_hash TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
+		// The legacy admin-managed supported_models catalog was replaced by the
+		// manifest-backed model_registry below. Drop the stale duplicate table if
+		// it is still present from an older deployment.
+		`DROP TABLE IF EXISTS supported_models`,
 
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
@@ -554,6 +584,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_instant_eligible BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_stripe_account ON users(stripe_account_id) WHERE stripe_account_id != ''`,
 
+		// Account role + per-account platform fee override (service accounts, e.g. OpenRouter).
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_fee_percent BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
+
 		`CREATE TABLE IF NOT EXISTS stripe_withdrawals (
 			id TEXT PRIMARY KEY,
 			account_id TEXT NOT NULL,
@@ -640,80 +674,161 @@ func hashKey(key string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// keyPrefix returns the first 12 characters of a key for display purposes.
-func keyPrefix(key string) string {
-	if len(key) <= 12 {
-		return key
+// apiKeyColumns is the canonical SELECT list for reading an api_keys row into
+// an APIKey via scanAPIKeyRow.
+const apiKeyColumns = `id, owner_account_id, name, raw_prefix, key_hash, active,
+	limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
+	allowed_models, expires_at, created_at, last_used_at`
+
+// rowScanner is satisfied by both pgx.Row and pgx.Rows.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanAPIKeyRow scans one api_keys row (selected via apiKeyColumns) into APIKey.
+func scanAPIKeyRow(row rowScanner) (*APIKey, error) {
+	var (
+		k          APIKey
+		active     bool
+		limit      *int64
+		rpm        *int64
+		itpm       *int64
+		otpm       *int64
+		allowed    string
+		expiresAt  *time.Time
+		lastUsedAt *time.Time
+	)
+	if err := row.Scan(&k.ID, &k.OwnerAccountID, &k.Name, &k.Label, &k.KeyHash, &active,
+		&limit, &k.LimitReset, &rpm, &itpm, &otpm,
+		&allowed, &expiresAt, &k.CreatedAt, &lastUsedAt); err != nil {
+		return nil, err
 	}
-	return key[:12] + "..."
+	k.Disabled = !active
+	k.LimitMicroUSD = limit
+	k.RPMLimit = rpm
+	k.ITPMLimit = itpm
+	k.OTPMLimit = otpm
+	k.LimitReset = NormalizeResetWindow(k.LimitReset)
+	k.AllowedModels = decodeModelList(allowed)
+	k.ExpiresAt = expiresAt
+	k.LastUsedAt = lastUsedAt
+	return &k, nil
+}
+
+// encodeModelList serializes a model allow-list for storage. Empty → "".
+func encodeModelList(models []string) string {
+	if len(models) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(models)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodeModelList parses a stored model allow-list. "" / invalid → nil.
+func decodeModelList(s string) []string {
+	if s == "" || s == "[]" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// insertAPIKey writes a fully-formed key record. Shared by CreateAPIKey/SeedKey.
+func (s *PostgresStore) insertAPIKey(ctx context.Context, rec *APIKey, onConflictDoNothing bool) error {
+	q := `INSERT INTO api_keys
+		(id, key_hash, raw_prefix, owner_account_id, name, active,
+		 limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
+		 allowed_models, expires_at, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
+	if onConflictDoNothing {
+		q += ` ON CONFLICT (key_hash) DO NOTHING`
+	}
+	_, err := s.pool.Exec(ctx, q,
+		rec.ID, rec.KeyHash, rec.Label, rec.OwnerAccountID, rec.Name, !rec.Disabled,
+		rec.LimitMicroUSD, NormalizeResetWindow(rec.LimitReset), rec.RPMLimit, rec.ITPMLimit, rec.OTPMLimit,
+		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt,
+	)
+	return err
 }
 
 // CreateKey generates a cryptographically random API key, hashes it, stores
 // the hash, and returns the raw key (the only time it's available in plaintext).
 func (s *PostgresStore) CreateKey() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("store: generate key: %w", err)
+	raw, _, err := s.CreateAPIKey("", APIKeyCreate{})
+	return raw, err
+}
+
+// CreateKeyForAccount generates a new API key linked to a specific account.
+func (s *PostgresStore) CreateKeyForAccount(accountID string) (string, error) {
+	raw, _, err := s.CreateAPIKey(accountID, APIKeyCreate{})
+	return raw, err
+}
+
+// CreateAPIKey mints a new API key with optional per-key limits.
+func (s *PostgresStore) CreateAPIKey(accountID string, opts APIKeyCreate) (string, *APIKey, error) {
+	raw, err := GenerateRawKey()
+	if err != nil {
+		return "", nil, fmt.Errorf("store: generate key: %w", err)
 	}
-	raw := "eigeninference-" + hex.EncodeToString(b)
-	h := hashKey(raw)
-	prefix := keyPrefix(raw)
+	id, err := GenerateKeyID()
+	if err != nil {
+		return "", nil, fmt.Errorf("store: generate key id: %w", err)
+	}
+	rec := &APIKey{
+		ID:             id,
+		OwnerAccountID: accountID,
+		Name:           opts.Name,
+		Label:          KeyLabel(raw),
+		KeyHash:        hashKey(raw),
+		LimitMicroUSD:  opts.LimitMicroUSD,
+		LimitReset:     NormalizeResetWindow(opts.LimitReset),
+		RPMLimit:       opts.RPMLimit,
+		ITPMLimit:      opts.ITPMLimit,
+		OTPMLimit:      opts.OTPMLimit,
+		AllowedModels:  opts.AllowedModels,
+		ExpiresAt:      opts.ExpiresAt,
+		CreatedAt:      time.Now().UTC(),
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO api_keys (key_hash, raw_prefix) VALUES ($1, $2)`,
-		h, prefix,
-	)
-	if err != nil {
-		return "", fmt.Errorf("store: insert key: %w", err)
+	if err := s.insertAPIKey(ctx, rec, false); err != nil {
+		return "", nil, fmt.Errorf("store: insert key: %w", err)
 	}
-
-	return raw, nil
+	return raw, rec, nil
 }
 
 // SeedKey inserts a specific raw key into the database. This is used for
 // bootstrapping the admin key. If the key already exists, it is a no-op.
 func (s *PostgresStore) SeedKey(rawKey string) error {
-	h := hashKey(rawKey)
-	prefix := keyPrefix(rawKey)
+	id, err := GenerateKeyID()
+	if err != nil {
+		return fmt.Errorf("store: generate key id: %w", err)
+	}
+	rec := &APIKey{
+		ID:         id,
+		Name:       "admin",
+		Label:      KeyLabel(rawKey),
+		KeyHash:    hashKey(rawKey),
+		LimitReset: KeyResetNone,
+		CreatedAt:  time.Now().UTC(),
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO api_keys (key_hash, raw_prefix) VALUES ($1, $2)
-		 ON CONFLICT (key_hash) DO NOTHING`,
-		h, prefix,
-	)
-	if err != nil {
+	if err := s.insertAPIKey(ctx, rec, true); err != nil {
 		return fmt.Errorf("store: seed key: %w", err)
 	}
 	return nil
-}
-
-// CreateKeyForAccount generates a new API key linked to a specific account.
-func (s *PostgresStore) CreateKeyForAccount(accountID string) (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("store: generate key: %w", err)
-	}
-	raw := "eigeninference-" + hex.EncodeToString(b)
-	h := hashKey(raw)
-	prefix := keyPrefix(raw)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO api_keys (key_hash, raw_prefix, owner_account_id) VALUES ($1, $2, $3)`,
-		h, prefix, accountID,
-	)
-	if err != nil {
-		return "", fmt.Errorf("store: insert key: %w", err)
-	}
-	return raw, nil
 }
 
 // GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
@@ -733,7 +848,9 @@ func (s *PostgresStore) GetKeyAccount(key string) string {
 	return accountID
 }
 
-// ValidateKey returns true if the given key exists and is active.
+// ValidateKey returns true if the given key exists, is active, and is not
+// expired. Expiry is enforced here (not just in AuthenticateKey) so callers
+// like telemetry attribution don't treat an expired key as a live account.
 func (s *PostgresStore) ValidateKey(key string) bool {
 	h := hashKey(key)
 
@@ -741,11 +858,15 @@ func (s *PostgresStore) ValidateKey(key string) bool {
 	defer cancel()
 
 	var active bool
+	var expiresAt *time.Time
 	err := s.pool.QueryRow(ctx,
-		`SELECT active FROM api_keys WHERE key_hash = $1`,
+		`SELECT active, expires_at FROM api_keys WHERE key_hash = $1`,
 		h,
-	).Scan(&active)
+	).Scan(&active, &expiresAt)
 	if err != nil {
+		return false
+	}
+	if expiresAt != nil && time.Now().After(*expiresAt) {
 		return false
 	}
 	return active
@@ -768,6 +889,198 @@ func (s *PostgresStore) ValidateKeyFull(key string) (bool, string, error) {
 		return false, "", err
 	}
 	return active, ownerAccountID, nil
+}
+
+// AuthenticateKey resolves a raw key to its active record for request auth.
+func (s *PostgresStore) AuthenticateKey(rawKey string) (*APIKey, error) {
+	h := hashKey(rawKey)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+apiKeyColumns+` FROM api_keys WHERE key_hash = $1`, h)
+	k, err := scanAPIKeyRow(row)
+	if err != nil {
+		return nil, err
+	}
+	if k.Disabled {
+		return nil, fmt.Errorf("key disabled")
+	}
+	if k.ExpiresAt != nil && time.Now().After(*k.ExpiresAt) {
+		return nil, fmt.Errorf("key expired")
+	}
+	return k, nil
+}
+
+// ListAPIKeys returns all keys owned by an account, newest first.
+func (s *PostgresStore) ListAPIKeys(accountID string) ([]APIKey, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+apiKeyColumns+` FROM api_keys WHERE owner_account_id = $1 AND id <> '' ORDER BY created_at DESC`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]APIKey, 0)
+	for rows.Next() {
+		k, err := scanAPIKeyRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *k)
+	}
+	return out, rows.Err()
+}
+
+// GetAPIKeyByID returns a single key by ID, scoped to the owner.
+func (s *PostgresStore) GetAPIKeyByID(accountID, id string) (*APIKey, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+apiKeyColumns+` FROM api_keys WHERE id = $1 AND owner_account_id = $2`, id, accountID)
+	return scanAPIKeyRow(row)
+}
+
+// UpdateAPIKey overwrites mutable fields of a key, scoped to the owner.
+func (s *PostgresStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*APIKey, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE api_keys SET
+			name = $1, active = $2, limit_micro_usd = $3, limit_reset = $4,
+			rpm_limit = $5, itpm_limit = $6, otpm_limit = $7,
+			allowed_models = $8, expires_at = $9
+		 WHERE id = $10 AND owner_account_id = $11`,
+		mutable.Name, !mutable.Disabled, mutable.LimitMicroUSD, NormalizeResetWindow(mutable.LimitReset),
+		mutable.RPMLimit, mutable.ITPMLimit, mutable.OTPMLimit,
+		encodeModelList(mutable.AllowedModels), mutable.ExpiresAt,
+		id, accountID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("key not found")
+	}
+	return s.GetAPIKeyByID(accountID, id)
+}
+
+// RevokeAPIKeyByID permanently deletes a key by ID, scoped to the owner.
+func (s *PostgresStore) RevokeAPIKeyByID(accountID, id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM api_keys WHERE id = $1 AND owner_account_id = $2`, id, accountID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("key not found")
+	}
+	return nil
+}
+
+// RotateAPIKey atomically replaces a key within a transaction (see Store
+// interface). The old key is deleted and the new key inserted in the same tx;
+// a concurrent rotate of the same id finds the row gone and returns not-found.
+func (s *PostgresStore) RotateAPIKey(accountID, id string) (string, *APIKey, error) {
+	raw, err := GenerateRawKey()
+	if err != nil {
+		return "", nil, fmt.Errorf("store: generate key: %w", err)
+	}
+	newID, err := GenerateKeyID()
+	if err != nil {
+		return "", nil, fmt.Errorf("store: generate key id: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("store: begin rotate tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	old, err := scanAPIKeyRow(tx.QueryRow(ctx,
+		`SELECT `+apiKeyColumns+` FROM api_keys WHERE id = $1 AND owner_account_id = $2 FOR UPDATE`, id, accountID))
+	if err != nil {
+		return "", nil, fmt.Errorf("key not found")
+	}
+
+	rec := &APIKey{
+		ID:             newID,
+		OwnerAccountID: accountID,
+		Name:           old.Name,
+		Label:          KeyLabel(raw),
+		KeyHash:        hashKey(raw),
+		Disabled:       old.Disabled,
+		LimitMicroUSD:  old.LimitMicroUSD,
+		LimitReset:     NormalizeResetWindow(old.LimitReset),
+		RPMLimit:       old.RPMLimit,
+		ITPMLimit:      old.ITPMLimit,
+		OTPMLimit:      old.OTPMLimit,
+		AllowedModels:  old.AllowedModels,
+		ExpiresAt:      old.ExpiresAt,
+		CreatedAt:      time.Now().UTC(),
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO api_keys
+			(id, key_hash, raw_prefix, owner_account_id, name, active,
+			 limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
+			 allowed_models, expires_at, created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		rec.ID, rec.KeyHash, rec.Label, rec.OwnerAccountID, rec.Name, !rec.Disabled,
+		rec.LimitMicroUSD, rec.LimitReset, rec.RPMLimit, rec.ITPMLimit, rec.OTPMLimit,
+		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt,
+	); err != nil {
+		return "", nil, fmt.Errorf("store: insert rotated key: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM api_keys WHERE id = $1 AND owner_account_id = $2`, id, accountID); err != nil {
+		return "", nil, fmt.Errorf("store: delete old key: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", nil, fmt.Errorf("store: commit rotate: %w", err)
+	}
+	return raw, rec, nil
+}
+
+// TouchAPIKey records that a key was used at the given time.
+func (s *PostgresStore) TouchAPIKey(id string, at time.Time) {
+	if id == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = s.pool.Exec(ctx, `UPDATE api_keys SET last_used_at = $1 WHERE id = $2`, at.UTC(), id)
+}
+
+// KeySpendSince returns total micro-USD charged to a key since `since` (UTC).
+func (s *PostgresStore) KeySpendSince(keyID string, since time.Time) int64 {
+	if keyID == "" {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var total int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(cost_micro_usd), 0) FROM usage
+		 WHERE key_id = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)`,
+		keyID, nullSince(since),
+	).Scan(&total)
+	if err != nil {
+		return 0
+	}
+	return total
 }
 
 // RevokeKey deactivates a key. Returns true if the key existed and was active.
@@ -842,6 +1155,12 @@ func (s *PostgresStore) RecordUsageWithCost(providerID, consumerKey, model, requ
 // RecordUsageWithCostAndLocation inserts a usage record with request ID, cost,
 // and approximate request-origin location.
 func (s *PostgresStore) RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
+	s.RecordUsageFull(providerID, consumerKey, "", model, requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
+}
+
+// RecordUsageFull inserts a usage record with full attribution including the
+// originating API key ID for per-key usage and spend tracking.
+func (s *PostgresStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
 	h := hashKey(consumerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -849,15 +1168,15 @@ func (s *PostgresStore) RecordUsageWithCostAndLocation(providerID, consumerKey, 
 
 	_, _ = s.pool.Exec(ctx,
 		`WITH ins AS (
-			INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			INSERT INTO usage (provider_id, consumer_key_hash, key_id, model, prompt_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		)
 		UPDATE usage_totals SET
 			total_requests = total_requests + 1,
-			total_prompt_tokens = total_prompt_tokens + $4,
-			total_completion_tokens = total_completion_tokens + $5
+			total_prompt_tokens = total_prompt_tokens + $5,
+			total_completion_tokens = total_completion_tokens + $6
 		WHERE id = 1`,
-		providerID, h, model, promptTokens, completionTokens, requestID, costMicroUSD, marshalProviderLocation(requestLocation),
+		providerID, h, keyID, model, promptTokens, completionTokens, requestID, costMicroUSD, marshalProviderLocation(requestLocation),
 	)
 }
 
@@ -1415,6 +1734,78 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	return nil
 }
 
+// MigrateAccountBalance moves the full balance (and withdrawable subset) from
+// one account ID to another in a single transaction. No-op (false) when the
+// source has no balance row or a zero balance.
+func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
+	if from == "" || to == "" || from == to {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin migrate tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var bal, wdr int64
+	err = tx.QueryRow(ctx,
+		`SELECT balance_micro_usd, withdrawable_micro_usd FROM balances WHERE account_id = $1 FOR UPDATE`, from,
+	).Scan(&bal, &wdr)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: read source balance: %w", err)
+	}
+	if bal == 0 && wdr == 0 {
+		return false, nil
+	}
+
+	// Zero the source and record the outgoing leg.
+	if _, err := tx.Exec(ctx,
+		`UPDATE balances SET balance_micro_usd = 0, withdrawable_micro_usd = 0, updated_at = NOW() WHERE account_id = $1`, from,
+	); err != nil {
+		return false, fmt.Errorf("store: zero source balance: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, 0, 'migrate:out')`,
+		from, string(LedgerMigration), -bal,
+	); err != nil {
+		return false, fmt.Errorf("store: source migration ledger entry: %w", err)
+	}
+
+	// Credit the destination and record the incoming leg.
+	var destBalance int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
+		 VALUES ($1, $2, $3, NOW())
+		 ON CONFLICT (account_id) DO UPDATE SET
+		   balance_micro_usd = balances.balance_micro_usd + $2,
+		   withdrawable_micro_usd = balances.withdrawable_micro_usd + $3,
+		   updated_at = NOW()
+		 RETURNING balance_micro_usd`,
+		to, bal, wdr,
+	).Scan(&destBalance); err != nil {
+		return false, fmt.Errorf("store: credit destination balance: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, $4, 'migrate:in')`,
+		to, string(LedgerMigration), bal, destBalance,
+	); err != nil {
+		return false, fmt.Errorf("store: destination migration ledger entry: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit migrate: %w", err)
+	}
+	return true, nil
+}
+
 // DebitWithdrawable subtracts micro-USD from both the total balance and the
 // withdrawable balance atomically. Returns error if the withdrawable balance
 // is insufficient. This ensures withdrawal debits are symmetric with
@@ -1792,9 +2183,9 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (account_id, privy_user_id, email)
-		 VALUES ($1, $2, $3)`,
-		user.AccountID, user.PrivyUserID, user.Email,
+		`INSERT INTO users (account_id, privy_user_id, email, role, platform_fee_percent)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		user.AccountID, user.PrivyUserID, user.Email, user.Role, user.PlatformFeePercent,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create user: %w", err)
@@ -1802,7 +2193,7 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	return nil
 }
 
-const userSelectColumns = `account_id, privy_user_id, email,
+const userSelectColumns = `account_id, privy_user_id, email, role, platform_fee_percent,
 	stripe_account_id, stripe_account_status, stripe_destination_type,
 	stripe_destination_last4, stripe_instant_eligible, created_at`
 
@@ -1810,7 +2201,7 @@ func scanUser(row interface {
 	Scan(...any) error
 }) (*User, error) {
 	var u User
-	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email,
+	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.Role, &u.PlatformFeePercent,
 		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeDestinationType,
 		&u.StripeDestinationLast4, &u.StripeInstantEligible, &u.CreatedAt); err != nil {
 		return nil, err
@@ -1885,6 +2276,43 @@ func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*User, e
 		return nil, fmt.Errorf("store: user with Stripe account %q not found: %w", stripeAccountID, err)
 	}
 	return u, nil
+}
+
+// SetUserRole sets the account role on a user record.
+func (s *PostgresStore) SetUserRole(accountID, role string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE users SET role = $2 WHERE account_id = $1`,
+		accountID, role,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set user role: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	return nil
+}
+
+// SetUserPlatformFeePercent sets (or clears, when nil) the per-account platform
+// fee override.
+func (s *PostgresStore) SetUserPlatformFeePercent(accountID string, feePercent *int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE users SET platform_fee_percent = $2 WHERE account_id = $1`,
+		accountID, feePercent,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set user platform fee: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	return nil
 }
 
 // GetUserByEmail returns the user for an email address.
@@ -2036,68 +2464,6 @@ func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]St
 		return []StripeWithdrawal{}, nil
 	}
 	return out, nil
-}
-
-// --- Supported Models ---
-
-func (s *PostgresStore) SetSupportedModel(model *SupportedModel) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO supported_models (id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, weight_hash, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-		 ON CONFLICT (id) DO UPDATE SET
-		   s3_name = $2, display_name = $3, model_type = $4, size_gb = $5, architecture = $6,
-		   description = $7, min_ram_gb = $8, active = $9, weight_hash = $10, updated_at = NOW()`,
-		model.ID, model.S3Name, model.DisplayName, model.ModelType, model.SizeGB,
-		model.Architecture, model.Description, model.MinRAMGB, model.Active, model.WeightHash,
-	)
-	if err != nil {
-		return fmt.Errorf("store: set supported model: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) ListSupportedModels() []SupportedModel {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, weight_hash
-		 FROM supported_models ORDER BY model_type ASC, min_ram_gb ASC, size_gb ASC`,
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var models []SupportedModel
-	for rows.Next() {
-		var m SupportedModel
-		if err := rows.Scan(&m.ID, &m.S3Name, &m.DisplayName, &m.ModelType, &m.SizeGB,
-			&m.Architecture, &m.Description, &m.MinRAMGB, &m.Active, &m.WeightHash); err != nil {
-			continue
-		}
-		models = append(models, m)
-	}
-	return models
-}
-
-func (s *PostgresStore) DeleteSupportedModel(modelID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	tag, err := s.pool.Exec(ctx,
-		`DELETE FROM supported_models WHERE id = $1`, modelID,
-	)
-	if err != nil {
-		return fmt.Errorf("store: delete supported model: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("model %q not found", modelID)
-	}
-	return nil
 }
 
 // --- Releases ---

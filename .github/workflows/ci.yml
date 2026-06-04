@@ -41,21 +41,32 @@ jobs:
   test-provider:
     name: Provider Tests
     runs-on: blacksmith-12vcpu-macos-26
-    env:
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: '1'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Run tests
+        with:
+          submodules: recursive
+      - name: Restore SwiftPM cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+            provider-swift/.build
+          key: spm-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          restore-keys: |
+            spm-v1-${{ runner.os }}-
+      - name: Build provider-swift
+        working-directory: provider-swift
+        run: swift build
+      - name: Extract mlx.metallib
         run: |
-          cd provider
-          # Skip proxy and server integration tests — they require SIP enabled
-          # which is not available on GitHub Actions macOS runners.
-          # These tests run locally on real Macs via the pre-push hook.
-          cargo test -- --skip proxy::tests --skip server::tests
-      - name: Check formatting
-        run: cd provider && cargo fmt --check
-      - name: Clippy
-        run: cd provider && cargo clippy
+          python3 -m venv /tmp/mlxvenv
+          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
+          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
+             provider-swift/.build/debug/mlx.metallib
+      - name: Run Swift tests
+        working-directory: provider-swift
+        run: swift test
 
   cache-swift:
     name: Swift Build + Cache

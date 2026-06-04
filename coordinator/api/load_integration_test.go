@@ -481,10 +481,13 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 	defer providerCancel()
 	go runProviderLoop(providerCtx, t, conn, pubKey, "billing")
 
-	// Credit the consumer with $100 (100,000,000 micro-USD).
+	// Credit the consumer with $100 (100,000,000 micro-USD). The bearer token
+	// is the raw "test-key"; the ledger tracks it under the derived non-secret
+	// identity (store.LegacyAccountID) since the key is unlinked.
 	consumerKey := "test-key"
+	consumerID := store.LegacyAccountID(consumerKey)
 	initialBalance := int64(100_000_000)
-	if err := st.Credit(consumerKey, initialBalance, store.LedgerDeposit, ""); err != nil {
+	if err := st.Credit(consumerID, initialBalance, store.LedgerDeposit, ""); err != nil {
 		t.Fatalf("credit consumer: %v", err)
 	}
 
@@ -520,7 +523,7 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 	// Let handleComplete finish processing.
 	time.Sleep(500 * time.Millisecond)
 
-	finalBalance := st.GetBalance(consumerKey)
+	finalBalance := st.GetBalance(consumerID)
 	charged := initialBalance - finalBalance
 
 	t.Logf("billing: initial=$%.2f, final=$%.2f, charged=$%.2f",
@@ -535,7 +538,7 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 	}
 
 	// Verify ledger entries: should have 1 deposit + numRequests charges.
-	ledger := st.LedgerHistory(consumerKey)
+	ledger := st.LedgerHistory(consumerID)
 	chargeCount := 0
 	for _, entry := range ledger {
 		if entry.Type == store.LedgerCharge {

@@ -28,12 +28,11 @@ except ImportError:
 # ── Model aliases ──────────────────────────────────────────────────────────
 
 MODEL_ALIASES = {
-    "qwen":    "qwen3.5-27b-claude-opus-8bit",
-    "qwen3.5": "qwen3.5-27b-claude-opus-8bit",
-    "gemma":   "mlx-community/gemma-4-26b-a4b-it-8bit",
-    "gemma-4": "mlx-community/gemma-4-26b-a4b-it-8bit",
-    "gemma4":  "mlx-community/gemma-4-26b-a4b-it-8bit",
-    "trinity": "mlx-community/Trinity-Mini-8bit",
+    "gemma":   "gemma-4-26b",
+    "gemma-4": "gemma-4-26b",
+    "gemma4":  "gemma-4-26b",
+    "gpt-oss": "gpt-oss-20b",
+    "gptoss":  "gpt-oss-20b",
 }
 
 DEFAULT_PROMPT = "Write a short paragraph about the history of computing. Be concise."
@@ -334,8 +333,8 @@ async def main():
     parser = argparse.ArgumentParser(description="EigenInference escalating load test")
     parser.add_argument("--url", default="https://inference-test.openinnovation.dev/v1/chat/completions",
                         help="Chat completions endpoint")
-    parser.add_argument("--model", default="qwen3.5",
-                        help="Model name or alias (qwen3.5, gemma-4, trinity)")
+    parser.add_argument("--model", default="gemma-4",
+                        help="Model name or alias (gemma-4, gpt-oss)")
     parser.add_argument("--levels", type=int, nargs="+", default=[1, 2, 4, 8],
                         help="Concurrency levels to test (default: 1 2 4 8)")
     parser.add_argument("--requests-per-level", type=int, default=4,

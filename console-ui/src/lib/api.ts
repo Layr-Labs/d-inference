@@ -27,6 +27,14 @@ function proxyHeaders(extra?: Record<string, string>): Record<string, string> {
   };
 }
 
+export interface ModelPricing {
+  prompt: string;
+  completion: string;
+  image?: string;
+  request?: string;
+  input_cache_read?: string;
+}
+
 export interface Model {
   id: string;
   object: string;
@@ -45,6 +53,17 @@ export interface Model {
   architecture?: string;
   family?: string;
   capabilities?: string[];
+  // OpenRouter provider schema fields (from the enriched /v1/models endpoint).
+  name?: string;
+  hugging_face_id?: string;
+  created?: number;
+  description?: string;
+  context_length?: number;
+  pricing?: ModelPricing;
+  input_modalities?: string[];
+  output_modalities?: string[];
+  supported_features?: string[];
+  supported_sampling_parameters?: string[];
 }
 
 export interface BalanceResponse {
@@ -127,6 +146,17 @@ export async function fetchModels(): Promise<Model[]> {
       architecture: m.architecture ?? meta.architecture,
       family: m.family ?? meta.family,
       capabilities: m.capabilities ?? meta.capabilities,
+      // OpenRouter provider schema fields.
+      name: m.name ?? meta.display_name,
+      hugging_face_id: m.hugging_face_id ?? m.id,
+      created: m.created,
+      description: m.description ?? meta.description,
+      context_length: m.context_length ?? m.max_context_length ?? meta.max_context_length,
+      pricing: m.pricing,
+      input_modalities: m.input_modalities,
+      output_modalities: m.output_modalities,
+      supported_features: m.supported_features,
+      supported_sampling_parameters: m.supported_sampling_parameters,
     };
   });
 }
@@ -314,6 +344,124 @@ export function computeStripeFeeUsd(amountUsd: number, method: "standard" | "ins
 export async function healthCheck(): Promise<{ status: string; providers: number }> {
   const res = await fetch("/api/health", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
+  return res.json();
+}
+
+// --- API key management (multi-key) ---
+//
+// These are account-management calls, NOT inference calls. They authenticate
+// with the Privy access token (Authorization: Bearer <token>) and go through
+// the /api/keys proxy routes, which forward to the coordinator's /v1/keys
+// endpoints. They never use the localStorage inference key.
+//
+// Money fields are USD floats. The plaintext secret is returned ONLY by
+// createApiKey / rotateApiKey and never again afterwards.
+
+export type KeyResetWindow = "none" | "daily" | "weekly" | "monthly";
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  label: string; // masked, e.g. "sk-db-1a2b...c3d4"
+  disabled: boolean;
+  limit_usd?: number; // spend cap; omitted if unlimited
+  limit_reset: KeyResetWindow;
+  usage_usd: number; // spend in the current window
+  remaining_usd?: number; // omitted if unlimited
+  rpm_limit?: number;
+  itpm_limit?: number;
+  otpm_limit?: number;
+  allowed_models?: string[]; // empty/omitted = all models
+  expires_at?: string; // RFC3339 UTC
+  created_at: string;
+  last_used_at?: string;
+}
+
+// Create body. Nullable fields are omitted on create; sending an explicit
+// null on update CLEARS the field.
+export interface CreateKeyBody {
+  name?: string;
+  limit_usd?: number | null;
+  limit_reset?: KeyResetWindow;
+  rpm_limit?: number | null;
+  itpm_limit?: number | null;
+  otpm_limit?: number | null;
+  allowed_models?: string[] | null;
+  expires_at?: string | null; // RFC3339
+}
+
+// Update body is any subset of CreateKeyBody plus `disabled`.
+export type UpdateKeyBody = CreateKeyBody & { disabled?: boolean };
+
+// Returned by create + rotate: the once-only plaintext secret plus metadata.
+export interface CreatedKey {
+  key: string; // "sk-db-<secret>" — shown once
+  data: ApiKey;
+}
+
+function managementHeaders(token: string): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+async function keyError(res: Response, fallback: string): Promise<Error> {
+  const data = await res.json().catch(() => null);
+  if (data && typeof data === "object") {
+    const err = (data as Record<string, unknown>).error;
+    if (typeof err === "string" && err) return new Error(err);
+    if (err && typeof err === "object") {
+      const message = (err as Record<string, unknown>).message;
+      if (typeof message === "string" && message) return new Error(message);
+    }
+    const message = (data as Record<string, unknown>).message;
+    if (typeof message === "string" && message) return new Error(message);
+  }
+  return new Error(`${fallback} (${res.status})`);
+}
+
+export async function listApiKeys(token: string): Promise<ApiKey[]> {
+  const res = await fetch("/api/keys", { headers: managementHeaders(token) });
+  if (!res.ok) throw await keyError(res, "Failed to load API keys");
+  const data = await res.json();
+  return Array.isArray(data?.data) ? (data.data as ApiKey[]) : [];
+}
+
+export async function createApiKey(token: string, body: CreateKeyBody): Promise<CreatedKey> {
+  const res = await fetch("/api/keys", {
+    method: "POST",
+    headers: managementHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await keyError(res, "Failed to create API key");
+  return res.json();
+}
+
+export async function updateApiKey(token: string, id: string, body: UpdateKeyBody): Promise<ApiKey> {
+  const res = await fetch(`/api/keys/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: managementHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await keyError(res, "Failed to update API key");
+  return res.json();
+}
+
+export async function deleteApiKey(token: string, id: string): Promise<void> {
+  const res = await fetch(`/api/keys/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: managementHeaders(token),
+  });
+  if (!res.ok) throw await keyError(res, "Failed to revoke API key");
+}
+
+export async function rotateApiKey(token: string, id: string): Promise<CreatedKey> {
+  const res = await fetch(`/api/keys/${encodeURIComponent(id)}/rotate`, {
+    method: "POST",
+    headers: managementHeaders(token),
+  });
+  if (!res.ok) throw await keyError(res, "Failed to rotate API key");
   return res.json();
 }
 

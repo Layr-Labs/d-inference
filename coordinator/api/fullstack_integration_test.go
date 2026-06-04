@@ -13,7 +13,7 @@ package api
 //   - mlx-community/Qwen3.5-0.8B-MLX-4bit downloaded (~0.5GB per instance)
 //   - ~1GB RAM per provider instance
 //
-// Gate: LIVE_FULLSTACK_TEST=1 cargo test (not run in CI)
+// Gate: LIVE_FULLSTACK_TEST=1 (not run in CI)
 //
 //     LIVE_FULLSTACK_TEST=1 go test ./internal/api/ -run TestFullStack -v -timeout=600s
 //
@@ -678,7 +678,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 
 	// --- Test 8: Model not available ---
 	t.Log("--- Test 8: Model not available ---")
-	code, body, _ = consumerRequest(ctx, ts.URL, "test-key", "nonexistent-model-xyz",
+	code, _, _ = consumerRequest(ctx, ts.URL, "test-key", "nonexistent-model-xyz",
 		"hello", true)
 	if code == 200 {
 		t.Error("request for nonexistent model should not succeed")

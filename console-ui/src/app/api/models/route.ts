@@ -17,6 +17,19 @@ function toModelEntry(model: JsonRecord, capacity?: JsonRecord) {
     object: model.object || "model",
     created: model.created || 0,
     owned_by: model.owned_by || "eigeninference",
+    // OpenRouter-shaped top-level fields (present on /v1/models and the
+    // enriched catalog). Passed through so the UI can render them.
+    name: model.name ?? metadata.display_name,
+    hugging_face_id: model.hugging_face_id ?? model.id,
+    description: model.description ?? metadata.description,
+    context_length: model.context_length ?? model.max_context_length ?? metadata.max_context_length,
+    max_output_length: model.max_output_length ?? metadata.max_output_length,
+    quantization: model.quantization ?? metadata.quantization,
+    pricing: model.pricing,
+    input_modalities: model.input_modalities,
+    output_modalities: model.output_modalities,
+    supported_features: model.supported_features,
+    supported_sampling_parameters: model.supported_sampling_parameters,
     metadata: {
       ...metadata,
       model_type: model.model_type ?? metadata.model_type,

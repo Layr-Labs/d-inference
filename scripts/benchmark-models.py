@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """Benchmark script for Darkbloom inference API.
 
-Sends a complex reasoning question to Gemma 4 and Qwen 3.5 in parallel,
+Sends a complex reasoning question to Gemma 4 and GPT-OSS in parallel,
 measures latency and token throughput.
 """
 
 import asyncio
 import time
 import json
+import os
 import aiohttp
 import argparse
 
-BASE_URL = "https://api.darkbloom.dev/v1"
-API_KEY = "eigeninference-e47e7299dc7d798ea1bcd706e0f780cb9a98536c7d2124a067f0e40e2b3b5b44"
+BASE_URL = os.environ.get("DARKBLOOM_BASE_URL", "https://api.darkbloom.dev/v1")
+# Never hardcode credentials. Export DARKBLOOM_API_KEY before running.
+API_KEY = os.environ.get("DARKBLOOM_API_KEY", "")
+if not API_KEY:
+    raise SystemExit("Set DARKBLOOM_API_KEY (e.g. export DARKBLOOM_API_KEY=sk-db-...) before running this benchmark.")
 
 MODELS = [
-    "mlx-community/gemma-4-26b-a4b-it-8bit",
-    "qwen3.5-27b-claude-opus-8bit",
+    "gemma-4-26b",
+    "gpt-oss-20b",
 ]
 
 PROMPT = """\

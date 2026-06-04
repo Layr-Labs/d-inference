@@ -230,4 +230,31 @@ struct BatchSchedulerBudgetTests {
         #expect(!buckets.keys.contains(3),
             "P2: queued-not-admitted bridges must NOT inflate observedBatchSize")
     }
+
+    // MARK: - Billing-zero leak: terminal must not zero observed tokens
+
+    /// Regression for the revenue leak: when the engine's terminal
+    /// `RequestOutput` reports fewer tokens (often 0) than were already observed
+    /// streaming, `recordFinish` must return the MAX of observed-vs-terminal,
+    /// not the terminal value. Pre-fix it overwrote the live count, so a
+    /// completed request settled at (0,0) → coordinator billed $0 and refunded.
+    @Test("recordFinish bills max(observed, terminal) completion tokens")
+    func recordFinishUsesMaxObservedTokens() async {
+        let scheduler = BatchScheduler()
+        await scheduler._testSeedBridge(
+            id: "bill-1", promptTokens: 12, maxTokens: 100, admitted: true)
+
+        // Streaming observed 20 completion tokens (and 12 prompt tokens)...
+        await scheduler.recordProgress(
+            requestId: "bill-1", promptTokens: 12, completionTokens: 20)
+
+        // ...but the terminal output under-reports both as 0 (the bug trigger).
+        let usage = await scheduler.recordFinish(
+            requestId: "bill-1", promptTokens: 0, completionTokens: 0, success: true)
+
+        #expect(usage.completionTokens == 20,
+            "terminal zero must not zero out the 20 observed completion tokens (billing-zero leak)")
+        #expect(usage.promptTokens == 12,
+            "prompt tokens must survive a terminal that under-reports them")
+    }
 }

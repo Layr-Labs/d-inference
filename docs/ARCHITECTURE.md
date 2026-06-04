@@ -20,19 +20,7 @@ Provider CLI (Swift `darkbloom`, hardened in-process)
 Apple Silicon GPU (Metal)
 ```
 
-> The legacy Rust provider (`provider/`) is still in production but will be
-> retired at the Swift cutover.
-
 ## Components
-
-### Provider Agent — legacy Rust (`provider/`)
-
-**Language:** Rust + Python (PyO3) — **legacy, retired at Swift cutover**
-
-The currently-shipping provider. Embeds the Python interpreter via PyO3 to run
-in-process MLX inference (`mlx-lm` / `vllm-mlx`). Same hardening posture as the
-Swift port. Replaced module-for-module by `provider-swift/` once the cutover
-lands.
 
 ### Coordinator (`coordinator/`)
 
@@ -72,11 +60,11 @@ response = client.chat.completions.create(
 )
 ```
 
-### Provider, Swift CLI (`provider-swift/`)
+### Provider Agent (`provider-swift/`)
 
-**Language:** Swift (replaces the Rust provider at cutover)
+**Language:** Swift
 
-CLI-only port of the provider agent. Two binaries:
+CLI provider agent. Two binaries:
 - `darkbloom`: the main provider daemon. Subcommands `serve`, `start`, `stop`,
   `status`, `doctor`, `models`, `login`, `logout`, `benchmark`, `update`, `verify`.
 - `darkbloom-enclave`: stateless Secure Enclave attestation/sign helper (legacy name `eigeninference-enclave` ships as a symlink for backward compatibility)
@@ -253,14 +241,16 @@ User-verifiable attestation API    Working     GET /v1/providers/attestation —
 
 ## Inference
 
-EigenInference runs inference **in-process** — no subprocess architecture. The Python MLX engine is embedded directly in the Rust process via PyO3.
+EigenInference runs inference **in-process** — no subprocess architecture. The
+provider links the MLX inference engine directly via [`mlx-swift-lm`](https://github.com/ml-explore/mlx-swift-lm);
+there is no embedded Python interpreter and no local inference server.
 
 | Backend | Mode | Features |
 |---------|------|----------|
-| **mlx-lm** | In-process (PyO3) | Primary backend, auto-installed if missing |
-| **vllm-mlx** | In-process (PyO3) | Preferred when available — continuous batching, prefix caching |
+| **mlx-swift-lm** | In-process (Swift) | MLX-Swift continuous batching with prefix caching |
 
-There is no subprocess fallback. If the in-process engine cannot initialize, the provider refuses to start and instructs the user to install mlx-lm.
+There is no subprocess fallback. The inference engine is compiled into the
+`darkbloom` binary, so there is no IPC or local server surface to observe.
 
 ## Payments
 

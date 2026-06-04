@@ -52,6 +52,21 @@ const (
 
 	// ChallengeResponseTimeout is how long to wait for a challenge response.
 	ChallengeResponseTimeout = 30 * time.Second
+
+	// MaxConsecutiveChallengeTimeoutsBeforeReconnect is the number of consecutive
+	// transient challenge timeouts (no response within ChallengeResponseTimeout)
+	// after which the coordinator force-closes the provider's WebSocket so it must
+	// reconnect and re-register.
+	//
+	// MarkUntrustedTransient keeps challenging a provider in place so it can
+	// self-recover via a later passing challenge — but that only helps if the
+	// provider can actually send a response. A provider whose outbound path is
+	// wedged keeps heartbeating (so it is never evicted by the stale sweeper)
+	// while failing every challenge, leaving it pinned hardware/untrusted forever.
+	// Cycling the connection forces a clean re-registration, which is the only way
+	// back. Must be > MaxFailedChallenges so a brief blip (sleep/network) still
+	// self-recovers without a disconnect.
+	MaxConsecutiveChallengeTimeoutsBeforeReconnect = 6
 )
 
 // pendingChallenge tracks an outstanding challenge sent to a provider.
@@ -126,6 +141,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	defer func() {
 		loopCancel()
 		s.registry.Disconnect(providerID)
+		s.clearPendingACME(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
 
@@ -382,12 +398,19 @@ func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, 
 	provider.ACMEVerified = true
 	provider.Mu().Unlock()
 
+	// Stash the result so retryACMETrust can re-run this on the first passing
+	// challenge. At registration the attestation challenge/response has not yet
+	// completed, so AttestationResult is nil and the two binding checks below
+	// fail purely on ordering — without a retry the provider would stay
+	// self_signed forever despite presenting a valid device cert.
+	s.stashPendingACME(providerID, acmeResult)
+
 	if !providerHasBoundEncryptionAttestation(provider) {
-		s.logger.Warn("ACME client cert verified but X25519 key was not bound by attestation",
+		// Expected before the first challenge completes; logged at debug so it
+		// doesn't look like a failure. The retry path resolves it.
+		s.logger.Debug("ACME cert verified but attestation not yet bound — will retry after challenge",
 			"provider_id", providerID,
 			"acme_serial", acmeResult.SerialNumber,
-			"acme_issuer", acmeResult.Issuer,
-			"acme_key_alg", acmeResult.PublicKeyAlg,
 		)
 		return
 	}
@@ -403,12 +426,42 @@ func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, 
 
 	provider.SetAttested(true, registry.TrustHardware)
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "ACME device attestation verified")
+	s.clearPendingACME(providerID)
 	s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
 		"provider_id", providerID,
 		"acme_serial", acmeResult.SerialNumber,
 		"acme_issuer", acmeResult.Issuer,
 		"acme_key_alg", acmeResult.PublicKeyAlg,
 	)
+}
+
+// stashPendingACME records the connect-time ACME result for later retry.
+func (s *Server) stashPendingACME(providerID string, acmeResult *ACMEVerificationResult) {
+	s.pendingACMEMu.Lock()
+	s.pendingACME[providerID] = acmeResult
+	s.pendingACMEMu.Unlock()
+}
+
+// clearPendingACME drops a stashed ACME result (after a successful upgrade or
+// on disconnect).
+func (s *Server) clearPendingACME(providerID string) {
+	s.pendingACMEMu.Lock()
+	delete(s.pendingACME, providerID)
+	s.pendingACMEMu.Unlock()
+}
+
+// retryACMETrust re-applies a stashed ACME result. Called from the
+// challenge-success path so a provider whose device cert was presented at
+// connect — but whose attestation had not yet bound — gets upgraded to
+// hardware once the binding completes. Mirrors the MDM re-verification retry.
+func (s *Server) retryACMETrust(providerID string, provider *registry.Provider) {
+	s.pendingACMEMu.Lock()
+	acmeResult := s.pendingACME[providerID]
+	s.pendingACMEMu.Unlock()
+	if acmeResult == nil {
+		return
+	}
+	s.applyACMETrust(providerID, provider, acmeResult)
 }
 
 func providerHasBoundEncryptionAttestation(provider *registry.Provider) bool {
@@ -484,10 +537,10 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			provider.Mu().Lock()
-			untrusted := provider.Status == registry.StatusUntrusted
-			provider.Mu().Unlock()
-			if untrusted {
+			// Stop only for a hard (non-recoverable) untrust. A transiently
+			// untrusted provider (missed-challenge timeouts) keeps being
+			// challenged so a later passing challenge can restore it.
+			if provider.ChallengeShouldStop() {
 				return
 			}
 			s.sendChallenge(ctx, conn, providerID, provider, tracker)
@@ -555,13 +608,13 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 		tracker.remove(nonce)
 		if resp == nil {
 			// Channel closed without response
-			s.handleChallengeFailure(providerID, "no response")
+			s.handleTransientChallengeFailure(conn, providerID, "no response")
 			return
 		}
 		s.verifyChallengeResponse(providerID, provider, pc, resp)
 	case <-time.After(timeout):
 		tracker.remove(nonce)
-		s.handleChallengeFailure(providerID, "timeout")
+		s.handleTransientChallengeFailure(conn, providerID, "timeout")
 	}
 }
 
@@ -667,9 +720,36 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				"provider_id", providerID,
 			)
 		default:
+			// Instrumentation for the non-recovering status-sig lockout seen on
+			// a couple of nodes (cause unconfirmed). Because the plain challenge
+			// signature already verified above (we returned on its failure),
+			// reaching here isolates the status-sig / canonical path: log
+			// plain_sig_passed plus the Go canonical bytes and per-field lengths
+			// so a field-presence or canonicalization mismatch is diagnosable
+			// from logs alone, without shipping a new build to the affected box.
+			canonical, cerr := attestation.BuildStatusCanonical(statusInput)
+			canonicalB64 := ""
+			if cerr == nil {
+				canonicalB64 = base64.StdEncoding.EncodeToString(canonical)
+			}
+			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_failed"})
+			if s.metrics != nil {
+				s.metrics.IncCounter("attestation_status_sig_failed_total")
+			}
 			s.logger.Error("status signature verification failed — possible tampering or canonical mismatch",
 				"provider_id", providerID,
 				"error", err,
+				"plain_sig_passed", true,
+				"go_canonical_b64", canonicalB64,
+				"go_canonical_len", len(canonical),
+				"canonical_build_err", cerr,
+				"status_sig_len", len(resp.StatusSignature),
+				"binary_hash_len", len(resp.BinaryHash),
+				"active_model_hash_len", len(resp.ActiveModelHash),
+				"python_hash_len", len(resp.PythonHash),
+				"runtime_hash_len", len(resp.RuntimeHash),
+				"template_hashes_count", len(resp.TemplateHashes),
+				"model_hashes_count", len(resp.ModelHashes),
 			)
 			s.handleChallengeFailure(providerID, "status signature verification failed: "+err.Error())
 			return
@@ -912,7 +992,17 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.Mu().Unlock()
 
 	// Challenge passed.
-	s.registry.RecordChallengeSuccess(providerID)
+	recovered := s.registry.RecordChallengeSuccess(providerID)
+	if recovered {
+		// The provider was transiently untrusted and is now back online. It was
+		// last told "untrusted" (handleChallengeFailure) and scheduled a 10-min
+		// diagnostic auto-report; push a fresh "online" trust_status so it clears
+		// that local state and cancels the report.
+		provider.Mu().Lock()
+		trustLevel := provider.TrustLevel
+		provider.Mu().Unlock()
+		s.sendTrustStatus(provider, trustLevel, "online", "recovered after transient deroute")
+	}
 	s.ddIncr("attestation.challenges", []string{"outcome:passed"})
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,
@@ -947,11 +1037,48 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			s.verifyProviderViaMDM(providerID, provider, result)
 		})
 	}
+
+	// Re-attempt ACME (mTLS device-cert) trust for self_signed providers.
+	// applyACMETrust ran at registration before attestation was bound, so a
+	// provider that presented a valid device cert can be promoted to hardware
+	// now that the challenge has passed. No-op if nothing was stashed.
+	if trustLevel == registry.TrustSelfSigned {
+		s.retryACMETrust(providerID, provider)
+	}
+}
+
+// handleTransientChallengeFailure records a transient challenge failure
+// (timeout / no response) and, once a provider has missed too many consecutive
+// challenges, force-closes its WebSocket so it must reconnect and re-register.
+//
+// A provider whose outbound path is wedged keeps heartbeating (so the stale
+// sweeper never evicts it) while every challenge times out, pinning it
+// hardware/untrusted forever. MarkUntrustedTransient alone cannot recover it
+// because recovery requires a passing challenge, which requires a working
+// outbound path. Cycling the connection forces a clean re-registration.
+func (s *Server) handleTransientChallengeFailure(conn *websocket.Conn, providerID, reason string) {
+	failures := s.handleChallengeFailure(providerID, reason)
+	if conn == nil || failures < MaxConsecutiveChallengeTimeoutsBeforeReconnect {
+		return
+	}
+	s.logger.Warn("provider exceeded consecutive challenge timeouts — forcing reconnect",
+		"provider_id", providerID,
+		"consecutive_failures", failures,
+		"reason", reason,
+	)
+	s.ddIncr("attestation.force_reconnect", []string{"reason:" + reason})
+	if s.metrics != nil {
+		s.metrics.IncCounter("attestation_force_reconnect_total", MetricLabel{"reason", reason})
+	}
+	// Closing the conn unblocks providerReadLoop's conn.Read, which cancels the
+	// loop context (stopping this challenge loop) and runs registry.Disconnect.
+	_ = conn.Close(websocket.StatusPolicyViolation, "attestation unresponsive — reconnect required")
 }
 
 // handleChallengeFailure records a failed challenge and marks the provider
-// as untrusted if the failure threshold is reached.
-func (s *Server) handleChallengeFailure(providerID string, reason string) {
+// as untrusted if the failure threshold is reached. It returns the running
+// count of consecutive failures.
+func (s *Server) handleChallengeFailure(providerID string, reason string) int {
 	transient := reason == "timeout" || reason == "no response"
 	failures := s.registry.RecordChallengeFailure(providerID, transient)
 	s.ddIncr("attestation.challenges", []string{"outcome:failed"})
@@ -964,7 +1091,14 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) {
 	severity := protocol.SeverityWarn
 	if failures >= registry.MaxFailedChallenges {
 		severity = protocol.SeverityError
-		s.registry.MarkUntrusted(providerID)
+		if transient {
+			// Missed-challenge timeouts (sleep / network blip) are recoverable:
+			// keep challenging and let a later passing challenge restore the
+			// provider without requiring a reconnect.
+			s.registry.MarkUntrustedTransient(providerID)
+		} else {
+			s.registry.MarkUntrusted(providerID)
+		}
 		if p := s.registry.GetProvider(providerID); p != nil {
 			s.sendTrustStatus(p, p.TrustLevel, string(registry.StatusUntrusted), reason)
 		}
@@ -982,6 +1116,7 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) {
 		)
 	}
 	s.ddIncr("attestation.failures", []string{"reason:" + reason})
+	return failures
 }
 
 func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg *protocol.InferenceResponseChunkMessage) {
@@ -1089,25 +1224,62 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
 
+	// Billing-zero observability: a COMPLETED request that reports zero tokens
+	// is billed $0 (and fully refunded). The provider-side fix (EngineBridge
+	// max + content-frame floor) should prevent this, but emit a metric so any
+	// residual leak is visible on the dashboard rather than silent.
+	if msg.Usage.CompletionTokens == 0 {
+		s.ddIncr("billing.zero_usage_complete", []string{"model:" + pr.Model})
+		s.logger.Warn("completed request reported zero completion tokens — billed $0",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"model", pr.Model,
+			"prompt_tokens", msg.Usage.PromptTokens,
+		)
+	}
+
 	// Record job success and usage BEFORE closing ChunkCh. Closing
 	// ChunkCh unblocks the consumer response handler, and callers may
 	// check usage immediately after the HTTP response completes.
 	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
 	s.registry.RecordJobSuccess(providerID, responseTime)
 
-	// Calculate cost — check provider's custom price, then platform DB price,
-	// then hardcoded defaults.
+	// Resolve the consumer once: platform-fee override (nil = global default)
+	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
+	// failed lookup (raw API-key account with no user row) falls back to
+	// defaults. Service accounts run on a 0% fee.
+	var feePercent *int64
+	isServiceConsumer := false
+	if u, err := s.store.GetUserByAccountID(pr.ConsumerKey); err == nil && u != nil {
+		feePercent = u.PlatformFeePercent
+		isServiceConsumer = u.Role == store.RoleService
+	}
+
+	// Calculate cost. Direct consumers: provider custom price, then platform DB
+	// price, then hardcoded defaults, with the per-request minimum applied.
+	// Service/wholesale traffic is billed at the advertised platform price
+	// (never a provider's higher custom price) and is exempt from the minimum,
+	// so the debit matches the published per-token OpenRouter feed exactly.
 	providerAccountForPricing := ""
 	if p := s.registry.GetProvider(providerID); p != nil {
 		providerAccountForPricing = providerPricingKeys(p)
 	}
-	customIn, customOut, hasCustom := s.store.GetModelPrice(providerAccountForPricing, pr.Model)
+	var customIn, customOut int64
+	var hasCustom bool
+	if !isServiceConsumer {
+		customIn, customOut, hasCustom = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
+	}
 	if !hasCustom {
 		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
 	}
-	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	var totalCost int64
+	if isServiceConsumer {
+		totalCost = payments.CalculateCostWithOverridesNoMinimum(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	} else {
+		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	}
 
-	providerPayout := payments.ProviderPayout(totalCost)
+	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
 	billingFinalized := true
 
 	// Settle billing against the pre-flight reservation. All balance
@@ -1175,7 +1347,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				pr.ReservedMicroUSD = totalCost
 			}
 			// Recompute payout after potential clamp.
-			providerPayout = payments.ProviderPayout(totalCost)
+			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
 		} else if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
 			start := time.Now()
@@ -1214,9 +1386,10 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		})
 
 		// Persist usage to DB asynchronously — billing has already been
-		// settled above, so this INSERT is not on the critical path.
+		// settled above, so this INSERT is not on the critical path. KeyID
+		// carries per-key usage/spend attribution (empty for legacy callers).
 		saferun.Go(s.logger, "recordUsage", func() {
-			s.store.RecordUsageWithCostAndLocation(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
+			s.store.RecordUsageFull(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 		})
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
@@ -1232,7 +1405,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		}
 
 		// Compute platform fee (needs referral lookup before spawning goroutines).
-		platformFee := payments.PlatformFee(totalCost)
+		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
 		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
 			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
 		}

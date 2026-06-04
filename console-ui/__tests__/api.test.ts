@@ -7,6 +7,11 @@ import {
   fetchModels,
   fetchPricing,
   healthCheck,
+  listApiKeys,
+  createApiKey,
+  updateApiKey,
+  deleteApiKey,
+  rotateApiKey,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -239,6 +244,45 @@ describe("fetchModels", () => {
     expect(result[0].min_ram_gb).toBe(24);
   });
 
+  it("surfaces OpenRouter provider fields (pricing, modalities, features)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      data: [
+        {
+          id: "mlx-community/Qwen3.5-9B-MLX-4bit",
+          object: "model",
+          name: "Qwen3.5 9B",
+          hugging_face_id: "mlx-community/Qwen3.5-9B-MLX-4bit",
+          created: 1735689600,
+          description: "Balanced general-purpose model.",
+          context_length: 262144,
+          quantization: "int4",
+          pricing: { prompt: "0.00000005", completion: "0.0000002", image: "0", request: "0", input_cache_read: "0" },
+          input_modalities: ["text"],
+          output_modalities: ["text"],
+          supported_features: ["tools", "reasoning"],
+          supported_sampling_parameters: ["temperature", "top_p", "max_tokens"],
+          metadata: {},
+        },
+      ],
+    }));
+
+    const result = await fetchModels();
+
+    expect(result).toHaveLength(1);
+    const m = result[0];
+    expect(m.name).toBe("Qwen3.5 9B");
+    expect(m.hugging_face_id).toBe("mlx-community/Qwen3.5-9B-MLX-4bit");
+    expect(m.created).toBe(1735689600);
+    expect(m.description).toBe("Balanced general-purpose model.");
+    expect(m.context_length).toBe(262144);
+    expect(m.pricing?.prompt).toBe("0.00000005");
+    expect(m.pricing?.completion).toBe("0.0000002");
+    expect(m.input_modalities).toEqual(["text"]);
+    expect(m.output_modalities).toEqual(["text"]);
+    expect(m.supported_features).toEqual(["tools", "reasoning"]);
+    expect(m.supported_sampling_parameters).toContain("temperature");
+  });
+
   it("throws on non-ok response", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 503));
     await expect(fetchModels()).rejects.toThrow("Failed to fetch models: 503");
@@ -280,6 +324,97 @@ describe("healthCheck", () => {
   it("throws on non-ok response", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
     await expect(healthCheck()).rejects.toThrow("Health check failed: 500");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// API key management client (Privy-authenticated, /api/keys proxy)
+// ---------------------------------------------------------------------------
+
+describe("API key management client", () => {
+  it("listApiKeys GETs /api/keys with a Bearer token and unwraps data", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ object: "list", data: [{ id: "key_1", name: "prod" }] })
+    );
+
+    const result = await listApiKeys("privy-tok");
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys");
+    expect(opts.headers.Authorization).toBe("Bearer privy-tok");
+    expect(opts.headers["x-api-key"]).toBeUndefined();
+    expect(result).toEqual([{ id: "key_1", name: "prod" }]);
+  });
+
+  it("listApiKeys throws the server error message on failure", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: "forbidden" } }, 403));
+    await expect(listApiKeys("t")).rejects.toThrow("forbidden");
+  });
+
+  it("createApiKey POSTs the body and returns the once-only secret", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ key: "sk-db-x", data: { id: "key_2" } }));
+
+    const result = await createApiKey("t", {
+      name: "prod",
+      limit_usd: 10,
+      limit_reset: "monthly",
+    });
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys");
+    expect(opts.method).toBe("POST");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+    expect(JSON.parse(opts.body)).toEqual({
+      name: "prod",
+      limit_usd: 10,
+      limit_reset: "monthly",
+    });
+    expect(result.key).toBe("sk-db-x");
+    expect(result.data.id).toBe("key_2");
+  });
+
+  it("updateApiKey PATCHes /api/keys/{id} and forwards null to clear a field", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: "key_2", disabled: true }));
+
+    await updateApiKey("t", "key_2", { disabled: true, limit_usd: null });
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys/key_2");
+    expect(opts.method).toBe("PATCH");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+    expect(JSON.parse(opts.body)).toEqual({ disabled: true, limit_usd: null });
+  });
+
+  it("deleteApiKey DELETEs /api/keys/{id}", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
+
+    await deleteApiKey("t", "key_2");
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys/key_2");
+    expect(opts.method).toBe("DELETE");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+  });
+
+  it("rotateApiKey POSTs /api/keys/{id}/rotate and returns the new secret", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ key: "sk-db-rot", data: { id: "key_2" } }));
+
+    const result = await rotateApiKey("t", "key_2");
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys/key_2/rotate");
+    expect(opts.method).toBe("POST");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+    expect(result.key).toBe("sk-db-rot");
+  });
+
+  it("URL-encodes the key id in management routes", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
+
+    await deleteApiKey("t", "key/with space");
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/keys/key%2Fwith%20space");
   });
 });
 

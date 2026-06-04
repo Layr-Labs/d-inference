@@ -39,6 +39,12 @@ func (s failingCreditStore) Credit(accountID string, amountMicroUSD int64, entry
 
 // billingTestServer creates a test server with billing enabled in mock mode.
 // Returns the server, underlying store, and ledger for assertion access.
+// testConsumerID is the ledger identity the coordinator now derives for the
+// unlinked "test-key" bearer (see store.LegacyAccountID). Requests still send
+// the raw "test-key" token; balances and usage are tracked under this hashed,
+// non-secret identity so the raw key never reaches the ledger or logs.
+var testConsumerID = store.LegacyAccountID("test-key")
+
 func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Ledger) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -59,7 +65,7 @@ func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Led
 	// Credit the default test consumer ("test-key") with $100 so
 	// the pre-flight balance check passes. Tests that need zero
 	// balance should use a different consumer key.
-	_ = st.Credit("test-key", 100_000_000, store.LedgerDeposit, "test-setup")
+	_ = st.Credit(testConsumerID, 100_000_000, store.LedgerDeposit, "test-setup")
 
 	return srv, st, ledger
 }
@@ -244,7 +250,7 @@ func TestIntegration_ConsumerBillingCharge(t *testing.T) {
 	defer cancel()
 
 	// The consumer ("test-key") was pre-credited with $100 by billingTestServer.
-	consumerID := "test-key"
+	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
 	if initialBalance <= 0 {
 		t.Fatalf("initial balance = %d, want > 0", initialBalance)
@@ -357,7 +363,9 @@ func TestIntegration_StreamingReservationBlocksExploit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	consumerID := "exploit-key"
+	// The bearer token is the raw "exploit-key"; the ledger tracks it under the
+	// derived non-secret identity (the key is unlinked).
+	consumerID := store.LegacyAccountID("exploit-key")
 
 	// Seed the consumer with 1000 μUSD ($0.001) — well above the old
 	// MinimumCharge of 100 μUSD but below the reservation required for a
@@ -379,7 +387,7 @@ func TestIntegration_StreamingReservationBlocksExploit(t *testing.T) {
 	// must reject at the pre-flight reservation stage.
 	chatBody := `{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":8192}`
 	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(chatBody))
-	httpReq.Header.Set("Authorization", "Bearer "+consumerID)
+	httpReq.Header.Set("Authorization", "Bearer exploit-key")
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		t.Fatalf("http request: %v", err)
@@ -419,7 +427,7 @@ func TestIntegration_ReservationRefundedOnCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	consumerID := "test-key"
+	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
 
 	model := "refund-test-model"
@@ -431,7 +439,7 @@ func TestIntegration_ReservationRefundedOnCompletion(t *testing.T) {
 	usage := protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 10}
 	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
 
-	status := sendInferenceRequest(t, ctx, ts.URL, model, consumerID)
+	status := sendInferenceRequest(t, ctx, ts.URL, model, "test-key")
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200", status)
 	}
@@ -460,7 +468,7 @@ func TestIntegration_ReservationRefundedOnCommittedProviderError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	consumerID := "test-key"
+	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
 
 	model := "refund-error-model"
@@ -470,7 +478,7 @@ func TestIntegration_ReservationRefundedOnCommittedProviderError(t *testing.T) {
 
 	chatBody := `{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":8192}`
 	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(chatBody))
-	httpReq.Header.Set("Authorization", "Bearer "+consumerID)
+	httpReq.Header.Set("Authorization", "Bearer test-key")
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -542,7 +550,7 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	consumerID := "test-key"
+	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
 
 	model := "provider-custom-price-model"
@@ -568,7 +576,7 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
 
-	status := sendInferenceRequest(t, ctx, ts.URL, model, consumerID)
+	status := sendInferenceRequest(t, ctx, ts.URL, model, "test-key")
 	if status != http.StatusOK {
 		t.Fatalf("inference status = %d, want 200", status)
 	}
@@ -605,13 +613,11 @@ func TestIntegration_BillingAllowsProviderWithoutPayoutDestination(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	consumerID := "test-key"
-
 	model := "no-payout-destination-model"
 	conn, _, _ := setupProviderForBillingNoPayoutDestination(t, ctx, ts, srv.registry, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	status := sendInferenceRequest(t, ctx, ts.URL, model, consumerID)
+	status := sendInferenceRequest(t, ctx, ts.URL, model, "test-key")
 	// Should NOT be 503 — providers without payout destination are allowed.
 	if status == http.StatusServiceUnavailable {
 		t.Fatalf("inference status = 503, providers without payout destination should be allowed")
@@ -621,7 +627,7 @@ func TestIntegration_BillingAllowsProviderWithoutPayoutDestination(t *testing.T)
 func TestNonStreamingCompleteObjectWithoutUsageDoesNotReturnSuccessAfterRefund(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
 
-	consumerID := "test-key"
+	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
 	const reservedMicroUSD int64 = 25_000
 	if err := ledger.Charge(consumerID, reservedMicroUSD, "reserve:"+consumerID); err != nil {
@@ -677,7 +683,7 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 	expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
 	expectedPayout := payments.ProviderPayout(expectedCost)
 
-	consumerID := "test-key"
+	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
 	if err := ledger.Charge(consumerID, expectedCost, "reserve:"+consumerID); err != nil {
 		t.Fatalf("reserve balance: %v", err)
@@ -741,7 +747,7 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 
 	// Set up the referral chain.
 	referrerAccountID := "referrer-account"
-	consumerID := "test-key" // API key = consumer identity
+	consumerID := testConsumerID // API key = consumer identity
 
 	// Register a referral code for the referrer.
 	referralSvc := srv.billing.Referral()
@@ -791,10 +797,10 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 
 	// Calculate expected amounts.
 	totalCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
-	expectedProviderPayout := payments.ProviderPayout(totalCost) // 95%
-	expectedPlatformFee := payments.PlatformFee(totalCost)       // 5%
+	expectedProviderPayout := payments.ProviderPayout(totalCost) // provider payout at the default fee
+	expectedPlatformFee := payments.PlatformFee(totalCost)       // platform fee at the default rate (0% during alpha)
 
-	// Referral share is 20% of the platform fee.
+	// Referral share is a percentage of the platform fee (0 while the fee is 0).
 	referralShare := expectedPlatformFee * referralSvc.SharePercent() / 100
 	expectedPlatformAfterReferral := expectedPlatformFee - referralShare
 
@@ -805,17 +811,17 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 		t.Errorf("consumer balance = %d, want %d (charged %d)", actualConsumerBalance, expectedConsumerBalance, totalCost)
 	}
 
-	// Verify provider got 95% of the charge credited to their account.
+	// Verify the provider got their payout credited to their account.
 	// setupProviderForBilling links the provider to an account via test-account-<id>.
 	if got := st.GetBalance(providerAccountID); got != expectedProviderPayout {
-		t.Errorf("provider account balance = %d, want %d (95%% of totalCost %d)",
+		t.Errorf("provider account balance = %d, want %d (payout of totalCost %d)",
 			got, expectedProviderPayout, totalCost)
 	}
 
 	// Verify referrer got their share.
 	referrerBalance := st.GetBalance(referrerAccountID)
 	if referrerBalance != referralShare {
-		t.Errorf("referrer balance = %d, want %d (20%% of platform fee %d)", referrerBalance, referralShare, expectedPlatformFee)
+		t.Errorf("referrer balance = %d, want %d (share of platform fee %d)", referrerBalance, referralShare, expectedPlatformFee)
 	}
 
 	// Verify platform got the remaining platform fee (after referral deduction).
@@ -1148,7 +1154,7 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 	// Reservation is deliberately lower than actual cost to trigger overage.
 	reservedAmount := actualCost / 2
 
-	consumerID := "test-key"
+	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
 	if err := ledger.Charge(consumerID, reservedAmount, "reserve:"+consumerID); err != nil {
 		t.Fatalf("reserve balance: %v", err)

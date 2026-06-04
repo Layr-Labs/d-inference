@@ -14,7 +14,6 @@ RUN chmod +x /usr/local/bin/coordinator
 
 RUN mkdir -p /var/www/html/dl
 
-COPY coordinator/deploy/Apple_Enterprise_Attestation_Root_CA.pem /opt/step-ca-seed/Apple_Enterprise_Attestation_Root_CA.pem
 COPY coordinator/deploy/acme-device.tpl /opt/step-ca-seed/acme-device.tpl
 
 COPY coordinator/Caddyfile /Caddyfile

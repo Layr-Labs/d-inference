@@ -1,0 +1,13 @@
+# Prompt-size cold-vs-warm TTFT sweep — hybrid checkpoint KV cache, Gemma-4 26B-A4B 8bit, M5 Max (128GB).
+# HybridCheckpointBenchLiveTests/gemma4FullPromptSizeSweep, commit 61fbdeb8, one model load.
+# cold = full prefill of a distinct prompt; warm = 2nd-use checkpoint restore + short suffix.
+# Size-aware sample counts (n=8 at 256 ... n=1 at 100k). TTFT in milliseconds.
+prompt_tokens,cold_ms,warm_ms,speedup,n
+256,157,76,2.06,8
+1024,314,78,3.99,5
+4096,1611,80,19.93,3
+16384,6820,90,75.61,3
+32768,16984,118,142.89,2
+65536,40470,389,103.97,1
+100000,75693,392,192.82,1
+# Cold rises super-linearly (O(n^2) attention); warm stays ~flat (restore + suffix only).

@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="400" viewBox="0 0 680 400" font-family="-apple-system, Helvetica, Arial, sans-serif">
+  <rect width="680" height="400" fill="#ffffff"/>
+  <text x="30" y="30" font-size="17" font-weight="700" fill="#1a1a1a">TTFT by prompt size: cold vs cached restore — Gemma-4 26B (M5 Max)</text>
+  <text x="30" y="49" font-size="11" fill="#666">cold full prefill vs 2nd-use checkpoint restore · log scale · real M5 data · commit 61fbdeb8</text>
+
+  <!-- y gridlines (log10 ms: 10ms..100s) -->
+  <g font-size="10" fill="#999">
+    <line x1="90" y1="320" x2="560" y2="320" stroke="#eee"/><text x="48" y="324">10 ms</text>
+    <line x1="90" y1="255" x2="560" y2="255" stroke="#eee"/><text x="44" y="259">100 ms</text>
+    <line x1="90" y1="190" x2="560" y2="190" stroke="#eee"/><text x="62" y="194">1 s</text>
+    <line x1="90" y1="125" x2="560" y2="125" stroke="#eee"/><text x="58" y="129">10 s</text>
+    <line x1="90" y1="60" x2="560" y2="60" stroke="#eee"/><text x="54" y="64">100 s</text>
+  </g>
+  <line x1="90" y1="60" x2="90" y2="320" stroke="#999"/>
+  <line x1="90" y1="320" x2="560" y2="320" stroke="#999"/>
+  <text x="22" y="190" font-size="11" fill="#666" transform="rotate(-90 22 190)" text-anchor="middle">TTFT (log scale)</text>
+  <text x="325" y="360" font-size="11" fill="#666" text-anchor="middle">shared-prefix length (tokens)</text>
+
+  <!-- x ticks -->
+  <g font-size="10" fill="#999" text-anchor="middle">
+    <text x="90" y="336">256</text><text x="168.3" y="336">1k</text><text x="246.7" y="336">4k</text>
+    <text x="325" y="336">16k</text><text x="403.3" y="336">32k</text><text x="481.7" y="336">64k</text>
+    <text x="560" y="336">100k</text>
+  </g>
+
+  <!-- shaded gap = prefill avoided by reuse -->
+  <polygon points="90,242.3 168.3,222.7 246.7,176.5 325,135.8 403.3,110 481.7,85.5 560,67.9 560,216.4 481.7,216.7 403.3,250.3 325,258 246.7,261.3 168.3,262 90,262.7"
+           fill="#3d9970" opacity="0.09"/>
+
+  <!-- COLD line -->
+  <polyline points="90,242.3 168.3,222.7 246.7,176.5 325,135.8 403.3,110 481.7,85.5 560,67.9"
+            fill="none" stroke="#c0392b" stroke-width="2.5"/>
+  <g fill="#c0392b">
+    <circle cx="90" cy="242.3" r="3.3"/><circle cx="168.3" cy="222.7" r="3.3"/><circle cx="246.7" cy="176.5" r="3.3"/>
+    <circle cx="325" cy="135.8" r="3.3"/><circle cx="403.3" cy="110" r="3.3"/><circle cx="481.7" cy="85.5" r="3.3"/>
+    <circle cx="560" cy="67.9" r="3.3"/>
+  </g>
+  <g font-size="9" fill="#c0392b" font-weight="600" text-anchor="middle">
+    <text x="90" y="235">157ms</text><text x="168.3" y="215">314ms</text><text x="246.7" y="169">1.6s</text>
+    <text x="325" y="128">6.8s</text><text x="403.3" y="103">17s</text><text x="475" y="78">40s</text>
+    <text x="556" y="60" text-anchor="end">76s</text>
+  </g>
+  <text x="300" y="150" font-size="11" font-weight="700" fill="#c0392b">cold (full prefill) — O(n²)</text>
+
+  <!-- WARM line -->
+  <polyline points="90,262.7 168.3,262 246.7,261.3 325,258 403.3,250.3 481.7,216.7 560,216.4"
+            fill="none" stroke="#2e7d52" stroke-width="2.5"/>
+  <g fill="#2e7d52">
+    <circle cx="90" cy="262.7" r="3.3"/><circle cx="168.3" cy="262" r="3.3"/><circle cx="246.7" cy="261.3" r="3.3"/>
+    <circle cx="325" cy="258" r="3.3"/><circle cx="403.3" cy="250.3" r="3.3"/><circle cx="481.7" cy="216.7" r="3.3"/>
+    <circle cx="560" cy="216.4" r="3.3"/>
+  </g>
+  <g font-size="9" fill="#2e7d52" font-weight="600" text-anchor="middle">
+    <text x="90" y="276">76ms</text><text x="403.3" y="264">118ms</text>
+    <text x="481.7" y="230">389ms</text><text x="560" y="230">392ms</text>
+  </g>
+  <text x="150" y="288" font-size="11" font-weight="700" fill="#2e7d52">warm (cached restore + suffix) — ~flat</text>
+
+  <!-- speedup callouts under x -->
+  <g font-size="9" fill="#777" text-anchor="middle">
+    <text x="90" y="349">2.1×</text><text x="168.3" y="349">4.0×</text><text x="246.7" y="349">20×</text>
+    <text x="325" y="349">76×</text><text x="403.3" y="349">143×</text><text x="481.7" y="349">104×</text>
+    <text x="560" y="349">193×</text>
+  </g>
+
+  <text x="90" y="384" font-size="9" fill="#aaa">Source: HybridCheckpointBenchLiveTests/gemma4FullPromptSizeSweep — M5 Max (128GB), real gemma-4-26b-a4b-it-8bit. Speedup = cold/warm.</text>
+</svg>

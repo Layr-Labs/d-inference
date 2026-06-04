@@ -70,34 +70,45 @@ import Testing
 // MARK: - ModelFitDiagnostic
 
 @Test func modelFitFailsWhenTooLarge() {
-    let d = ModelFitDiagnostic.diagnose(modelID: "big", weightGb: 19.0, usableGb: 21.0)
-    // needs 19*2=38 > 21 → fail
+    // New gate (ModelLoadAdmission): required = weights + 2 GB headroom.
+    // 25 GB weights needs 27 GB > 21 usable → fail.
+    let d = ModelFitDiagnostic.diagnose(modelID: "big", weightGb: 25.0, usableGb: 21.0)
     #expect(d.level == .fail)
-    #expect(d.message.contains("38"))
+    #expect(d.message.contains("27"))
 }
 
 @Test func modelFitPassesWhenItFits() {
+    // 5 GB weights needs 5 + 2 = 7 GB ≤ 21 usable → pass.
     let d = ModelFitDiagnostic.diagnose(modelID: "small", weightGb: 5.0, usableGb: 21.0)
     #expect(d.level == .pass)
 }
 
 @Test func usableInferenceGbMatchesProviderAccounting() {
-    // (total − reserve − gpuActive − cache) × 0.7. Must match
-    // ProviderLoop.availableMemoryGb() so doctor and the provider agree.
-    // 32 GB box, 4 GB reserve, idle: (32 − 4) × 0.7 = 19.6.
-    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4) - 19.6) < 0.001)
-    // With 5 GB GPU active: (32 − 4 − 5) × 0.7 = 16.1.
-    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, gpuActiveGb: 5) - 16.1) < 0.001)
+    // Delegates to ModelLoadAdmission.freeForLoadGb. Must match
+    // ProviderLoop.availableMemoryGb(): real free minus reserve, NO 0.7 discount.
+    // 32 GB box, 4 GB reserve, idle, OS-available unknown: 32 − 4 = 28.
+    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4) - 28.0) < 0.01)
+    // With 5 GB GPU active: 32 − 5 − 4 = 23.
+    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, gpuActiveGb: 5) - 23.0) < 0.01)
+    // Clamped to live OS-available memory when that is the tighter bound:
+    // 32 GB box but OS reports only 10 GB available → 10 − 4 = 6.
+    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, systemAvailableGb: 10) - 6.0) < 0.01)
     // Never negative.
     #expect(ModelFitDiagnostic.usableInferenceGb(totalGb: 8, reserveGb: 16) == 0)
 }
 
-@Test func modelFitUsesProviderUsableMemoryNotRawAvailable() {
-    // Regression for the review finding: a 9 GB-weight model (needs 18 GB) on a
-    // 24 GB box must FAIL — usable is (24−4)×0.7 = 14 GB, NOT the raw 20 GB.
-    let usable = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4)
-    let d = ModelFitDiagnostic.diagnose(modelID: "mid", weightGb: 9.0, usableGb: usable)
-    #expect(d.level == .fail, "must reflect the provider's 0.7 gate, not total−reserve")
+@Test func modelFitMatchesRuntimeGateNotRawAvailable() {
+    // Headline parity with #273's runtime gate: gpt-oss (~13.5 GB weights, so
+    // needs 15.5 GB) on a 24 GB box with the OS reporting ~20 GB free FITS —
+    // usable 20 − 4 = 16 ≥ 15.5 — matching ProviderLoop, which now loads it.
+    let usable = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4, systemAvailableGb: 20)
+    let ok = ModelFitDiagnostic.diagnose(modelID: "gpt-oss", weightGb: 13.5, usableGb: usable)
+    #expect(ok.level == .pass, "doctor must agree with the runtime gate that gpt-oss fits 24 GB")
+    // But a genuinely over-capacity case (OS only 12 GB free) must FAIL, not
+    // mislead the operator: usable 12 − 4 = 8 < 15.5.
+    let tight = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4, systemAvailableGb: 12)
+    let bad = ModelFitDiagnostic.diagnose(modelID: "gpt-oss", weightGb: 13.5, usableGb: tight)
+    #expect(bad.level == .fail)
 }
 
 @Test func modelFitSuggestsFittingAlternatives() {
@@ -105,6 +116,7 @@ import Testing
         ModelFitDiagnostic.ModelOption(id: "small", weightGb: 5.0),
         ModelFitDiagnostic.ModelOption(id: "huge", weightGb: 40.0),
     ]
+    // huge needs 42 > 21 → fail; small needs 7 ≤ 21 → suggested.
     let d = ModelFitDiagnostic.diagnose(modelID: "huge", weightGb: 40.0, usableGb: 21.0, alternatives: alts)
     #expect(d.level == .fail)
     #expect(d.fix?.contains("small") == true)

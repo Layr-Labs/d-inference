@@ -70,9 +70,16 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public struct Capacity: Codable, Sendable, Equatable {
         public var totalMemoryGb: Double
         public var gpuMemoryActiveGb: Double
-        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double) {
+        /// Live MLX GPU cache (buffer pool) memory. Optional for backward
+        /// compatibility with state files written before this field existed; the
+        /// model-fit diagnostic subtracts it so `doctor` exactly mirrors
+        /// `ProviderLoop.availableMemoryGb()` even when the OS-available reading
+        /// is unavailable.
+        public var gpuMemoryCacheGb: Double?
+        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil) {
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
+            self.gpuMemoryCacheGb = gpuMemoryCacheGb
         }
     }
 

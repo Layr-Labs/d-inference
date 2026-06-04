@@ -1096,7 +1096,10 @@ public actor ProviderLoop {
                 usageGaps: stats.usageGaps
             ),
             capacity: cap.map {
-                DaemonState.Capacity(totalMemoryGb: $0.totalMemoryGb, gpuMemoryActiveGb: $0.gpuMemoryActiveGb)
+                DaemonState.Capacity(
+                    totalMemoryGb: $0.totalMemoryGb,
+                    gpuMemoryActiveGb: $0.gpuMemoryActiveGb,
+                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
             },
             lastModelLoadError: lastModelLoadError
         )

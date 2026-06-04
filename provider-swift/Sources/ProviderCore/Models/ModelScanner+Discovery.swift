@@ -28,8 +28,37 @@ extension ModelScanner {
         return scanModels(in: cacheDir, availableMemoryGB: hardwareInfo.memoryAvailableGb)
     }
 
+    /// Scan for ALL locally cached MLX models WITHOUT the available-memory
+    /// filter. Diagnostics (`darkbloom doctor`) need this: when the configured
+    /// model is too large for this box, `scanModels` drops it, which would make
+    /// doctor diagnose some other (fitting) model instead of flagging the one
+    /// the operator actually configured and that will never load.
+    public static func scanAllModels(hardwareInfo: HardwareInfo) -> [ModelInfo] {
+        guard let cacheDir = defaultCacheDirectory(),
+              FileManager.default.fileExists(atPath: cacheDir.path) else {
+            discoveryLogger.debug("HuggingFace cache directory not found")
+            return []
+        }
+        return scanAllModels(in: cacheDir)
+    }
+
     /// Scan for models in a specific cache directory, filtering by available memory.
     public static func scanModels(in cacheDir: URL, availableMemoryGB: UInt64) -> [ModelInfo] {
+        scanAllModels(in: cacheDir).filter { info in
+            if info.estimatedMemoryGb <= Double(availableMemoryGB) {
+                return true
+            }
+            discoveryLogger.debug(
+                "Skipping \(info.id) — needs \(String(format: "%.1f", info.estimatedMemoryGb)) GB but only \(availableMemoryGB) GB available"
+            )
+            return false
+        }
+    }
+
+    /// Scan for every MLX model in a cache directory, unfiltered. The shared
+    /// discovery core for both the memory-filtered `scanModels(in:availableMemoryGB:)`
+    /// and the diagnostics path.
+    public static func scanAllModels(in cacheDir: URL) -> [ModelInfo] {
         let fm = FileManager.default
         let entries: [URL]
         do {
@@ -65,13 +94,7 @@ extension ModelScanner {
                 continue
             }
 
-            if info.estimatedMemoryGb <= Double(availableMemoryGB) {
-                models.append(info)
-            } else {
-                discoveryLogger.debug(
-                    "Skipping \(info.id) — needs \(String(format: "%.1f", info.estimatedMemoryGb)) GB but only \(availableMemoryGB) GB available"
-                )
-            }
+            models.append(info)
         }
 
         // Sort by estimated memory ascending (smallest models first)

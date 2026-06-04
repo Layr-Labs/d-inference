@@ -14,6 +14,9 @@ enum DoctorRunner {
         let now = Date().timeIntervalSince1970
         let state = DaemonStateFile.read()
         let daemonUp = state.map { daemonProcessAlive(pid: $0.pid) } ?? false
+        // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
+        // its live fields (trust level, current model, capacity) are trustworthy.
+        let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
 
         // ---- Attestation key (local, no daemon needed) ----
         let se = SEKeySelfTest.run()
@@ -37,8 +40,13 @@ enum DoctorRunner {
                                   message: "the provider daemon isn't running, so live trust status is unavailable.",
                                   fix: "run `darkbloom start`, then `darkbloom doctor`."))
         }
-        // Enrollment hint (local).
-        if !checkMDMEnrolled() {
+        // Enrollment hint (local) — but skip it when the coordinator already
+        // grants this provider hardware trust (e.g. via ACME device attestation,
+        // which needs no MDM profile). Nagging an already-hardware-trusted box to
+        // enroll in MDM is a false warning that sends the operator down the wrong
+        // flow and contradicts the trust line printed just above.
+        let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
+        if !alreadyHardwareTrusted && !checkMDMEnrolled() {
             out.append(Diagnostic(section: .trust, name: "mdm enrollment", level: .warn,
                                   message: "this Mac is not enrolled in MDM — hardware trust can't be granted, so you won't receive traffic on a hardware-trust network.",
                                   fix: "run `darkbloom enroll` and approve the profile in System Settings → Profiles, then wait ~5 min."))
@@ -46,25 +54,45 @@ enum DoctorRunner {
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
         if let hw = snapshot.hardware {
-            // Use the SAME accounting the provider enforces at load time
-            // (total − reserve − GPU − cache) × 0.7, not the raw available RAM —
+            // Mirror the provider's REAL load gate via ModelFitDiagnostic →
+            // ModelLoadAdmission: clamp to live OS-available memory and subtract
+            // the OS reserve + resident MLX memory, not raw total−reserve —
             // otherwise doctor reports "fits" for a model the provider refuses.
-            // When the daemon is up, subtract its live GPU-active memory.
-            let gpuActiveGb = (daemonUp ? state?.capacity?.gpuMemoryActiveGb : nil) ?? 0
+            // When the daemon is up and fresh, subtract its live GPU-active
+            // memory too (the min() inside ModelLoadAdmission keeps it conservative
+            // without double-counting against the OS-available figure).
+            let gpuActiveGb = (stateFresh ? state?.capacity?.gpuMemoryActiveGb : nil) ?? 0
+            let gpuCacheGb = (stateFresh ? state?.capacity?.gpuMemoryCacheGb : nil) ?? 0
+            let bytesPerGb = 1024.0 * 1024.0 * 1024.0
+            let systemAvailableGb = SystemMemory.availableBytes().map { Double($0) / bytesPerGb }
             let usableGb = ModelFitDiagnostic.usableInferenceGb(
                 totalGb: Double(hw.memoryGb),
                 reserveGb: Double(snapshot.config.provider.memoryReserveGB),
-                gpuActiveGb: gpuActiveGb)
-            let targetID = state?.currentModel ?? snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first
-            let alternatives = snapshot.models.map {
+                systemAvailableGb: systemAvailableGb,
+                gpuActiveGb: gpuActiveGb,
+                gpuCacheGb: gpuCacheGb)
+
+            // Prefer the live loaded model ONLY when the daemon is up and fresh;
+            // otherwise diagnose the CONFIGURED model. A stale state file (daemon
+            // stopped/crashed, then provider.toml changed to a larger model)
+            // would otherwise check last session's model and miss the new misfit.
+            let liveModel = stateFresh ? state?.currentModel : nil
+            let targetID = liveModel ?? snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first
+
+            // Use the UNFILTERED model list: ModelScanner.scanModels drops models
+            // too large for this box, so a too-large CONFIGURED model would be
+            // absent and doctor would silently diagnose a different (fitting) one
+            // instead of flagging the one that will never load.
+            let allModels = ModelScanner.scanAllModels(hardwareInfo: hw)
+            let alternatives = allModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
-            if let targetID, let target = snapshot.models.first(where: { $0.id == targetID }) {
+            if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,
                     usableGb: usableGb, alternatives: alternatives))
             } else if !alternatives.isEmpty {
-                // No specific target; check the largest local model fits.
+                // No specific/known target; check the largest local model fits.
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {
                     out.append(ModelFitDiagnostic.diagnose(
                         modelID: biggest.id, weightGb: biggest.weightGb,
@@ -103,6 +131,14 @@ enum DoctorRunner {
         }
 
         // ---- Version (coordinator) ----
+        // NOTE: `minimum` is nil for now — VersionDiagnostic supports a hard
+        // below-minimum FAIL, but the coordinator only exposes
+        // min_provider_version on Privy-authenticated /v1/me endpoints, which
+        // this device-token CLI can't call. Surfacing it needs a device-authed
+        // source (a new endpoint or a trust_status/registration field) — tracked
+        // as a follow-up. Below-min providers are still flagged indirectly: the
+        // coordinator marks them RuntimeVerified=false and the trust section
+        // above reports the resulting "not earning" state.
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
         switch await updater.checkForUpdate() {
         case .updateAvailable(let current, let latest):

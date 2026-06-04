@@ -157,11 +157,28 @@ public enum EncryptedKVStore {
     /// process KILL (SIGKILL/OOM/power-loss) between createFile and rename
     /// leaves a `.tmp-<UUID>` orphan with no sweep. Call once at cache
     /// setup so they can't accumulate across crashes. Never throws.
+    /// CODEX-R2 MEDIUM: recurse ONE level into subdirectories. The engine tier
+    /// writes flat (`kv/<modelKey>/<hash>.tmp-…`) but the checkpoint tier nests
+    /// under a model-hash subdir (`kv/<modelKey>/<modelHash[:12]>/<digest>.tmp-…`)
+    /// — a non-recursive sweep of the modelKey dir would leave nested multi-GB
+    /// temp blobs behind (invisible to collectKVFiles, leaking outside the
+    /// global budget).
     static func sweepStaleTempFiles(in dir: URL) {
         let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
-        for name in names where name.contains(".\(tempInfix)") {
-            try? fm.removeItem(at: dir.appendingPathComponent(name))
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: []
+        ) else { return }
+        for url in entries {
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDir {
+                if let nested = try? fm.contentsOfDirectory(atPath: url.path) {
+                    for name in nested where name.contains(".\(tempInfix)") {
+                        try? fm.removeItem(at: url.appendingPathComponent(name))
+                    }
+                }
+            } else if url.lastPathComponent.contains(".\(tempInfix)") {
+                try? fm.removeItem(at: url)
+            }
         }
     }
 

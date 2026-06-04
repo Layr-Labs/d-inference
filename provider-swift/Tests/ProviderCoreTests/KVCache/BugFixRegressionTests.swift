@@ -542,3 +542,81 @@ func codexMedium_globalDiskCeilingFromEnv() {
     #expect(BatchScheduler.prefixCacheGlobalDiskCeiling() == 0,
         "unset ⇒ 0 (accountant derives from free disk)")
 }
+
+// MARK: - Codex round-2 fixes
+
+@Test
+func codexR2High2_engineEvictionReconcilesAccountant() async {
+    // CODEX-R2 HIGH-2 regression: engine-tier evictForGlobalBudget must push
+    // post-eviction usage to the accountant (publishUsageNow). Without it, the
+    // accountant's runningTotals stay stale (pre-eviction) and it keeps
+    // re-selecting already-deleted ghosts. After a forced engine eviction, the
+    // accountant's recorded usage must match the REAL surviving on-disk bytes.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let modelKey = "engine1"
+    let dir = kvRoot.appendingPathComponent(modelKey, isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+    // Measure one block's on-disk size, then set a ceiling that forces eviction
+    // of some-but-not-all blocks (so surviving bytes are nonzero).
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 30, freeBytes: { _ in 1 << 40 })
+    let binding = PrefixCacheModelBinding(
+        modelHash: "sha256:eng", modelDtype: "float32", modelArch: "Llama",
+        vocabSize: 1000, numLayers: 1, kvHeads: 2, headDim: 4)
+    let p = EncryptedPrefixCachePersistence(
+        kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding,
+        accountant: accountant, modelKey: modelKey)
+    _ = await accountant.register(modelKey: modelKey, owner: p)
+    // Write 4 blocks.
+    for i in 0..<4 {
+        p.saveBlock(blockHash: Data("blk-\(i)".utf8), layerCaches: engineBlock(layers: 1, tokens: 256))
+    }
+    func diskBytes() -> Int {
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.filter { $0.pathExtension == EncryptedKVStore.fileExtension }
+            .reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+    let beforeBytes = diskBytes()
+    #expect(beforeBytes > 0)
+
+    // Directly signal an eviction of ~half the bytes.
+    let freed = await p.evictForGlobalBudget(targetBytesToFree: beforeBytes / 2)
+    #expect(freed > 0, "some bytes must be evicted")
+    // publishUsageNow (inside evictForGlobalBudget) is awaited, so the
+    // accountant is already reconciled.
+    let recorded = await accountant._usageForTest(modelKey: modelKey) ?? -1
+    let actual = diskBytes()
+    #expect(actual > 0, "some blocks must survive (ceiling forces partial eviction)")
+    #expect(recorded == actual,
+        "CODEX-R2-HIGH-2: after engine eviction, accountant usage (\(recorded)) must match real on-disk bytes (\(actual)) — engine tier must publishUsageNow")
+}
+
+@Test
+func codexR2Medium_recursiveTempSweep() throws {
+    // CODEX-R2 MEDIUM regression: sweepStaleTempFiles must recurse into the
+    // checkpoint tier's nested <modelHash[:12]> subdir, not just the flat top.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let modelDir = kvRoot.appendingPathComponent("modelkey12", isDirectory: true)
+    let nested = modelDir.appendingPathComponent("abcdef012345", isDirectory: true)
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+
+    let ext = EncryptedKVStore.fileExtension
+    let infix = EncryptedKVStore.tempInfix
+    // A flat temp (engine layout) + a nested temp (checkpoint layout) + a real
+    // committed file that must SURVIVE.
+    let flatTemp = modelDir.appendingPathComponent("blk.\(ext).\(infix)-AAA")
+    let nestedTemp = nested.appendingPathComponent("dig.\(ext).\(infix)-BBB")
+    let realFile = nested.appendingPathComponent("keep.\(ext)")
+    try Data([1]).write(to: flatTemp)
+    try Data([2]).write(to: nestedTemp)
+    try Data([3]).write(to: realFile)
+
+    EncryptedKVStore.sweepStaleTempFiles(in: modelDir)
+
+    #expect(!FileManager.default.fileExists(atPath: flatTemp.path), "flat temp must be swept")
+    #expect(!FileManager.default.fileExists(atPath: nestedTemp.path),
+        "CODEX-R2-MEDIUM: NESTED temp must be swept (recursive)")
+    #expect(FileManager.default.fileExists(atPath: realFile.path), "committed file must survive")
+}

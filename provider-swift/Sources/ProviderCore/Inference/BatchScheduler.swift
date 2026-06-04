@@ -219,9 +219,22 @@ public actor BatchScheduler {
             // global total over ceiling) would see this live, mid-reconcile dir
             // as UNOWNED and direct-delete its files. Claiming first makes tick
             // skip it. Usage is published AFTER reconcile (reconciled footprint).
+            // claimAccountantRegistration is internally guarded: if this load was
+            // superseded (stopCurrentEngine ran during the await → manager closed),
+            // it deregisters the just-claimed token rather than registering a dead
+            // manager (CODEX-R2 HIGH-1).
             await mgr.claimAccountantRegistration()
             await mgr.reconcileWithDisk()
             await mgr.publishUsageToAccountant()
+        }
+        // CODEX-R2 HIGH-1: re-check epoch after the checkpoint setup awaits. If a
+        // newer load/unload superseded us, bail (the manager already deregistered
+        // itself via the closed-guard above; nil it so we don't serve stale).
+        guard loadEpoch == generationEpoch else {
+            self.engine = nil; self.checkpointManager = nil
+            self.checkpointBoundaries = []; self.engineTierOwner = nil
+            await engine.stop()
+            return
         }
 
         // BUG-1-FIX: register the engine-tier owner with the accountant.
@@ -231,7 +244,17 @@ public actor BatchScheduler {
             let token = await accountant.register(
                 modelKey: owner.modelKey,  // need to expose modelKey on the owner
                 owner: owner)
-            engineTierAccountantToken = token
+            // CODEX-R2 HIGH-1: if this load was superseded during register's
+            // await, undo the registration so we don't leave a stale engine owner.
+            if loadEpoch != generationEpoch {
+                await accountant.deregister(token)
+            } else {
+                engineTierAccountantToken = token
+                // MEDIUM-FIX (reload-undercount): publish the pre-existing flat
+                // files NOW so they count against the global budget immediately,
+                // not only once a later saveBlock crosses the debounce.
+                await owner.publishUsageNow()
+            }
         }
 
         applyPostLoadBudgets(snapshot: snapshot)
@@ -708,9 +731,16 @@ public actor BatchScheduler {
     static func prefixCacheGlobalDiskCeiling() -> Int {
         guard let gb = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]
             .flatMap(Double.init), gb > 0, gb.isFinite, gb < gbToBytesCeiling
-        else { return 0 }  // 0 ⇒ accountant derives from free disk
+        else { return 0 }
         return Int(gb * 1_073_741_824)
     }
+    // CODEX-R2 LOW: under the global accountant, DISK_GB semantics differ from
+    // the legacy per-model parser: `0` (or unset / non-numeric) means "derive a
+    // cap from live free disk" (min(10GiB, free/2)), NOT "unlimited". An
+    // unlimited GLOBAL cache would defeat the accountant's purpose (fill the
+    // volume), so there is intentionally no unbounded mode here; an operator who
+    // wants effectively-unbounded sets a very large explicit value. Documented
+    // in docs/ssd-kv-cache.md §11.
 
     /// Best-effort free capacity (bytes) of the volume containing `url`.
     /// Prefers the "important usage" figure Apple recommends for storage

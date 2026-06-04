@@ -222,34 +222,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         sweepLock.unlock()
         guard trigger else { return }
 
-        // Scan the flat dir for .darkbloom-kv files, sum bytes, build mtime-LRU summary.
-        let fm = FileManager.default
-        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
-        guard let entries = try? fm.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
-        ) else { return }
-
-        var total = 0
-        var summary: [EntryValue] = []
-        let suffix = ".\(EncryptedKVStore.fileExtension)"
-        let nowEpoch = Int64(Date().timeIntervalSince1970)
-        for u in entries where u.lastPathComponent.hasSuffix(suffix) {
-            let name = u.lastPathComponent
-            let digestHex = String(name.dropLast(suffix.count))
-            let v = try? u.resourceValues(forKeys: Set(keys))
-            let size = v?.fileSize ?? 0
-            total += size
-            // Degraded mtime-LRU score (older = lower, mirroring tick).
-            let mtime = v?.contentModificationDate?.timeIntervalSince1970 ?? 0
-            let age = Double(nowEpoch) - mtime
-            let score = size > 0 ? (1.0 / max(1.0, age)) / Double(size) : 0.0
-            // BUG-1/3-FIX: engine-tier entries use fileURL=nil (the accountant
-            // will reconstruct from digestHex for the owned flat layout).
-            summary.append(EntryValue(
-                modelKey: modelKey, digestHex: digestHex, fileBytes: size, score: score, fileURL: nil
-            ))
-        }
-
+        let (total, summary) = buildUsageSnapshot()
         // Fire-and-forget push (saveBlock is synchronous on the engine step loop).
         Task.detached { [accountant, modelKey, total, summary] in
             await accountant.updateUsage(modelKey: modelKey, totalBytes: total, valueSummary: summary)
@@ -258,6 +231,53 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         sweepLock.lock()
         bytesSincePush = 0
         sweepLock.unlock()
+    }
+
+    /// Scan the flat dir for `.darkbloom-kv` files → (totalBytes, mtime-LRU
+    /// value summary). Shared by the debounced saveBlock push and the immediate
+    /// post-eviction / post-registration publish.
+    private func buildUsageSnapshot() -> (Int, [EntryValue]) {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
+        ) else { return (0, []) }
+        var total = 0
+        var summary: [EntryValue] = []
+        let suffix = ".\(EncryptedKVStore.fileExtension)"
+        let nowEpoch = Int64(Date().timeIntervalSince1970)
+        for u in entries where u.lastPathComponent.hasSuffix(suffix) {
+            let digestHex = String(u.lastPathComponent.dropLast(suffix.count))
+            let v = try? u.resourceValues(forKeys: Set(keys))
+            let size = v?.fileSize ?? 0
+            total += size
+            let mtime = v?.contentModificationDate?.timeIntervalSince1970 ?? 0
+            let age = Double(nowEpoch) - mtime
+            let score = size > 0 ? (1.0 / max(1.0, age)) / Double(size) : 0.0
+            summary.append(EntryValue(
+                modelKey: modelKey, digestHex: digestHex, fileBytes: size, score: score, fileURL: nil))
+        }
+        return (total, summary)
+    }
+
+    /// Push CURRENT usage to the accountant immediately (no debounce). Called
+    /// after a global-budget eviction (HIGH-2: so runningTotals/valueSummaries
+    /// reflect the post-eviction state — otherwise the accountant keeps
+    /// re-selecting already-deleted ghosts and cascades the dir to empty) and
+    /// right after registration (MEDIUM: so a reloaded model's pre-existing flat
+    /// files are accounted immediately, not invisible until a saveBlock crosses
+    /// the debounce).
+    public func publishUsageNow() async {
+        guard let accountant else { return }
+        let (total, summary) = buildUsageSnapshot()
+        resetBytesSincePush()
+        await accountant.updateUsage(modelKey: modelKey, totalBytes: total, valueSummary: summary)
+    }
+
+    /// Reset the debounce counter under the lock (sync — NSLock can't be held
+    /// across an await, so callers in async contexts call this before/after).
+    private func resetBytesSincePush() {
+        sweepLock.lock(); bytesSincePush = 0; sweepLock.unlock()
     }
 
     /// Evict oldest `.darkbloom-kv` files (by modification time) until the
@@ -318,6 +338,14 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
             if (try? fm.removeItem(at: f.url)) != nil { freed += f.size }
         }
 
+        // HIGH-2-FIX: reconcile the accountant with the post-eviction state.
+        // The accountant (since the round-1 double-subtract fix) recomputes
+        // globalTotal() after signaling and relies on the owner having refreshed
+        // its runningTotals/valueSummaries. The checkpoint tier does this via
+        // notifyAccountant(); the engine tier MUST too, or its stale summary
+        // makes the accountant re-select already-deleted ghosts and cascade the
+        // whole dir to empty (then stay phantom-over-budget).
+        if freed > 0 { await publishUsageNow() }
         logger.info("engine prefix cache evicted for global budget: freed \(freed) (target \(targetBytesToFree))")
         return freed
     }

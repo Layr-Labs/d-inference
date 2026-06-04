@@ -618,8 +618,10 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         // Apply the budget to the reconciled set, then persist.
         enforceDiskBudget(index: index, cacheDir: cacheDir)
         flushIndexNow()
-        // Phase 3: notify the accountant after reconcile (byte-changing op).
-        Task { await notifyAccountant() }
+        // CODEX-R2 MEDIUM: no stale unstructured notify here. loadModel calls
+        // publishUsageToAccountant() explicitly right after reconcile (and only
+        // when not superseded), so a detached Task that could fire post-unload
+        // is both unnecessary and a hazard.
     }
 
     /// TB-016 sub-feature B: persist a single digest from RAM to SSD.
@@ -813,7 +815,10 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// Dropping the pre-registration push is safe: registerWithAccountant does
     /// the initial usage push itself, right after registration.
     private func notifyAccountant() async {
-        guard let accountant, let index, accountantToken != nil else { return }
+        // CODEX-R2 MEDIUM: also guard on !closed — a stale unstructured notify
+        // Task (e.g. from reconcileWithDisk) could otherwise re-add this model's
+        // runningTotals/valueSummaries after deregistration.
+        guard let accountant, let index, accountantToken != nil, !closed else { return }
         let totalBytes = index.bytes(modelHash: binding.modelHash)
         let valueSummary = buildValueSummary()
         await accountant.updateUsage(modelKey: modelKey, totalBytes: totalBytes, valueSummary: valueSummary)
@@ -829,8 +834,18 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// live-delete. Claiming first makes tick skip the dir. No usage is pushed
     /// here (reconcile hasn't run); call publishUsageToAccountant() after.
     public func claimAccountantRegistration() async {
-        guard let accountant, accountantToken == nil else { return }
-        accountantToken = await accountant.register(modelKey: modelKey, owner: self)
+        guard let accountant, accountantToken == nil, !closed else { return }
+        let token = await accountant.register(modelKey: modelKey, owner: self)
+        // CODEX-R2 HIGH-1: if deregisterFromAccountant() ran DURING the register
+        // await, it saw accountantToken == nil and returned without deregistering
+        // — leaving a dead (closed) manager registered. Detect that here and undo
+        // the registration so the accountant never holds a closed owner (whose
+        // evictForGlobalBudget returns 0 while tick treats the dir as "owned").
+        if closed {
+            await accountant.deregister(token)
+        } else {
+            accountantToken = token
+        }
     }
 
     /// Push the post-reconcile usage to the accountant (call AFTER reconcile +

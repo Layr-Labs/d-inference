@@ -175,6 +175,25 @@ struct HybridCheckpointLiveTests {
             modelID: "mlx-community/gemma-4-26b-a4b-it-8bit", checkpointL: 4096)
     }
 
+    // PAST-WINDOW equivalence for GPT-OSS — the proof that gates whether the
+    // past-window ladder lift can be enabled for GPT-OSS too (today
+    // PrefixCachePastWindow.isProven is Gemma-only, a conservative default —
+    // GPT-OSS was never *disproven*, just never run). GPT-OSS's mechanism is
+    // identical to Gemma's: full-attention layers (KVCacheSimple) keep ALL
+    // tokens; sliding layers (RotatingKVCache, window 128) keep their wrapped
+    // ring buffer. If serialize→restore→continue is bit-exact for L > 128, the
+    // lift is sound for GPT-OSS and isProven can include it. L = 256 and 512
+    // are 2× and 4× the 128 window (ring buffer wrapped).
+    @Test(.enabled(if:
+        LiveInferenceFixtures.liveTestsEnabled
+            && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GPTOSS"] != nil))
+    func gptOssRestoreMatchesColdPastWindow() async throws {
+        try await assertRestoreMatchesCold(
+            modelID: "mlx-community/gpt-oss-20b-MXFP4-Q8", checkpointL: 256)
+        try await assertRestoreMatchesCold(
+            modelID: "mlx-community/gpt-oss-20b-MXFP4-Q8", checkpointL: 512)
+    }
+
     /// FULL ENCRYPTED-SSD PATH: prefill prefix → real PrefixCacheManager
     /// store → flushToSSD (writes encrypted file) → DROP the manager → FRESH
     /// manager + reconcileWithDisk → lookup (reads SSD, decrypts, per-layer

@@ -213,10 +213,15 @@ public actor BatchScheduler {
         // vanished. Safe here: no requests admitted yet, so no concurrent
         // flush/lookup races the reconcile.
         if let mgr = checkpointManager {
+            // Phase 3 (HIGH-FIX): CLAIM accountant ownership BEFORE reconcile.
+            // reconcileWithDisk mutates this model's files/index; if we registered
+            // only after, a concurrent accountant tick (another model pushed the
+            // global total over ceiling) would see this live, mid-reconcile dir
+            // as UNOWNED and direct-delete its files. Claiming first makes tick
+            // skip it. Usage is published AFTER reconcile (reconciled footprint).
+            await mgr.claimAccountantRegistration()
             await mgr.reconcileWithDisk()
-            // Phase 3: register with the global disk accountant after reconcile
-            // (so the accountant sees the reconciled bytes on first push).
-            await mgr.registerWithAccountant()
+            await mgr.publishUsageToAccountant()
         }
 
         // BUG-1-FIX: register the engine-tier owner with the accountant.
@@ -689,6 +694,22 @@ public actor BatchScheduler {
         }
         guard let free = freeBytes else { return defaultDiskBudgetBytes }
         return max(1, min(defaultDiskBudgetBytes, free / 2))
+    }
+
+    /// GLOBAL disk ceiling (bytes) for the GlobalDiskAccountant, parsed from
+    /// `DARKBLOOM_PREFIX_CACHE_DISK_GB`. Returns the explicit byte cap when the
+    /// operator set a positive value, else 0 = "derive from live free disk"
+    /// (the accountant uses min(10GiB, free/2) and re-evaluates each tick).
+    ///
+    /// MEDIUM-FIX: previously the env var was parsed only into the per-model
+    /// backing's diskBudgetBytes, which is forced to 0 when the accountant is
+    /// active — so an operator-set global cap was silently ignored. The
+    /// accountant is the sole authority now, so the env cap must reach IT.
+    static func prefixCacheGlobalDiskCeiling() -> Int {
+        guard let gb = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]
+            .flatMap(Double.init), gb > 0, gb.isFinite, gb < gbToBytesCeiling
+        else { return 0 }  // 0 ⇒ accountant derives from free disk
+        return Int(gb * 1_073_741_824)
     }
 
     /// Best-effort free capacity (bytes) of the volume containing `url`.

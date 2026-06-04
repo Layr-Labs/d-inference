@@ -268,11 +268,16 @@ public actor GlobalDiskAccountant {
         for (modelKey, entries) in chosen {
             let bytesForModel = entries.reduce(0) { $0 + $1.fileBytes }
             if let (_, owner) = registry.values.first(where: { $0.modelKey == modelKey }) {
-                // OWNED: signal the owner.
-                let freed = await owner.evictForGlobalBudget(targetBytesToFree: bytesForModel)
-                runningTotals[modelKey] = max(0, (runningTotals[modelKey] ?? 0) - freed)
-                total -= freed
-                logger.info("signaled owned model \(modelKey, privacy: .public) to free \(bytesForModel) → freed \(freed)")
+                // OWNED: signal the owner. The owner's evictForGlobalBudget calls
+                // notifyAccountant() at the end (reentrant on this actor), which
+                // sets runningTotals[modelKey] + valueSummaries[modelKey] to the
+                // fresh post-eviction state from its live index. So we must NOT
+                // also subtract `freed` here — that would double-count (the
+                // owner already reduced the running total). Recompute `total`
+                // from the reconciled running totals instead of a local delta.
+                _ = await owner.evictForGlobalBudget(targetBytesToFree: bytesForModel)
+                total = globalTotal()
+                logger.info("signaled owned model \(modelKey, privacy: .public) to free \(bytesForModel) → total now \(total)")
             } else {
                 // UNOWNED: accountant directly deletes files.
                 let freed = await evictUnownedEntries(modelKey: modelKey, entries: entries)

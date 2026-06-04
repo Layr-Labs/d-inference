@@ -162,6 +162,12 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     private let modelKey: String
     /// Accountant registration token (stored after register, used for deregister).
     private var accountantToken: AccountantToken?
+    /// Set true on deregister (model unload). Disk mutators (store/persist/flush/
+    /// evict) bail when closed, so an in-flight/queued capture or promotion Task
+    /// — which holds its own `self` reference and can outlive the manager being
+    /// dropped — cannot write to SSD after deregistration (which would look
+    /// unowned to the accountant or race a reused-modelKey reload).
+    private var closed = false
 
     private var stats = PrefixCacheManagerStats()
 
@@ -385,6 +391,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// to a direct SSD write so highest-value checkpoints aren't silently lost.
     @discardableResult
     public func store(tokens: [Int], checkpointLength: Int, caches: SendableKVCaches) async -> Bool {
+        guard !closed else { return false }
         guard checkpointLength > 0, checkpointLength <= tokens.count else { return false }
         let digest = PrefixDigest.digest(tokens: tokens, length: checkpointLength)
         let digestHex = digest.dbkvHexString
@@ -462,6 +469,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// caller can't persist sub-threshold one-offs).
     @discardableResult
     public func flushToSSD() async -> Int {
+        guard !closed else { return 0 }
         guard ssdEnabled, let index, let kek, let cacheDir else { return 0 }
 
         var written = 0
@@ -620,6 +628,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// Returns true if successfully persisted, false otherwise.
     @discardableResult
     private func persistDigest(_ digest: Data) async -> Bool {
+        guard !closed else { return false }
         guard ssdEnabled, let index, let kek, let cacheDir else { return false }
         let digestHex = digest.dbkvHexString
 
@@ -724,6 +733,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// stop when freed >= target, coalesced index.save). Returns bytes freed.
     /// Runs on this actor's executor (auto-serialized vs flush/lookup/load).
     public func evictForGlobalBudget(targetBytesToFree: Int) async -> Int {
+        guard !closed else { return 0 }
         guard let index, let cacheDir else { return 0 }
         guard targetBytesToFree > 0 else { return 0 }
 
@@ -809,23 +819,42 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         await accountant.updateUsage(modelKey: modelKey, totalBytes: totalBytes, valueSummary: valueSummary)
     }
 
-    /// Register this manager with the global disk accountant (called once
-    /// after reconcileWithDisk, before serving). No-op when accountant is nil.
-    /// Pushes the post-reconcile usage AFTER registration so the reconciled
-    /// footprint is accounted as OWNED (signaled), never as unowned (direct-
-    /// deleted), and isn't invisible until the next flush.
-    public func registerWithAccountant() async {
-        guard let accountant else { return }
+    /// CLAIM ownership with the accountant BEFORE reconcileWithDisk runs.
+    /// reconcileWithDisk mutates this model's files/index (reclaims orphans,
+    /// drops vanished entries), and the accountant's tick() direct-deletes any
+    /// dir whose modelKey is NOT in its registry. If we registered only AFTER
+    /// reconcile, a concurrent tick (triggered by another already-registered
+    /// model pushing the global total over ceiling) would classify this live,
+    /// mid-reconcile dir as UNOWNED and delete its files — a cross-actor
+    /// live-delete. Claiming first makes tick skip the dir. No usage is pushed
+    /// here (reconcile hasn't run); call publishUsageToAccountant() after.
+    public func claimAccountantRegistration() async {
+        guard let accountant, accountantToken == nil else { return }
         accountantToken = await accountant.register(modelKey: modelKey, owner: self)
-        if let index {
-            let totalBytes = index.bytes(modelHash: binding.modelHash)
-            let valueSummary = buildValueSummary()
-            await accountant.updateUsage(modelKey: modelKey, totalBytes: totalBytes, valueSummary: valueSummary)
-        }
     }
 
-    /// Deregister from the accountant (called on unload). No-op when accountant is nil.
+    /// Push the post-reconcile usage to the accountant (call AFTER reconcile +
+    /// claimAccountantRegistration). Accounts the reconciled footprint as OWNED
+    /// so it isn't invisible until the next flush.
+    public func publishUsageToAccountant() async {
+        await notifyAccountant()
+    }
+
+    /// Back-compat single call: claim + publish. (Tests / callers that don't
+    /// need the reconcile window split.)
+    public func registerWithAccountant() async {
+        await claimAccountantRegistration()
+        await publishUsageToAccountant()
+    }
+
+    /// Deregister from the accountant (called on unload). Sets `closed` FIRST so
+    /// any in-flight/queued capture or promotion Task (which holds its own `self`
+    /// reference and outlives the BatchScheduler dropping the manager) cannot
+    /// write to SSD after deregistration — otherwise such a write would look
+    /// unowned to the accountant, or race a newly-loaded manager that reuses the
+    /// same modelKey (same modelId). No-op when accountant is nil.
     public func deregisterFromAccountant() async {
+        closed = true
         guard let accountant, let token = accountantToken else { return }
         await accountant.deregister(token)
         accountantToken = nil

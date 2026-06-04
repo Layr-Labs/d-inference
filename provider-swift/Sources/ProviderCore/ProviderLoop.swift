@@ -225,7 +225,9 @@ public actor ProviderLoop {
         let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("darkbloom/kv", isDirectory: true)
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
-        self.diskAccountant = GlobalDiskAccountant(kvRoot: kvRoot)
+        self.diskAccountant = GlobalDiskAccountant(
+            kvRoot: kvRoot,
+            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling())
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

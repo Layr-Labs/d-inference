@@ -55,17 +55,36 @@ jobs:
           key: spm-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v1-${{ runner.os }}-
-      - name: Build provider-swift
+      - name: Build provider-swift (incl. tests)
         working-directory: provider-swift
-        run: swift build
+        # Build the TEST bundle too, so the .xctest bundle exists before we
+        # place the metallib next to its runner binary (see next step).
+        run: swift build --build-tests
       - name: Extract mlx.metallib
+        working-directory: provider-swift
         run: |
           python3 -m venv /tmp/mlxvenv
           /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-             provider-swift/.build/debug/mlx.metallib
+          metallib="/tmp/mlxvenv/lib/python$(/tmp/mlxvenv/bin/python -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages/mlx/lib/mlx.metallib"
+          # MLX's C++ loader (device.cpp load_default_library) searches for the
+          # metallib COLOCATED WITH THE RUNNING BINARY. Under `swift test` the
+          # running binary is the xctest runner INSIDE the .xctest bundle, so a
+          # copy in .build/debug alone is not found — it must sit next to the
+          # runner. Place it in both locations to cover `swift run`/built-binary
+          # paths and the test runner. Fail loudly if the source isn't there.
+          test -f "$metallib" || { echo "::error::mlx.metallib not found at $metallib"; exit 1; }
+          cp "$metallib" .build/debug/mlx.metallib
+          for bundle in .build/debug/*PackageTests.xctest; do
+            macos="$bundle/Contents/MacOS"
+            if [ -d "$macos" ]; then
+              cp "$metallib" "$macos/mlx.metallib"
+              echo "placed metallib in $macos"
+            fi
+          done
       - name: Run Swift tests
         working-directory: provider-swift
+        # NOTE: do NOT pass --build-tests-relinking flags; the bundle is already
+        # built above, so `swift test` reuses it (and our colocated metallib).
         run: swift test
 
   cache-swift:

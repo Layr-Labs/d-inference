@@ -150,7 +150,8 @@ private func makeManager(
         boundaries: [4, 8],
         diskBudgetBytes: diskBudget,
         minPersistTokens: minPersist,
-        now: now
+        now: now,
+        modelKey: "test-model"
     )
     return (mgr, cacheDir)
 }
@@ -217,9 +218,20 @@ func secondLookupPromotesToSSD() async throws {
     let appeared = await waitForFile(at: fileURL, timeout: .seconds(10))
     #expect(appeared, "2nd-use promotion must create SSD file")
 
-    // Clear RAM and verify the next lookup hits SSD.
+    // Clear RAM and verify the next lookup hits SSD. The promotion is a
+    // detached Task that writes the file THEN records the index entry; under
+    // parallel test load the index.record can lag the file by a beat, so poll
+    // the actual SSD hit (needs file AND index entry) rather than assuming the
+    // first post-clear lookup wins the race.
     await mgr.clearRAM()
-    let hit2 = await mgr.lookup(tokens: tokens)
+    var hit2 = await mgr.lookup(tokens: tokens)
+    var waited = 0
+    while hit2?.tier != .ssd, waited < 500 {
+        try? await Task.sleep(for: .milliseconds(20))
+        waited += 1
+        await mgr.clearRAM()  // a missed lookup may have promoted RAM; keep RAM empty
+        hit2 = await mgr.lookup(tokens: tokens)
+    }
     #expect(hit2?.tier == .ssd)
     #expect(hit2?.tokenCount == 8)
 }

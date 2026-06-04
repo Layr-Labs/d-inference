@@ -47,7 +47,7 @@ private func arraysEqual(_ a: [MLXArray], _ b: [MLXArray]) -> Bool {
 func persistenceSaveLoadRoundtrip() {
     let kekKey = SymmetricKey(size: .bits256)
     let dir = tmpDir()
-    let p = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 3))
+    let p = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 3), modelKey: "test-model")
     let hash = Data("blockhash-1".utf8)
     let original = block(layers: 3, tokens: 8)
 
@@ -67,7 +67,7 @@ func persistenceFileIsEncryptedOnDisk() throws {
     // The on-disk bytes must NOT contain the plaintext KV pattern.
     let kekKey = SymmetricKey(size: .bits256)
     let dir = tmpDir()
-    let p = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 1))
+    let p = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 1), modelKey: "test-model")
     let hash = Data("h".utf8)
     p.saveBlock(blockHash: hash, layerCaches: block(layers: 1, tokens: 8))
 
@@ -87,10 +87,10 @@ func persistenceMB1RejectsWrongModel() {
     let dir = tmpDir()
     let hash = Data("shared-hash".utf8)
 
-    let pA = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "modelA", layers: 2))
+    let pA = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "modelA", layers: 2), modelKey: "test-model")
     pA.saveBlock(blockHash: hash, layerCaches: block(layers: 2, tokens: 8))
 
-    let pB = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "modelB", layers: 2))
+    let pB = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "modelB", layers: 2), modelKey: "test-model")
     #expect(pB.loadBlock(blockHash: hash) == nil, "MB-1: model B must not load model A's block")
 }
 
@@ -99,12 +99,12 @@ func persistenceWrongKEKReturnsNil() {
     let dir = tmpDir()
     let hash = Data("h".utf8)
     let pWrite = EncryptedPrefixCachePersistence(
-        kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding(model: "m", layers: 1))
+        kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding(model: "m", layers: 1), modelKey: "test-model")
     pWrite.saveBlock(blockHash: hash, layerCaches: block(layers: 1, tokens: 8))
 
     // Different KEK → DEK unwrap fails → loadBlock returns nil (no crash).
     let pRead = EncryptedPrefixCachePersistence(
-        kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding(model: "m", layers: 1))
+        kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding(model: "m", layers: 1), modelKey: "test-model")
     #expect(pRead.loadBlock(blockHash: hash) == nil)
 }
 
@@ -116,7 +116,7 @@ func endToEndEvictionPersistsAndReloadsThroughRealPrefixCache() {
     let kekKey = SymmetricKey(size: .bits256)
     let dir = tmpDir()
     let persistence = EncryptedPrefixCachePersistence(
-        kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2))
+        kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2), modelKey: "test-model")
 
     // blockSize 4, only 1 in-GPU block → storing a 2nd prefix evicts the 1st.
     let cache = PrefixCache(
@@ -152,7 +152,7 @@ func loadBlockRefusesFileHoldingDifferentPrefix() throws {
     // serve a different prompt's KV under the requested block hash.
     let kekKey = SymmetricKey(size: .bits256)
     let dir = tmpDir()
-    let p = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2))
+    let p = EncryptedPrefixCachePersistence(kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2), modelKey: "test-model")
 
     let hashA = Data("prefix-A".utf8)
     let hashB = Data("prefix-B".utf8)
@@ -178,7 +178,7 @@ func persistenceEvictsOldestWhenDiskBudgetExceeded() throws {
 
     // Measure one file's size, then set a ~2.5-file budget.
     let probe = EncryptedPrefixCachePersistence(
-        kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2))
+        kekKey: kekKey, dir: dir, binding: binding(model: "m", layers: 2), modelKey: "test-model")
     probe.saveBlock(blockHash: Data("probe".utf8), layerCaches: block(layers: 2, tokens: 64))
     let probeURL = dir.appendingPathComponent(
         "\(Data("probe".utf8).dbkvHexString).\(EncryptedKVStore.fileExtension)")
@@ -230,13 +230,13 @@ func loadBlockDeletesFileOnModelMismatch() throws {
     let dir = tmpDir()
     let hash = Data("blk".utf8)
     let pA = EncryptedPrefixCachePersistence(
-        kekKey: kekKey, dir: dir, binding: binding(model: "weightA", layers: 2))
+        kekKey: kekKey, dir: dir, binding: binding(model: "weightA", layers: 2), modelKey: "test-model")
     pA.saveBlock(blockHash: hash, layerCaches: block(layers: 2, tokens: 8))
     let url = dir.appendingPathComponent("\(hash.dbkvHexString).\(EncryptedKVStore.fileExtension)")
     #expect(FileManager.default.fileExists(atPath: url.path))
 
     let pB = EncryptedPrefixCachePersistence(
-        kekKey: kekKey, dir: dir, binding: binding(model: "weightB", layers: 2))
+        kekKey: kekKey, dir: dir, binding: binding(model: "weightB", layers: 2), modelKey: "test-model")
     #expect(pB.loadBlock(blockHash: hash) == nil, "stale-weight file must be refused")
     #expect(!FileManager.default.fileExists(atPath: url.path),
             "stale-weight file must be deleted on access (no leak)")

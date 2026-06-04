@@ -103,6 +103,8 @@ public actor ProviderLoop {
     private let state: ProviderState
     private let cancellationRegistry: InferenceCancellationRegistry
     private let kvBudget: GlobalKVCacheBudget
+    /// Phase 3: global disk accountant (process-wide, shared across models).
+    private let diskAccountant: GlobalDiskAccountant
     private let powerAssertion: InferencePowerAssertion
     private let preloadTaskStarted: (@Sendable (String) -> Void)?
     private let beforeModelLoad: (@Sendable (String) async -> Void)?
@@ -219,6 +221,11 @@ public actor ProviderLoop {
         self.maxModelSlots = max(1, min(config.models.count, Int(config.config.backend.maxModelSlots)))
         let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
         self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
+        // Phase 3: construct the global disk accountant (one per host).
+        let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("darkbloom/kv", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
+        self.diskAccountant = GlobalDiskAccountant(kvRoot: kvRoot)
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
@@ -420,6 +427,8 @@ public actor ProviderLoop {
             await cancelAllInflight()
         }
         await coordinator.shutdown()
+        // Phase 3: shutdown the global disk accountant.
+        await diskAccountant.shutdown()
         while !modelSlots.isEmpty {
             if let unloading = modelsUnloading.first {
                 await waitForModelUnload(unloading)
@@ -1461,7 +1470,8 @@ public actor ProviderLoop {
                 maxConcurrentRequests: Self.schedulerMaxConcurrent,
                 pendingTimeout: Self.schedulerPendingTimeout,
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-                kvBudget: kvBudget
+                kvBudget: kvBudget,
+                diskAccountant: diskAccountant
             )
             await scheduler.loadModel(container: container, modelId: modelId, weightHash: modelInfo.weightHash)
             if isShuttingDown || Task.isCancelled {

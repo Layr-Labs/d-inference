@@ -34,7 +34,7 @@ import os
 
 private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "encrypted-prefix-persistence")
 
-public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unchecked Sendable {
+public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, PrefixCacheOwner, @unchecked Sendable {
     // The crypto/path properties are immutable after init. The only mutable
     // state is the disk-budget bookkeeping (`bytesSinceSweep`), guarded by
     // `sweepLock` — so @unchecked Sendable remains sound (all shared mutable
@@ -47,18 +47,33 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unc
     /// save pushes the directory over budget, the oldest files are evicted.
     /// 0 = unlimited (no sweep). Without this the cache grows until the
     /// volume fills, which breaks later cache writes and model downloads.
+    /// Phase 3: when accountant != nil, this is set to 0 (unbounded) so the
+    /// two budgets never fight — accountant is sole authority.
     private let diskBudgetBytes: Int
     private let sweepLock = NSLock()
     private var bytesSinceSweep = 0
 
+    /// Phase 3: global disk accountant (process-wide, shared across models).
+    /// nil ⇒ today's per-model behavior (backward compat).
+    private let accountant: GlobalDiskAccountant?
+    /// 12-char modelKey (sha256(modelId)[:12]) for accountant registration.
+    /// BUG-1-FIX: exposed as public so BatchScheduler can register this owner.
+    public let modelKey: String
+
     public init(
         kekKey: SymmetricKey, dir: URL, binding: PrefixCacheModelBinding,
-        diskBudgetBytes: Int = 0
+        diskBudgetBytes: Int = 0,
+        accountant: GlobalDiskAccountant? = nil,
+        modelKey: String = ""
     ) {
         self.kekKey = kekKey
         self.dir = dir
         self.binding = binding
-        self.diskBudgetBytes = max(0, diskBudgetBytes)
+        // Phase 3: when accountant != nil, set diskBudgetBytes to 0 (unbounded)
+        // so the two budgets never fight — accountant is sole authority.
+        self.diskBudgetBytes = accountant != nil ? 0 : max(0, diskBudgetBytes)
+        self.accountant = accountant
+        self.modelKey = modelKey
     }
 
     // MARK: - PrefixCachePersistence
@@ -204,6 +219,38 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, @unc
             if (try? fm.removeItem(at: f.url)) != nil { total -= f.size }
         }
         logger.info("prefix cache disk sweep: now \(total) bytes (budget \(self.diskBudgetBytes))")
+    }
+
+    // MARK: - Phase 3: Global disk accountant integration
+
+    /// PrefixCacheOwner conformance: evict oldest files (by mtime) to free at
+    /// least `targetBytesToFree`. Returns bytes freed. Called by the global
+    /// disk accountant when the process-wide disk budget is exceeded. Reuses
+    /// the sweep loop body (mtime-LRU eviction). No locking needed: the
+    /// accountant is the sole caller and serializes all evictions.
+    public func evictForGlobalBudget(targetBytesToFree: Int) async -> Int {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
+        ) else { return 0 }
+
+        var files: [(url: URL, size: Int, mtime: Date)] = []
+        let suffix = ".\(EncryptedKVStore.fileExtension)"
+        for u in entries where u.lastPathComponent.hasSuffix(suffix) {
+            let v = try? u.resourceValues(forKeys: Set(keys))
+            let size = v?.fileSize ?? 0
+            files.append((u, size, v?.contentModificationDate ?? .distantPast))
+        }
+
+        var freed = 0
+        for f in files.sorted(by: { $0.mtime < $1.mtime }) {
+            if freed >= targetBytesToFree { break }
+            if (try? fm.removeItem(at: f.url)) != nil { freed += f.size }
+        }
+
+        logger.info("engine prefix cache evicted for global budget: freed \(freed) (target \(targetBytesToFree))")
+        return freed
     }
 
     // MARK: - Paths

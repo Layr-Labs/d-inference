@@ -84,6 +84,8 @@ public actor StandaloneServer {
     private var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
     private let kvBudget: GlobalKVCacheBudget
+    /// Phase 3: global disk accountant (process-wide, shared across models).
+    private let diskAccountant: GlobalDiskAccountant
 
     public init(
         config: StandaloneServerConfig = StandaloneServerConfig(),
@@ -92,6 +94,11 @@ public actor StandaloneServer {
         self.config = config
         self.models = models
         self.kvBudget = GlobalKVCacheBudget()
+        // Phase 3: construct the global disk accountant (one per host).
+        let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("darkbloom/kv", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
+        self.diskAccountant = GlobalDiskAccountant(kvRoot: kvRoot)
     }
 
     static let schedulerMaxConcurrent = 24
@@ -155,6 +162,8 @@ public actor StandaloneServer {
     public func stop() {
         serverTask?.cancel()
         serverTask = nil
+        // Phase 3: shutdown the global disk accountant.
+        Task { await diskAccountant.shutdown() }
     }
 
     /// Test helper: wait for the Hummingbird service task to finish after
@@ -206,7 +215,8 @@ public actor StandaloneServer {
             maxConcurrentRequests: Self.schedulerMaxConcurrent,
             pendingTimeout: Self.schedulerPendingTimeout,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-            kvBudget: kvBudget
+            kvBudget: kvBudget,
+            diskAccountant: diskAccountant
         )
         await scheduler.loadModel(container: container, modelId: modelId)
         let tokenizer: TokenizerHandle = await container.perform { ctx in

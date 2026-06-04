@@ -48,7 +48,8 @@ private func makeManager(
         cacheDir: ssd ? cacheDir : nil,
         ssdEnabled: ssd,
         boundaries: [4, 8],  // small checkpoints for testing
-        now: { 1000 }
+        now: { 1000 },
+        modelKey: "test-model"
     )
     return (mgr, cacheDir)
 }

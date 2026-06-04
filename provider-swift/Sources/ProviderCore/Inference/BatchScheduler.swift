@@ -50,6 +50,9 @@ public actor BatchScheduler {
     /// when the model's context length is known.
     var defaultMaxTokens: Int
     let kvBudget: GlobalKVCacheBudget?
+    /// Phase 3: global disk accountant (process-wide, shared across models).
+    /// nil ⇒ today's per-model disk budget behavior.
+    let diskAccountant: GlobalDiskAccountant?
     let adaptiveCapPolicy = AdaptiveBatchCapPolicy.default
 
     // MARK: - Model-specific state (set by `loadModel`)
@@ -76,6 +79,13 @@ public actor BatchScheduler {
     var checkpointManager: PrefixCacheManager?
     /// Sliding-window-derived checkpoint boundaries for the current model.
     var checkpointBoundaries: [Int] = []
+
+    /// BUG-1-FIX: Engine-tier owner (EncryptedPrefixCachePersistence) for pure-
+    /// attention models. Non-nil only when the model classifies as `.engine` AND
+    /// the prefix cache flag is on. Registered with the accountant at load time,
+    /// deregistered at stopCurrentEngine.
+    var engineTierOwner: EncryptedPrefixCachePersistence?
+    var engineTierAccountantToken: AccountantToken?
 
     /// Admission control + token budget tracking. `nil` until `loadModel()`.
     var planner: BatchQueuePlanner?
@@ -123,13 +133,15 @@ public actor BatchScheduler {
         maxConcurrentRequests: Int = 4,
         pendingTimeout: Duration = .seconds(120),
         defaultMaxTokens: Int = 4096,
-        kvBudget: GlobalKVCacheBudget? = nil
+        kvBudget: GlobalKVCacheBudget? = nil,
+        diskAccountant: GlobalDiskAccountant? = nil
     ) {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
         self.defaultMaxTokens = defaultMaxTokens
         self.initDefaultMaxTokens = defaultMaxTokens
         self.kvBudget = kvBudget
+        self.diskAccountant = diskAccountant
         self.dynamicMaxConcurrentRequests = min(4, max(1, maxConcurrentRequests))
     }
 
@@ -166,7 +178,8 @@ public actor BatchScheduler {
             weightBytes: snapshot.bytes,
             maxConcurrentRequests: maxConcurrentRequests,
             eosTokenIds: snapshot.eosTokenIds,
-            architecture: snapshot.architecture
+            architecture: snapshot.architecture,
+            diskAccountant: diskAccountant
         )
         let engine = build.engine
         // Re-check epoch after the engine.start suspension. If another
@@ -179,6 +192,7 @@ public actor BatchScheduler {
         self.engine = engine
         self.checkpointManager = build.checkpointManager
         self.checkpointBoundaries = build.checkpointBoundaries
+        self.engineTierOwner = build.engineTierOwner  // BUG-1-FIX
         await engine.start()
         // Final epoch check after start() — start can suspend too.
         guard loadEpoch == generationEpoch else {
@@ -187,6 +201,7 @@ public actor BatchScheduler {
             // stale manager pointing at the superseded model).
             self.checkpointManager = nil
             self.checkpointBoundaries = []
+            self.engineTierOwner = nil  // BUG-1-FIX
             await engine.stop()
             return
         }
@@ -197,7 +212,22 @@ public actor BatchScheduler {
         // disk budget and are reusable) and drops index entries whose files
         // vanished. Safe here: no requests admitted yet, so no concurrent
         // flush/lookup races the reconcile.
-        if let mgr = checkpointManager { await mgr.reconcileWithDisk() }
+        if let mgr = checkpointManager {
+            await mgr.reconcileWithDisk()
+            // Phase 3: register with the global disk accountant after reconcile
+            // (so the accountant sees the reconciled bytes on first push).
+            await mgr.registerWithAccountant()
+        }
+
+        // BUG-1-FIX: register the engine-tier owner with the accountant.
+        // Without this, the engine tier's live dir is UNOWNED → tick() directly
+        // deletes its files, racing saveBlock/loadBlock (cross-actor live-delete).
+        if let owner = engineTierOwner, let accountant = diskAccountant {
+            let token = await accountant.register(
+                modelKey: owner.modelKey,  // need to expose modelKey on the owner
+                owner: owner)
+            engineTierAccountantToken = token
+        }
 
         applyPostLoadBudgets(snapshot: snapshot)
         // Apply the conservative startup cap before admitting any request,
@@ -277,10 +307,13 @@ public actor BatchScheduler {
     /// checkpoint-tier manager + its boundaries (non-nil only for hybrid
     /// `.checkpoint` models with the flag on). The caller stores the manager
     /// on the actor and uses it for `submit`-time lookup.
+    /// BUG-1-FIX: added engineTierOwner (EncryptedPrefixCachePersistence) for
+    /// accountant registration when strategy == .engine.
     struct EngineBuild {
         let engine: BatchedEngine
         let checkpointManager: PrefixCacheManager?
         let checkpointBoundaries: [Int]
+        let engineTierOwner: EncryptedPrefixCachePersistence?
     }
 
     private static func makeBatchedEngine(
@@ -290,7 +323,8 @@ public actor BatchScheduler {
         weightBytes: Int,
         maxConcurrentRequests: Int,
         eosTokenIds: Set<Int>,
-        architecture: ModelArchitecture
+        architecture: ModelArchitecture,
+        diskAccountant: GlobalDiskAccountant? = nil
     ) async -> EngineBuild {
         // TB-007: the prefix cache is OFF by default. When the operator sets
         // DARKBLOOM_PREFIX_CACHE we enable it with an ENCRYPTED-at-rest
@@ -325,6 +359,8 @@ public actor BatchScheduler {
             var enginePrefixCache: PrefixCache? = nil
             var checkpointManager: PrefixCacheManager? = nil
             var boundaries: [Int] = []
+            // BUG-1-FIX: capture the engine-tier owner for accountant registration.
+            var engineTierOwner: EncryptedPrefixCachePersistence? = nil
 
             if let backing {
                 switch strategy {
@@ -332,12 +368,16 @@ public actor BatchScheduler {
                     if maxBlocks >= 1 {
                         prefixCacheLogger.info(
                             "engine prefix cache: \(maxBlocks) blocks × \(blockSize) tok (~\(kvBytesPerToken) B/tok)")
+                        // BUG-1-FIX: keep a reference to the owner for registration.
+                        let persistence = EncryptedPrefixCachePersistence(
+                            kekKey: backing.kekKey, dir: backing.dir,
+                            binding: backing.binding, diskBudgetBytes: backing.diskBudgetBytes,
+                            accountant: diskAccountant, modelKey: backing.modelKey)
+                        engineTierOwner = persistence
                         enginePrefixCache = PrefixCache(
                             config: PrefixCacheConfig(blockSize: blockSize, maxBlocks: maxBlocks),
                             modelName: modelId,
-                            persistence: EncryptedPrefixCachePersistence(
-                                kekKey: backing.kekKey, dir: backing.dir,
-                                binding: backing.binding, diskBudgetBytes: backing.diskBudgetBytes))
+                            persistence: persistence)
                     } else {
                         prefixCacheLogger.warning(
                             "prefix cache disabled: model KV (\(kvBytesPerToken) B/tok) exceeds the memory budget for even one block")
@@ -385,11 +425,15 @@ public actor BatchScheduler {
                         // Bound the on-disk checkpoint footprint (+ index.json)
                         // so sustained diverse traffic can't fill the volume —
                         // same 50%-of-free default as the block tier.
+                        // Phase 3: when diskAccountant != nil, this becomes 0
+                        // (unbounded) — accountant is sole authority.
                         diskBudgetBytes: backing.diskBudgetBytes,
                         // TB-016 sub-feature B: min persist threshold (16384
                         // for Gemma, 0 otherwise). Env override available.
                         minPersistTokens: Self.prefixCacheMinPersistTokens(arch: modelId),
-                        now: nowFn)
+                        now: nowFn,
+                        accountant: diskAccountant,
+                        modelKey: backing.modelKey)
                     prefixCacheLogger.info(
                         "checkpoint prefix cache: window \(window), boundaries \(boundaries)")
                 case .none:
@@ -442,7 +486,8 @@ public actor BatchScheduler {
                     externalChatTemplate: nil
                 ),
                 checkpointManager: checkpointManager,
-                checkpointBoundaries: boundaries
+                checkpointBoundaries: boundaries,
+                engineTierOwner: engineTierOwner  // BUG-1-FIX
             )
         }
     }
@@ -461,6 +506,8 @@ public actor BatchScheduler {
         let dir: URL
         let binding: PrefixCacheModelBinding
         let diskBudgetBytes: Int
+        /// Phase 3: 12-char modelKey (sha256(modelId)[:12]) for accountant.
+        let modelKey: String
     }
 
     /// Build the shared encrypted-cache backing IFF the operator opted in via
@@ -537,7 +584,7 @@ public actor BatchScheduler {
         prefixCacheLogger.info(
             "encrypted prefix cache active for \(modelId, privacy: .public) (bound to \(weightHash == nil ? "modelId" : "weightHash", privacy: .public)) at \(dir.path, privacy: .public), disk budget \(diskBudget) bytes (default = 50% of free volume space)")
         return PrefixCacheBacking(
-            kekKey: kekKey, kek: kek, dir: dir, binding: binding, diskBudgetBytes: diskBudget)
+            kekKey: kekKey, kek: kek, dir: dir, binding: binding, diskBudgetBytes: diskBudget, modelKey: String(modelKey))
     }
 
     // MARK: - Prefix cache sizing/binding helpers (testable)
@@ -1023,11 +1070,22 @@ public actor BatchScheduler {
         tokenizer = nil
         // Persist any coalesced index writes before dropping the manager, so
         // checkpoints written since the last coalesced save survive restart.
-        if let mgr = checkpointManager { await mgr.flushIndexNow() }
+        if let mgr = checkpointManager {
+            await mgr.flushIndexNow()
+            // Phase 3: deregister from the accountant before dropping the manager.
+            await mgr.deregisterFromAccountant()
+        }
         // Drop the checkpoint manager so a stale one can't serve the next
         // model (the new model's loadModel reinstalls its own, or nil).
         checkpointManager = nil
         checkpointBoundaries = []
+
+        // BUG-1-FIX: deregister the engine-tier owner from the accountant.
+        if let accountant = diskAccountant, let token = engineTierAccountantToken {
+            await accountant.deregister(token)
+        }
+        engineTierOwner = nil
+        engineTierAccountantToken = nil
 
         let bridgeIds = Array(activeBridges.keys)
         for id in bridgeIds {

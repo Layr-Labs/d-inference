@@ -127,7 +127,7 @@ public struct PrefixCacheManagerStats: Sendable, Equatable {
 
 // MARK: - Manager
 
-public actor PrefixCacheManager {
+public actor PrefixCacheManager: PrefixCacheOwner {
 
     private let binding: PrefixCacheModelBinding
     private let ram: PrefixCacheRAM
@@ -140,6 +140,8 @@ public actor PrefixCacheManager {
     /// each flush, LRU entries (file + index entry together) are evicted to
     /// stay under it, so the SSD tier and index.json are both bounded under
     /// sustained diverse traffic. 0 = unbounded (not recommended in prod).
+    /// Phase 3: when accountant != nil, this is set to 0 (unbounded) so the
+    /// two budgets never fight — accountant is sole authority.
     private let diskBudgetBytes: Int
     /// TB-016 sub-feature B: Minimum token count for SSD persistence. Gates
     /// PERSISTENCE only, not RAM admission (short within-window prefixes
@@ -152,6 +154,14 @@ public actor PrefixCacheManager {
     /// TB-016 sub-feature C: freshly-promoted entries stay hot.
     private let evictionHalfLifeSeconds: Double
     private let now: @Sendable () -> Int64
+
+    /// Phase 3: global disk accountant (process-wide, shared across models).
+    /// nil ⇒ today's per-model behavior (backward compat).
+    private let accountant: GlobalDiskAccountant?
+    /// 12-char modelKey (sha256(modelId)[:12]) for accountant registration.
+    private let modelKey: String
+    /// Accountant registration token (stored after register, used for deregister).
+    private var accountantToken: AccountantToken?
 
     private var stats = PrefixCacheManagerStats()
 
@@ -190,7 +200,9 @@ public actor PrefixCacheManager {
         minPersistTokens: Int = 0,
         prefillCostPerToken: Double = 1.0,
         evictionHalfLifeSeconds: Double = 86400,
-        now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970) }
+        now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970) },
+        accountant: GlobalDiskAccountant? = nil,
+        modelKey: String = ""
     ) {
         self.binding = binding
         self.ram = ram
@@ -200,11 +212,15 @@ public actor PrefixCacheManager {
         // SSD requires all three backing pieces; otherwise RAM-only.
         self.ssdEnabled = ssdEnabled && index != nil && kek != nil && cacheDir != nil
         self.boundaries = boundaries
-        self.diskBudgetBytes = max(0, diskBudgetBytes)
+        // Phase 3: when accountant != nil, set diskBudgetBytes to 0 (unbounded)
+        // so the two budgets never fight — accountant is sole authority.
+        self.diskBudgetBytes = accountant != nil ? 0 : max(0, diskBudgetBytes)
         self.minPersistTokens = minPersistTokens
         self.prefillCostPerToken = prefillCostPerToken
         self.evictionHalfLifeSeconds = evictionHalfLifeSeconds
         self.now = now
+        self.accountant = accountant
+        self.modelKey = modelKey
     }
 
     public var isSSDEnabled: Bool { ssdEnabled }
@@ -459,6 +475,8 @@ public actor PrefixCacheManager {
                 // or teardown — retries rather than dropping durability.
                 if (try? index.save()) != nil { unsavedWrites = 0 }
             }
+            // Phase 3: notify the accountant after byte-changing op.
+            await notifyAccountant()
         }
         return written
     }
@@ -534,6 +552,8 @@ public actor PrefixCacheManager {
         // Apply the budget to the reconciled set, then persist.
         enforceDiskBudget(index: index, cacheDir: cacheDir)
         flushIndexNow()
+        // Phase 3: notify the accountant after reconcile (byte-changing op).
+        Task { await notifyAccountant() }
     }
 
     /// TB-016 sub-feature B: persist a single digest from RAM to SSD.
@@ -598,6 +618,8 @@ public actor PrefixCacheManager {
             if unsavedWrites >= Self.saveCoalesceThreshold {
                 if (try? index.save()) != nil { unsavedWrites = 0 }
             }
+            // Phase 3: notify the accountant after byte-changing op.
+            await notifyAccountant()
             return true
         } catch {
             logger.warning("persistDigest: failed for \(digestHex, privacy: .public): \(String(describing: error))")
@@ -633,6 +655,112 @@ public actor PrefixCacheManager {
             total -= max(0, entry.fileBytes)
             stats.diskEvictions += 1
         }
+    }
+
+    // MARK: - Phase 3: Global disk accountant integration
+
+    /// PrefixCacheOwner conformance: evict lowest-score entries to free at
+    /// least `targetBytesToFree`. Called by the global disk accountant when
+    /// the process-wide disk budget is exceeded. Reuses the enforceDiskBudget
+    /// loop body (entriesByScoreAscending → removeItem + index.remove + stats,
+    /// stop when freed >= target, coalesced index.save). Returns bytes freed.
+    /// Runs on this actor's executor (auto-serialized vs flush/lookup/load).
+    public func evictForGlobalBudget(targetBytesToFree: Int) async -> Int {
+        guard let index, let cacheDir else { return 0 }
+        guard targetBytesToFree > 0 else { return 0 }
+
+        var freed = 0
+        // Evict LOWEST-score entries first (benefit-per-byte, recency-weighted).
+        for entry in index.entriesByScoreAscending(
+            modelHash: binding.modelHash,
+            now: now(),
+            prefillCostPerToken: prefillCostPerToken,
+            halfLifeSeconds: evictionHalfLifeSeconds
+        ) {
+            if freed >= targetBytesToFree { break }
+            let url = cacheDir.appendingPathComponent(
+                "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)")
+            try? FileManager.default.removeItem(at: url)
+            index.remove(modelHash: binding.modelHash, digestHex: entry.digestHex)
+            freed += max(0, entry.fileBytes)
+            stats.diskEvictions += 1
+        }
+
+        // Coalesced index save (same logic as flushToSSD).
+        if freed > 0 {
+            unsavedWrites += 1
+            if unsavedWrites >= Self.saveCoalesceThreshold {
+                if (try? index.save()) != nil { unsavedWrites = 0 }
+            }
+        }
+
+        return freed
+    }
+
+    /// Build value summary for the accountant: [EntryValue] with one entry
+    /// per SSD file, including (modelKey, digestHex, fileBytes, score).
+    /// Called after each byte-changing op (flush/persist/eviction) to push
+    /// updated totals + summaries to the accountant.
+    private func buildValueSummary() -> [EntryValue] {
+        guard let index else { return [] }
+        return index.entriesByScoreAscending(
+            modelHash: binding.modelHash,
+            now: now(),
+            prefillCostPerToken: prefillCostPerToken,
+            halfLifeSeconds: evictionHalfLifeSeconds
+        ).map { entry in
+            EntryValue(
+                modelKey: modelKey,
+                digestHex: entry.digestHex,
+                fileBytes: entry.fileBytes,
+                score: PrefixCacheIndex.benefitScore(
+                    entry, now: now(),
+                    prefillCostPerToken: prefillCostPerToken,
+                    halfLifeSeconds: evictionHalfLifeSeconds
+                )
+            )
+        }
+    }
+
+    /// Push updated usage to the accountant after a byte-changing op.
+    /// Cheap O(this-model-entries) push, no tree walk. No-op when accountant is nil.
+    ///
+    /// Gated on `accountantToken != nil`: a usage push BEFORE this manager is
+    /// registered (e.g. the detached Task fired by the synchronous
+    /// reconcileWithDisk, which runs before registerWithAccountant) would reach
+    /// the accountant while this model is still absent from its registry. If the
+    /// reconciled footprint already exceeds the global ceiling, the accountant
+    /// would classify this not-yet-owned model as UNOWNED and DIRECT-DELETE its
+    /// live checkpoint files — the cross-actor live-delete the design forbids.
+    /// Dropping the pre-registration push is safe: registerWithAccountant does
+    /// the initial usage push itself, right after registration.
+    private func notifyAccountant() async {
+        guard let accountant, let index, accountantToken != nil else { return }
+        let totalBytes = index.bytes(modelHash: binding.modelHash)
+        let valueSummary = buildValueSummary()
+        await accountant.updateUsage(modelKey: modelKey, totalBytes: totalBytes, valueSummary: valueSummary)
+    }
+
+    /// Register this manager with the global disk accountant (called once
+    /// after reconcileWithDisk, before serving). No-op when accountant is nil.
+    /// Pushes the post-reconcile usage AFTER registration so the reconciled
+    /// footprint is accounted as OWNED (signaled), never as unowned (direct-
+    /// deleted), and isn't invisible until the next flush.
+    public func registerWithAccountant() async {
+        guard let accountant else { return }
+        accountantToken = await accountant.register(modelKey: modelKey, owner: self)
+        if let index {
+            let totalBytes = index.bytes(modelHash: binding.modelHash)
+            let valueSummary = buildValueSummary()
+            await accountant.updateUsage(modelKey: modelKey, totalBytes: totalBytes, valueSummary: valueSummary)
+        }
+    }
+
+    /// Deregister from the accountant (called on unload). No-op when accountant is nil.
+    public func deregisterFromAccountant() async {
+        guard let accountant, let token = accountantToken else { return }
+        await accountant.deregister(token)
+        accountantToken = nil
     }
 
     // MARK: - Clear

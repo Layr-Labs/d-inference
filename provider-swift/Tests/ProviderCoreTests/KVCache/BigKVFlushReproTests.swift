@@ -96,7 +96,8 @@ func bigFlushToSSD_2_4GB() async throws {
         ram: PrefixCacheRAM(),  // default 8GB byte budget
         index: PrefixCacheIndex(fileURL: dir.appendingPathComponent("index.json")),
         kek: newKEK(),
-        cacheDir: dir, ssdEnabled: true, boundaries: [L], now: { 1000 })
+        cacheDir: dir, ssdEnabled: true, boundaries: [L], now: { 1000 },
+        modelKey: "test-model")
 
     let tokens = Array(0..<(L + 4))
     let stored = await mgr.store(tokens: tokens, checkpointLength: L, caches: SendableKVCaches(caches))

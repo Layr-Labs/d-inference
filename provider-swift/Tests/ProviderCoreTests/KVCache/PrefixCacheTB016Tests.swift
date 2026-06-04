@@ -87,15 +87,23 @@ func ladderUnchangedForGptOssUnproven() {
 }
 
 @Test
-func pastWindowProvenGateGemmaFamily() {
-    // isProven(arch:) returns true only when arch contains "gemma" (case-insensitive).
+func pastWindowProvenGate() {
+    // isProven(arch:) is true for the PROVEN families (Gemma + GPT-OSS, both
+    // bit-exact-verified past their window on real weights), case-insensitive
+    // substring match. Everything else is false (safe default).
     #expect(PrefixCachePastWindow.isProven(arch: "gemma"))
     #expect(PrefixCachePastWindow.isProven(arch: "Gemma"))
     #expect(PrefixCachePastWindow.isProven(arch: "gemma2"))
     #expect(PrefixCachePastWindow.isProven(arch: "GEMMA"))
     #expect(PrefixCachePastWindow.isProven(arch: "mlx-community/gemma-4-2b-instruct"))
-    #expect(!PrefixCachePastWindow.isProven(arch: "gpt"))
+    // GPT-OSS now proven (gptOssRestoreMatchesColdPastWindow, M5).
+    #expect(PrefixCachePastWindow.isProven(arch: "gpt-oss"))
+    #expect(PrefixCachePastWindow.isProven(arch: "mlx-community/gpt-oss-20b-MXFP4-Q8"))
+    #expect(PrefixCachePastWindow.isProven(arch: "GPT-OSS"))
+    // Unproven families keep the within-window ladder.
+    #expect(!PrefixCachePastWindow.isProven(arch: "gpt2"))   // not gpt-oss
     #expect(!PrefixCachePastWindow.isProven(arch: "qwen"))
+    #expect(!PrefixCachePastWindow.isProven(arch: "llama"))
     #expect(!PrefixCachePastWindow.isProven(arch: "unknown"))
 }
 

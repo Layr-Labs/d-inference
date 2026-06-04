@@ -91,15 +91,19 @@ The pieces actually on the live path are `EncryptedKVStore` +
 Set the env var on the provider process:
 
 ```bash
-DARKBLOOM_PREFIX_CACHE=1              # enable (default off); or =true
-DARKBLOOM_PREFIX_CACHE_MAX_GB=8       # optional: in-GPU block-cache budget (default = 1/8 physical RAM)
-DARKBLOOM_PREFIX_CACHE_DISK_GB=10     # optional: on-disk budget per model (default = 10 GB, clamped to 50% of free; 0 = unlimited)
+DARKBLOOM_PREFIX_CACHE=1                     # enable (default off); or =true
+DARKBLOOM_PREFIX_CACHE_MAX_GB=8              # optional: in-GPU block-cache budget (default = 1/8 physical RAM)
+DARKBLOOM_PREFIX_CACHE_DISK_GB=50            # optional: GLOBAL on-disk budget across ALL models (default = min(10 GiB, 50% of free); 0 = unlimited)
+DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS=0  # optional: 2nd-use admission threshold (default = 16384 for Gemma, 0 otherwise)
 ```
 
 `MAX_GB` bounds the in-memory block cache (the number of GPU blocks is
 derived from it + the model's per-token KV bytes, so a large model can't
 silently retain hundreds of GB outside admission control). `DISK_GB`
-bounds the encrypted SSD files per model (LRU sweep — see [§11](#11-on-disk-layout)).
+bounds the encrypted SSD files **globally across all loaded models**
+(value-based eviction — see [§11](#11-on-disk-layout)). `MIN_PERSIST_TOKENS`
+gates SSD writes (checkpoints below this stay RAM-only until a 2nd use promotes
+them — see [§4.2](#42-evict--encrypt-to-ssd)).
 
 Wiring happens in `BatchScheduler.makeBatchedEngine` /
 `makeEncryptedPrefixPersistenceIfEnabled`
@@ -119,7 +123,7 @@ When active you'll see, once per model load:
 
 ```
 DARKBLOOM_PREFIX_CACHE is ON — engine prefix cache enabled (TB-007: …)
-encrypted prefix cache active for <modelId> (bound to weightHash|modelId) at <dir>, disk budget <N> bytes (default = 10 GB per model)
+encrypted prefix cache active for <modelId> (bound to weightHash|modelId) at <dir>, disk budget <N> bytes (default = min(10 GiB, 50% of free volume space), GLOBAL across models)
 prefix cache sized to <maxBlocks> blocks × 256 tok (~<kvBytesPerToken> B/tok)
 ```
 
@@ -149,7 +153,17 @@ calls `persistence.saveBlock(blockHash, layerCaches)`:
    `tokenPrefixHash = blockHash`, the layout JSON in `metaState`, per-chunk
    plaintext sizes).
 3. `EncryptedKVStore.writeSync` → encrypt + atomically write
-   `<blockHashHex>.darkbloom-kv` (see [§5](#5-on-disk-file-format)).
+   `<blockHashHex>.darkbloom-kv` (see [§5](#5-on-disk-file-format)). Bodies
+   larger than INT_MAX (2 GiB) are written in segments ≤1 GiB each (a single
+   `write(2)` of ≥2 GiB fails EINVAL on Darwin), so large checkpoints
+   (e.g. ~2.4 GB hybrid at 100k tokens) persist correctly.
+
+**2nd-use admission (checkpoint tier only):** initial capture is RAM-only
+(fast). An SSD file is written only on the **2nd use** (a re-lookup that
+RAM-hits) of a prefix whose `tokenCount >= minPersistTokens` (env
+`DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS`, default 16384 for Gemma, 0
+otherwise). Stops write storms from one-off diverse prompts. The engine block
+tier persists eagerly on eviction (no RAM-first admission).
 
 Failures are best-effort: a lost block just means a future cold prefill.
 
@@ -379,16 +393,53 @@ Everything fails closed to a cold prefill:
 | Block pool saturated on a cold hit | block served for this request only |
 | Write failure mid-flush | best-effort; temp cleaned up, no partial promoted |
 | In-memory budget can't fit one block | cache disabled for that model (logged) |
-| On-disk files exceed `DISK_GB` | oldest `.darkbloom-kv` evicted (LRU) to fit |
+| On-disk files exceed `DISK_GB` | lowest benefit-per-byte entries evicted (cross-model) to fit |
 | Weights change under the same model id | MB-1 rejects + deletes stale-weight files on access; rest aged out by the sweep |
-| A single block larger than the disk budget | write skipped (no churn) |
+| A single file larger than the global disk budget | write skipped (no churn) |
+| Bodies >2 GiB (INT_MAX) | written in ≤1 GiB segments (Darwin `write(2)` limit) |
 
 No path serves KV for the wrong prefix/model, and no malformed file crashes
 the provider.
 
 ---
 
-## 11. On-disk layout
+## 11. Disk budget (global accountant)
+
+**Phase 3 (as-built):** the disk budget is **process-wide and global** across
+all loaded models, enforced by `GlobalDiskAccountant`
+(`provider-swift/Sources/ProviderCore/KVCache/GlobalDiskAccountant.swift`).
+When `DARKBLOOM_PREFIX_CACHE_DISK_GB` is set (>0), it caps the ENTIRE
+`darkbloom/kv/` tree (all models combined). When unset (or 0), the default is
+`min(10 GiB, 50% of free disk)` recomputed live every 30 seconds.
+
+**Cross-model value-based eviction:** when the global total exceeds the
+ceiling, the accountant merges all models' value summaries (owned + unowned
+dirs), sorts by **benefit-per-byte score** (ascending), and evicts the
+lowest-score entries across the fleet until back under budget. Score =
+`((hitCount+1) * tokenCount * prefillCostPerToken / max(1, fileBytes)) *
+recency`, where recency uses hyperbolic decay (halfLife = 24h default). For
+OWNED models (a live `PrefixCacheManager` actor), the accountant **signals**
+the owner to evict (the owner runs the deletion on its own executor —
+actor-isolated, no cross-actor race). For UNOWNED dirs (no live actor — a
+retired/unloaded model), the accountant directly deletes files and rmdirs when
+empty.
+
+**Retired-model reclaim:** directories from unloaded models are not deleted on
+teardown; they persist so a restart can reuse their files. Under disk pressure
+the periodic tick (every 30s) scans the `darkbloom/kv/` tree, sums unowned
+dirs' bytes, builds degraded value summaries (mtime-LRU for files not in any
+live index), and reclaims them via the cross-model eviction. This preserves
+restart reuse while avoiding orphan leaks.
+
+**Cross-actor safety property:** the accountant NEVER directly deletes a file
+owned by a live model (registered manager) — it signals the owner, which
+evicts on its own executor (auto-serialized vs flush/lookup/load). Direct
+filesystem deletion happens ONLY for UNOWNED dirs (no live actor → no race).
+See issue #266.
+
+---
+
+## 12. On-disk layout
 
 ```
 ~/Library/Caches/darkbloom/kv/
@@ -407,25 +458,20 @@ the disk sweep — invalidation on weight change without leaking directories.
 A genuine model *switch* uses a different `sha256(modelId)` directory. The
 KEK lives in the Keychain, not on the cache disk.
 
-The per-model directory is bounded by `DARKBLOOM_PREFIX_CACHE_DISK_GB`,
-defaulting to a **fixed 10 GB per model** (clamped down to 50% of free
-space on a tight volume, measured at model load via
-`volumeAvailableCapacityForImportantUsage`). The default is a fixed cap, not
-a fraction of free space, *because the budget is per-model*: a "50% of free"
-default would let several models each claim half the disk and collectively
-fill it (see the per-model limitation below + issue #266). When a save
-pushes the directory over budget, the oldest `.darkbloom-kv` files are
-evicted (LRU by mtime), amortized so the directory scan doesn't run on
-every block. A block whose own size exceeds the budget is skipped entirely
-(no write-then-delete churn). Set the env var explicitly to raise/lower it
-(0 = unlimited).
+The **global** disk budget (see [§11](#11-disk-budget-global-accountant))
+defaults to `min(10 GiB, 50% of free space)` when
+`DARKBLOOM_PREFIX_CACHE_DISK_GB` is unset, recomputed live. When set (>0), it
+caps the entire `darkbloom/kv/` tree across all models. Eviction is
+cross-model value-based: lowest benefit-per-byte score evicts first,
+regardless of which model owns the file. A file whose own size exceeds the
+global budget is skipped entirely (no write-then-delete churn). Set the env
+var explicitly to raise/lower it (0 = unlimited).
 
 Both tiers enforce this budget: the engine block tier
-(`EncryptedPrefixCachePersistence`) sweeps on save, and the checkpoint tier
-(`PrefixCacheManager.flushToSSD`) evicts least-recently-hit checkpoints
-(file + index entry together) after each flush — so the per-model KV
-directory **and** its `index.json` are both bounded under sustained
-diverse-prompt traffic.
+(`EncryptedPrefixCachePersistence`) and the checkpoint tier
+(`PrefixCacheManager`) notify the accountant after each byte-changing op
+(flush, persist, eviction). The accountant signals the owning model to evict
+when the global total exceeds the ceiling.
 
 **Crash consistency.** The checkpoint index save is *coalesced* (every N
 writes, not every flush) to keep the O(N) re-encode off the hot lookup
@@ -439,23 +485,22 @@ vanished are dropped; foreign/mislabeled files are deleted. So coalescing
 keeps its perf win without leaking disk or losing cache across restart. A
 graceful unload also `flushIndexNow()`s before dropping the manager.
 
-**Bounding is per-model, not global.** Each model directory gets its own
-budget; the sweep only scans its own directory. The default is a fixed
-10 GB per model (not a fraction of free space) specifically so several
-cached models can't each claim a large slice and collectively fill the
-volume — aggregate worst case ≈ (models cached) × the per-model cap. A
-budget is measured once at load and doesn't shrink if the volume later
-fills from other writers (it's re-measured on the next model load).
+**Bounding is GLOBAL (Phase 3, as-built), not per-model.** One process-wide
+ceiling shared across all loaded models; the accountant scans the entire
+`darkbloom/kv/` tree (all model dirs + unowned dirs). The default
+`min(10 GiB, 50% of free)` is recomputed every 30s, so it shrinks if the
+volume fills from other writers. Cross-model value-based eviction ensures the
+lowest-value KV (across the fleet) is dropped first, so a high-churn
+many-model deployment doesn't over-commit. Retired-model dirs (unowned) are
+reclaimed under pressure (not on unload), preserving restart reuse.
 
 > **Rollout guidance.** Out of the box (`DARKBLOOM_PREFIX_CACHE=1`, nothing
-> else) each model is capped at 10 GB on disk — safe for a **low-churn /
-> few-model** deployment (e.g. ≤ 5 models ⇒ ≤ 50 GB aggregate). Raise
-> `DARKBLOOM_PREFIX_CACHE_DISK_GB` when you have headroom; lower it / count
-> your models if the volume is tight. A process-wide **global** disk
-> accountant (one ceiling across all models, cross-model LRU eviction,
-> retired-dir GC) is required before enabling the flag on a **high-churn /
-> many-model fleet** — tracked in
-> [#266](https://github.com/Layr-Labs/d-inference/issues/266).
+> else) the GLOBAL default is `min(10 GiB, 50% of free)` — safe for
+> multi-model deployments; the accountant cross-model-evicts to stay under
+> one ceiling. Raise `DARKBLOOM_PREFIX_CACHE_DISK_GB` explicitly when you have
+> headroom. The global accountant resolves issue
+> [#266](https://github.com/Layr-Labs/d-inference/issues/266) (the per-model
+> limitation is retired).
 
 **Known limitation (low):** a model directory is keyed by `sha256(modelId)`
 and is *not* deleted when that model is retired/unloaded, so directories
@@ -471,7 +516,7 @@ undecryptable and are swept).
 
 ---
 
-## 12. Security model (TB-007)
+## 13. Security model (TB-007)
 
 This cache adds **encryption-at-rest** (disk-theft / local-attacker
 defense). It does **not** close the in-process **cross-tenant** channel:
@@ -495,16 +540,17 @@ case.
 
 ---
 
-## 13. Code & test map
+## 14. Code & test map
 
 | Concern | File |
 |---|---|
 | File format / crypto seal | `provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift` |
 | KEK envelope | `KVCacheKEK.swift`, `KeyWrappingService.swift`, `SecureEnclaveKeyWrappingService.swift`, `WrappedKEKStorage.swift` |
 | `[KVCache]` ↔ bytes | `KVCacheSerializer.swift` |
-| Wired SSD backend | `EncryptedPrefixCachePersistence.swift` |
-| Checkpoint tier (unwired) | `PrefixCacheManager.swift`, `PrefixCacheIndex.swift`, `PrefixDigest.swift`, `PrefixCacheRAM.swift` |
-| Flag wiring | `Inference/BatchScheduler.swift` (`makeEncryptedPrefixPersistenceIfEnabled`) |
+| Wired SSD backend (engine tier) | `EncryptedPrefixCachePersistence.swift` |
+| Checkpoint tier (wired) | `PrefixCacheManager.swift`, `PrefixCacheIndex.swift`, `PrefixDigest.swift`, `PrefixCacheRAM.swift`, `PrefixCachePastWindow.swift` |
+| Global disk accountant (Phase 3) | `GlobalDiskAccountant.swift` |
+| Flag wiring + budget resolution | `Inference/BatchScheduler.swift` (`makePrefixCacheBackingIfEnabled`, `resolveDiskBudget`, `prefixCacheMinPersistTokens`) |
 | Engine block cache + persistence hook | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatching/PrefixCache.swift` |
 | Tests | `provider-swift/Tests/ProviderCoreTests/KVCache/*`, `libs/mlx-swift-lm/Tests/MLXLMTests/CBPrefixCacheTests.swift` |
 

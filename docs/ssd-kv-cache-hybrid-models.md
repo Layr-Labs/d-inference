@@ -116,32 +116,38 @@ restore is exact, so reuse past the window is correct in this pipeline today.
 
 ### What the window *does* still control
 
-The only place the window matters is `PrefixDigest.checkpoints(forSliding
-Window:)`, which today **deliberately** emits boundaries `≤ window`:
+`PrefixDigest.checkpoints(forSlidingWindow:maxContext:pastWindowProven:)` now
+**extends past the window** for PROVEN families (Gemma), via a coarse tail
+ladder `[2048, 4096, 8192, 16384, 32768]` up to a 32k ceiling (or the model's
+`maxContextLength` if smaller). Unproven families (GPT-OSS — where the window
+genuinely discards) keep the within-window-only ladder:
 
-| Model | min sliding window | default checkpoint boundaries (current) |
-|---|---|---|
-| Gemma-4 | **1024** | 256, 512, 1024 |
-| GPT-OSS | **128** | 64, 128 |
+| Model | min sliding window | PROVEN? | checkpoint boundaries (as-built, Phase 1) |
+|---|---|---|---|
+| Gemma-4 | **1024** | YES (proven bit-exact past-window restore) | 256, 512, 1024, **2048, 4096, 8192, 16384, 32768** (up to maxContext) |
+| GPT-OSS | **128** | NO (unproven) | 64, 128 (capped at window) |
 
-This is a **conservative default**, kept because (a) past-window restore was
-unverified until the test above, and (b) a sliding layer that has wrapped
-holds *strictly less* benefit per extra token than a full layer, so the
-marginal value of a very long checkpoint is mostly from the full-attention
-layers. Now that past-window equivalence is proven, the cap **can be lifted**
-to allow long shared-prefix reuse (e.g. a 100k system prompt): the full
-layers would store 100k KV and the sliding layers their window. The cost is
-storage/IO (full-layer KV for the whole prefix on disk) and restore latency
-(decrypt + rebuild grows with prefix size), not correctness. Lifting it is
-tracked separately — see [#266](https://github.com/Layr-Labs/d-inference/issues/266)
-and the new follow-up issue for long-prefix checkpoints.
+**How it's wired (Phase 1, `PrefixDigest.swift:62-88`):**
+`PrefixCachePastWindow.isProven(arch:)` returns `true` for any architecture
+string containing "gemma" (case-insensitive). When `pastWindowProven == true`
+AND `maxContext > inWindow.last`, the ladder is extended with the tail
+`[2048, 4096, 8192, 16384, 32768]`, filtered to `(inWindow.last, maxContext]`.
+Unproven families keep the within-window ladder unchanged (safe default).
 
-> Honest tradeoff at the current default: GPT-OSS's 128-token window means a
-> within-window checkpoint saves at most ~128 tokens of prefill on its
+The cost of a long checkpoint is storage/IO (full-layer KV for the whole
+prefix on disk) and restore latency (decrypt + rebuild grows with prefix
+size), not correctness (proven by `gemma4RestoreMatchesColdPastWindow` at
+L=2048 and L=4096, both > the 1024 window). The 32k ceiling is a human
+decision balancing reuse vs write amplification.
+
+> Honest tradeoff for GPT-OSS at the current boundary: its 128-token window
+> means a within-window checkpoint saves at most ~128 tokens of prefill on its
 > sliding layers — modest. Its full-attention layers and TTFT on a shared
 > system prompt still benefit (measured: 2.60× at a 96-tok prefix). Long
-> shared prefixes are not yet reused only because the boundary default caps
-> them, not because the KV cache can't represent them.
+> shared prefixes (> 128 tok) are not reused only because the boundary default
+> caps them (unproven), not because the KV cache can't represent them. Lifting
+> the cap for GPT-OSS requires proving past-window restore equivalence via a
+> test like `gemma4RestoreMatchesColdPastWindow`.
 
 ## 4. Isolation — how we guarantee other models are unaffected
 

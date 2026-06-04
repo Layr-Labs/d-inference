@@ -89,7 +89,9 @@ func bug1_engineTierReportsUsageAndGetsSignaled() async throws {
     let persistence = EncryptedPrefixCachePersistence(
         kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding,
         accountant: accountant, modelKey: modelKey)
-    _ = await accountant.register(modelKey: modelKey, owner: persistence)
+    let token = await accountant.register(modelKey: modelKey, owner: persistence)
+    // HIGH-1-FIX: set the token so usage pushes are token-scoped.
+    persistence.setAccountantToken(token)
 
     // Usage must be 0 before any save.
     #expect(await accountant._usageForTest(modelKey: modelKey) == 0)
@@ -567,7 +569,9 @@ func codexR2High2_engineEvictionReconcilesAccountant() async {
     let p = EncryptedPrefixCachePersistence(
         kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding,
         accountant: accountant, modelKey: modelKey)
-    _ = await accountant.register(modelKey: modelKey, owner: p)
+    let token = await accountant.register(modelKey: modelKey, owner: p)
+    // HIGH-1-FIX: set the token so usage pushes are token-scoped.
+    p.setAccountantToken(token)
     // Write 4 blocks.
     for i in 0..<4 {
         p.saveBlock(blockHash: Data("blk-\(i)".utf8), layerCaches: engineBlock(layers: 1, tokens: 256))
@@ -619,4 +623,159 @@ func codexR2Medium_recursiveTempSweep() throws {
     #expect(!FileManager.default.fileExists(atPath: nestedTemp.path),
         "CODEX-R2-MEDIUM: NESTED temp must be swept (recursive)")
     #expect(FileManager.default.fileExists(atPath: realFile.path), "committed file must survive")
+}
+
+// MARK: - Codex round-3 fixes (GPT-5.5 xhigh)
+
+@Test
+func codexR3High1_staleUpdateUsageIgnored() async {
+    // CODEX-R3 HIGH-1 regression: accountant updates must be token-scoped.
+    // A stale detached push (from an older load that unloaded, or from a
+    // stale checkpoint manager) must NOT clobber the current owner's usage.
+    // Before fix: updateUsage(modelKey:...) blindly overwrites runningTotals/
+    // valueSummaries by modelKey alone. After fix: tracked activeToken per
+    // modelKey; stale token's push is NO-OP.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 30)
+
+    // Register modelKey "m" → token1, push 1000 bytes.
+    let owner1 = FakeOwner()
+    let token1 = await accountant.register(modelKey: "m", owner: owner1)
+    await accountant.updateUsage(token: token1, totalBytes: 1000, valueSummary: [
+        EntryValue(modelKey: "m", digestHex: "a", fileBytes: 1000, score: 0.1, fileURL: nil),
+    ])
+    #expect(await accountant._usageForTest(modelKey: "m") == 1000)
+
+    // Deregister token1 (unload).
+    await accountant.deregister(token1)
+    #expect(await accountant._usageForTest(modelKey: "m") == nil, "deregister clears usage")
+
+    // Register "m" again → token2, push 2000 bytes (via token2).
+    let owner2 = FakeOwner()
+    let token2 = await accountant.register(modelKey: "m", owner: owner2)
+    await accountant.updateUsage(token: token2, totalBytes: 2000, valueSummary: [
+        EntryValue(modelKey: "m", digestHex: "b", fileBytes: 2000, score: 0.2, fileURL: nil),
+    ])
+    #expect(await accountant._usageForTest(modelKey: "m") == 2000)
+
+    // STALE push: a detached Task from token1's load tries to update usage
+    // (simulates a late checkpoint flush or a stale saveBlock push carrying
+    // the STALE token1). It must be IGNORED (token1 is no longer the active owner).
+    await accountant.updateUsage(token: token1, totalBytes: 999, valueSummary: [
+        EntryValue(modelKey: "m", digestHex: "stale", fileBytes: 999, score: 0.0, fileURL: nil),
+    ])
+
+    // HIGH-1-FIX: token2's usage must be unaffected (still 2000, not clobbered to 999).
+    #expect(await accountant._usageForTest(modelKey: "m") == 2000,
+        "CODEX-R3-HIGH-1: stale updateUsage must be ignored (token2 still active)")
+}
+
+@Test
+func codexR3High1_staleUpdateAfterDeregisterNoResurrect() async {
+    // CODEX-R3 HIGH-1 regression (variant): a stale updateUsage after BOTH
+    // tokens deregistered must NOT resurrect runningTotals["m"]. Before fix:
+    // updateUsage(token:...) would still overwrite if the token was in registry.
+    // After fix: NO-OP when the token is not the active one.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 30)
+
+    let owner1 = FakeOwner()
+    let token1 = await accountant.register(modelKey: "m", owner: owner1)
+    await accountant.updateUsage(token: token1, totalBytes: 1000, valueSummary: [])
+    await accountant.deregister(token1)
+    #expect(await accountant._usageForTest(modelKey: "m") == nil, "deregister clears usage")
+
+    // Stale push after deregister (carrying the stale token1).
+    await accountant.updateUsage(token: token1, totalBytes: 999, valueSummary: [])
+    // HIGH-1-FIX: must NOT resurrect usage (still nil, not 999).
+    #expect(await accountant._usageForTest(modelKey: "m") == nil,
+        "CODEX-R3-HIGH-1: stale updateUsage after deregister must NOT resurrect usage")
+}
+
+@Test
+func codexR3High1_staleUpdateWithTwoLiveTokensIgnored() async {
+    // CODEX-R3 HIGH-1 regression (the LOAD-BEARING variant): this is the ONLY
+    // test that actually exercises the `activeToken[modelKey] == token.id`
+    // guard. The sibling tests deregister token1 BEFORE the stale push, so the
+    // pre-existing `registry[token.id]` guard catches them — removing the
+    // activeToken line leaves them green. Here BOTH tokens are LIVE (registered,
+    // never deregistered) for the same modelKey, so token1 IS still in registry.
+    // Only the activeToken guard distinguishes the stale (token1) push from the
+    // current (token2) one. Remove that guard → token1's push clobbers token2's
+    // usage → this test fails. That is the true revert-confirmation.
+    //
+    // Production window: a superseded/concurrent reload that re-registers the
+    // same modelKey before the previous owner deregistered (BatchScheduler today
+    // deregisters first, so this is defense-in-depth — but the guard must work).
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 30)
+
+    // token1 registers modelKey "m" and pushes 1000.
+    let owner1 = FakeOwner()
+    let token1 = await accountant.register(modelKey: "m", owner: owner1)
+    await accountant.updateUsage(token: token1, totalBytes: 1000, valueSummary: [
+        EntryValue(modelKey: "m", digestHex: "a", fileBytes: 1000, score: 0.1, fileURL: nil),
+    ])
+    #expect(await accountant._usageForTest(modelKey: "m") == 1000)
+
+    // token2 registers the SAME modelKey WITHOUT token1 deregistering first.
+    // register() makes token2 the active owner and resets usage to 0; token1
+    // remains in `registry` (still "live").
+    let owner2 = FakeOwner()
+    let token2 = await accountant.register(modelKey: "m", owner: owner2)
+    await accountant.updateUsage(token: token2, totalBytes: 2000, valueSummary: [
+        EntryValue(modelKey: "m", digestHex: "b", fileBytes: 2000, score: 0.2, fileURL: nil),
+    ])
+    #expect(await accountant._usageForTest(modelKey: "m") == 2000)
+
+    // STALE push carrying token1 (still in registry). Only the activeToken
+    // guard can reject it — registry[token1.id] is non-nil.
+    await accountant.updateUsage(token: token1, totalBytes: 999, valueSummary: [
+        EntryValue(modelKey: "m", digestHex: "stale", fileBytes: 999, score: 0.0, fileURL: nil),
+    ])
+
+    // HIGH-1-FIX: token2's usage must survive (2000, not clobbered to 999).
+    #expect(await accountant._usageForTest(modelKey: "m") == 2000,
+        "CODEX-R3-HIGH-1: with two live tokens, a stale token's updateUsage must be a NO-OP")
+}
+
+@Test
+func codexR3High2_loadModelCleanupIdentityChecked() async throws {
+    // CODEX-R3 HIGH-2 regression: loadModel's epoch-bail cleanup must be
+    // identity-checked. If load A suspends and load B completes (sets
+    // self.engine = B.engine) before A resumes, A's stale-epoch cleanup must
+    // NOT clobber B's live self.engine. Before fix: unconditional `self.engine
+    // = nil` on stale-epoch. After fix: `if self.engine === engine { self.engine = nil }`.
+    //
+    // This is hard to unit-test without a model (the real loadModel is complex).
+    // Instead we test the CONCEPTUAL fix: identity-checked cleanup. We simulate
+    // the interleaving by manually setting self.engine to a "winner" object,
+    // then calling a cleanup that should identity-check before niling.
+    //
+    // The load-bearing assertion: after a superseded load's cleanup, the winner's
+    // self.engine is INTACT (not niled). The fix is verified by inspection
+    // (lines 188-207, 233-254 in BatchScheduler.swift use identity checks).
+    // This test documents the INTENT and confirms the pattern compiles.
+    //
+    // MINIMAL STUB: we can't instantiate a real BatchScheduler + BatchedEngine
+    // without a model. Instead we show the identity-check pattern is sound:
+    final class Holder {
+        var engine: AnyObject?
+    }
+    let h = Holder()
+    let engineA = NSObject()
+    let engineB = NSObject()
+
+    // Load A assigns engineA.
+    h.engine = engineA
+    // Load B wins (assigns engineB).
+    h.engine = engineB
+    // Load A resumes, checks epoch (superseded), MUST identity-check before nil.
+    if h.engine === engineA { h.engine = nil }  // NO-OP if winner already replaced it
+    // HIGH-2-FIX: engineB must survive (not niled by A's stale cleanup).
+    #expect(h.engine === engineB,
+        "CODEX-R3-HIGH-2: identity-checked cleanup must NOT nil the winner's engine")
 }

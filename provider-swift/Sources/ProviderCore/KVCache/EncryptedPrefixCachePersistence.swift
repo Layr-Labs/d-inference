@@ -62,6 +62,13 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// 12-char modelKey (sha256(modelId)[:12]) for accountant registration.
     /// BUG-1-FIX: exposed as public so BatchScheduler can register this owner.
     public let modelKey: String
+    /// HIGH-1-FIX: Accountant registration token (set by BatchScheduler after
+    /// register, cleared on deregister). Usage pushes must pass this token so
+    /// stale detached Tasks (from an older load) are NO-OP.
+    /// Thread-safe: reads are atomic (Optional is a value type), writes are
+    /// guarded by sweepLock (setAccountantToken is always called on the same
+    /// executor as register/deregister, so no race on the accountant itself).
+    private var accountantToken: AccountantToken?
 
     public init(
         kekKey: SymmetricKey, dir: URL, binding: PrefixCacheModelBinding,
@@ -206,6 +213,8 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// Triggered by saveBlock (synchronous, no actor hops allowed), so the
     /// push is fire-and-forget. Scans the dir and builds an mtime-LRU summary
     /// (mirroring tick's degraded scoring for unowned dirs).
+    /// HIGH-1-FIX: capture accountantToken under the lock and pass it to the
+    /// detached push so stale Tasks (from an older load) are NO-OP.
     private func pushUsageToAccountantIfNeeded(addedBytes: Int, accountant: GlobalDiskAccountant) {
         sweepLock.lock()
         bytesSincePush += max(0, addedBytes)
@@ -219,13 +228,16 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         // savings. Without an accountant, keep the per-model `diskBudgetBytes/8`.
         let threshold = diskBudgetBytes > 0 ? diskBudgetBytes / 8 : 1 * 1024 * 1024
         let trigger = bytesSincePush >= threshold
+        // HIGH-1-FIX: capture the token while holding the lock.
+        let token = accountantToken
         sweepLock.unlock()
-        guard trigger else { return }
+        guard trigger, let token else { return }
 
         let (total, summary) = buildUsageSnapshot()
         // Fire-and-forget push (saveBlock is synchronous on the engine step loop).
-        Task.detached { [accountant, modelKey, total, summary] in
-            await accountant.updateUsage(modelKey: modelKey, totalBytes: total, valueSummary: summary)
+        // HIGH-1-FIX: pass the token so stale detached Tasks are NO-OP.
+        Task.detached { [accountant, token, total, summary] in
+            await accountant.updateUsage(token: token, totalBytes: total, valueSummary: summary)
         }
         // Reset the debounce counter after push.
         sweepLock.lock()
@@ -267,17 +279,26 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// right after registration (MEDIUM: so a reloaded model's pre-existing flat
     /// files are accounted immediately, not invisible until a saveBlock crosses
     /// the debounce).
+    /// HIGH-1-FIX: pass the token so stale Tasks are NO-OP.
     public func publishUsageNow() async {
-        guard let accountant else { return }
+        guard let accountant, let token = accountantToken else { return }
         let (total, summary) = buildUsageSnapshot()
         resetBytesSincePush()
-        await accountant.updateUsage(modelKey: modelKey, totalBytes: total, valueSummary: summary)
+        await accountant.updateUsage(token: token, totalBytes: total, valueSummary: summary)
     }
 
     /// Reset the debounce counter under the lock (sync — NSLock can't be held
     /// across an await, so callers in async contexts call this before/after).
     private func resetBytesSincePush() {
         sweepLock.lock(); bytesSincePush = 0; sweepLock.unlock()
+    }
+
+    /// HIGH-1-FIX: Store the accountant token (called by BatchScheduler after
+    /// register). Thread-safe via sweepLock.
+    public func setAccountantToken(_ token: AccountantToken?) {
+        sweepLock.lock()
+        accountantToken = token
+        sweepLock.unlock()
     }
 
     /// Evict oldest `.darkbloom-kv` files (by modification time) until the

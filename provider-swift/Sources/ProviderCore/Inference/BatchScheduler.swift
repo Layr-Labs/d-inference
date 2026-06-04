@@ -195,13 +195,14 @@ public actor BatchScheduler {
         self.engineTierOwner = build.engineTierOwner  // BUG-1-FIX
         await engine.start()
         // Final epoch check after start() — start can suspend too.
+        // HIGH-2-FIX: identity-checked cleanup — only nil self.engine if it's
+        // the one THIS load assigned (self.engine === engine). If a newer load
+        // already replaced it, leave the winner's self.* intact.
         guard loadEpoch == generationEpoch else {
-            self.engine = nil
-            // Keep checkpointManager consistent with engine (don't leave a
-            // stale manager pointing at the superseded model).
-            self.checkpointManager = nil
-            self.checkpointBoundaries = []
-            self.engineTierOwner = nil  // BUG-1-FIX
+            if self.engine === engine { self.engine = nil }
+            if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
+            if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
+            if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
             await engine.stop()
             return
         }
@@ -230,9 +231,12 @@ public actor BatchScheduler {
         // CODEX-R2 HIGH-1: re-check epoch after the checkpoint setup awaits. If a
         // newer load/unload superseded us, bail (the manager already deregistered
         // itself via the closed-guard above; nil it so we don't serve stale).
+        // HIGH-2-FIX: identity-checked cleanup (same as above).
         guard loadEpoch == generationEpoch else {
-            self.engine = nil; self.checkpointManager = nil
-            self.checkpointBoundaries = []; self.engineTierOwner = nil
+            if self.engine === engine { self.engine = nil }
+            if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
+            if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
+            if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
             await engine.stop()
             return
         }
@@ -248,12 +252,32 @@ public actor BatchScheduler {
             // await, undo the registration so we don't leave a stale engine owner.
             if loadEpoch != generationEpoch {
                 await accountant.deregister(token)
+                owner.setAccountantToken(nil)
             } else {
                 engineTierAccountantToken = token
+                // HIGH-1-FIX: thread the token through to the owner so its usage
+                // pushes are token-scoped (stale detached Tasks are NO-OP).
+                owner.setAccountantToken(token)
                 // MEDIUM-FIX (reload-undercount): publish the pre-existing flat
                 // files NOW so they count against the global budget immediately,
                 // not only once a later saveBlock crosses the debounce.
                 await owner.publishUsageNow()
+                // HIGH-2-FIX: re-check epoch after publishUsageNow() await. If
+                // superseded, deregister the engine-tier token and bail without
+                // touching the winner's planner/watchdog.
+                guard loadEpoch == generationEpoch else {
+                    await accountant.deregister(token)
+                    owner.setAccountantToken(nil)
+                    if self.engineTierAccountantToken == token {
+                        self.engineTierAccountantToken = nil
+                    }
+                    if self.engine === engine { self.engine = nil }
+                    if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
+                    if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
+                    if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+                    await engine.stop()
+                    return
+                }
             }
         }
 
@@ -1135,6 +1159,8 @@ public actor BatchScheduler {
         if let accountant = diskAccountant, let token = engineTierAccountantToken {
             await accountant.deregister(token)
         }
+        // HIGH-1-FIX: clear the token from the owner so stale Tasks are NO-OP.
+        engineTierOwner?.setAccountantToken(nil)
         engineTierOwner = nil
         engineTierAccountantToken = nil
 

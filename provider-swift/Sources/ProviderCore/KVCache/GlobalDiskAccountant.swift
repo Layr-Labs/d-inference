@@ -100,6 +100,12 @@ public actor GlobalDiskAccountant {
 
     /// Registered owners: token.id → (modelKey, owner).
     private var registry: [UUID: (modelKey: String, owner: PrefixCacheOwner)] = [:]
+    /// HIGH-1-FIX: Track the CURRENT active token per modelKey. Set on register,
+    /// cleared on deregister ONLY IF the deregistered token is still active.
+    /// Usage updates are scoped to the active token: a stale token's push is
+    /// ignored (NO-OP), so a detached Task from an earlier load can't clobber
+    /// a newer load's runningTotals/valueSummaries.
+    private var activeToken: [String: UUID] = [:]
     /// Per-model running total (bytes), pushed by updateUsage.
     private var runningTotals: [String: Int] = [:]
     /// Per-model value summaries, pushed by updateUsage.
@@ -145,6 +151,8 @@ public actor GlobalDiskAccountant {
     public func register(modelKey: String, owner: PrefixCacheOwner) async -> AccountantToken {
         let token = AccountantToken(id: UUID())
         registry[token.id] = (modelKey, owner)
+        // HIGH-1-FIX: mark this token as the active owner for the modelKey.
+        activeToken[modelKey] = token.id
         runningTotals[modelKey] = 0
         valueSummaries[modelKey] = []
 
@@ -172,10 +180,17 @@ public actor GlobalDiskAccountant {
 
     public func deregister(_ token: AccountantToken) async {
         guard let (modelKey, _) = registry.removeValue(forKey: token.id) else { return }
-        // Flip ownership to unowned (accountant will scan it on next tick).
-        // Do NOT delete the dir — it holds reusable files for a restart.
-        runningTotals.removeValue(forKey: modelKey)
-        valueSummaries.removeValue(forKey: modelKey)
+        // HIGH-1-FIX: clear activeToken ONLY if this token is still the active one.
+        // If a newer reload already registered a fresh token, leave activeToken as-is.
+        if activeToken[modelKey] == token.id {
+            activeToken.removeValue(forKey: modelKey)
+        }
+        // HIGH-1-FIX: clear runningTotals/valueSummaries ONLY if this token was
+        // active. If superseded, the newer owner already set them — leave intact.
+        if activeToken[modelKey] == nil {
+            runningTotals.removeValue(forKey: modelKey)
+            valueSummaries.removeValue(forKey: modelKey)
+        }
         logger.info("deregistered model \(modelKey, privacy: .public)")
 
         // Stop tick if no more registered models (no work to do).
@@ -189,7 +204,25 @@ public actor GlobalDiskAccountant {
 
     /// Called by PrefixCacheManager after each byte-changing op (flush,
     /// persist, eviction). Cheap O(this-model-entries) push, no tree walk.
+    /// HIGH-1-FIX: modelKey-only signature kept for back-compat (engine-tier
+    /// calls from EncryptedPrefixCachePersistence), but usage updates from a
+    /// stale registration (e.g. detached Task from an older load) are NO-OP:
+    /// we only accept updates for the CURRENT active token. Callers that can
+    /// pass a token should use updateUsage(token:totalBytes:valueSummary:).
     public func updateUsage(modelKey: String, totalBytes: Int, valueSummary: [EntryValue]) async {
+        // NO-OP if no active registration for this modelKey (all owners unloaded).
+        guard activeToken[modelKey] != nil else { return }
+        runningTotals[modelKey] = max(0, totalBytes)
+        valueSummaries[modelKey] = valueSummary
+        await enforceIfOverBudget()
+    }
+
+    /// HIGH-1-FIX: Token-scoped usage update. Only accepts the update if the
+    /// token is still the active owner for its modelKey — stale tokens (from a
+    /// superseded load or a detached Task that outlived the unload) are NO-OP.
+    public func updateUsage(token: AccountantToken, totalBytes: Int, valueSummary: [EntryValue]) async {
+        guard let (modelKey, _) = registry[token.id] else { return }
+        guard activeToken[modelKey] == token.id else { return }
         runningTotals[modelKey] = max(0, totalBytes)
         valueSummaries[modelKey] = valueSummary
         await enforceIfOverBudget()

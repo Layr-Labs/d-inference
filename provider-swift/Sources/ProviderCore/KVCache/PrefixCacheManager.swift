@@ -814,14 +814,15 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// live checkpoint files — the cross-actor live-delete the design forbids.
     /// Dropping the pre-registration push is safe: registerWithAccountant does
     /// the initial usage push itself, right after registration.
+    /// HIGH-1-FIX: pass the token so stale detached Tasks are NO-OP.
     private func notifyAccountant() async {
         // CODEX-R2 MEDIUM: also guard on !closed — a stale unstructured notify
         // Task (e.g. from reconcileWithDisk) could otherwise re-add this model's
         // runningTotals/valueSummaries after deregistration.
-        guard let accountant, let index, accountantToken != nil, !closed else { return }
+        guard let accountant, let index, let token = accountantToken, !closed else { return }
         let totalBytes = index.bytes(modelHash: binding.modelHash)
         let valueSummary = buildValueSummary()
-        await accountant.updateUsage(modelKey: modelKey, totalBytes: totalBytes, valueSummary: valueSummary)
+        await accountant.updateUsage(token: token, totalBytes: totalBytes, valueSummary: valueSummary)
     }
 
     /// CLAIM ownership with the accountant BEFORE reconcileWithDisk runs.

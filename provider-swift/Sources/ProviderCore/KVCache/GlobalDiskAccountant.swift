@@ -57,11 +57,15 @@ public protocol PrefixCacheOwner: Sendable {
 
 /// Per-entry value data for benefit-per-byte scoring (Phase-1 semantics).
 /// Aggregated across all models (owned + unowned) during enforcement.
+/// BUG-3-FIX: added `fileURL` so evictUnownedEntries can delete the
+/// discovered file directly instead of re-deriving from the untrusted
+/// index relativePath (path-traversal defense).
 public struct EntryValue: Sendable {
     let modelKey: String
     let digestHex: String
     let fileBytes: Int
     let score: Double
+    let fileURL: URL?  // BUG-3-FIX: discovered file path from the tick scan or nil for owned.
 }
 
 // MARK: - Registration token
@@ -107,6 +111,11 @@ public actor GlobalDiskAccountant {
 
     /// Tick task (started lazily on first register, cancelled on shutdown).
     private var tickTask: Task<Void, Never>?
+    /// BUG-6-FIX: reentrancy guard for enforceIfOverBudget. Without this,
+    /// concurrent updateUsage calls can interleave at the owner-eviction await,
+    /// both targeting the same owner with stale runningTotals → over-eviction.
+    private var isEnforcing = false
+    private var enforceRequested = false
 
     // MARK: - Init
 
@@ -138,6 +147,19 @@ public actor GlobalDiskAccountant {
         registry[token.id] = (modelKey, owner)
         runningTotals[modelKey] = 0
         valueSummaries[modelKey] = []
+
+        // BUG-7-FIX: A prior deregister left this model's files on disk; a tick
+        // may have folded them into unowned*. Drop that stale share now so
+        // register + updateUsage don't double-count it (owned + unowned) until
+        // the next tick. The subtraction is exact (EntryValue carries fileBytes).
+        let staleBytes = unownedValueSummaries
+            .filter { $0.modelKey == modelKey }
+            .reduce(0) { $0 + $1.fileBytes }
+        if staleBytes > 0 {
+            unownedBytes = max(0, unownedBytes - staleBytes)
+            unownedValueSummaries.removeAll { $0.modelKey == modelKey }
+            logger.info("register: dropped stale unowned accounting for \(modelKey, privacy: .public) (\(staleBytes) bytes)")
+        }
 
         // Start the tick watchdog on first register (pattern: BatchScheduler.startPendingTimeoutWatchdog).
         if tickTask == nil {
@@ -195,7 +217,25 @@ public actor GlobalDiskAccountant {
 
     /// Check if global total > ceiling; if so, evict lowest-score entries
     /// across ALL models (owned + unowned) until within budget.
+    /// BUG-6-FIX: guarded against reentrancy across the owner-eviction await.
     private func enforceIfOverBudget() async {
+        // BUG-6-FIX: if already enforcing, set the requested flag and return.
+        // The in-flight pass will re-run once if any concurrent caller arrived.
+        if isEnforcing {
+            enforceRequested = true
+            return
+        }
+        isEnforcing = true
+        defer { isEnforcing = false }
+
+        repeat {
+            enforceRequested = false
+            await enforceOnce()
+        } while enforceRequested
+    }
+
+    /// Single enforcement pass (factored out for the reentrancy guard loop).
+    private func enforceOnce() async {
         let ceiling = effectiveCeiling()
         var total = globalTotal()
         guard total > ceiling else { return }
@@ -238,6 +278,14 @@ public actor GlobalDiskAccountant {
                 let freed = await evictUnownedEntries(modelKey: modelKey, entries: entries)
                 unownedBytes = max(0, unownedBytes - freed)
                 total -= freed
+                // BUG-4-FIX: prune the just-evicted digests from the cached
+                // unowned summary so a between-tick re-enforce (updateUsage →
+                // enforceIfOverBudget) cannot re-count their phantom bytes.
+                // The summary is otherwise only rebuilt on the 30s tick.
+                let evicted = Set(entries.map { $0.digestHex })
+                unownedValueSummaries.removeAll {
+                    $0.modelKey == modelKey && evicted.contains($0.digestHex)
+                }
                 logger.info("deleted unowned model \(modelKey, privacy: .public) files: freed \(freed)")
             }
         }
@@ -262,19 +310,24 @@ public actor GlobalDiskAccountant {
         let allIndexEntries = index.allEntries()
 
         for entry in entries {
-            // BUG-2-FIX(a): resolve file path for BOTH layouts.
-            // Checkpoint tier: files nested under <modelHash[:12]>/<digest>.darkbloom-kv
-            // Engine tier: files flat under <modelKey>/<blockHash>.darkbloom-kv
-            // Try nested first (if an index entry has relativePath, use it),
-            // else fall back to flat (engine tier has no index entries).
+            // BUG-3-FIX: use the fileURL discovered by tick's collectKVFiles
+            // instead of re-deriving from the untrusted index relativePath.
+            // This closes the path-traversal hole: the URL comes from a real
+            // directory walk, never from index.json (which is plaintext and
+            // NOT authenticated). Fallback to the old logic only for entries
+            // from owned summaries (where fileURL is nil).
             let fileURL: URL
-            if let indexEntry = allIndexEntries.first(where: { $0.digestHex == entry.digestHex }),
-               !indexEntry.relativePath.isEmpty {
-                // Checkpoint tier: relativePath is modelDirComponent/digestHex.darkbloom-kv
-                fileURL = modelDir.appendingPathComponent(indexEntry.relativePath)
+            if let discovered = entry.fileURL {
+                fileURL = discovered
             } else {
-                // Engine tier: flat file directly under modelDir.
-                fileURL = modelDir.appendingPathComponent("\(entry.digestHex)\(suffix)")
+                // Fallback (owned-summary entries or legacy tests): reconstruct
+                // from digestHex. Try nested first (checkpoint tier).
+                if let indexEntry = allIndexEntries.first(where: { $0.digestHex == entry.digestHex }),
+                   !indexEntry.relativePath.isEmpty {
+                    fileURL = modelDir.appendingPathComponent(indexEntry.relativePath)
+                } else {
+                    fileURL = modelDir.appendingPathComponent("\(entry.digestHex)\(suffix)")
+                }
             }
 
             if let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
@@ -397,8 +450,9 @@ public actor GlobalDiskAccountant {
                     score = size > 0 ? (1.0 / max(1.0, age)) / Double(size) : 0.0
                 }
 
+                // BUG-3-FIX: thread the discovered fileURL through EntryValue.
                 unownedValues.append(EntryValue(
-                    modelKey: modelKey, digestHex: digestHex, fileBytes: size, score: score
+                    modelKey: modelKey, digestHex: digestHex, fileBytes: size, score: score, fileURL: fileURL
                 ))
             }
         }
@@ -453,5 +507,15 @@ public actor GlobalDiskAccountant {
     public func shutdown() {
         tickTask?.cancel()
         tickTask = nil
+    }
+
+    // MARK: - Test introspection
+
+    /// Last-reported OWNED usage (bytes) for a model, or nil if not registered.
+    /// Test-only seam: regression tests assert that an owner's usage push
+    /// actually reached the accountant (e.g. the engine tier's saveBlock →
+    /// pushUsageToAccountantIfNeeded path). Not used in production.
+    public func _usageForTest(modelKey: String) -> Int? {
+        runningTotals[modelKey]
     }
 }

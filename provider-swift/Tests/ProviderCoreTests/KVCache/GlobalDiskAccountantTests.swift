@@ -100,11 +100,11 @@ func accountantOverBudgetSignalsOwner() async {
     // Push usage totaling 6000 (over ceiling 5000).
     // Model1 has lower-score entries than model2.
     let summary1 = [
-        EntryValue(modelKey: "model1", digestHex: "a", fileBytes: 1000, score: 0.1),
-        EntryValue(modelKey: "model1", digestHex: "b", fileBytes: 2000, score: 0.2),
+        EntryValue(modelKey: "model1", digestHex: "a", fileBytes: 1000, score: 0.1, fileURL: nil),
+        EntryValue(modelKey: "model1", digestHex: "b", fileBytes: 2000, score: 0.2, fileURL: nil),
     ]
     let summary2 = [
-        EntryValue(modelKey: "model2", digestHex: "c", fileBytes: 3000, score: 0.5),
+        EntryValue(modelKey: "model2", digestHex: "c", fileBytes: 3000, score: 0.5, fileURL: nil),
     ]
     await accountant.updateUsage(modelKey: "model1", totalBytes: 3000, valueSummary: summary1)
     await accountant.updateUsage(modelKey: "model2", totalBytes: 3000, valueSummary: summary2)
@@ -161,7 +161,7 @@ func accountantEffectiveCeilingConfiguredVsDerived() async {
     let owner1 = FakeOwner()
     _ = await accountant1.register(modelKey: "model1", owner: owner1)
     let summary1 = [
-        EntryValue(modelKey: "model1", digestHex: "x", fileBytes: 5000, score: 0.1),
+        EntryValue(modelKey: "model1", digestHex: "x", fileBytes: 5000, score: 0.1, fileURL: nil),
     ]
     await accountant1.updateUsage(modelKey: "model1", totalBytes: 9000, valueSummary: summary1)
     let calls1 = await owner1.snapshotCalls()
@@ -176,7 +176,7 @@ func accountantEffectiveCeilingConfiguredVsDerived() async {
     let owner2 = FakeOwner()
     _ = await accountant2.register(modelKey: "model2", owner: owner2)
     let summary2 = [
-        EntryValue(modelKey: "model2", digestHex: "y", fileBytes: 1500, score: 0.1),
+        EntryValue(modelKey: "model2", digestHex: "y", fileBytes: 1500, score: 0.1, fileURL: nil),
     ]
     await accountant2.updateUsage(modelKey: "model2", totalBytes: 3000, valueSummary: summary2)
     let calls2 = await owner2.snapshotCalls()
@@ -199,10 +199,10 @@ func accountantGloballyLowestScoreAcrossTwoModels() async {
     // Model1 has one low-score entry (0.05), model2 has one slightly-higher (0.1).
     // Total = 6000 (over ceiling 5000). Accountant should pick model1's entry first.
     let summary1 = [
-        EntryValue(modelKey: "model1", digestHex: "a", fileBytes: 3000, score: 0.05),
+        EntryValue(modelKey: "model1", digestHex: "a", fileBytes: 3000, score: 0.05, fileURL: nil),
     ]
     let summary2 = [
-        EntryValue(modelKey: "model2", digestHex: "b", fileBytes: 3000, score: 0.1),
+        EntryValue(modelKey: "model2", digestHex: "b", fileBytes: 3000, score: 0.1, fileURL: nil),
     ]
     await accountant.updateUsage(modelKey: "model1", totalBytes: 3000, valueSummary: summary1)
     await accountant.updateUsage(modelKey: "model2", totalBytes: 3000, valueSummary: summary2)
@@ -234,7 +234,7 @@ func accountantOwnedVsUnownedMix() async {
     let owner1 = FakeOwner()
     _ = await accountant.register(modelKey: "owned1", owner: owner1)
     let summary1 = [
-        EntryValue(modelKey: "owned1", digestHex: "x", fileBytes: 2000, score: 0.2),
+        EntryValue(modelKey: "owned1", digestHex: "x", fileBytes: 2000, score: 0.2, fileURL: nil),
     ]
     await accountant.updateUsage(modelKey: "owned1", totalBytes: 2000, valueSummary: summary1)
 
@@ -444,8 +444,8 @@ func accountantRegisteredEngineTierNotDeleted() async {
 
     // Push usage to accountant.
     let summary = [
-        EntryValue(modelKey: modelKey, digestHex: "block1", fileBytes: 1000, score: 0.1),
-        EntryValue(modelKey: modelKey, digestHex: "block2", fileBytes: 1000, score: 0.2),
+        EntryValue(modelKey: modelKey, digestHex: "block1", fileBytes: 1000, score: 0.1, fileURL: nil),
+        EntryValue(modelKey: modelKey, digestHex: "block2", fileBytes: 1000, score: 0.2, fileURL: nil),
     ]
     await accountant.updateUsage(modelKey: modelKey, totalBytes: 2000, valueSummary: summary)
 

@@ -52,6 +52,9 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     private let diskBudgetBytes: Int
     private let sweepLock = NSLock()
     private var bytesSinceSweep = 0
+    /// BUG-1-FIX: bytes written since the last usage push to the accountant.
+    /// Accumulates under sweepLock; pushed when >= threshold.
+    private var bytesSincePush = 0
 
     /// Phase 3: global disk accountant (process-wide, shared across models).
     /// nil ⇒ today's per-model behavior (backward compat).
@@ -112,7 +115,14 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
             let url = fileURL(blockHash)
             try EncryptedKVStore.writeSync(to: url, metadata: meta, chunks: chunks, kekKey: kekKey)
             let written = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
-            enforceDiskBudgetIfNeeded(addedBytes: written ?? 0)
+            // BUG-1-FIX: when accountant != nil, push usage to the accountant
+            // (debounced) so enforceIfOverBudget can signal evictForGlobalBudget.
+            // Otherwise (nil-accountant backward compat) use the local sweep.
+            if let accountant {
+                pushUsageToAccountantIfNeeded(addedBytes: written ?? 0, accountant: accountant)
+            } else {
+                enforceDiskBudgetIfNeeded(addedBytes: written ?? 0)
+            }
         } catch {
             // Best-effort: a lost block just means a future cold prefill.
             logger.warning("saveBlock failed for \(blockHash.dbkvHexString, privacy: .public): \(String(describing: error))")
@@ -189,6 +199,65 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         sweepLock.unlock()
         guard trigger else { return }
         sweep()
+    }
+
+    /// BUG-1-FIX: Debounce-push usage to the accountant so engine-tier bytes
+    /// are visible and enforceIfOverBudget can signal evictForGlobalBudget.
+    /// Triggered by saveBlock (synchronous, no actor hops allowed), so the
+    /// push is fire-and-forget. Scans the dir and builds an mtime-LRU summary
+    /// (mirroring tick's degraded scoring for unowned dirs).
+    private func pushUsageToAccountantIfNeeded(addedBytes: Int, accountant: GlobalDiskAccountant) {
+        sweepLock.lock()
+        bytesSincePush += max(0, addedBytes)
+        // Debounce threshold. When an accountant is attached, diskBudgetBytes is
+        // forced to 0 (the accountant is the sole budget authority), so a
+        // `diskBudgetBytes/8` debounce is unavailable — and a 64 MiB constant
+        // would leave the FIRST ~64 MiB of every engine model (and any model
+        // that never reaches 64 MiB) INVISIBLE to the global budget. Use a
+        // small fixed 1 MiB cadence instead: the push is cheap (a dir scan + a
+        // detached actor call) and prompt visibility matters more than debounce
+        // savings. Without an accountant, keep the per-model `diskBudgetBytes/8`.
+        let threshold = diskBudgetBytes > 0 ? diskBudgetBytes / 8 : 1 * 1024 * 1024
+        let trigger = bytesSincePush >= threshold
+        sweepLock.unlock()
+        guard trigger else { return }
+
+        // Scan the flat dir for .darkbloom-kv files, sum bytes, build mtime-LRU summary.
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
+        ) else { return }
+
+        var total = 0
+        var summary: [EntryValue] = []
+        let suffix = ".\(EncryptedKVStore.fileExtension)"
+        let nowEpoch = Int64(Date().timeIntervalSince1970)
+        for u in entries where u.lastPathComponent.hasSuffix(suffix) {
+            let name = u.lastPathComponent
+            let digestHex = String(name.dropLast(suffix.count))
+            let v = try? u.resourceValues(forKeys: Set(keys))
+            let size = v?.fileSize ?? 0
+            total += size
+            // Degraded mtime-LRU score (older = lower, mirroring tick).
+            let mtime = v?.contentModificationDate?.timeIntervalSince1970 ?? 0
+            let age = Double(nowEpoch) - mtime
+            let score = size > 0 ? (1.0 / max(1.0, age)) / Double(size) : 0.0
+            // BUG-1/3-FIX: engine-tier entries use fileURL=nil (the accountant
+            // will reconstruct from digestHex for the owned flat layout).
+            summary.append(EntryValue(
+                modelKey: modelKey, digestHex: digestHex, fileBytes: size, score: score, fileURL: nil
+            ))
+        }
+
+        // Fire-and-forget push (saveBlock is synchronous on the engine step loop).
+        Task.detached { [accountant, modelKey, total, summary] in
+            await accountant.updateUsage(modelKey: modelKey, totalBytes: total, valueSummary: summary)
+        }
+        // Reset the debounce counter after push.
+        sweepLock.lock()
+        bytesSincePush = 0
+        sweepLock.unlock()
     }
 
     /// Evict oldest `.darkbloom-kv` files (by modification time) until the

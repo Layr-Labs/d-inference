@@ -380,16 +380,74 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// checkpoint digest of `tokens[0..<checkpointLength]`. SSD
     /// persistence happens later via `flushToSSD` (write-back).
     /// Returns true if stored, false if rejected (e.g., exceeds maxBytes).
+    /// BUG-5-FIX: when RAM rejects an over-budget checkpoint AND it is
+    /// persistable (>= minPersistTokens or pinned) AND ssdEnabled, fall back
+    /// to a direct SSD write so highest-value checkpoints aren't silently lost.
     @discardableResult
-    public func store(tokens: [Int], checkpointLength: Int, caches: SendableKVCaches) -> Bool {
+    public func store(tokens: [Int], checkpointLength: Int, caches: SendableKVCaches) async -> Bool {
         guard checkpointLength > 0, checkpointLength <= tokens.count else { return false }
         let digest = PrefixDigest.digest(tokens: tokens, length: checkpointLength)
+        let digestHex = digest.dbkvHexString
         let stored = ram.put(
             modelHash: binding.modelHash, digest: digest,
             caches: caches.caches, tokenCount: checkpointLength
         )
-        if stored { stats.stores += 1 }
-        return stored
+        if stored {
+            stats.stores += 1
+            return true
+        }
+
+        // BUG-5-FIX: RAM rejected (over its maxBytes). If this checkpoint is
+        // persistable (>= minPersistTokens or pinned) AND ssdEnabled, persist
+        // it directly to SSD so highest-value checkpoints aren't silently lost
+        // on memory-constrained hosts (where RAM maxBytes = physMem/8 may be
+        // smaller than a past-window checkpoint).
+        let isPersistable = checkpointLength >= minPersistTokens || pinnedDigests.contains(digestHex)
+        guard ssdEnabled, isPersistable, let index, let kek, let cacheDir else { return false }
+        guard KVCacheSerializer.areSupported(caches.caches) else { return false }
+
+        // Dedup: already persisted or in-flight.
+        if index.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil { return false }
+        if inFlightWrites.contains(digestHex) { return false }
+
+        inFlightWrites.insert(digestHex)
+        defer { inFlightWrites.remove(digestHex) }
+
+        do {
+            let (chunks, layout) = try KVCacheSerializer.serialize(caches.caches)
+            let layoutJSON = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
+            let relativePath = "\(modelDirComponent)/\(digestHex).\(EncryptedKVStore.fileExtension)"
+            let fileURL = cacheDir.appendingPathComponent(relativePath)
+            let meta = EncryptedKVStoreMetadata(
+                modelHash: binding.modelHash, modelDtype: binding.modelDtype, modelArch: binding.modelArch,
+                vocabSize: binding.vocabSize, numLayers: binding.numLayers,
+                kvHeads: binding.kvHeads, headDim: binding.headDim, tokenCount: checkpointLength,
+                tokenPrefixHash: digestHex, kvCacheClass: "mixed",
+                metaState: [layoutJSON], chunkPlaintextSizes: chunks.map { $0.count }, createdAt: now()
+            )
+            try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
+
+            let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+            let fileBytes = (attrs?[.size] as? Int) ?? 0
+            index.record(PrefixIndexEntry(
+                modelHash: binding.modelHash, digestHex: digestHex, tokenCount: checkpointLength,
+                relativePath: relativePath, fileBytes: fileBytes, createdAt: now(), lastHitAt: now()
+            ))
+
+            stats.ssdFlushes += 1
+            enforceDiskBudget(index: index, cacheDir: cacheDir)
+
+            unsavedWrites += 1
+            if unsavedWrites >= Self.saveCoalesceThreshold {
+                if (try? index.save()) != nil { unsavedWrites = 0 }
+            }
+            await notifyAccountant()
+            // The checkpoint is now on SSD (not in RAM), so report success.
+            return true
+        } catch {
+            logger.warning("store: direct SSD persist failed for oversized checkpoint \(digestHex, privacy: .public): \(String(describing: error))")
+            return false
+        }
     }
 
     // MARK: - Flush (write-back to SSD)
@@ -692,6 +750,12 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             if unsavedWrites >= Self.saveCoalesceThreshold {
                 if (try? index.save()) != nil { unsavedWrites = 0 }
             }
+            // BUG-8-FIX: refresh the accountant after global-budget eviction so
+            // runningTotals + valueSummaries reflect the post-eviction state
+            // (freed bytes + removed entries). Without this, stale valueSummaries
+            // cause the accountant to re-select the just-evicted ghosts on the
+            // next enforce (a between-tick updateUsage from another model).
+            await notifyAccountant()
         }
 
         return freed
@@ -709,6 +773,9 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             prefillCostPerToken: prefillCostPerToken,
             halfLifeSeconds: evictionHalfLifeSeconds
         ).map { entry in
+            // BUG-3-FIX: owned entries pass fileURL=nil; the accountant will
+            // reconstruct from digestHex (safe: owned entries are never deleted
+            // by the unowned path that had the traversal hole).
             EntryValue(
                 modelKey: modelKey,
                 digestHex: entry.digestHex,
@@ -717,7 +784,8 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                     entry, now: now(),
                     prefillCostPerToken: prefillCostPerToken,
                     halfLifeSeconds: evictionHalfLifeSeconds
-                )
+                ),
+                fileURL: nil
             )
         }
     }

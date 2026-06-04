@@ -15,8 +15,18 @@ private let H = 2, D = 4
 private func block(layers: Int, tokens: Int, base: Float = 0) -> [KVCacheSimple] {
     (0..<layers).map { l in
         let c = KVCacheSimple()
-        let k = MLXArray((0..<(H * tokens * D)).map { Float($0 + l * 7) + base }, [1, H, tokens, D])
-        let v = MLXArray((0..<(H * tokens * D)).map { Float($0 + l * 7) + base + 100 }, [1, H, tokens, D])
+        // Build the [Float] payloads with explicit types FIRST. Inlining the
+        // `(0..<n).map { Float($0 + l*7) + base }` directly into the MLXArray
+        // initializer makes Swift's overload solver time out on the CI
+        // toolchain ("unable to type-check this expression in reasonable time")
+        // — MLXArray has many init overloads and the mixed Int/Float closure
+        // explodes inference. Typed locals + a typed shape disambiguate it.
+        let n = H * tokens * D
+        let shape: [Int] = [1, H, tokens, D]
+        let kData: [Float] = (0..<n).map { i in Float(i + l * 7) + base }
+        let vData: [Float] = (0..<n).map { i in Float(i + l * 7) + base + 100 }
+        let k = MLXArray(kData, shape)
+        let v = MLXArray(vData, shape)
         _ = c.update(keys: k, values: v)
         eval(c.innerState())
         return c

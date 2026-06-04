@@ -53,8 +53,17 @@ private func makeFakeKVDir(at kvRoot: URL, modelKey: String, files: [(digestHex:
 private func engineBlock(layers: Int, tokens: Int) -> [KVCacheSimple] {
     (0..<layers).map { l in
         let c = KVCacheSimple()
-        let k = MLXArray((0..<(2 * tokens * 4)).map { Float($0 + l) }, [1, 2, tokens, 4])
-        let v = MLXArray((0..<(2 * tokens * 4)).map { Float($0 + l) + 9 }, [1, 2, tokens, 4])
+        // Build the [Float] payloads with explicit types FIRST. Inlining
+        // `(0..<n).map { Float($0 + l) + 9 }` into the MLXArray initializer makes
+        // Swift's overload solver time out on the CI toolchain ("unable to
+        // type-check this expression in reasonable time"); typed locals + a typed
+        // shape disambiguate it. See EncryptedPrefixCachePersistenceTests too.
+        let n = 2 * tokens * 4
+        let shape: [Int] = [1, 2, tokens, 4]
+        let kData: [Float] = (0..<n).map { i in Float(i + l) }
+        let vData: [Float] = (0..<n).map { i in Float(i + l) + 9 }
+        let k = MLXArray(kData, shape)
+        let v = MLXArray(vData, shape)
         _ = c.update(keys: k, values: v)
         eval(c.innerState())
         return c
@@ -272,8 +281,13 @@ func bug5_storeDirectSSDFallbackWhenRamRejects() async throws {
     let tokens = Array(0..<10)
     let caches = (0..<2).map { _ in
         let c = KVCacheSimple()
-        let k = MLXArray((0..<(2 * 8 * 4)).map { Float($0) }, [1, 2, 8, 4])
-        let v = MLXArray((0..<(2 * 8 * 4)).map { Float($0 + 100) }, [1, 2, 8, 4])
+        // Typed locals so Swift's overload solver doesn't time out on the CI
+        // toolchain — see the note in engineBlock()/attnBlock() below.
+        let shape: [Int] = [1, 2, 8, 4]
+        let kData: [Float] = (0..<(2 * 8 * 4)).map { Float($0) }
+        let vData: [Float] = (0..<(2 * 8 * 4)).map { i in Float(i + 100) }
+        let k = MLXArray(kData, shape)
+        let v = MLXArray(vData, shape)
         _ = c.update(keys: k, values: v)
         eval(c.innerState())
         return c
@@ -401,8 +415,14 @@ func bug7_reloadDoesNotDoubleCount() async {
 private func attnBlock(layers: Int, tokens: Int) -> [any KVCache] {
     (0..<layers).map { l -> any KVCache in
         let c = KVCacheSimple()
-        let k = MLXArray((0..<(2 * tokens * 4)).map { Float($0 + l) }, [1, 2, tokens, 4])
-        let v = MLXArray((0..<(2 * tokens * 4)).map { Float($0 + l) + 9 }, [1, 2, tokens, 4])
+        // Typed locals (see engineBlock) to keep Swift's overload solver under
+        // the CI per-expression type-check budget.
+        let n = 2 * tokens * 4
+        let shape: [Int] = [1, 2, tokens, 4]
+        let kData: [Float] = (0..<n).map { i in Float(i + l) }
+        let vData: [Float] = (0..<n).map { i in Float(i + l) + 9 }
+        let k = MLXArray(kData, shape)
+        let v = MLXArray(vData, shape)
         _ = c.update(keys: k, values: v)
         eval(c.innerState())
         return c

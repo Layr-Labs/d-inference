@@ -300,19 +300,35 @@ public actor GlobalDiskAccountant {
         //   • UNOWNED: the accountant directly deletes files.
         for (modelKey, entries) in chosen {
             let bytesForModel = entries.reduce(0) { $0 + $1.fileBytes }
-            if let (_, owner) = registry.values.first(where: { $0.modelKey == modelKey }) {
-                // OWNED: signal the owner. The owner's evictForGlobalBudget calls
-                // notifyAccountant() at the end (reentrant on this actor), which
-                // sets runningTotals[modelKey] + valueSummaries[modelKey] to the
-                // fresh post-eviction state from its live index. So we must NOT
-                // also subtract `freed` here — that would double-count (the
-                // owner already reduced the running total). Recompute `total`
-                // from the reconciled running totals instead of a local delta.
+            // CODEX-R4 HIGH (C3): resolve the owner via activeToken[modelKey],
+            // NOT registry.values.first(where:). During a reload window two
+            // tokens can be registered for the same modelKey; the first-match
+            // lookup has undefined iteration order and could return the STALE
+            // owner — a closed checkpoint manager (frees 0, budget stays
+            // violated) or, worse, a stale engine-tier owner that direct-deletes
+            // files in the dir the ACTIVE owner is using (cross-actor race).
+            if let activeID = activeToken[modelKey], let (_, owner) = registry[activeID] {
+                // OWNED by the ACTIVE token: signal it. The owner's
+                // evictForGlobalBudget calls notifyAccountant()/publishUsageNow()
+                // at the end (reentrant on this actor), which sets
+                // runningTotals[modelKey] + valueSummaries[modelKey] to the fresh
+                // post-eviction state from its live index. So we must NOT also
+                // subtract `freed` here — that would double-count. Recompute
+                // `total` from the reconciled running totals instead.
                 _ = await owner.evictForGlobalBudget(targetBytesToFree: bytesForModel)
                 total = globalTotal()
                 logger.info("signaled owned model \(modelKey, privacy: .public) to free \(bytesForModel) → total now \(total)")
+            } else if registry.contains(where: { $0.value.modelKey == modelKey }) {
+                // STALE-ONLY: a registry entry exists for this modelKey but it is
+                // NOT the active token (mid-reload: the active owner deregistered
+                // and a fresh one hasn't claimed yet, or a superseded token lingers).
+                // A live owner object still holds this dir, so the accountant must
+                // NOT direct-delete (forbidden cross-actor mutation). Skip this
+                // round; the ~30s tick (or the next updateUsage-driven enforce)
+                // re-evaluates once ownership settles.
+                logger.info("skipping model \(modelKey, privacy: .public): registered but not the active token (reload window)")
             } else {
-                // UNOWNED: accountant directly deletes files.
+                // UNOWNED: no registry entry at all → accountant directly deletes.
                 let freed = await evictUnownedEntries(modelKey: modelKey, entries: entries)
                 unownedBytes = max(0, unownedBytes - freed)
                 total -= freed

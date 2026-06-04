@@ -743,6 +743,100 @@ func codexR3High1_staleUpdateWithTwoLiveTokensIgnored() async {
 }
 
 @Test
+func codexR4High_enforceSignalsActiveOwnerNotStale() async {
+    // CODEX-R4 HIGH (C3): when over budget, enforceOnce must signal the ACTIVE
+    // owner for a modelKey — resolved via activeToken[modelKey] — not whatever
+    // registry.values.first(where:) happens to return (undefined order). With
+    // two live tokens for one modelKey (reload window), the STALE owner must
+    // NOT be signaled (it would free 0, or — for the engine tier — delete files
+    // in the active owner's dir). Revert-guard: change line ~310 back to
+    // `registry.values.first(where:)` and this can pick owner1.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    // Tiny ceiling so any usage push is over budget and forces enforcement.
+    let accountant = GlobalDiskAccountant(
+        kvRoot: kvRoot, configuredCeiling: 10, freeBytes: { _ in 1 << 40 })
+
+    // owner1 registers modelKey "m" (token1) — then a reload registers owner2
+    // (token2) for the SAME "m" WITHOUT owner1 deregistering. token2 is active.
+    let owner1 = FakeOwner()
+    _ = await accountant.register(modelKey: "m", owner: owner1)
+    let owner2 = FakeOwner()
+    let token2 = await accountant.register(modelKey: "m", owner: owner2)
+
+    // Push usage over the ceiling via the ACTIVE token2 → triggers enforceOnce.
+    await accountant.updateUsage(token: token2, totalBytes: 1000, valueSummary: [
+        EntryValue(modelKey: "m", digestHex: "d", fileBytes: 1000, score: 0.01, fileURL: nil),
+    ])
+    // Let the (reentrant, same-actor) enforcement settle.
+    try? await Task.sleep(for: .milliseconds(20))
+
+    let calls1 = await owner1.snapshotCalls().count
+    let calls2 = await owner2.snapshotCalls().count
+    #expect(calls2 >= 1, "CODEX-R4-C3: the ACTIVE owner (owner2) must be signaled to evict")
+    #expect(calls1 == 0, "CODEX-R4-C3: the STALE owner (owner1) must NOT be signaled")
+}
+
+#if DEBUG
+@Test
+func codexR4High_writeAfterDeregisterIsNotRecorded() async {
+    // CODEX-R4 HIGH (C1): if the manager is deregistered (closed=true) WHILE an
+    // SSD write is in flight, the write completes but must NOT record the index
+    // entry / notify the accountant — otherwise the file is an orphan recorded
+    // in a dead manager's index (and a later index.save() could clobber a
+    // reloaded same-modelKey manager). The file itself is LEFT on disk (never
+    // cross-actor live-deleted); a fresh manager's reconcile reclaims it.
+    //
+    // Deterministic injection: the _afterWriteHookForTest seam fires right after
+    // EncryptedKVStore.write returns and BEFORE the post-write `closed` re-check,
+    // simulating a deregister landing during the write suspension. Revert-guard:
+    // delete the `if closed { ... break }` in flushToSSD and the index WILL
+    // record → _indexHasEntryForTest becomes true → this test fails.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 40, freeBytes: { _ in 1 << 40 })
+    let (mgr, modelDir) = await makeCkptMgrWithSSD(kvRoot: kvRoot, modelKey: "m1", accountant: accountant)
+    await mgr.registerWithAccountant()
+
+    // Store one checkpoint in RAM (accepted), so flushToSSD has exactly one
+    // entry to write. checkpointLength 8 == a boundary; minPersist defaults 0.
+    let tokens = Array(0..<10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnBlock(layers: 2, tokens: 8)))
+    let digestHex = PrefixDigest.digest(tokens: tokens, length: 8).dbkvHexString
+
+    // Arm the seam: when the write completes, deregister (sets closed=true)
+    // BEFORE the C1 re-check. Runs on the manager actor → completes in-line.
+    await mgr._setAfterWriteHookForTest { [weak mgr] in
+        await mgr?.deregisterFromAccountant()
+    }
+
+    let written = await mgr.flushToSSD()
+
+    // The file was written to disk (the write itself completed before close)…
+    func onDiskFileCount(_ dir: URL) -> Int {
+        guard let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else { return 0 }
+        var n = 0
+        for case let u as URL in en where u.pathExtension == EncryptedKVStore.fileExtension { n += 1 }
+        return n
+    }
+    #expect(onDiskFileCount(modelDir) == 1, "C1: the write completed, so the file exists on disk")
+    // …but it must NOT be recorded in the (now-closed) manager's index, and
+    // flushToSSD must report 0 newly-written (the close bailed before record).
+    #expect(written == 0, "C1: flushToSSD must report 0 when closed during the write")
+    #expect(await mgr._indexHasEntryForTest(digestHex: digestHex) == false,
+        "CODEX-R4-C1: a write that finished after deregister must NOT be recorded in the index")
+
+    // The orphaned file is reclaimable: a fresh manager on the SAME dir
+    // reconciles it back into a valid index entry (counted + reusable).
+    let fresh = await makeCkptMgrWithSSD(kvRoot: kvRoot, modelKey: "m1", accountant: accountant).0
+    await fresh.reconcileWithDisk()
+    #expect(await fresh._indexHasEntryForTest(digestHex: digestHex) == true,
+        "CODEX-R4-C1: a fresh manager's reconcile must reclaim the left-behind file")
+}
+#endif
+
+@Test
 func codexR3High2_loadModelCleanupIdentityChecked() async throws {
     // CODEX-R3 HIGH-2 regression: loadModel's epoch-bail cleanup must be
     // identity-checked. If load A suspends and load B completes (sets

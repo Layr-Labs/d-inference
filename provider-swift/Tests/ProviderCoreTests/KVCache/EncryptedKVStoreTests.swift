@@ -398,3 +398,78 @@ func sweepStaleTempFilesRemovesOrphansKeepsRealFiles() throws {
     #expect(fm.fileExists(atPath: real.path), "real cache file must be kept")
     #expect(fm.fileExists(atPath: index.path), "index.json must be kept")
 }
+
+// MARK: - CODEX-R4 HIGH (C2): header-only readMetadataOnly
+//
+// C2 is a memory/perf fix: readMetadataOnly used to map+copy the entire
+// multi-GB ciphertext body (via splitHeaderAndBody's `subdata`) only to discard
+// it, OOMing reconcileWithDisk. The fix reads ONLY the header via FileHandle.
+// This is inherently NOT a failing-on-revert guard (you'd have to measure heap
+// allocation), so these are CORRECTNESS tests for the new parser, not strict
+// revert-guards: (1) equivalence pins the new FileHandle offset math (a bug in
+// the header-only parser fails this); (2) the malformed/truncated cases pin its
+// defensive behavior. The "don't copy the body" property itself is verified by
+// inspection (the new path never calls subdata(in: metadataEnd..<raw.count)).
+
+@Test
+func readMetadataOnlyMatchesFullParseOnLargeBody() async throws {
+    // The new FileHandle header-only parser must return the SAME metadata as a
+    // full read on a multi-MB body (the path reconcileWithDisk hammers). Guards
+    // the new parser's offset math against regressions IN the new code.
+    let url = newTempURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let kek = newKEK()
+    defer { Task { try? await kek.wipe() } }
+
+    let sizes = [4 * 1024 * 1024, 2 * 1024 * 1024]  // 6 MiB of body
+    let metadata = makeMetadata(tokenCount: 9001, chunkSizes: sizes)
+    try await EncryptedKVStore.write(to: url, metadata: metadata, chunks: makeChunks(sizes), kek: kek)
+
+    let headerOnly = try EncryptedKVStore.readMetadataOnly(from: url)
+    let (fullMeta, _) = try await EncryptedKVStore.read(from: url, kek: kek)
+    #expect(headerOnly == metadata, "C2: header-only metadata must equal what was written")
+    #expect(headerOnly == fullMeta, "C2: header-only metadata must equal the full-read metadata")
+}
+
+@Test
+func readMetadataOnlyRejectsTruncatedHeader() async throws {
+    // The FileHandle parser reads exact byte counts; a file truncated mid-header
+    // must throw (not read uninitialized/short). Old whole-file map+subdata also
+    // threw, but via a different path — this pins the new parser's behavior.
+    let url = newTempURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let kek = newKEK()
+    defer { Task { try? await kek.wipe() } }
+
+    let metadata = makeMetadata(chunkSizes: [256])
+    try await EncryptedKVStore.write(to: url, metadata: metadata, chunks: makeChunks([256]), kek: kek)
+
+    // Truncate to 12 bytes — past the magic/version but mid fixed-prefix.
+    let raw = try Data(contentsOf: url)
+    try raw.prefix(12).write(to: url)
+    #expect(throws: EncryptedKVStoreError.self) {
+        _ = try EncryptedKVStore.readMetadataOnly(from: url)
+    }
+}
+
+@Test
+func readMetadataOnlyRejectsOutOfBoundsWrappedLen() async throws {
+    // C2 revert-guard for the hard bound: a corrupt/hostile wrapped-DEK length
+    // field (here 0x7FFFFFFF) must be rejected as malformed BEFORE the parser
+    // tries to read ~2 GiB off the field. The pre-fix code had no such bound.
+    let url = newTempURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let kek = newKEK()
+    defer { Task { try? await kek.wipe() } }
+
+    let metadata = makeMetadata(chunkSizes: [256])
+    try await EncryptedKVStore.write(to: url, metadata: metadata, chunks: makeChunks([256]), kek: kek)
+
+    // Overwrite the wrapped-DEK length (uint32 LE at offset 20) with a huge value.
+    var raw = try Data(contentsOf: url)
+    raw[20] = 0xFF; raw[21] = 0xFF; raw[22] = 0xFF; raw[23] = 0x7F
+    try raw.write(to: url)
+    #expect(throws: EncryptedKVStoreError.self) {
+        _ = try EncryptedKVStore.readMetadataOnly(from: url)
+    }
+}

@@ -149,6 +149,14 @@ public enum EncryptedKVStore {
     public static let gcmTagLength = 16
     public static let chunkInfoPrefix = "dbkv-chunk-v1"
     public static let fileExtension = "darkbloom-kv"
+    /// CODEX-R4 HIGH (C2): hard bound on the length fields the header-only
+    /// parser will trust before it has read the bytes. The wrapped DEK is ~60
+    /// bytes (32-byte key + GCM tag + nonce) and metadata is a small JSON
+    /// (layout + chunk sizes); 64 MiB is astronomically larger than either, but
+    /// bounds a corrupt/hostile length prefix so we never allocate gigabytes
+    /// (or loop) off an attacker-chosen uint32. A real value over this is
+    /// treated as a malformed header.
+    static let maxHeaderFieldBytes = 64 * 1024 * 1024
     /// Infix used for atomic-write temp files: `<name>.tmp-<UUID>`.
     static let tempInfix = "tmp-"
 
@@ -292,9 +300,82 @@ public enum EncryptedKVStore {
     /// Parse only the metadata block — no DEK unwrap, no chunk
     /// decrypt. Suitable for index rebuilds and prefix lookups where
     /// we just need to know `token_count`, `model_hash`, etc.
+    ///
+    /// CODEX-R4 HIGH (C2): reads ONLY the header bytes via `FileHandle`
+    /// (fixed prefix → wrapped-DEK len+bytes → metadata len+bytes). It never
+    /// maps or copies the multi-GB ciphertext body the way `splitHeaderAndBody`
+    /// does. `reconcileWithDisk` calls this for every on-disk checkpoint, and a
+    /// checkpoint body can be gigabytes — the old path allocated/copied the
+    /// whole body per file only to discard it (OOM / huge latency).
     public static func readMetadataOnly(from url: URL) throws -> EncryptedKVStoreMetadata {
-        let (header, _) = try splitHeaderAndBody(at: url)
-        return header.metadata
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw EncryptedKVStoreError.ioFailure("open \(url.lastPathComponent): \(error)")
+        }
+        defer { try? handle.close() }
+
+        // Fixed prefix: magic(4) version(2) flags(2) fileIV(12) wrappedLen(4) = 24.
+        let prefix = try readExactly(24, from: handle, what: "header prefix")
+
+        guard Array(prefix.prefix(4)) == magic else {
+            throw EncryptedKVStoreError.malformedHeader(
+                "magic mismatch: got \(Array(prefix.prefix(4)).map { String(format: "%02x", $0) }.joined())"
+            )
+        }
+        let version = readUInt16LE(prefix, at: 4)
+        guard version == formatVersion else {
+            throw EncryptedKVStoreError.unsupportedVersion(version)
+        }
+        let flags = readUInt16LE(prefix, at: 6)
+        guard flags == 0 else {
+            throw EncryptedKVStoreError.malformedHeader("flags \(flags) ≠ 0 in v1")
+        }
+
+        // wrapped DEK length + bytes (validate against a hard bound so a corrupt
+        // uint32 can't drive a multi-GB allocation before we've authenticated anything).
+        let wrappedLen = Int(readUInt32LE(prefix, at: 20))
+        guard wrappedLen >= 0, wrappedLen <= maxHeaderFieldBytes else {
+            throw EncryptedKVStoreError.malformedHeader("wrapped DEK length \(wrappedLen) out of bounds")
+        }
+        // Skip the wrapped DEK (not needed for metadata); read the 4-byte
+        // metadata-length field that follows it.
+        _ = try readExactly(wrappedLen, from: handle, what: "wrapped DEK")
+        let metadataLenBytes = try readExactly(4, from: handle, what: "metadata length")
+        let metadataLen = Int(readUInt32LE(metadataLenBytes, at: 0))
+        guard metadataLen >= 0, metadataLen <= maxHeaderFieldBytes else {
+            throw EncryptedKVStoreError.malformedHeader("metadata length \(metadataLen) out of bounds")
+        }
+        let metadataBytes = try readExactly(metadataLen, from: handle, what: "metadata")
+
+        do {
+            return try canonicalDecode(metadataBytes)
+        } catch {
+            throw EncryptedKVStoreError.malformedHeader("metadata JSON: \(error)")
+        }
+    }
+
+    /// Read EXACTLY `count` bytes from `handle` or throw `.truncated`.
+    /// `FileHandle.read(upToCount:)` can return short reads, so loop until we
+    /// have all the bytes (or hit EOF). Used by the header-only parser.
+    private static func readExactly(_ count: Int, from handle: FileHandle, what: String) throws -> Data {
+        guard count > 0 else { return Data() }
+        var out = Data()
+        out.reserveCapacity(count)
+        while out.count < count {
+            let chunk: Data?
+            do {
+                chunk = try handle.read(upToCount: count - out.count)
+            } catch {
+                throw EncryptedKVStoreError.ioFailure("read \(what): \(error)")
+            }
+            guard let chunk, !chunk.isEmpty else {
+                throw EncryptedKVStoreError.truncated("\(what): expected \(count) bytes, got \(out.count) before EOF")
+            }
+            out.append(chunk)
+        }
+        return out
     }
 
     // MARK: - Shared body/header/write helpers (used by both async + sync paths)

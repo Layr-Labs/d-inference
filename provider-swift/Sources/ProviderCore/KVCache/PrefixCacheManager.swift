@@ -169,6 +169,16 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// unowned to the accountant or race a reused-modelKey reload).
     private var closed = false
 
+    #if DEBUG
+    /// CODEX-R4 HIGH (C1) test seam: fired right after `EncryptedKVStore.write`
+    /// returns and BEFORE the post-write `closed` re-check, so a regression test
+    /// can deterministically simulate a deregister landing during the write
+    /// suspension (instead of racing a real concurrent unload). nil in prod
+    /// (never set outside tests). Awaited on the manager actor, so a hook that
+    /// calls `deregisterFromAccountant()` runs to completion before the re-check.
+    var _afterWriteHookForTest: (@Sendable () async -> Void)?
+    #endif
+
     private var stats = PrefixCacheManagerStats()
 
     /// Digests currently being written by an in-flight flushToSSD. The
@@ -232,6 +242,19 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     public var isSSDEnabled: Bool { ssdEnabled }
     public func snapshotStats() -> PrefixCacheManagerStats { stats }
     public func ramTierStats() -> PrefixCacheRAMStats { ram.snapshotStats() }
+
+    #if DEBUG
+    /// CODEX-R4 HIGH (C1) test seam: install the after-write hook (see
+    /// `_afterWriteHookForTest`). DEBUG-only; never called in prod.
+    func _setAfterWriteHookForTest(_ hook: @escaping @Sendable () async -> Void) {
+        _afterWriteHookForTest = hook
+    }
+    /// CODEX-R4 HIGH (C1) test seam: does this manager's index hold an entry for
+    /// `digestHex`? Used to assert a post-close write did NOT record.
+    func _indexHasEntryForTest(digestHex: String) -> Bool {
+        index?.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil
+    }
+    #endif
 
     // MARK: - Lookup
 
@@ -434,6 +457,23 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             )
             try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
 
+            #if DEBUG
+            if let hook = _afterWriteHookForTest { await hook() }
+            #endif
+            // CODEX-R4 HIGH (C1): the manager may have been deregistered
+            // (closed=true via deregisterFromAccountant) DURING the await above.
+            // The `closed` contract is that no SSD bookkeeping survives
+            // deregistration: recording here pushes a now-orphaned index entry,
+            // and a later index.save() could clobber a freshly-loaded
+            // same-modelKey manager's index.json. We deliberately do NOT delete
+            // the file — that path/dir may already be OWNED by the new manager
+            // (same modelHash → same modelDirComponent), so removing it would be
+            // the forbidden cross-actor live-delete (and could nuke the new
+            // owner's identical-digest file). The file is reclaimed and counted
+            // by the new manager's reconcileWithDisk (validates model + prefix
+            // binding). Bail without recording/saving/notifying.
+            if closed { return false }
+
             let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
             let fileBytes = (attrs?[.size] as? Int) ?? 0
             index.record(PrefixIndexEntry(
@@ -513,6 +553,19 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                 )
                 try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
 
+                #if DEBUG
+                if let hook = _afterWriteHookForTest { await hook() }
+                #endif
+                // CODEX-R4 HIGH (C1): deregistered (closed) DURING the write
+                // await — stop recording/notifying. See store() for the full
+                // rationale; the file is left for the new manager's reconcile to
+                // reclaim (never cross-actor live-deleted). Drop the in-flight
+                // marker and break the loop (no more writes after close).
+                if closed {
+                    inFlightWrites.remove(digestHex)
+                    break
+                }
+
                 let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
                 let fileBytes = (attrs?[.size] as? Int) ?? 0
                 index.record(PrefixIndexEntry(
@@ -527,7 +580,14 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             inFlightWrites.remove(digestHex)
         }
 
-        if written > 0 {
+        // CODEX-R4 HIGH (C1): if we were deregistered mid-loop, do NOT run the
+        // post-loop bookkeeping — enforceDiskBudget deletes files (cross-actor
+        // live-delete on a dir the new owner may hold) and index.save() would
+        // clobber the new same-modelKey manager's index.json. `written` is the
+        // count BEFORE close; any pre-close records stay in this dead manager's
+        // in-memory index (never saved), and the files are reclaimed by the new
+        // manager's reconcile.
+        if written > 0 && !closed {
             stats.ssdFlushes += written
             enforceDiskBudget(index: index, cacheDir: cacheDir)
             // Coalesce the O(N) full-index re-encode + atomic write + fsync:
@@ -671,6 +731,15 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                 createdAt: now()
             )
             try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
+
+            #if DEBUG
+            if let hook = _afterWriteHookForTest { await hook() }
+            #endif
+            // CODEX-R4 HIGH (C1): deregistered (closed) DURING the write await.
+            // Skip record/save/notify; leave the file for the new manager's
+            // reconcile to reclaim (never cross-actor live-deleted). See store()
+            // for the full rationale. The defer above drops the in-flight marker.
+            if closed { return false }
 
             let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
             let fileBytes = (attrs?[.size] as? Int) ?? 0

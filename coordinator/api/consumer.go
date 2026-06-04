@@ -152,6 +152,8 @@ const errModelTooLarge = "model too large for any available provider"
 // dispatchOneProvider encrypts and sends an inference request to a single
 // provider. It returns the pending request and provider on success, or an
 // error string on failure. The excludeProviders set is updated on failure.
+// selfRoutePolicy and its resolvers live in self_route.go.
+
 func (s *Server) dispatchOneProvider(
 	r *http.Request,
 	model string,
@@ -163,6 +165,7 @@ func (s *Server) dispatchOneProvider(
 	requestedMaxTokens int,
 	allowedProviderSerials []string,
 	isResponsesAPI bool,
+	policy selfRoutePolicy,
 	timing *registry.RequestTiming,
 	excludeProviders map[string]struct{},
 ) (
@@ -187,6 +190,9 @@ func (s *Server) dispatchOneProvider(
 		ReservedMicroUSD:       reservedMicroUSD,
 		BaseReservedMicroUSD:   reservedMicroUSD,
 		AllowedProviderSerials: allowedProviderSerials,
+		SelfRouteOnly:          policy.enabled,
+		OwnerAccountID:         policy.ownerAccountID,
+		FreeSelfRoute:          policy.enabled,
 		AcceptedCh:             make(chan struct{}, 1),
 		ChunkCh:                make(chan string, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),
@@ -224,12 +230,14 @@ func (s *Server) dispatchOneProvider(
 		pr.Timing.RoutedAt = time.Now()
 	}
 
-	if s.billing != nil && !providerHasPayoutDestination(provider) {
+	if s.billing != nil && !policy.enabled && !providerHasPayoutDestination(provider) {
 		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
 			"provider_id", provider.ID)
 	}
 
-	if s.billing != nil {
+	// Free self-route requests are settled at zero cost (handleComplete), so
+	// there is no reservation to top up for a provider's custom price.
+	if s.billing != nil && !policy.enabled {
 		_, err := s.reserveAdditionalForProvider(pr, provider)
 		if err != nil {
 			cleanupPending()
@@ -982,6 +990,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		rawBody, _ = json.Marshal(parsed)
 	}
 
+	// "Use my own machine, for free" opt-in. The signal is the
+	// X-Darkbloom-Route header (OpenAI-client-safe: invisible to the body
+	// schema) OR a per-key hard ceiling. The header can only *request*
+	// self-routing; it cannot name a machine — ownership is matched on the
+	// coordinator-stamped provider AccountID, so nothing here is forgeable.
+	policy := s.resolveSelfRoutePolicy(r)
+
 	isResponsesAPI := input != nil && len(messages) == 0
 
 	// Inject model-specific defaults from the registry: reasoning_parser
@@ -1044,7 +1059,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// portion. The routing estimate (estimatedPromptTokens, len/4) is kept
 	// separate so scheduler capacity checks aren't over-inflated.
 	var reservedMicroUSD int64
-	if s.billing != nil {
+	// Self-route is free: skip the pre-flight balance reservation and the
+	// per-key spend cap entirely. A zero-balance owner must never be blocked
+	// from running on their own machine, and a self_route_only key never spends.
+	if s.billing != nil && !policy.enabled {
 		consumerKey := consumerKeyFromContext(r.Context())
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		// Per-key spend cap (phase 1) — checked before the reservation so a
@@ -1089,31 +1107,42 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pre-flight capacity check: can ANY provider serve this model right now?
-	// If not, return 429 immediately rather than queueing for up to 120s.
-	// OpenRouter treats 429 as "rate limited" (no uptime penalty) vs 503
-	// which counts as downtime. Fast 429s also preserve our TTFT metrics.
-	candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
-	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
-		// Providers serve this model but none can ever fit it — non-retryable.
-		// Surface a clear 503 instead of a 429 the client would retry forever.
-		refundReservation()
-		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-			fmt.Sprintf("model %q is too large for any currently available provider", model),
-			withCode("model_unavailable")))
-		return
-	}
-	if candidateCount == 0 && capacityRejections > 0 {
-		// Providers exist for this model but ALL are at capacity.
-		retryAfter := s.estimateRetryAfter(model)
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		refundReservation()
-		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-			fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
-			withCode("rate_limit_exceeded")))
-		return
+	// Self-route pre-flight: confirm the caller owns an online machine that can
+	// serve this model, with precise errors and no fallback to the paid fleet.
+	if policy.enabled {
+		if s.selfRouteUnavailable(w, r, policy.ownerAccountID, model) {
+			refundReservation()
+			return
+		}
+	} else {
+		// Pre-flight capacity check: can ANY provider serve this model right
+		// now? If not, return 429 immediately rather than queueing for up to
+		// 120s. OpenRouter treats 429 as "rate limited" (no uptime penalty) vs
+		// 503 which counts as downtime. Fast 429s also preserve our TTFT
+		// metrics. Self-route skips this fleet-wide gate — it queues on the
+		// owner's machine instead (handled below).
+		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
+			// Providers serve this model but none can ever fit it — non-retryable.
+			// Surface a clear 503 instead of a 429 the client would retry forever.
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				withCode("model_unavailable")))
+			return
+		}
+		if candidateCount == 0 && capacityRejections > 0 {
+			// Providers exist for this model but ALL are at capacity.
+			retryAfter := s.estimateRetryAfter(model)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
+				withCode("rate_limit_exceeded")))
+			return
+		}
 	}
 
 	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
@@ -1152,7 +1181,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		provider, pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 			r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 			estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
-			isResponsesAPI, timing, excludeProviders,
+			isResponsesAPI, policy, timing, excludeProviders,
 		)
 		if provider == nil {
 			// No online provider has enough memory to ever fit this model.
@@ -1205,6 +1234,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				ReservedMicroUSD:       reservedMicroUSD,
 				BaseReservedMicroUSD:   reservedMicroUSD,
 				AllowedProviderSerials: allowedProviderSerials,
+				SelfRouteOnly:          policy.enabled,
+				OwnerAccountID:         policy.ownerAccountID,
+				FreeSelfRoute:          policy.enabled,
 				AcceptedCh:             make(chan struct{}, 1),
 				ChunkCh:                make(chan string, chunkBufferSize),
 				CompleteCh:             make(chan protocol.UsageInfo, 1),
@@ -1223,9 +1255,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				retryAfter := s.estimateRetryAfter(model)
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				refundReservation()
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
-					withCode("rate_limit_exceeded")))
+				if policy.enabled {
+					writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
+						"your machine is at capacity — retry shortly", withCode("machine_busy")))
+				} else {
+					writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+						fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
+						withCode("rate_limit_exceeded")))
+				}
 				return
 			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
@@ -1246,9 +1283,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				s.ddIncr("request_queue.timeout", []string{"model:" + model, "model_type:" + s.registry.ModelType(model)})
 				retryAfter := s.estimateRetryAfter(model)
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
-					withCode("rate_limit_exceeded")))
+				if policy.enabled {
+					writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
+						"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
+				} else {
+					writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+						fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
+						withCode("rate_limit_exceeded")))
+				}
 				return
 			}
 			// Queue assigned a provider; still need to dispatch.
@@ -1260,7 +1302,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Log missing payout destination but don't skip — earnings
 			// are credited to the provider's internal ledger and can be
 			// withdrawn once they complete Stripe Connect onboarding.
-			if s.billing != nil && !providerHasPayoutDestination(provider) {
+			if s.billing != nil && !policy.enabled && !providerHasPayoutDestination(provider) {
 				s.logger.Warn("queued provider missing payout destination, crediting to internal ledger",
 					"request_id", requestID,
 					"provider_id", provider.ID,
@@ -1268,8 +1310,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Custom pricing check — provider may charge more than the
-			// platform rate. Reserve the additional amount now.
-			if s.billing != nil {
+			// platform rate. Reserve the additional amount now. Skipped for
+			// free self-route, which settles at zero cost.
+			if s.billing != nil && !policy.enabled {
 				if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 					provider.RemovePending(requestID)
 					s.registry.SetProviderIdle(provider.ID)
@@ -1457,7 +1500,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			backupProvider, backupPR, _, _, _ := s.dispatchOneProvider(
 				r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 				estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
-				isResponsesAPI, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
+				isResponsesAPI, policy, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
 				backupExclude,
 			)
 
@@ -3315,6 +3358,7 @@ type createAPIKeyRequest struct {
 	ITPMLimit     *int64     `json:"itpm_limit"`
 	OTPMLimit     *int64     `json:"otpm_limit"`
 	AllowedModels []string   `json:"allowed_models"`
+	SelfRouteOnly bool       `json:"self_route_only"`
 	ExpiresAt     *time.Time `json:"expires_at"`
 }
 
@@ -3337,6 +3381,7 @@ func (s *Server) apiKeyToResponse(k *store.APIKey) types.APIKeyResponse {
 		ITPMLimit:     k.ITPMLimit,
 		OTPMLimit:     k.OTPMLimit,
 		AllowedModels: k.AllowedModels,
+		SelfRouteOnly: k.SelfRouteOnly,
 		ExpiresAt:     k.ExpiresAt,
 		CreatedAt:     k.CreatedAt,
 		LastUsedAt:    k.LastUsedAt,
@@ -3472,6 +3517,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		ITPMLimit:     req.ITPMLimit,
 		OTPMLimit:     req.OTPMLimit,
 		AllowedModels: req.AllowedModels,
+		SelfRouteOnly: req.SelfRouteOnly,
 		ExpiresAt:     req.ExpiresAt,
 	}
 	if req.LimitUSD != nil {
@@ -3611,6 +3657,13 @@ func applyKeyPatch(k *store.APIKey, patch map[string]json.RawMessage) string {
 			}
 			k.AllowedModels = models
 		}
+	}
+	if raw, ok := patch["self_route_only"]; ok {
+		var v bool
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return "invalid value for self_route_only"
+		}
+		k.SelfRouteOnly = v
 	}
 	for field, dst := range map[string]**int64{
 		"rpm_limit":  &k.RPMLimit,
@@ -3920,6 +3973,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		stripProviderRoutingFields(parsed)
 	}
 
+	// "Use my own machine, for free" opt-in (see handleChatCompletions).
+	policy := s.resolveSelfRoutePolicy(r)
+
 	// Completions and Anthropic messages both use the max_tokens field (never
 	// max_output_tokens, which is Responses API only). Inject a default if
 	// unset so the pre-flight reservation bounds the generation.
@@ -3948,7 +4004,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
 	var reservedMicroUSD int64
-	if s.billing != nil {
+	// Self-route is free: skip the reservation and per-key spend cap.
+	if s.billing != nil && !policy.enabled {
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		// Per-key spend cap (phase 1) — checked before the reservation.
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
@@ -3979,25 +4036,33 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	// Pre-flight capacity check (same logic as handleChatCompletions).
-	candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
-	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
-		refundReservation()
-		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-			fmt.Sprintf("model %q is too large for any currently available provider", model),
-			withCode("model_unavailable")))
-		return
-	}
-	if candidateCount == 0 && capacityRejections > 0 {
-		retryAfter := s.estimateRetryAfter(model)
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		refundReservation()
-		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-			fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
-			withCode("rate_limit_exceeded")))
-		return
+	// Self-route pre-flight (precise errors, no paid fallback); otherwise the
+	// fleet-wide capacity 429 (same logic as handleChatCompletions).
+	if policy.enabled {
+		if s.selfRouteUnavailable(w, r, policy.ownerAccountID, model) {
+			refundReservation()
+			return
+		}
+	} else {
+		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				withCode("model_unavailable")))
+			return
+		}
+		if candidateCount == 0 && capacityRejections > 0 {
+			retryAfter := s.estimateRetryAfter(model)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
+				withCode("rate_limit_exceeded")))
+			return
+		}
 	}
 
 	requestID := uuid.New().String()
@@ -4010,6 +4075,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 		ConsumerLocation:       consumerLocation,
 		AllowedProviderSerials: allowedProviderSerials,
+		SelfRouteOnly:          policy.enabled,
+		OwnerAccountID:         policy.ownerAccountID,
+		FreeSelfRoute:          policy.enabled,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,
 		ReservedMicroUSD:       reservedMicroUSD,
@@ -4045,13 +4113,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			break
 		}
 
-		if s.billing != nil && !providerHasPayoutDestination(provider) {
+		if s.billing != nil && !policy.enabled && !providerHasPayoutDestination(provider) {
 			s.logger.Warn("provider missing payout destination, crediting to internal ledger",
 				"provider_id", provider.ID)
 		}
 
-		// Custom pricing check — provider may charge more than the platform rate.
-		if s.billing != nil {
+		// Custom pricing check — provider may charge more than the platform
+		// rate. Skipped for free self-route, which settles at zero cost.
+		if s.billing != nil && !policy.enabled {
 			if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
@@ -4093,9 +4162,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:over_capacity"})
-			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
-				withCode("rate_limit_exceeded")))
+			if policy.enabled {
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
+					"your machine is at capacity — retry shortly", withCode("machine_busy")))
+			} else {
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
+					withCode("rate_limit_exceeded")))
+			}
 			return
 		}
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
@@ -4108,9 +4182,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
-			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
-				withCode("rate_limit_exceeded")))
+			if policy.enabled {
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
+					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
+			} else {
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
+					withCode("rate_limit_exceeded")))
+			}
 			return
 		}
 		decision = queuedReq.Decision
@@ -4130,11 +4209,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	defer cleanupPending()
-	if s.billing != nil && !providerHasPayoutDestination(provider) {
+	if s.billing != nil && !policy.enabled && !providerHasPayoutDestination(provider) {
 		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
 			"provider_id", provider.ID)
 	}
-	if s.billing != nil {
+	// Free self-route settles at zero cost — no provider-price top-up.
+	if s.billing != nil && !policy.enabled {
 		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 			cleanupPending()
 			refundExtra()

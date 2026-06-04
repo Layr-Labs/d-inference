@@ -200,6 +200,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS allowed_models TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS self_route_only BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		// Backfill stable IDs for legacy rows (deterministic from the hash so
 		// it is stable across restarts and idempotent).
 		`UPDATE api_keys SET id = 'key_' || substr(md5(key_hash), 1, 24) WHERE id IS NULL OR id = ''`,
@@ -678,7 +679,7 @@ func hashKey(key string) string {
 // an APIKey via scanAPIKeyRow.
 const apiKeyColumns = `id, owner_account_id, name, raw_prefix, key_hash, active,
 	limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
-	allowed_models, expires_at, created_at, last_used_at`
+	allowed_models, expires_at, created_at, last_used_at, self_route_only`
 
 // rowScanner is satisfied by both pgx.Row and pgx.Rows.
 type rowScanner interface {
@@ -700,7 +701,7 @@ func scanAPIKeyRow(row rowScanner) (*APIKey, error) {
 	)
 	if err := row.Scan(&k.ID, &k.OwnerAccountID, &k.Name, &k.Label, &k.KeyHash, &active,
 		&limit, &k.LimitReset, &rpm, &itpm, &otpm,
-		&allowed, &expiresAt, &k.CreatedAt, &lastUsedAt); err != nil {
+		&allowed, &expiresAt, &k.CreatedAt, &lastUsedAt, &k.SelfRouteOnly); err != nil {
 		return nil, err
 	}
 	k.Disabled = !active
@@ -747,15 +748,15 @@ func (s *PostgresStore) insertAPIKey(ctx context.Context, rec *APIKey, onConflic
 	q := `INSERT INTO api_keys
 		(id, key_hash, raw_prefix, owner_account_id, name, active,
 		 limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
-		 allowed_models, expires_at, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
+		 allowed_models, expires_at, created_at, self_route_only)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
 	if onConflictDoNothing {
 		q += ` ON CONFLICT (key_hash) DO NOTHING`
 	}
 	_, err := s.pool.Exec(ctx, q,
 		rec.ID, rec.KeyHash, rec.Label, rec.OwnerAccountID, rec.Name, !rec.Disabled,
 		rec.LimitMicroUSD, NormalizeResetWindow(rec.LimitReset), rec.RPMLimit, rec.ITPMLimit, rec.OTPMLimit,
-		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt,
+		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt, rec.SelfRouteOnly,
 	)
 	return err
 }
@@ -795,6 +796,7 @@ func (s *PostgresStore) CreateAPIKey(accountID string, opts APIKeyCreate) (strin
 		ITPMLimit:      opts.ITPMLimit,
 		OTPMLimit:      opts.OTPMLimit,
 		AllowedModels:  opts.AllowedModels,
+		SelfRouteOnly:  opts.SelfRouteOnly,
 		ExpiresAt:      opts.ExpiresAt,
 		CreatedAt:      time.Now().UTC(),
 	}
@@ -955,11 +957,11 @@ func (s *PostgresStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*API
 		`UPDATE api_keys SET
 			name = $1, active = $2, limit_micro_usd = $3, limit_reset = $4,
 			rpm_limit = $5, itpm_limit = $6, otpm_limit = $7,
-			allowed_models = $8, expires_at = $9
-		 WHERE id = $10 AND owner_account_id = $11`,
+			allowed_models = $8, expires_at = $9, self_route_only = $10
+		 WHERE id = $11 AND owner_account_id = $12`,
 		mutable.Name, !mutable.Disabled, mutable.LimitMicroUSD, NormalizeResetWindow(mutable.LimitReset),
 		mutable.RPMLimit, mutable.ITPMLimit, mutable.OTPMLimit,
-		encodeModelList(mutable.AllowedModels), mutable.ExpiresAt,
+		encodeModelList(mutable.AllowedModels), mutable.ExpiresAt, mutable.SelfRouteOnly,
 		id, accountID,
 	)
 	if err != nil {
@@ -1028,6 +1030,7 @@ func (s *PostgresStore) RotateAPIKey(accountID, id string) (string, *APIKey, err
 		ITPMLimit:      old.ITPMLimit,
 		OTPMLimit:      old.OTPMLimit,
 		AllowedModels:  old.AllowedModels,
+		SelfRouteOnly:  old.SelfRouteOnly,
 		ExpiresAt:      old.ExpiresAt,
 		CreatedAt:      time.Now().UTC(),
 	}
@@ -1035,11 +1038,11 @@ func (s *PostgresStore) RotateAPIKey(accountID, id string) (string, *APIKey, err
 		`INSERT INTO api_keys
 			(id, key_hash, raw_prefix, owner_account_id, name, active,
 			 limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
-			 allowed_models, expires_at, created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			 allowed_models, expires_at, created_at, self_route_only)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		rec.ID, rec.KeyHash, rec.Label, rec.OwnerAccountID, rec.Name, !rec.Disabled,
 		rec.LimitMicroUSD, rec.LimitReset, rec.RPMLimit, rec.ITPMLimit, rec.OTPMLimit,
-		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt,
+		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt, rec.SelfRouteOnly,
 	); err != nil {
 		return "", nil, fmt.Errorf("store: insert rotated key: %w", err)
 	}

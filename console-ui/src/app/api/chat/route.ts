@@ -13,6 +13,9 @@ export async function POST(req: NextRequest) {
   const apiKey = req.headers.get("x-api-key") || "";
   const incomingCt = req.headers.get("content-type") || "application/json";
   const isSealed = incomingCt.toLowerCase().startsWith(SEALED_CT);
+  // "Use my machine, for free" opt-in. Forwarded verbatim to the coordinator,
+  // which honors it server-side; it never enters the request body.
+  const selfRoute = req.headers.get("x-darkbloom-route") || "";
 
   // Forward the body bytes verbatim. For plaintext we keep the existing
   // JSON-roundtrip behavior (preserves the existing tests); for sealed we
@@ -30,6 +33,7 @@ export async function POST(req: NextRequest) {
     headers: {
       "Content-Type": isSealed ? SEALED_CT : "application/json",
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...(selfRoute ? { "X-Darkbloom-Route": selfRoute } : {}),
     },
     body: isSealed ? bodyBytes : JSON.stringify(await req.json()),
   };

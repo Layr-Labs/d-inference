@@ -39,6 +39,34 @@ import Testing
     #expect(register.attestation?.rawBytes == rawData)
 }
 
+@Test func registerEncodesPrivateOnlyOnlyWhenTrue() throws {
+    // Default (false): the flag is omitted, mirroring the Go `omitempty` tag.
+    let off = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm"
+    ))
+    let offObject = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(off))
+    #expect(offObject["private_only"] == nil)
+
+    // Explicit true: encoded as snake_case and round-trips back to true.
+    let on = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm",
+        privateOnly: true
+    ))
+    let onData = try ProviderProtocolCodec.encodeProviderMessage(on)
+    let onObject = try jsonObject(onData)
+    #expect(onObject["private_only"] as? Bool == true)
+
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: onData)
+    guard case .register(let register) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(register.privateOnly == true)
+}
+
 @Test func providerMessagesRoundTripThroughCodableEnvelope() throws {
     let messages: [ProviderMessage] = [
         .register(ProviderMessage.Register(

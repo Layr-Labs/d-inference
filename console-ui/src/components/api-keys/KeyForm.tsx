@@ -34,6 +34,7 @@ export function KeyForm({
   const [allowed, setAllowed] = useState<string[]>(initial?.allowed_models ?? []);
   const [modelQuery, setModelQuery] = useState("");
   const [modelText, setModelText] = useState((initial?.allowed_models ?? []).join(", "));
+  const [selfRouteOnly, setSelfRouteOnly] = useState(initial?.self_route_only ?? false);
 
   const hasModels = models.length > 0;
   const nameTrim = name.trim();
@@ -63,6 +64,7 @@ export function KeyForm({
       otpm_limit: intOrClear(otpm, clear),
       expires_at: expiryOrClear(expiresAt, clear),
       allowed_models: modelsOrClear(selectedModels, clear),
+      self_route_only: selfRouteOnly,
     };
     onSubmit(body);
   };
@@ -216,6 +218,30 @@ export function KeyForm({
             : "Leave empty to allow all models."}
         </p>
       </div>
+
+      <button
+        type="button"
+        onClick={() => setSelfRouteOnly((v) => !v)}
+        aria-pressed={selfRouteOnly}
+        className={`w-full flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
+          selfRouteOnly ? "border-teal/50 bg-teal/5" : "border-border-dim hover:bg-bg-hover"
+        }`}
+      >
+        <span
+          className={`mt-0.5 flex items-center justify-center w-4 h-4 rounded border shrink-0 ${
+            selfRouteOnly ? "bg-teal border-teal text-white" : "border-border-subtle"
+          }`}
+        >
+          {selfRouteOnly && <Check size={11} />}
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-medium text-text-primary">My Machine only — free</span>
+          <span className="block text-xs text-text-tertiary mt-0.5">
+            Every request on this key routes only to a Darkbloom node you run, and is free. It never
+            spends balance or reaches the public fleet.
+          </span>
+        </span>
+      </button>
 
       <div className="flex gap-3 pt-1">
         <button

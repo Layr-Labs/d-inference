@@ -253,6 +253,7 @@ func (s *MemoryStore) CreateAPIKey(accountID string, opts APIKeyCreate) (string,
 		ITPMLimit:      cloneInt64Ptr(opts.ITPMLimit),
 		OTPMLimit:      cloneInt64Ptr(opts.OTPMLimit),
 		AllowedModels:  append([]string(nil), opts.AllowedModels...),
+		SelfRouteOnly:  opts.SelfRouteOnly,
 		ExpiresAt:      cloneTimePtr(opts.ExpiresAt),
 		CreatedAt:      time.Now().UTC(),
 	}
@@ -386,6 +387,7 @@ func (s *MemoryStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*APIKe
 	rec.ITPMLimit = cloneInt64Ptr(mutable.ITPMLimit)
 	rec.OTPMLimit = cloneInt64Ptr(mutable.OTPMLimit)
 	rec.AllowedModels = append([]string(nil), mutable.AllowedModels...)
+	rec.SelfRouteOnly = mutable.SelfRouteOnly
 	rec.ExpiresAt = cloneTimePtr(mutable.ExpiresAt)
 	return cloneAPIKey(rec), nil
 }
@@ -440,6 +442,7 @@ func (s *MemoryStore) RotateAPIKey(accountID, id string) (string, *APIKey, error
 		ITPMLimit:      cloneInt64Ptr(old.ITPMLimit),
 		OTPMLimit:      cloneInt64Ptr(old.OTPMLimit),
 		AllowedModels:  append([]string(nil), old.AllowedModels...),
+		SelfRouteOnly:  old.SelfRouteOnly,
 		ExpiresAt:      cloneTimePtr(old.ExpiresAt),
 		CreatedAt:      time.Now().UTC(),
 	}

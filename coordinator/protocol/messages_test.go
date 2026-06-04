@@ -62,6 +62,61 @@ func TestRegisterMessageMarshal(t *testing.T) {
 	}
 }
 
+// TestRegisterMessagePrivateOnlySymmetry verifies the coordinator decodes the
+// private_only flag the Swift provider emits (snake_case key, only present when
+// true), and that the Go side round-trips it. Protects the Go↔Swift protocol
+// symmetry for the self-route "private machine" mode.
+func TestRegisterMessagePrivateOnlySymmetry(t *testing.T) {
+	// A minimal register payload exactly as the Swift ProviderMessage encoder
+	// emits it (private_only present and true).
+	swiftJSON := `{
+		"type": "register",
+		"hardware": {"chip_name": "Apple M3 Max", "memory_gb": 64},
+		"models": [{"id": "m", "model_type": "qwen3", "quantization": "4bit"}],
+		"backend": "mlx",
+		"public_key": "abc",
+		"auth_token": "tok",
+		"private_only": true
+	}`
+	var decoded RegisterMessage
+	if err := json.Unmarshal([]byte(swiftJSON), &decoded); err != nil {
+		t.Fatalf("unmarshal swift payload: %v", err)
+	}
+	if !decoded.PrivateOnly {
+		t.Fatal("private_only=true from the Swift payload did not decode")
+	}
+
+	// Omitted private_only must default to false (Swift omits it when false).
+	withoutFlag := `{"type":"register","hardware":{},"models":[],"backend":"mlx"}`
+	var d2 RegisterMessage
+	if err := json.Unmarshal([]byte(withoutFlag), &d2); err != nil {
+		t.Fatalf("unmarshal without flag: %v", err)
+	}
+	if d2.PrivateOnly {
+		t.Fatal("private_only should default to false when omitted")
+	}
+
+	// Go round-trip: false is omitted (omitempty), true survives.
+	data, _ := json.Marshal(RegisterMessage{Type: TypeRegister, PrivateOnly: false})
+	if contains(string(data), "private_only") {
+		t.Errorf("private_only=false should be omitted, got %s", data)
+	}
+	data, _ = json.Marshal(RegisterMessage{Type: TypeRegister, PrivateOnly: true})
+	var back RegisterMessage
+	if err := json.Unmarshal(data, &back); err != nil || !back.PrivateOnly {
+		t.Errorf("private_only=true round-trip failed: %v / %s", err, data)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 func TestHeartbeatMessageMarshal(t *testing.T) {
 	msg := HeartbeatMessage{
 		Type:        TypeHeartbeat,

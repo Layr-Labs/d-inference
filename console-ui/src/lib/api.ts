@@ -372,6 +372,7 @@ export interface ApiKey {
   itpm_limit?: number;
   otpm_limit?: number;
   allowed_models?: string[]; // empty/omitted = all models
+  self_route_only?: boolean; // hard ceiling: only routes to the owner's machine, free
   expires_at?: string; // RFC3339 UTC
   created_at: string;
   last_used_at?: string;
@@ -387,6 +388,7 @@ export interface CreateKeyBody {
   itpm_limit?: number | null;
   otpm_limit?: number | null;
   allowed_models?: string[] | null;
+  self_route_only?: boolean;
   expires_at?: string | null; // RFC3339
 }
 
@@ -469,15 +471,21 @@ export async function streamChat(
   messages: ChatMessage[],
   model: string,
   callbacks: StreamCallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts?: { selfRoute?: boolean }
 ): Promise<void> {
   // Optional sender→coordinator encryption. Defaults off so plaintext SDK
   // and curl flows keep working unchanged. When enabled we NaCl-Box-seal the
   // outgoing body to the coordinator's published X25519 pubkey, then decrypt
   // each SSE event on the way back.
   const requestBody = { model, messages, stream: true };
+  // "Use my machine, for free": opt-in routing to the caller's own provider.
+  // Carried as a header so it never enters the (optionally sealed) body.
+  const selfRouteHeader: Record<string, string> = opts?.selfRoute
+    ? { "X-Darkbloom-Route": "self" }
+    : {};
   let sealCtx: { ephemPriv: Uint8Array; coordPub: Uint8Array } | null = null;
-  let fetchHeaders = proxyHeaders();
+  let fetchHeaders = proxyHeaders(selfRouteHeader);
   let fetchBody: string;
 
   if (isEncryptionEnabled()) {
@@ -485,7 +493,7 @@ export async function streamChat(
       const coordKey = await getCoordinatorKey();
       const sealed = sealRequest(requestBody, coordKey);
       fetchBody = sealed.envelopeJson;
-      fetchHeaders = proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE });
+      fetchHeaders = proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE, ...selfRouteHeader });
       sealCtx = {
         ephemPriv: sealed.ephemeralPrivateKey,
         coordPub: coordKey.publicKey,
@@ -551,7 +559,19 @@ export async function streamChat(
     try {
       const errData = JSON.parse(text);
       const msg = errData?.error?.message || text;
-      if (res.status === 503 && msg.includes("queue timeout")) {
+      // Self-route ("My Machine") specific errors map to actionable copy. The
+      // coordinator never falls back to paid providers for these, so the
+      // messaging is explicit rather than a generic retry.
+      const code = errData?.error?.code as string | undefined;
+      if (code === "no_linked_machine") {
+        callbacks.onError("No machine linked to your account — run `darkbloom login` on your Mac, then try again.");
+      } else if (code === "machine_offline") {
+        callbacks.onError("Your machine is offline — start your Darkbloom node and try again. (My Machine never falls back to paid providers.)");
+      } else if (code === "model_not_loaded") {
+        callbacks.onError("This model isn't loaded on your machine — load it on your node, then try again.");
+      } else if (code === "machine_busy") {
+        callbacks.onError("Your machine is busy — try again in a moment.");
+      } else if (res.status === 503 && msg.includes("queue timeout")) {
         callbacks.onError("All providers are busy — please try again in a moment");
       } else if (res.status === 402) {
         callbacks.onError("Insufficient credits — buy credits in Billing to continue");

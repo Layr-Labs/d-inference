@@ -231,6 +231,7 @@ type APIKeyResponse struct {
 	ITPMLimit     *int64     `json:"itpm_limit,omitempty"`
 	OTPMLimit     *int64     `json:"otpm_limit,omitempty"`
 	AllowedModels []string   `json:"allowed_models,omitempty"`
+	SelfRouteOnly bool       `json:"self_route_only"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`

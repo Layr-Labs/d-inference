@@ -230,6 +230,10 @@ public struct CoordinatorClientConfig: Sendable {
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
     public let privacyCapabilities: PrivacyCapabilities?
+    /// When true, this machine registers as private-only: the coordinator
+    /// serves it exclusively to its owner's self-route requests, never the
+    /// public fleet.
+    public let privateOnly: Bool
 
     public init(
         url: String,
@@ -243,7 +247,8 @@ public struct CoordinatorClientConfig: Sendable {
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
-        privacyCapabilities: PrivacyCapabilities? = nil
+        privacyCapabilities: PrivacyCapabilities? = nil,
+        privateOnly: Bool = false
     ) {
         self.url = url
         self.hardware = hardware
@@ -257,6 +262,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
         self.privacyCapabilities = privacyCapabilities
+        self.privateOnly = privateOnly
     }
 }
 

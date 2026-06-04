@@ -333,7 +333,8 @@ public actor ProviderLoop {
             authToken: loopConfig.authToken,
             runtimeHashes: runtimeWithMetallib,
             modelHashes: loopConfig.modelHashes,
-            privacyCapabilities: privacyCapabilitiesForRegistration()
+            privacyCapabilities: privacyCapabilitiesForRegistration(),
+            privateOnly: loopConfig.config.coordinator.privateOnly
         )
 
         // 4. Create coordinator client and start connection

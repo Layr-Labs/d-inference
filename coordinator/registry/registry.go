@@ -91,6 +91,21 @@ type PendingRequest struct {
 	// one of these attested hardware serials. Empty means the request may
 	// route to any eligible provider.
 	AllowedProviderSerials []string
+	// SelfRouteOnly restricts routing to providers owned by OwnerAccountID
+	// (the "use my own machine" path). When set, the scheduler skips every
+	// provider whose AccountID != OwnerAccountID and never falls back to the
+	// public fleet. The owner-match is on the coordinator-stamped AccountID,
+	// never on any client-supplied value.
+	SelfRouteOnly bool
+	// OwnerAccountID is the authenticated account that must own the serving
+	// provider when SelfRouteOnly is set. Stamped server-side from the
+	// request's authenticated identity.
+	OwnerAccountID string
+	// FreeSelfRoute marks a request that must settle at zero cost (no charge,
+	// no platform fee, no provider payout) because it is served by a machine
+	// the requesting account owns. handleComplete re-verifies ownership of the
+	// serving provider before honoring this flag.
+	FreeSelfRoute bool
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int
@@ -185,6 +200,10 @@ type Provider struct {
 
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
+
+	// PrivateOnly excludes this machine from the public fleet entirely: it
+	// serves only its owner's self-route requests. Reported at registration.
+	PrivateOnly bool
 
 	// Benchmark data reported at registration
 	PrefillTPS float64 // prefill tokens per second
@@ -1119,6 +1138,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Backend:                 msg.Backend,
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: msg.EncryptedResponseChunks,
+		PrivateOnly:             msg.PrivateOnly,
 		PrefillTPS:              msg.PrefillTPS,
 		DecodeTPS:               msg.DecodeTPS,
 		TrustLevel:              TrustNone,
@@ -2596,8 +2616,14 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	for _, p := range r.providers {
 		p.mu.Lock()
 
-		// Apply the same gates as snapshotProviderLocked.
+		// Apply the same gates as snapshotProviderLocked. Private-only machines
+		// never serve the public fleet, so they do not count toward public
+		// model capacity.
 		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		if p.PrivateOnly {
 			p.mu.Unlock()
 			continue
 		}

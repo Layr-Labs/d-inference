@@ -1280,6 +1280,46 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	}
 
 	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
+
+	// Free self-route settlement. A request marked FreeSelfRoute must be served
+	// by a provider the requesting account owns. Re-verify ownership here as
+	// defense-in-depth — the router already filtered to owned providers, so a
+	// mismatch should be impossible (e.g. the machine was unlinked mid-flight).
+	// Only on a confirmed match do we settle at zero cost; otherwise we fall
+	// back to normal paid settlement rather than grant free inference on a
+	// machine the caller does not own (closes the "mark free, serve elsewhere"
+	// hole).
+	freeSelfRoute := false
+	if pr.FreeSelfRoute {
+		// Read ownership from the provider that actually served this request —
+		// the handleComplete argument — rather than a fresh registry lookup.
+		// The provider may have deregistered between sending this completion and
+		// settlement running; GetProvider would then return nil and we'd wrongly
+		// bill the legitimate owner. The provider struct's AccountID is stable
+		// across deregistration, so the passed-in object is the authoritative,
+		// race-free source. (GetProvider is preferred only as a freshness
+		// refinement; it falls back to the argument when the entry is gone.)
+		serving := s.registry.GetProvider(providerID)
+		if serving == nil {
+			serving = provider
+		}
+		serving.Mu().Lock()
+		servingOwner := serving.AccountID
+		serving.Mu().Unlock()
+		if servingOwner != "" && servingOwner == pr.ConsumerKey {
+			freeSelfRoute = true
+			totalCost = 0
+			providerPayout = 0
+		} else {
+			s.logger.Error("self-route completion served by a non-owned provider — settling as paid (defense-in-depth)",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+				"serving_owner", servingOwner,
+				"consumer_key", pr.ConsumerKey,
+			)
+		}
+	}
+
 	billingFinalized := true
 
 	// Settle billing against the pre-flight reservation. All balance
@@ -1355,7 +1395,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
 			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
 		}
-	} else {
+	} else if !freeSelfRoute {
 		start := time.Now()
 		if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
@@ -1421,7 +1461,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			publicKey := p.PublicKey
 			p.Mu().Unlock()
 
-			if accountID != "" {
+			// Free self-route earns no payout (consumer == provider account).
+			if accountID != "" && !freeSelfRoute {
 				settlementWg.Add(1)
 				go func() {
 					defer settlementWg.Done()

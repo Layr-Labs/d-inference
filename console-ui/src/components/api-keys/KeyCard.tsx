@@ -128,6 +128,14 @@ export function KeyCard({
                 Console key
               </span>
             )}
+            {keyData.self_route_only && (
+              <span
+                title="Routes only to a machine you run — free, never the public fleet"
+                className="text-[10px] font-mono uppercase tracking-wide text-teal bg-teal/10 border border-teal/30 rounded px-1.5 py-0.5"
+              >
+                My Machine · Free
+              </span>
+            )}
           </div>
           <p className="mt-1 text-xs font-mono text-text-tertiary truncate">{keyData.label}</p>
         </div>

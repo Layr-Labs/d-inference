@@ -37,6 +37,12 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Local server port (used with --local).")
     var port: UInt16 = 8000
 
+    @Option(help: "Bind address for --local (default 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).")
+    var bind: String = "127.0.0.1"
+
+    @Flag(help: "Disable local API-key auth for --local (NOT recommended; trusted/airgapped use only).")
+    var noAuth = false
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
 
@@ -97,13 +103,36 @@ struct Start: AsyncParsableCommand {
             includeDisabled: all
         )
 
-        print("darkbloom \(ProviderCore.version) (standalone)")
-        print("Listening on 127.0.0.1:\(port)")
+        // Direct/local mode: mint (or reuse) a bearer token so the loopback
+        // server isn't open to every local process / hostile webpage. --no-auth
+        // opts out for trusted/airgapped use.
+        let token: String?
+        if noAuth {
+            token = nil
+        } else {
+            token = try LocalEndpoint.loadOrCreateToken()
+        }
+
+        let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+        print("darkbloom \(ProviderCore.version) (local / direct mode)")
+        print("Listening on \(bind):\(port)")
         print("Models: \(advertised.count)")
         for m in advertised {
             print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
         }
-        print("OpenAI-compatible: GET /health, GET /v1/models, POST /v1/chat/completions")
+        print()
+        print("OpenAI-compatible endpoint:")
+        print("  base URL: \(baseURL)")
+        if let token {
+            print("  API key:  \(token)")
+            print()
+            print("  export OPENAI_BASE_URL=\(baseURL)")
+            print("  export OPENAI_API_KEY=\(token)")
+        } else {
+            print("  API key:  (auth disabled — --no-auth)")
+        }
+        print()
+        print("  Shareable any time with: darkbloom local")
         print()
 
         // Standalone mode still benefits from the PID lock + sleep prevention.
@@ -114,12 +143,27 @@ struct Start: AsyncParsableCommand {
         let server = StandaloneServer(
             config: StandaloneServerConfig(
                 port: port,
-                host: "127.0.0.1",
-                maxCachedModels: Int(clamping: config.backend.maxModelSlots)
+                host: bind,
+                maxCachedModels: Int(clamping: config.backend.maxModelSlots),
+                authToken: token
             ),
             models: advertised
         )
         try await server.start()
+
+        // Publish discovery metadata so a same-machine client (and
+        // `darkbloom local`) can find + authenticate to this server. Removed on
+        // exit; the token file persists so the token survives restarts.
+        let info = LocalEndpoint.Info(
+            host: bind,
+            port: port,
+            apiKey: token ?? "",
+            version: ProviderCore.version,
+            pid: ProcessInfo.processInfo.processIdentifier,
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try? LocalEndpoint.writeInfo(info)
+        defer { LocalEndpoint.removeInfo() }
 
         // Wait forever (until SIGINT). In standalone mode we don't have a
         // coordinator event stream to drive the loop, so we just block.

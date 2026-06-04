@@ -687,6 +687,12 @@ type APIKey struct {
 	// AllowedModels restricts which models the key may call. Empty = all.
 	AllowedModels []string `json:"allowed_models,omitempty"`
 
+	// SelfRouteOnly is a hard ceiling: every request on this key is routed
+	// only to a machine the owning account runs, and is free. The key can
+	// never spend balance or reach the public fleet. See the "self-route"
+	// design in the consumer handler.
+	SelfRouteOnly bool `json:"self_route_only"`
+
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
@@ -702,6 +708,7 @@ type APIKeyCreate struct {
 	ITPMLimit     *int64
 	OTPMLimit     *int64
 	AllowedModels []string
+	SelfRouteOnly bool
 	ExpiresAt     *time.Time
 }
 

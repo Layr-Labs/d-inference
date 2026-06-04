@@ -39,7 +39,7 @@ extension StandaloneServer {
     /// middleware onto a router returned by
     /// `MLXServerApplication.buildRouter`; wrapping the built
     /// responder is the supported alternative.
-    nonisolated func makeApplication() -> Application<CORSResponder<RouterResponder<BasicRequestContext>>> {
+    nonisolated func makeApplication() -> Application<LocalAuthResponder<CORSResponder<RouterResponder<BasicRequestContext>>>> {
         // I1: route through the single atomic-acquire entry point so a
         // concurrent eviction cannot pick the just-loaded model
         // between `ensureModelLoaded` and the reservation bump.
@@ -75,9 +75,12 @@ extension StandaloneServer {
         let service = MLXOpenAIService(engine: engine)
         let router = MLXServerApplication.buildRouter(service: service)
         let corsResponder = CORSResponder(inner: router.buildResponder())
+        // Auth is the outermost layer so an unauthenticated request is rejected
+        // before reaching the engine. Pass-through when no token is configured.
+        let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
 
         return Application(
-            responder: corsResponder,
+            responder: authedResponder,
             configuration: .init(
                 address: .hostname(config.host, port: Int(config.port)),
                 serverName: "darkbloom-provider"

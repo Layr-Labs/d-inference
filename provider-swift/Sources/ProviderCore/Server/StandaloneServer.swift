@@ -48,11 +48,15 @@ public struct StandaloneServerConfig: Sendable {
     public let port: UInt16
     public let host: String
     public let maxCachedModels: Int
+    /// Bearer token required on every inference route (direct/local mode).
+    /// nil = no auth (library default / explicit `--no-auth`).
+    public let authToken: String?
 
-    public init(port: UInt16 = 8000, host: String = "127.0.0.1", maxCachedModels: Int = 3) {
+    public init(port: UInt16 = 8000, host: String = "127.0.0.1", maxCachedModels: Int = 3, authToken: String? = nil) {
         self.port = port
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
+        self.authToken = authToken
     }
 }
 

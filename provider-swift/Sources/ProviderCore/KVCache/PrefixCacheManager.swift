@@ -274,6 +274,11 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// drain parks, the actor frees, the write resumes/bails/finishes, and the
     /// drain wakes. This seam reproduces only the `closed=true` precondition.
     func _markClosedForTest() { closed = true }
+    /// CODEX-R6 test seam: drop just the index entry for `digestHex` (leaving the
+    /// on-disk file), turning it into an orphan a live reconcile would re-index.
+    func _dropIndexEntryForTest(digestHex: String) {
+        index?.remove(modelHash: binding.modelHash, digestHex: digestHex)
+    }
     /// CODEX-R5 test seam: number of teardown waiters currently parked in
     /// `drainInFlightWrites`. Lets the drain test confirm deregister actually
     /// blocked on the drain (rather than passing trivially because no write was
@@ -333,9 +338,19 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// deregistered manager must not save its index or push usage, lest it
     /// clobber a reloaded same-modelKey manager's index.json or resurrect usage).
     private func dropUnusableSSDFile(_ fileURL: URL, digestHex: String, index: PrefixCacheIndex) async {
+        // CODEX-R6 HIGH: check `closed` BEFORE deleting (was after — an R5
+        // regression). A lookup can suspend in EncryptedKVStore.read, the manager
+        // be deregistered (closed=true) during that await, and the read then fail
+        // and reach here — at which point a NEW same-modelKey manager may already
+        // own this dir (the path is deterministic from binding.modelHash). A
+        // closed manager deleting that file is exactly the cross-actor live-delete
+        // R4-C1 forbids: it could nuke the new owner's freshly-written checkpoint.
+        // A closed manager must leave the file (the live owner's lookup/reconcile
+        // re-validates and drops it if genuinely unusable). Matches the entry-guard
+        // discipline in store/flushToSSD/persistDigest.
+        guard !closed else { return }
         try? FileManager.default.removeItem(at: fileURL)
         index.remove(modelHash: binding.modelHash, digestHex: digestHex)
-        guard !closed else { return }
         // The removal made the index dirty; persist it now (a single-entry drop
         // is cheap, and leaving it only in memory would let a crash resurrect the
         // stale entry → another failed lookup → re-drop). notifyAccountant pushes
@@ -654,6 +669,13 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// tier already serves them this session; this is durability across
     /// restart for the entries written since the last coalesced save.
     public func flushIndexNow() {
+        // CODEX-R6 HIGH: a CLOSED (deregistered/superseded) manager must not save
+        // its index — a new same-modelKey manager may own the dir, and saving this
+        // dead manager's stale in-memory index would clobber the live index.json.
+        // Legit teardown calls flushIndexNow BEFORE deregisterFromAccountant (so
+        // closed is still false here); only a superseded Load A reaching this after
+        // Load B closed it is blocked.
+        guard !closed else { return }
         guard ssdEnabled, let index else { return }
         if unsavedWrites > 0 || index.isDirty {
             // Only clear the unsaved counter if the save actually succeeded;
@@ -675,6 +697,13 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// are deleted (unusable). Best-effort; never throws. Call ONCE right
     /// after construction, before any flush/lookup, from the async setup path.
     public func reconcileWithDisk() {
+        // CODEX-R6 HIGH: a superseded Load A can resume after Load B closed this
+        // manager (B ran stopCurrentEngine during A's claimAccountantRegistration
+        // await) and still call reconcileWithDisk. A closed manager scanning +
+        // deleting files / saving an index in a dir now owned by the new manager
+        // is the forbidden cross-actor mutation — with a weight change it would
+        // classify the new owner's files as foreign and delete them. Bail.
+        guard !closed else { return }
         guard ssdEnabled, let index, let cacheDir else { return }
         let modelDir = cacheDir.appendingPathComponent(modelDirComponent, isDirectory: true)
         let fm = FileManager.default

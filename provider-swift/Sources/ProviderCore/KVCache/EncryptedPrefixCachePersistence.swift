@@ -145,7 +145,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         do {
             meta = try EncryptedKVStore.readMetadataOnly(from: url)
         } catch {
-            try? FileManager.default.removeItem(at: url)
+            removeUnusableBlockFile(url)  // CODEX-R6 MEDIUM: refresh accountant
             return nil
         }
         guard meta.modelHash == binding.modelHash,
@@ -153,7 +153,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
               meta.kvHeads == binding.kvHeads,
               meta.headDim == binding.headDim else {
             logger.warning("MB-1: block file model/shape mismatch — dropping \(blockHash.dbkvHexString, privacy: .public)")
-            try? FileManager.default.removeItem(at: url)
+            removeUnusableBlockFile(url)  // CODEX-R6 MEDIUM: refresh accountant
             return nil
         }
         // Prefix binding: the file authenticates under its OWN metadata
@@ -291,6 +291,28 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// across an await, so callers in async contexts call this before/after).
     private func resetBytesSincePush() {
         sweepLock.lock(); bytesSincePush = 0; sweepLock.unlock()
+    }
+
+    /// CODEX-R6 MEDIUM: remove an unusable engine-tier block file (corrupt header
+    /// or model/shape mismatch) discovered during loadBlock, and refresh the
+    /// accountant so the deleted bytes stop being counted. This is the engine-tier
+    /// analog of the checkpoint tier's dropUnusableSSDFile (R5 MED-1): tick() skips
+    /// registered (owned) dirs, so without this push the accountant keeps the stale
+    /// byte total until a later saveBlock crosses the debounce or the model reloads.
+    /// loadBlock is synchronous (PrefixCachePersistence contract — no actor hops),
+    /// so the push is fire-and-forget, token-scoped (stale Tasks are NO-OP), and the
+    /// snapshot is rebuilt AFTER the removal so it reflects the smaller footprint.
+    private func removeUnusableBlockFile(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        guard let accountant else { return }
+        sweepLock.lock()
+        let token = accountantToken
+        sweepLock.unlock()
+        guard let token else { return }
+        let (total, summary) = buildUsageSnapshot()  // post-removal footprint
+        Task.detached { [accountant, token, total, summary] in
+            await accountant.updateUsage(token: token, totalBytes: total, valueSummary: summary)
+        }
     }
 
     /// HIGH-1-FIX: Store the accountant token (called by BatchScheduler after

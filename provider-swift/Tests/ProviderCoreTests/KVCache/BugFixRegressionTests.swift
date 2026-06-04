@@ -146,6 +146,59 @@ func bug1_engineTierReportsUsageAndGetsSignaled() async throws {
     #expect(usage > 0, "BUG-1-FIX: saveBlock must push engine-tier on-disk usage to the accountant (was \(usage))")
 }
 
+@Test
+func codexR6Medium_engineTierLoadBlockDropRefreshesAccountant() async throws {
+    // CODEX-R6 MEDIUM regression: when the engine tier's loadBlock drops a corrupt
+    // / wrong-model file, it must refresh the accountant (the engine-tier analog
+    // of the checkpoint tier's R5 MED-1). tick() skips registered (owned) dirs,
+    // so without the push the accountant keeps counting the deleted bytes. Revert
+    // -guard: change loadBlock's removeUnusableBlockFile back to a bare removeItem
+    // and the accountant usage stays high after the drop → this test fails.
+    let kvRoot = tmpKVRoot()
+    let modelKey = "engine-drop"
+    let dir = kvRoot.appendingPathComponent(modelKey, isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 30)
+    let binding = PrefixCacheModelBinding(
+        modelHash: "sha256:engmodel", modelDtype: "float32", modelArch: "Llama",
+        vocabSize: 1000, numLayers: 2, kvHeads: 2, headDim: 4)
+    let persistence = EncryptedPrefixCachePersistence(
+        kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding,
+        accountant: accountant, modelKey: modelKey)
+    let token = await accountant.register(modelKey: modelKey, owner: persistence)
+    persistence.setAccountantToken(token)
+
+    // Write enough real blocks to push usage > 0.
+    var usage = 0
+    for i in 0..<10 {
+        persistence.saveBlock(blockHash: Data("blk-\(i)".utf8),
+                              layerCaches: engineBlock(layers: 2, tokens: 2048))
+        usage = await accountant._usageForTest(modelKey: modelKey) ?? 0
+        if usage > 0 { break }
+    }
+    var waited = 0
+    while usage == 0, waited < 100 { try? await Task.sleep(for: .milliseconds(20)); waited += 1; usage = await accountant._usageForTest(modelKey: modelKey) ?? 0 }
+    #expect(usage > 0, "precondition: blocks reported to accountant")
+
+    // Corrupt EVERY block file on disk (bad magic) so loadBlock drops each.
+    let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+    for u in files where u.pathExtension == EncryptedKVStore.fileExtension {
+        try? Data(repeating: 0xEE, count: 32).write(to: u)
+    }
+    // loadBlock each corrupt file → header parse fails → removeUnusableBlockFile
+    // removes it AND fires the detached accountant refresh.
+    for i in 0..<10 { _ = persistence.loadBlock(blockHash: Data("blk-\(i)".utf8)) }
+
+    // The detached pushes settle to a smaller (eventually 0) footprint.
+    var after = await accountant._usageForTest(modelKey: modelKey) ?? -1
+    waited = 0
+    while after > 0, waited < 100 { try? await Task.sleep(for: .milliseconds(20)); waited += 1; after = await accountant._usageForTest(modelKey: modelKey) ?? -1 }
+    #expect(after == 0,
+        "CODEX-R6-MEDIUM: engine-tier loadBlock drops must refresh accountant usage to 0 (was \(after))")
+}
+
 // MARK: - BUG-3: Path traversal (MAJOR)
 
 @Test
@@ -1000,6 +1053,87 @@ func codexR5Medium_lookupDropOfCorruptFileRefreshesAccountant() async {
     #expect(after == 0,
         "CODEX-R5-MEDIUM: dropping a corrupt file on lookup must refresh accountant usage to 0 (was \(after))")
 }
+
+#if DEBUG
+@Test
+func codexR6High_closedManagerDoesNotDeleteOnLookupDrop() async {
+    // CODEX-R6 HIGH regression (R5 fix order bug): a CLOSED manager must NOT
+    // delete an SSD file during a lookup-drop. A lookup can suspend in
+    // EncryptedKVStore.read, the manager be deregistered (closed=true) during
+    // that await, and the read then fail and reach dropUnusableSSDFile — by which
+    // point a NEW same-modelKey manager may own the dir (deterministic path from
+    // modelHash). The old dropUnusableSSDFile removed the file BEFORE the !closed
+    // check → cross-actor live-delete (could nuke the new owner's checkpoint).
+    // Fix: guard !closed BEFORE removeItem. Revert-guard: move the guard back
+    // after removeItem → the file gets deleted → this test fails.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 40, freeBytes: { _ in 1 << 40 })
+    let (mgr, modelDir) = await makeCkptMgrWithSSD(kvRoot: kvRoot, modelKey: "m1", accountant: accountant)
+    await mgr.registerWithAccountant()
+
+    let tokens = Array(0..<10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnBlock(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()
+
+    func findKVFile(_ dir: URL) -> URL? {
+        guard let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else { return nil }
+        for case let u as URL in en where u.pathExtension == EncryptedKVStore.fileExtension { return u }
+        return nil
+    }
+    guard let fileURL = findKVFile(modelDir) else {
+        #expect(Bool(false), "precondition: a persisted file must exist"); return
+    }
+    // Corrupt the file so the lookup's metadata read fails → drop path.
+    try? Data(repeating: 0xEE, count: 32).write(to: fileURL)
+
+    // Mark the manager CLOSED (simulates deregister landing during the lookup's
+    // read await), then drive a lookup that reaches the drop path.
+    await mgr._markClosedForTest()
+    await mgr.clearRAM()
+    _ = await mgr.lookup(tokens: tokens)
+
+    // A closed manager must LEAVE the file (the live owner reclaims/drops it).
+    #expect(FileManager.default.fileExists(atPath: fileURL.path),
+        "CODEX-R6-HIGH: a closed manager must NOT delete the file on a lookup-drop (cross-actor live-delete)")
+}
+
+@Test
+func codexR6High_closedManagerSkipsReconcile() async {
+    // CODEX-R6 HIGH regression: reconcileWithDisk() must bail when closed. A
+    // superseded Load A can resume after Load B closed its manager and still call
+    // reconcile — re-indexing / deleting files in a dir now owned by the new
+    // manager. We persist a VALID checkpoint, then DELETE its index entry so the
+    // file becomes an orphan that a live reconcile WOULD re-index. With the
+    // manager closed, reconcile must NOT run, so the orphan stays un-indexed.
+    // Revert-guard: remove `guard !closed` from reconcileWithDisk → it re-indexes
+    // the orphan → _indexHasEntryForTest becomes true → this test fails.
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 40, freeBytes: { _ in 1 << 40 })
+    let (mgr, _) = await makeCkptMgrWithSSD(kvRoot: kvRoot, modelKey: "m1", accountant: accountant)
+    await mgr.registerWithAccountant()
+
+    let tokens = Array(0..<10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnBlock(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()
+    let digestHex = PrefixDigest.digest(tokens: tokens, length: 8).dbkvHexString
+    #expect(await mgr._indexHasEntryForTest(digestHex: digestHex) == true, "precondition: entry recorded")
+
+    // Make the on-disk file an ORPHAN (drop only the index entry); a LIVE
+    // reconcile would re-index it. Then close and reconcile — must be a no-op.
+    await mgr._dropIndexEntryForTest(digestHex: digestHex)
+    #expect(await mgr._indexHasEntryForTest(digestHex: digestHex) == false, "entry dropped → orphan on disk")
+    await mgr._markClosedForTest()
+    await mgr.reconcileWithDisk()
+    await mgr.flushIndexNow()  // must bail on closed, must not crash
+
+    #expect(await mgr._indexHasEntryForTest(digestHex: digestHex) == false,
+        "CODEX-R6-HIGH: a closed manager's reconcileWithDisk must NOT run (orphan stays un-indexed)")
+}
+#endif
 
 @Test
 func codexR3High2_loadModelCleanupIdentityChecked() async throws {

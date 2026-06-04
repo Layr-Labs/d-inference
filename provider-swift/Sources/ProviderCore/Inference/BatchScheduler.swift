@@ -225,8 +225,16 @@ public actor BatchScheduler {
             // it deregisters the just-claimed token rather than registering a dead
             // manager (CODEX-R2 HIGH-1).
             await mgr.claimAccountantRegistration()
-            await mgr.reconcileWithDisk()
-            await mgr.publishUsageToAccountant()
+            // CODEX-R6 HIGH: re-check epoch after claimAccountantRegistration's
+            // await. If a newer load/unload superseded us during that await, this
+            // manager was closed by stopCurrentEngine — do NOT reconcile/publish.
+            // reconcileWithDisk now also self-guards on `closed` (defence in
+            // depth), but bailing here avoids touching the accountant for a dead
+            // manager and falls through to the identity-checked cleanup below.
+            if loadEpoch == generationEpoch {
+                await mgr.reconcileWithDisk()
+                await mgr.publishUsageToAccountant()
+            }
         }
         // CODEX-R2 HIGH-1: re-check epoch after the checkpoint setup awaits. If a
         // newer load/unload superseded us, bail (the manager already deregistered

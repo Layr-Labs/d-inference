@@ -1410,6 +1410,18 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 					"error", err,
 				)
 			}
+			// If this was a self-route request that FELL BACK to paid settlement
+			// (marked free at dispatch, but mid-flight ownership revalidation
+			// failed), the owner has no balance because self-route skips
+			// reservation — so a failed charge means no money was collected and
+			// we must NOT credit the provider from an unfunded balance. Zero the
+			// cost and payout. (Other no-reservation paths — e.g. admin /
+			// platform-covered usage — keep their existing payout behavior.)
+			if pr.FreeSelfRoute {
+				totalCost = 0
+				providerPayout = 0
+				s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model})
+			}
 		}
 		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
 	}

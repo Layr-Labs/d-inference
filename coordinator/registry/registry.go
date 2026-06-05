@@ -1430,6 +1430,14 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}
+	// Private-only providers serve only their owner's self-route traffic, never
+	// the public fleet. They must not suppress public swap planning: otherwise a
+	// private-only machine that happens to hold a queued public model warm makes
+	// the planner believe the model is already served and skip load_model to an
+	// eligible public node, stranding public requests until queue timeout.
+	if p.PrivateOnly {
+		return false
+	}
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
 		return false
 	}
@@ -1503,6 +1511,11 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	defer p.mu.Unlock()
 
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return 0, false
+	}
+	// Private-only providers never serve public traffic, so never pick one as a
+	// public load_model target (mirrors the public-routing exclusion).
+	if p.PrivateOnly {
 		return 0, false
 	}
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
@@ -2295,9 +2308,15 @@ func (r *Registry) ListModels() []AggregateModel {
 		attested := p.Attested
 		attestResult := p.AttestationResult
 		privateReady := providerSupportsPrivateTextLocked(p)
+		privateOnly := p.PrivateOnly
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
+			continue
+		}
+		// Private-only providers serve only their owner's self-route traffic, so
+		// they must not appear in or inflate the public /v1/models aggregation.
+		if privateOnly {
 			continue
 		}
 		if !r.trustMeetsMinimum(trust) || !privateReady {

@@ -151,6 +151,19 @@ struct Start: AsyncParsableCommand {
         )
         try await server.start()
 
+        // Wait for the server to actually accept connections before advertising
+        // it. start() launches Hummingbird in a child task and returns BEFORE
+        // the socket bind completes; if the port is already in use (or the task
+        // exits immediately) we must not write a discovery record pointing at a
+        // dead endpoint that `darkbloom local` / local-first clients would then
+        // trust. Poll /health (auth-exempt) until it answers.
+        let dialHost = (bind == "0.0.0.0") ? "127.0.0.1" : bind
+        guard await Self.waitForLocalServerReady(host: dialHost, port: port, timeout: 5.0) else {
+            await server.stop()
+            printError("Local server failed to start listening on \(bind):\(port) within 5s — is the port already in use?")
+            throw ExitCode.failure
+        }
+
         // Publish discovery metadata so a same-machine client (and
         // `darkbloom local`) can find + authenticate to this server. Removed on
         // exit; the token file persists so the token survives restarts.
@@ -169,6 +182,28 @@ struct Start: AsyncParsableCommand {
         // coordinator event stream to drive the loop, so we just block.
         let waitForever = AsyncStream<Never> { _ in }
         for await _ in waitForever {}
+    }
+
+    /// Polls the local server's `/health` endpoint until it accepts a connection
+    /// or the timeout elapses. Used to confirm the socket is actually bound
+    /// before publishing the discovery record. Returns true once any HTTP
+    /// response comes back.
+    private static func waitForLocalServerReady(host: String, port: UInt16, timeout: TimeInterval) async -> Bool {
+        guard let url = URL(string: "http://\(host):\(port)/health") else { return false }
+        let deadline = Date().addingTimeInterval(timeout)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 1.0
+        request.httpMethod = "GET"
+        while Date() < deadline {
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                if response is HTTPURLResponse { return true }
+            } catch {
+                // Not listening yet — retry until the deadline.
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+        }
+        return false
     }
 
     // MARK: - Foreground (invoked by launchd)

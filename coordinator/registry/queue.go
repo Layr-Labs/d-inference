@@ -218,17 +218,30 @@ func (q *RequestQueue) CleanStale() {
 	}
 }
 
-// FailQueuedRequestsForModel rejects all queued requests for a model by
-// sending nil on their ResponseCh. Waiters receive ErrQueueTimeout.
-// Called when the coordinator determines no provider can serve the model
-// (e.g. all load_model attempts failed with no alternative provider).
+// FailQueuedRequestsForModel rejects queued requests for a model by sending nil
+// on their ResponseCh. Waiters receive ErrQueueTimeout. Called when the
+// coordinator determines no provider can serve the model (e.g. all load_model
+// attempts failed with no alternative provider).
+//
+// Exclusive self-route waiters (Pending.SelfRouteOnly) are deliberately NOT
+// failed here: this verdict comes from a PUBLIC capacity check, which ignores
+// the caller's own machine. A public load_model failure or lack of public
+// capacity must not reject an owner's self-route request while their own
+// (busy) machine is still eligible to serve it. Those waiters stay queued to be
+// drained when their machine frees up, or to time out naturally via CleanStale
+// (surfacing machine_busy). Returns the number of (public) requests failed.
 func (q *RequestQueue) FailQueuedRequestsForModel(model string) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	queue := q.queues[model]
 	failed := 0
+	var survivors []*QueuedRequest
 	for _, req := range queue {
+		if req.Pending != nil && req.Pending.SelfRouteOnly {
+			survivors = append(survivors, req)
+			continue
+		}
 		req.markDone()
 		select {
 		case req.ResponseCh <- nil:
@@ -236,7 +249,11 @@ func (q *RequestQueue) FailQueuedRequestsForModel(model string) int {
 		default:
 		}
 	}
-	delete(q.queues, model)
+	if len(survivors) == 0 {
+		delete(q.queues, model)
+	} else {
+		q.queues[model] = survivors
+	}
 	return failed
 }
 

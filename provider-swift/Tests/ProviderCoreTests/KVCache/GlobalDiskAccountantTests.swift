@@ -308,7 +308,7 @@ func accountantTickRecomputesCeilingAndScansUnowned() async {
     try? FileManager.default.removeItem(at: kvRoot)
 }
 
-// MARK: - REAL LAYOUT TESTS (BUG-2-FIX)
+// MARK: - REAL LAYOUT TESTS
 
 /// Helper: create a CHECKPOINT-tier unowned dir with NESTED layout:
 /// kvRoot/<modelKey>/<modelHash[:12]>/<digest>.darkbloom-kv + index.json
@@ -345,8 +345,8 @@ private func makeNestedCheckpointDir(
 
 @Test
 func accountantUnownedCheckpointTierNestedLayout() async {
-    // BUG-2-FIX(a): tick() must scan NESTED files (checkpoint tier).
-    // BUG-2-FIX(b): evictUnownedEntries must use the entry's OWN modelHash, not modelKey.
+    // tick() must scan NESTED files (checkpoint tier).
+    // evictUnownedEntries must use the entry's OWN modelHash, not modelKey.
     let kvRoot = tmpKVRoot()
     let ceiling = 2000
     let accountant = GlobalDiskAccountant(
@@ -389,7 +389,7 @@ func accountantUnownedCheckpointTierNestedLayout() async {
 
 @Test
 func accountantUnownedEngineTierFlatLayout() async {
-    // BUG-2-FIX(a): tick() must scan FLAT files (engine tier, no index).
+    // tick() must scan FLAT files (engine tier, no index).
     let kvRoot = tmpKVRoot()
     let ceiling = 1000
     let accountant = GlobalDiskAccountant(
@@ -422,7 +422,7 @@ func accountantUnownedEngineTierFlatLayout() async {
 
 @Test
 func accountantRegisteredEngineTierNotDeleted() async {
-    // BUG-1-FIX: a REGISTERED engine-tier owner's live dir must NEVER be
+    // A REGISTERED engine-tier owner's live dir must NEVER be
     // directly deleted by tick — only signaled via evictForGlobalBudget.
     let kvRoot = tmpKVRoot()
     let ceiling = 1000

@@ -111,7 +111,7 @@ public actor KVCacheKEK {
         } catch {
             throw KVCacheKEKError.wrappingFailed(String(describing: error))
         }
-        // CODEX-R5 MEDIUM: atomic create-if-absent, NOT a clobbering save. If a
+        // Atomic create-if-absent, NOT a clobbering save. If a
         // concurrent first-use (another model load on a fresh machine) already
         // persisted a different KEK, `saveIfAbsent` returns THAT one and we adopt
         // it — so every cache file in the process is governed by a single KEK

@@ -57,7 +57,7 @@ public protocol PrefixCacheOwner: Sendable {
 
 /// Per-entry value data for benefit-per-byte scoring (Phase-1 semantics).
 /// Aggregated across all models (owned + unowned) during enforcement.
-/// BUG-3-FIX: added `fileURL` so evictUnownedEntries can delete the
+/// Added `fileURL` so evictUnownedEntries can delete the
 /// discovered file directly instead of re-deriving from the untrusted
 /// index relativePath (path-traversal defense).
 public struct EntryValue: Sendable {
@@ -65,7 +65,7 @@ public struct EntryValue: Sendable {
     let digestHex: String
     let fileBytes: Int
     let score: Double
-    let fileURL: URL?  // BUG-3-FIX: discovered file path from the tick scan or nil for owned.
+    let fileURL: URL?  // Discovered file path from the tick scan, or nil for owned.
 }
 
 // MARK: - Registration token
@@ -100,7 +100,7 @@ public actor GlobalDiskAccountant {
 
     /// Registered owners: token.id → (modelKey, owner).
     private var registry: [UUID: (modelKey: String, owner: PrefixCacheOwner)] = [:]
-    /// HIGH-1-FIX: Track the CURRENT active token per modelKey. Set on register,
+    /// Track the CURRENT active token per modelKey. Set on register,
     /// cleared on deregister ONLY IF the deregistered token is still active.
     /// Usage updates are scoped to the active token: a stale token's push is
     /// ignored (NO-OP), so a detached Task from an earlier load can't clobber
@@ -117,7 +117,7 @@ public actor GlobalDiskAccountant {
 
     /// Tick task (started lazily on first register, cancelled on shutdown).
     private var tickTask: Task<Void, Never>?
-    /// BUG-6-FIX: reentrancy guard for enforceIfOverBudget. Without this,
+    /// Reentrancy guard for enforceIfOverBudget. Without this,
     /// concurrent updateUsage calls can interleave at the owner-eviction await,
     /// both targeting the same owner with stale runningTotals → over-eviction.
     private var isEnforcing = false
@@ -151,12 +151,12 @@ public actor GlobalDiskAccountant {
     public func register(modelKey: String, owner: PrefixCacheOwner) async -> AccountantToken {
         let token = AccountantToken(id: UUID())
         registry[token.id] = (modelKey, owner)
-        // HIGH-1-FIX: mark this token as the active owner for the modelKey.
+        // Mark this token as the active owner for the modelKey.
         activeToken[modelKey] = token.id
         runningTotals[modelKey] = 0
         valueSummaries[modelKey] = []
 
-        // BUG-7-FIX: A prior deregister left this model's files on disk; a tick
+        // A prior deregister left this model's files on disk; a tick
         // may have folded them into unowned*. Drop that stale share now so
         // register + updateUsage don't double-count it (owned + unowned) until
         // the next tick. The subtraction is exact (EntryValue carries fileBytes).
@@ -180,12 +180,12 @@ public actor GlobalDiskAccountant {
 
     public func deregister(_ token: AccountantToken) async {
         guard let (modelKey, _) = registry.removeValue(forKey: token.id) else { return }
-        // HIGH-1-FIX: clear activeToken ONLY if this token is still the active one.
+        // Clear activeToken ONLY if this token is still the active one.
         // If a newer reload already registered a fresh token, leave activeToken as-is.
         if activeToken[modelKey] == token.id {
             activeToken.removeValue(forKey: modelKey)
         }
-        // HIGH-1-FIX: clear runningTotals/valueSummaries ONLY if this token was
+        // Clear runningTotals/valueSummaries ONLY if this token was
         // active. If superseded, the newer owner already set them — leave intact.
         if activeToken[modelKey] == nil {
             runningTotals.removeValue(forKey: modelKey)
@@ -204,7 +204,7 @@ public actor GlobalDiskAccountant {
 
     /// Called by PrefixCacheManager after each byte-changing op (flush,
     /// persist, eviction). Cheap O(this-model-entries) push, no tree walk.
-    /// HIGH-1-FIX: modelKey-only signature kept for back-compat (engine-tier
+    /// ModelKey-only signature kept for back-compat (engine-tier
     /// calls from EncryptedPrefixCachePersistence), but usage updates from a
     /// stale registration (e.g. detached Task from an older load) are NO-OP:
     /// we only accept updates for the CURRENT active token. Callers that can
@@ -217,7 +217,7 @@ public actor GlobalDiskAccountant {
         await enforceIfOverBudget()
     }
 
-    /// HIGH-1-FIX: Token-scoped usage update. Only accepts the update if the
+    /// Token-scoped usage update. Only accepts the update if the
     /// token is still the active owner for its modelKey — stale tokens (from a
     /// superseded load or a detached Task that outlived the unload) are NO-OP.
     public func updateUsage(token: AccountantToken, totalBytes: Int, valueSummary: [EntryValue]) async {
@@ -250,9 +250,9 @@ public actor GlobalDiskAccountant {
 
     /// Check if global total > ceiling; if so, evict lowest-score entries
     /// across ALL models (owned + unowned) until within budget.
-    /// BUG-6-FIX: guarded against reentrancy across the owner-eviction await.
+    /// Guarded against reentrancy across the owner-eviction await.
     private func enforceIfOverBudget() async {
-        // BUG-6-FIX: if already enforcing, set the requested flag and return.
+        // If already enforcing, set the requested flag and return.
         // The in-flight pass will re-run once if any concurrent caller arrived.
         if isEnforcing {
             enforceRequested = true
@@ -300,7 +300,7 @@ public actor GlobalDiskAccountant {
         //   • UNOWNED: the accountant directly deletes files.
         for (modelKey, entries) in chosen {
             let bytesForModel = entries.reduce(0) { $0 + $1.fileBytes }
-            // CODEX-R4 HIGH (C3): resolve the owner via activeToken[modelKey],
+            // Resolve the owner via activeToken[modelKey],
             // NOT registry.values.first(where:). During a reload window two
             // tokens can be registered for the same modelKey; the first-match
             // lookup has undefined iteration order and could return the STALE
@@ -332,7 +332,7 @@ public actor GlobalDiskAccountant {
                 let freed = await evictUnownedEntries(modelKey: modelKey, entries: entries)
                 unownedBytes = max(0, unownedBytes - freed)
                 total -= freed
-                // BUG-4-FIX: prune the just-evicted digests from the cached
+                // Prune the just-evicted digests from the cached
                 // unowned summary so a between-tick re-enforce (updateUsage →
                 // enforceIfOverBudget) cannot re-count their phantom bytes.
                 // The summary is otherwise only rebuilt on the 30s tick.
@@ -356,7 +356,7 @@ public actor GlobalDiskAccountant {
         let suffix = ".\(EncryptedKVStore.fileExtension)"
         var freed = 0
 
-        // BUG-2-FIX(b): Load the transient index and enumerate ALL its entries
+        // Load the transient index and enumerate ALL its entries
         // (not by modelKey, which is the dir name, NOT the index's modelHash).
         // The index is per-dir, so all its entries belong to this dir's model.
         let indexURL = modelDir.appendingPathComponent("index.json")
@@ -364,7 +364,7 @@ public actor GlobalDiskAccountant {
         let allIndexEntries = index.allEntries()
 
         for entry in entries {
-            // BUG-3-FIX: use the fileURL discovered by tick's collectKVFiles
+            // Use the fileURL discovered by tick's collectKVFiles
             // instead of re-deriving from the untrusted index relativePath.
             // This closes the path-traversal hole: the URL comes from a real
             // directory walk, never from index.json (which is plaintext and
@@ -390,7 +390,7 @@ public actor GlobalDiskAccountant {
             }
             try? fm.removeItem(at: fileURL)
 
-            // BUG-2-FIX(b): Use the entry's OWN modelHash (from the index) to remove it.
+            // Use the entry's OWN modelHash (from the index) to remove it.
             // For engine-tier entries (not in index), we skip index removal.
             if let indexEntry = allIndexEntries.first(where: { $0.digestHex == entry.digestHex }) {
                 index.remove(modelHash: indexEntry.modelHash, digestHex: entry.digestHex)
@@ -403,7 +403,7 @@ public actor GlobalDiskAccountant {
         }
 
         // If the dir has no more .darkbloom-kv files (at any depth), rmdir it.
-        // BUG-2-FIX(a): check nested subdirs too (checkpoint tier).
+        // Check nested subdirs too (checkpoint tier).
         let hasFiles = checkForKVFiles(in: modelDir, fm: fm, suffix: suffix)
         if !hasFiles {
             try? fm.removeItem(at: modelDir)
@@ -447,7 +447,7 @@ public actor GlobalDiskAccountant {
     /// Periodic tick: re-read free disk, recompute ceiling, scan kvRoot for
     /// unowned dirs, sum their bytes + build degraded value summaries, then
     /// enforce the global budget. Internal for testing (called by tick task in prod).
-    /// BUG-2-FIX(a): Handles BOTH layouts: flat (engine) and nested (checkpoint).
+    /// Handles BOTH layouts: flat (engine) and nested (checkpoint).
     func tick() async {
         let fm = FileManager.default
         let suffix = ".\(EncryptedKVStore.fileExtension)"
@@ -469,7 +469,7 @@ public actor GlobalDiskAccountant {
                 continue
             }
 
-            // BUG-2-FIX(a): UNOWNED dir. Load its index (if present) to get all entries.
+            // UNOWNED dir. Load its index (if present) to get all entries.
             let indexURL = modelDir.appendingPathComponent("index.json")
             let index = PrefixCacheIndex(fileURL: indexURL)
             let allIndexEntries = index.allEntries()
@@ -487,7 +487,7 @@ public actor GlobalDiskAccountant {
                 unownedTotal += size
 
                 // Build degraded value summary: try index entry first, else mtime-LRU.
-                // BUG-2-FIX(b): query index by relativePath or digestHex (not by modelKey).
+                // Query index by relativePath or digestHex (not by modelKey).
                 let score: Double
                 if let entry = allIndexEntries.first(where: { $0.digestHex == digestHex }) {
                     // Use the index's benefit-per-byte score.
@@ -504,7 +504,7 @@ public actor GlobalDiskAccountant {
                     score = size > 0 ? (1.0 / max(1.0, age)) / Double(size) : 0.0
                 }
 
-                // BUG-3-FIX: thread the discovered fileURL through EntryValue.
+                // Thread the discovered fileURL through EntryValue.
                 unownedValues.append(EntryValue(
                     modelKey: modelKey, digestHex: digestHex, fileBytes: size, score: score, fileURL: fileURL
                 ))
@@ -520,7 +520,7 @@ public actor GlobalDiskAccountant {
 
     /// Collect all .darkbloom-kv files at any depth under `dir`, returning
     /// (fileURL, relativePath from dir). Handles both flat (engine) and nested
-    /// (checkpoint) layouts. BUG-2-FIX(a): recursive scan for checkpoint tier.
+    /// (checkpoint) layouts via a recursive scan for the checkpoint tier.
     private func collectKVFiles(in dir: URL, fm: FileManager, suffix: String) -> [(URL, String)] {
         var results: [(URL, String)] = []
         guard let contents = try? fm.contentsOfDirectory(

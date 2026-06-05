@@ -93,7 +93,7 @@ private func engineBlock(layers: Int, tokens: Int) -> [KVCacheSimple] {
 
 @Test
 func bug1_engineTierReportsUsageAndGetsSignaled() async throws {
-    // BUG-1-FIX regression (CRITICAL): the engine tier
+    // The engine tier
     // (EncryptedPrefixCachePersistence) must PUSH its on-disk usage to the
     // global accountant from saveBlock(), or its disk grows unbounded
     // (invisible to the global budget). This drives the REAL path:
@@ -120,7 +120,7 @@ func bug1_engineTierReportsUsageAndGetsSignaled() async throws {
         kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding,
         accountant: accountant, modelKey: modelKey)
     let token = await accountant.register(modelKey: modelKey, owner: persistence)
-    // HIGH-1-FIX: set the token so usage pushes are token-scoped.
+    // Set the token so usage pushes are token-scoped.
     persistence.setAccountantToken(token)
 
     // Usage must be 0 before any save.
@@ -150,7 +150,7 @@ func bug1_engineTierReportsUsageAndGetsSignaled() async throws {
 func codexR6Medium_engineTierLoadBlockDropRefreshesAccountant() async throws {
     // CODEX-R6 MEDIUM regression: when the engine tier's loadBlock drops a corrupt
     // / wrong-model file, it must refresh the accountant (the engine-tier analog
-    // of the checkpoint tier's R5 MED-1). tick() skips registered (owned) dirs,
+    // of the checkpoint tier's lookup-drop refresh). tick() skips registered (owned) dirs,
     // so without the push the accountant keeps counting the deleted bytes. Revert
     // -guard: change loadBlock's removeUnusableBlockFile back to a bare removeItem
     // and the accountant usage stays high after the drop → this test fails.
@@ -203,7 +203,7 @@ func codexR6Medium_engineTierLoadBlockDropRefreshesAccountant() async throws {
 
 @Test
 func bug3_unownedEvictionDoesNotTraverseRelativePath() async {
-    // BUG-3-FIX regression: evictUnownedEntries must NOT trust index.json's
+    // evictUnownedEntries must NOT trust index.json's
     // relativePath (plaintext, unauthenticated). Before fix: a poisoned
     // relativePath = "../../../../../../tmp/EVIL.darkbloom-kv" would delete
     // files outside kvRoot. After fix: use the fileURL discovered by tick's
@@ -245,7 +245,7 @@ func bug3_unownedEvictionDoesNotTraverseRelativePath() async {
     // Trigger tick: should scan the REAL files (not the poisoned index path).
     await accountant.tick()
 
-    // Verify the sentinel was NOT removed (BUG-3-FIX: fileURL from collectKVFiles, not relativePath).
+    // Verify the sentinel was NOT removed (fileURL from collectKVFiles, not relativePath).
     let sentinelExistsAfter = FileManager.default.fileExists(atPath: sentinelURL.path)
     #expect(sentinelExistsAfter, "BUG-3-FIX: sentinel outside kvRoot must NOT be deleted")
 
@@ -273,7 +273,7 @@ func bug3_unownedEvictionDoesNotTraverseRelativePath() async {
 
 @Test
 func bug4_staleUnownedSummaryPrunedAfterEviction() async {
-    // BUG-4-FIX regression: after evictUnownedEntries deletes files, it must prune
+    // After evictUnownedEntries deletes files, it must prune
     // those digests from unownedValueSummaries so a between-tick re-enforce doesn't
     // re-count phantom bytes (file already gone → freed=0, but the accountant tries
     // to free it again). Before fix: evicted entries linger in the cached summary,
@@ -325,7 +325,7 @@ func bug4_staleUnownedSummaryPrunedAfterEviction() async {
 
 @Test
 func bug5_storeDirectSSDFallbackWhenRamRejects() async throws {
-    // BUG-5-FIX regression: when RAM tier REJECTS a checkpoint (entry > RAM maxBytes)
+    // When RAM tier REJECTS a checkpoint (entry > RAM maxBytes)
     // AND it's persistable (tokenCount >= minPersistTokens, ssdEnabled), store()
     // must write it directly to SSD instead of silently dropping. Before fix: RAM
     // rejection → store returns false, checkpoint lost. After fix: store() checks
@@ -390,7 +390,7 @@ func bug5_storeDirectSSDFallbackWhenRamRejects() async throws {
 
 @Test
 func bug6_enforceReentrancyGuarded() async {
-    // BUG-6-FIX regression: concurrent updateUsage calls can interleave at the
+    // Concurrent updateUsage calls can interleave at the
     // owner-eviction await, both targeting the same owner with stale runningTotals
     // → over-eviction. Before fix: no guard, owner.evictForGlobalBudget called
     // twice for one deficit. After fix: isEnforcing guard + re-run loop, owner
@@ -437,7 +437,7 @@ func bug6_enforceReentrancyGuarded() async {
 
 @Test
 func bug7_reloadDoesNotDoubleCount() async {
-    // BUG-7-FIX regression: after deregister + tick (folds dir into unowned) +
+    // After deregister + tick (folds dir into unowned) +
     // register again, the model's bytes are counted TWICE (owned + unowned)
     // until the next tick. Before fix: register doesn't clear stale unowned
     // accounting. After fix: register prunes the stale share, globalTotal()
@@ -525,7 +525,7 @@ private func makeCkptMgrWithSSD(
 
 @Test
 func codexHigh2_ownedEvictionDoesNotDoubleSubtract() async throws {
-    // CODEX HIGH-2 regression: when the accountant signals an OWNED manager to
+    // When the accountant signals an OWNED manager to
     // evict, evictForGlobalBudget already calls notifyAccountant() (reentrantly
     // sets runningTotals[modelKey] to the fresh post-eviction total). The
     // accountant must NOT then subtract `freed` AGAIN — that under-counts the
@@ -601,7 +601,7 @@ func codexHigh2_ownedEvictionDoesNotDoubleSubtract() async throws {
 
 @Test
 func codexHigh3_closedManagerRejectsLateWrites() async {
-    // CODEX HIGH-3 regression: after deregisterFromAccountant() (model unload),
+    // After deregisterFromAccountant() (model unload),
     // an in-flight/queued capture or promotion Task must NOT be able to write to
     // SSD — otherwise it races a reused-modelKey reload / looks unowned. The
     // `closed` flag set in deregister must make store()/flushToSSD() bail.
@@ -627,7 +627,7 @@ func codexHigh3_closedManagerRejectsLateWrites() async {
 
 @Test
 func codexMedium_globalDiskCeilingFromEnv() {
-    // CODEX MEDIUM regression: DARKBLOOM_PREFIX_CACHE_DISK_GB must reach the
+    // DARKBLOOM_PREFIX_CACHE_DISK_GB must reach the
     // GLOBAL accountant ceiling (it was silently ignored — parsed only into the
     // per-model backing, which is forced to 0 when the accountant is active).
     setenv("DARKBLOOM_PREFIX_CACHE_DISK_GB", "20", 1)
@@ -664,7 +664,7 @@ func codexR2High2_engineEvictionReconcilesAccountant() async {
         kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding,
         accountant: accountant, modelKey: modelKey)
     let token = await accountant.register(modelKey: modelKey, owner: p)
-    // HIGH-1-FIX: set the token so usage pushes are token-scoped.
+    // Set the token so usage pushes are token-scoped.
     p.setAccountantToken(token)
     // Write 4 blocks.
     for i in 0..<4 {
@@ -760,7 +760,7 @@ func codexR3High1_staleUpdateUsageIgnored() async {
         EntryValue(modelKey: "m", digestHex: "stale", fileBytes: 999, score: 0.0, fileURL: nil),
     ])
 
-    // HIGH-1-FIX: token2's usage must be unaffected (still 2000, not clobbered to 999).
+    // token2's usage must be unaffected (still 2000, not clobbered to 999).
     #expect(await accountant._usageForTest(modelKey: "m") == 2000,
         "CODEX-R3-HIGH-1: stale updateUsage must be ignored (token2 still active)")
 }
@@ -783,7 +783,7 @@ func codexR3High1_staleUpdateAfterDeregisterNoResurrect() async {
 
     // Stale push after deregister (carrying the stale token1).
     await accountant.updateUsage(token: token1, totalBytes: 999, valueSummary: [])
-    // HIGH-1-FIX: must NOT resurrect usage (still nil, not 999).
+    // Must NOT resurrect usage (still nil, not 999).
     #expect(await accountant._usageForTest(modelKey: "m") == nil,
         "CODEX-R3-HIGH-1: stale updateUsage after deregister must NOT resurrect usage")
 }
@@ -831,7 +831,7 @@ func codexR3High1_staleUpdateWithTwoLiveTokensIgnored() async {
         EntryValue(modelKey: "m", digestHex: "stale", fileBytes: 999, score: 0.0, fileURL: nil),
     ])
 
-    // HIGH-1-FIX: token2's usage must survive (2000, not clobbered to 999).
+    // token2's usage must survive (2000, not clobbered to 999).
     #expect(await accountant._usageForTest(modelKey: "m") == 2000,
         "CODEX-R3-HIGH-1: with two live tokens, a stale token's updateUsage must be a NO-OP")
 }
@@ -902,9 +902,9 @@ func codexR4High_writeAfterDeregisterIsNotRecorded() async {
     // Arm the seam: when the write completes, mark the manager closed BEFORE
     // the C1 re-check. We use _markClosedForTest (not deregisterFromAccountant)
     // because the hook runs FROM INSIDE the in-flight write; the real deregister
-    // now drains in-flight writes (R5 fix) and would self-deadlock awaiting this
+    // now drains in-flight writes and would self-deadlock awaiting this
     // very write. _markClosedForTest reproduces just the closed=true precondition
-    // the C1 bail checks. (The drain itself is covered by the dedicated R5 test.)
+    // the post-write closed bail checks. (The drain itself is covered by the dedicated drain test.)
     await mgr._setAfterWriteHookForTest { [weak mgr] in
         await mgr?._markClosedForTest()
     }
@@ -1194,7 +1194,7 @@ func codexR3High2_loadModelCleanupIdentityChecked() async throws {
     h.engine = engineB
     // Load A resumes, checks epoch (superseded), MUST identity-check before nil.
     if h.engine === engineA { h.engine = nil }  // NO-OP if winner already replaced it
-    // HIGH-2-FIX: engineB must survive (not niled by A's stale cleanup).
+    // engineB must survive (not niled by A's stale cleanup).
     #expect(h.engine === engineB,
         "CODEX-R3-HIGH-2: identity-checked cleanup must NOT nil the winner's engine")
 }

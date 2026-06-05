@@ -80,7 +80,7 @@ public actor BatchScheduler {
     /// Sliding-window-derived checkpoint boundaries for the current model.
     var checkpointBoundaries: [Int] = []
 
-    /// BUG-1-FIX: Engine-tier owner (EncryptedPrefixCachePersistence) for pure-
+    /// Engine-tier owner (EncryptedPrefixCachePersistence) for pure-
     /// attention models. Non-nil only when the model classifies as `.engine` AND
     /// the prefix cache flag is on. Registered with the accountant at load time,
     /// deregistered at stopCurrentEngine.
@@ -192,10 +192,10 @@ public actor BatchScheduler {
         self.engine = engine
         self.checkpointManager = build.checkpointManager
         self.checkpointBoundaries = build.checkpointBoundaries
-        self.engineTierOwner = build.engineTierOwner  // BUG-1-FIX
+        self.engineTierOwner = build.engineTierOwner
         await engine.start()
         // Final epoch check after start() — start can suspend too.
-        // HIGH-2-FIX: identity-checked cleanup — only nil self.engine if it's
+        // Identity-checked cleanup — only nil self.engine if it's
         // the one THIS load assigned (self.engine === engine). If a newer load
         // already replaced it, leave the winner's self.* intact.
         guard loadEpoch == generationEpoch else {
@@ -214,7 +214,7 @@ public actor BatchScheduler {
         // vanished. Safe here: no requests admitted yet, so no concurrent
         // flush/lookup races the reconcile.
         if let mgr = checkpointManager {
-            // Phase 3 (HIGH-FIX): CLAIM accountant ownership BEFORE reconcile.
+            // Phase 3: CLAIM accountant ownership BEFORE reconcile.
             // reconcileWithDisk mutates this model's files/index; if we registered
             // only after, a concurrent accountant tick (another model pushed the
             // global total over ceiling) would see this live, mid-reconcile dir
@@ -223,9 +223,9 @@ public actor BatchScheduler {
             // claimAccountantRegistration is internally guarded: if this load was
             // superseded (stopCurrentEngine ran during the await → manager closed),
             // it deregisters the just-claimed token rather than registering a dead
-            // manager (CODEX-R2 HIGH-1).
+            // manager.
             await mgr.claimAccountantRegistration()
-            // CODEX-R6 HIGH: re-check epoch after claimAccountantRegistration's
+            // Re-check epoch after claimAccountantRegistration's
             // await. If a newer load/unload superseded us during that await, this
             // manager was closed by stopCurrentEngine — do NOT reconcile/publish.
             // reconcileWithDisk now also self-guards on `closed` (defence in
@@ -236,10 +236,10 @@ public actor BatchScheduler {
                 await mgr.publishUsageToAccountant()
             }
         }
-        // CODEX-R2 HIGH-1: re-check epoch after the checkpoint setup awaits. If a
+        // re-check epoch after the checkpoint setup awaits. If a
         // newer load/unload superseded us, bail (the manager already deregistered
         // itself via the closed-guard above; nil it so we don't serve stale).
-        // HIGH-2-FIX: identity-checked cleanup (same as above).
+        // Identity-checked cleanup (same as above).
         guard loadEpoch == generationEpoch else {
             if self.engine === engine { self.engine = nil }
             if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
@@ -249,28 +249,28 @@ public actor BatchScheduler {
             return
         }
 
-        // BUG-1-FIX: register the engine-tier owner with the accountant.
+        // Register the engine-tier owner with the accountant.
         // Without this, the engine tier's live dir is UNOWNED → tick() directly
         // deletes its files, racing saveBlock/loadBlock (cross-actor live-delete).
         if let owner = engineTierOwner, let accountant = diskAccountant {
             let token = await accountant.register(
                 modelKey: owner.modelKey,  // need to expose modelKey on the owner
                 owner: owner)
-            // CODEX-R2 HIGH-1: if this load was superseded during register's
+            // if this load was superseded during register's
             // await, undo the registration so we don't leave a stale engine owner.
             if loadEpoch != generationEpoch {
                 await accountant.deregister(token)
                 owner.setAccountantToken(nil)
             } else {
                 engineTierAccountantToken = token
-                // HIGH-1-FIX: thread the token through to the owner so its usage
+                // Thread the token through to the owner so its usage
                 // pushes are token-scoped (stale detached Tasks are NO-OP).
                 owner.setAccountantToken(token)
-                // MEDIUM-FIX (reload-undercount): publish the pre-existing flat
+                // Publish the pre-existing flat
                 // files NOW so they count against the global budget immediately,
                 // not only once a later saveBlock crosses the debounce.
                 await owner.publishUsageNow()
-                // HIGH-2-FIX: re-check epoch after publishUsageNow() await. If
+                // Re-check epoch after publishUsageNow() await. If
                 // superseded, deregister the engine-tier token and bail without
                 // touching the winner's planner/watchdog.
                 guard loadEpoch == generationEpoch else {
@@ -344,7 +344,7 @@ public actor BatchScheduler {
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
     }
 
-    /// HIGH-FIX (stale-engine enqueue): `submit`/`submitTokenized` capture
+    /// Stale-engine enqueue guard: `submit`/`submitTokenized` capture
     /// `engine` at the top, then `await` planner admission, KV reservation, and
     /// checkpoint restore before `engine.core.addRequest`. A concurrent
     /// `stopCurrentEngine()`/`loadModel()` can bump `generationEpoch` and
@@ -357,7 +357,7 @@ public actor BatchScheduler {
         capturedEpoch == generationEpoch && self.engine === capturedEngine
     }
 
-    /// MEDIUM-FIX (stale-engine enqueue, part 2): the pre-`addRequest` guard
+    /// Stale-engine enqueue guard, part 2: the pre-`addRequest` guard
     /// (`engineStillCurrent`) is necessary but NOT sufficient. `EngineCore.addRequest`
     /// does the real `scheduler.addRequest` inside an `engineQueue.async` block
     /// with no `_running` check, and `stopCurrentEngine`'s `abortAllRequests()`
@@ -404,7 +404,7 @@ public actor BatchScheduler {
     /// checkpoint-tier manager + its boundaries (non-nil only for hybrid
     /// `.checkpoint` models with the flag on). The caller stores the manager
     /// on the actor and uses it for `submit`-time lookup.
-    /// BUG-1-FIX: added engineTierOwner (EncryptedPrefixCachePersistence) for
+    /// Added engineTierOwner (EncryptedPrefixCachePersistence) for
     /// accountant registration when strategy == .engine.
     struct EngineBuild {
         let engine: BatchedEngine
@@ -456,7 +456,7 @@ public actor BatchScheduler {
             var enginePrefixCache: PrefixCache? = nil
             var checkpointManager: PrefixCacheManager? = nil
             var boundaries: [Int] = []
-            // BUG-1-FIX: capture the engine-tier owner for accountant registration.
+            // Capture the engine-tier owner for accountant registration.
             var engineTierOwner: EncryptedPrefixCachePersistence? = nil
 
             if let backing {
@@ -465,7 +465,7 @@ public actor BatchScheduler {
                     if maxBlocks >= 1 {
                         prefixCacheLogger.info(
                             "engine prefix cache: \(maxBlocks) blocks × \(blockSize) tok (~\(kvBytesPerToken) B/tok)")
-                        // BUG-1-FIX: keep a reference to the owner for registration.
+                        // Keep a reference to the owner for registration.
                         let persistence = EncryptedPrefixCachePersistence(
                             kekKey: backing.kekKey, dir: backing.dir,
                             binding: backing.binding, diskBudgetBytes: backing.diskBudgetBytes,
@@ -584,7 +584,7 @@ public actor BatchScheduler {
                 ),
                 checkpointManager: checkpointManager,
                 checkpointBoundaries: boundaries,
-                engineTierOwner: engineTierOwner  // BUG-1-FIX
+                engineTierOwner: engineTierOwner
             )
         }
     }
@@ -793,7 +793,7 @@ public actor BatchScheduler {
     /// operator set a positive value, else 0 = "derive from live free disk"
     /// (the accountant uses min(10GiB, free/2) and re-evaluates each tick).
     ///
-    /// MEDIUM-FIX: previously the env var was parsed only into the per-model
+    /// Previously the env var was parsed only into the per-model
     /// backing's diskBudgetBytes, which is forced to 0 when the accountant is
     /// active — so an operator-set global cap was silently ignored. The
     /// accountant is the sole authority now, so the env cap must reach IT.
@@ -803,7 +803,7 @@ public actor BatchScheduler {
         else { return 0 }
         return Int(gb * 1_073_741_824)
     }
-    // CODEX-R2 LOW: under the global accountant, DISK_GB semantics differ from
+    // Under the global accountant, DISK_GB semantics differ from
     // the legacy per-model parser: `0` (or unset / non-numeric) means "derive a
     // cap from live free disk" (min(10GiB, free/2)), NOT "unlimited". An
     // unlimited GLOBAL cache would defeat the accountant's purpose (fill the
@@ -901,7 +901,7 @@ public actor BatchScheduler {
             continuation.finish()
             return stream
         }
-        // HIGH-FIX: pin the load epoch with the captured engine so we can detect
+        // Pin the load epoch with the captured engine so we can detect
         // a concurrent unload/reload across the awaits below (planner, KV, restore).
         let submitEpoch = generationEpoch
 
@@ -971,7 +971,7 @@ public actor BatchScheduler {
             samplingParams: sp
         )
         await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
-        // HIGH-FIX: re-check the engine is still the one we captured (a reload/
+        // Re-check the engine is still the one we captured (a reload/
         // unload may have run during the awaits above). Enqueuing onto a stopped/
         // superseded engine hangs the request or runs it on the wrong model.
         guard engineStillCurrent(submitEpoch, engine) else {
@@ -981,7 +981,7 @@ public actor BatchScheduler {
             return stream
         }
         _ = await engine.core.addRequest(req)
-        // MEDIUM-FIX: the add is now registered (addRequest's continuation only
+        // The add is now registered (addRequest's continuation only
         // resumes after its engineQueue block ran). Re-confirm currency; if a stop
         // interleaved across the add, abort it so it doesn't hang on a stopped
         // scheduler that abortAllRequests' pre-add snapshot missed.
@@ -1021,7 +1021,7 @@ public actor BatchScheduler {
             continuation.finish()
             return stream
         }
-        // HIGH-FIX: pin the load epoch with the captured engine (see submitTokenized).
+        // Pin the load epoch with the captured engine (see submitTokenized).
         let submitEpoch = generationEpoch
 
         // Pre-tokenize so chat-template errors surface as `.error` events;
@@ -1053,7 +1053,7 @@ public actor BatchScheduler {
             return stream
         }
 
-        // P1 fix (atomic): the cumulative gate + slot reservation must
+        // Atomic: the cumulative gate + slot reservation must
         // run in one synchronous block. Actor reentrancy across the
         // upcoming `planner.admit` / `kvBudget.reserve` awaits would
         // otherwise let two concurrent submits both read the same
@@ -1124,7 +1124,7 @@ public actor BatchScheduler {
             samplingParams: sp
         )
         await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
-        // HIGH-FIX: re-check the captured engine is still current after the awaits.
+        // Re-check the captured engine is still current after the awaits.
         guard engineStillCurrent(submitEpoch, engine) else {
             await dropBridge(requestId: id)
             continuation.yield(.error("model reloaded during submit; please retry"))
@@ -1132,7 +1132,7 @@ public actor BatchScheduler {
             return stream
         }
         _ = await engine.core.addRequest(req)
-        // MEDIUM-FIX: re-confirm currency AFTER the add registered (see
+        // Re-confirm currency AFTER the add registered (see
         // submitTokenized); abort the just-added request if a stop interleaved.
         guard await confirmEnqueuedOrAbort(
             requestId: id, capturedEpoch: submitEpoch, capturedEngine: engine
@@ -1166,7 +1166,7 @@ public actor BatchScheduler {
             // Engine delivers a terminal RequestOutput synchronously; the
             // streaming Task handles `recordFinish` + KV release.
             //
-            // MEDIUM-FIX: abortRequest returns false when the engine has no
+            // AbortRequest returns false when the engine has no
             // collector for this id yet — i.e. the request is in `activeBridges`
             // but not yet registered with EngineCore (still mid-submit awaiting
             // planner/KV/restore, or its `addRequest` engineQueue block hasn't
@@ -1257,11 +1257,11 @@ public actor BatchScheduler {
         checkpointManager = nil
         checkpointBoundaries = []
 
-        // BUG-1-FIX: deregister the engine-tier owner from the accountant.
+        // Deregister the engine-tier owner from the accountant.
         if let accountant = diskAccountant, let token = engineTierAccountantToken {
             await accountant.deregister(token)
         }
-        // HIGH-1-FIX: clear the token from the owner so stale Tasks are NO-OP.
+        // Clear the token from the owner so stale Tasks are NO-OP.
         engineTierOwner?.setAccountantToken(nil)
         engineTierOwner = nil
         engineTierAccountantToken = nil
@@ -1287,7 +1287,7 @@ public actor BatchScheduler {
         dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
     }
 
-    /// P1 fix: cumulative active-bridge gate, called from tests.
+    /// Cumulative active-bridge gate, called from tests.
     ///
     /// `submit()` inlines the same check synchronously before its
     /// first `await` (so the gate is atomic with respect to actor

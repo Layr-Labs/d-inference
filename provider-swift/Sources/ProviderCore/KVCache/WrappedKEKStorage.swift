@@ -26,7 +26,7 @@ public protocol WrappedKEKStorage: Sendable {
     /// Persist the wrapped KEK bytes, replacing any prior entry.
     func save(_ wrapped: Data) throws
 
-    /// CODEX-R5 MEDIUM: atomic create-if-absent. Persist `wrapped` ONLY if no
+    /// Atomic create-if-absent. Persist `wrapped` ONLY if no
     /// entry exists yet, and return the AUTHORITATIVE bytes now in storage —
     /// the just-saved `wrapped` if we won the create, or the pre-existing entry
     /// if another writer got there first. This closes the first-use KEK race:

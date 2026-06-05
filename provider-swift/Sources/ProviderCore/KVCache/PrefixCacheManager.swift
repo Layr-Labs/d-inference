@@ -170,7 +170,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     private var closed = false
 
     #if DEBUG
-    /// CODEX-R4 HIGH (C1) test seam: fired right after `EncryptedKVStore.write`
+    /// Test seam: fired right after `EncryptedKVStore.write`
     /// returns and BEFORE the post-write `closed` re-check, so a regression test
     /// can deterministically simulate a deregister landing during the write
     /// suspension (instead of racing a real concurrent unload). nil in prod
@@ -189,7 +189,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// digest and redundantly serialize+encrypt+fsync the same (large) blob.
     /// Actor-isolated, so check-and-insert before the await is atomic.
     private var inFlightWrites: Set<String> = []
-    /// CODEX-R5 HIGH: continuations parked by `deregisterFromAccountant` while
+    /// Continuations parked by `deregisterFromAccountant` while
     /// in-flight writes drain. A write that lands the LAST in-flight file (so
     /// `inFlightWrites` becomes empty) resumes them. This lets teardown await
     /// quiescence: every file the old manager will ever write is on disk before
@@ -255,31 +255,32 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     public func ramTierStats() -> PrefixCacheRAMStats { ram.snapshotStats() }
 
     #if DEBUG
-    /// CODEX-R4 HIGH (C1) test seam: install the after-write hook (see
+    /// Test seam: install the after-write hook (see
     /// `_afterWriteHookForTest`). DEBUG-only; never called in prod.
     func _setAfterWriteHookForTest(_ hook: @escaping @Sendable () async -> Void) {
         _afterWriteHookForTest = hook
     }
-    /// CODEX-R4 HIGH (C1) test seam: does this manager's index hold an entry for
+    /// Test seam: does this manager's index hold an entry for
     /// `digestHex`? Used to assert a post-close write did NOT record.
     func _indexHasEntryForTest(digestHex: String) -> Bool {
         index?.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil
     }
-    /// CODEX-R4/R5 test seam: set `closed` WITHOUT the full deregister drain.
-    /// The C1 test fires this from `_afterWriteHookForTest` (i.e. from INSIDE an
-    /// in-flight write); calling the real `deregisterFromAccountant()` there
+    /// Test seam: set `closed` WITHOUT the full deregister drain.
+    /// The post-close-write regression test fires this from `_afterWriteHookForTest`
+    /// (i.e. from INSIDE an in-flight write); calling the real
+    /// `deregisterFromAccountant()` there
     /// would self-deadlock — its `drainInFlightWrites()` awaits the very write
     /// that is parked in the hook. Production never does this: deregister runs
     /// on the BatchScheduler task while the write is suspended off-actor, so the
     /// drain parks, the actor frees, the write resumes/bails/finishes, and the
     /// drain wakes. This seam reproduces only the `closed=true` precondition.
     func _markClosedForTest() { closed = true }
-    /// CODEX-R6 test seam: drop just the index entry for `digestHex` (leaving the
+    /// Test seam: drop just the index entry for `digestHex` (leaving the
     /// on-disk file), turning it into an orphan a live reconcile would re-index.
     func _dropIndexEntryForTest(digestHex: String) {
         index?.remove(modelHash: binding.modelHash, digestHex: digestHex)
     }
-    /// CODEX-R5 test seam: number of teardown waiters currently parked in
+    /// Test seam: number of teardown waiters currently parked in
     /// `drainInFlightWrites`. Lets the drain test confirm deregister actually
     /// blocked on the drain (rather than passing trivially because no write was
     /// in flight).
@@ -292,7 +293,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// to `tokens`. RAM first, then SSD (with the MB-1 guard). Returns
     /// fresh, caller-owned caches via `sending`, or nil on miss.
     public func lookup(tokens: [Int]) async -> PrefixLookupResult? {
-        // CODEX-R7 MEDIUM: a closed (deregistered/unloaded) manager must not
+        // A closed (deregistered/unloaded) manager must not
         // serve hits. Without this, a lookup that started before unload — or one
         // racing teardown — could return KV from a manager whose model is gone,
         // which (combined with the stale-engine submit window) risks seeding a
@@ -333,27 +334,27 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         return nil
     }
 
-    /// CODEX-R5 MEDIUM: drop an unusable SSD file (corrupt header, wrong model/
+    /// Drop an unusable SSD file (corrupt header, wrong model/
     /// shape/prefix, or undecryptable) discovered during a lookup — removing the
     /// file AND its index entry, then refreshing durable + accountant state.
     /// Before this, the five `loadFromSSD` removal sites dropped file+entry but
     /// left the index unsaved and the accountant still counting the deleted
     /// bytes, so enforcement could evict against phantom entries until a later
     /// write happened to republish usage. Persist the now-dirty index and notify
-    /// the accountant — but ONLY if `!closed` (R4-C1 cross-actor discipline: a
-    /// deregistered manager must not save its index or push usage, lest it
-    /// clobber a reloaded same-modelKey manager's index.json or resurrect usage).
+    /// the accountant — but ONLY if `!closed`: a deregistered manager must not
+    /// save its index or push usage, lest it clobber a reloaded same-modelKey
+    /// manager's index.json or resurrect usage in the accountant.
     private func dropUnusableSSDFile(_ fileURL: URL, digestHex: String, index: PrefixCacheIndex) async {
-        // CODEX-R6 HIGH: check `closed` BEFORE deleting (was after — an R5
-        // regression). A lookup can suspend in EncryptedKVStore.read, the manager
-        // be deregistered (closed=true) during that await, and the read then fail
-        // and reach here — at which point a NEW same-modelKey manager may already
-        // own this dir (the path is deterministic from binding.modelHash). A
-        // closed manager deleting that file is exactly the cross-actor live-delete
-        // R4-C1 forbids: it could nuke the new owner's freshly-written checkpoint.
-        // A closed manager must leave the file (the live owner's lookup/reconcile
-        // re-validates and drops it if genuinely unusable). Matches the entry-guard
-        // discipline in store/flushToSSD/persistDigest.
+        // Check `closed` BEFORE deleting. A lookup can suspend in
+        // EncryptedKVStore.read, the manager be deregistered (closed=true) during
+        // that await, and the read then fail and reach here — at which point a NEW
+        // same-modelKey manager may already own this dir (the path is deterministic
+        // from binding.modelHash). A closed manager deleting that file is the
+        // cross-actor live-delete the ownership model forbids: it could nuke the
+        // new owner's freshly-written checkpoint. A closed manager must leave the
+        // file (the live owner's lookup/reconcile re-validates and drops it if
+        // genuinely unusable). Matches the entry-guard discipline in
+        // store/flushToSSD/persistDigest.
         guard !closed else { return }
         try? FileManager.default.removeItem(at: fileURL)
         index.remove(modelHash: binding.modelHash, digestHex: digestHex)
@@ -454,7 +455,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             return nil
         }
 
-        // CODEX-R7 MEDIUM: the manager may have been deregistered (closed) while
+        // The manager may have been deregistered (closed) while
         // we were suspended in the read above. A closed manager must not serve a
         // hit (its model is gone — seeding a superseded engine) nor mutate RAM/
         // index state a new same-modelKey manager may now own. Bail.
@@ -478,7 +479,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// checkpoint digest of `tokens[0..<checkpointLength]`. SSD
     /// persistence happens later via `flushToSSD` (write-back).
     /// Returns true if stored, false if rejected (e.g., exceeds maxBytes).
-    /// BUG-5-FIX: when RAM rejects an over-budget checkpoint AND it is
+    /// When RAM rejects an over-budget checkpoint AND it is
     /// persistable (>= minPersistTokens or pinned) AND ssdEnabled, fall back
     /// to a direct SSD write so highest-value checkpoints aren't silently lost.
     @discardableResult
@@ -496,7 +497,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             return true
         }
 
-        // BUG-5-FIX: RAM rejected (over its maxBytes). If this checkpoint is
+        // RAM rejected (over its maxBytes). If this checkpoint is
         // persistable (>= minPersistTokens or pinned) AND ssdEnabled, persist
         // it directly to SSD so highest-value checkpoints aren't silently lost
         // on memory-constrained hosts (where RAM maxBytes = physMem/8 may be
@@ -529,7 +530,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             #if DEBUG
             if let hook = _afterWriteHookForTest { await hook() }
             #endif
-            // CODEX-R4 HIGH (C1): the manager may have been deregistered
+            // The manager may have been deregistered
             // (closed=true via deregisterFromAccountant) DURING the await above.
             // The `closed` contract is that no SSD bookkeeping survives
             // deregistration: recording here pushes a now-orphaned index entry,
@@ -625,7 +626,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                 #if DEBUG
                 if let hook = _afterWriteHookForTest { await hook() }
                 #endif
-                // CODEX-R4 HIGH (C1): deregistered (closed) DURING the write
+                // Deregistered (closed) DURING the write
                 // await — stop recording/notifying. See store() for the full
                 // rationale; the file is left for the new manager's reconcile to
                 // reclaim (never cross-actor live-deleted). Drop the in-flight
@@ -649,7 +650,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             finishWrite(digestHex)
         }
 
-        // CODEX-R4 HIGH (C1): if we were deregistered mid-loop, do NOT run the
+        // If we were deregistered mid-loop, do NOT run the
         // post-loop bookkeeping — enforceDiskBudget deletes files (cross-actor
         // live-delete on a dir the new owner may hold) and index.save() would
         // clobber the new same-modelKey manager's index.json. `written` is the
@@ -681,7 +682,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// tier already serves them this session; this is durability across
     /// restart for the entries written since the last coalesced save.
     public func flushIndexNow() {
-        // CODEX-R6 HIGH: a CLOSED (deregistered/superseded) manager must not save
+        // A CLOSED (deregistered/superseded) manager must not save
         // its index — a new same-modelKey manager may own the dir, and saving this
         // dead manager's stale in-memory index would clobber the live index.json.
         // Legit teardown calls flushIndexNow BEFORE deregisterFromAccountant (so
@@ -709,7 +710,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// are deleted (unusable). Best-effort; never throws. Call ONCE right
     /// after construction, before any flush/lookup, from the async setup path.
     public func reconcileWithDisk() {
-        // CODEX-R6 HIGH: a superseded Load A can resume after Load B closed this
+        // A superseded Load A can resume after Load B closed this
         // manager (B ran stopCurrentEngine during A's claimAccountantRegistration
         // await) and still call reconcileWithDisk. A closed manager scanning +
         // deleting files / saving an index in a dir now owned by the new manager
@@ -761,7 +762,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         // Apply the budget to the reconciled set, then persist.
         enforceDiskBudget(index: index, cacheDir: cacheDir)
         flushIndexNow()
-        // CODEX-R2 MEDIUM: no stale unstructured notify here. loadModel calls
+        // No stale unstructured notify here. loadModel calls
         // publishUsageToAccountant() explicitly right after reconcile (and only
         // when not superseded), so a detached Task that could fire post-unload
         // is both unnecessary and a hazard.
@@ -818,7 +819,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             #if DEBUG
             if let hook = _afterWriteHookForTest { await hook() }
             #endif
-            // CODEX-R4 HIGH (C1): deregistered (closed) DURING the write await.
+            // Deregistered (closed) DURING the write await.
             // Skip record/save/notify; leave the file for the new manager's
             // reconcile to reclaim (never cross-actor live-deleted). See store()
             // for the full rationale. The defer above drops the in-flight marker.
@@ -914,7 +915,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             if unsavedWrites >= Self.saveCoalesceThreshold {
                 if (try? index.save()) != nil { unsavedWrites = 0 }
             }
-            // BUG-8-FIX: refresh the accountant after global-budget eviction so
+            // Refresh the accountant after global-budget eviction so
             // runningTotals + valueSummaries reflect the post-eviction state
             // (freed bytes + removed entries). Without this, stale valueSummaries
             // cause the accountant to re-select the just-evicted ghosts on the
@@ -937,7 +938,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             prefillCostPerToken: prefillCostPerToken,
             halfLifeSeconds: evictionHalfLifeSeconds
         ).map { entry in
-            // BUG-3-FIX: owned entries pass fileURL=nil; the accountant will
+            // Owned entries pass fileURL=nil; the accountant will
             // reconstruct from digestHex (safe: owned entries are never deleted
             // by the unowned path that had the traversal hole).
             EntryValue(
@@ -966,9 +967,9 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// live checkpoint files — the cross-actor live-delete the design forbids.
     /// Dropping the pre-registration push is safe: registerWithAccountant does
     /// the initial usage push itself, right after registration.
-    /// HIGH-1-FIX: pass the token so stale detached Tasks are NO-OP.
+    /// Pass the token so stale detached Tasks are NO-OP.
     private func notifyAccountant() async {
-        // CODEX-R2 MEDIUM: also guard on !closed — a stale unstructured notify
+        // Also guard on !closed — a stale unstructured notify
         // Task (e.g. from reconcileWithDisk) could otherwise re-add this model's
         // runningTotals/valueSummaries after deregistration.
         guard let accountant, let index, let token = accountantToken, !closed else { return }
@@ -989,7 +990,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     public func claimAccountantRegistration() async {
         guard let accountant, accountantToken == nil, !closed else { return }
         let token = await accountant.register(modelKey: modelKey, owner: self)
-        // CODEX-R2 HIGH-1: if deregisterFromAccountant() ran DURING the register
+        // if deregisterFromAccountant() ran DURING the register
         // await, it saw accountantToken == nil and returned without deregistering
         // — leaving a dead (closed) manager registered. Detect that here and undo
         // the registration so the accountant never holds a closed owner (whose
@@ -1023,7 +1024,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// same modelKey (same modelId). No-op when accountant is nil.
     public func deregisterFromAccountant() async {
         closed = true
-        // CODEX-R5 HIGH: drain in-flight writes BEFORE deregistering. A detached
+        // Drain in-flight writes BEFORE deregistering. A detached
         // capture/promotion Task may be suspended inside EncryptedKVStore.write;
         // its file lands on the atomic rename when it resumes. loadModel awaits
         // stopCurrentEngine() -> this method fully before it constructs and

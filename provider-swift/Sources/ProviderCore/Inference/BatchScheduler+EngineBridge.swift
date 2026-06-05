@@ -15,7 +15,7 @@
 //     stay `fileprivate` in spirit but compile as `internal` because
 //     the bridge Task lives in this extension file (and the symbols
 //     are also called from `cancel` paths in the main file).
-//   * `recordProgress` is new (P2 fix: in-flight decode visibility).
+//   * `recordProgress` is new (in-flight decode visibility).
 
 import Foundation
 import MLXLMCommon
@@ -59,7 +59,7 @@ extension BatchScheduler {
                     sawFirstToken = true
                 }
 
-                // P2: keep `BridgeState.completionTokens` live so
+                // keep `BridgeState.completionTokens` live so
                 // `backendCapacity()` (heartbeats) reports in-flight
                 // decode progress, not stale zeros until finish.
                 if output.completionTokens > 0 || output.promptTokens > 0 {
@@ -156,7 +156,7 @@ extension BatchScheduler {
         activeBridges[requestId] = bridge
     }
 
-    /// P2 fix: refresh the bridge's prompt + completion token counts on
+    /// Refresh the bridge's prompt + completion token counts on
     /// every non-empty `RequestOutput` so `backendCapacity()` reports
     /// live in-flight decode (vs. stale 0 until `recordFinish`).
     ///
@@ -214,7 +214,7 @@ extension BatchScheduler {
         }
 
         if success, tps > 0 {
-            // P2 fix: previously `activeBridges.count + 1` mixed in
+            // Previously `activeBridges.count + 1` mixed in
             // queued-not-admitted bridges. Use admitted-and-running
             // count (admittedAt != nil) + 1 for the just-finished one.
             let runningRows = activeBridges.values.filter { $0.admittedAt != nil }.count + 1
@@ -290,7 +290,7 @@ extension BatchScheduler {
             // Insert BEFORE abort so the streaming Task sees the flag
             // when it consumes the resulting terminal RequestOutput.
             timedOutBridges.insert(id)
-            // MEDIUM-FIX: abortRequest returns false when the engine has no
+            // AbortRequest returns false when the engine has no
             // collector for this id yet — the request is still mid-submit (its
             // `addRequest` engineQueue block hasn't run, so `runBridge`/the
             // output stream don't exist yet either). The engine abort is then a

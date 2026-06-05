@@ -149,7 +149,7 @@ public enum EncryptedKVStore {
     public static let gcmTagLength = 16
     public static let chunkInfoPrefix = "dbkv-chunk-v1"
     public static let fileExtension = "darkbloom-kv"
-    /// CODEX-R4 HIGH (C2): hard bound on the length fields the header-only
+    /// Hard bound on the length fields the header-only
     /// parser will trust before it has read the bytes. The wrapped DEK is ~60
     /// bytes (32-byte key + GCM tag + nonce) and metadata is a small JSON
     /// (layout + chunk sizes); 64 MiB is astronomically larger than either, but
@@ -165,7 +165,7 @@ public enum EncryptedKVStore {
     /// process KILL (SIGKILL/OOM/power-loss) between createFile and rename
     /// leaves a `.tmp-<UUID>` orphan with no sweep. Call once at cache
     /// setup so they can't accumulate across crashes. Never throws.
-    /// CODEX-R2 MEDIUM: recurse ONE level into subdirectories. The engine tier
+    /// Recurse ONE level into subdirectories. The engine tier
     /// writes flat (`kv/<modelKey>/<hash>.tmp-…`) but the checkpoint tier nests
     /// under a model-hash subdir (`kv/<modelKey>/<modelHash[:12]>/<digest>.tmp-…`)
     /// — a non-recursive sweep of the modelKey dir would leave nested multi-GB
@@ -301,7 +301,7 @@ public enum EncryptedKVStore {
     /// decrypt. Suitable for index rebuilds and prefix lookups where
     /// we just need to know `token_count`, `model_hash`, etc.
     ///
-    /// CODEX-R4 HIGH (C2): reads ONLY the header bytes via `FileHandle`
+    /// Reads ONLY the header bytes via `FileHandle`
     /// (fixed prefix → wrapped-DEK len+bytes → metadata len+bytes). It never
     /// maps or copies the multi-GB ciphertext body the way `splitHeaderAndBody`
     /// does. `reconcileWithDisk` calls this for every on-disk checkpoint, and a

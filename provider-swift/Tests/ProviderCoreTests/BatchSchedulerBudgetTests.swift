@@ -260,7 +260,7 @@ struct BatchSchedulerBudgetTests {
 
     // MARK: - Cancel/timeout cleanup for a not-yet-engine-registered request
 
-    /// CODEX-MEDIUM regression: a request can sit in `activeBridges` with a KV
+    /// A request can sit in `activeBridges` with a KV
     /// reservation BEFORE it is registered with EngineCore (still mid-submit, or
     /// its `addRequest` engineQueue block hasn't run). `EngineCore.abortRequest`
     /// returns false for such an id (no collector), so the pre-fix `cancel()`

@@ -52,7 +52,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     private let diskBudgetBytes: Int
     private let sweepLock = NSLock()
     private var bytesSinceSweep = 0
-    /// BUG-1-FIX: bytes written since the last usage push to the accountant.
+    /// Bytes written since the last usage push to the accountant.
     /// Accumulates under sweepLock; pushed when >= threshold.
     private var bytesSincePush = 0
 
@@ -60,9 +60,9 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// nil ⇒ today's per-model behavior (backward compat).
     private let accountant: GlobalDiskAccountant?
     /// 12-char modelKey (sha256(modelId)[:12]) for accountant registration.
-    /// BUG-1-FIX: exposed as public so BatchScheduler can register this owner.
+    /// Exposed as public so BatchScheduler can register this owner.
     public let modelKey: String
-    /// HIGH-1-FIX: Accountant registration token (set by BatchScheduler after
+    /// Accountant registration token (set by BatchScheduler after
     /// register, cleared on deregister). Usage pushes must pass this token so
     /// stale detached Tasks (from an older load) are NO-OP.
     /// Thread-safe: reads are atomic (Optional is a value type), writes are
@@ -122,7 +122,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
             let url = fileURL(blockHash)
             try EncryptedKVStore.writeSync(to: url, metadata: meta, chunks: chunks, kekKey: kekKey)
             let written = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
-            // BUG-1-FIX: when accountant != nil, push usage to the accountant
+            // When accountant != nil, push usage to the accountant
             // (debounced) so enforceIfOverBudget can signal evictForGlobalBudget.
             // Otherwise (nil-accountant backward compat) use the local sweep.
             if let accountant {
@@ -145,7 +145,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         do {
             meta = try EncryptedKVStore.readMetadataOnly(from: url)
         } catch {
-            removeUnusableBlockFile(url)  // CODEX-R6 MEDIUM: refresh accountant
+            removeUnusableBlockFile(url)  // refresh accountant
             return nil
         }
         guard meta.modelHash == binding.modelHash,
@@ -153,7 +153,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
               meta.kvHeads == binding.kvHeads,
               meta.headDim == binding.headDim else {
             logger.warning("MB-1: block file model/shape mismatch — dropping \(blockHash.dbkvHexString, privacy: .public)")
-            removeUnusableBlockFile(url)  // CODEX-R6 MEDIUM: refresh accountant
+            removeUnusableBlockFile(url)  // refresh accountant
             return nil
         }
         // Prefix binding: the file authenticates under its OWN metadata
@@ -208,12 +208,12 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         sweep()
     }
 
-    /// BUG-1-FIX: Debounce-push usage to the accountant so engine-tier bytes
+    /// Debounce-push usage to the accountant so engine-tier bytes
     /// are visible and enforceIfOverBudget can signal evictForGlobalBudget.
     /// Triggered by saveBlock (synchronous, no actor hops allowed), so the
     /// push is fire-and-forget. Scans the dir and builds an mtime-LRU summary
     /// (mirroring tick's degraded scoring for unowned dirs).
-    /// HIGH-1-FIX: capture accountantToken under the lock and pass it to the
+    /// Capture accountantToken under the lock and pass it to the
     /// detached push so stale Tasks (from an older load) are NO-OP.
     private func pushUsageToAccountantIfNeeded(addedBytes: Int, accountant: GlobalDiskAccountant) {
         sweepLock.lock()
@@ -228,14 +228,14 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         // savings. Without an accountant, keep the per-model `diskBudgetBytes/8`.
         let threshold = diskBudgetBytes > 0 ? diskBudgetBytes / 8 : 1 * 1024 * 1024
         let trigger = bytesSincePush >= threshold
-        // HIGH-1-FIX: capture the token while holding the lock.
+        // Capture the token while holding the lock.
         let token = accountantToken
         sweepLock.unlock()
         guard trigger, let token else { return }
 
         let (total, summary) = buildUsageSnapshot()
         // Fire-and-forget push (saveBlock is synchronous on the engine step loop).
-        // HIGH-1-FIX: pass the token so stale detached Tasks are NO-OP.
+        // Pass the token so stale detached Tasks are NO-OP.
         Task.detached { [accountant, token, total, summary] in
             await accountant.updateUsage(token: token, totalBytes: total, valueSummary: summary)
         }
@@ -273,13 +273,12 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     }
 
     /// Push CURRENT usage to the accountant immediately (no debounce). Called
-    /// after a global-budget eviction (HIGH-2: so runningTotals/valueSummaries
-    /// reflect the post-eviction state — otherwise the accountant keeps
-    /// re-selecting already-deleted ghosts and cascades the dir to empty) and
-    /// right after registration (MEDIUM: so a reloaded model's pre-existing flat
-    /// files are accounted immediately, not invisible until a saveBlock crosses
-    /// the debounce).
-    /// HIGH-1-FIX: pass the token so stale Tasks are NO-OP.
+    /// after a global-budget eviction (so runningTotals/valueSummaries reflect
+    /// the post-eviction state — otherwise the accountant keeps re-selecting
+    /// already-deleted ghosts and cascades the dir to empty) and right after
+    /// registration (so a reloaded model's pre-existing flat files are accounted
+    /// immediately, not invisible until a saveBlock crosses the debounce).
+    /// Pass the token so stale Tasks are NO-OP.
     public func publishUsageNow() async {
         guard let accountant, let token = accountantToken else { return }
         let (total, summary) = buildUsageSnapshot()
@@ -293,10 +292,10 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         sweepLock.lock(); bytesSincePush = 0; sweepLock.unlock()
     }
 
-    /// CODEX-R6 MEDIUM: remove an unusable engine-tier block file (corrupt header
+    /// Remove an unusable engine-tier block file (corrupt header
     /// or model/shape mismatch) discovered during loadBlock, and refresh the
     /// accountant so the deleted bytes stop being counted. This is the engine-tier
-    /// analog of the checkpoint tier's dropUnusableSSDFile (R5 MED-1): tick() skips
+    /// analog of the checkpoint tier's dropUnusableSSDFile: tick() skips
     /// registered (owned) dirs, so without this push the accountant keeps the stale
     /// byte total until a later saveBlock crosses the debounce or the model reloads.
     /// loadBlock is synchronous (PrefixCachePersistence contract — no actor hops),
@@ -315,7 +314,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         }
     }
 
-    /// HIGH-1-FIX: Store the accountant token (called by BatchScheduler after
+    /// Store the accountant token (called by BatchScheduler after
     /// register). Thread-safe via sweepLock.
     public func setAccountantToken(_ token: AccountantToken?) {
         sweepLock.lock()
@@ -381,7 +380,7 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
             if (try? fm.removeItem(at: f.url)) != nil { freed += f.size }
         }
 
-        // HIGH-2-FIX: reconcile the accountant with the post-eviction state.
+        // Reconcile the accountant with the post-eviction state.
         // The accountant (since the round-1 double-subtract fix) recomputes
         // globalTotal() after signaling and relies on the owner having refreshed
         // its runningTotals/valueSummaries. The checkpoint tier does this via

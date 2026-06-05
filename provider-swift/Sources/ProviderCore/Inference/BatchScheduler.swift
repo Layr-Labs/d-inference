@@ -357,6 +357,30 @@ public actor BatchScheduler {
         capturedEpoch == generationEpoch && self.engine === capturedEngine
     }
 
+    /// MEDIUM-FIX (stale-engine enqueue, part 2): the pre-`addRequest` guard
+    /// (`engineStillCurrent`) is necessary but NOT sufficient. `EngineCore.addRequest`
+    /// does the real `scheduler.addRequest` inside an `engineQueue.async` block
+    /// with no `_running` check, and `stopCurrentEngine`'s `abortAllRequests()`
+    /// snapshots the collector keys BEFORE dispatching aborts — so a stop that
+    /// interleaves between our guard and the queued add executing will (a) miss
+    /// this request in the abort snapshot and (b) still run `scheduler.addRequest`
+    /// on a stopped scheduler → the request never steps and the stream hangs.
+    /// `addRequest`'s continuation resumes only AFTER its queued block ran, so by
+    /// the time this is called the request IS registered. Re-check currency here;
+    /// if superseded, explicitly abort the just-added request (removes it from the
+    /// stopped/new scheduler and delivers a terminal output to unblock the stream)
+    /// and tear down the bridge. Returns true iff safe to proceed to runBridge.
+    private func confirmEnqueuedOrAbort(
+        requestId: String, capturedEpoch: UInt64, capturedEngine: BatchedEngine
+    ) async -> Bool {
+        if engineStillCurrent(capturedEpoch, capturedEngine) { return true }
+        // Superseded after the add landed: abort it on the engine we added to so
+        // it doesn't linger on a stopped scheduler, then drop our bookkeeping.
+        _ = capturedEngine.core.abortRequest(requestId)
+        await dropBridge(requestId: requestId)
+        return false
+    }
+
     /// TEST SEAM: install a checkpoint manager + capture hook onto the live
     /// engine, replicating exactly what `makeBatchedEngine` wires for a
     /// `.checkpoint` model. Production builds the manager with an SE-wrapped
@@ -957,6 +981,17 @@ public actor BatchScheduler {
             return stream
         }
         _ = await engine.core.addRequest(req)
+        // MEDIUM-FIX: the add is now registered (addRequest's continuation only
+        // resumes after its engineQueue block ran). Re-confirm currency; if a stop
+        // interleaved across the add, abort it so it doesn't hang on a stopped
+        // scheduler that abortAllRequests' pre-add snapshot missed.
+        guard await confirmEnqueuedOrAbort(
+            requestId: id, capturedEpoch: submitEpoch, capturedEngine: engine
+        ) else {
+            continuation.yield(.error("model reloaded during submit; please retry"))
+            continuation.finish()
+            return stream
+        }
 
         runBridge(
             requestId: id,
@@ -1097,6 +1132,15 @@ public actor BatchScheduler {
             return stream
         }
         _ = await engine.core.addRequest(req)
+        // MEDIUM-FIX: re-confirm currency AFTER the add registered (see
+        // submitTokenized); abort the just-added request if a stop interleaved.
+        guard await confirmEnqueuedOrAbort(
+            requestId: id, capturedEpoch: submitEpoch, capturedEngine: engine
+        ) else {
+            continuation.yield(.error("model reloaded during submit; please retry"))
+            continuation.finish()
+            return stream
+        }
 
         // Hand the per-request stream to the bridge extension. Bridge
         // teardown / finish-event mapping all live in

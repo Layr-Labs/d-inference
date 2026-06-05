@@ -1165,10 +1165,26 @@ public actor BatchScheduler {
         if let engine = self.engine {
             // Engine delivers a terminal RequestOutput synchronously; the
             // streaming Task handles `recordFinish` + KV release.
-            _ = engine.core.abortRequest(requestId)
-            return
+            //
+            // MEDIUM-FIX: abortRequest returns false when the engine has no
+            // collector for this id yet — i.e. the request is in `activeBridges`
+            // but not yet registered with EngineCore (still mid-submit awaiting
+            // planner/KV/restore, or its `addRequest` engineQueue block hasn't
+            // run). In that window the engine abort is a no-op, so the streaming
+            // Task will never see a terminal output and our local bridge/planner/
+            // KV state would leak. Fall through to drop it locally. (If the add
+            // later lands, the orphaned request is removed from `activeBridges`,
+            // so its terminal output is a harmless no-op on recordFinish/release.)
+            if engine.core.abortRequest(requestId) {
+                return
+            }
         }
-        // No engine: request may still be planner-pending.
+        // No engine, or the engine had no in-flight collector for this id:
+        // tear down whatever local state exists (planner-pending and/or a
+        // not-yet-registered bridge). dropBridge releases the KV reservation +
+        // cancels the planner entry; the explicit calls below cover the
+        // engine-nil path where no bridge was created.
+        await dropBridge(requestId: requestId)
         if let planner = self.planner {
             await planner.cancel(requestID: requestId)
             await refreshPendingSummaryCache()

@@ -257,4 +257,40 @@ struct BatchSchedulerBudgetTests {
         #expect(usage.promptTokens == 12,
             "prompt tokens must survive a terminal that under-reports them")
     }
+
+    // MARK: - Cancel/timeout cleanup for a not-yet-engine-registered request
+
+    /// CODEX-MEDIUM regression: a request can sit in `activeBridges` with a KV
+    /// reservation BEFORE it is registered with EngineCore (still mid-submit, or
+    /// its `addRequest` engineQueue block hasn't run). `EngineCore.abortRequest`
+    /// returns false for such an id (no collector), so the pre-fix `cancel()`
+    /// — which early-returned right after `abortRequest` in the engine branch —
+    /// left the bridge + KV reservation + planner entry stranded. Post-fix:
+    /// `cancel` falls through to `dropBridge` (+ planner/KV release) when the
+    /// engine abort no-ops. Here `engine == nil` exercises that fall-through
+    /// deterministically. Revert-guard: restore the early `return` after
+    /// abortRequest (or drop the dropBridge call) and the KV bytes leak → fails.
+    @Test("cancel() releases bridge + KV reservation for a not-yet-registered request")
+    func cancelDropsUnregisteredBridgeAndKV() async {
+        let kvBudget = GlobalKVCacheBudget()
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
+
+        // Simulate a submitted-but-not-yet-engine-registered request: a bridge
+        // in activeBridges plus a live KV reservation under the same id.
+        await scheduler._testSeedBridge(id: "r1", promptTokens: 100, maxTokens: 100)
+        let reserved = await kvBudget.reserve(requestID: "r1", kvBytesPerToken: 1024, tokenCount: 200)
+        #expect(reserved, "precondition: KV reservation succeeds")
+        #expect(await kvBudget.outstandingReservedBytes() > 0, "precondition: bytes reserved")
+        #expect(await scheduler.activeTokenBudgetUsed == 200, "precondition: bridge counted")
+
+        // Cancel. With no engine, the fixed cancel() must still drop the bridge
+        // and release the KV reservation (the leak the pre-fix code left behind).
+        await scheduler.cancel(requestId: "r1")
+
+        #expect(await scheduler.activeTokenBudgetUsed == 0,
+            "CODEX-MEDIUM: cancel must drop the bridge for a not-yet-registered request")
+        #expect(await kvBudget.outstandingReservedBytes() == 0,
+            "CODEX-MEDIUM: cancel must release the KV reservation for a not-yet-registered request")
+    }
 }

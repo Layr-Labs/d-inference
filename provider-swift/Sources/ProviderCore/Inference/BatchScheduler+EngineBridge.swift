@@ -285,11 +285,26 @@ extension BatchScheduler {
             bridge.admittedAt == nil
                 && now - bridge.submittedAt >= pendingTimeout
         }
+        var abortedLocally: [String] = []
         for (id, _) in timedOut {
             // Insert BEFORE abort so the streaming Task sees the flag
             // when it consumes the resulting terminal RequestOutput.
             timedOutBridges.insert(id)
-            _ = engine.core.abortRequest(id)
+            // MEDIUM-FIX: abortRequest returns false when the engine has no
+            // collector for this id yet — the request is still mid-submit (its
+            // `addRequest` engineQueue block hasn't run, so `runBridge`/the
+            // output stream don't exist yet either). The engine abort is then a
+            // no-op AND no terminal output will ever arrive, so the bridge would
+            // sit in `activeBridges` past its timeout leaking KV/planner budget.
+            // Drop it locally. Safe: a false return guarantees no engine
+            // collector, hence no streaming Task consuming for this id; if its
+            // add later lands, the bridge is gone and its outputs are no-ops.
+            if !engine.core.abortRequest(id) {
+                abortedLocally.append(id)
+            }
+        }
+        for id in abortedLocally {
+            await dropBridge(requestId: id)  // also clears the timedOutBridges flag
         }
         await refreshPendingSummaryCache()
     }

@@ -169,6 +169,64 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         return try createNew(accessGroup: group, label: keyLabel)
     }
 
+    // MARK: - Self-test & verified load
+
+    /// errSecInteractionNotAllowed — the key exists but cannot be used right
+    /// now: the data-protection keychain is locked (headless box never unlocked
+    /// since boot) or the key's access policy is too strict (a leftover
+    /// WhenUnlocked v1 key, or a poisoned v2 key).
+    private static let errInteractionNotAllowed: OSStatus = -25308
+
+    /// Signs a fixed probe to prove the key can actually produce a signature.
+    /// Returns nil on success, or the failing OSStatus. A key that *loads* fine
+    /// but fails here is the silent-killer case: the provider would answer every
+    /// attestation challenge with a signing error and be pinned untrusted while
+    /// still heartbeating "online".
+    public func selfTestSign() -> OSStatus? {
+        let probe = Data("darkbloom-se-selftest".utf8)
+        do {
+            _ = try sign(probe)
+            return nil
+        } catch let PersistentEnclaveKeyError.signingFailed(status, _) {
+            return status
+        } catch {
+            return errSecInternalError
+        }
+    }
+
+    /// Like `loadOrCreate`, but proves the key can sign before returning it.
+    /// If the self-test fails, it makes ONE auto-repair attempt — delete the
+    /// key and re-mint it with the AfterFirstUnlock policy — then re-tests. If
+    /// it still cannot sign, it throws so the caller falls back to an ephemeral
+    /// identity (the provider keeps serving at self_signed instead of being
+    /// silently pinned untrusted, e.g. MF4502MM7P: 9/9 -25308, 0 signatures).
+    public static func loadOrCreateVerified(
+        accessGroup: String? = nil,
+        label: String? = nil
+    ) throws -> PersistentEnclaveKey {
+        let key = try loadOrCreate(accessGroup: accessGroup, label: label)
+        guard let status = key.selfTestSign() else {
+            return key
+        }
+        logger.warning("Persistent SE key failed self-test sign (OSStatus \(status)) — attempting auto-repair (delete + re-mint)")
+
+        let group = resolveAccessGroup(accessGroup)
+        let keyLabel = label ?? defaultLabel
+        // Best-effort delete; if the keychain is locked this also fails and the
+        // re-mint below surfaces the same error to the caller's ephemeral
+        // fallback.
+        try? delete(accessGroup: accessGroup, label: label)
+        let fresh = try createNew(accessGroup: group, label: keyLabel)
+        if let reStatus = fresh.selfTestSign() {
+            throw PersistentEnclaveKeyError.signingFailed(
+                status: reStatus,
+                message: "persistent SE key cannot sign after auto-repair (keychain likely locked / headless box not unlocked since boot)"
+            )
+        }
+        logger.info("Persistent SE key auto-repair succeeded — re-minted a working v2 key")
+        return fresh
+    }
+
     // MARK: - Find Existing
 
     private static func findExisting(

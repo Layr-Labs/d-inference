@@ -143,6 +143,12 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
+// errModelTooLarge is the dispatch error returned when providers serve the
+// requested model but none of them has enough total memory to ever load it.
+// Distinct from "no provider available" so the caller rejects fast instead of
+// queuing for 120s — queueing can't help a model that will never fit.
+const errModelTooLarge = "model too large for any available provider"
+
 // dispatchOneProvider encrypts and sends an inference request to a single
 // provider. It returns the pending request and provider on success, or an
 // error string on failure. The excludeProviders set is updated on failure.
@@ -198,6 +204,11 @@ func (s *Server) dispatchOneProvider(
 
 	provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
 	if provider == nil {
+		// Providers serve this model but none can physically fit it: don't make
+		// the caller queue/retry for something that will never load.
+		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
+			return nil, nil, decision, errModelTooLarge, http.StatusServiceUnavailable
+		}
 		return nil, nil, decision, "no provider available", http.StatusServiceUnavailable
 	}
 	pendingCleanup := true
@@ -1082,7 +1093,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// If not, return 429 immediately rather than queueing for up to 120s.
 	// OpenRouter treats 429 as "rate limited" (no uptime penalty) vs 503
 	// which counts as downtime. Fast 429s also preserve our TTFT metrics.
-	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
+		// Providers serve this model but none can ever fit it — non-retryable.
+		// Surface a clear 503 instead of a 429 the client would retry forever.
+		refundReservation()
+		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q is too large for any currently available provider", model),
+			withCode("model_unavailable")))
+		return
+	}
 	if candidateCount == 0 && capacityRejections > 0 {
 		// Providers exist for this model but ALL are at capacity.
 		retryAfter := s.estimateRetryAfter(model)
@@ -1134,6 +1155,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			isResponsesAPI, timing, excludeProviders,
 		)
 		if provider == nil {
+			// No online provider has enough memory to ever fit this model.
+			// Retrying and queueing are both pointless — reject immediately
+			// with a clear, non-retryable error.
+			if dispatchErr == errModelTooLarge {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+				lastErr = dispatchErr
+				lastErrCode = dispatchErrCode
+				break
+			}
+
 			// dispatchOneProvider may have found a provider but rejected it
 			// (payout destination missing, insufficient funds, encryption
 			// missing). In that case it already added the provider to
@@ -1926,7 +1957,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
-			_, capRej := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+			_, capRej, _ := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
 			if capRej > 0 {
 				statusCode = http.StatusTooManyRequests
 			} else {
@@ -3893,7 +3924,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Pre-flight capacity check (same logic as handleChatCompletions).
-	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
+		refundReservation()
+		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q is too large for any currently available provider", model),
+			withCode("model_unavailable")))
+		return
+	}
 	if candidateCount == 0 && capacityRejections > 0 {
 		retryAfter := s.estimateRetryAfter(model)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -3976,6 +4015,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		break
 	}
 	if provider == nil {
+		// No online provider can physically fit this model — queueing/retrying
+		// can't help, so fast-fail with a clear, non-retryable error instead of
+		// blocking for 120s then 503-ing. Mirrors the streaming dispatch path.
+		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				withCode("model_unavailable")))
+			return
+		}
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  requestID,
 			Model:      model,

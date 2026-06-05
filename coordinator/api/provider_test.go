@@ -2319,6 +2319,40 @@ func TestHandleChallengeFailureThresholdTransientIsRecoverable(t *testing.T) {
 	}
 }
 
+// handleChallengeFailure returns the running consecutive-failure count, which
+// drives the force-reconnect escalation in handleTransientChallengeFailure.
+// A provider whose outbound path is wedged heartbeats forever (never evicted)
+// while failing every challenge; the count is what lets the coordinator cycle
+// the connection. handleTransientChallengeFailure must also tolerate a nil conn.
+func TestHandleChallengeFailureReturnsConsecutiveCountAndNilConnSafe(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	reg.Register("p1", nil, &protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:   []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:  "mlx-swift",
+	})
+
+	for i := 1; i <= MaxConsecutiveChallengeTimeoutsBeforeReconnect; i++ {
+		got := srv.handleChallengeFailure("p1", "timeout")
+		if got != i {
+			t.Fatalf("handleChallengeFailure call %d returned %d, want %d", i, got, i)
+		}
+	}
+
+	// A nil conn (e.g. provider already torn down) must not panic even though
+	// the count is past the force-reconnect threshold.
+	srv.handleTransientChallengeFailure(nil, "p1", "timeout")
+
+	if got := reg.GetProvider("p1"); got == nil || got.Status != registry.StatusUntrusted {
+		t.Fatalf("provider should be untrusted after repeated timeouts")
+	}
+}
+
 // Issue #239: a non-transient reason at the threshold is a hard deroute — the
 // challenge loop stops and it cannot self-recover.
 func TestHandleChallengeFailureThresholdSecurityIsHard(t *testing.T) {

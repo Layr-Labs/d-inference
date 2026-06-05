@@ -261,11 +261,15 @@ public actor ProviderLoop {
 
         if PersistentEnclaveKey.isAvailable {
             do {
-                let key = try PersistentEnclaveKey.loadOrCreate()
+                // loadOrCreateVerified proves the key can actually sign (and
+                // auto-repairs a poisoned/locked key once) before we commit to
+                // it. A key that loads but can't sign would otherwise fail every
+                // attestation challenge silently and pin the box untrusted.
+                let key = try PersistentEnclaveKey.loadOrCreateVerified()
                 log.info("Using persistent keychain-backed Secure Enclave key for attestation")
                 return key
             } catch {
-                log.warning("Persistent SE key unavailable (\(error)), falling back to ephemeral")
+                log.warning("Persistent SE key unavailable or unusable (\(error)), falling back to ephemeral")
             }
         }
 
@@ -610,7 +614,7 @@ public actor ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
-        if fastAdmissionReject(modelId: modelId) {
+        if await fastAdmissionReject(modelId: modelId) {
             logger.warning("[\(requestId)] Pre-accept reject for '\(modelId)': insufficient capacity to load")
             send.send(.inferenceError(
                 requestId: requestId,
@@ -794,6 +798,14 @@ public actor ProviderLoop {
             var fullResponseText = ""
             var promptTokens = 0
             var completionTokens = 0
+            // Defense-in-depth for the billing-zero leak: count SSE frames that
+            // carried visible output. If the usage chunk is lost entirely
+            // (parser drift / upstream regression), this is a conservative
+            // lower-bound floor for completion tokens so a request that clearly
+            // produced output never settles at 0 (which the coordinator would
+            // fully refund). MLX streams ~1 token per frame, so this slightly
+            // under-counts vs. true tokenization but never bills $0 for work.
+            var contentFrameCount = 0
 
             do {
                 for try await frame in frames {
@@ -828,14 +840,28 @@ public actor ProviderLoop {
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
                     if let parsed = Self.parseStreamChunk(frame) {
+                        var frameHadContent = false
                         if let content = parsed.contentDelta {
                             fullResponseText += content
+                            // Count only NON-empty content toward the billing
+                            // floor: parseStreamChunk returns a non-nil but empty
+                            // contentDelta for SSE frames carrying "content":""
+                            // (role/terminal deltas), which produce no visible
+                            // output and must not be billed.
+                            if !content.isEmpty {
+                                frameHadContent = true
+                            }
                         }
-                        if let reasoning = parsed.reasoningDelta {
+                        if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
                             fullResponseText += reasoning
+                            frameHadContent = true
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
+                            frameHadContent = true
+                        }
+                        if frameHadContent {
+                            contentFrameCount += 1
                         }
                         if let usage = parsed.usage {
                             promptTokens = usage.promptTokens
@@ -882,13 +908,28 @@ public actor ProviderLoop {
             // capacity), so we cannot fall back to engine-authoritative
             // counts here without expanding its public surface.
             if promptTokens == 0 || completionTokens == 0 {
-                log.warning(
-                    "[\(requestId)] CRITICAL: usage chunk missing or zero "
-                    + "(promptTokens=\(promptTokens), "
-                    + "completionTokens=\(completionTokens)). "
-                    + "Billing will be undercounted. Check upstream "
-                    + "MLXOpenAIService.streamChatCompletionFrames behavior."
-                )
+                // Fallback: if completion tokens are missing/zero but we
+                // streamed visible output, bill the observed content-frame
+                // count instead of $0. This caps the revenue leak even if the
+                // usage chunk is lost entirely. Prompt tokens have no in-loop
+                // proxy, so a zero there is still only logged.
+                if completionTokens == 0 && contentFrameCount > 0 {
+                    completionTokens = contentFrameCount
+                    log.warning(
+                        "[\(requestId)] usage chunk missing/zero completion tokens; "
+                        + "billing \(contentFrameCount) observed content frames as a floor. "
+                        + "Check upstream MLXOpenAIService.streamChatCompletionFrames behavior."
+                    )
+                } else {
+                    log.warning(
+                        "[\(requestId)] CRITICAL: usage chunk missing or zero "
+                        + "(promptTokens=\(promptTokens), "
+                        + "completionTokens=\(completionTokens), "
+                        + "contentFrames=\(contentFrameCount)). "
+                        + "Billing will be undercounted. Check upstream "
+                        + "MLXOpenAIService.streamChatCompletionFrames behavior."
+                    )
+                }
             }
 
             // Update stats
@@ -1436,14 +1477,20 @@ public actor ProviderLoop {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
-            // Budget enough headroom to warm the model. Per-request KV safety is
-            // enforced later by BatchScheduler's live token budget, so this load
-            // gate should not assume the engine's full adaptive slot ceiling is
-            // simultaneously filled with maximum-context requests. A 2x (rather
-            // than 3x) multiple keeps a safety margin for KV-cache growth while
-            // still letting models load on boxes where other models are actively
-            // serving — the previous 3x rejected loads that would have fit.
-            let requiredGb = modelInfo.estimatedMemoryGb * 2.0
+            // Load gate: require room for the WEIGHTS plus headroom for ONE
+            // request, not a full-concurrency multiple. Concurrency beyond one
+            // request is sized dynamically at runtime by the live token budget +
+            // GlobalKVCacheBudget (which strictly rejects any request whose KV
+            // won't fit real free memory, so this looser gate cannot OOM — worst
+            // case a box serves one request at a time). The old gate demanded
+            // free ≥ weights × 2.86 (a `× 2.0` here on top of a `× 0.7` discount
+            // in availableMemoryGb) and left every small/mid machine unable to
+            // load a model it could actually serve. `availableMemoryGb` now
+            // clamps to real OS-available memory and subtracts in-flight KV
+            // reservations, so dropping the multiplier here is still OOM-safe.
+            let requiredGb = ModelLoadAdmission.requiredToLoadGb(
+                weightsGb: modelInfo.estimatedMemoryGb,
+                headroomGb: Self.loadHeadroomGb)
             try await evictUntilAvailable(requiredGb: requiredGb)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -1544,15 +1591,34 @@ public actor ProviderLoop {
         }
     }
 
-    private func availableMemoryGb() -> Double {
-        let total = ProcessInfo.processInfo.physicalMemory
-        let active = UInt64(MLX.GPU.activeMemory)
-        let cache = UInt64(MLX.GPU.cacheMemory)
-        let reserve = Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB)
-        let used = Self.saturatingAdd(active, cache, reserve)
-        let usable = total > used ? total - used : 0
-        return Double(usable) * 0.7 / (1024.0 * 1024.0 * 1024.0)
+    /// Physical memory (GB) available to LOAD a model. No 0.7 KV-safety discount
+    /// here — weights are a known one-time allocation, and the 0.7 runtime
+    /// safety is already enforced per request by GlobalKVCacheBudget. Applying it
+    /// twice was the double-count that kept capable machines from ever loading a
+    /// model they could serve.
+    ///
+    /// Two OOM-safety clamps make the looser gate sound:
+    ///   1. The free figure is clamped to what the OS actually reports available
+    ///      (`SystemMemory.availableBytes`), not just `total − MLX.active −
+    ///      MLX.cache`, which over-reports whenever the OS/other processes hold
+    ///      RAM.
+    ///   2. KV already promised to in-flight requests
+    ///      (`kvBudget.outstandingReservedBytes`) is subtracted, so a concurrent
+    ///      load can't consume memory a mid-decode request is counting on.
+    private func availableMemoryGb() async -> Double {
+        let outstanding = await kvBudget.outstandingReservedBytes()
+        return ModelLoadAdmission.freeForLoadGb(
+            totalBytes: ProcessInfo.processInfo.physicalMemory,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+            gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+            reserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB),
+            outstandingReservationBytes: outstanding)
     }
+
+    /// Headroom (GB) reserved above the weights at load time for ONE request.
+    /// Concurrency beyond that is grown dynamically by the runtime token budget.
+    static let loadHeadroomGb = ModelLoadAdmission.defaultLoadHeadroomGb
 
     private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
         var total: UInt64 = 0
@@ -1569,14 +1635,14 @@ public actor ProviderLoop {
     /// eviction since `await unloadModel` is a suspension point.
     /// Throws if the memory target cannot be met after exhausting evictable models.
     private func evictUntilAvailable(requiredGb: Double) async throws {
-        while availableMemoryGb() < requiredGb {
+        while await availableMemoryGb() < requiredGb {
             let modelsWithInflight = Set(requestToModel.values)
             let candidate = modelSlots
                 .filter { !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key) }
                 .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
 
             guard let (modelId, _) = candidate else {
-                let available = String(format: "%.1f", availableMemoryGb())
+                let available = String(format: "%.1f", await availableMemoryGb())
                 let required = String(format: "%.1f", requiredGb)
                 throw InferenceError.modelLoadFailed(
                     "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
@@ -1597,7 +1663,7 @@ public actor ProviderLoop {
     /// ``evictUntilAvailable`` WITHOUT loading anything and is deliberately
     /// conservative: anything that *could* succeed (including via eviction of
     /// an idle model) is admitted and left for the post-accept load path.
-    private func fastAdmissionReject(modelId: String) -> Bool {
+    private func fastAdmissionReject(modelId: String) async -> Bool {
         // Already resident — definitely serviceable.
         if modelSlots[modelId] != nil {
             return false
@@ -1608,7 +1674,22 @@ public actor ProviderLoop {
         guard let modelInfo = loopConfig.models.first(where: { $0.id == modelId }) else {
             return false
         }
-        let requiredGb = modelInfo.estimatedMemoryGb * 2.0
+        let requiredGb = ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: modelInfo.estimatedMemoryGb,
+            headroomGb: Self.loadHeadroomGb)
+
+        // Sample live memory FIRST — this is the only suspension point in the
+        // method (it awaits the KV-budget actor). Reading all the actor-local
+        // slot/in-flight state AFTER the await means the decision below is made
+        // atomically with respect to this actor: nothing can mutate slots
+        // between the reads and the verdict, so there is no TOCTOU window.
+        let available = await availableMemoryGb()
+
+        // Re-check residency after the suspension: the model may have been
+        // loaded by a concurrent request while we were awaiting memory.
+        if modelSlots[modelId] != nil {
+            return false
+        }
 
         // An idle slot (loaded, no in-flight work, not already unloading) can be
         // evicted to make room, so its presence means we must NOT pre-reject.
@@ -1619,7 +1700,7 @@ public actor ProviderLoop {
 
         // Mirrors evictUntilAvailable's terminal failure: not enough free
         // memory and nothing idle to free.
-        if availableMemoryGb() < requiredGb && !hasEvictable {
+        if available < requiredGb && !hasEvictable {
             return true
         }
 

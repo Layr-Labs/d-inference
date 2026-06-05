@@ -767,7 +767,7 @@ func TestQuickCapacityCheckCountsPendingPromptAndMaxTokens(t *testing.T) {
 		RequestedMaxTokens:    1_000,
 	})
 
-	candidates, rejections := reg.QuickCapacityCheck(model, 1_000, 256)
+	candidates, rejections, _ := reg.QuickCapacityCheck(model, 1_000, 256)
 	if candidates != 0 || rejections != 1 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
 	}
@@ -905,7 +905,7 @@ func TestPerSlotMaxConcurrencyLimitsRoutingForModel(t *testing.T) {
 		t.Fatalf("decision=%+v, want one capacity rejection at per-slot cap", decision)
 	}
 
-	candidates, rejections := reg.QuickCapacityCheck(model, 100, 128)
+	candidates, rejections, _ := reg.QuickCapacityCheck(model, 100, 128)
 	if candidates != 0 || rejections != 1 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
 	}
@@ -932,12 +932,83 @@ func TestPerSlotMaxConcurrencyZeroFallsBack(t *testing.T) {
 	for i := range 4 {
 		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("existing-%d", i), Model: model})
 	}
-	candidates, rejections := reg.QuickCapacityCheck(model, 100, 128)
+	candidates, rejections, _ := reg.QuickCapacityCheck(model, 100, 128)
 	if candidates != 1 || rejections != 0 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 1/0", candidates, rejections)
 	}
 	if found := reg.FindProvider(model); found == nil {
 		t.Fatal("FindProvider should use fallback cap when max_concurrency is zero")
+	}
+}
+
+// TestQuickCapacityCheckReportsModelTooLarge is the preflight half of the
+// model_too_large fix: a cold model that can never fit must be reported as
+// modelTooLarge, NOT capacityRejections — otherwise the consumer preflight 429s
+// it and the client retries a model that will never fit. Regression for the
+// Codex review finding on the QuickCapacityCheck preflight.
+func TestQuickCapacityCheckReportsModelTooLarge(t *testing.T) {
+	reg := New(testLogger())
+	model := "preflight-too-large"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 128}}) // needs 128*2=256GB
+	p := makeSchedulerProvider(t, reg, "small-box", model, 80)
+	p.mu.Lock()
+	p.BackendCapacity.TotalMemoryGB = 64
+	p.BackendCapacity.Slots[0].State = "idle_shutdown" // cold: model not resident
+	p.mu.Unlock()
+
+	candidates, rejections, tooLarge := reg.QuickCapacityCheck(model, 100, 128)
+	if candidates != 0 || rejections != 0 || tooLarge != 1 {
+		t.Fatalf("QuickCapacityCheck = (cand=%d, rej=%d, tooLarge=%d), want 0/0/1", candidates, rejections, tooLarge)
+	}
+}
+
+// TestModelFitPrefersCatalogMinRAM is the core fix: the fit gate must use the
+// catalog's authoritative min_ram_gb, NOT a synthetic multiple of the weight.
+// A 28 GB-weight model (gemma-like) with min_ram_gb=36 must be ADMITTED on a
+// 64 GB box (a multiplier of 2.x would have wrongly rejected the whole 64 GB
+// tier), and REJECTED on a 24 GB box (below the published minimum).
+func TestModelFitPrefersCatalogMinRAM(t *testing.T) {
+	model := "gemma-like"
+	// Qualifies on 64 GB (min_ram_gb=36 ≤ 64).
+	reg := New(testLogger())
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28, MinRAMGB: 36}})
+	p := makeSchedulerProvider(t, reg, "box64", model, 80)
+	p.mu.Lock()
+	p.BackendCapacity.TotalMemoryGB = 64
+	p.BackendCapacity.Slots[0].State = "idle_shutdown" // cold: gate applies
+	p.mu.Unlock()
+	if _, _, tooLarge := reg.QuickCapacityCheck(model, 100, 128); tooLarge != 0 {
+		t.Fatalf("min_ram_gb=36 on 64GB box must be admitted, got modelTooLarge=%d", tooLarge)
+	}
+
+	// Rejected on 24 GB (below min_ram_gb=36).
+	reg2 := New(testLogger())
+	reg2.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28, MinRAMGB: 36}})
+	small := makeSchedulerProvider(t, reg2, "box24", model, 80)
+	small.mu.Lock()
+	small.BackendCapacity.TotalMemoryGB = 24
+	small.BackendCapacity.Slots[0].State = "idle_shutdown"
+	small.mu.Unlock()
+	if _, _, tooLarge := reg2.QuickCapacityCheck(model, 100, 128); tooLarge != 1 {
+		t.Fatalf("min_ram_gb=36 on 24GB box must be model_too_large, got %d", tooLarge)
+	}
+}
+
+// TestModelFitGptOssOn24GB is the operator-facing case: gpt-oss-20b
+// (min_ram_gb=24) must be ADMITTED on a 24 GB box — the catalog says it
+// qualifies, and a weight×multiplier gate (12.1×2.x > 24) would wrongly reject
+// it and starve every 24 GB node of traffic.
+func TestModelFitGptOssOn24GB(t *testing.T) {
+	reg := New(testLogger())
+	model := "gpt-oss-20b"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 12.1, MinRAMGB: 24}})
+	p := makeSchedulerProvider(t, reg, "box24", model, 80)
+	p.mu.Lock()
+	p.BackendCapacity.TotalMemoryGB = 24
+	p.BackendCapacity.Slots[0].State = "idle_shutdown"
+	p.mu.Unlock()
+	if _, _, tooLarge := reg.QuickCapacityCheck(model, 100, 128); tooLarge != 0 {
+		t.Fatalf("gpt-oss-20b (min_ram_gb=24) on a 24GB box must be admitted, got modelTooLarge=%d", tooLarge)
 	}
 }
 
@@ -962,7 +1033,7 @@ func TestPerSlotMaxConcurrencyUsesBackendReportedLoad(t *testing.T) {
 		t.Fatalf("decision=%+v, want one capacity rejection from backend slot load", decision)
 	}
 
-	candidates, rejections := reg.QuickCapacityCheck(model, 100, 128)
+	candidates, rejections, _ := reg.QuickCapacityCheck(model, 100, 128)
 	if candidates != 0 || rejections != 1 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
 	}
@@ -1009,7 +1080,7 @@ func TestManyPerSlotCapsRespectProviderWideAggregateCap(t *testing.T) {
 	if decision.CandidateCount != 0 || decision.CapacityRejections != 1 {
 		t.Fatalf("decision=%+v, want one capacity rejection at aggregate cap", decision)
 	}
-	candidates, rejections := reg.QuickCapacityCheck(models[0], 100, 128)
+	candidates, rejections, _ := reg.QuickCapacityCheck(models[0], 100, 128)
 	if candidates != 0 || rejections != 1 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
 	}
@@ -1174,7 +1245,7 @@ func TestSlotHeadroomWithExhaustedTokenBudgetRejectsCapacity(t *testing.T) {
 	if decision.CandidateCount != 0 || decision.CapacityRejections != 1 {
 		t.Fatalf("decision=%+v, want one capacity rejection from token budget", decision)
 	}
-	candidates, rejections := reg.QuickCapacityCheck(model, 256, 1024)
+	candidates, rejections, _ := reg.QuickCapacityCheck(model, 256, 1024)
 	if candidates != 0 || rejections != 1 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
 	}

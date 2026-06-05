@@ -79,6 +79,18 @@ if [ -n "$MICROMDM_API_KEY" ]; then
             -days 3650 -subj "/CN=localhost" 2>/dev/null
     fi
 
+    # If the coordinator is configured with EIGENINFERENCE_MDM_WEBHOOK_SECRET it
+    # rejects any MDM callback that doesn't present that secret. MicroMDM has no
+    # option to set a header on the command webhook, so the shared secret rides
+    # as a ?token= query param (the coordinator also accepts the X-Webhook-Token
+    # header — see HandleMDMWebhook). These MUST stay in sync: setting the secret
+    # on the coordinator without this token would 403 every legitimate
+    # SecurityInfo/MDA callback and stall provider hardware-trust verification.
+    MDM_WEBHOOK_URL="http://localhost:8080/v1/mdm/webhook"
+    if [ -n "${EIGENINFERENCE_MDM_WEBHOOK_SECRET:-}" ]; then
+        MDM_WEBHOOK_URL="${MDM_WEBHOOK_URL}?token=${EIGENINFERENCE_MDM_WEBHOOK_SECRET}"
+    fi
+
     echo "Starting MicroMDM..."
     micromdm serve \
         -server-url "https://${DOMAIN:-localhost}" \
@@ -89,7 +101,7 @@ if [ -n "$MICROMDM_API_KEY" ]; then
         -tls-key /data/micromdm/server.key \
         -http-addr :9002 \
         -http-proxy-headers \
-        -command-webhook-url http://localhost:8080/v1/mdm/webhook \
+        -command-webhook-url "${MDM_WEBHOOK_URL}" \
         >> /data/micromdm.log 2>&1 &
 
     # Wait for MicroMDM to be ready, then import push cert if needed

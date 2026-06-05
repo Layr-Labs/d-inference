@@ -116,6 +116,38 @@ func TestBuildStatusCanonicalUnicodeNonce(t *testing.T) {
 	}
 }
 
+// TestBuildStatusCanonicalDoesNotHTMLEscape guards the SetEscapeHTML(false)
+// fix. Go's default json.Marshal escapes <, >, & as < > &,
+// but the Swift provider's JSONEncoder emits them raw — so any signed field
+// containing one of those characters would produce a canonical mismatch and a
+// spurious status-signature failure. The canonical bytes here MUST match what
+// Swift signs (raw characters, no \u00xx escapes).
+func TestBuildStatusCanonicalDoesNotHTMLEscape(t *testing.T) {
+	got, err := BuildStatusCanonical(StatusCanonicalInput{
+		// Fictional values exercising every HTML-escaped character. Real
+		// hashes/nonces are base64/hex today, which is exactly why this
+		// divergence is latent — this test makes it impossible to regress.
+		Nonce:           "a<b>c&d",
+		Timestamp:       "t",
+		BinaryHash:      "x&y",
+		ActiveModelHash: "p<q>r",
+	})
+	if err != nil {
+		t.Fatalf("BuildStatusCanonical: %v", err)
+	}
+	expected := []byte(`{"active_model_hash":"p<q>r","binary_hash":"x&y","nonce":"a<b>c&d","timestamp":"t"}`)
+	if !bytes.Equal(got, expected) {
+		t.Fatalf("HTML escaping not disabled — canonical will mismatch Swift\nwant: %s\ngot:  %s", expected, got)
+	}
+	// Belt-and-suspenders: Go's HTML escaping would turn these characters into
+	// \u00xx sequences, which introduce a backslash (0x5c). The correct,
+	// un-escaped output for these inputs contains no backslash at all — so any
+	// backslash byte means escaping leaked back in.
+	if bytes.IndexByte(got, '\\') != -1 {
+		t.Fatalf("canonical output contains an escape backslash — HTML escaping not fully disabled: %s", got)
+	}
+}
+
 // TestVerifyStatusSignatureMissingReturnsSentinel ensures legacy
 // providers (no status_signature field) trigger ErrStatusSignatureMissing
 // rather than a generic verification failure — callers gate trust

@@ -99,11 +99,6 @@ public actor StandaloneServer {
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
     static let schedulerDefaultMaxTokens = 4096
-    /// Free-memory headroom required to admit a model load, as a multiple of
-    /// the model's estimated weight footprint. 2x leaves room for KV-cache
-    /// growth without blocking loads when other models are actively serving on
-    /// the same machine (3x was too conservative and rejected loads that fit).
-    static let modelLoadMemoryMultiplier = 2.0
 
     /// Map a scheduler-side admission error message to an HTTP status. Used
     /// by tests and by any custom error-mapping middleware. Retained here
@@ -283,7 +278,7 @@ public actor StandaloneServer {
     private func ensureMemoryHeadroomForLoad(requiredGb: Double) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
-        while availableMemoryGb() < requiredGb {
+        while await availableMemoryGb() < requiredGb {
             guard await evictLRUIdleScheduler() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
@@ -292,40 +287,19 @@ public actor StandaloneServer {
         }
     }
 
-    private nonisolated func availableMemoryGb() -> Double {
-        let mlxUsedBytes = Self.saturatingAdd(UInt64(max(0, MLX.GPU.activeMemory)), UInt64(max(0, MLX.GPU.cacheMemory)))
-        let totalBytes = ProcessInfo.processInfo.physicalMemory
-        let mlxHeadroomBytes = totalBytes > mlxUsedBytes ? totalBytes - mlxUsedBytes : 0
-        let availableBytes = min(Self.systemAvailableMemoryBytes() ?? mlxHeadroomBytes, mlxHeadroomBytes)
-        return Double(availableBytes) / (1024.0 * 1024.0 * 1024.0)
-    }
-
-    private nonisolated static func systemAvailableMemoryBytes() -> UInt64? {
-        var stats = vm_statistics64()
-        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
-        let result = withUnsafeMutablePointer(to: &stats) { ptr in
-            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
-            }
-        }
-        guard result == KERN_SUCCESS else { return nil }
-        let availablePages = Self.saturatingAdd(
-            UInt64(stats.free_count),
-            UInt64(stats.inactive_count),
-            UInt64(stats.speculative_count)
-        )
-        let (bytes, overflow) = availablePages.multipliedReportingOverflow(by: UInt64(getpagesize()))
-        return overflow ? UInt64.max : bytes
-    }
-
-    private nonisolated static func saturatingAdd(_ values: UInt64...) -> UInt64 {
-        var total: UInt64 = 0
-        for value in values {
-            let (sum, overflow) = total.addingReportingOverflow(value)
-            if overflow { return UInt64.max }
-            total = sum
-        }
-        return total
+    /// Free memory (GB) for loading a model, via the shared OOM-safe arithmetic:
+    /// clamped to real OS-available memory (`SystemMemory`) and minus any KV
+    /// already promised to in-flight requests (`kvBudget`). See
+    /// `ModelLoadAdmission` for the rationale.
+    private func availableMemoryGb() async -> Double {
+        let outstanding = await kvBudget.outstandingReservedBytes()
+        return ModelLoadAdmission.freeForLoadGb(
+            totalBytes: ProcessInfo.processInfo.physicalMemory,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+            gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+            reserveBytes: 0,
+            outstandingReservationBytes: outstanding)
     }
 
     /// Touch the cached scheduler's last-used timestamp on access.
@@ -496,7 +470,9 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             try await evictIfNeededForLoad()
             try await ensureMemoryHeadroomForLoad(
-                requiredGb: modelInfo.estimatedMemoryGb * Self.modelLoadMemoryMultiplier
+                requiredGb: ModelLoadAdmission.requiredToLoadGb(
+                    weightsGb: modelInfo.estimatedMemoryGb,
+                    headroomGb: ModelLoadAdmission.defaultLoadHeadroomGb)
             )
             try Task.checkCancellation()
             let container = try await LLMModelFactory.shared.loadContainer(

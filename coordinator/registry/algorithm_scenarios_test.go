@@ -199,6 +199,33 @@ func TestAlgorithm_P1_DoesNotRejectWarmProviderWithoutWeightsHeadroom(t *testing
 	}
 }
 
+// A model that is RESIDENT-but-idle (loaded, no active requests → provider
+// reports slot state "idle", not "running") must never be rejected by the
+// absolute-fit gate. The model is demonstrably in memory, so the heuristic —
+// which can overestimate via catalog SizeGB — must not exclude it. Regression
+// for the review finding: `snap.modelLoaded` only tracks "running", so an "idle"
+// slot would otherwise be treated as a cold load and gated.
+func TestAlgorithm_P1_IdleResidentModelNotRejectedByFitGate(t *testing.T) {
+	reg := New(testLogger())
+	model := "p1-idle-resident"
+	// Catalog SizeGB=40 → fit gate needs 40*2.0=80 GB, more than the 64 GB box.
+	// If the gate ignored residency it would reject this provider.
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 40}})
+
+	scenarioProvider{
+		id: "idle-resident", decodeTPS: 60, totalMemGB: 64, gpuActiveGB: 42,
+		slotState: "idle", // loaded, currently no active requests
+	}.register(t, reg, model)
+
+	p := reserveOne(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected idle-resident provider to be admitted (model is loaded), got nil")
+	}
+	if p.ID != "idle-resident" {
+		t.Fatalf("got %q, want idle-resident", p.ID)
+	}
+}
+
 // When the catalog has no SizeGB for a model, the gate must not gate.
 // This preserves backwards compatibility with catalog entries written
 // before the SizeGB field existed.

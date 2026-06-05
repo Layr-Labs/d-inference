@@ -1,4 +1,5 @@
 import Foundation
+import Network
 #if canImport(os)
 import os
 #endif
@@ -153,6 +154,55 @@ private final class ManagedAtomic<Value: FixedWidthInteger>: @unchecked Sendable
     }
 }
 
+// MARK: - OutboundRouter (per-connection outbound delivery)
+
+/// Routes outbound messages to the *current* connection's stream.
+///
+/// The stable `send` closure handed to callers (ProviderLoop) routes through
+/// this so it always reaches the live session. Crucially, the outbound
+/// `AsyncStream` is recreated for every connection: an `AsyncStream` is
+/// single-shot, so once a session's consuming task is cancelled on disconnect
+/// its iterator is permanently terminated. Reusing one stream across reconnects
+/// silently dropped every outbound message -- including attestation challenge
+/// responses -- after the first reconnect, leaving providers stuck
+/// `hardware/untrusted reason=timeout` on an otherwise-healthy connection
+/// (heartbeats and ping/pong run on separate tasks, so the socket stayed up).
+///
+/// A lock (matching PongTracker/ManagedAtomic) is used instead of actor
+/// isolation so `send` can stay a synchronous, non-async closure.
+private final class OutboundRouter: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var continuation: AsyncStream<OutboundMessage>.Continuation?
+
+    /// Install the continuation for a new connection, finishing any prior one.
+    func activate(_ cont: AsyncStream<OutboundMessage>.Continuation) {
+        let previous: AsyncStream<OutboundMessage>.Continuation? = lock.withLock {
+            let prev = continuation
+            continuation = cont
+            return prev
+        }
+        previous?.finish()
+    }
+
+    /// Yield a message to the current connection, if any. Messages produced
+    /// while disconnected are dropped (the caller cannot reach the coordinator
+    /// anyway) rather than buffered into a stream nothing is consuming.
+    func yield(_ msg: OutboundMessage) {
+        let cont = lock.withLock { continuation }
+        cont?.yield(msg)
+    }
+
+    /// Tear down outbound delivery permanently (shutdown).
+    func finish() {
+        let cont: AsyncStream<OutboundMessage>.Continuation? = lock.withLock {
+            let c = continuation
+            continuation = nil
+            return c
+        }
+        cont?.finish()
+    }
+}
+
 // MARK: - Configuration
 
 public struct CoordinatorClientConfig: Sendable {
@@ -274,6 +324,38 @@ public struct AttestationResponsePayload: Sendable {
     }
 }
 
+// MARK: - Reachability
+
+/// Lightweight wrapper over NWPathMonitor that tracks current network
+/// reachability. The reconnect loop uses it to distinguish "the coordinator is
+/// down" from "this box has no internet" — the latter is the dominant cause of
+/// provider flap across the fleet and is an operator/network problem, not a
+/// coordinator one. Surfacing it in reconnect telemetry makes that split
+/// visible instead of every drop looking like a coordinator fault.
+final class ReachabilityMonitor: @unchecked Sendable {
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "dev.darkbloom.reachability")
+    private let lock = NSLock()
+    private var _reachable = true
+
+    init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.lock.lock()
+            self._reachable = (path.status == .satisfied)
+            self.lock.unlock()
+        }
+        monitor.start(queue: queue)
+    }
+
+    var isReachable: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _reachable
+    }
+
+    func stop() { monitor.cancel() }
+}
+
 // MARK: - Coordinator Client Actor
 
 public actor CoordinatorClient {
@@ -283,8 +365,15 @@ public actor CoordinatorClient {
 
     private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "coordinator")
 
+    /// Tracks whether the box currently has a usable network path, so reconnect
+    /// logs/telemetry can attribute flap to local connectivity vs the coordinator.
+    private let reachability = ReachabilityMonitor()
+
     private var eventContinuation: AsyncStream<CoordinatorEvent>.Continuation?
-    private var outboundContinuation: AsyncStream<OutboundMessage>.Continuation?
+    /// Holds the current connection's outbound continuation. The outbound stream
+    /// is recreated per connection (see OutboundRouter / connectAndRun); reusing
+    /// one AsyncStream across reconnects silently kills outbound delivery.
+    private let outboundRouter = OutboundRouter()
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -307,16 +396,17 @@ public actor CoordinatorClient {
         let (eventStream, eventCont) = AsyncStream<CoordinatorEvent>.makeStream()
         self.eventContinuation = eventCont
 
-        let (outboundStream, outboundCont) = AsyncStream<OutboundMessage>.makeStream()
-        self.outboundContinuation = outboundCont
-
+        // The outbound stream is created per-connection inside connectAndRun and
+        // registered with the router; the stable send closure always routes
+        // through the router to the live session.
+        let router = self.outboundRouter
         let sendFn: @Sendable (OutboundMessage) -> Void = { msg in
-            outboundCont.yield(msg)
+            router.yield(msg)
         }
 
         Task { [weak self] in
             guard let self else { return }
-            await self.runLoop(outboundStream: outboundStream)
+            await self.runLoop()
         }
 
         return (eventStream, sendFn)
@@ -326,12 +416,12 @@ public actor CoordinatorClient {
         shutdownRequested = true
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         eventContinuation?.finish()
-        outboundContinuation?.finish()
+        outboundRouter.finish()
     }
 
     // MARK: - Connection Loop
 
-    private func runLoop(outboundStream: AsyncStream<OutboundMessage>) async {
+    private func runLoop() async {
         var backoff = ExponentialBackoff(base: 1.0, max: 30.0)
         var reconnectCount: UInt64 = 0
 
@@ -339,7 +429,7 @@ public actor CoordinatorClient {
             logger.info("Connecting to coordinator: \(self.config.url)")
 
             do {
-                try await connectAndRun(outboundStream: outboundStream)
+                try await connectAndRun()
                 logger.info("Coordinator connection closed, reconnecting...")
                 backoff.reset()
                 continue
@@ -348,7 +438,8 @@ public actor CoordinatorClient {
 
                 eventContinuation?.yield(.disconnected)
                 let delay = backoff.nextDelay()
-                logger.warning("Coordinator connection error: \(error.localizedDescription). Reconnecting in \(delay)s")
+                let reachable = reachability.isReachable
+                logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s")
 
                 reconnectCount += 1
                 if shouldEmitReconnectTelemetry(count: reconnectCount) {
@@ -370,7 +461,7 @@ public actor CoordinatorClient {
 
     // MARK: - Single Connection Session
 
-    private func connectAndRun(outboundStream: AsyncStream<OutboundMessage>) async throws {
+    private func connectAndRun() async throws {
         guard let url = URL(string: config.url) else {
             throw CoordinatorError.invalidURL(config.url)
         }
@@ -383,6 +474,16 @@ public actor CoordinatorClient {
 
         try await sendRegistration(ws: ws)
         logger.info("Sent registration to coordinator")
+
+        // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
+        // its iterator is terminated when the previous session's consumer task is
+        // cancelled on disconnect, so a reused stream would never deliver another
+        // message. Recreating it per connection (and routing the stable send
+        // closure through outboundRouter) is what keeps attestation responses and
+        // inference replies flowing after a reconnect. Activate before announcing
+        // .connected so any immediate outbound is buffered, not dropped.
+        let (outboundStream, outboundCont) = AsyncStream<OutboundMessage>.makeStream()
+        outboundRouter.activate(outboundCont)
 
         eventContinuation?.yield(.connected)
 
@@ -660,6 +761,7 @@ public actor CoordinatorClient {
     }
 
     private func emitReconnectTelemetry(count: UInt64, error: Error) {
+        let reachable = reachability.isReachable
         TelemetryClient.shared.emit(
             kind: .connectivity,
             severity: .warn,
@@ -668,9 +770,12 @@ public actor CoordinatorClient {
                 "reconnect_count": .int(Int(count)),
                 "last_error": .string(error.localizedDescription),
                 "coordinator_url": .string(config.url),
+                // Distinguishes "coordinator down" from "box lost internet" —
+                // the latter is the dominant, operator-side cause of flap.
+                "network_reachable": .bool(reachable),
             ]
         )
-        logger.warning("Reconnect telemetry: count=\(count) error=\(error.localizedDescription)")
+        logger.warning("Reconnect telemetry: count=\(count) network_reachable=\(reachable) error=\(error.localizedDescription)")
     }
 }
 

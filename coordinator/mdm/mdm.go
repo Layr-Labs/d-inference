@@ -23,12 +23,27 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// commandUUIDRe extracts the CommandUUID from a MicroMDM device response plist
+// (<key>CommandUUID</key><string>…</string>), tolerating whitespace/newlines.
+var commandUUIDRe = regexp.MustCompile(`<key>CommandUUID</key>\s*<string>([^<]+)</string>`)
+
+// parseCommandUUID returns the CommandUUID embedded in a device response plist,
+// or "" if absent.
+func parseCommandUUID(plistData []byte) string {
+	m := commandUUIDRe.FindSubmatch(plistData)
+	if len(m) < 2 {
+		return ""
+	}
+	return string(bytes.TrimSpace(m[1]))
+}
 
 // DeviceAttestationResponse contains the DER-encoded certificate chain
 // from Apple's DevicePropertiesAttestation response.
@@ -64,7 +79,33 @@ type Client struct {
 	onMDA OnMDACallback
 	// Callback for SecurityInfo responses that arrive after the waiter timed out.
 	onLateSecInfo OnLateSecurityInfoCallback
+
+	// outstanding tracks command UUIDs the coordinator has issued but not yet
+	// matched to a response. The webhook only honors a response whose
+	// CommandUUID is here — this is what makes the (unauthenticated) MicroMDM
+	// callback safe: a caller can only ANSWER a command we actually issued, it
+	// can never volunteer an unsolicited "SIP=true" to forge a trust upgrade.
+	// Keyed by command UUID (a random, non-public identifier).
+	outstandingMu sync.Mutex
+	outstanding   map[string]outstandingCommand
 }
+
+// outstandingCommand records a command UUID the coordinator issued, so the
+// webhook can verify an inbound response was solicited.
+type outstandingCommand struct {
+	udid     string
+	issuedAt time.Time
+}
+
+// outstandingCommandTTL bounds how long an issued command UUID stays valid for
+// matching a webhook response. It must comfortably exceed the worst-case APN /
+// Power Nap delivery delay (a sleeping Mac wakes on roughly a ~15-minute Power
+// Nap cadence — see the late-SecurityInfo callback in cmd/coordinator/main.go),
+// otherwise the UUID expires before a genuine SecurityInfo response arrives,
+// consumeCommand drops it as stale, and the self_signed→hardware recovery path
+// never fires. 30 minutes covers that delay while still bounding the forge
+// window if a (random, localhost-only) UUID ever leaked.
+const outstandingCommandTTL = 30 * time.Minute
 
 // NewClient creates an MDM client.
 func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
@@ -85,7 +126,79 @@ func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 		logger:         logger,
 		secInfoWaiters: make(map[string]chan *SecurityInfoResponse),
 		attestWaiters:  make(map[string]chan *DeviceAttestationResponse),
+		outstanding:    make(map[string]outstandingCommand),
 	}
+}
+
+// readOnlyMDMRequestTypes is the EXHAUSTIVE allowlist of MDM command request
+// types the coordinator is permitted to send to a provider's Mac. Both are pure
+// queries — they read security posture and never mutate the device:
+//
+//	SecurityInfo      → SIP / Secure Boot / FileVault status
+//	DeviceInformation → DevicePropertiesAttestation (Apple-signed cert chain)
+//
+// Every command that could act ON a provider's machine — DeviceLock,
+// EraseDevice, RestartDevice, ShutDownDevice, InstallProfile, RemoveProfile,
+// InstallApplication, ClearPasscode, EnableRemoteDesktop, ScheduleOSUpdate, … —
+// is intentionally absent. Enrolling a provider grants the coordinator
+// read-only visibility into hardware trust, NEVER control. assertReadOnlyCommand
+// is the single chokepoint that enforces this: a future code path (or a
+// compromised coordinator) that tries to issue a mutating command fails closed
+// here instead of reaching the device. To add a command type, it must be a
+// read-only query AND added here in review.
+var readOnlyMDMRequestTypes = map[string]struct{}{
+	"SecurityInfo":      {},
+	"DeviceInformation": {},
+}
+
+// ErrMutatingCommandBlocked is returned when something attempts to send an MDM
+// command that is not on the read-only allowlist.
+var ErrMutatingCommandBlocked = fmt.Errorf("mdm: refusing to send non-read-only command (provider machines are read-only)")
+
+// assertReadOnlyCommand fails closed unless requestType is a known read-only
+// query. This is the guarantee that the coordinator can never "do something" to
+// a provider's Mac via MDM.
+func assertReadOnlyCommand(requestType string) error {
+	if _, ok := readOnlyMDMRequestTypes[requestType]; !ok {
+		return fmt.Errorf("%w: %q", ErrMutatingCommandBlocked, requestType)
+	}
+	return nil
+}
+
+// trackCommand records an issued command UUID so the webhook can confirm a
+// later response was solicited. Prunes expired entries opportunistically.
+func (c *Client) trackCommand(commandUUID, udid string, now time.Time) {
+	if commandUUID == "" {
+		return
+	}
+	c.outstandingMu.Lock()
+	defer c.outstandingMu.Unlock()
+	for id, cmd := range c.outstanding {
+		if now.Sub(cmd.issuedAt) > outstandingCommandTTL {
+			delete(c.outstanding, id)
+		}
+	}
+	c.outstanding[commandUUID] = outstandingCommand{udid: udid, issuedAt: now}
+}
+
+// consumeCommand checks whether commandUUID corresponds to a command the
+// coordinator issued (and has not yet expired), removing it (one-shot). It
+// returns the UDID the command was sent to and whether the match succeeded.
+func (c *Client) consumeCommand(commandUUID string, now time.Time) (string, bool) {
+	if commandUUID == "" {
+		return "", false
+	}
+	c.outstandingMu.Lock()
+	defer c.outstandingMu.Unlock()
+	cmd, ok := c.outstanding[commandUUID]
+	if !ok {
+		return "", false
+	}
+	delete(c.outstanding, commandUUID)
+	if now.Sub(cmd.issuedAt) > outstandingCommandTTL {
+		return "", false
+	}
+	return cmd.udid, true
 }
 
 // SetOnMDA registers a callback for late-arriving MDA attestation certs.
@@ -173,9 +286,13 @@ func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
 // SendSecurityInfoCommand sends a SecurityInfo command to a device by UDID.
 // Returns the command UUID for tracking the response.
 func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
+	const requestType = "SecurityInfo"
+	if err := assertReadOnlyCommand(requestType); err != nil {
+		return "", err
+	}
 	body, _ := json.Marshal(map[string]string{
 		"udid":         udid,
-		"request_type": "SecurityInfo",
+		"request_type": requestType,
 	})
 	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/commands", bytes.NewReader(body))
 	if err != nil {
@@ -199,6 +316,7 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 		return "", fmt.Errorf("mdm command response decode failed: %w", err)
 	}
 
+	c.trackCommand(result.Payload.CommandUUID, udid, time.Now())
 	return result.Payload.CommandUUID, nil
 }
 
@@ -227,6 +345,10 @@ func (c *Client) SendDeviceAttestationCommand(udid string, nonce ...string) (str
 // with DeviceAttestationNonce. MicroMDM's structured API doesn't support this
 // field, so we bypass it with the raw command endpoint: POST /v1/commands/{udid}.
 func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, error) {
+	// DevicePropertiesAttestation is requested via a DeviceInformation command.
+	if err := assertReadOnlyCommand("DeviceInformation"); err != nil {
+		return "", err
+	}
 	cmdUUID := uuid.New().String()
 
 	// Build nonce XML if provided
@@ -272,6 +394,8 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 		respBody, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("mdm raw command failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
+
+	c.trackCommand(cmdUUID, udid, time.Now())
 
 	// Push to trigger device check-in
 	pushReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/push/"+udid, nil)
@@ -341,15 +465,46 @@ func (c *Client) HandleWebhook(body []byte) {
 		return
 	}
 
-	// Log what the plist contains for debugging
+	// SOLICITED-RESPONSE GATE. Only honor a response whose CommandUUID matches a
+	// command the coordinator actually issued. The webhook endpoint is otherwise
+	// unauthenticated; without this, anyone who can reach it could POST a forged
+	// "SIP=true" SecurityInfo (or an attestation) and drive a self_signed
+	// provider to hardware trust. Because command UUIDs are random and never
+	// exposed, an attacker cannot match an in-flight command. Unsolicited or
+	// stale responses are dropped here, before any waiter or trust-upgrade
+	// callback runs.
+	cmdUUID := parseCommandUUID(plistData)
+	trackedUDID, solicited := c.consumeCommand(cmdUUID, time.Now())
+	if !solicited {
+		c.logger.Warn("mdm webhook dropped: unsolicited or unknown CommandUUID",
+			"udid", webhook.Event.UDID,
+			"command_uuid", cmdUUID,
+		)
+		return
+	}
+	// Defense in depth: the response's device must be the one we addressed.
+	if trackedUDID != "" && webhook.Event.UDID != "" && trackedUDID != webhook.Event.UDID {
+		c.logger.Warn("mdm webhook dropped: CommandUUID/UDID mismatch",
+			"command_uuid", cmdUUID,
+			"webhook_udid", webhook.Event.UDID,
+			"command_udid", trackedUDID,
+		)
+		return
+	}
+
+	// Log what the plist contains. The raw preview is kept at Debug only: it
+	// echoes the device response verbatim, which includes the CommandUUID — and
+	// UUID secrecy is what the solicited-command gate relies on, so it must not
+	// be emitted at Info where it could leak the gate's secret to anyone with
+	// log access.
 	hasSecInfo := bytes.Contains(plistData, []byte("SecurityInfo"))
 	hasDeviceAttest := bytes.Contains(plistData, []byte("DevicePropertiesAttestation"))
 	c.logger.Info("mdm webhook plist content",
 		"size", len(plistData),
 		"has_security_info", hasSecInfo,
 		"has_device_attestation", hasDeviceAttest,
-		"preview", string(plistData[:min(len(plistData), 2000)]),
 	)
+	c.logger.Debug("mdm webhook plist preview", "preview", string(plistData[:min(len(plistData), 2000)]))
 
 	// Parse the plist for SecurityInfo
 	secInfo := parseSecurityInfoPlist(plistData)

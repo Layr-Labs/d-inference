@@ -285,7 +285,7 @@ func TestAdaptiveCapacityIntegrationOmittedMaxConcurrencyUsesLegacyFallback(t *t
 	for i := range 4 {
 		p.AddPending(&registry.PendingRequest{RequestID: fmt.Sprintf("legacy-%d", i), ProviderID: p.ID, Model: model, RequestedMaxTokens: 128})
 	}
-	candidates, rejections := reg.QuickCapacityCheck(model, 10, 128)
+	candidates, rejections, _ := reg.QuickCapacityCheck(model, 10, 128)
 	if candidates != 1 || rejections != 0 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 1/0 with legacy fallback", candidates, rejections)
 	}

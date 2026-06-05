@@ -274,6 +274,92 @@ struct CoordinatorIntegrationTests {
         #expect(snap.registers.last?.backend == "mlx-swift")
     }
 
+    // MARK: 3b. Outbound delivery survives a reconnect (regression)
+
+    /// Regression test for the outage where ~half the fleet got pinned
+    /// `hardware/untrusted reason=timeout` after a coordinator restart.
+    ///
+    /// The outbound `AsyncStream` used to be created once in `start()` and
+    /// reused across every reconnect. An `AsyncStream` is single-shot: once the
+    /// first session's consumer task is cancelled on disconnect, the iterator is
+    /// terminated, so the next session's forwarder task exited immediately and
+    /// NO outbound message (attestation responses, inference replies) was ever
+    /// sent again. Heartbeats/pings run on their own tasks, so the socket stayed
+    /// up and the provider was never evicted — it just silently stopped
+    /// answering challenges.
+    ///
+    /// Test #3 above only proves the provider *re-registers* after a drop, and
+    /// registration uses `ws.send` directly (not the outbound stream), so it
+    /// passed even with the bug. This test exercises the outbound stream
+    /// specifically: it must still deliver an attestation response on the new
+    /// connection.
+    @Test("CoordinatorClient still delivers outbound messages after a reconnect")
+    func outboundDeliverySurvivesReconnect() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let keys = NodeKeyPair.generate()
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: keys.publicKeyBase64,
+            heartbeatInterval: 60
+        )
+        let (events, sendFn) = await coordinator.start()
+        let send = SendHandle(sendFn)
+        defer { Task { await coordinator.shutdown() } }
+
+        // Background drainer: answer every attestation challenge through the
+        // stable `send` handle — the exact outbound path ProviderLoop uses.
+        let drain = Task {
+            for await event in events {
+                if case .attestationChallenge(let nonce, _) = event {
+                    send.send(.attestationResponse(AttestationResponsePayload(
+                        nonce: nonce,
+                        signature: "fake-sig",
+                        statusSignature: nil,
+                        publicKey: keys.publicKeyBase64,
+                        sipEnabled: true,
+                        binaryHash: String(repeating: "b", count: 64)
+                    )))
+                }
+            }
+        }
+        defer { drain.cancel() }
+
+        // First connection.
+        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(first != nil)
+        let registersBefore = mock.snapshot().registers.count
+
+        // Force a reconnect — what a coordinator restart / network blip does to
+        // every provider at once.
+        await mock.dropActiveWebSocket()
+
+        // Provider reconnects and re-registers on a brand-new WebSocket.
+        let reRegistered = try await mock.waitForSnapshot(timeout: .seconds(10)) {
+            $0.registers.count > registersBefore
+        }
+        try #require(reRegistered != nil)
+
+        // Push a challenge over the NEW connection. Pre-fix, the outbound
+        // forwarder had already exited, so this response was silently dropped.
+        try await mock.pushAttestationChallenge(
+            nonce: "cmVjb25uZWN0",
+            timestamp: "2026-05-31T08:00:00Z"
+        )
+
+        let after = try await mock.waitForSnapshot(timeout: .seconds(10)) {
+            $0.attestationResponses.contains { $0.nonce == "cmVjb25uZWN0" }
+        }
+        let snap = try #require(
+            after,
+            "no attestation response after reconnect — outbound stream is dead"
+        )
+        let resp = try #require(snap.attestationResponses.first { $0.nonce == "cmVjb25uZWN0" })
+        #expect(resp.publicKey == keys.publicKeyBase64)
+    }
+
     // MARK: 4. EnrollmentService round-trip
 
     @Test("EnrollmentService either fetches the mocked profile or short-circuits as already-enrolled")

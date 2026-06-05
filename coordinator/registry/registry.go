@@ -607,9 +607,26 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Restore trust level (will be re-verified via fresh attestation)
-	p.TrustLevel = TrustLevel(rec.TrustLevel)
-	p.Attested = rec.Attested
+	// Restore trust level, but NEVER above self_signed. Hardware trust must be
+	// re-earned via a fresh live challenge + MDM/ACME on every (re)connection.
+	// Resurrecting a stored "hardware" level would route real traffic to a
+	// provider that has not yet passed a live challenge, and is the source of
+	// the "registry says hardware but the live verdict is self_signed" drift.
+	// The challenge-success path (verifyChallengeResponse) re-upgrades to
+	// hardware once the live legs pass.
+	if r := trustRank(TrustLevel(rec.TrustLevel)); r > trustRank(TrustSelfSigned) {
+		p.TrustLevel = TrustSelfSigned
+	} else {
+		p.TrustLevel = TrustLevel(rec.TrustLevel)
+	}
+	// Do NOT clobber a fresh live attestation: verifyProviderAttestation runs
+	// just before this and may have already set Attested=true (self_signed) from
+	// a passing SE attestation. Only fall back to the stored flag when we don't
+	// already have a fresh one — otherwise consumers/stats would see
+	// X-Provider-Attested:false despite a successful live attestation.
+	if !p.Attested {
+		p.Attested = rec.Attested
+	}
 	p.MDAVerified = rec.MDAVerified
 	p.ACMEVerified = rec.ACMEVerified
 
@@ -806,6 +823,10 @@ type CatalogEntry struct {
 	ID         string
 	WeightHash string  // expected SHA-256 weight fingerprint (empty = not enforced)
 	SizeGB     float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
+	// MinRAMGB is the catalog's authoritative minimum unified memory (GB) to run
+	// this model — the operator-published requirement. The hardware-fit gate
+	// prefers this over any heuristic multiple of SizeGB. Zero = unknown.
+	MinRAMGB int
 }
 
 // SetModelCatalog updates the set of active models. Only models in this
@@ -902,6 +923,15 @@ func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) b
 func (r *Registry) catalogSizeGBLocked(model string) float64 {
 	if e, ok := r.modelCatalog[model]; ok {
 		return e.SizeGB
+	}
+	return 0
+}
+
+// catalogMinRAMGbLocked returns the model's authoritative minimum-RAM
+// requirement (GB) from the catalog, or 0 when unknown. Caller must hold r.mu.
+func (r *Registry) catalogMinRAMGbLocked(model string) int {
+	if e, ok := r.modelCatalog[model]; ok {
+		return e.MinRAMGB
 	}
 	return 0
 }
@@ -1471,17 +1501,15 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 
-	// Memory gate: reject providers that cannot physically load the model.
-	// The provider applies a 2x multiplier on model weight size when deciding
-	// whether to load (ensureModelLoaded uses estimatedMemoryGb * 2.0 for
-	// headroom). Use the catalog SizeGB * 2.5 as the coordinator-side gate
-	// (slightly less conservative since the provider will reject anyway if
-	// it truly doesn't fit). This prevents the coordinator from sending
-	// load_model commands to machines that will always OOM-reject them.
-	if entry, ok := r.modelCatalog[model]; ok && entry.SizeGB > 0 {
-		requiredGB := entry.SizeGB * 2.5
-		providerMemGB := float64(p.Hardware.MemoryGB)
-		if providerMemGB > 0 && requiredGB > providerMemGB {
+	// Memory gate: reject providers that cannot run the model per the catalog's
+	// authoritative min_ram_gb (falling back to the weight heuristic only when
+	// unknown). Shares modelFitsHardware with the consumer-routing admission
+	// gate so the two can never drift. This prevents the coordinator from
+	// sending load_model commands to machines that clearly cannot fit it, while
+	// trusting the operator-published requirement rather than a synthetic
+	// multiple that would exclude catalog-qualified nodes.
+	if entry, ok := r.modelCatalog[model]; ok && (entry.MinRAMGB > 0 || entry.SizeGB > 0) {
+		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
 			return 0, false
 		}
 	}
@@ -1616,7 +1644,10 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	// temporarily at capacity (capacityRejections > 0), the requests
 	// should wait — those providers may finish current work and become
 	// available.
-	candidates, capacityRejections := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
+	// modelTooLarge is intentionally ignored here: a model that can never fit
+	// any provider should NOT keep its queued requests waiting (they'd time out
+	// after 120s) — fall through to fail them fast.
+	candidates, capacityRejections, _ := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
 	if candidates > 0 || capacityRejections > 0 {
 		return
 	}

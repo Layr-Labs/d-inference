@@ -25,6 +25,7 @@
 package attestation
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
@@ -413,7 +414,22 @@ func BuildStatusCanonical(in StatusCanonicalInput) ([]byte, error) {
 	if len(in.ModelHashes) > 0 {
 		m["model_hashes"] = in.ModelHashes
 	}
-	return json.Marshal(m)
+	// Encode WITHOUT Go's HTML escaping so the bytes match the Swift provider's
+	// JSONEncoder (which never escapes <, >, &). With the default json.Marshal,
+	// any field value containing <, >, or & would serialize as < / > /
+	// & on the Go side but raw on the Swift side, producing a canonical
+	// mismatch and a spurious status-signature failure. For base64/hex values
+	// (the only ones in use today) the output is byte-identical, so this is a
+	// no-op for current providers and a fix for the latent divergence.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return nil, err
+	}
+	// json.Encoder.Encode appends a trailing newline; strip it so the canonical
+	// bytes match Swift's JSONEncoder output exactly.
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // VerifyStatusSignature verifies that statusSigB64 is a valid SE P-256

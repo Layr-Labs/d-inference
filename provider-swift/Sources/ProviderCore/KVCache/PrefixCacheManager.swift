@@ -292,6 +292,12 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// to `tokens`. RAM first, then SSD (with the MB-1 guard). Returns
     /// fresh, caller-owned caches via `sending`, or nil on miss.
     public func lookup(tokens: [Int]) async -> PrefixLookupResult? {
+        // CODEX-R7 MEDIUM: a closed (deregistered/unloaded) manager must not
+        // serve hits. Without this, a lookup that started before unload — or one
+        // racing teardown — could return KV from a manager whose model is gone,
+        // which (combined with the stale-engine submit window) risks seeding a
+        // superseded engine. The SSD path re-checks `closed` after its read await.
+        guard !closed else { return nil }
         let checkpoints = PrefixDigest.checkpoints(tokens: tokens, boundaries: boundaries)
         guard !checkpoints.isEmpty else {
             stats.misses += 1
@@ -447,6 +453,12 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
+
+        // CODEX-R7 MEDIUM: the manager may have been deregistered (closed) while
+        // we were suspended in the read above. A closed manager must not serve a
+        // hit (its model is gone — seeding a superseded engine) nor mutate RAM/
+        // index state a new same-modelKey manager may now own. Bail.
+        guard !closed else { return nil }
 
         // Promote to RAM for the next hit, and bump index recency.
         if let digestData = Data(hex: entry.digestHex) {

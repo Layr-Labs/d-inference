@@ -344,6 +344,19 @@ public actor BatchScheduler {
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
     }
 
+    /// HIGH-FIX (stale-engine enqueue): `submit`/`submitTokenized` capture
+    /// `engine` at the top, then `await` planner admission, KV reservation, and
+    /// checkpoint restore before `engine.core.addRequest`. A concurrent
+    /// `stopCurrentEngine()`/`loadModel()` can bump `generationEpoch` and
+    /// `engine.stop()` the captured engine during those awaits — enqueuing onto a
+    /// stopped/superseded engine (request hangs / lands on the wrong model).
+    /// Returns true iff `capturedEpoch` still matches AND `self.engine` is still
+    /// the captured instance, so the caller may proceed to addRequest. The
+    /// epoch + identity pair mirrors the load-side guards in `loadModel`.
+    private func engineStillCurrent(_ capturedEpoch: UInt64, _ capturedEngine: BatchedEngine) -> Bool {
+        capturedEpoch == generationEpoch && self.engine === capturedEngine
+    }
+
     /// TEST SEAM: install a checkpoint manager + capture hook onto the live
     /// engine, replicating exactly what `makeBatchedEngine` wires for a
     /// `.checkpoint` model. Production builds the manager with an SE-wrapped
@@ -864,6 +877,9 @@ public actor BatchScheduler {
             continuation.finish()
             return stream
         }
+        // HIGH-FIX: pin the load epoch with the captured engine so we can detect
+        // a concurrent unload/reload across the awaits below (planner, KV, restore).
+        let submitEpoch = generationEpoch
 
         let requestBudget = promptTokens.count + maxTokens
         guard requestBudget <= tokenBudgetMax else {
@@ -931,6 +947,15 @@ public actor BatchScheduler {
             samplingParams: sp
         )
         await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
+        // HIGH-FIX: re-check the engine is still the one we captured (a reload/
+        // unload may have run during the awaits above). Enqueuing onto a stopped/
+        // superseded engine hangs the request or runs it on the wrong model.
+        guard engineStillCurrent(submitEpoch, engine) else {
+            await dropBridge(requestId: id)
+            continuation.yield(.error("model reloaded during submit; please retry"))
+            continuation.finish()
+            return stream
+        }
         _ = await engine.core.addRequest(req)
 
         runBridge(
@@ -961,6 +986,8 @@ public actor BatchScheduler {
             continuation.finish()
             return stream
         }
+        // HIGH-FIX: pin the load epoch with the captured engine (see submitTokenized).
+        let submitEpoch = generationEpoch
 
         // Pre-tokenize so chat-template errors surface as `.error` events;
         // engine's internal `buildPrompt` silently falls back to role:content.
@@ -1062,6 +1089,13 @@ public actor BatchScheduler {
             samplingParams: sp
         )
         await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
+        // HIGH-FIX: re-check the captured engine is still current after the awaits.
+        guard engineStillCurrent(submitEpoch, engine) else {
+            await dropBridge(requestId: id)
+            continuation.yield(.error("model reloaded during submit; please retry"))
+            continuation.finish()
+            return stream
+        }
         _ = await engine.core.addRequest(req)
 
         // Hand the per-request stream to the bridge extension. Bridge

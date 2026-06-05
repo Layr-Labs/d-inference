@@ -93,7 +93,7 @@ Set the env var on the provider process:
 ```bash
 DARKBLOOM_PREFIX_CACHE=1                     # enable (default off); or =true
 DARKBLOOM_PREFIX_CACHE_MAX_GB=8              # optional: in-GPU block-cache budget (default = 1/8 physical RAM)
-DARKBLOOM_PREFIX_CACHE_DISK_GB=50            # optional: GLOBAL on-disk budget across ALL models (default = min(10 GiB, 50% of free); 0 = unlimited)
+DARKBLOOM_PREFIX_CACHE_DISK_GB=50            # optional: GLOBAL on-disk budget across ALL models. Unset / 0 / non-numeric = DERIVE min(10 GiB, 50% of free), re-evaluated each tick (NOT unlimited). For effectively-unbounded, set a very large explicit value.
 DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS=0  # optional: 2nd-use admission threshold (default = 16384 for Gemma, 0 otherwise)
 ```
 
@@ -527,6 +527,24 @@ whether someone else cached them). That's why the cache is **default-off**,
 opt-in via `DARKBLOOM_PREFIX_CACHE`, and ships only with an explicit
 operator threat-model sign-off. Flag off ⇒ no cache ⇒ no exposure. See the
 design doc's threat model for the full TB-007 analysis.
+
+**At-rest scope — plaintext metadata is a known-prefix oracle for a disk
+observer.** Encryption-at-rest covers the **KV tensors only**. The file header
+metadata is plaintext (it's the GCM AAD, so it's authenticated but not
+confidential): it carries `tokenCount`, the **stable prefix hash**
+(`tokenPrefixHash` = SHA-256 over the prefix token IDs), the model-binding
+fields (`modelHash`, `modelArch`, layer/head/dim shape), `createdAt`/`expiresAt`,
+and the chunk layout. Because the prefix hash is a deterministic function of the
+token IDs, an attacker with **read access to the cache directory** (not a tenant
+— a disk/filesystem observer) can take a *guessed* prefix, compute its hash, and
+test for equality against the on-disk filenames/metadata to **confirm whether a
+known prompt prefix was cached** — and learn its token count and model. This is
+a confirmation/equality oracle on guessable prefixes, not plaintext recovery (the
+KV bytes stay encrypted). It is in-scope-accepted for the disk-theft threat model
+(an attacker who can read the dir already defeats nothing of the KV confidentiality
+guarantee) but is called out here so operators don't assume the filenames/metadata
+are private. Mitigation if ever needed: salt/HMAC the on-disk prefix hash with a
+per-install secret so it isn't directly recomputable from guessed tokens.
 
 Model binding uses the **weight hash** (`ModelInfo.weightHash`) when the
 catalog provides it, falling back to the `modelId` otherwise. The on-disk

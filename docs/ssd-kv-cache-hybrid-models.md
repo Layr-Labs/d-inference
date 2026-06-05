@@ -116,38 +116,44 @@ restore is exact, so reuse past the window is correct in this pipeline today.
 
 ### What the window *does* still control
 
-`PrefixDigest.checkpoints(forSlidingWindow:maxContext:pastWindowProven:)` now
-**extends past the window** for PROVEN families (Gemma), via a coarse tail
-ladder `[2048, 4096, 8192, 16384, 32768]` up to a 32k ceiling (or the model's
-`maxContextLength` if smaller). Unproven families (GPT-OSS — where the window
-genuinely discards) keep the within-window-only ladder:
+`PrefixDigest.checkpoints(forSlidingWindow:maxContext:pastWindowProven:)`
+**extends past the window** for PROVEN families, via a coarse tail ladder
+`[2048, 4096, 8192, 16384, 32768]` up to a 32k ceiling (or the model's
+`maxContextLength` if smaller). **Both Gemma-4 and GPT-OSS are now proven**
+(see `PrefixCachePastWindow.provenSubstrings = ["gemma", "gpt-oss", "gptoss"]`),
+so both get the extended ladder. A family that is NOT proven keeps the
+within-window-only ladder (safe default):
 
-| Model | min sliding window | PROVEN? | checkpoint boundaries (as-built, Phase 1) |
+| Model | min sliding window | PROVEN? | checkpoint boundaries (as-built) |
 |---|---|---|---|
-| Gemma-4 | **1024** | YES (proven bit-exact past-window restore) | 256, 512, 1024, **2048, 4096, 8192, 16384, 32768** (up to maxContext) |
-| GPT-OSS | **128** | NO (unproven) | 64, 128 (capped at window) |
+| Gemma-4 | **1024** | YES (`gemma4RestoreMatchesColdPastWindow`, L=2048/4096 > 1024) | 256, 512, 1024, **2048, 4096, 8192, 16384, 32768** (up to maxContext) |
+| GPT-OSS | **128** | YES (`gptOssRestoreMatchesColdPastWindow`, L=256/512 > 128) | 64, 128, **2048, 4096, 8192, 16384, 32768** (up to maxContext) |
 
-**How it's wired (Phase 1, `PrefixDigest.swift:62-88`):**
+**How it's wired (`PrefixDigest.swift`, `PrefixCachePastWindow.swift`):**
 `PrefixCachePastWindow.isProven(arch:)` returns `true` for any architecture
-string containing "gemma" (case-insensitive). When `pastWindowProven == true`
-AND `maxContext > inWindow.last`, the ladder is extended with the tail
-`[2048, 4096, 8192, 16384, 32768]`, filtered to `(inWindow.last, maxContext]`.
-Unproven families keep the within-window ladder unchanged (safe default).
+string containing `"gemma"`, `"gpt-oss"`, or `"gptoss"` (case-insensitive).
+When `pastWindowProven == true` AND `maxContext > inWindow.last`, the ladder is
+extended with the tail `[2048, 4096, 8192, 16384, 32768]`, filtered to
+`(inWindow.last, maxContext]`. A not-yet-proven family keeps the within-window
+ladder unchanged (safe default).
 
 The cost of a long checkpoint is storage/IO (full-layer KV for the whole
 prefix on disk) and restore latency (decrypt + rebuild grows with prefix
-size), not correctness (proven by `gemma4RestoreMatchesColdPastWindow` at
-L=2048 and L=4096, both > the 1024 window). The 32k ceiling is a human
-decision balancing reuse vs write amplification.
+size), not correctness — proven by `gemma4RestoreMatchesColdPastWindow`
+(L=2048/4096 > 1024 window) and `gptOssRestoreMatchesColdPastWindow`
+(L=256/512 > 128 window). Both families use the same `RotatingKVCache`
+mechanism (full-attention layers retain all tokens; sliding layers keep their
+wrapped window), so the wrapped-ring-buffer restore is identical and verified
+for both. The 32k ceiling is a human decision balancing reuse vs write
+amplification.
 
-> Honest tradeoff for GPT-OSS at the current boundary: its 128-token window
-> means a within-window checkpoint saves at most ~128 tokens of prefill on its
-> sliding layers — modest. Its full-attention layers and TTFT on a shared
-> system prompt still benefit (measured: 2.60× at a 96-tok prefix). Long
-> shared prefixes (> 128 tok) are not reused only because the boundary default
-> caps them (unproven), not because the KV cache can't represent them. Lifting
-> the cap for GPT-OSS requires proving past-window restore equivalence via a
-> test like `gemma4RestoreMatchesColdPastWindow`.
+> GPT-OSS past-window lift (now enabled): its 128-token sliding window means a
+> within-window checkpoint would save at most ~128 tokens of prefill on its
+> sliding layers. With past-window restore proven, long shared prefixes are now
+> reused on its full-attention layers too (the coarse tail ladder), so a long
+> shared system prompt is restored rather than re-prefilled. Its TTFT benefit on
+> a shared prefix was already measured at 2.60× at a 96-token prefix; the lift
+> extends reuse to longer prefixes.
 
 ## 4. Isolation — how we guarantee other models are unaffected
 

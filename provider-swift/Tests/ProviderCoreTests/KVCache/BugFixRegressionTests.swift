@@ -1133,6 +1133,32 @@ func codexR6High_closedManagerSkipsReconcile() async {
     #expect(await mgr._indexHasEntryForTest(digestHex: digestHex) == false,
         "CODEX-R6-HIGH: a closed manager's reconcileWithDisk must NOT run (orphan stays un-indexed)")
 }
+
+@Test
+func codexR7Medium_closedManagerLookupReturnsNil() async {
+    // CODEX-R7 MEDIUM regression: a closed (deregistered/unloaded) manager must
+    // NOT serve a lookup hit. Without the top-level `guard !closed` in lookup(),
+    // a request that started before unload — or one racing teardown — could get
+    // KV from a manager whose model is gone, risking seeding a superseded engine.
+    // Revert-guard: remove the `guard !closed else { return nil }` at the top of
+    // lookup() and this test fails (the RAM hit is returned post-close).
+    let kvRoot = tmpKVRoot()
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+    let accountant = GlobalDiskAccountant(kvRoot: kvRoot, configuredCeiling: 1 << 40, freeBytes: { _ in 1 << 40 })
+    let (mgr, _) = await makeCkptMgrWithSSD(kvRoot: kvRoot, modelKey: "m1", accountant: accountant)
+    await mgr.registerWithAccountant()
+
+    // Stage a RAM hit (model-free; no SSD needed for the RAM-tier path).
+    let tokens = Array(0..<10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnBlock(layers: 2, tokens: 8)))
+    #expect(await mgr.lookup(tokens: tokens) != nil, "precondition: a live manager serves the RAM hit")
+
+    // Close the manager — every subsequent lookup must miss.
+    await mgr._markClosedForTest()
+    #expect(await mgr.lookup(tokens: tokens) == nil,
+        "CODEX-R7-MEDIUM: a closed manager must NOT serve a lookup hit")
+}
 #endif
 
 @Test

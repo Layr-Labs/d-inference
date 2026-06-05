@@ -411,6 +411,15 @@ process exit / explicit cache eviction.
 
 ## 7. Index file
 
+> **AS-BUILT (supersedes the SQLite sketch below):** there is **no SQLite
+> dependency**. The index is a per-model-dir **JSON file** `index.json` under
+> `kv/<modelKey>/`, loaded into memory and written back atomically — see
+> `PrefixCacheIndex.swift` (top-of-file: *"No SQLite dependency"*;
+> `PrefixIndexEntry: Codable`, `JSONEncoder`/`JSONDecoder`). Per-dir scoping
+> replaces the global `model_hash` column; writes are coalesced
+> (`saveCoalesceThreshold`) and crash-reconciled by `reconcileWithDisk()`. The
+> SQL schema below is retained only as the original design record.
+
 `~/.cache/darkbloom/kv/prefix-index.dbkv-idx` is a single SQLite
 database (we already link `SQLite.swift` indirectly via Hummingbird's
 dep graph — confirm). `[Q3]`

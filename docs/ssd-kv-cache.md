@@ -358,8 +358,9 @@ recoverable cold miss** — never wrong KV served, never a process crash.
 
 ## 9. Exact-checkpoint matching (checkpoint tier)
 
-The (unwired) `PrefixCacheManager` tier keys prefixes by **exact
-checkpoint** rather than longest-common-prefix. `PrefixDigest` hashes the
+The `PrefixCacheManager` tier (wired into `BatchScheduler` for hybrid
+sliding-window models — Gemma-4, GPT-OSS — when the flag is on) keys prefixes
+by **exact checkpoint** rather than longest-common-prefix. `PrefixDigest` hashes the
 prompt's first `c` tokens at fixed boundaries (256, 512, 1024, 2048, 4096,
 8192) in a single rolling-SHA pass, so two prompts sharing a system prompt
 produce identical digests at every checkpoint inside the shared region.

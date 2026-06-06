@@ -50,8 +50,9 @@ Qwen stays uncached. (Out of scope; explicitly preserved as-is.)
 
 Instead of per-layer token-position blocks, snapshot **the entire
 multi-layer cache** at an exact prefix length and restore it wholesale.
-This is what the already-built (but unwired) **`PrefixCacheManager`** tier
-does, and its `KVCacheSerializer` already round-trips both `KVCacheSimple`
+This is what the **`PrefixCacheManager`** tier does (wired into
+`BatchScheduler` for hybrid models when the flag is on), and its
+`KVCacheSerializer` already round-trips both `KVCacheSimple`
 and `RotatingKVCache` (state + `metaState`), with restore correctness
 partially covered by `RotatingKVCacheRestoreTests`.
 

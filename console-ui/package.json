@@ -2,7 +2,7 @@
   "name": "web",
   "version": "0.1.0",
   "overrides": {
-    "axios": "^1.15.0"
+    "axios": "^1.17.0"
   },
   "private": true,
   "scripts": {

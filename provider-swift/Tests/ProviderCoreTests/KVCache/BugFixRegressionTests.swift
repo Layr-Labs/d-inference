@@ -199,6 +199,52 @@ func codexR6Medium_engineTierLoadBlockDropRefreshesAccountant() async throws {
         "Engine-tier loadBlock drops must refresh accountant usage to 0 (was \(after))")
 }
 
+@Test
+func engineTierClosedGateBlocksMutationsAfterUnload() async throws {
+    // Regression: after unload, the engine tier must reject all disk mutations.
+    // BatchScheduler calls close() before deregistering the owner, so a stale
+    // engine step finishing after engine.stop() (which doesn't fence an in-flight
+    // engineQueue step) or a late accountant eviction signal cannot mutate files
+    // in a kv/<modelKey> dir a reloaded same-modelKey owner may now hold.
+    // Revert-guard: remove `guard !isClosed()` from saveBlock → the post-close
+    // save writes a file → the count assertion fails.
+    let kvRoot = tmpKVRoot()
+    let modelKey = "engine-closed"
+    let dir = kvRoot.appendingPathComponent(modelKey, isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: kvRoot) }
+
+    let binding = PrefixCacheModelBinding(
+        modelHash: "sha256:engmodel", modelDtype: "float32", modelArch: "Llama",
+        vocabSize: 1000, numLayers: 2, kvHeads: 2, headDim: 4)
+    // No accountant: exercise the bare closed-gate (diskBudget large/unbounded).
+    let persistence = EncryptedPrefixCachePersistence(
+        kekKey: SymmetricKey(size: .bits256), dir: dir, binding: binding)
+
+    func kvFileCount() -> Int {
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return files.filter { $0.hasSuffix(EncryptedKVStore.fileExtension) }.count
+    }
+
+    // Open: a save lands a file.
+    persistence.saveBlock(blockHash: Data("open".utf8), layerCaches: engineBlock(layers: 2, tokens: 8))
+    #expect(kvFileCount() == 1, "precondition: an open owner persists a block")
+
+    // Unload: close the owner.
+    persistence.close()
+
+    // Closed: saveBlock is a no-op (no new file), even for a fresh block hash.
+    persistence.saveBlock(blockHash: Data("after-close".utf8), layerCaches: engineBlock(layers: 2, tokens: 8))
+    #expect(kvFileCount() == 1,
+        "a closed engine-tier owner must NOT write new blocks (stale step after unload)")
+
+    // Closed: evictForGlobalBudget must not delete the surviving file.
+    let freed = await persistence.evictForGlobalBudget(targetBytesToFree: 1 << 30)
+    #expect(freed == 0, "a closed owner's evictForGlobalBudget must be a no-op")
+    #expect(kvFileCount() == 1,
+        "a closed owner must NOT delete files for a dir a reloaded owner may hold")
+}
+
 // MARK: - BUG-3: Path traversal (MAJOR)
 
 @Test

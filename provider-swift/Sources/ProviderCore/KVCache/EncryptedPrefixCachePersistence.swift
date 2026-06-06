@@ -56,6 +56,20 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// Accumulates under sweepLock; pushed when >= threshold.
     private var bytesSincePush = 0
 
+    /// Set true by `close()` on model unload (BatchScheduler.stopCurrentEngine),
+    /// BEFORE the accountant deregisters this owner. Once closed, every disk
+    /// mutator (saveBlock, loadBlock's drop-on-mismatch, sweep, evictForGlobal
+    /// Budget, usage pushes) is a no-op, so a stale engine step that finishes
+    /// after unload — `EngineCore.stop()` does not fence an in-flight
+    /// `engineQueue` step — or a late accountant eviction signal cannot mutate
+    /// files in a `kv/<modelKey>` dir a freshly-reloaded same-modelKey owner may
+    /// now hold. Mirrors PrefixCacheManager's `closed` latch (checkpoint tier).
+    /// saveBlock/loadBlock are synchronous (PrefixCachePersistence contract), so
+    /// no async drain is needed: a check-and-bail closes the window; an
+    /// already-executing synchronous saveBlock just completes one content-
+    /// addressed write (reclaimed by the new owner's sweep). Guarded by sweepLock.
+    private var closed = false
+
     /// Phase 3: global disk accountant (process-wide, shared across models).
     /// nil ⇒ today's per-model behavior (backward compat).
     private let accountant: GlobalDiskAccountant?
@@ -89,6 +103,9 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     // MARK: - PrefixCachePersistence
 
     public func saveBlock(blockHash: Data, layerCaches: [KVCacheSimple]) {
+        // Closed (model unloaded): a stale engine step must not write into a dir
+        // a reloaded same-modelKey owner may now hold.
+        guard !isClosed() else { return }
         let caches = layerCaches as [any KVCache]
         guard KVCacheSerializer.areSupported(caches) else { return }
 
@@ -302,6 +319,9 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// so the push is fire-and-forget, token-scoped (stale Tasks are NO-OP), and the
     /// snapshot is rebuilt AFTER the removal so it reflects the smaller footprint.
     private func removeUnusableBlockFile(_ url: URL) {
+        // Closed: a reloaded same-modelKey owner may now hold this dir, so a
+        // stale loadBlock must not delete its files (cross-owner mutation).
+        guard !isClosed() else { return }
         try? FileManager.default.removeItem(at: url)
         guard let accountant else { return }
         sweepLock.lock()
@@ -322,11 +342,31 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
         sweepLock.unlock()
     }
 
+    /// Mark this owner closed on model unload. BatchScheduler must call this
+    /// BEFORE `accountant.deregister(token)` so no disk mutation slips through
+    /// between deregistration and the dir being handed to a reloaded owner.
+    /// Idempotent; thread-safe via sweepLock.
+    public func close() {
+        sweepLock.lock()
+        closed = true
+        sweepLock.unlock()
+    }
+
+    /// Snapshot of the closed flag under the lock.
+    private func isClosed() -> Bool {
+        sweepLock.lock(); defer { sweepLock.unlock() }
+        return closed
+    }
+
     /// Evict oldest `.darkbloom-kv` files (by modification time) until the
     /// directory is within `diskBudgetBytes`. Best-effort.
     private func sweep() {
         sweepLock.lock()
         defer { sweepLock.unlock() }
+        // Closed: don't delete files in a dir a reloaded owner may hold. (Read
+        // `closed` directly — we already hold sweepLock, so isClosed() would
+        // deadlock on the non-recursive NSLock.)
+        guard !closed else { return }
         bytesSinceSweep = 0
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
@@ -360,6 +400,10 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// the sweep loop body (mtime-LRU eviction). No locking needed: the
     /// accountant is the sole caller and serializes all evictions.
     public func evictForGlobalBudget(targetBytesToFree: Int) async -> Int {
+        // Closed: a late accountant eviction signal (the accountant should have
+        // deregistered this owner, but a signal already in flight could still
+        // land) must not delete files in a dir a reloaded owner may now hold.
+        guard !isClosed() else { return 0 }
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
         guard let entries = try? fm.contentsOfDirectory(

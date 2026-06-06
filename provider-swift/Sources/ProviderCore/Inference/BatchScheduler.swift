@@ -1298,6 +1298,13 @@ public actor BatchScheduler {
         checkpointManager = nil
         checkpointBoundaries = []
 
+        // Close the engine-tier owner FIRST (before deregister) so no disk
+        // mutation slips through between deregistration and the dir being handed
+        // to a reloaded same-modelKey owner: a stale engine step finishing after
+        // `engine.stop()` (which doesn't fence an in-flight engineQueue step) or
+        // a late accountant eviction signal will now no-op. `engine.stop()` was
+        // already awaited above, so the GPU step loop is winding down by here.
+        engineTierOwner?.close()
         // Deregister the engine-tier owner from the accountant.
         if let accountant = diskAccountant, let token = engineTierAccountantToken {
             await accountant.deregister(token)

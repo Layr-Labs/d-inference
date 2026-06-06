@@ -211,6 +211,12 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	if n := len(s.providerPayouts); n > maxEntries {
 		s.providerPayouts = append([]ProviderPayout(nil), s.providerPayouts[n-maxEntries:]...)
 	}
+	if n := len(s.providerSessions); n > maxEntries {
+		s.providerSessions = append([]ProviderSession(nil), s.providerSessions[n-maxEntries:]...)
+	}
+	if n := len(s.logReports); n > maxEntries {
+		s.logReports = append([]LogReport(nil), s.logReports[n-maxEntries:]...)
+	}
 
 	// Expired device codes can be dropped outright.
 	now := time.Now()
@@ -2680,6 +2686,9 @@ func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial,
 			if ps.AccountID == "" {
 				ps.AccountID = accountID
 			}
+			// At most one open row per sessionID (OpenProviderSession
+			// guarantees it), so stop scanning once matched.
+			return nil
 		}
 	}
 	return nil
@@ -2718,13 +2727,16 @@ func (s *MemoryStore) CloseProviderSession(_ context.Context, sessionID, reason 
 
 // CloseOpenProviderSessions closes any sessions still open, setting
 // disconnected_at to the last heartbeat (startup reconcile).
-func (s *MemoryStore) CloseOpenProviderSessions(_ context.Context) (int, error) {
+func (s *MemoryStore) CloseOpenProviderSessions(_ context.Context, staleBefore time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for i := range s.providerSessions {
 		ps := &s.providerSessions[i]
-		if ps.DisconnectedAt == nil {
+		// Only close genuinely-orphaned sessions (last heartbeat older than the
+		// staleness fence); a session still touched by another live instance
+		// during a blue-green deploy stays fresh and is left open.
+		if ps.DisconnectedAt == nil && ps.LastSeen.Before(staleBefore) {
 			t := ps.LastSeen
 			ps.DisconnectedAt = &t
 			ps.DisconnectReason = "coordinator_restart"

@@ -3648,13 +3648,21 @@ func (s *PostgresStore) CloseProviderSession(ctx context.Context, sessionID, rea
 	return nil
 }
 
-// CloseOpenProviderSessions closes any sessions still open (orphaned by a prior
-// coordinator process), setting disconnected_at to the last heartbeat seen.
-func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context) (int, error) {
+// CloseOpenProviderSessions closes open sessions whose last heartbeat predates
+// staleBefore (orphaned by a prior coordinator process), setting disconnected_at
+// to the last heartbeat seen. The last_seen < staleBefore fence prevents a
+// blue-green deploy from truncating a session still live (and being touched) on
+// the old instance over the shared DB — its last_seen stays fresh.
+//
+// Note: crash-path disconnected_at granularity is bounded by how often last_seen
+// advances. Heartbeats touch it (TouchProviderSession), so the recorded
+// disconnect can lag the true last-seen by at most the heartbeat interval.
+func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefore time.Time) (int, error) {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE provider_sessions
 		    SET disconnected_at = last_seen, disconnect_reason = 'coordinator_restart'
-		  WHERE disconnected_at IS NULL`,
+		  WHERE disconnected_at IS NULL AND last_seen < $1`,
+		staleBefore,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: close open provider sessions: %w", err)

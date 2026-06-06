@@ -14,7 +14,7 @@ export default function RouteError({
 }) {
   return (
     <div className="space-y-3">
-      <DbError err={error} />
+      <DbError digest={error.digest} />
       <button
         onClick={reset}
         className="rounded border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text-dim)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"

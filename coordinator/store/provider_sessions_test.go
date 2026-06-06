@@ -60,7 +60,7 @@ func TestMemoryProviderSessionLifecycle(t *testing.T) {
 	if err := st.OpenProviderSession(ctx, "sess-2", "S2", "A2"); err != nil {
 		t.Fatalf("open2: %v", err)
 	}
-	n, err := st.CloseOpenProviderSessions(ctx)
+	n, err := st.CloseOpenProviderSessions(ctx, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -105,8 +105,56 @@ func TestMemoryProviderSessionCloseBeforeOpen(t *testing.T) {
 		t.Fatalf("late open must not duplicate/reopen: %+v", st.providerSessions)
 	}
 
-	if n, _ := st.CloseOpenProviderSessions(ctx); n != 0 {
+	if n, _ := st.CloseOpenProviderSessions(ctx, time.Now().Add(time.Minute)); n != 0 {
 		t.Fatalf("no session should be left open after the race, reconcile closed %d", n)
+	}
+}
+
+// TestMemoryProviderSessionReconcileFencesFreshSessions is the regression for the
+// blue-green deploy truncation bug: a session still being touched (fresh
+// last_seen) must NOT be closed by a startup reconcile — only genuinely-orphaned
+// (stale) sessions are. Mirrors the new-instance-starts-while-old-instance-live
+// cutover over a shared DB.
+func TestMemoryProviderSessionReconcileFencesFreshSessions(t *testing.T) {
+	st := NewMemory(Config{})
+	ctx := context.Background()
+	now := time.Now()
+
+	// A session live on "another instance": opened, and heartbeated to ~now.
+	if err := st.OpenProviderSession(ctx, "fresh", "S1", "A1"); err != nil {
+		t.Fatalf("open fresh: %v", err)
+	}
+	if err := st.TouchProviderSession(ctx, "fresh", "S1", "A1", now.Add(-10*time.Second)); err != nil {
+		t.Fatalf("touch fresh: %v", err)
+	}
+	// A genuinely-orphaned session: opened, last heartbeat 10 min ago.
+	if err := st.OpenProviderSession(ctx, "stale", "S2", "A2"); err != nil {
+		t.Fatalf("open stale: %v", err)
+	}
+	if err := st.TouchProviderSession(ctx, "stale", "S2", "A2", now.Add(-10*time.Minute)); err != nil {
+		t.Fatalf("touch stale: %v", err)
+	}
+
+	// Reconcile with a 3-minute fence (the prod value).
+	n, err := st.CloseOpenProviderSessions(ctx, now.Add(-3*time.Minute))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("reconcile closed %d, want 1 (only the stale session)", n)
+	}
+	for i := range st.providerSessions {
+		ps := &st.providerSessions[i]
+		switch ps.SessionID {
+		case "fresh":
+			if ps.DisconnectedAt != nil {
+				t.Fatalf("FRESH session was wrongly closed by reconcile (blue-green truncation bug)")
+			}
+		case "stale":
+			if ps.DisconnectedAt == nil || ps.DisconnectReason != "coordinator_restart" {
+				t.Fatalf("stale orphaned session was not closed: %+v", ps)
+			}
+		}
 	}
 }
 

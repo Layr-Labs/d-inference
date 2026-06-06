@@ -47,8 +47,12 @@ export function InteractiveTable<T>({
       if (col?.sortValue) {
         const sv = col.sortValue;
         r = [...r].sort((a, b) => {
-          const av = sv(a);
-          const bv = sv(b);
+          // Normalize Dates to epoch millis so date columns sort chronologically
+          // (TIMESTAMPTZ values come back as JS Dates; String(date) would sort by
+          // weekday/month name, not by time).
+          const norm = (v: unknown) => (v instanceof Date ? v.getTime() : v);
+          const av = norm(sv(a));
+          const bv = norm(sv(b));
           const cmp =
             typeof av === "number" && typeof bv === "number"
               ? av - bv

@@ -455,10 +455,14 @@ type Store interface {
 	// CloseProviderSession marks the open session for sessionID as ended.
 	CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error
 
-	// CloseOpenProviderSessions closes any sessions still marked open (used at
-	// startup to reconcile sessions orphaned by a previous coordinator process).
-	// Returns the number of sessions closed.
-	CloseOpenProviderSessions(ctx context.Context) (int, error)
+	// CloseOpenProviderSessions closes sessions still marked open whose last
+	// heartbeat (last_seen) predates staleBefore — i.e. genuinely orphaned by a
+	// dead prior coordinator process. The staleBefore fence is what makes this
+	// safe under a blue-green/rolling deploy over a shared DB: a session still
+	// live on the OLD instance keeps getting TouchProviderSession heartbeats, so
+	// its last_seen stays fresh and is NOT closed by the NEW instance's startup
+	// reconcile. Returns the number of sessions closed.
+	CloseOpenProviderSessions(ctx context.Context, staleBefore time.Time) (int, error)
 
 	// --- Provider Reputation Persistence ---
 

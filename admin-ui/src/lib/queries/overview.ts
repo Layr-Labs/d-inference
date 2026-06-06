@@ -10,7 +10,9 @@ export interface TableCount {
 // recovery-conflicts (no scan of the data tables).
 export async function getTableCounts(): Promise<TableCount[]> {
   const rows = await query<{ table: string; est_rows: string }>(
-    `SELECT c.relname AS table, c.reltuples::bigint AS est_rows
+    // reltuples is -1 for a never-analyzed relation (PG14+); clamp to 0 so a
+    // freshly-created table doesn't render "-1" until autovacuum/ANALYZE runs.
+    `SELECT c.relname AS table, GREATEST(c.reltuples, 0)::bigint AS est_rows
        FROM pg_class c
        JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind = 'r'

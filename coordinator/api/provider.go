@@ -1281,24 +1281,20 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 
 	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
 
-	// Free self-route settlement. A request marked FreeSelfRoute must be served
-	// by a provider the requesting account owns. Re-verify ownership here as
-	// defense-in-depth — the router already filtered to owned providers, so a
-	// mismatch should be impossible (e.g. the machine was unlinked mid-flight).
-	// Only on a confirmed match do we settle at zero cost; otherwise we fall
-	// back to normal paid settlement rather than grant free inference on a
-	// machine the caller does not own (closes the "mark free, serve elsewhere"
-	// hole).
+	// Free settlement when an OWNED machine served the request. Two paths reach
+	// here:
+	//   - FreeSelfRoute (exclusive self-route): the router only ever picks owned
+	//     providers, so a mismatch should be impossible (machine unlinked
+	//     mid-flight); a mismatch falls back to paid to close the "mark free,
+	//     serve elsewhere" hole.
+	//   - PreferOwner (prefer-with-fallback): the request may legitimately have
+	//     fallen back to a PUBLIC provider, in which case paid settlement is the
+	//     correct, expected outcome — not an error.
+	// Either way: free iff the provider that actually served it is owned by the
+	// requesting account. Ownership is read from the serving provider object
+	// (stable across deregistration), not a fresh lookup.
 	freeSelfRoute := false
-	if pr.FreeSelfRoute {
-		// Read ownership from the provider that actually served this request —
-		// the handleComplete argument — rather than a fresh registry lookup.
-		// The provider may have deregistered between sending this completion and
-		// settlement running; GetProvider would then return nil and we'd wrongly
-		// bill the legitimate owner. The provider struct's AccountID is stable
-		// across deregistration, so the passed-in object is the authoritative,
-		// race-free source. (GetProvider is preferred only as a freshness
-		// refinement; it falls back to the argument when the entry is gone.)
+	if pr.FreeSelfRoute || pr.PreferOwner {
 		serving := s.registry.GetProvider(providerID)
 		if serving == nil {
 			serving = provider
@@ -1307,10 +1303,14 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		servingOwner := serving.AccountID
 		serving.Mu().Unlock()
 		if servingOwner != "" && servingOwner == pr.ConsumerKey {
+			// Owned machine served it → free. For PreferOwner this also fully
+			// refunds the up-front reservation below (totalCost 0 < reserved).
 			freeSelfRoute = true
 			totalCost = 0
 			providerPayout = 0
-		} else {
+		} else if pr.FreeSelfRoute {
+			// Exclusive self-route should never be served by a non-owned
+			// provider — surface it and settle as paid (defense-in-depth).
 			s.logger.Error("self-route completion served by a non-owned provider — settling as paid (defense-in-depth)",
 				"provider_id", providerID,
 				"request_id", msg.RequestID,
@@ -1318,6 +1318,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				"consumer_key", pr.ConsumerKey,
 			)
 		}
+		// PreferOwner served by a public provider is the normal fallback — no
+		// log, settle as paid against the reservation.
 	}
 
 	billingFinalized := true

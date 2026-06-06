@@ -229,11 +229,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	defer p.mu.Unlock()
 
 	// Re-check capacity under the provider lock in case another goroutine
-	// changed the pending set between snapshot and reservation. selfRouteOwner
-	// mirrors selection: a self-route request has already been filtered to a
-	// provider the caller owns, so the trust floor is relaxed and a private-only
-	// machine is admitted here too.
-	if !r.providerCanAdmitLocked(p, model, pr.SelfRouteOnly) {
+	// changed the pending set between snapshot and reservation. relaxTrust
+	// mirrors selection: the trust floor (and private-only admission) is relaxed
+	// only when this is the caller's own machine — for exclusive self-route
+	// (always owned here) or for prefer when the winner happens to be owned.
+	owned := p.AccountID != "" && p.AccountID == pr.OwnerAccountID
+	relaxTrust := pr.SelfRouteOnly || (pr.PreferOwner && owned)
+	if !r.providerCanAdmitLocked(p, model, relaxTrust) {
 		return nil, RoutingDecision{
 			Model:                   model,
 			CandidateCount:          candidateCount,
@@ -296,14 +298,11 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	capacityRejections := 0
 	tooLargeRejections := 0
 	for _, p := range r.providers {
-		// Self-route: restrict to providers owned by the requesting account
-		// and never fall back to the public fleet. Once this passes, the
-		// provider is the caller's own machine, so snapshotProviderLocked may
-		// relax the hardware-trust gate (relaxTrust = pr.SelfRouteOnly).
-		if pr.SelfRouteOnly {
-			if !providerOwnedBy(p, pr.OwnerAccountID) {
-				continue
-			}
+		owned := providerOwnedBy(p, pr.OwnerAccountID)
+		// Exclusive self-route: restrict to the caller's own machines and never
+		// fall back to the public fleet.
+		if pr.SelfRouteOnly && !owned {
+			continue
 		}
 		if len(allowedSerials) > 0 {
 			if !providerMatchesAllowedSerial(p, allowedSerials) {
@@ -313,7 +312,11 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
 		}
-		snap, ok := r.snapshotProviderLocked(p, model, pr.SelfRouteOnly)
+		// Relax the hardware-trust floor ONLY for the caller's own (possibly
+		// un-enrolled) machine — whether exclusive self-route or prefer — never
+		// for public providers.
+		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
+		snap, ok := r.snapshotProviderLocked(p, model, relaxTrust)
 		if !ok {
 			continue
 		}
@@ -335,14 +338,31 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		return nil, candidateCount, capacityRejections, tooLargeRejections
 	}
 
+	// Prefer-with-fallback: if the caller asked to prefer their own machine and
+	// at least one owned candidate can serve, choose among owned candidates
+	// only; otherwise fall back to the full pool (a public provider, charged
+	// normally). Exclusive self-route already filtered to owned above.
+	pool := candidates
+	if pr.PreferOwner {
+		owned := make([]*routingCandidate, 0, len(candidates))
+		for _, c := range candidates {
+			if providerOwnedBy(c.provider, pr.OwnerAccountID) {
+				owned = append(owned, c)
+			}
+		}
+		if len(owned) > 0 {
+			pool = owned
+		}
+	}
+
 	var best *routingCandidate
-	for _, c := range candidates {
+	for _, c := range pool {
 		if best == nil || c.costMs < best.costMs {
 			best = c
 		}
 	}
-	nearTies := make([]*routingCandidate, 0, len(candidates))
-	for _, c := range candidates {
+	nearTies := make([]*routingCandidate, 0, len(pool))
+	for _, c := range pool {
 		if math.Abs(c.costMs-best.costMs) <= nearTieCostWindowMs {
 			nearTies = append(nearTies, c)
 		}

@@ -97,9 +97,19 @@ type PendingRequest struct {
 	// public fleet. The owner-match is on the coordinator-stamped AccountID,
 	// never on any client-supplied value.
 	SelfRouteOnly bool
+	// PreferOwner is the "prefer my own machine, but fall back to the paid
+	// fleet" mode. Unlike SelfRouteOnly it does NOT exclude public providers:
+	// the scheduler picks the caller's own machine whenever one can serve, and
+	// only falls back to the public fleet (charged normally) when none can. The
+	// hardware-trust floor is relaxed for the caller's own (possibly un-enrolled)
+	// machine, exactly as for SelfRouteOnly, but never for public providers.
+	// Billing is decided at settlement: free if an owned machine actually served
+	// it, paid otherwise — so a PreferOwner request takes a normal reservation
+	// up front (unlike SelfRouteOnly, which skips it).
+	PreferOwner bool
 	// OwnerAccountID is the authenticated account that must own the serving
-	// provider when SelfRouteOnly is set. Stamped server-side from the
-	// request's authenticated identity.
+	// provider when SelfRouteOnly or PreferOwner is set. Stamped server-side
+	// from the request's authenticated identity.
 	OwnerAccountID string
 	// FreeSelfRoute marks a request that must settle at zero cost (no charge,
 	// no platform fee, no provider payout) because it is served by a machine

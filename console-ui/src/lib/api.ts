@@ -479,10 +479,13 @@ export async function streamChat(
   // outgoing body to the coordinator's published X25519 pubkey, then decrypt
   // each SSE event on the way back.
   const requestBody = { model, messages, stream: true };
-  // "Use my machine, for free": opt-in routing to the caller's own provider.
+  // "Use my machine": the chat composer toggle prioritizes the caller's own
+  // provider (free when it serves) but falls back to the paid fleet when their
+  // machine can't — so the toggle is never a dead end. That's the `prefer`
+  // intent; the strict free-only ceiling lives on the API key (self_route_only).
   // Carried as a header so it never enters the (optionally sealed) body.
   const selfRouteHeader: Record<string, string> = opts?.selfRoute
-    ? { "X-Darkbloom-Route": "self" }
+    ? { "X-Darkbloom-Route": "prefer" }
     : {};
   let sealCtx: { ephemPriv: Uint8Array; coordPub: Uint8Array } | null = null;
   let fetchHeaders = proxyHeaders(selfRouteHeader);

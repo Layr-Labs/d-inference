@@ -20,34 +20,48 @@ import (
 // authenticated identity plus the X-Darkbloom-Route header / per-key flag);
 // no field originates from the request body.
 type selfRoutePolicy struct {
-	// enabled restricts routing to providers owned by ownerAccountID and marks
-	// the request free. The zero value is a normal paid request to any provider.
+	// enabled is EXCLUSIVE self-route: restrict routing to providers owned by
+	// ownerAccountID, mark the request free, and never fall back to the paid
+	// fleet. The zero value is a normal paid request to any provider.
 	enabled bool
+	// prefer is "prefer my own machine, fall back to the paid fleet": route to
+	// an owned provider whenever one can serve (free), otherwise use the public
+	// fleet (charged). Mutually exclusive with `enabled`; it takes a normal
+	// reservation up front so the paid fallback can settle, and billing is
+	// decided at settlement by whether an owned machine actually served it.
+	prefer bool
 	// ownerAccountID is the account that must own the serving provider.
 	ownerAccountID string
 }
 
 // resolveSelfRoutePolicy derives the self-route decision from the request's
-// authenticated identity and opt-in signals. A per-key SelfRouteOnly flag is a
-// hard ceiling (every request on that key self-routes and is free); otherwise
-// the X-Darkbloom-Route: self header opts in a single request. The owner is the
-// authenticated consumer key, which is the same namespace as Provider.AccountID
-// (both derive from the account that linked the device). An unresolved identity
-// (empty consumer key) disables self-route so it can never match a machine.
+// authenticated identity and opt-in signals:
+//
+//   - A per-key SelfRouteOnly flag is a hard ceiling — every request on that key
+//     is EXCLUSIVE self-route (owned-only, free, no fallback), regardless of header.
+//   - X-Darkbloom-Route: self  → EXCLUSIVE for this one request.
+//   - X-Darkbloom-Route: prefer → PREFER (owned-first, paid fallback) for this request.
+//
+// The owner is the authenticated consumer key, the same namespace as
+// Provider.AccountID (both derive from the account that linked the device). An
+// unresolved identity (empty consumer key) disables self-route entirely so it
+// can never match a machine.
 func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
-	headerWants := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Darkbloom-Route")), "self")
+	route := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Darkbloom-Route")))
 	keyForces := false
 	if k := apiKeyFromContext(r.Context()); k != nil {
 		keyForces = k.SelfRouteOnly
 	}
-	if !headerWants && !keyForces {
+	exclusive := keyForces || route == "self"
+	prefer := !exclusive && route == "prefer"
+	if !exclusive && !prefer {
 		return selfRoutePolicy{}
 	}
 	owner := consumerKeyFromContext(r.Context())
 	if owner == "" {
 		return selfRoutePolicy{}
 	}
-	return selfRoutePolicy{enabled: true, ownerAccountID: owner}
+	return selfRoutePolicy{enabled: exclusive, prefer: prefer, ownerAccountID: owner}
 }
 
 // selfRouteUnavailable reports whether a self-route request cannot proceed and,

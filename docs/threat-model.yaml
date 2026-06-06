@@ -288,7 +288,8 @@ trust_boundaries:
       launches load the existing key by access group and label query. The private key
       never leaves the SE silicon. Two operations are performed with it: (1) ECDSA
       signing of attestation blobs, and (2) ECIES unwrap/decryption — when the
-      encrypted SSD KV cache is enabled (DARKBLOOM_PREFIX_CACHE, default off), the
+      encrypted SSD KV cache is enabled (DARKBLOOM_PREFIX_CACHE, default ON;
+      opt out with =0), the
       same key decrypts the wrapped per-provider KEK that protects on-disk KV
       (PersistentEnclaveKey+ECIES.swift, SecureEnclaveKeyWrappingService.swift). This
       grants entitled same-team binaries a decryption capability on this key, not only

@@ -5,11 +5,13 @@ it — the as-built behavior. For the design rationale, threat model, and
 phased plan see **[ssd-kv-cache-design.md](ssd-kv-cache-design.md)**; this
 doc is the operator + engineer reference for what actually runs.
 
-> **Status / safety gate.** The cache is **OFF by default**. It is enabled
-> only when the operator sets `DARKBLOOM_PREFIX_CACHE=1` AND the machine
-> can persist a Secure-Enclave-wrapped key. Enabling it re-introduces a
-> cross-tenant TTFT side-channel (TB-007) — see [Security model](#security-model).
-> With the flag unset the engine runs with `prefixCache: nil`: no cache, no
+> **Status / safety gate.** The cache is **ON by default** (operator decision);
+> opt out with `DARKBLOOM_PREFIX_CACHE=0`. It also requires the machine to
+> persist a Secure-Enclave-wrapped key — if the SE/entitlement is missing it
+> stays off rather than use an ephemeral key. It re-introduces a cross-tenant
+> TTFT side-channel (TB-007) that encryption does NOT mitigate — untrusted
+> multi-tenant deployments MUST opt out. See [Security model](#security-model).
+> With the flag set to `0` the engine runs with `prefixCache: nil`: no cache, no
 > files, today's exact behavior.
 
 ---
@@ -90,12 +92,13 @@ flag — which tier a model uses is decided by `PrefixCacheStrategy.classify`.
 
 ---
 
-## 3. Enabling it
+## 3. Enabling / disabling it
 
-Set the env var on the provider process:
+The prefix cache is **ON by default**. To disable it, opt out on the provider
+process:
 
 ```bash
-DARKBLOOM_PREFIX_CACHE=1                     # enable (default off); or =true
+DARKBLOOM_PREFIX_CACHE=0                     # opt OUT (default = ON); also false/off/no
 DARKBLOOM_PREFIX_CACHE_MAX_GB=8              # optional: in-GPU block-cache budget (default = 1/8 physical RAM)
 DARKBLOOM_PREFIX_CACHE_DISK_GB=50            # optional: GLOBAL on-disk budget across ALL models. Unset / 0 / non-numeric = DERIVE min(10 GiB, 50% of free), re-evaluated each tick (NOT unlimited). For effectively-unbounded, set a very large explicit value.
 DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS=0  # optional: 2nd-use admission threshold (default = 16384 for Gemma, 0 otherwise)
@@ -112,10 +115,10 @@ them — see [§4.2](#42-evict--encrypt-to-ssd)).
 Wiring happens in `BatchScheduler.makeBatchedEngine` /
 `makeEncryptedPrefixPersistenceIfEnabled`
 (`provider-swift/Sources/ProviderCore/Inference/BatchScheduler.swift`). The
-cache is constructed **only if all** of these hold; otherwise it stays
-`nil` (off) and the provider logs why:
+cache is constructed **unless** it's opted out, and otherwise **only if** the
+remaining conditions hold; if not it stays `nil` (off) and the provider logs why:
 
-1. `DARKBLOOM_PREFIX_CACHE` is `1`/`true`.
+1. `DARKBLOOM_PREFIX_CACHE` is NOT set to `0`/`false`/`off`/`no` (default = on).
 2. The model architecture exposes `numLayers`, `kvHeads`, `headDim`.
 3. A persistent KEK is available: a Secure-Enclave identity
    (`PersistentEnclaveKey.loadOrCreate`) + Keychain storage
@@ -126,7 +129,7 @@ cache is constructed **only if all** of these hold; otherwise it stays
 When active you'll see, once per model load:
 
 ```
-DARKBLOOM_PREFIX_CACHE is ON — engine prefix cache enabled (TB-007: …)
+Prefix cache is ON (default; opt out with DARKBLOOM_PREFIX_CACHE=0) — TB-007: …
 encrypted prefix cache active for <modelId> (bound to weightHash|modelId) at <dir>, disk budget <N> bytes (default = min(10 GiB, 50% of free volume space), GLOBAL across models)
 prefix cache sized to <maxBlocks> blocks × 256 tok (~<kvBytesPerToken> B/tok)
 ```
@@ -501,8 +504,8 @@ lowest-value KV (across the fleet) is dropped first, so a high-churn
 many-model deployment doesn't over-commit. Retired-model dirs (unowned) are
 reclaimed under pressure (not on unload), preserving restart reuse.
 
-> **Rollout guidance.** Out of the box (`DARKBLOOM_PREFIX_CACHE=1`, nothing
-> else) the GLOBAL default is `min(10 GiB, 50% of free)` — safe for
+> **Rollout guidance.** Out of the box (default-on, nothing else set) the
+> GLOBAL default is `min(10 GiB, 50% of free)` — safe for
 > multi-model deployments; the accountant cross-model-evicts to stay under
 > one ceiling. Raise `DARKBLOOM_PREFIX_CACHE_DISK_GB` explicitly when you have
 > headroom. The global accountant resolves issue
@@ -530,10 +533,11 @@ defense). It does **not** close the in-process **cross-tenant** channel:
 the provider can't see tenant identity, so a shared prefix block is shared
 across consumers, and the TTFT difference between a cache hit and miss is a
 timing oracle (a tenant who already knows the exact prompt tokens can detect
-whether someone else cached them). That's why the cache is **default-off**,
-opt-in via `DARKBLOOM_PREFIX_CACHE`, and ships only with an explicit
-operator threat-model sign-off. Flag off ⇒ no cache ⇒ no exposure. See the
-design doc's threat model for the full TB-007 analysis.
+whether someone else cached them). The cache is **on by default** per an
+explicit operator decision accepting this channel for trusted / single-tenant
+deployments; **untrusted multi-tenant deployments MUST opt out** with
+`DARKBLOOM_PREFIX_CACHE=0` (⇒ no cache ⇒ no exposure). Encryption-at-rest does
+not change this. See the design doc's threat model for the full TB-007 analysis.
 
 **At-rest scope — plaintext metadata is a known-prefix oracle for a disk
 observer.** Encryption-at-rest covers the **KV tensors only**. The file header

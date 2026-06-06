@@ -71,11 +71,11 @@ public actor BatchScheduler {
 
     /// Checkpoint-tier KV cache for hybrid sliding-window models (Gemma-4,
     /// GPT-OSS). Non-nil only when the model's caches classify as
-    /// `.checkpoint` AND `DARKBLOOM_PREFIX_CACHE` is on (mutually exclusive
-    /// with the engine block tier, which serves pure-attention `.engine`
-    /// models). Looked up in `submit` to seed a request's `restoredCheckpoint`;
-    /// stored to via the scheduler's capture hook. nil ⇒ feature off for this
-    /// model (today's behavior).
+    /// `.checkpoint` AND the prefix cache is enabled (on by default; opt out
+    /// with `DARKBLOOM_PREFIX_CACHE=0`) — mutually exclusive with the engine
+    /// block tier, which serves pure-attention `.engine` models. Looked up in
+    /// `submit` to seed a request's `restoredCheckpoint`; stored to via the
+    /// scheduler's capture hook. nil ⇒ feature off for this model.
     var checkpointManager: PrefixCacheManager?
     /// Sliding-window-derived checkpoint boundaries for the current model.
     var checkpointBoundaries: [Int] = []
@@ -458,11 +458,11 @@ public actor BatchScheduler {
         architecture: ModelArchitecture,
         diskAccountant: GlobalDiskAccountant? = nil
     ) async -> EngineBuild {
-        // TB-007: the prefix cache is OFF by default. When the operator sets
-        // DARKBLOOM_PREFIX_CACHE we enable it with an ENCRYPTED-at-rest
-        // backend. This does NOT close the in-process cross-tenant sharing /
-        // TTFT side-channel, so it ships only behind this flag + a
-        // threat-model sign-off. See docs/ssd-kv-cache-design.md.
+        // TB-007: the prefix cache is ON by default (operator decision) with an
+        // ENCRYPTED-at-rest backend; opt out with DARKBLOOM_PREFIX_CACHE=0.
+        // Encryption does NOT close the in-process cross-tenant sharing / TTFT
+        // side-channel — untrusted multi-tenant deployments must opt out. See
+        // docs/ssd-kv-cache-design.md.
         //
         // Two mutually-exclusive tiers, selected by the model's cache types
         // (PrefixCacheStrategy): pure-attention (.engine) models use the
@@ -642,26 +642,38 @@ public actor BatchScheduler {
         let modelKey: String
     }
 
-    /// Build the shared encrypted-cache backing IFF the operator opted in via
-    /// `DARKBLOOM_PREFIX_CACHE`. Returns nil (cache stays off) when the flag
-    /// is unset, the model architecture is incomplete, or the persisted KEK
-    /// is unavailable (no Secure Enclave / entitlement) — in the last case we
-    /// refuse rather than use an ephemeral key that wouldn't survive restart.
+    /// Build the shared encrypted-cache backing. The prefix cache is ON BY
+    /// DEFAULT; an operator opts OUT via `DARKBLOOM_PREFIX_CACHE=0` (also
+    /// `false`/`off`/`no`). Returns nil (cache stays off) when explicitly
+    /// disabled, the model architecture is incomplete, or the persisted KEK is
+    /// unavailable (no Secure Enclave / entitlement) — in the last case we refuse
+    /// rather than use an ephemeral key that wouldn't survive restart.
     ///
-    /// SECURITY (TB-007): see makeBatchedEngine. The cache is bound to the
-    /// WEIGHT identity (`weightHash`) when known, not just the mutable model
-    /// id — a re-download under the same id with different weights must not
+    /// SECURITY (TB-007): the prefix cache shares KV prefixes across consumers
+    /// and the hit/miss TTFT difference is a cross-tenant timing side channel
+    /// that encryption-at-rest does NOT mitigate. It is now default-on per an
+    /// explicit operator decision; deployments that must not expose this channel
+    /// (untrusted multi-tenant) set `DARKBLOOM_PREFIX_CACHE=0`. The cache is bound
+    /// to the WEIGHT identity (`weightHash`) when known, not just the mutable
+    /// model id — a re-download under the same id with different weights must not
     /// serve stale KV. Falls back to modelId when no weight hash is available.
     private static func makePrefixCacheBackingIfEnabled(
         modelId: String,
         weightHash: String?,
         architecture: ModelArchitecture
     ) async -> PrefixCacheBacking? {
-        let env = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE"]
-        guard env == "1" || env?.lowercased() == "true" else { return nil }
+        // Default ON: only an explicit opt-out disables it.
+        let env = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE"]?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        let disabled = env == "0" || env == "false" || env == "off" || env == "no"
+        guard !disabled else {
+            prefixCacheLogger.info(
+                "DARKBLOOM_PREFIX_CACHE is OFF (explicit opt-out) — prefix cache disabled.")
+            return nil
+        }
 
         prefixCacheLogger.warning(
-            "DARKBLOOM_PREFIX_CACHE is ON — engine prefix cache enabled (TB-007: cross-tenant sharing / TTFT side-channel; encrypted-at-rest only)."
+            "Prefix cache is ON (default; opt out with DARKBLOOM_PREFIX_CACHE=0) — TB-007: cross-tenant sharing / TTFT side-channel; encrypted-at-rest only."
         )
 
         guard let numLayers = architecture.numLayers,
@@ -792,14 +804,14 @@ public actor BatchScheduler {
     /// no explicit `DARKBLOOM_PREFIX_CACHE_DISK_GB`. Deliberately a small
     /// FIXED cap, NOT a fraction of free space: the budget is PER MODEL (see
     /// docs / issue #266), so a "50% of free" default lets N models
-    /// collectively fill the disk. A fixed cap keeps "just set
-    /// DARKBLOOM_PREFIX_CACHE=1" safe out of the box for a low-churn /
-    /// few-model rollout (≈ N × 10 GB aggregate); operators raise it
-    /// explicitly when they have the headroom.
+    /// collectively fill the disk. A fixed cap keeps the default-on prefix cache
+    /// safe out of the box for a low-churn / few-model rollout (≈ N × 10 GB
+    /// aggregate); operators raise it explicitly when they have the headroom.
     static let defaultDiskBudgetBytes = 10 * 1_073_741_824
 
     /// On-disk budget for persisted prefix files. Operator override:
-    /// DARKBLOOM_PREFIX_CACHE_DISK_GB (0 = unlimited). Default = a fixed
+    /// DARKBLOOM_PREFIX_CACHE_DISK_GB — a positive value sets the cap; unset / 0 /
+    /// non-numeric falls back to the default (NOT unlimited). Default = a fixed
     /// 10 GB per model, clamped down to 50% of free space on a tight volume.
     static func prefixCacheDiskBudgetBytes(cacheDir: URL) -> Int {
         let envGB = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]

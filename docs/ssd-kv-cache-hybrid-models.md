@@ -336,6 +336,7 @@ path does not exist yet** — it must be built, carefully.
   through the actual serialize→deserialize→rebuild pipeline. Gated on
   `DARKBLOOM_LIVE_MLX_TESTS` + `_GEMMA`/`_GPTOSS`; skips cleanly in CI.
 
-**Feature complete** behind the default-off `DARKBLOOM_PREFIX_CACHE` flag,
-pending: the submodule PR merge, the TB-007 sign-off, and a run of the live
-gate on real weights.
+**Feature complete**, gated by `DARKBLOOM_PREFIX_CACHE` (default ON; opt out
+with `=0`). Pending: the submodule PR merge and a run of the live gate on real
+weights. Default-on reflects the operator's accepted TB-007 tradeoff — untrusted
+multi-tenant deployments must opt out.

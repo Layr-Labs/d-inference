@@ -687,7 +687,7 @@ public actor BatchScheduler {
         // survive restart. If unavailable, disable rather than fall back
         // to an ephemeral key (which would silently break restart-reuse).
         let kekKey: SymmetricKey
-        let kek: KVCacheKEK
+        var kek: KVCacheKEK
         do {
             let se = try PersistentEnclaveKey.loadOrCreate()
             kek = KVCacheKEK(
@@ -696,8 +696,31 @@ public actor BatchScheduler {
             )
             kekKey = try await kek.loadOrCreate()
         } catch {
-            prefixCacheLogger.warning("prefix cache disabled: KEK unavailable (\(String(describing: error)))")
-            return nil
+            // STRESS/TEST-ONLY escape hatch: an UNSIGNED build (no
+            // keychain-access-groups entitlement) can't reach the SE-wrapped KEK,
+            // so the cache would normally stay off. DARKBLOOM_PREFIX_CACHE_ALLOW_
+            // EPHEMERAL=1 lets such a build run the cache with a process-random
+            // in-memory KEK so the cache LOGIC can be exercised/soak-tested. The
+            // key does NOT persist across restart (files written this run become
+            // undecryptable next run — reconcile drops them), so this is unsafe
+            // for production reuse and MUST NOT be set on a signed deployment.
+            let ephEnv = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"]?
+                .lowercased() ?? ""
+            let allowEphemeral: Bool = (ephEnv == "1" || ephEnv == "true" || ephEnv == "yes" || ephEnv == "on")
+            guard allowEphemeral else {
+                prefixCacheLogger.warning("prefix cache disabled: KEK unavailable (\(String(describing: error)))")
+                return nil
+            }
+            prefixCacheLogger.warning(
+                "prefix cache: SE KEK unavailable (\(String(describing: error))) — using an EPHEMERAL in-memory KEK (DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL). TEST/STRESS ONLY: cache files do NOT survive restart; do not set this on a signed/production build.")
+            kek = KVCacheKEK(
+                wrapper: InMemoryKeyWrappingService(),
+                storage: InMemoryWrappedKEKStorage(identifier: "ephemeral-stress"))
+            guard let ephKey = try? await kek.loadOrCreate() else {
+                prefixCacheLogger.warning("prefix cache disabled: ephemeral KEK init failed")
+                return nil
+            }
+            kekKey = ephKey
         }
 
         // The on-disk directory is keyed by the MODEL id (stable across

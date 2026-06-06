@@ -81,8 +81,12 @@ shares the same on-disk format, crypto, and load-path guards as the block
 tier. See **[ssd-kv-cache-hybrid-models.md](ssd-kv-cache-hybrid-models.md)**
 for the full capture/restore design and verification.
 
-The pieces actually on the live path are `EncryptedKVStore` +
-`KVCacheSerializer` + `KVCacheKEK` + `EncryptedPrefixCachePersistence`.
+The shared primitives on the live path are `EncryptedKVStore` +
+`KVCacheSerializer` + `KVCacheKEK`. The engine tier reaches them via
+`EncryptedPrefixCachePersistence` (pure-attention models); the checkpoint tier
+via `PrefixCacheManager` + `PrefixCacheIndex` + `PrefixCacheRAM` (hybrid
+sliding-window models). Both tiers are wired into `BatchScheduler` behind the
+flag — which tier a model uses is decided by `PrefixCacheStrategy.classify`.
 
 ---
 

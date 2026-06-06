@@ -207,6 +207,11 @@ logit-equivalence test passes on both.
 
 ## 6. Implementation steps (each behind a quality gate)
 
+> **STATUS: all steps below are DONE and wired** (see the per-step DONE markers
+> in §8). This section is the original roadmap, kept for design context; it is
+> not a list of pending work. In particular step 5 (`PrefixCacheManager` →
+> `BatchScheduler`) is complete.
+
 1. **Capability classifier** (pure, unit-tested): `[any KVCache] → {engine,
    checkpoint, none}`. No behavior change yet.
 2. **Boundary derivation** from sliding window (pure, unit-tested).

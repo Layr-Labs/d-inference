@@ -1115,6 +1115,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			refundReservation()
 			return
 		}
+	} else if policy.prefer {
+		// Prefer mode: SKIP the public fleet pre-flight. QuickCapacityCheck has
+		// no owner-trust relaxation, so it would spuriously 429/503 a request
+		// whose own (idle, possibly un-enrolled / private-only) machine could
+		// serve it while the public fleet is busy. Dispatch does owned-first
+		// routing with a paid public fallback and the normal queue, which is the
+		// correct gate for prefer.
 	} else {
 		// Pre-flight capacity check: can ANY provider serve this model right
 		// now? If not, return 429 immediately rather than queueing for up to
@@ -4045,6 +4052,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundReservation()
 			return
 		}
+	} else if policy.prefer {
+		// Prefer mode skips the public fleet pre-flight (no owner-trust
+		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
 		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {

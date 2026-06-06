@@ -2159,7 +2159,35 @@ extension ProviderLoop {
                 log.error("local endpoint server failed: \(error.localizedDescription)")
             }
         }
-        logger.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
+        // Verify the bind actually succeeded and warn loudly if not. A port clash
+        // leaves COORDINATOR serving fully intact (we deliberately do not kill the
+        // provider for a local-endpoint failure), but the local endpoint would
+        // otherwise be silently unavailable — so make it operator-visible.
+        let probeHost = cfg.host == "0.0.0.0" ? "127.0.0.1" : cfg.host
+        let probePort = cfg.port
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard self != nil else { return }
+            if await Self.localEndpointHealthy(host: probeHost, port: probePort) {
+                log.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
+            } else {
+                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
+            }
+        }
+    }
+
+    /// Probe the local endpoint's /health to confirm the socket is accepting
+    /// connections. Returns true on any HTTP response within the timeout.
+    private static func localEndpointHealthy(host: String, port: UInt16, timeout: TimeInterval = 2.0) async -> Bool {
+        guard let url = URL(string: "http://\(host):\(port)/health") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return response is HTTPURLResponse
+        } catch {
+            return false
+        }
     }
 
     /// Stop the local endpoint server, if running.

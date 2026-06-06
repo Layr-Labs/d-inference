@@ -1324,7 +1324,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Log missing payout destination but don't skip — earnings
 			// are credited to the provider's internal ledger and can be
 			// withdrawn once they complete Stripe Connect onboarding.
-			if s.billing != nil && !policy.enabled && !providerHasPayoutDestination(provider) {
+			// A queued request settles FREE when its drained provider is the
+			// caller's own machine: exclusive self-route always, OR a prefer
+			// request whose selected provider is owned (settlement refunds to
+			// zero). Skip the payout warning and the custom-price top-up then
+			// (the top-up could otherwise 429 the free owned route).
+			queuedSettlesFree := policy.enabled
+			if !queuedSettlesFree && policy.prefer {
+				provider.Mu().Lock()
+				queuedSettlesFree = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
+				provider.Mu().Unlock()
+			}
+
+			if s.billing != nil && !queuedSettlesFree && !providerHasPayoutDestination(provider) {
 				s.logger.Warn("queued provider missing payout destination, crediting to internal ledger",
 					"request_id", requestID,
 					"provider_id", provider.ID,
@@ -1334,7 +1346,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Custom pricing check — provider may charge more than the
 			// platform rate. Reserve the additional amount now. Skipped for
 			// free self-route, which settles at zero cost.
-			if s.billing != nil && !policy.enabled {
+			if s.billing != nil && !queuedSettlesFree {
 				if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 					provider.RemovePending(requestID)
 					s.registry.SetProviderIdle(provider.ID)
@@ -4159,14 +4171,25 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			break
 		}
 
-		if s.billing != nil && !policy.enabled && !providerHasPayoutDestination(provider) {
+		// Settles FREE when served by the caller's own machine: exclusive
+		// self-route always, or a prefer request whose selected provider is owned
+		// (settlement refunds to zero). Skip the payout warning + custom-price
+		// top-up then (the top-up could otherwise 429 the free owned route).
+		settlesFree := policy.enabled
+		if !settlesFree && policy.prefer {
+			provider.Mu().Lock()
+			settlesFree = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
+			provider.Mu().Unlock()
+		}
+
+		if s.billing != nil && !settlesFree && !providerHasPayoutDestination(provider) {
 			s.logger.Warn("provider missing payout destination, crediting to internal ledger",
 				"provider_id", provider.ID)
 		}
 
 		// Custom pricing check — provider may charge more than the platform
-		// rate. Skipped for free self-route, which settles at zero cost.
-		if s.billing != nil && !policy.enabled {
+		// rate. Skipped for free (owned) requests, which settle at zero cost.
+		if s.billing != nil && !settlesFree {
 			if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
@@ -4255,12 +4278,21 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	defer cleanupPending()
-	if s.billing != nil && !policy.enabled && !providerHasPayoutDestination(provider) {
+	// Settles FREE when served by the caller's own machine (exclusive self-route,
+	// or a prefer request whose selected provider is owned — settlement refunds
+	// to zero). Skip the payout warning + custom-price top-up then.
+	settlesFreeDirect := policy.enabled
+	if !settlesFreeDirect && policy.prefer {
+		provider.Mu().Lock()
+		settlesFreeDirect = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
+		provider.Mu().Unlock()
+	}
+	if s.billing != nil && !settlesFreeDirect && !providerHasPayoutDestination(provider) {
 		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
 			"provider_id", provider.ID)
 	}
-	// Free self-route settles at zero cost — no provider-price top-up.
-	if s.billing != nil && !policy.enabled {
+	// Free (owned) requests settle at zero cost — no provider-price top-up.
+	if s.billing != nil && !settlesFreeDirect {
 		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 			cleanupPending()
 			refundExtra()

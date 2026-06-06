@@ -562,14 +562,15 @@ export async function streamChat(
     try {
       const errData = JSON.parse(text);
       const msg = errData?.error?.message || text;
-      // Self-route ("My Machine") specific errors map to actionable copy. The
-      // coordinator never falls back to paid providers for these, so the
-      // messaging is explicit rather than a generic retry.
+      // Strict free-only self-route errors (from a `self_route_only` API key)
+      // map to actionable copy. These only occur on the exclusive free-only
+      // path, which never falls back to paid providers — the "My Machine" chat
+      // toggle uses `prefer` and falls back, so it won't produce these codes.
       const code = errData?.error?.code as string | undefined;
       if (code === "no_linked_machine") {
         callbacks.onError("No machine linked to your account — run `darkbloom login` on your Mac, then try again.");
       } else if (code === "machine_offline") {
-        callbacks.onError("Your machine is offline — start your Darkbloom node and try again. (My Machine never falls back to paid providers.)");
+        callbacks.onError("Your machine is offline — start your Darkbloom node and try again. (Free-only self-route won't fall back to the paid network.)");
       } else if (code === "model_not_loaded") {
         callbacks.onError("This model isn't loaded on your machine — load it on your node, then try again.");
       } else if (code === "machine_busy") {

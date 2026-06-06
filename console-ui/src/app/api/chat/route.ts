@@ -13,8 +13,9 @@ export async function POST(req: NextRequest) {
   const apiKey = req.headers.get("x-api-key") || "";
   const incomingCt = req.headers.get("content-type") || "application/json";
   const isSealed = incomingCt.toLowerCase().startsWith(SEALED_CT);
-  // "Use my machine, for free" opt-in. Forwarded verbatim to the coordinator,
-  // which honors it server-side; it never enters the request body.
+  // "Use my machine" routing opt-in (X-Darkbloom-Route: self | prefer).
+  // Forwarded verbatim to the coordinator, which honors it server-side; it
+  // never enters the request body.
   const selfRoute = req.headers.get("x-darkbloom-route") || "";
 
   // Forward the body bytes verbatim. For plaintext we keep the existing

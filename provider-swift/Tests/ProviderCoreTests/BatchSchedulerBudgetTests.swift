@@ -325,4 +325,37 @@ struct BatchSchedulerBudgetTests {
         #expect(await kvBudget.outstandingReservedBytes() == 0,
             "the cancelled request's KV reservation must be released, not leaked")
     }
+
+    /// Regression for the LATE-reservation leak: cancel can drop the bridge
+    /// BEFORE the submit task reserves KV (cancel fires during planner.admit;
+    /// the resumed submit then calls kvBudget.reserve). The bail-path cleanup
+    /// (releaseRequestResources, invoked by confirmEnqueuedOrAbort) must release
+    /// that reservation even though the bridge is already gone — dropBridge alone
+    /// no-ops in that case (it guards on bridge-present), leaking the bytes.
+    /// Revert-guard: drop the unconditional releaseKVReservation from
+    /// releaseRequestResources and outstandingReservedBytes stays > 0 → fails.
+    @Test("late KV reservation is released when the bridge was already cancelled")
+    func lateKVReservationReleasedAfterCancel() async {
+        let kvBudget = GlobalKVCacheBudget()
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
+
+        // 1. Bridge seeded (submit past the cumulative gate), no KV reserved yet.
+        await scheduler._testSeedBridge(id: "r1", promptTokens: 100, maxTokens: 100)
+        // 2. Cancel fires while submit is suspended in planner.admit: drops the
+        //    bridge; the KV release inside it is a no-op (nothing reserved yet).
+        await scheduler.cancel(requestId: "r1")
+        #expect(await scheduler._bridgeIsActiveForTest("r1") == false, "bridge dropped by cancel")
+        // 3. Submit RESUMES and reserves KV for the (already-cancelled) request.
+        let reserved = await kvBudget.reserve(requestID: "r1", kvBytesPerToken: 1024, tokenCount: 200)
+        #expect(reserved, "the resumed submit reserves KV after the cancel")
+        #expect(await kvBudget.outstandingReservedBytes() > 0, "reservation now live")
+
+        // 4. confirmEnqueuedOrAbort sees the missing bridge and bails via
+        //    releaseRequestResources — which must release the late reservation.
+        await scheduler.releaseRequestResources("r1")
+
+        #expect(await kvBudget.outstandingReservedBytes() == 0,
+            "the late KV reservation must be released on the bail path (dropBridge alone no-ops)")
+    }
 }

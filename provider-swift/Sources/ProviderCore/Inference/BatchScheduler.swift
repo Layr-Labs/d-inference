@@ -383,7 +383,8 @@ public actor BatchScheduler {
     ///
     /// In either case abort the just-added request on the engine we added to
     /// (removes it from the scheduler and delivers a terminal output to unblock
-    /// any stream) and drop the bridge. Returns true iff safe to runBridge.
+    /// any stream) and release this request's resources. Returns true iff safe
+    /// to runBridge.
     private func confirmEnqueuedOrAbort(
         requestId: String, capturedEpoch: UInt64, capturedEngine: BatchedEngine
     ) async -> Bool {
@@ -391,10 +392,28 @@ public actor BatchScheduler {
         let bridgeDropped = activeBridges[requestId] == nil
         if !superseded && !bridgeDropped { return true }
         _ = capturedEngine.core.abortRequest(requestId)
-        // dropBridge is idempotent: a no-op if the cancel/timeout path already
-        // removed this id, otherwise releases KV + cancels the planner entry.
-        await dropBridge(requestId: requestId)
+        await releaseRequestResources(requestId)
         return false
+    }
+
+    /// Release everything a request holds, regardless of how far submit got.
+    /// dropBridge handles the normal case (bridge still present → removes it,
+    /// releases KV, cancels the planner, refreshes the summary), but it guards
+    /// ALL of that behind "bridge was present", so it's a full no-op when the
+    /// cancel/timeout path already removed the bridge — and that path can run
+    /// BEFORE this submit reserved KV (cancel fires during planner.admit; the
+    /// resumed submit then reserves at kvBudget.reserve). That late reservation
+    /// would otherwise leak. So also release KV + cancel the planner entry
+    /// UNCONDITIONALLY (both are idempotent: release/cancel on an unknown id is a
+    /// no-op). Safe to call whether or not the bridge is still present.
+    /// `internal` (not `private`) so the leak regression test can drive it
+    /// directly — the full submit→cancel→resume interleaving needs a live engine.
+    func releaseRequestResources(_ requestId: String) async {
+        await dropBridge(requestId: requestId)
+        await releaseKVReservation(requestID: requestId)
+        if let planner = self.planner {
+            _ = await planner.cancel(requestID: requestId)
+        }
     }
 
     /// TEST SEAM: install a checkpoint manager + capture hook onto the live

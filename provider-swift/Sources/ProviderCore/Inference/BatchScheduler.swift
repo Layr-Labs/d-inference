@@ -1009,8 +1009,11 @@ public actor BatchScheduler {
         // Re-check the engine is still the one we captured (a reload/
         // unload may have run during the awaits above). Enqueuing onto a stopped/
         // superseded engine hangs the request or runs it on the wrong model.
+        // Use releaseRequestResources (not bare dropBridge): a cancel/timeout
+        // could have dropped the bridge during planner.admit BEFORE we reserved
+        // KV above, so dropBridge alone would no-op and leak the reservation.
         guard engineStillCurrent(submitEpoch, engine) else {
-            await dropBridge(requestId: id)
+            await releaseRequestResources(id)
             continuation.yield(.error("model reloaded during submit; please retry"))
             continuation.finish()
             return stream
@@ -1160,8 +1163,11 @@ public actor BatchScheduler {
         )
         await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
         // Re-check the captured engine is still current after the awaits.
+        // releaseRequestResources (not bare dropBridge): a cancel/timeout during
+        // planner.admit could have dropped the bridge BEFORE we reserved KV, so
+        // dropBridge alone would no-op and leak the reservation made above.
         guard engineStillCurrent(submitEpoch, engine) else {
-            await dropBridge(requestId: id)
+            await releaseRequestResources(id)
             continuation.yield(.error("model reloaded during submit; please retry"))
             continuation.finish()
             return stream

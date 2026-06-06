@@ -143,7 +143,7 @@ export async function verifyCertificateChain(
   const steps: VerificationStep[] = [
     { status: "pending", label: "Parsing certificate chain" },
     { status: "pending", label: "Extracting device identity" },
-    { status: "pending", label: "Verifying intermediate certificate" },
+    { status: "pending", label: "Verifying certificate chain links" },
     { status: "pending", label: "Verifying root CA fingerprint" },
     { status: "pending", label: "Confirming Apple device attestation" },
   ];
@@ -197,42 +197,14 @@ export async function verifyCertificateChain(
       : leafCN || "Device certificate parsed";
     notify();
 
-    // Step 3: Verify intermediate signed the leaf
+    // Step 3: Verify every adjacent pair in the chain: certs[i] signed by certs[i+1].
+    // Checking only leaf→certs[1] is insufficient — a forged chain like
+    // [forged_leaf, attacker_CA, Apple_root] would pass the leaf check and
+    // the root fingerprint check without verifying attacker_CA→Apple_root.
     steps[2].status = "running";
     notify();
 
-    if (intermediate) {
-      try {
-        const verified = await leaf.verify(intermediate);
-        if (verified) {
-          steps[2].status = "success";
-          const intermediateCN = extractCN(intermediate.subject);
-          steps[2].detail = `Signed by ${intermediateCN || "Apple Intermediate CA"}`;
-        } else {
-          steps[2].status = "error";
-          steps[2].detail = "Signature verification failed";
-          notify();
-          return {
-            success: false,
-            steps,
-            deviceInfo,
-            error: "Intermediate CA signature verification failed",
-          };
-        }
-      } catch (verifyErr) {
-        // Don't silently succeed — if verify() threw, we can't confirm the signature.
-        // Fall through to chain validation in Step 4 which does fingerprint-based checks.
-        steps[2].status = "error";
-        steps[2].detail = `Signature check inconclusive: ${verifyErr instanceof Error ? verifyErr.message : "unknown error"}`;
-        notify();
-        return {
-          success: false,
-          steps,
-          deviceInfo,
-          error: "Could not verify leaf certificate signature",
-        };
-      }
-    } else {
+    if (certs.length < 2) {
       steps[2].status = "error";
       steps[2].detail = "No intermediate certificate";
       notify();
@@ -243,6 +215,41 @@ export async function verifyCertificateChain(
         error: "Missing intermediate certificate",
       };
     }
+
+    for (let i = 0; i < certs.length - 1; i++) {
+      const subject = certs[i];
+      const issuer = certs[i + 1];
+      try {
+        const verified = await subject.verify(issuer);
+        if (!verified) {
+          steps[2].status = "error";
+          const subjCN = extractCN(subject.subject) || `cert[${i}]`;
+          const issuerCN = extractCN(issuer.subject) || `cert[${i + 1}]`;
+          steps[2].detail = `Signature verification failed: ${subjCN} not signed by ${issuerCN}`;
+          notify();
+          return {
+            success: false,
+            steps,
+            deviceInfo,
+            error: `Certificate chain broken at link ${i}→${i + 1}`,
+          };
+        }
+      } catch (verifyErr) {
+        steps[2].status = "error";
+        const subjCN = extractCN(subject.subject) || `cert[${i}]`;
+        steps[2].detail = `Signature check failed for ${subjCN}: ${verifyErr instanceof Error ? verifyErr.message : "unknown error"}`;
+        notify();
+        return {
+          success: false,
+          steps,
+          deviceInfo,
+          error: `Could not verify certificate chain at link ${i}→${i + 1}`,
+        };
+      }
+    }
+
+    steps[2].status = "success";
+    steps[2].detail = `All ${certs.length - 1} chain link${certs.length > 2 ? "s" : ""} verified`;
     notify();
 
     // Step 4: Verify root CA fingerprint

@@ -200,6 +200,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS allowed_models TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS self_route_only BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		// Backfill stable IDs for legacy rows (deterministic from the hash so
 		// it is stable across restarts and idempotent).
 		`UPDATE api_keys SET id = 'key_' || substr(md5(key_hash), 1, 24) WHERE id IS NULL OR id = ''`,
@@ -658,6 +659,28 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_log_reports_serial ON provider_log_reports(serial_number, created_at DESC)`,
+
+		// Provider sessions — durable connect→disconnect history for uptime/downtime.
+		// One row per websocket connection; disconnected_at IS NULL while open.
+		// session_id is UNIQUE so the async open/close paths are order-independent
+		// (open = INSERT ON CONFLICT DO NOTHING; close = upsert) — a fast
+		// connect→disconnect where close races ahead of open cannot leave a
+		// permanently-open row.
+		`CREATE TABLE IF NOT EXISTS provider_sessions (
+			id BIGSERIAL PRIMARY KEY,
+			session_id TEXT NOT NULL UNIQUE,
+			serial_number TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			disconnected_at TIMESTAMPTZ,
+			disconnect_reason TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_serial ON provider_sessions(serial_number, connected_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_connected ON provider_sessions(connected_at DESC)`,
+		// Partial index over still-open sessions — speeds the online-now count and
+		// the startup reconcile. (session_id lookups use the UNIQUE index.)
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_open ON provider_sessions(connected_at) WHERE disconnected_at IS NULL`,
 	}
 
 	for _, m := range migrations {
@@ -678,7 +701,7 @@ func hashKey(key string) string {
 // an APIKey via scanAPIKeyRow.
 const apiKeyColumns = `id, owner_account_id, name, raw_prefix, key_hash, active,
 	limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
-	allowed_models, expires_at, created_at, last_used_at`
+	allowed_models, expires_at, created_at, last_used_at, self_route_only`
 
 // rowScanner is satisfied by both pgx.Row and pgx.Rows.
 type rowScanner interface {
@@ -700,7 +723,7 @@ func scanAPIKeyRow(row rowScanner) (*APIKey, error) {
 	)
 	if err := row.Scan(&k.ID, &k.OwnerAccountID, &k.Name, &k.Label, &k.KeyHash, &active,
 		&limit, &k.LimitReset, &rpm, &itpm, &otpm,
-		&allowed, &expiresAt, &k.CreatedAt, &lastUsedAt); err != nil {
+		&allowed, &expiresAt, &k.CreatedAt, &lastUsedAt, &k.SelfRouteOnly); err != nil {
 		return nil, err
 	}
 	k.Disabled = !active
@@ -747,15 +770,15 @@ func (s *PostgresStore) insertAPIKey(ctx context.Context, rec *APIKey, onConflic
 	q := `INSERT INTO api_keys
 		(id, key_hash, raw_prefix, owner_account_id, name, active,
 		 limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
-		 allowed_models, expires_at, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
+		 allowed_models, expires_at, created_at, self_route_only)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
 	if onConflictDoNothing {
 		q += ` ON CONFLICT (key_hash) DO NOTHING`
 	}
 	_, err := s.pool.Exec(ctx, q,
 		rec.ID, rec.KeyHash, rec.Label, rec.OwnerAccountID, rec.Name, !rec.Disabled,
 		rec.LimitMicroUSD, NormalizeResetWindow(rec.LimitReset), rec.RPMLimit, rec.ITPMLimit, rec.OTPMLimit,
-		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt,
+		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt, rec.SelfRouteOnly,
 	)
 	return err
 }
@@ -795,6 +818,7 @@ func (s *PostgresStore) CreateAPIKey(accountID string, opts APIKeyCreate) (strin
 		ITPMLimit:      opts.ITPMLimit,
 		OTPMLimit:      opts.OTPMLimit,
 		AllowedModels:  opts.AllowedModels,
+		SelfRouteOnly:  opts.SelfRouteOnly,
 		ExpiresAt:      opts.ExpiresAt,
 		CreatedAt:      time.Now().UTC(),
 	}
@@ -955,11 +979,11 @@ func (s *PostgresStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*API
 		`UPDATE api_keys SET
 			name = $1, active = $2, limit_micro_usd = $3, limit_reset = $4,
 			rpm_limit = $5, itpm_limit = $6, otpm_limit = $7,
-			allowed_models = $8, expires_at = $9
-		 WHERE id = $10 AND owner_account_id = $11`,
+			allowed_models = $8, expires_at = $9, self_route_only = $10
+		 WHERE id = $11 AND owner_account_id = $12`,
 		mutable.Name, !mutable.Disabled, mutable.LimitMicroUSD, NormalizeResetWindow(mutable.LimitReset),
 		mutable.RPMLimit, mutable.ITPMLimit, mutable.OTPMLimit,
-		encodeModelList(mutable.AllowedModels), mutable.ExpiresAt,
+		encodeModelList(mutable.AllowedModels), mutable.ExpiresAt, mutable.SelfRouteOnly,
 		id, accountID,
 	)
 	if err != nil {
@@ -1028,6 +1052,7 @@ func (s *PostgresStore) RotateAPIKey(accountID, id string) (string, *APIKey, err
 		ITPMLimit:      old.ITPMLimit,
 		OTPMLimit:      old.OTPMLimit,
 		AllowedModels:  old.AllowedModels,
+		SelfRouteOnly:  old.SelfRouteOnly,
 		ExpiresAt:      old.ExpiresAt,
 		CreatedAt:      time.Now().UTC(),
 	}
@@ -1035,11 +1060,11 @@ func (s *PostgresStore) RotateAPIKey(accountID, id string) (string, *APIKey, err
 		`INSERT INTO api_keys
 			(id, key_hash, raw_prefix, owner_account_id, name, active,
 			 limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
-			 allowed_models, expires_at, created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			 allowed_models, expires_at, created_at, self_route_only)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		rec.ID, rec.KeyHash, rec.Label, rec.OwnerAccountID, rec.Name, !rec.Disabled,
 		rec.LimitMicroUSD, rec.LimitReset, rec.RPMLimit, rec.ITPMLimit, rec.OTPMLimit,
-		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt,
+		encodeModelList(rec.AllowedModels), rec.ExpiresAt, rec.CreatedAt, rec.SelfRouteOnly,
 	); err != nil {
 		return "", nil, fmt.Errorf("store: insert rotated key: %w", err)
 	}
@@ -3566,4 +3591,81 @@ func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
 		return nil, fmt.Errorf("store: log report %d not found: %w", id, err)
 	}
 	return &r, nil
+}
+
+// OpenProviderSession records the start of a provider connection. Idempotent:
+// ON CONFLICT DO NOTHING so a duplicate register, or an open that races behind a
+// close (fast connect→disconnect), never creates a second or reopened row.
+func (s *PostgresStore) OpenProviderSession(ctx context.Context, sessionID, serial, accountID string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_sessions (session_id, serial_number, account_id)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (session_id) DO NOTHING`,
+		sessionID, serial, accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: open provider session: %w", err)
+	}
+	return nil
+}
+
+// TouchProviderSession updates the open session's last_seen and backfills
+// serial/account if they were unknown at open time.
+func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, serial, accountID string, lastSeen time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_sessions
+		    SET last_seen = $2,
+		        serial_number = CASE WHEN serial_number = '' THEN $3 ELSE serial_number END,
+		        account_id    = CASE WHEN account_id = ''    THEN $4 ELSE account_id    END
+		  WHERE session_id = $1 AND disconnected_at IS NULL`,
+		sessionID, lastSeen, serial, accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: touch provider session: %w", err)
+	}
+	return nil
+}
+
+// CloseProviderSession marks the session for sessionID as ended. Implemented as
+// an upsert so it is correct regardless of whether the async OpenProviderSession
+// has landed yet: if the row is missing (close raced ahead of open on a fast
+// connect→disconnect) it inserts an already-closed row; if open, it closes it;
+// if already closed, it leaves the original disconnect timestamp/reason intact.
+func (s *PostgresStore) CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_sessions (session_id, connected_at, last_seen, disconnected_at, disconnect_reason)
+		 VALUES ($1, $3, $3, $3, $2)
+		 ON CONFLICT (session_id) DO UPDATE
+		    SET disconnected_at = COALESCE(provider_sessions.disconnected_at, EXCLUDED.disconnected_at),
+		        disconnect_reason = CASE WHEN provider_sessions.disconnected_at IS NULL
+		                                 THEN EXCLUDED.disconnect_reason
+		                                 ELSE provider_sessions.disconnect_reason END`,
+		sessionID, reason, when,
+	)
+	if err != nil {
+		return fmt.Errorf("store: close provider session: %w", err)
+	}
+	return nil
+}
+
+// CloseOpenProviderSessions closes open sessions whose last heartbeat predates
+// staleBefore (orphaned by a prior coordinator process), setting disconnected_at
+// to the last heartbeat seen. The last_seen < staleBefore fence prevents a
+// blue-green deploy from truncating a session still live (and being touched) on
+// the old instance over the shared DB — its last_seen stays fresh.
+//
+// Note: crash-path disconnected_at granularity is bounded by how often last_seen
+// advances. Heartbeats touch it (TouchProviderSession), so the recorded
+// disconnect can lag the true last-seen by at most the heartbeat interval.
+func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefore time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE provider_sessions
+		    SET disconnected_at = last_seen, disconnect_reason = 'coordinator_restart'
+		  WHERE disconnected_at IS NULL AND last_seen < $1`,
+		staleBefore,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: close open provider sessions: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }

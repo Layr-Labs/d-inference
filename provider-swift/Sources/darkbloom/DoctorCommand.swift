@@ -29,10 +29,28 @@ struct Doctor: AsyncParsableCommand {
             coordinatorOverride: coordinator
         ))
 
-        print("darkbloom doctor")
+        // Operator-facing diagnosis: trust reason, SE key, model fit, runtime,
+        // billing, version — the "why am I / aren't I earning?" answers.
+        let diagnosis = await DoctorRunner.buildOperatorDiagnosis(
+            snapshot: snapshot,
+            coordinatorURL: coordinator ?? snapshot.config.coordinator.url
+        )
+
+        print("darkbloom doctor \(ProviderCore.version)")
         print("Config: \(describeConfigPath(snapshot))")
+        let daemonState = DaemonStateFile.read()
+        let daemonRunning = daemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false
+        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
+
+        // The high-signal diagnosis first (sectioned, with fixes).
+        let rendered = DiagnosticReportRenderer.render(diagnosis)
+        if !rendered.isEmpty { print(rendered) }
+
+        // Then the detailed low-level checks.
+        print("")
+        print("DETAILED CHECKS")
         for check in checks {
-            print("\(check.status.marker) \(check.name): \(check.detail)")
+            print("  \(check.status.marker) \(check.name): \(check.detail)")
         }
         if support {
             print("")
@@ -45,7 +63,9 @@ struct Doctor: AsyncParsableCommand {
         }
 
         let hasFailure = checks.contains { $0.status == .fail }
+            || diagnosis.contains { $0.level == .fail }
         let hasWarning = checks.contains { $0.status == .warn }
+            || diagnosis.contains { $0.level == .warn }
 
         if hasFailure || (strict && hasWarning) {
             throw ExitCode.failure

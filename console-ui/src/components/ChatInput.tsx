@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, ChevronDown, LogIn } from "lucide-react";
+import { Send, Square, ChevronDown, LogIn, Cpu } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { trackEvent } from "@/lib/google-analytics";
 
@@ -16,7 +16,7 @@ interface ChatInputProps {
 export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, onLogin }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { selectedModel, models, setSelectedModel } = useStore();
+  const { selectedModel, models, setSelectedModel, useMyMachine, setUseMyMachine } = useStore();
   const [modelOpen, setModelOpen] = useState(false);
 
   const handleSend = useCallback(() => {
@@ -149,6 +149,31 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                   </div>
                 )}
               </div>
+
+              {/* My Machine (prefer self-route, paid fallback) toggle */}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !useMyMachine;
+                  setUseMyMachine(next);
+                  trackEvent("self_route_toggled", { enabled: next });
+                }}
+                title={
+                  useMyMachine
+                    ? "Prefer your own machine (free when it serves). If it's offline or busy, this falls back to the paid network so you're never stuck."
+                    : "Prefer a Darkbloom node you run (free when it serves); falls back to the paid network if it can't"
+                }
+                aria-pressed={useMyMachine}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border-2 transition-all ${
+                  useMyMachine
+                    ? "text-teal bg-teal/10 border-teal/40 font-semibold"
+                    : "text-text-tertiary border-transparent hover:text-text-secondary hover:bg-bg-hover hover:border-border-subtle"
+                }`}
+              >
+                <Cpu size={12} />
+                <span className="hidden sm:inline">My Machine</span>
+                {useMyMachine && <span className="text-[10px] opacity-80">· Free, else paid</span>}
+              </button>
             </div>
 
             {/* Right: Send / Stop */}

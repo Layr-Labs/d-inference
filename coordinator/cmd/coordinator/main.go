@@ -119,6 +119,26 @@ func main() {
 		})
 	}
 
+	// Reconcile provider sessions left open by a previous coordinator process
+	// (durable uptime history). Best-effort + time-bounded — neither an error nor
+	// a slow/unresponsive DB must block startup. Only sessions whose last
+	// heartbeat is older than the staleness fence are closed, so a blue-green
+	// cutover over the shared DB does NOT truncate sessions still live (and being
+	// touched every heartbeat) on the old instance — only genuinely-orphaned rows
+	// from a dead prior process age past the fence and get closed.
+	func() {
+		rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
+		defer rcancel()
+		// 3 min comfortably exceeds the 30s heartbeat and 90s eviction window, so
+		// any session live on another instance stays fresh; orphans do not.
+		staleBefore := time.Now().Add(-3 * time.Minute)
+		if n, err := st.CloseOpenProviderSessions(rctx, staleBefore); err != nil {
+			logger.Warn("failed to reconcile open provider sessions", "error", err)
+		} else if n > 0 {
+			logger.Info("reconciled orphaned provider sessions", "closed", n)
+		}
+	}()
+
 	reg := registry.New(logger)
 
 	// Set minimum trust level for routing.

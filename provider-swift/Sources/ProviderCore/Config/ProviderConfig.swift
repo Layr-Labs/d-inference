@@ -98,21 +98,28 @@ public struct BackendSettings: Sendable, Equatable, Codable {
 public struct CoordinatorSettings: Sendable, Equatable, Codable {
     public var url: String
     public var heartbeatIntervalSecs: UInt64
+    /// When true, register this machine as private-only: the coordinator serves
+    /// it exclusively to the owner's own ("My Machine") requests, never the
+    /// public fleet. Set `private_only = true` under `[coordinator]` in config.
+    public var privateOnly: Bool
 
-    public init(url: String = "wss://api.darkbloom.dev/ws/provider", heartbeatIntervalSecs: UInt64 = 5) {
+    public init(url: String = "wss://api.darkbloom.dev/ws/provider", heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
         self.url = url
         self.heartbeatIntervalSecs = heartbeatIntervalSecs
+        self.privateOnly = privateOnly
     }
 
     enum CodingKeys: String, CodingKey {
         case url
         case heartbeatIntervalSecs = "heartbeat_interval_secs"
+        case privateOnly = "private_only"
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? "wss://api.darkbloom.dev/ws/provider"
         self.heartbeatIntervalSecs = try container.decodeIfPresent(UInt64.self, forKey: .heartbeatIntervalSecs) ?? 5
+        self.privateOnly = try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false
     }
 }
 

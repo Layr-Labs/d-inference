@@ -48,11 +48,15 @@ public struct StandaloneServerConfig: Sendable {
     public let port: UInt16
     public let host: String
     public let maxCachedModels: Int
+    /// Bearer token required on every inference route (direct/local mode).
+    /// nil = no auth (library default / explicit `--no-auth`).
+    public let authToken: String?
 
-    public init(port: UInt16 = 8000, host: String = "127.0.0.1", maxCachedModels: Int = 3) {
+    public init(port: UInt16 = 8000, host: String = "127.0.0.1", maxCachedModels: Int = 3, authToken: String? = nil) {
         self.port = port
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
+        self.authToken = authToken
     }
 }
 
@@ -86,6 +90,12 @@ public actor StandaloneServer {
     private let kvBudget: GlobalKVCacheBudget
     /// Phase 3: global disk accountant (process-wide, shared across models).
     private let diskAccountant: GlobalDiskAccountant
+    /// Bind status, set by Hummingbird's onServerRunning (success) or the server
+    /// task's catch (failure). `waitUntilBound` reads these — the authoritative
+    /// "did WE bind the port" signal, not an HTTP probe a foreign process on the
+    /// same port could answer.
+    private var didBind = false
+    private var bindFailed = false
 
     public init(
         config: StandaloneServerConfig = StandaloneServerConfig(),
@@ -145,14 +155,38 @@ public actor StandaloneServer {
         let app = makeApplication()
         serverTask = Task {
             do {
-                standaloneLogger.info("Standalone server listening on \(self.config.host):\(self.config.port)")
                 try await app.runService(gracefulShutdownSignals: [])
             } catch is CancellationError {
                 standaloneLogger.info("Standalone server cancelled")
             } catch {
-                standaloneLogger.error("Standalone server failed: \(error.localizedDescription)")
+                standaloneLogger.error("Standalone server failed to bind \(self.config.host):\(self.config.port): \(error.localizedDescription)")
+                await self.markBindFailed()
             }
         }
+    }
+
+    /// Called by Hummingbird's onServerRunning once the socket is actually bound.
+    func markBound() {
+        didBind = true
+        standaloneLogger.info("Standalone server listening on \(self.config.host):\(self.config.port)")
+    }
+
+    private func markBindFailed() {
+        bindFailed = true
+    }
+
+    /// Wait until the server has confirmed it bound the port (true) or failed /
+    /// timed out (false). Polls the actor flags set by onServerRunning / the
+    /// server task — never an HTTP probe, so a foreign process holding the port
+    /// can't produce a false positive.
+    public func waitUntilBound(timeoutSeconds: Double = 5.0) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(timeoutSeconds))
+        while ContinuousClock.now < deadline {
+            if didBind { return true }
+            if bindFailed || serverTask == nil { return false }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return didBind
     }
 
     /// Stop the server.

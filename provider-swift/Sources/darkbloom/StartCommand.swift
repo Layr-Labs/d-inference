@@ -34,11 +34,28 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Run a local OpenAI-compatible HTTP server only; do not connect to the coordinator.")
     var local = false
 
-    @Option(help: "Local server port (used with --local).")
+    @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients.")
+    var localEndpoint = false
+
+    @Option(help: "Local server port (used with --local / --local-endpoint).")
     var port: UInt16 = 8000
+
+    @Option(help: "Bind address for --local / --local-endpoint (default 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).")
+    var bind: String = "127.0.0.1"
+
+    @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
+    var noAuth = false
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+
+        // --local (coordinator-less) and --local-endpoint (alongside the
+        // coordinator) are mutually exclusive serve modes; reject the ambiguous
+        // combination rather than silently picking one.
+        if local && localEndpoint {
+            printError("--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less local server, or --local-endpoint to serve a local endpoint alongside the coordinator.")
+            throw ExitCode.failure
+        }
 
         // GPU is required. Reject CPU fallback up-front so we never
         // come up reporting healthy and then silently churn at 0.5 tok/s.
@@ -97,13 +114,36 @@ struct Start: AsyncParsableCommand {
             includeDisabled: all
         )
 
-        print("darkbloom \(ProviderCore.version) (standalone)")
-        print("Listening on 127.0.0.1:\(port)")
+        // Direct/local mode: mint (or reuse) a bearer token so the loopback
+        // server isn't open to every local process / hostile webpage. --no-auth
+        // opts out for trusted/airgapped use.
+        let token: String?
+        if noAuth {
+            token = nil
+        } else {
+            token = try LocalEndpoint.loadOrCreateToken()
+        }
+
+        let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+        print("darkbloom \(ProviderCore.version) (local / direct mode)")
+        print("Listening on \(bind):\(port)")
         print("Models: \(advertised.count)")
         for m in advertised {
             print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
         }
-        print("OpenAI-compatible: GET /health, GET /v1/models, POST /v1/chat/completions")
+        print()
+        print("OpenAI-compatible endpoint:")
+        print("  base URL: \(baseURL)")
+        if let token {
+            print("  API key:  \(token)")
+            print()
+            print("  export OPENAI_BASE_URL=\(baseURL)")
+            print("  export OPENAI_API_KEY=\(token)")
+        } else {
+            print("  API key:  (auth disabled — --no-auth)")
+        }
+        print()
+        print("  Shareable any time with: darkbloom local")
         print()
 
         // Standalone mode still benefits from the PID lock + sleep prevention.
@@ -114,18 +154,47 @@ struct Start: AsyncParsableCommand {
         let server = StandaloneServer(
             config: StandaloneServerConfig(
                 port: port,
-                host: "127.0.0.1",
-                maxCachedModels: Int(clamping: config.backend.maxModelSlots)
+                host: bind,
+                maxCachedModels: Int(clamping: config.backend.maxModelSlots),
+                authToken: token
             ),
             models: advertised
         )
         try await server.start()
+
+        // Wait until the server CONFIRMS it bound the port before advertising it.
+        // start() launches Hummingbird in a child task and returns before the
+        // bind completes; we must not write a discovery record pointing at a dead
+        // (or, worse, a foreign) endpoint that `darkbloom local` / local-first
+        // clients would then trust. waitUntilBound reads the actor's own bind
+        // signal (Hummingbird onServerRunning), not an HTTP probe a process
+        // already holding the port could answer.
+        guard await server.waitUntilBound(timeoutSeconds: 5.0) else {
+            await server.stop()
+            printError("Local server failed to bind \(bind):\(port) within 5s — is the port already in use?")
+            throw ExitCode.failure
+        }
+
+        // Publish discovery metadata so a same-machine client (and
+        // `darkbloom local`) can find + authenticate to this server. Removed on
+        // exit; the token file persists so the token survives restarts.
+        let info = LocalEndpoint.Info(
+            host: bind,
+            port: port,
+            apiKey: token ?? "",
+            version: ProviderCore.version,
+            pid: ProcessInfo.processInfo.processIdentifier,
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try? LocalEndpoint.writeInfo(info)
+        defer { LocalEndpoint.removeInfo() }
 
         // Wait forever (until SIGINT). In standalone mode we don't have a
         // coordinator event stream to drive the loop, so we just block.
         let waitForever = AsyncStream<Never> { _ in }
         for await _ in waitForever {}
     }
+
 
     // MARK: - Foreground (invoked by launchd)
 
@@ -201,6 +270,31 @@ struct Start: AsyncParsableCommand {
             print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
         }
 
+        // Unified mode: build the local-endpoint config when --local-endpoint is
+        // set. Reuses the same persistent bearer token + bind/port options as
+        // --local; --no-auth opts out of the token (trusted/airgapped only).
+        var localEndpointConfig: LocalInferenceHTTPConfig?
+        if localEndpoint {
+            // FAIL CLOSED: if auth is requested (no --no-auth) but the token
+            // can't be created/read, abort rather than silently opening the
+            // endpoint unauthenticated — otherwise an unwritable ~/.darkbloom
+            // would expose it (especially under --bind 0.0.0.0). Mirrors --local.
+            let token: String?
+            if noAuth {
+                token = nil
+            } else {
+                do {
+                    token = try LocalEndpoint.loadOrCreateToken()
+                } catch {
+                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/.darkbloom permissions, or pass --no-auth for a trusted/airgapped setup.")
+                    throw ExitCode.failure
+                }
+            }
+            localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
+            let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `darkbloom local`)" : "  (auth disabled)")")
+        }
+
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL,
             hardware: hardware,
@@ -208,7 +302,8 @@ struct Start: AsyncParsableCommand {
             config: config,
             authToken: authToken,
             runtimeHashes: runtimeHashes,
-            modelHashes: modelHashes
+            modelHashes: modelHashes,
+            localEndpoint: localEndpointConfig
         )
 
         do {
@@ -417,7 +512,10 @@ struct Start: AsyncParsableCommand {
         try LaunchAgent.installAndStart(
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,
-            idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil)
+            idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil),
+            localEndpoint: LaunchAgent.LocalEndpointOptions(
+                enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
+            )
         )
 
         let logPath = LaunchAgent.logPath().path
@@ -425,6 +523,10 @@ struct Start: AsyncParsableCommand {
         print("  Models:  \(selectedModelIDs.count)")
         for id in selectedModelIDs {
             print("    \(id)")
+        }
+        if localEndpoint {
+            let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+            print("  Local:   \(shownURL) (unified mode — run `darkbloom local` for the API key)")
         }
         print("  Logs:    \(logPath)")
         print()

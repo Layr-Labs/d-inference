@@ -32,9 +32,17 @@ type ChatCompletionChoice struct {
 
 // ChatCompletionUsage is token usage in a chat completion response.
 type ChatCompletionUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	TotalTokens             int                      `json:"total_tokens"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+// CompletionTokensDetails is the OpenAI-compatible breakdown of
+// completion tokens. Only emitted when there is something to report
+// (e.g. a non-zero reasoning-token count).
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // ChatCompletionResponse is an OpenAI-compatible chat completion response.
@@ -223,6 +231,7 @@ type APIKeyResponse struct {
 	ITPMLimit     *int64     `json:"itpm_limit,omitempty"`
 	OTPMLimit     *int64     `json:"otpm_limit,omitempty"`
 	AllowedModels []string   `json:"allowed_models,omitempty"`
+	SelfRouteOnly bool       `json:"self_route_only"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`

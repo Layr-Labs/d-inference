@@ -284,3 +284,61 @@ func encodeToolCallsForHashProducesStableEncoding() {
 func encodeToolCallsForHashEmptyInputReturnsEmptyString() {
     #expect(ProviderLoop.encodeToolCallsForHash([]) == "")
 }
+
+// MARK: - injectReasoningTokens
+
+@Test("injectReasoningTokens adds completion_tokens_details to a usage frame")
+func injectReasoningTokensAddsDetails() throws {
+    let frame = try encodeChunk(
+        finishReason: "stop",
+        usage: OpenAIUsage(promptTokens: 10, completionTokens: 30)
+    )
+    let rewritten = ProviderLoop.injectReasoningTokens(into: frame, reasoningTokens: 12)
+
+    // The rewritten frame must still parse and preserve the original counts.
+    let parsed = try #require(ProviderLoop.parseStreamChunk(rewritten))
+    let usage = try #require(parsed.usage)
+    #expect(usage.promptTokens == 10)
+    #expect(usage.completionTokens == 30)
+
+    // And carry the OpenAI-standard reasoning detail on the wire.
+    let payload = try #require(ProviderLoop.joinedDataPayload(rewritten))
+    let obj = try #require(
+        try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
+    )
+    let usageObj = try #require(obj["usage"] as? [String: Any])
+    let details = try #require(usageObj["completion_tokens_details"] as? [String: Any])
+    #expect((details["reasoning_tokens"] as? Int) == 12)
+}
+
+@Test("injectReasoningTokens is a no-op for zero reasoning tokens")
+func injectReasoningTokensZeroIsNoop() throws {
+    let frame = try encodeChunk(
+        finishReason: "stop",
+        usage: OpenAIUsage(promptTokens: 5, completionTokens: 5)
+    )
+    #expect(ProviderLoop.injectReasoningTokens(into: frame, reasoningTokens: 0) == frame)
+}
+
+@Test("injectReasoningTokens leaves frames without a usage block untouched")
+func injectReasoningTokensNoUsageIsNoop() throws {
+    let frame = try encodeChunk(content: "hello")
+    #expect(ProviderLoop.injectReasoningTokens(into: frame, reasoningTokens: 9) == frame)
+}
+
+@Test("injectReasoningTokens preserves a pre-existing details object")
+func injectReasoningTokensMergesExistingDetails() throws {
+    // Hand-craft a usage frame that already carries an unrelated detail
+    // field; the reasoning_tokens splice must not drop it.
+    let raw = #"data: {"id":"x","model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"completion_tokens_details":{"audio_tokens":3}}}"# + "\n\n"
+    let rewritten = ProviderLoop.injectReasoningTokens(into: raw, reasoningTokens: 4)
+    let payload = try #require(ProviderLoop.joinedDataPayload(rewritten))
+    let obj = try #require(
+        try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
+    )
+    let details = try #require(
+        (obj["usage"] as? [String: Any])?["completion_tokens_details"] as? [String: Any]
+    )
+    #expect((details["reasoning_tokens"] as? Int) == 4)
+    #expect((details["audio_tokens"] as? Int) == 3)
+}

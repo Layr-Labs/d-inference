@@ -72,6 +72,10 @@ public struct ProviderLoopConfig: Sendable {
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
+    /// When set, the provider also serves a local OpenAI-compatible HTTP
+    /// endpoint off the SAME loaded models it serves to the coordinator
+    /// (unified mode). nil = coordinator-only (the default).
+    public let localEndpoint: LocalInferenceHTTPConfig?
 
     public init(
         coordinatorURL: String,
@@ -80,7 +84,8 @@ public struct ProviderLoopConfig: Sendable {
         config: ProviderConfig,
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
-        modelHashes: [String: String] = [:]
+        modelHashes: [String: String] = [:],
+        localEndpoint: LocalInferenceHTTPConfig? = nil
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
@@ -89,6 +94,7 @@ public struct ProviderLoopConfig: Sendable {
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
+        self.localEndpoint = localEndpoint
     }
 }
 
@@ -119,6 +125,14 @@ public actor ProviderLoop {
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
     private var requestToModel: [String: String] = [:]
+
+    /// Per-model count of in-flight requests from the LOCAL HTTP endpoint
+    /// (unified mode), used to keep eviction and the idle monitor from pulling a
+    /// model out from under a local stream. See `LocalReservationCounter`.
+    private var localReservations = LocalReservationCounter()
+
+    /// The running local OpenAI HTTP server task (unified mode), if any.
+    private var localServerTask: Task<Void, Never>?
 
     /// Guards against concurrent loads. `modelsLoading` tracks which models
     /// are mid-load; waiters suspend until the first loader finishes.
@@ -164,6 +178,15 @@ public actor ProviderLoop {
 
     /// Task for the delayed auto-report (10 minutes after learning trust status).
     private var autoReportTask: Task<Void, Never>?
+
+    /// Diagnostics: the most recent trust_status from the coordinator and the
+    /// most recent model-load failure, plus the daemon start time. Persisted to
+    /// the daemon state file so `darkbloom status`/`doctor` can show the
+    /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
+    /// (not ContinuousClock) so it survives across the CLI process boundary.
+    private var lastTrustStatus: DaemonState.Trust?
+    private var lastModelLoadError: DaemonState.ModelLoadError?
+    private let startedAtEpoch: Double = Date().timeIntervalSince1970
 
     /// Keeps the network stack alive during sleep for APN push notifications.
     /// Held for the entire provider session so MDM SecurityInfo commands
@@ -302,6 +325,14 @@ public actor ProviderLoop {
         networkAssertion.acquire()
         defer { networkAssertion.release() }
 
+        // Unified mode: also expose a local OpenAI endpoint off the same loaded
+        // models. Started before the coordinator connection so local clients can
+        // serve immediately; torn down on shutdown.
+        if let localEndpoint = loopConfig.localEndpoint {
+            startLocalEndpoint(localEndpoint)
+        }
+        defer { stopLocalEndpoint() }
+
         // 1. Apply security hardening
         try await applySecurityHardening()
 
@@ -333,7 +364,8 @@ public actor ProviderLoop {
             authToken: loopConfig.authToken,
             runtimeHashes: runtimeWithMetallib,
             modelHashes: loopConfig.modelHashes,
-            privacyCapabilities: privacyCapabilitiesForRegistration()
+            privacyCapabilities: privacyCapabilitiesForRegistration(),
+            privateOnly: loopConfig.config.coordinator.privateOnly
         )
 
         // 4. Create coordinator client and start connection
@@ -616,6 +648,14 @@ public actor ProviderLoop {
             return
         }
 
+        // `reasoning_effort` is not part of the upstream
+        // `OpenAIChatCompletionRequest` shape, so decode it directly from
+        // the request body and thread it into the chat template's render
+        // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
+        // Harmony reads it to set the reasoning budget; other models
+        // ignore the extra template variable.
+        let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
+
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
         // then waits for the first chunk with the full inference timeout, so we
         // must REJECT (status 503) any request we are *certain* we cannot serve
@@ -755,7 +795,8 @@ public actor ProviderLoop {
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },
                 releaseModel: { _ in },
-                defaultMaxTokens: Self.schedulerDefaultMaxTokens
+                defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+                reasoningEffort: reasoningEffort
             )
 
             // Force-stream so we get SSE frames even if the original request
@@ -817,6 +858,12 @@ public actor ProviderLoop {
             // fully refund). MLX streams ~1 token per frame, so this slightly
             // under-counts vs. true tokenization but never bills $0 for work.
             var contentFrameCount = 0
+            // Accumulated `reasoning_content` deltas (gpt-oss analysis
+            // channel, Qwen3/DeepSeek <think>, Gemma4 channels). Re-tokenized
+            // at completion to report an accurate `reasoning_tokens` count —
+            // upstream's usage block only carries the total completion count.
+            var reasoningText = ""
+            var reasoningTokens = 0
 
             do {
                 for try await frame in frames {
@@ -850,6 +897,7 @@ public actor ProviderLoop {
                     //   real assistant output on `delta.tool_calls`; a
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
+                    var frameToEmit = frame
                     if let parsed = Self.parseStreamChunk(frame) {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
@@ -866,6 +914,7 @@ public actor ProviderLoop {
                         if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
                             fullResponseText += reasoning
                             frameHadContent = true
+                            reasoningText += reasoning
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
@@ -877,9 +926,32 @@ public actor ProviderLoop {
                         if let usage = parsed.usage {
                             promptTokens = usage.promptTokens
                             completionTokens = usage.completionTokens
+                            // The usage block rides the final chunk, after all
+                            // reasoning deltas, so `reasoningText` is complete
+                            // here. Re-tokenize it for an accurate count and
+                            // surface it to chat-completions consumers via
+                            // `usage.completion_tokens_details.reasoning_tokens`
+                            // (OpenAI shape). The coordinator forwards this
+                            // chunk verbatim, so no coordinator change is
+                            // needed for the streaming path.
+                            if !reasoningText.isEmpty {
+                                // Re-tokenizing detokenized text isn't a perfect
+                                // identity (whitespace/special-token merges), so
+                                // clamp to the engine's completion count — a
+                                // reasoning subset can never exceed the total.
+                                reasoningTokens = min(
+                                    tokenizer.inner.encode(
+                                        text: reasoningText, addSpecialTokens: false
+                                    ).count,
+                                    max(0, completionTokens)
+                                )
+                                frameToEmit = Self.injectReasoningTokens(
+                                    into: frame, reasoningTokens: reasoningTokens
+                                )
+                            }
                         }
                     }
-                    if !emitSSE(frame) { return }
+                    if !emitSSE(frameToEmit) { return }
                 }
             } catch {
                 // P1 #2: CancellationError raised by `try await
@@ -941,6 +1013,10 @@ public actor ProviderLoop {
                         + "MLXOpenAIService.streamChatCompletionFrames behavior."
                     )
                 }
+                // Surface the usage-chunk anomaly to the operator via `doctor`
+                // (recorded even when the content-frame floor recovered billing,
+                // since a missing/zero usage chunk is itself the signal).
+                providerStats.incrementUsageGaps()
             }
 
             // Update stats
@@ -959,7 +1035,8 @@ public actor ProviderLoop {
             )
             let usageInfo = UsageInfo(
                 promptTokens: UInt64(max(0, promptTokens)),
-                completionTokens: UInt64(max(0, completionTokens))
+                completionTokens: UInt64(max(0, completionTokens)),
+                reasoningTokens: UInt64(max(0, reasoningTokens))
             )
             send.send(.inferenceComplete(
                 requestId: requestId,
@@ -1073,8 +1150,54 @@ public actor ProviderLoop {
     /// Handle a trust_status message from the coordinator. If the provider
     /// learns it is self_signed or untrusted, schedule a one-time auto-report
     /// of unified logs after 10 minutes.
+    /// Assembles the current daemon state and writes it to the state file so the
+    /// CLI (`status`/`doctor`) can read live state + the latest trust reason.
+    /// Best-effort and cheap; safe to call from the trust handler and the
+    /// periodic capacity loop.
+    private func writeDaemonState() {
+        let cap = state.backendCapacity
+        let snapshot = DaemonState(
+            pid: getpid(),
+            version: ProviderCore.version,
+            writtenAt: Date().timeIntervalSince1970,
+            startedAt: startedAtEpoch,
+            trust: lastTrustStatus,
+            currentModel: state.currentModel,
+            warmModels: state.warmModels,
+            inferenceActive: state.inferenceActive,
+            stats: DaemonState.Stats(
+                requestsServed: stats.requestsServed,
+                tokensGenerated: stats.tokensGenerated,
+                usageGaps: stats.usageGaps
+            ),
+            capacity: cap.map {
+                DaemonState.Capacity(
+                    totalMemoryGb: $0.totalMemoryGb,
+                    gpuMemoryActiveGb: $0.gpuMemoryActiveGb,
+                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
+            },
+            lastModelLoadError: lastModelLoadError
+        )
+        DaemonStateFile.write(snapshot)
+    }
+
+    /// Records a model-load failure for the diagnostics state file so the
+    /// operator sees the exact "Insufficient memory …" text in `doctor`.
+    private func recordModelLoadError(model: String, message: String) {
+        lastModelLoadError = DaemonState.ModelLoadError(
+            model: model, message: message, at: Date().timeIntervalSince1970)
+        writeDaemonState()
+    }
+
     private func handleTrustStatus(trustLevel: String, status: String, reason: String) {
         logger.info("Trust status update: level=\(trustLevel) status=\(status) reason=\(reason)")
+
+        // Cache + persist so `darkbloom status`/`doctor` can show the operator
+        // the coordinator's reason (otherwise it is only in the logs).
+        lastTrustStatus = DaemonState.Trust(
+            trustLevel: trustLevel, status: status, reason: reason,
+            receivedAt: Date().timeIntervalSince1970)
+        writeDaemonState()
 
         let needsReport = trustLevel == "self_signed" || status == "untrusted"
         guard needsReport, !didAutoReport else {
@@ -1267,7 +1390,7 @@ public actor ProviderLoop {
         for (modelId, slot) in modelSlots {
             if modelsUnloading.contains(modelId) { continue }
             let elapsed = now - slot.lastInferenceAt
-            let hasInflight = modelsWithInflight.contains(modelId)
+            let hasInflight = modelsWithInflight.contains(modelId) || hasLocalReservation(modelId)
             if IdleTimeoutPolicy.shouldUnload(
                 elapsed: elapsed,
                 timeout: timeout,
@@ -1281,6 +1404,7 @@ public actor ProviderLoop {
         for modelId in candidates {
             let currentInflight = Set(requestToModel.values)
             guard !currentInflight.contains(modelId),
+                  !hasLocalReservation(modelId),
                   !modelsUnloading.contains(modelId),
                   let slot = modelSlots[modelId] else { continue }
 
@@ -1315,10 +1439,16 @@ public actor ProviderLoop {
         let pollInterval = Duration.seconds(Int64(max(1, heartbeatInterval / 2)))
         let me = self
         capacityRefreshTask = Task {
+            // Write once immediately so `status`/`doctor` have a fresh file soon
+            // after the daemon starts, before the first poll interval elapses.
+            await me.writeDaemonState()
             while !Task.isCancelled {
                 try? await Task.sleep(for: pollInterval)
                 if Task.isCancelled { break }
                 await me.updateAggregateCapacity()
+                // Refresh the diagnostics state file on the same cadence so
+                // `status`/`doctor` see current model, stats, and capacity.
+                await me.writeDaemonState()
             }
         }
     }
@@ -1469,7 +1599,7 @@ public actor ProviderLoop {
         if modelSlots.count >= maxModelSlots {
             let modelsWithInflight = Set(requestToModel.values)
             let evictable = modelSlots.filter {
-                !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key)
+                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
             }
             if evictable.isEmpty {
                 isLoadingAny = false
@@ -1502,7 +1632,14 @@ public actor ProviderLoop {
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: modelInfo.estimatedMemoryGb,
                 headroomGb: Self.loadHeadroomGb)
-            try await evictUntilAvailable(requiredGb: requiredGb)
+            do {
+                try await evictUntilAvailable(requiredGb: requiredGb)
+            } catch let InferenceError.modelLoadFailed(message) {
+                // Record for diagnostics so `doctor` shows the operator the exact
+                // "Insufficient memory …" reason, then rethrow unchanged.
+                recordModelLoadError(model: modelId, message: message)
+                throw InferenceError.modelLoadFailed(message)
+            }
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -1617,6 +1754,10 @@ public actor ProviderLoop {
     ///   2. KV already promised to in-flight requests
     ///      (`kvBudget.outstandingReservedBytes`) is subtracted, so a concurrent
     ///      load can't consume memory a mid-decode request is counting on.
+    ///
+    /// `doctor`'s model-fit check shares the SAME arithmetic via
+    /// `ModelLoadAdmission`, so the operator-facing verdict can never drift from
+    /// what this method enforces at load time.
     private func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
         return ModelLoadAdmission.freeForLoadGb(
@@ -1650,7 +1791,7 @@ public actor ProviderLoop {
         while await availableMemoryGb() < requiredGb {
             let modelsWithInflight = Set(requestToModel.values)
             let candidate = modelSlots
-                .filter { !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key) }
+                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) }
                 .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
 
             guard let (modelId, _) = candidate else {
@@ -1707,7 +1848,7 @@ public actor ProviderLoop {
         // evicted to make room, so its presence means we must NOT pre-reject.
         let modelsWithInflight = Set(requestToModel.values)
         let hasEvictable = modelSlots.contains {
-            !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key)
+            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
         }
 
         // Mirrors evictUntilAvailable's terminal failure: not enough free
@@ -1988,3 +2129,147 @@ struct ProviderLogger: Sendable {
 import MLX
 import MLXLLM
 import MLXLMCommon
+
+// MARK: - Unified local endpoint
+
+/// Serves a local OpenAI-compatible HTTP endpoint alongside coordinator serving,
+/// backed by the SAME loaded models (`modelSlots`) so weights load once and
+/// local + coordinator requests feed the same continuous-batching engine and the
+/// same `GlobalKVCacheBudget` (so reported capacity reflects local load too).
+///
+/// Kept as a same-file extension so it can reach `ProviderLoop`'s private model
+/// registry / load path without loosening their access for the whole module.
+extension ProviderLoop {
+    /// Start the local endpoint (idempotent). Runs the shared HTTP app in a
+    /// child task; its registry closures reach back into this actor.
+    func startLocalEndpoint(_ cfg: LocalInferenceHTTPConfig) {
+        guard localServerTask == nil else { return }
+        let app = makeLocalInferenceApplication(
+            config: cfg,
+            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+            acquire: { [weak self] modelId in
+                guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId) }
+                return try await self.acquireModelForLocal(modelId)
+            },
+            tokenizerProvider: { [weak self] modelId in
+                guard let self else { throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization }
+                return try await self.resolveTokenizerForLocal(modelId)
+            },
+            availableModels: { [weak self] in
+                guard let self else { return [] }
+                return await self.advertisedLocalModelIds()
+            },
+            // Fires only once OUR server has actually bound the socket — the
+            // authoritative bind signal. We publish discovery here (never from a
+            // best-effort HTTP probe that a foreign process on the same port
+            // could answer). If the bind fails, runService throws below and this
+            // never runs, so no stale/foreign discovery record is written.
+            onServerRunning: { [weak self] _ in
+                await self?.onLocalEndpointBound(cfg)
+            }
+        )
+        let log = logger
+        localServerTask = Task {
+            do {
+                try await app.runService(gracefulShutdownSignals: [])
+            } catch is CancellationError {
+                // expected on shutdown
+            } catch {
+                // A bind failure (e.g. port already in use) lands here. We do NOT
+                // kill the provider — coordinator serving must stay up — but make
+                // the local-endpoint failure loud and operator-actionable.
+                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
+            }
+        }
+    }
+
+    /// Invoked by Hummingbird once the local endpoint socket is bound and
+    /// listening. Publishes the discovery record so `darkbloom local` /
+    /// local-first clients find the unified endpoint — only now that the bind is
+    /// CONFIRMED to be ours.
+    private func onLocalEndpointBound(_ cfg: LocalInferenceHTTPConfig) {
+        logger.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
+        try? LocalEndpoint.writeInfo(LocalEndpoint.Info(
+            host: cfg.host,
+            port: cfg.port,
+            apiKey: cfg.authToken ?? "",
+            version: ProviderCore.version,
+            pid: ProcessInfo.processInfo.processIdentifier,
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        ))
+    }
+
+    /// Stop the local endpoint server, if running, and remove its discovery record.
+    func stopLocalEndpoint() {
+        guard localServerTask != nil else { return }
+        localServerTask?.cancel()
+        localServerTask = nil
+        LocalEndpoint.removeInfo()
+    }
+
+    /// Acquire a resident model for a LOCAL request: ensure it's loaded, then
+    /// hold a local reservation (released by the engine when the stream ends) so
+    /// the idle monitor and load-gate eviction can't pull it mid-stream. Loading
+    /// goes through the same `ensureModelLoaded` gate as coordinator requests, so
+    /// the shared `GlobalKVCacheBudget` and memory admission apply uniformly.
+    func acquireModelForLocal(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        do {
+            try await ensureModelLoaded(modelId: modelId)
+        } catch let err as InferenceError {
+            // Map load failures to the engine's typed errors (404 / 503).
+            switch err {
+            case .invalidModelDirectory, .noModelLoaded:
+                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+            default:
+                throw MultiModelBatchSchedulerEngineError.queueFull("local capacity unavailable for \(modelId)")
+            }
+        }
+        guard let slot = modelSlots[modelId] else {
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        }
+        localReservations.reserve(modelId)
+        modelSlots[modelId]?.lastInferenceAt = .now
+        let release: @Sendable (String) async -> Void = { [weak self] mid in
+            await self?.releaseLocalReservation(mid)
+        }
+        return MultiModelBatchSchedulerEngine.AcquiredModel(
+            scheduler: slot.scheduler,
+            tokenizer: slot.tokenizer,
+            releaseToken: OneShotRelease(release: release, modelId: modelId),
+            modelType: loopConfig.models.first(where: { $0.id == modelId })?.modelType
+        )
+    }
+
+    /// Drop one local in-flight reservation for a model.
+    func releaseLocalReservation(_ modelId: String) {
+        localReservations.release(modelId)
+        modelSlots[modelId]?.lastInferenceAt = .now
+    }
+
+    /// Whether a model currently has a local request in flight. Used by the idle
+    /// monitor and eviction so they never unload a model a local stream is using.
+    func hasLocalReservation(_ modelId: String) -> Bool {
+        localReservations.isReserved(modelId)
+    }
+
+    /// Resolve a tokenizer for the local token-utility endpoints. Read-only, so
+    /// (unlike `acquireModelForLocal`) it takes no reservation.
+    func resolveTokenizerForLocal(_ modelId: String?) async throws -> TokenizerHandle {
+        if let modelId {
+            guard let slot = modelSlots[modelId] else {
+                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+            }
+            return slot.tokenizer
+        }
+        if let firstKey = modelSlots.keys.sorted().first, let slot = modelSlots[firstKey] {
+            return slot.tokenizer
+        }
+        throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
+    }
+
+    /// The advertised `/v1/models` catalog for the local endpoint — everything
+    /// this provider is configured to serve, not just the resident subset.
+    func advertisedLocalModelIds() -> [String] {
+        loopConfig.models.map { $0.id }.sorted()
+    }
+}

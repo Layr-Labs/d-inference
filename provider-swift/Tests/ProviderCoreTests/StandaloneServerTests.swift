@@ -149,6 +149,69 @@ import Testing
     await server.stopAndWait()
 }
 
+// MARK: - Direct/local mode: bearer-token auth
+
+@Test func standaloneServerEnforcesBearerTokenOnInferenceRoutes() async throws {
+    let model = ModelInfo(
+        id: "mlx-community/Qwen2.5-7B-4bit",
+        modelType: "qwen2",
+        quantization: "4bit",
+        sizeBytes: 4_000_000_000,
+        estimatedMemoryGb: 4.5
+    )
+    let token = "dk-local-integration-token"
+    let server = StandaloneServer(
+        config: StandaloneServerConfig(authToken: token),
+        models: [model]
+    )
+    let app = server.makeApplication()
+
+    try await app.test(.router) { client in
+        // Health is exempt — liveness probes need no secret.
+        try await client.execute(uri: "/health", method: .get) { response in
+            #expect(response.status == .ok)
+        }
+        // /v1/models without a token → 401, with a CORS header so a browser
+        // client can still read the error body.
+        try await client.execute(uri: "/v1/models", method: .get) { response in
+            #expect(response.status == .unauthorized)
+            #expect(response.headers[.accessControlAllowOrigin] == "*")
+        }
+        // Wrong token → 401.
+        try await client.execute(
+            uri: "/v1/models",
+            method: .get,
+            headers: [.authorization: "Bearer not-the-token"]
+        ) { response in
+            #expect(response.status == .unauthorized)
+        }
+        // Correct token → 200 (advertised catalog).
+        try await client.execute(
+            uri: "/v1/models",
+            method: .get,
+            headers: [.authorization: "Bearer \(token)"]
+        ) { response in
+            #expect(response.status == .ok)
+        }
+        // OPTIONS preflight stays exempt (CORS).
+        try await client.execute(uri: "/v1/chat/completions", method: .options) { response in
+            #expect(response.status == .noContent)
+        }
+    }
+}
+
+@Test func standaloneServerWithoutTokenStaysOpen() async throws {
+    // Backward-compat / explicit --no-auth: nil token => no enforcement.
+    let model = ModelInfo(id: "m", quantization: "4bit", sizeBytes: 1, estimatedMemoryGb: 1)
+    let server = standaloneTestServer(models: [model])
+    let app = server.makeApplication()
+    try await app.test(.router) { client in
+        try await client.execute(uri: "/v1/models", method: .get) { response in
+            #expect(response.status == .ok)
+        }
+    }
+}
+
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {
     StandaloneServer(
         models: models

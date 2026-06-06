@@ -28,6 +28,9 @@ public enum ProviderMessage: Sendable, Equatable {
         public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var privacyCapabilities: PrivacyCapabilities?
+        /// When true, this machine serves only its owner's self-route requests,
+        /// never the public fleet. Mirrors RegisterMessage.PrivateOnly (Go).
+        public var privateOnly: Bool
 
         public init(
             hardware: HardwareInfo,
@@ -44,7 +47,8 @@ public enum ProviderMessage: Sendable, Equatable {
             pythonHash: String? = nil,
             runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
-            privacyCapabilities: PrivacyCapabilities? = nil
+            privacyCapabilities: PrivacyCapabilities? = nil,
+            privateOnly: Bool = false
         ) {
             self.hardware = hardware
             self.models = models
@@ -61,6 +65,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
+            self.privateOnly = privateOnly
         }
     }
 
@@ -232,6 +237,7 @@ extension ProviderMessage: Codable {
         case runtimeHash = "runtime_hash"
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
+        case privateOnly = "private_only"
         // Heartbeat
         case status
         case activeModel = "active_model"
@@ -290,6 +296,9 @@ extension ProviderMessage: Codable {
                 try container.encode(r.templateHashes, forKey: .templateHashes)
             }
             try container.encodeIfPresent(r.privacyCapabilities, forKey: .privacyCapabilities)
+            if r.privateOnly {
+                try container.encode(true, forKey: .privateOnly)
+            }
 
         case .heartbeat(let h):
             try container.encode(TypeValue.heartbeat, forKey: .type)
@@ -377,7 +386,8 @@ extension ProviderMessage: Codable {
                 pythonHash: try container.decodeIfPresent(String.self, forKey: .pythonHash),
                 runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
-                privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities)
+                privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
+                privateOnly: try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false
             ))
 
         case .heartbeat:

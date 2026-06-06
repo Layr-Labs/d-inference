@@ -143,15 +143,32 @@ public struct ProviderStats: Codable, Sendable, Equatable {
 public struct UsageInfo: Codable, Sendable, Equatable {
     public var promptTokens: UInt64
     public var completionTokens: UInt64
+    /// Subset of `completionTokens` spent on reasoning/analysis content
+    /// (gpt-oss analysis channel, <think> blocks, etc.). Counted with the
+    /// model tokenizer on the provider; 0 when the response carried no
+    /// reasoning content. The coordinator surfaces this as
+    /// `reasoning_tokens` in the Responses API and as
+    /// `completion_tokens_details.reasoning_tokens` in chat completions.
+    public var reasoningTokens: UInt64
 
     enum CodingKeys: String, CodingKey {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
+        case reasoningTokens = "reasoning_tokens"
     }
 
-    public init(promptTokens: UInt64, completionTokens: UInt64) {
+    public init(promptTokens: UInt64, completionTokens: UInt64, reasoningTokens: UInt64 = 0) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
+        self.reasoningTokens = reasoningTokens
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.promptTokens = try c.decode(UInt64.self, forKey: .promptTokens)
+        self.completionTokens = try c.decode(UInt64.self, forKey: .completionTokens)
+        // Optional for backward compatibility with peers that don't send it.
+        self.reasoningTokens = try c.decodeIfPresent(UInt64.self, forKey: .reasoningTokens) ?? 0
     }
 }
 

@@ -443,6 +443,27 @@ type Store interface {
 	// UpdateProviderRuntime persists runtime integrity verification state.
 	UpdateProviderRuntime(ctx context.Context, id string, verified bool, pythonHash, runtimeHash string) error
 
+	// OpenProviderSession records the start of a provider connection (one row per
+	// websocket session). serial/account may be empty at connect time and are
+	// backfilled by TouchProviderSession once attestation/linking completes.
+	OpenProviderSession(ctx context.Context, sessionID, serial, accountID string) error
+
+	// TouchProviderSession updates the open session's last_seen heartbeat and
+	// backfills serial/account if they were unknown at open time.
+	TouchProviderSession(ctx context.Context, sessionID, serial, accountID string, lastSeen time.Time) error
+
+	// CloseProviderSession marks the open session for sessionID as ended.
+	CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error
+
+	// CloseOpenProviderSessions closes sessions still marked open whose last
+	// heartbeat (last_seen) predates staleBefore — i.e. genuinely orphaned by a
+	// dead prior coordinator process. The staleBefore fence is what makes this
+	// safe under a blue-green/rolling deploy over a shared DB: a session still
+	// live on the OLD instance keeps getting TouchProviderSession heartbeats, so
+	// its last_seen stays fresh and is NOT closed by the NEW instance's startup
+	// reconcile. Returns the number of sessions closed.
+	CloseOpenProviderSessions(ctx context.Context, staleBefore time.Time) (int, error)
+
 	// --- Provider Reputation Persistence ---
 
 	// UpsertReputation creates or updates a provider's reputation record.
@@ -687,6 +708,12 @@ type APIKey struct {
 	// AllowedModels restricts which models the key may call. Empty = all.
 	AllowedModels []string `json:"allowed_models,omitempty"`
 
+	// SelfRouteOnly is a hard ceiling: every request on this key is routed
+	// only to a machine the owning account runs, and is free. The key can
+	// never spend balance or reach the public fleet. See the "self-route"
+	// design in the consumer handler.
+	SelfRouteOnly bool `json:"self_route_only"`
+
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
@@ -702,6 +729,7 @@ type APIKeyCreate struct {
 	ITPMLimit     *int64
 	OTPMLimit     *int64
 	AllowedModels []string
+	SelfRouteOnly bool
 	ExpiresAt     *time.Time
 }
 
@@ -1006,6 +1034,22 @@ type ProviderRecord struct {
 	LastSessionTokensGenerated int64             `json:"last_session_tokens_generated"`
 	RegisteredAt               time.Time         `json:"registered_at"`
 	LastSeen                   time.Time         `json:"last_seen"`
+}
+
+// ProviderSession is one connect→disconnect lifecycle of a provider machine.
+// connected_at/disconnected_at bound the session; last_seen is the most recent
+// heartbeat within it. disconnected_at == nil means the session is still open.
+// These rows are the durable source for uptime/downtime history (the providers
+// table only keeps a single mutable last_seen).
+type ProviderSession struct {
+	ID               int64      `json:"id"`
+	SessionID        string     `json:"session_id"` // providers.id for this connection
+	SerialNumber     string     `json:"serial_number"`
+	AccountID        string     `json:"account_id"`
+	ConnectedAt      time.Time  `json:"connected_at"`
+	LastSeen         time.Time  `json:"last_seen"`
+	DisconnectedAt   *time.Time `json:"disconnected_at,omitempty"`
+	DisconnectReason string     `json:"disconnect_reason"`
 }
 
 // ProviderLocation captures approximate geographic location for a provider or

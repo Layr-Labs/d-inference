@@ -91,6 +91,31 @@ type PendingRequest struct {
 	// one of these attested hardware serials. Empty means the request may
 	// route to any eligible provider.
 	AllowedProviderSerials []string
+	// SelfRouteOnly restricts routing to providers owned by OwnerAccountID
+	// (the "use my own machine" path). When set, the scheduler skips every
+	// provider whose AccountID != OwnerAccountID and never falls back to the
+	// public fleet. The owner-match is on the coordinator-stamped AccountID,
+	// never on any client-supplied value.
+	SelfRouteOnly bool
+	// PreferOwner is the "prefer my own machine, but fall back to the paid
+	// fleet" mode. Unlike SelfRouteOnly it does NOT exclude public providers:
+	// the scheduler picks the caller's own machine whenever one can serve, and
+	// only falls back to the public fleet (charged normally) when none can. The
+	// hardware-trust floor is relaxed for the caller's own (possibly un-enrolled)
+	// machine, exactly as for SelfRouteOnly, but never for public providers.
+	// Billing is decided at settlement: free if an owned machine actually served
+	// it, paid otherwise — so a PreferOwner request takes a normal reservation
+	// up front (unlike SelfRouteOnly, which skips it).
+	PreferOwner bool
+	// OwnerAccountID is the authenticated account that must own the serving
+	// provider when SelfRouteOnly or PreferOwner is set. Stamped server-side
+	// from the request's authenticated identity.
+	OwnerAccountID string
+	// FreeSelfRoute marks a request that must settle at zero cost (no charge,
+	// no platform fee, no provider payout) because it is served by a machine
+	// the requesting account owns. handleComplete re-verifies ownership of the
+	// serving provider before honoring this flag.
+	FreeSelfRoute bool
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int
@@ -185,6 +210,10 @@ type Provider struct {
 
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
+
+	// PrivateOnly excludes this machine from the public fleet entirely: it
+	// serves only its owner's self-route requests. Reported at registration.
+	PrivateOnly bool
 
 	// Benchmark data reported at registration
 	PrefillTPS float64 // prefill tokens per second
@@ -779,6 +808,12 @@ func (r *Registry) persistProviderNow(p *Provider) {
 		if err := r.store.UpsertProvider(ctx, rec); err != nil {
 			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
 		}
+
+		// Keep this connection's session row fresh and backfill serial/account
+		// once attestation/linking has populated them.
+		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, rec.LastSeen); err != nil {
+			r.logger.Warn("failed to touch provider session", "provider_id", rec.ID, "error", err)
+		}
 	})
 }
 
@@ -1119,6 +1154,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Backend:                 msg.Backend,
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: msg.EncryptedResponseChunks,
+		PrivateOnly:             msg.PrivateOnly,
 		PrefillTPS:              msg.PrefillTPS,
 		DecodeTPS:               msg.DecodeTPS,
 		TrustLevel:              TrustNone,
@@ -1141,6 +1177,20 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		r.modelProviderInc(m.ID)
 	}
 	r.mu.Unlock()
+
+	// Open a session row for this connection (async; durable uptime history).
+	// serial/account are empty here (set after attestation/linking) and are
+	// backfilled by the throttled TouchProviderSession in persistProviderNow.
+	if r.store != nil {
+		sessionID := p.ID
+		saferun.Go(r.logger, "registry.openSession", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := r.store.OpenProviderSession(ctx, sessionID, "", ""); err != nil {
+				r.logger.Warn("failed to open provider session", "provider_id", sessionID, "error", err)
+			}
+		})
+	}
 
 	r.logger.Info("provider registered",
 		"provider_id", id,
@@ -1410,6 +1460,14 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}
+	// Private-only providers serve only their owner's self-route traffic, never
+	// the public fleet. They must not suppress public swap planning: otherwise a
+	// private-only machine that happens to hold a queued public model warm makes
+	// the planner believe the model is already served and skip load_model to an
+	// eligible public node, stranding public requests until queue timeout.
+	if p.PrivateOnly {
+		return false
+	}
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
 		return false
 	}
@@ -1483,6 +1541,11 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	defer p.mu.Unlock()
 
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return 0, false
+	}
+	// Private-only providers never serve public traffic, so never pick one as a
+	// public load_model target (mirrors the public-routing exclusion).
+	if p.PrivateOnly {
 		return 0, false
 	}
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
@@ -1652,7 +1715,18 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 		return
 	}
 
-	failed := r.queue.FailQueuedRequestsForModel(modelID)
+	// Prefer waiters are preserved only when their owner actually has an owned
+	// provider serving this model (it may free up). A prefer waiter with no
+	// owned provider is just waiting on the (now-unservable) public fleet, so it
+	// should fail fast like any public request. Compute eligibility here —
+	// OUTSIDE the queue lock — since OwnedProviderSummary takes the registry lock.
+	preferOwnerEligible := make(map[string]bool)
+	for _, owner := range r.queue.PreferWaiterOwners(modelID) {
+		_, servesModel := r.OwnedProviderSummary(owner, modelID)
+		preferOwnerEligible[owner] = servesModel > 0
+	}
+
+	failed := r.queue.FailQueuedRequestsForModel(modelID, preferOwnerEligible)
 	if failed > 0 {
 		r.logger.Warn("rejected queued requests for unservable model",
 			"model_id", modelID,
@@ -1714,6 +1788,18 @@ func (r *Registry) Disconnect(id string) {
 	}
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.mu.Unlock()
+
+	// Close this connection's session row (async; durable uptime history).
+	// Covers both graceful disconnects and evictStale (which calls Disconnect).
+	if r.store != nil {
+		saferun.Go(r.logger, "registry.closeSession", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := r.store.CloseProviderSession(ctx, id, "disconnect", time.Now()); err != nil {
+				r.logger.Warn("failed to close provider session", "provider_id", id, "error", err)
+			}
+		})
+	}
 
 	r.logger.Info("provider disconnected", "provider_id", id)
 }
@@ -2275,9 +2361,15 @@ func (r *Registry) ListModels() []AggregateModel {
 		attested := p.Attested
 		attestResult := p.AttestationResult
 		privateReady := providerSupportsPrivateTextLocked(p)
+		privateOnly := p.PrivateOnly
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
+			continue
+		}
+		// Private-only providers serve only their owner's self-route traffic, so
+		// they must not appear in or inflate the public /v1/models aggregation.
+		if privateOnly {
 			continue
 		}
 		if !r.trustMeetsMinimum(trust) || !privateReady {
@@ -2596,8 +2688,14 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	for _, p := range r.providers {
 		p.mu.Lock()
 
-		// Apply the same gates as snapshotProviderLocked.
+		// Apply the same gates as snapshotProviderLocked. Private-only machines
+		// never serve the public fleet, so they do not count toward public
+		// model capacity.
 		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		if p.PrivateOnly {
 			p.mu.Unlock()
 			continue
 		}

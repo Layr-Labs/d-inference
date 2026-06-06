@@ -30,6 +30,10 @@ interface AppState {
   selectedModel: string;
   models: Model[];
   sidebarOpen: boolean;
+  // "Use my machine" — prefer the user's own provider (free when it serves),
+  // falling back to the paid network when it can't (sends X-Darkbloom-Route:
+  // prefer). Not free-only — that strict ceiling is the per-key self_route_only.
+  useMyMachine: boolean;
 
   // Actions
   createChat: () => string;
@@ -42,6 +46,7 @@ interface AppState {
   setSelectedModel: (model: string) => void;
   setModels: (models: Model[]) => void;
   setSidebarOpen: (open: boolean) => void;
+  setUseMyMachine: (on: boolean) => void;
   updateChatTitle: (chatId: string, title: string) => void;
 }
 
@@ -57,6 +62,7 @@ export const useStore = create<AppState>()(
       selectedModel: "",
       models: [],
       sidebarOpen: typeof window !== "undefined" ? window.innerWidth >= 640 : true,
+      useMyMachine: false,
 
       createChat: () => {
         const id = generateId();
@@ -147,6 +153,7 @@ export const useStore = create<AppState>()(
         });
       },
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
+      setUseMyMachine: (on) => set({ useMyMachine: on }),
       updateChatTitle: (chatId, title) =>
         set((s) => ({
           chats: s.chats.map((c) =>
@@ -165,6 +172,7 @@ export const useStore = create<AppState>()(
         activeChatId: state.activeChatId,
         selectedModel: state.selectedModel,
         sidebarOpen: state.sidebarOpen,
+        useMyMachine: state.useMyMachine,
       }),
     }
   )

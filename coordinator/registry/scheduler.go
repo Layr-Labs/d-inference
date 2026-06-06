@@ -229,8 +229,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	defer p.mu.Unlock()
 
 	// Re-check capacity under the provider lock in case another goroutine
-	// changed the pending set between snapshot and reservation.
-	if !r.providerCanAdmitLocked(p, model) {
+	// changed the pending set between snapshot and reservation. relaxTrust
+	// mirrors selection: the trust floor (and private-only admission) is relaxed
+	// only when this is the caller's own machine — for exclusive self-route
+	// (always owned here) or for prefer when the winner happens to be owned.
+	owned := p.AccountID != "" && p.AccountID == pr.OwnerAccountID
+	relaxTrust := pr.SelfRouteOnly || (pr.PreferOwner && owned)
+	if !r.providerCanAdmitLocked(p, model, relaxTrust) {
 		return nil, RoutingDecision{
 			Model:                   model,
 			CandidateCount:          candidateCount,
@@ -293,6 +298,12 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	capacityRejections := 0
 	tooLargeRejections := 0
 	for _, p := range r.providers {
+		owned := providerOwnedBy(p, pr.OwnerAccountID)
+		// Exclusive self-route: restrict to the caller's own machines and never
+		// fall back to the public fleet.
+		if pr.SelfRouteOnly && !owned {
+			continue
+		}
 		if len(allowedSerials) > 0 {
 			if !providerMatchesAllowedSerial(p, allowedSerials) {
 				continue
@@ -301,7 +312,11 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
 		}
-		snap, ok := r.snapshotProviderLocked(p, model)
+		// Relax the hardware-trust floor ONLY for the caller's own (possibly
+		// un-enrolled) machine — whether exclusive self-route or prefer — never
+		// for public providers.
+		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
+		snap, ok := r.snapshotProviderLocked(p, model, relaxTrust)
 		if !ok {
 			continue
 		}
@@ -323,14 +338,31 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		return nil, candidateCount, capacityRejections, tooLargeRejections
 	}
 
+	// Prefer-with-fallback: if the caller asked to prefer their own machine and
+	// at least one owned candidate can serve, choose among owned candidates
+	// only; otherwise fall back to the full pool (a public provider, charged
+	// normally). Exclusive self-route already filtered to owned above.
+	pool := candidates
+	if pr.PreferOwner {
+		owned := make([]*routingCandidate, 0, len(candidates))
+		for _, c := range candidates {
+			if providerOwnedBy(c.provider, pr.OwnerAccountID) {
+				owned = append(owned, c)
+			}
+		}
+		if len(owned) > 0 {
+			pool = owned
+		}
+	}
+
 	var best *routingCandidate
-	for _, c := range candidates {
+	for _, c := range pool {
 		if best == nil || c.costMs < best.costMs {
 			best = c
 		}
 	}
-	nearTies := make([]*routingCandidate, 0, len(candidates))
-	for _, c := range candidates {
+	nearTies := make([]*routingCandidate, 0, len(pool))
+	for _, c := range pool {
 		if math.Abs(c.costMs-best.costMs) <= nearTieCostWindowMs {
 			nearTies = append(nearTies, c)
 		}
@@ -385,6 +417,59 @@ func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool
 	return false
 }
 
+// providerOwnedBy reports whether p is owned by accountID. Ownership is the
+// coordinator-stamped Provider.AccountID (set at registration from the device
+// auth token), never a client-supplied value — so it cannot be forged by a
+// caller. An empty accountID never matches.
+func providerOwnedBy(p *Provider, accountID string) bool {
+	if p == nil || accountID == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.AccountID != "" && p.AccountID == accountID
+}
+
+// OwnedProviderSummary reports, for the given account, how many of its
+// currently-connected providers are online and how many can serve `model`.
+// It powers self-route pre-flight error messaging: distinguishing "your
+// machine is offline" from "your machine can't serve this model". The
+// model-serving check applies the same privacy/runtime/challenge gates as
+// routing but deliberately ignores the hardware-trust gate, which self-route
+// relaxes for a caller's own machine. "Linked but offline" providers are not
+// counted here (they are not in the registry); callers detect zero linked
+// machines via store.ListProvidersByAccount.
+func (r *Registry) OwnedProviderSummary(accountID, model string) (online, servesModel int) {
+	if accountID == "" {
+		return 0, 0
+	}
+	now := time.Now()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+		if p.AccountID == "" || p.AccountID != accountID {
+			p.mu.Unlock()
+			continue
+		}
+		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		online++
+		serves := r.providerServesCatalogModelLocked(p, model) &&
+			p.RuntimeVerified &&
+			providerSupportsPrivateTextLocked(p) &&
+			!p.LastChallengeVerified.IsZero() &&
+			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		p.mu.Unlock()
+		if serves {
+			servesModel++
+		}
+	}
+	return online, servesModel
+}
+
 // logRoutingDecision emits a structured debug-level record of the
 // winning candidate and its cost breakdown. Cheap when the level is
 // disabled, since slog short-circuits before formatting.
@@ -410,7 +495,16 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 	)
 }
 
-func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSnapshot, bool) {
+// snapshotProviderLocked builds a routing snapshot for p, returning ok=false
+// when p fails any structural/privacy/capacity gate. selfRouteOwner is true
+// when this is a self-route request and p is owned by the requesting account.
+// It (1) drops the hardware-trust floor to TrustNone — a personal Mac will not
+// be MDM/MDA enrolled, so without this it would be unroutable to its own owner
+// — and (2) admits a private-only machine, which is otherwise excluded from
+// the public fleet. Every privacy-critical gate (RuntimeVerified, private-text
+// support, challenge freshness) still applies, so plaintext is never exposed
+// and only the genuinely-signed provider binary serves.
+func (r *Registry) snapshotProviderLocked(p *Provider, model string, selfRouteOwner bool) (routingSnapshot, bool) {
 	now := time.Now()
 
 	p.mu.Lock()
@@ -422,7 +516,16 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return routingSnapshot{}, false
 	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+	// A private-only machine never serves the public fleet — only its owner's
+	// self-route requests.
+	if p.PrivateOnly && !selfRouteOwner {
+		return routingSnapshot{}, false
+	}
+	minTrust := r.MinTrustLevel
+	if selfRouteOwner {
+		minTrust = TrustNone
+	}
+	if trustRank(p.TrustLevel) < trustRank(minTrust) {
 		return routingSnapshot{}, false
 	}
 	if !p.RuntimeVerified {
@@ -778,11 +881,18 @@ func providerModelIDs(p *Provider) []string {
 	return ids
 }
 
-func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
+func (r *Registry) providerCanAdmitLocked(p *Provider, model string, selfRouteOwner bool) bool {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified {
+	if p.PrivateOnly && !selfRouteOwner {
+		return false
+	}
+	minTrust := r.MinTrustLevel
+	if selfRouteOwner {
+		minTrust = TrustNone
+	}
+	if trustRank(p.TrustLevel) < trustRank(minTrust) || !p.RuntimeVerified {
 		return false
 	}
 	if !providerSupportsPrivateTextLocked(p) {
@@ -868,12 +978,18 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		p.mu.Lock()
 
-		// Structural gates (same as snapshotProviderLocked).
+		// Structural gates (same as snapshotProviderLocked). This pre-flight
+		// only runs for public (non-self-route) requests, so private-only
+		// machines are excluded unconditionally.
 		if !r.providerServesCatalogModelLocked(p, model) {
 			p.mu.Unlock()
 			continue
 		}
 		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		if p.PrivateOnly {
 			p.mu.Unlock()
 			continue
 		}

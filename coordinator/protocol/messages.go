@@ -105,6 +105,7 @@ type RegisterMessage struct {
 	PrefillTPS              float64         `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
 	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
 	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
+	PrivateOnly             bool            `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
 	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
@@ -202,6 +203,13 @@ type InferenceResponseChunkMessage struct {
 type UsageInfo struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	// ReasoningTokens is the subset of CompletionTokens spent on
+	// reasoning/analysis content (gpt-oss analysis channel, <think>
+	// blocks, etc.), counted with the model tokenizer on the provider.
+	// 0 when the response carried no reasoning content. Mirrors
+	// `reasoningTokens` in the Swift UsageInfo. omitempty keeps the wire
+	// shape unchanged for non-reasoning responses and older providers.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // InferenceCompleteMessage signals the provider finished generating.

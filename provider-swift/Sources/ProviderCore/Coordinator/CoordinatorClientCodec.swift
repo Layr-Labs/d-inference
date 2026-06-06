@@ -22,7 +22,8 @@ public enum CoordinatorClientCodec {
             pythonHash: config.runtimeHashes?.pythonHash,
             runtimeHash: config.runtimeHashes?.runtimeHash,
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],
-            privacyCapabilities: privacyCapabilities
+            privacyCapabilities: privacyCapabilities,
+            privateOnly: config.privateOnly
         ))
     }
 

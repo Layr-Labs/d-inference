@@ -50,6 +50,7 @@ export default function ChatPage() {
     updateChatTitle,
     selectedModel,
     setModels,
+    useMyMachine,
   } = useStore();
 
   const { ready, authenticated, apiKeyReady, login } = useAuth();
@@ -198,7 +199,8 @@ export default function ChatPage() {
               setIsStreaming(false);
             },
           },
-          abort.signal
+          abort.signal,
+          { selfRoute: useMyMachine }
         );
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -227,6 +229,7 @@ export default function ChatPage() {
       updateChatTitle,
       selectedModel,
       addToast,
+      useMyMachine,
     ]
   );
 
@@ -306,7 +309,8 @@ export default function ChatPage() {
             setIsStreaming(false);
           },
         },
-        abort.signal
+        abort.signal,
+        { selfRoute: useMyMachine }
       ).catch((err) => {
         if ((err as Error).name !== "AbortError") {
           trackEvent("chat_error", {
@@ -321,7 +325,7 @@ export default function ChatPage() {
         setIsStreaming(false);
       });
     },
-    [activeChat, isStreaming, authenticated, apiKeyReady, selectedModel, updateMessage, appendToMessage, appendToThinking, addToast]
+    [activeChat, isStreaming, authenticated, apiKeyReady, selectedModel, updateMessage, appendToMessage, appendToThinking, addToast, useMyMachine]
   );
 
   return (

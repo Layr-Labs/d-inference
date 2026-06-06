@@ -102,6 +102,12 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	)
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
+		// Private-only providers serve only their owner's self-route traffic and
+		// are not part of the public fleet, so they must not inflate public
+		// totals, provider counts, or per-model provider counts.
+		if p.PrivateOnly {
+			return
+		}
 		totalRequests += p.Stats.RequestsServed
 		totalTokensGen += p.Stats.TokensGenerated
 		totalGPUCores += p.Hardware.GPUCores
@@ -289,6 +295,11 @@ func (s *Server) aggregateProviderLocations() (
 	regions := make(map[regionKey]*regionAgg)
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
+		// Private-only providers are not part of the public fleet — keep them off
+		// the public network map and out of its provider/hardware counts.
+		if p.PrivateOnly {
+			return
+		}
 		if p.Location == nil || p.Location.CountryCode == "" {
 			unknownProviders++
 			return

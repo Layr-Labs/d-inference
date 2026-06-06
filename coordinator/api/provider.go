@@ -1280,6 +1280,48 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	}
 
 	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
+
+	// Free settlement when an OWNED machine served the request. Two paths reach
+	// here:
+	//   - FreeSelfRoute (exclusive self-route): the router only ever picks owned
+	//     providers, so a mismatch should be impossible (machine unlinked
+	//     mid-flight); a mismatch falls back to paid to close the "mark free,
+	//     serve elsewhere" hole.
+	//   - PreferOwner (prefer-with-fallback): the request may legitimately have
+	//     fallen back to a PUBLIC provider, in which case paid settlement is the
+	//     correct, expected outcome — not an error.
+	// Either way: free iff the provider that actually served it is owned by the
+	// requesting account. Ownership is read from the serving provider object
+	// (stable across deregistration), not a fresh lookup.
+	freeSelfRoute := false
+	if pr.FreeSelfRoute || pr.PreferOwner {
+		serving := s.registry.GetProvider(providerID)
+		if serving == nil {
+			serving = provider
+		}
+		serving.Mu().Lock()
+		servingOwner := serving.AccountID
+		serving.Mu().Unlock()
+		if servingOwner != "" && servingOwner == pr.ConsumerKey {
+			// Owned machine served it → free. For PreferOwner this also fully
+			// refunds the up-front reservation below (totalCost 0 < reserved).
+			freeSelfRoute = true
+			totalCost = 0
+			providerPayout = 0
+		} else if pr.FreeSelfRoute {
+			// Exclusive self-route should never be served by a non-owned
+			// provider — surface it and settle as paid (defense-in-depth).
+			s.logger.Error("self-route completion served by a non-owned provider — settling as paid (defense-in-depth)",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+				"serving_owner", servingOwner,
+				"consumer_key", pr.ConsumerKey,
+			)
+		}
+		// PreferOwner served by a public provider is the normal fallback — no
+		// log, settle as paid against the reservation.
+	}
+
 	billingFinalized := true
 
 	// Settle billing against the pre-flight reservation. All balance
@@ -1355,7 +1397,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
 			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
 		}
-	} else {
+	} else if !freeSelfRoute {
 		start := time.Now()
 		if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
@@ -1369,6 +1411,18 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 					"cost_micro_usd", totalCost,
 					"error", err,
 				)
+			}
+			// If this was a self-route request that FELL BACK to paid settlement
+			// (marked free at dispatch, but mid-flight ownership revalidation
+			// failed), the owner has no balance because self-route skips
+			// reservation — so a failed charge means no money was collected and
+			// we must NOT credit the provider from an unfunded balance. Zero the
+			// cost and payout. (Other no-reservation paths — e.g. admin /
+			// platform-covered usage — keep their existing payout behavior.)
+			if pr.FreeSelfRoute {
+				totalCost = 0
+				providerPayout = 0
+				s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model})
 			}
 		}
 		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
@@ -1388,9 +1442,18 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// Persist usage to DB asynchronously — billing has already been
 		// settled above, so this INSERT is not on the critical path. KeyID
 		// carries per-key usage/spend attribution (empty for legacy callers).
-		saferun.Go(s.logger, "recordUsage", func() {
-			s.store.RecordUsageFull(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
-		})
+		//
+		// Skip the persistent (public-stats-feeding) row for FREE self-route:
+		// it is private, owner-only traffic and must not appear in the public
+		// /stats time-series, request-location, or flow aggregations. Private-only
+		// providers only ever serve free self-route, so this also keeps their
+		// traffic out of public stats. The owner still sees it via the in-memory
+		// RecordUsage above (their session/transparency view).
+		if !freeSelfRoute {
+			saferun.Go(s.logger, "recordUsage", func() {
+				s.store.RecordUsageFull(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
+			})
+		}
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
@@ -1421,7 +1484,12 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			publicKey := p.PublicKey
 			p.Mu().Unlock()
 
-			if accountID != "" {
+			// Credit the provider only when there is an actual payout. A zero
+			// payout means either free self-route (consumer == provider account)
+			// or an uncollected charge (e.g. a self-route paid-fallback whose
+			// owner had no balance) — in both cases we must not record a
+			// (zero-value) earning row. Mirrors the platformFee > 0 guard below.
+			if accountID != "" && !freeSelfRoute && providerPayout > 0 {
 				settlementWg.Add(1)
 				go func() {
 					defer settlementWg.Done()

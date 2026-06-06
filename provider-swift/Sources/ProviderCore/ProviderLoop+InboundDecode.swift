@@ -55,4 +55,21 @@ extension ProviderLoop {
             return try decoder.decode(OpenAIChatCompletionRequest.self, from: normalized)
         }
     }
+
+    /// Pull the OpenAI `reasoning_effort` field out of a raw request body.
+    ///
+    /// This lives outside `OpenAIChatCompletionRequest` (the upstream type
+    /// doesn't model it), so we decode it directly. Returns a trimmed,
+    /// non-empty string or `nil`. The value is passed through verbatim —
+    /// the valid set (`low`/`medium`/`high` for gpt-oss; other models
+    /// differ) is enforced by each model's chat template, not here, so we
+    /// stay format-agnostic rather than hardcoding a per-model allowlist.
+    internal static func extractReasoningEffort(from data: Data) -> String? {
+        struct Probe: Decodable { let reasoning_effort: String? }
+        guard let probe = try? JSONDecoder().decode(Probe.self, from: data),
+              let raw = probe.reasoning_effort
+        else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }

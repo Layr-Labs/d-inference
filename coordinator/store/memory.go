@@ -113,6 +113,10 @@ type MemoryStore struct {
 	// Provider log reports
 	logReports   []LogReport
 	logReportSeq int64
+
+	// Provider sessions (connect→disconnect uptime history)
+	providerSessions   []ProviderSession
+	providerSessionSeq int64
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -207,6 +211,12 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	if n := len(s.providerPayouts); n > maxEntries {
 		s.providerPayouts = append([]ProviderPayout(nil), s.providerPayouts[n-maxEntries:]...)
 	}
+	if n := len(s.providerSessions); n > maxEntries {
+		s.providerSessions = append([]ProviderSession(nil), s.providerSessions[n-maxEntries:]...)
+	}
+	if n := len(s.logReports); n > maxEntries {
+		s.logReports = append([]LogReport(nil), s.logReports[n-maxEntries:]...)
+	}
 
 	// Expired device codes can be dropped outright.
 	now := time.Now()
@@ -253,6 +263,7 @@ func (s *MemoryStore) CreateAPIKey(accountID string, opts APIKeyCreate) (string,
 		ITPMLimit:      cloneInt64Ptr(opts.ITPMLimit),
 		OTPMLimit:      cloneInt64Ptr(opts.OTPMLimit),
 		AllowedModels:  append([]string(nil), opts.AllowedModels...),
+		SelfRouteOnly:  opts.SelfRouteOnly,
 		ExpiresAt:      cloneTimePtr(opts.ExpiresAt),
 		CreatedAt:      time.Now().UTC(),
 	}
@@ -386,6 +397,7 @@ func (s *MemoryStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*APIKe
 	rec.ITPMLimit = cloneInt64Ptr(mutable.ITPMLimit)
 	rec.OTPMLimit = cloneInt64Ptr(mutable.OTPMLimit)
 	rec.AllowedModels = append([]string(nil), mutable.AllowedModels...)
+	rec.SelfRouteOnly = mutable.SelfRouteOnly
 	rec.ExpiresAt = cloneTimePtr(mutable.ExpiresAt)
 	return cloneAPIKey(rec), nil
 }
@@ -440,6 +452,7 @@ func (s *MemoryStore) RotateAPIKey(accountID, id string) (string, *APIKey, error
 		ITPMLimit:      cloneInt64Ptr(old.ITPMLimit),
 		OTPMLimit:      cloneInt64Ptr(old.OTPMLimit),
 		AllowedModels:  append([]string(nil), old.AllowedModels...),
+		SelfRouteOnly:  old.SelfRouteOnly,
 		ExpiresAt:      cloneTimePtr(old.ExpiresAt),
 		CreatedAt:      time.Now().UTC(),
 	}
@@ -2632,6 +2645,105 @@ func (s *MemoryStore) GetLogReport(id int64) (*LogReport, error) {
 		}
 	}
 	return nil, fmt.Errorf("log report %d not found", id)
+}
+
+// OpenProviderSession records the start of a provider connection. Idempotent
+// (mirrors the postgres ON CONFLICT DO NOTHING): if a row for sessionID already
+// exists — duplicate register, or open racing behind a close — it does nothing.
+func (s *MemoryStore) OpenProviderSession(_ context.Context, sessionID, serial, accountID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.providerSessions {
+		if s.providerSessions[i].SessionID == sessionID {
+			return nil
+		}
+	}
+	now := time.Now()
+	s.providerSessionSeq++
+	s.providerSessions = append(s.providerSessions, ProviderSession{
+		ID:           s.providerSessionSeq,
+		SessionID:    sessionID,
+		SerialNumber: serial,
+		AccountID:    accountID,
+		ConnectedAt:  now,
+		LastSeen:     now,
+	})
+	return nil
+}
+
+// TouchProviderSession updates the open session's last_seen and backfills
+// serial/account if they were unknown at open time.
+func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial, accountID string, lastSeen time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.providerSessions {
+		ps := &s.providerSessions[i]
+		if ps.SessionID == sessionID && ps.DisconnectedAt == nil {
+			ps.LastSeen = lastSeen
+			if ps.SerialNumber == "" {
+				ps.SerialNumber = serial
+			}
+			if ps.AccountID == "" {
+				ps.AccountID = accountID
+			}
+			// At most one open row per sessionID (OpenProviderSession
+			// guarantees it), so stop scanning once matched.
+			return nil
+		}
+	}
+	return nil
+}
+
+// CloseProviderSession marks the session for sessionID as ended. Upsert
+// semantics (mirrors postgres): closes an open row; leaves an already-closed row
+// untouched; and if the row is missing (close raced ahead of open) inserts an
+// already-closed row so no permanently-open session can be orphaned.
+func (s *MemoryStore) CloseProviderSession(_ context.Context, sessionID, reason string, when time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.providerSessions {
+		ps := &s.providerSessions[i]
+		if ps.SessionID == sessionID {
+			if ps.DisconnectedAt == nil {
+				t := when
+				ps.DisconnectedAt = &t
+				ps.DisconnectReason = reason
+			}
+			return nil
+		}
+	}
+	t := when
+	s.providerSessionSeq++
+	s.providerSessions = append(s.providerSessions, ProviderSession{
+		ID:               s.providerSessionSeq,
+		SessionID:        sessionID,
+		ConnectedAt:      when,
+		LastSeen:         when,
+		DisconnectedAt:   &t,
+		DisconnectReason: reason,
+	})
+	return nil
+}
+
+// CloseOpenProviderSessions closes any sessions still open, setting
+// disconnected_at to the last heartbeat (startup reconcile).
+func (s *MemoryStore) CloseOpenProviderSessions(_ context.Context, staleBefore time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for i := range s.providerSessions {
+		ps := &s.providerSessions[i]
+		// Only close genuinely-orphaned sessions (last heartbeat older than the
+		// staleness fence); a session still touched by another live instance
+		// during a blue-green deploy stays fresh and is left open.
+		if ps.DisconnectedAt == nil && ps.LastSeen.Before(staleBefore) {
+			t := ps.LastSeen
+			ps.DisconnectedAt = &t
+			ps.DisconnectReason = "coordinator_restart"
+			n++
+		}
+	}
+	return n, nil
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.

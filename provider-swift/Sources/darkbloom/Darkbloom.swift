@@ -24,6 +24,7 @@ struct Darkbloom: AsyncParsableCommand {
             Status.self,
             Doctor.self,
             Models.self,
+            Local.self,
             Login.self,
             Logout.self,
             Benchmark.self,

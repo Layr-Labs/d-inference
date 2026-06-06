@@ -451,12 +451,9 @@ func main() {
 		}
 	}
 
-	// Configure configuration-profile signing (optional). When a code-signing
-	// identity (e.g. an Apple Developer ID Application .p12) is provided via
-	// PROFILE_SIGNING_P12_B64 / PROFILE_SIGNING_P12_PATH (+ _PASSWORD), the
-	// /v1/enroll .mobileconfig is CMS-signed so macOS shows it as signed/trusted
-	// at install time. Misconfiguration logs and degrades to serving unsigned —
-	// it never blocks startup or enrollment.
+	// Optional profile signing: when a code-signing identity (e.g. Developer ID
+	// Application .p12) is supplied via PROFILE_SIGNING_P12_B64/_PATH (+ _PASSWORD),
+	// CMS-sign the /v1/enroll .mobileconfig. Misconfig degrades to unsigned.
 	if signer := profilesign.LoadFromEnv(logger); signer != nil {
 		srv.SetProfileSigner(signer)
 	} else {

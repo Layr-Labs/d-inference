@@ -52,12 +52,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	body := []byte(generateCombinedProfile(req.SerialNumber, baseURL))
 
-	// CMS-sign the profile so macOS shows it as signed/trusted at install time
-	// instead of the red "Unsigned" warning. Signing is purely an install-time
-	// trust concern and does not affect the SCEP/MDM/ACME chain inside the
-	// profile. If no signing identity is configured, or signing fails for any
-	// reason, fall back to serving the unsigned profile so enrollment is never
-	// blocked — but make the failure loud (error log + metric) so it is caught.
+	// CMS-sign the profile so macOS shows it as signed at install time. Signing is
+	// install-time trust only (does not affect the SCEP/MDM/ACME chain inside). If
+	// no signer is configured or signing fails, serve unsigned so enrollment is
+	// never blocked — but make the failure loud (error log + metric).
 	switch {
 	case s.profileSigner == nil:
 		s.ddIncr("enroll.profile_unsigned", nil)

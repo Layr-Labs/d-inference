@@ -1,18 +1,13 @@
-// Package profilesign signs Apple configuration profiles (.mobileconfig) with a
-// CMS / PKCS#7 SignedData structure so macOS and iOS display them as signed and
-// trusted at install time instead of the red "Unsigned" warning.
+// Package profilesign CMS-signs Apple configuration profiles (.mobileconfig) so
+// macOS/iOS show them as signed/trusted at install time instead of "Unsigned".
 //
-// Signing is optional and purely an install-time, cosmetic-trust concern: it
-// does NOT change, strengthen, or weaken the SCEP / MDM / ACME attestation chain
-// carried inside the profile. When no signing identity is configured the caller
-// is expected to serve profiles unsigned (the historical behaviour), so a
-// misconfigured or expired certificate never blocks provider enrollment.
-//
-// The trust the user sees depends only on the signing certificate chaining to a
-// CA already in the device trust store. In practice that means a code-signing
-// certificate (e.g. an Apple "Developer ID Application" identity, which chains to
-// the Apple Root CA built into every Mac). The bundle should also carry the
-// issuing intermediate(s) so the device can build the full path.
+// Signing is optional and install-time trust only: it does not affect the
+// SCEP/MDM/ACME attestation chain inside the profile, and a missing or broken
+// identity must degrade to serving unsigned (never block enrollment). The trust
+// shown depends solely on the signing cert chaining to a CA already on the
+// device — i.e. a code-signing cert such as an Apple "Developer ID Application"
+// (chains to the Apple Root CA on every Mac); include the issuing intermediate
+// in the bundle so the device can build the full path.
 package profilesign
 
 import (
@@ -147,19 +142,15 @@ func (s *Signer) Expired(now time.Time) bool {
 	return now.Before(s.leaf.NotBefore) || now.After(s.leaf.NotAfter)
 }
 
-// LoadFromEnv constructs a Signer from environment variables, returning nil (and
-// no error) when no signing identity is configured so the caller can degrade to
-// serving unsigned profiles. Any misconfiguration is logged and also yields nil
-// rather than aborting startup.
+// LoadFromEnv builds a Signer from the environment, returning nil (no error) when
+// unconfigured or misconfigured so the caller degrades to serving unsigned
+// profiles rather than aborting startup. Bundle source (first match wins):
 //
-// Configuration (first match wins for the bundle source):
-//
-//	PROFILE_SIGNING_P12_B64       base64 (standard or URL-safe) DER PKCS#12 bundle
-//	PROFILE_SIGNING_P12_PATH      filesystem path to a DER PKCS#12 bundle
+//	PROFILE_SIGNING_P12_B64       base64 (std or URL-safe) DER PKCS#12 bundle
+//	PROFILE_SIGNING_P12_PATH      path to a DER PKCS#12 bundle
 //	PROFILE_SIGNING_P12_PASSWORD  bundle password (may be empty)
 //
-// The base64 form mirrors MDM_PUSH_P12_B64 so the same KMS-injection pipeline can
-// carry it.
+// The base64 form mirrors MDM_PUSH_P12_B64 for the same KMS pipeline.
 func LoadFromEnv(logger *slog.Logger) *Signer {
 	b64 := strings.TrimSpace(os.Getenv("PROFILE_SIGNING_P12_B64"))
 	path := strings.TrimSpace(os.Getenv("PROFILE_SIGNING_P12_PATH"))

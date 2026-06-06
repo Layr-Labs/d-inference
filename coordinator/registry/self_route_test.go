@@ -216,3 +216,129 @@ func TestPrivateOnlyProviderExcludedFromPublicFleet(t *testing.T) {
 		t.Fatalf("selected %q, want %q", selected.ID, priv.ID)
 	}
 }
+
+// TestPreferOwnerPicksOwnedWhenAvailable verifies the prefer-with-fallback mode
+// chooses the caller's own machine even when a faster public provider exists.
+func TestPreferOwnerPicksOwnedWhenAvailable(t *testing.T) {
+	reg := New(testLogger())
+	model := "prefer-model"
+
+	owned := makeSchedulerProvider(t, reg, "owned", model, 40)  // slower
+	other := makeSchedulerProvider(t, reg, "other", model, 400) // much faster, public
+	setProviderAccount(owned, "acct-A")
+	setProviderAccount(other, "acct-B")
+
+	req := &PendingRequest{
+		RequestID:          "req-prefer",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		PreferOwner:        true,
+		OwnerAccountID:     "acct-A",
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("prefer returned nil despite an owned, capable provider")
+	}
+	if selected.ID != owned.ID {
+		t.Fatalf("selected %q, want owned %q (prefer must pick own machine over a faster public one)", selected.ID, owned.ID)
+	}
+	// Both providers are eligible candidates; prefer just narrows the WINNER.
+	if decision.CandidateCount != 2 {
+		t.Fatalf("decision.CandidateCount=%d, want 2 (public provider is still an eligible fallback)", decision.CandidateCount)
+	}
+}
+
+// TestPreferOwnerFallsBackToPublic verifies prefer routes to the paid fleet when
+// the caller owns no eligible provider — unlike exclusive self-route, which
+// returns nil. This is the "never a dead end" guarantee.
+func TestPreferOwnerFallsBackToPublic(t *testing.T) {
+	reg := New(testLogger())
+	model := "prefer-fallback-model"
+
+	other := makeSchedulerProvider(t, reg, "other", model, 200) // public, not owned
+	setProviderAccount(other, "acct-B")
+
+	req := &PendingRequest{
+		RequestID:          "req-prefer-fb",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		PreferOwner:        true,
+		OwnerAccountID:     "acct-A", // owns nothing
+	}
+	selected, _ := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("prefer returned nil; it must fall back to the public fleet")
+	}
+	if selected.ID != other.ID {
+		t.Fatalf("selected %q, want public fallback %q", selected.ID, other.ID)
+	}
+}
+
+// TestPreferOwnerRelaxesTrustForOwnMachineOnly verifies the per-provider trust
+// relaxation: an un-enrolled OWNED machine is selected under prefer, but an
+// un-enrolled PUBLIC machine of the same low trust is not.
+func TestPreferOwnerRelaxesTrustForOwnMachineOnly(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustHardware
+	model := "prefer-trust-model"
+
+	owned := makeSchedulerProvider(t, reg, "owned-lowtrust", model, 100)
+	setProviderAccount(owned, "acct-A")
+	lowerTrust(owned, TrustSelfSigned) // un-enrolled personal Mac
+
+	req := &PendingRequest{
+		RequestID:          "req-prefer-trust",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		PreferOwner:        true,
+		OwnerAccountID:     "acct-A",
+	}
+	selected, _ := reg.ReserveProviderEx(model, req)
+	if selected == nil || selected.ID != owned.ID {
+		t.Fatalf("prefer must relax the trust floor for the caller's own machine; got %v", selected)
+	}
+
+	// A low-trust PUBLIC machine (different account) must NOT be relaxed.
+	reg2 := New(testLogger())
+	reg2.MinTrustLevel = TrustHardware
+	pub := makeSchedulerProvider(t, reg2, "pub-lowtrust", model, 100)
+	setProviderAccount(pub, "acct-B")
+	lowerTrust(pub, TrustSelfSigned)
+	req2 := &PendingRequest{RequestID: "r2", Model: model, RequestedMaxTokens: 128, PreferOwner: true, OwnerAccountID: "acct-A"}
+	if selected, _ := reg2.ReserveProviderEx(model, req2); selected != nil {
+		t.Fatalf("prefer must NOT relax trust for a non-owned public provider; got %q", selected.ID)
+	}
+}
+
+// TestListModelsExcludesPrivateOnly verifies a private-only machine does not
+// inflate the public /v1/models aggregation.
+func TestListModelsExcludesPrivateOnly(t *testing.T) {
+	reg := New(testLogger())
+	model := "stats-model"
+
+	pub := makeSchedulerProvider(t, reg, "pub", model, 100)
+	setProviderAccount(pub, "acct-B")
+	priv := makeSchedulerProvider(t, reg, "priv", model, 100)
+	setProviderAccount(priv, "acct-A")
+	setProviderPrivateOnly(priv)
+
+	models := reg.ListModels()
+	var found *AggregateModel
+	for i := range models {
+		if models[i].ID == model {
+			found = &models[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("public model missing from ListModels")
+	}
+	if found.Providers != 1 {
+		t.Fatalf("ListModels Providers=%d, want 1 (private-only machine must be excluded)", found.Providers)
+	}
+}
+
+func lowerTrust(p *Provider, level TrustLevel) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.TrustLevel = level
+}

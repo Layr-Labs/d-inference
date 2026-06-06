@@ -18,22 +18,42 @@ online.
 
 ## Opting in
 
-Two signals, both OpenAI-client-safe:
+Three intents, all OpenAI-client-safe. Two are EXCLUSIVE (owned-only, free, no
+fallback); one is PREFER (owned-first, paid fallback so it's never a dead end):
 
-| Signal | Scope | Notes |
-|---|---|---|
-| `X-Darkbloom-Route: self` header | Per request | Invisible to the OpenAI body schema; works with any SDK (`extra_headers`). Never enters the (optionally sealed) request body. |
-| API key `self_route_only: true` | Per key (hard ceiling) | Every request on the key self-routes and is free; the key can never spend balance or reach the public fleet, regardless of header. |
+| Signal | Mode | Scope | Notes |
+|---|---|---|---|
+| `X-Darkbloom-Route: self` header | Exclusive | Per request | Owned-only, free, no fallback. Invisible to the OpenAI body schema; works with any SDK (`extra_headers`). Never enters the (optionally sealed) body. |
+| API key `self_route_only: true` | Exclusive | Per key (hard ceiling) | Every request on the key is owned-only and free; it can never spend balance or reach the public fleet, regardless of header. |
+| `X-Darkbloom-Route: prefer` header | Prefer | Per request | Routes to your own machine whenever it can serve (free); falls back to the **paid** public fleet when it can't. Takes a normal reservation up front (refunded if your machine serves), so the account needs a balance. |
 
 ```bash
+# Strict free-or-error (exclusive):
 curl https://api.darkbloom.dev/v1/chat/completions \
   -H "Authorization: Bearer dk-..." \
   -H "X-Darkbloom-Route: self" \
   -d '{"model":"gpt-oss-20b","messages":[{"role":"user","content":"hi"}]}'
+
+# Prioritized with paid fallback (prefer):
+curl https://api.darkbloom.dev/v1/chat/completions \
+  -H "Authorization: Bearer dk-..." \
+  -H "X-Darkbloom-Route: prefer" \
+  -d '{"model":"gpt-oss-20b","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-In the console UI: the **My Machine** toggle in the chat composer, or the
-**"My Machine only — free"** checkbox when creating/editing an API key.
+In the console UI: the **My Machine** toggle in the chat composer sends
+`prefer` (prioritized, never stuck), and the **"My Machine only — free"**
+checkbox on an API key sets the strict `self_route_only` ceiling.
+
+### Exclusive vs prefer
+
+- **Exclusive** (`self` / `self_route_only`): guarantees $0 — if your machine
+  can't serve you get an explicit error, never a charge. Works at zero balance.
+- **Prefer** (`prefer`): prioritizes your machine for free but never strands you
+  — it falls back to the paid fleet. Because it might pay, it reserves up front
+  (refunded when your machine serves), so the account must hold a balance.
+  Routing relaxes the hardware-trust floor for your own (possibly un-enrolled)
+  machine only, never for public providers.
 
 ## Ownership model (the crux)
 

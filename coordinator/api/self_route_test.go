@@ -265,3 +265,157 @@ func TestSelfRoute_SettlementMismatchFallsBackToPaid(t *testing.T) {
 		t.Fatalf("owner balance %d not reduced from %d — mismatch must settle as paid, not free", finalBalance, initialBalance)
 	}
 }
+
+// sendRoutedRequest posts a chat completion with an explicit X-Darkbloom-Route
+// value ("" = no header). Returns the HTTP status code.
+func sendRoutedRequest(t *testing.T, ctx context.Context, tsURL, model, apiKey, route string) int {
+	t.Helper()
+	body := `{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":true}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, tsURL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if route != "" {
+		req.Header.Set("X-Darkbloom-Route", route)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http request: %v", err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body)
+	return resp.StatusCode
+}
+
+// TestSelfRoute_PreferFreeOnOwnedMachine: with X-Darkbloom-Route: prefer and a
+// funded owner whose own machine serves the request, the up-front reservation is
+// fully refunded (net free) and the provider accrues no payout. (prefer takes a
+// reservation up front so a paid fallback could settle, unlike exclusive
+// self-route which skips it — so the owner must have a balance.)
+func TestSelfRoute_PreferFreeOnOwnedMachine(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "prefer-owner"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	_ = st.Credit(owner, 100_000_000, store.LedgerDeposit, "test-setup")
+	initial := ledger.Balance(owner)
+
+	model := "prefer-owned-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("prefer status = %d, want 200", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if bal := ledger.Balance(owner); bal != initial {
+		t.Errorf("owner balance = %d, want %d (prefer served by own machine must be net free)", bal, initial)
+	}
+	earnings, _ := st.GetAccountEarnings(owner, 100)
+	if len(earnings) != 0 {
+		t.Errorf("provider earnings = %d, want 0 when own machine served a prefer request", len(earnings))
+	}
+}
+
+// TestSelfRoute_PreferFallsBackToPaid: with prefer and an owner who owns NO
+// machine, the request falls back to the paid public fleet and is charged —
+// unlike exclusive self-route, which would 409. "Never a dead end."
+func TestSelfRoute_PreferFallsBackToPaid(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const caller = "prefer-owns-nothing"
+	raw, _, err := st.CreateAPIKey(caller, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	_ = st.Credit(caller, 100_000_000, store.LedgerDeposit, "test-setup")
+	initial := ledger.Balance(caller)
+
+	model := "prefer-fallback-paid-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, "someone-else") // caller owns nothing
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("prefer fallback status = %d, want 200 (must fall back to paid, not 409)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if bal := ledger.Balance(caller); bal >= initial {
+		t.Errorf("caller balance = %d, want < %d (paid fallback must charge)", bal, initial)
+	}
+}
+
+// TestSelfRoute_UnfundedFallbackDoesNotPayProvider is the Part 3 regression: a
+// FreeSelfRoute request whose ownership revalidation fails at settlement AND
+// whose owner has NO balance must not record paid usage or credit the provider
+// from an unfunded balance.
+func TestSelfRoute_UnfundedFallbackDoesNotPayProvider(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const owner = "unfunded-owner"
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Fatalf("precondition: balance = %d, want 0", bal)
+	}
+
+	model := "unfunded-mismatch-model"
+	conn, providerID, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	pr := &registry.PendingRequest{
+		RequestID:             "unfunded-req",
+		Model:                 model,
+		ConsumerKey:           owner,
+		OwnerAccountID:        owner,
+		SelfRouteOnly:         true,
+		FreeSelfRoute:         true,
+		EstimatedPromptTokens: 50,
+		RequestedMaxTokens:    128,
+		AcceptedCh:            make(chan struct{}, 1),
+		ChunkCh:               make(chan string, 1),
+		CompleteCh:            make(chan protocol.UsageInfo, 1),
+		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+	}
+	selected, _ := srv.registry.ReserveProviderEx(model, pr)
+	if selected == nil {
+		t.Fatal("failed to reserve the owned provider")
+	}
+	// Unlink the machine to a stranger before completion → ownership revalidation
+	// fails → paid fallback → charge fails (owner unfunded).
+	if p := srv.registry.GetProvider(providerID); p != nil {
+		p.Mu().Lock()
+		p.AccountID = "a-stranger"
+		p.Mu().Unlock()
+	}
+	srv.handleComplete(providerID, selected, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: pr.RequestID,
+		Usage:     protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50},
+	})
+
+	// The (stranger) provider must NOT be credited from an unfunded balance.
+	earnings, _ := st.GetAccountEarnings("a-stranger", 100)
+	if len(earnings) != 0 {
+		t.Errorf("provider earnings = %d, want 0 (no payout from an unfunded balance)", len(earnings))
+	}
+}

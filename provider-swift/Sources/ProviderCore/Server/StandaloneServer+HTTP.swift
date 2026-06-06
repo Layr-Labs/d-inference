@@ -39,11 +39,23 @@ extension StandaloneServer {
     /// middleware onto a router returned by
     /// `MLXServerApplication.buildRouter`; wrapping the built
     /// responder is the supported alternative.
-    nonisolated func makeApplication() -> Application<LocalAuthResponder<CORSResponder<RouterResponder<BasicRequestContext>>>> {
-        // I1: route through the single atomic-acquire entry point so a
-        // concurrent eviction cannot pick the just-loaded model
-        // between `ensureModelLoaded` and the reservation bump.
-        let engine = MultiModelBatchSchedulerEngine(
+    nonisolated func makeApplication() -> LocalInferenceApplication {
+        // Delegates to the shared builder (see LocalInferenceHTTP.swift) so the
+        // standalone (`--local`) and unified (`--local-endpoint`) endpoints serve
+        // byte-identical HTTP behaviour. Only the registry-backing closures
+        // differ — here they reach into this actor's own scheduler cache.
+        //
+        // I1: route through the single atomic-acquire entry point so a concurrent
+        // eviction cannot pick the just-loaded model between `ensureModelLoaded`
+        // and the reservation bump.
+        //
+        // P2 #3: `availableModels` returns the ADVERTISED catalog (not the
+        // currently-loaded subset) — discovery clients call `/v1/models` before
+        // their first request to pick a valid id; an empty list at cold start
+        // would make them give up.
+        makeLocalInferenceApplication(
+            config: LocalInferenceHTTPConfig(host: config.host, port: config.port, authToken: config.authToken),
+            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
             acquire: { [weak self] modelId in
                 guard let self else {
                     throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
@@ -56,35 +68,10 @@ extension StandaloneServer {
                 }
                 return try await self.resolveTokenizer(modelId)
             },
-            // P2 #3: `/v1/models` must return the ADVERTISED catalog
-            // (everything the operator configured this provider to
-            // serve), not the currently-loaded subset. Discovery
-            // clients call `/v1/models` before their first request to
-            // pick a valid model id — an empty list at startup (when
-            // no model is resident yet) would make them give up. The
-            // pre-rewrite implementation returned the catalog; the
-            // MLXLMServer adoption regressed to `loadedModelIds()`.
-            // This restores the intended semantics.
             availableModels: { [weak self] in
                 guard let self else { return [] }
                 return await self.advertisedModelIds()
-            },
-            defaultMaxTokens: Self.schedulerDefaultMaxTokens
-        )
-
-        let service = MLXOpenAIService(engine: engine)
-        let router = MLXServerApplication.buildRouter(service: service)
-        let corsResponder = CORSResponder(inner: router.buildResponder())
-        // Auth is the outermost layer so an unauthenticated request is rejected
-        // before reaching the engine. Pass-through when no token is configured.
-        let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
-
-        return Application(
-            responder: authedResponder,
-            configuration: .init(
-                address: .hostname(config.host, port: Int(config.port)),
-                serverName: "darkbloom-provider"
-            )
+            }
         )
     }
 }

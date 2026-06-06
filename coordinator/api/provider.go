@@ -1475,8 +1475,12 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			publicKey := p.PublicKey
 			p.Mu().Unlock()
 
-			// Free self-route earns no payout (consumer == provider account).
-			if accountID != "" && !freeSelfRoute {
+			// Credit the provider only when there is an actual payout. A zero
+			// payout means either free self-route (consumer == provider account)
+			// or an uncollected charge (e.g. a self-route paid-fallback whose
+			// owner had no balance) — in both cases we must not record a
+			// (zero-value) earning row. Mirrors the platformFee > 0 guard below.
+			if accountID != "" && !freeSelfRoute && providerPayout > 0 {
 				settlementWg.Add(1)
 				go func() {
 					defer settlementWg.Done()

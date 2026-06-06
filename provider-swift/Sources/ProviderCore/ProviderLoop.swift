@@ -72,6 +72,10 @@ public struct ProviderLoopConfig: Sendable {
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
+    /// When set, the provider also serves a local OpenAI-compatible HTTP
+    /// endpoint off the SAME loaded models it serves to the coordinator
+    /// (unified mode). nil = coordinator-only (the default).
+    public let localEndpoint: LocalInferenceHTTPConfig?
 
     public init(
         coordinatorURL: String,
@@ -80,7 +84,8 @@ public struct ProviderLoopConfig: Sendable {
         config: ProviderConfig,
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
-        modelHashes: [String: String] = [:]
+        modelHashes: [String: String] = [:],
+        localEndpoint: LocalInferenceHTTPConfig? = nil
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
@@ -89,6 +94,7 @@ public struct ProviderLoopConfig: Sendable {
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
+        self.localEndpoint = localEndpoint
     }
 }
 
@@ -117,6 +123,15 @@ public actor ProviderLoop {
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
     private var requestToModel: [String: String] = [:]
+
+    /// Per-model count of in-flight requests from the LOCAL HTTP endpoint
+    /// (unified mode). Local requests aren't tracked in `requestToModel`
+    /// (that's coordinator-request bookkeeping), so this is what keeps eviction
+    /// and the idle monitor from pulling a model out from under a local stream.
+    private var localReservations: [String: Int] = [:]
+
+    /// The running local OpenAI HTTP server task (unified mode), if any.
+    private var localServerTask: Task<Void, Never>?
 
     /// Guards against concurrent loads. `modelsLoading` tracks which models
     /// are mid-load; waiters suspend until the first loader finishes.
@@ -301,6 +316,14 @@ public actor ProviderLoop {
         // Keep the network stack alive during sleep for APN/MDM push delivery.
         networkAssertion.acquire()
         defer { networkAssertion.release() }
+
+        // Unified mode: also expose a local OpenAI endpoint off the same loaded
+        // models. Started before the coordinator connection so local clients can
+        // serve immediately; torn down on shutdown.
+        if let localEndpoint = loopConfig.localEndpoint {
+            startLocalEndpoint(localEndpoint)
+        }
+        defer { stopLocalEndpoint() }
 
         // 1. Apply security hardening
         try await applySecurityHardening()
@@ -1357,7 +1380,7 @@ public actor ProviderLoop {
         for (modelId, slot) in modelSlots {
             if modelsUnloading.contains(modelId) { continue }
             let elapsed = now - slot.lastInferenceAt
-            let hasInflight = modelsWithInflight.contains(modelId)
+            let hasInflight = modelsWithInflight.contains(modelId) || hasLocalReservation(modelId)
             if IdleTimeoutPolicy.shouldUnload(
                 elapsed: elapsed,
                 timeout: timeout,
@@ -1371,6 +1394,7 @@ public actor ProviderLoop {
         for modelId in candidates {
             let currentInflight = Set(requestToModel.values)
             guard !currentInflight.contains(modelId),
+                  !hasLocalReservation(modelId),
                   !modelsUnloading.contains(modelId),
                   let slot = modelSlots[modelId] else { continue }
 
@@ -1565,7 +1589,7 @@ public actor ProviderLoop {
         if modelSlots.count >= maxModelSlots {
             let modelsWithInflight = Set(requestToModel.values)
             let evictable = modelSlots.filter {
-                !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key)
+                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
             }
             if evictable.isEmpty {
                 isLoadingAny = false
@@ -1756,7 +1780,7 @@ public actor ProviderLoop {
         while await availableMemoryGb() < requiredGb {
             let modelsWithInflight = Set(requestToModel.values)
             let candidate = modelSlots
-                .filter { !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key) }
+                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) }
                 .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
 
             guard let (modelId, _) = candidate else {
@@ -1813,7 +1837,7 @@ public actor ProviderLoop {
         // evicted to make room, so its presence means we must NOT pre-reject.
         let modelsWithInflight = Set(requestToModel.values)
         let hasEvictable = modelSlots.contains {
-            !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key)
+            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
         }
 
         // Mirrors evictUntilAvailable's terminal failure: not enough free
@@ -2094,3 +2118,124 @@ struct ProviderLogger: Sendable {
 import MLX
 import MLXLLM
 import MLXLMCommon
+
+// MARK: - Unified local endpoint
+
+/// Serves a local OpenAI-compatible HTTP endpoint alongside coordinator serving,
+/// backed by the SAME loaded models (`modelSlots`) so weights load once and
+/// local + coordinator requests feed the same continuous-batching engine and the
+/// same `GlobalKVCacheBudget` (so reported capacity reflects local load too).
+///
+/// Kept as a same-file extension so it can reach `ProviderLoop`'s private model
+/// registry / load path without loosening their access for the whole module.
+extension ProviderLoop {
+    /// Start the local endpoint (idempotent). Runs the shared HTTP app in a
+    /// child task; its registry closures reach back into this actor.
+    func startLocalEndpoint(_ cfg: LocalInferenceHTTPConfig) {
+        guard localServerTask == nil else { return }
+        let app = makeLocalInferenceApplication(
+            config: cfg,
+            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+            acquire: { [weak self] modelId in
+                guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId) }
+                return try await self.acquireModelForLocal(modelId)
+            },
+            tokenizerProvider: { [weak self] modelId in
+                guard let self else { throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization }
+                return try await self.resolveTokenizerForLocal(modelId)
+            },
+            availableModels: { [weak self] in
+                guard let self else { return [] }
+                return await self.advertisedLocalModelIds()
+            }
+        )
+        let log = logger
+        localServerTask = Task {
+            do {
+                try await app.runService(gracefulShutdownSignals: [])
+            } catch is CancellationError {
+                // expected on shutdown
+            } catch {
+                log.error("local endpoint server failed: \(error.localizedDescription)")
+            }
+        }
+        logger.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
+    }
+
+    /// Stop the local endpoint server, if running.
+    func stopLocalEndpoint() {
+        localServerTask?.cancel()
+        localServerTask = nil
+    }
+
+    /// Acquire a resident model for a LOCAL request: ensure it's loaded, then
+    /// hold a local reservation (released by the engine when the stream ends) so
+    /// the idle monitor and load-gate eviction can't pull it mid-stream. Loading
+    /// goes through the same `ensureModelLoaded` gate as coordinator requests, so
+    /// the shared `GlobalKVCacheBudget` and memory admission apply uniformly.
+    func acquireModelForLocal(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        do {
+            try await ensureModelLoaded(modelId: modelId)
+        } catch let err as InferenceError {
+            // Map load failures to the engine's typed errors (404 / 503).
+            switch err {
+            case .invalidModelDirectory, .noModelLoaded:
+                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+            default:
+                throw MultiModelBatchSchedulerEngineError.queueFull("local capacity unavailable for \(modelId)")
+            }
+        }
+        guard let slot = modelSlots[modelId] else {
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        }
+        localReservations[modelId, default: 0] += 1
+        modelSlots[modelId]?.lastInferenceAt = .now
+        let release: @Sendable (String) async -> Void = { [weak self] mid in
+            await self?.releaseLocalReservation(mid)
+        }
+        return MultiModelBatchSchedulerEngine.AcquiredModel(
+            scheduler: slot.scheduler,
+            tokenizer: slot.tokenizer,
+            releaseToken: OneShotRelease(release: release, modelId: modelId),
+            modelType: loopConfig.models.first(where: { $0.id == modelId })?.modelType
+        )
+    }
+
+    /// Drop one local in-flight reservation for a model.
+    func releaseLocalReservation(_ modelId: String) {
+        guard let n = localReservations[modelId] else { return }
+        if n <= 1 {
+            localReservations.removeValue(forKey: modelId)
+        } else {
+            localReservations[modelId] = n - 1
+        }
+        modelSlots[modelId]?.lastInferenceAt = .now
+    }
+
+    /// Whether a model currently has a local request in flight. Used by the idle
+    /// monitor and eviction so they never unload a model a local stream is using.
+    func hasLocalReservation(_ modelId: String) -> Bool {
+        (localReservations[modelId] ?? 0) > 0
+    }
+
+    /// Resolve a tokenizer for the local token-utility endpoints. Read-only, so
+    /// (unlike `acquireModelForLocal`) it takes no reservation.
+    func resolveTokenizerForLocal(_ modelId: String?) async throws -> TokenizerHandle {
+        if let modelId {
+            guard let slot = modelSlots[modelId] else {
+                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+            }
+            return slot.tokenizer
+        }
+        if let firstKey = modelSlots.keys.sorted().first, let slot = modelSlots[firstKey] {
+            return slot.tokenizer
+        }
+        throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
+    }
+
+    /// The advertised `/v1/models` catalog for the local endpoint — everything
+    /// this provider is configured to serve, not just the resident subset.
+    func advertisedLocalModelIds() -> [String] {
+        loopConfig.models.map { $0.id }.sorted()
+    }
+}

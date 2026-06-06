@@ -198,3 +198,53 @@ func TestQueueDifferentModelsMaxSize(t *testing.T) {
 		t.Errorf("expected ErrQueueFull for model-a, got %v", err)
 	}
 }
+
+// TestFailQueuedRequestsForModelSkipsSelfRoute verifies that a PUBLIC unservable
+// verdict fails public waiters but leaves exclusive self-route waiters queued —
+// their own (busy) machine may still serve them.
+func TestFailQueuedRequestsForModelSkipsSelfRoute(t *testing.T) {
+	q := NewRequestQueue(10, 30*time.Second)
+	model := "queue-self-route"
+
+	public := &QueuedRequest{
+		RequestID:  "pub",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "pub", Model: model},
+	}
+	selfRoute := &QueuedRequest{
+		RequestID:  "self",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "self", Model: model, SelfRouteOnly: true, OwnerAccountID: "acct-A"},
+	}
+	if err := q.Enqueue(public); err != nil {
+		t.Fatalf("enqueue public: %v", err)
+	}
+	if err := q.Enqueue(selfRoute); err != nil {
+		t.Fatalf("enqueue self-route: %v", err)
+	}
+
+	failed := q.FailQueuedRequestsForModel(model)
+	if failed != 1 {
+		t.Fatalf("failed=%d, want 1 (only the public waiter)", failed)
+	}
+	// Public waiter received a nil (rejection).
+	select {
+	case p := <-public.ResponseCh:
+		if p != nil {
+			t.Fatal("public waiter should have received nil rejection")
+		}
+	default:
+		t.Fatal("public waiter was not failed")
+	}
+	// Self-route waiter is still queued (not failed).
+	if q.QueueSize(model) != 1 {
+		t.Fatalf("queue size = %d, want 1 (self-route waiter must remain)", q.QueueSize(model))
+	}
+	select {
+	case <-selfRoute.ResponseCh:
+		t.Fatal("self-route waiter must NOT be failed by a public-unservable verdict")
+	default:
+	}
+}

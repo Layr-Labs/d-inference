@@ -18,15 +18,22 @@ fallback to the relayed self-route.
 ## Run it
 
 ```bash
-darkbloom start --local                 # serve locally on 127.0.0.1:8000
+darkbloom start --local                 # local server ONLY (no coordinator)
 darkbloom start --local --port 8080     # custom port
 darkbloom start --local --bind 100.x.y.z  # bind a tailnet IP for same-account devices
 darkbloom start --local --no-auth       # disable the API key (trusted/airgapped only)
+
+# Unified mode: serve the public fleet AND a local endpoint at once, off the
+# SAME loaded models (weights load once; local + coordinator requests share one
+# continuous-batching engine and KV budget):
+darkbloom start --local-endpoint                 # coordinator + local on :8000
+darkbloom start --local-endpoint --port 8080 --bind 100.x.y.z
 ```
 
-`--local` runs the OpenAI server **only** (no coordinator connection). It mints a
-persistent bearer token (`~/.darkbloom/local_token`, `0600`) and writes a
-discovery record (`~/.darkbloom/local.json`, `0600`).
+`--local` runs the OpenAI server **only** (no coordinator connection).
+`--local-endpoint` runs it **alongside** the coordinator connection. Both mint a
+persistent bearer token (`~/.darkbloom/local_token`, `0600`); `--local` also
+writes a discovery record (`~/.darkbloom/local.json`, `0600`).
 
 ## Find the endpoint
 
@@ -118,12 +125,24 @@ const { response, via } = await chatCompletionWithFallback(
 They are complementary modes a client picks by reachability — `localFirst.ts`
 does exactly that.
 
+## Serve publicly AND locally at once (`--local-endpoint`)
+
+`--local-endpoint` is the unified mode: the provider keeps its coordinator
+connection (serving the public fleet) **and** exposes the local OpenAI endpoint
+off the **same** loaded models. There is no double-load — both front-ends
+dispatch through ONE shared `BatchScheduler` registry and `GlobalKVCacheBudget`,
+so a local request and a coordinator request feed the same continuous-batching
+engine and count against the same capacity the coordinator sees. Local in-flight
+requests hold a reservation that keeps the idle monitor / load-gate from evicting
+a model mid-stream. The HTTP layer is identical to `--local` (shared builder), so
+auth, CORS, and error mapping behave the same.
+
 ## Limitations / future
 
-- `--local` is a distinct serve mode: it does not also connect to the coordinator
-  (coordinator mode builds its own scheduler, so running both would load each
-  model twice). A shared-scheduler "serve publicly **and** locally at once" mode
-  is future work.
+- `--local` and `--local-endpoint` mint the same bearer token, but only `--local`
+  writes the `~/.darkbloom/local.json` discovery record today; for unified mode
+  the endpoint URL is printed at startup. Writing the discovery record from
+  unified mode (so `darkbloom local` finds it too) is a small follow-on.
 - The hosted browser console can't read `~/.darkbloom/local.json`; a settings
   field to paste the `darkbloom local` URL + token (then prefer it via
   `localFirst.ts`) is a natural follow-on.

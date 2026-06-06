@@ -71,10 +71,27 @@ public enum LaunchAgent: Sendable {
     ///   - coordinatorURL: WebSocket URL for the coordinator (ws:// or wss://).
     ///   - models: Model IDs to serve (passed as --model flags to `serve`).
     ///   - idleTimeout: Optional idle timeout in minutes (passed as --idle-timeout).
+    /// Options for the unified local OpenAI endpoint (serve the public fleet AND
+    /// a local endpoint off the same loaded models). `enabled == false` keeps the
+    /// daemon coordinator-only.
+    public struct LocalEndpointOptions: Sendable {
+        public let enabled: Bool
+        public let port: UInt16
+        public let bind: String
+        public let noAuth: Bool
+        public init(enabled: Bool = false, port: UInt16 = 8000, bind: String = "127.0.0.1", noAuth: Bool = false) {
+            self.enabled = enabled
+            self.port = port
+            self.bind = bind
+            self.noAuth = noAuth
+        }
+    }
+
     public static func installAndStart(
         coordinatorURL: String,
         models: [String] = [],
-        idleTimeout: UInt64? = nil
+        idleTimeout: UInt64? = nil,
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
         // Determine the binary path (current executable)
         let binaryPath = currentExecutablePath()
@@ -92,7 +109,8 @@ public enum LaunchAgent: Sendable {
             binaryPath: binaryPath,
             coordinatorURL: coordinatorURL,
             models: models,
-            idleTimeout: idleTimeout
+            idleTimeout: idleTimeout,
+            localEndpoint: localEndpoint
         )
         try loadService()
     }
@@ -128,7 +146,8 @@ public enum LaunchAgent: Sendable {
         binaryPath: String,
         coordinatorURL: String,
         models: [String],
-        idleTimeout: UInt64?
+        idleTimeout: UInt64?,
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
         let plist = plistPath()
         let parentDir = plist.deletingLastPathComponent()
@@ -154,6 +173,14 @@ public enum LaunchAgent: Sendable {
         if let timeout = idleTimeout {
             programArguments.append("--idle-timeout")
             programArguments.append("\(timeout)")
+        }
+        if localEndpoint.enabled {
+            programArguments.append("--local-endpoint")
+            programArguments.append(contentsOf: ["--port", "\(localEndpoint.port)"])
+            programArguments.append(contentsOf: ["--bind", localEndpoint.bind])
+            if localEndpoint.noAuth {
+                programArguments.append("--no-auth")
+            }
         }
 
         let plistDict: [String: Any] = [

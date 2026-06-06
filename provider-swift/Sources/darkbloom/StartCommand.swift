@@ -34,13 +34,16 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Run a local OpenAI-compatible HTTP server only; do not connect to the coordinator.")
     var local = false
 
-    @Option(help: "Local server port (used with --local).")
+    @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients.")
+    var localEndpoint = false
+
+    @Option(help: "Local server port (used with --local / --local-endpoint).")
     var port: UInt16 = 8000
 
-    @Option(help: "Bind address for --local (default 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).")
+    @Option(help: "Bind address for --local / --local-endpoint (default 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).")
     var bind: String = "127.0.0.1"
 
-    @Flag(help: "Disable local API-key auth for --local (NOT recommended; trusted/airgapped use only).")
+    @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
 
     mutating func run() async throws {
@@ -280,6 +283,17 @@ struct Start: AsyncParsableCommand {
             print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
         }
 
+        // Unified mode: build the local-endpoint config when --local-endpoint is
+        // set. Reuses the same persistent bearer token + bind/port options as
+        // --local; --no-auth opts out of the token (trusted/airgapped only).
+        var localEndpointConfig: LocalInferenceHTTPConfig?
+        if localEndpoint {
+            let token = noAuth ? nil : (try? LocalEndpoint.loadOrCreateToken())
+            localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
+            let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `darkbloom local`)" : "  (auth disabled)")")
+        }
+
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL,
             hardware: hardware,
@@ -287,7 +301,8 @@ struct Start: AsyncParsableCommand {
             config: config,
             authToken: authToken,
             runtimeHashes: runtimeHashes,
-            modelHashes: modelHashes
+            modelHashes: modelHashes,
+            localEndpoint: localEndpointConfig
         )
 
         do {
@@ -496,7 +511,10 @@ struct Start: AsyncParsableCommand {
         try LaunchAgent.installAndStart(
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,
-            idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil)
+            idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil),
+            localEndpoint: LaunchAgent.LocalEndpointOptions(
+                enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
+            )
         )
 
         let logPath = LaunchAgent.logPath().path
@@ -504,6 +522,10 @@ struct Start: AsyncParsableCommand {
         print("  Models:  \(selectedModelIDs.count)")
         for id in selectedModelIDs {
             print("    \(id)")
+        }
+        if localEndpoint {
+            let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+            print("  Local:   \(shownURL) (unified mode — run `darkbloom local` for the API key)")
         }
         print("  Logs:    \(logPath)")
         print()

@@ -1,8 +1,9 @@
 /// PrefixCacheManager — orchestrates the three-tier prefix KV cache
-/// (design §4, phase P3). One manager per loaded model, owned by the
-/// BatchScheduler (the BatchScheduler wiring itself is the next step and
-/// is NOT in this file — this is the standalone, fully-testable
-/// orchestration layer).
+/// (design §4). One manager per loaded model, owned by the BatchScheduler
+/// (which builds it in `makeBatchedEngine`, drives `lookup`/`store` from the
+/// submit + capture paths, and tears it down via `deregisterFromAccountant` on
+/// unload). This file is the standalone, fully-testable orchestration layer;
+/// the scheduler wiring lives in `BatchScheduler`.
 ///
 /// Tiers, in lookup order:
 ///   1. RAM  — decrypted `[any KVCache]` (PrefixCacheRAM), keyed by

@@ -30,7 +30,7 @@ private final class MutableIntHolder: @unchecked Sendable {
     func set(_ newValue: Int) { lock.lock(); v = newValue; lock.unlock() }
 }
 
-/// CODEX-R5 test helper: a one-shot async gate. A task `await gate.wait()`s and
+/// A one-shot async gate. A task `await gate.wait()`s and
 /// parks until another task calls `release()`. `isWaiting()` lets the driver
 /// confirm a waiter has actually parked (deterministic, no fixed sleeps).
 private actor TestGate {
@@ -143,12 +143,12 @@ func bug1_engineTierReportsUsageAndGetsSignaled() async throws {
         try? await Task.sleep(for: .milliseconds(20)); waited += 1
         usage = await accountant._usageForTest(modelKey: modelKey) ?? 0
     }
-    #expect(usage > 0, "BUG-1-FIX: saveBlock must push engine-tier on-disk usage to the accountant (was \(usage))")
+    #expect(usage > 0, "SaveBlock must push engine-tier on-disk usage to the accountant (was \(usage))")
 }
 
 @Test
 func codexR6Medium_engineTierLoadBlockDropRefreshesAccountant() async throws {
-    // CODEX-R6 MEDIUM regression: when the engine tier's loadBlock drops a corrupt
+    // When the engine tier's loadBlock drops a corrupt
     // / wrong-model file, it must refresh the accountant (the engine-tier analog
     // of the checkpoint tier's lookup-drop refresh). tick() skips registered (owned) dirs,
     // so without the push the accountant keeps counting the deleted bytes. Revert
@@ -196,7 +196,7 @@ func codexR6Medium_engineTierLoadBlockDropRefreshesAccountant() async throws {
     waited = 0
     while after > 0, waited < 100 { try? await Task.sleep(for: .milliseconds(20)); waited += 1; after = await accountant._usageForTest(modelKey: modelKey) ?? -1 }
     #expect(after == 0,
-        "CODEX-R6-MEDIUM: engine-tier loadBlock drops must refresh accountant usage to 0 (was \(after))")
+        "Engine-tier loadBlock drops must refresh accountant usage to 0 (was \(after))")
 }
 
 // MARK: - BUG-3: Path traversal (MAJOR)
@@ -247,7 +247,7 @@ func bug3_unownedEvictionDoesNotTraverseRelativePath() async {
 
     // Verify the sentinel was NOT removed (fileURL from collectKVFiles, not relativePath).
     let sentinelExistsAfter = FileManager.default.fileExists(atPath: sentinelURL.path)
-    #expect(sentinelExistsAfter, "BUG-3-FIX: sentinel outside kvRoot must NOT be deleted")
+    #expect(sentinelExistsAfter, "Sentinel outside kvRoot must NOT be deleted")
 
     // The real unowned files SHOULD have been evicted, BUT the test setup is
     // artificial: the poisoned index entry confuses the deletion path (it tries
@@ -312,7 +312,7 @@ func bug4_staleUnownedSummaryPrunedAfterEviction() async {
     // (over-evicts the owned model to compensate for the phantom 600). AFTER FIX:
     // ghost is pruned, only file2 is selected, owned model NOT signaled.
     let calls1 = await owner1.snapshotCalls()
-    #expect(calls1.isEmpty, "BUG-4-FIX: owned model must NOT be signaled (ghost pruned, only file2 re-selected)")
+    #expect(calls1.isEmpty, "Owned model must NOT be signaled (ghost pruned, only file2 re-selected)")
 
     // Verify file2 was deleted (second enforcement without the ghost re-selection).
     let file2Exists = FileManager.default.fileExists(atPath: modelDir.appendingPathComponent("file2.\(EncryptedKVStore.fileExtension)").path)
@@ -369,18 +369,18 @@ func bug5_storeDirectSSDFallbackWhenRamRejects() async throws {
 
     // store() should succeed despite RAM rejection (direct SSD write fallback).
     let stored = await mgr.store(tokens: tokens, checkpointLength: 8, caches: SendableKVCaches(caches))
-    #expect(stored == true, "BUG-5-FIX: store must succeed via direct SSD write when RAM rejects but persistable")
+    #expect(stored == true, "Store must succeed via direct SSD write when RAM rejects but persistable")
 
     // Verify the SSD file was actually written by checking the nested dir structure.
     let modelHashPrefix = String(binding.modelHash.replacingOccurrences(of: "sha256:", with: "").prefix(12))
     let nestedDir = dir.appendingPathComponent(modelHashPrefix, isDirectory: true)
     let filesWritten = (try? FileManager.default.contentsOfDirectory(atPath: nestedDir.path)) ?? []
     let kvFiles = filesWritten.filter { $0.hasSuffix(".\(EncryptedKVStore.fileExtension)") }
-    #expect(kvFiles.count == 1, "BUG-5-FIX: direct SSD write must create 1 file on disk")
+    #expect(kvFiles.count == 1, "Direct SSD write must create 1 file on disk")
 
     // Verify the entry is retrievable via lookup (it may be in RAM or SSD).
     let hit = await mgr.lookup(tokens: tokens)
-    #expect(hit != nil, "BUG-5-FIX: direct-SSD-written entry must be retrievable")
+    #expect(hit != nil, "Direct-SSD-written entry must be retrievable")
     #expect(hit?.tokenCount == 8)
 
     try? FileManager.default.removeItem(at: dir)
@@ -428,7 +428,7 @@ func bug6_enforceReentrancyGuarded() async {
     let calls = await owner1.snapshotCalls()
     // BEFORE FIX: calls.count == 2 (double eviction). AFTER FIX: calls.count <= 2, but if 2 they're sequential (not reentered).
     // The reentrancy guard ensures no over-eviction: the second pass re-reads globalTotal() after the first freed.
-    #expect(calls.count <= 2, "BUG-6-FIX: reentrancy guard prevents double-eviction from stale state")
+    #expect(calls.count <= 2, "Reentrancy guard prevents double-eviction from stale state")
 
     try? FileManager.default.removeItem(at: kvRoot)
 }
@@ -478,7 +478,7 @@ func bug7_reloadDoesNotDoubleCount() async {
 
     // Verify owner is NOT spuriously signaled (2000 < 3000 ceiling).
     let calls2 = await owner2.snapshotCalls()
-    #expect(calls2.isEmpty, "BUG-7-FIX: reload must not double-count (2000 < 3000 ceiling)")
+    #expect(calls2.isEmpty, "Reload must not double-count (2000 < 3000 ceiling)")
 
     try? FileManager.default.removeItem(at: kvRoot)
 }
@@ -596,7 +596,7 @@ func codexHigh2_ownedEvictionDoesNotDoubleSubtract() async throws {
     // notifyAccountant already reconciles runningTotals; the accountant must not
     // subtract `freed` again). Kept to exercise the live evict→notify path.
     #expect(recorded >= 0 && recorded <= actual + oneFile,
-        "CODEX-HIGH-2: accountant usage (\(recorded)) tracks on-disk bytes (\(actual)) after eviction")
+        "Accountant usage (\(recorded)) tracks on-disk bytes (\(actual)) after eviction")
 }
 
 @Test
@@ -618,11 +618,11 @@ func codexHigh3_closedManagerRejectsLateWrites() async {
     let stored = await mgr.store(tokens: Array(0..<10), checkpointLength: 8,
                                  caches: SendableKVCaches(attnBlock(layers: 2, tokens: 8)))
     let written = await mgr.flushToSSD()
-    #expect(!stored, "CODEX-HIGH-3: store() after deregister must be rejected (closed)")
-    #expect(written == 0, "CODEX-HIGH-3: flushToSSD() after deregister must write nothing")
+    #expect(!stored, "Store() after deregister must be rejected (closed)")
+    #expect(written == 0, "FlushToSSD() after deregister must write nothing")
     let files = (try? FileManager.default.contentsOfDirectory(atPath: modelDir.path)) ?? []
     let kvFiles = files.filter { $0.hasSuffix(".\(EncryptedKVStore.fileExtension)") }
-    #expect(kvFiles.isEmpty, "CODEX-HIGH-3: no SSD file should be written after deregister")
+    #expect(kvFiles.isEmpty, "No SSD file should be written after deregister")
 }
 
 @Test
@@ -633,7 +633,7 @@ func codexMedium_globalDiskCeilingFromEnv() {
     setenv("DARKBLOOM_PREFIX_CACHE_DISK_GB", "20", 1)
     defer { unsetenv("DARKBLOOM_PREFIX_CACHE_DISK_GB") }
     #expect(BatchScheduler.prefixCacheGlobalDiskCeiling() == 20 * 1_073_741_824,
-        "CODEX-MEDIUM: DISK_GB=20 must yield a 20 GiB global ceiling")
+        "DISK_GB=20 must yield a 20 GiB global ceiling")
     unsetenv("DARKBLOOM_PREFIX_CACHE_DISK_GB")
     #expect(BatchScheduler.prefixCacheGlobalDiskCeiling() == 0,
         "unset ⇒ 0 (accountant derives from free disk)")
@@ -643,7 +643,7 @@ func codexMedium_globalDiskCeilingFromEnv() {
 
 @Test
 func codexR2High2_engineEvictionReconcilesAccountant() async {
-    // CODEX-R2 HIGH-2 regression: engine-tier evictForGlobalBudget must push
+    // Engine-tier evictForGlobalBudget must push
     // post-eviction usage to the accountant (publishUsageNow). Without it, the
     // accountant's runningTotals stay stale (pre-eviction) and it keeps
     // re-selecting already-deleted ghosts. After a forced engine eviction, the
@@ -687,12 +687,12 @@ func codexR2High2_engineEvictionReconcilesAccountant() async {
     let actual = diskBytes()
     #expect(actual > 0, "some blocks must survive (ceiling forces partial eviction)")
     #expect(recorded == actual,
-        "CODEX-R2-HIGH-2: after engine eviction, accountant usage (\(recorded)) must match real on-disk bytes (\(actual)) — engine tier must publishUsageNow")
+        "After engine eviction, accountant usage (\(recorded)) must match real on-disk bytes (\(actual)) — engine tier must publishUsageNow")
 }
 
 @Test
 func codexR2Medium_recursiveTempSweep() throws {
-    // CODEX-R2 MEDIUM regression: sweepStaleTempFiles must recurse into the
+    // SweepStaleTempFiles must recurse into the
     // checkpoint tier's nested <modelHash[:12]> subdir, not just the flat top.
     let kvRoot = tmpKVRoot()
     defer { try? FileManager.default.removeItem(at: kvRoot) }
@@ -715,7 +715,7 @@ func codexR2Medium_recursiveTempSweep() throws {
 
     #expect(!FileManager.default.fileExists(atPath: flatTemp.path), "flat temp must be swept")
     #expect(!FileManager.default.fileExists(atPath: nestedTemp.path),
-        "CODEX-R2-MEDIUM: NESTED temp must be swept (recursive)")
+        "NESTED temp must be swept (recursive)")
     #expect(FileManager.default.fileExists(atPath: realFile.path), "committed file must survive")
 }
 
@@ -723,7 +723,7 @@ func codexR2Medium_recursiveTempSweep() throws {
 
 @Test
 func codexR3High1_staleUpdateUsageIgnored() async {
-    // CODEX-R3 HIGH-1 regression: accountant updates must be token-scoped.
+    // Accountant updates must be token-scoped.
     // A stale detached push (from an older load that unloaded, or from a
     // stale checkpoint manager) must NOT clobber the current owner's usage.
     // Before fix: updateUsage(modelKey:...) blindly overwrites runningTotals/
@@ -762,12 +762,12 @@ func codexR3High1_staleUpdateUsageIgnored() async {
 
     // token2's usage must be unaffected (still 2000, not clobbered to 999).
     #expect(await accountant._usageForTest(modelKey: "m") == 2000,
-        "CODEX-R3-HIGH-1: stale updateUsage must be ignored (token2 still active)")
+        "Stale updateUsage must be ignored (token2 still active)")
 }
 
 @Test
 func codexR3High1_staleUpdateAfterDeregisterNoResurrect() async {
-    // CODEX-R3 HIGH-1 regression (variant): a stale updateUsage after BOTH
+    // A stale updateUsage after BOTH
     // tokens deregistered must NOT resurrect runningTotals["m"]. Before fix:
     // updateUsage(token:...) would still overwrite if the token was in registry.
     // After fix: NO-OP when the token is not the active one.
@@ -785,12 +785,12 @@ func codexR3High1_staleUpdateAfterDeregisterNoResurrect() async {
     await accountant.updateUsage(token: token1, totalBytes: 999, valueSummary: [])
     // Must NOT resurrect usage (still nil, not 999).
     #expect(await accountant._usageForTest(modelKey: "m") == nil,
-        "CODEX-R3-HIGH-1: stale updateUsage after deregister must NOT resurrect usage")
+        "Stale updateUsage after deregister must NOT resurrect usage")
 }
 
 @Test
 func codexR3High1_staleUpdateWithTwoLiveTokensIgnored() async {
-    // CODEX-R3 HIGH-1 regression (the LOAD-BEARING variant): this is the ONLY
+    // This is the ONLY
     // test that actually exercises the `activeToken[modelKey] == token.id`
     // guard. The sibling tests deregister token1 BEFORE the stale push, so the
     // pre-existing `registry[token.id]` guard catches them — removing the
@@ -833,12 +833,12 @@ func codexR3High1_staleUpdateWithTwoLiveTokensIgnored() async {
 
     // token2's usage must survive (2000, not clobbered to 999).
     #expect(await accountant._usageForTest(modelKey: "m") == 2000,
-        "CODEX-R3-HIGH-1: with two live tokens, a stale token's updateUsage must be a NO-OP")
+        "With two live tokens, a stale token's updateUsage must be a NO-OP")
 }
 
 @Test
 func codexR4High_enforceSignalsActiveOwnerNotStale() async {
-    // CODEX-R4 HIGH (C3): when over budget, enforceOnce must signal the ACTIVE
+    // When over budget, enforceOnce must signal the ACTIVE
     // owner for a modelKey — resolved via activeToken[modelKey] — not whatever
     // registry.values.first(where:) happens to return (undefined order). With
     // two live tokens for one modelKey (reload window), the STALE owner must
@@ -867,14 +867,14 @@ func codexR4High_enforceSignalsActiveOwnerNotStale() async {
 
     let calls1 = await owner1.snapshotCalls().count
     let calls2 = await owner2.snapshotCalls().count
-    #expect(calls2 >= 1, "CODEX-R4-C3: the ACTIVE owner (owner2) must be signaled to evict")
-    #expect(calls1 == 0, "CODEX-R4-C3: the STALE owner (owner1) must NOT be signaled")
+    #expect(calls2 >= 1, "The ACTIVE owner (owner2) must be signaled to evict")
+    #expect(calls1 == 0, "The STALE owner (owner1) must NOT be signaled")
 }
 
 #if DEBUG
 @Test
 func codexR4High_writeAfterDeregisterIsNotRecorded() async {
-    // CODEX-R4 HIGH (C1): if the manager is deregistered (closed=true) WHILE an
+    // If the manager is deregistered (closed=true) WHILE an
     // SSD write is in flight, the write completes but must NOT record the index
     // entry / notify the accountant — otherwise the file is an orphan recorded
     // in a dead manager's index (and a later index.save() could clobber a
@@ -923,19 +923,19 @@ func codexR4High_writeAfterDeregisterIsNotRecorded() async {
     // flushToSSD must report 0 newly-written (the close bailed before record).
     #expect(written == 0, "C1: flushToSSD must report 0 when closed during the write")
     #expect(await mgr._indexHasEntryForTest(digestHex: digestHex) == false,
-        "CODEX-R4-C1: a write that finished after deregister must NOT be recorded in the index")
+        "A write that finished after deregister must NOT be recorded in the index")
 
     // The orphaned file is reclaimable: a fresh manager on the SAME dir
     // reconciles it back into a valid index entry (counted + reusable).
     let fresh = await makeCkptMgrWithSSD(kvRoot: kvRoot, modelKey: "m1", accountant: accountant).0
     await fresh.reconcileWithDisk()
     #expect(await fresh._indexHasEntryForTest(digestHex: digestHex) == true,
-        "CODEX-R4-C1: a fresh manager's reconcile must reclaim the left-behind file")
+        "A fresh manager's reconcile must reclaim the left-behind file")
 }
 
 @Test
 func codexR5High_deregisterDrainsInFlightWritesBeforeReturning() async {
-    // CODEX-R5 HIGH regression: deregisterFromAccountant() must WAIT for in-flight
+    // DeregisterFromAccountant() must WAIT for in-flight
     // writes to land on disk before returning, so a new same-modelKey manager's
     // one-shot reconcileWithDisk (which loadModel runs only AFTER stopCurrentEngine
     // -> deregister fully returns) sees every file and re-indexes it. Without the
@@ -984,7 +984,7 @@ func codexR5High_deregisterDrainsInFlightWritesBeforeReturning() async {
         try? await Task.sleep(for: .milliseconds(10))
         if await mgr._drainWaiterCountForTest() > 0 { drained = true }
     }
-    #expect(drained, "CODEX-R5-HIGH: deregister must BLOCK in the drain while a write is in flight")
+    #expect(drained, "Deregister must BLOCK in the drain while a write is in flight")
 
     // Release the write → it lands/bails, finishWrite empties inFlightWrites,
     // the drain wakes, deregister returns. If the drain were missing this would
@@ -1000,13 +1000,13 @@ func codexR5High_deregisterDrainsInFlightWritesBeforeReturning() async {
         return n
     }
     #expect(onDiskFileCount(modelDir) == 1,
-        "CODEX-R5-HIGH: after deregister returns, the in-flight write's file is on disk (drained)")
+        "After deregister returns, the in-flight write's file is on disk (drained)")
 }
 #endif
 
 @Test
 func codexR5Medium_lookupDropOfCorruptFileRefreshesAccountant() async {
-    // CODEX-R5 MEDIUM regression: when a lookup discovers a corrupt/unusable SSD
+    // When a lookup discovers a corrupt/unusable SSD
     // file and drops it (file + index entry), it must also refresh the accountant
     // so the deleted bytes stop being counted. Before the fix the five loadFromSSD
     // removal sites left the accountant counting the ghost until a later write
@@ -1051,13 +1051,13 @@ func codexR5Medium_lookupDropOfCorruptFileRefreshesAccountant() async {
         "the corrupt file must be removed on lookup")
     let after = await accountant._usageForTest(modelKey: "m1") ?? -1
     #expect(after == 0,
-        "CODEX-R5-MEDIUM: dropping a corrupt file on lookup must refresh accountant usage to 0 (was \(after))")
+        "Dropping a corrupt file on lookup must refresh accountant usage to 0 (was \(after))")
 }
 
 #if DEBUG
 @Test
 func codexR6High_closedManagerDoesNotDeleteOnLookupDrop() async {
-    // CODEX-R6 HIGH regression (R5 fix order bug): a CLOSED manager must NOT
+    // A CLOSED manager must NOT
     // delete an SSD file during a lookup-drop. A lookup can suspend in
     // EncryptedKVStore.read, the manager be deregistered (closed=true) during
     // that await, and the read then fail and reach dropUnusableSSDFile — by which
@@ -1096,12 +1096,12 @@ func codexR6High_closedManagerDoesNotDeleteOnLookupDrop() async {
 
     // A closed manager must LEAVE the file (the live owner reclaims/drops it).
     #expect(FileManager.default.fileExists(atPath: fileURL.path),
-        "CODEX-R6-HIGH: a closed manager must NOT delete the file on a lookup-drop (cross-actor live-delete)")
+        "A closed manager must NOT delete the file on a lookup-drop (cross-actor live-delete)")
 }
 
 @Test
 func codexR6High_closedManagerSkipsReconcile() async {
-    // CODEX-R6 HIGH regression: reconcileWithDisk() must bail when closed. A
+    // ReconcileWithDisk() must bail when closed. A
     // superseded Load A can resume after Load B closed its manager and still call
     // reconcile — re-indexing / deleting files in a dir now owned by the new
     // manager. We persist a VALID checkpoint, then DELETE its index entry so the
@@ -1131,12 +1131,12 @@ func codexR6High_closedManagerSkipsReconcile() async {
     await mgr.flushIndexNow()  // must bail on closed, must not crash
 
     #expect(await mgr._indexHasEntryForTest(digestHex: digestHex) == false,
-        "CODEX-R6-HIGH: a closed manager's reconcileWithDisk must NOT run (orphan stays un-indexed)")
+        "A closed manager's reconcileWithDisk must NOT run (orphan stays un-indexed)")
 }
 
 @Test
 func codexR7Medium_closedManagerLookupReturnsNil() async {
-    // CODEX-R7 MEDIUM regression: a closed (deregistered/unloaded) manager must
+    // A closed (deregistered/unloaded) manager must
     // NOT serve a lookup hit. Without the top-level `guard !closed` in lookup(),
     // a request that started before unload — or one racing teardown — could get
     // KV from a manager whose model is gone, risking seeding a superseded engine.
@@ -1157,13 +1157,13 @@ func codexR7Medium_closedManagerLookupReturnsNil() async {
     // Close the manager — every subsequent lookup must miss.
     await mgr._markClosedForTest()
     #expect(await mgr.lookup(tokens: tokens) == nil,
-        "CODEX-R7-MEDIUM: a closed manager must NOT serve a lookup hit")
+        "A closed manager must NOT serve a lookup hit")
 }
 #endif
 
 @Test
 func codexR3High2_loadModelCleanupIdentityChecked() async throws {
-    // CODEX-R3 HIGH-2 regression: loadModel's epoch-bail cleanup must be
+    // LoadModel's epoch-bail cleanup must be
     // identity-checked. If load A suspends and load B completes (sets
     // self.engine = B.engine) before A resumes, A's stale-epoch cleanup must
     // NOT clobber B's live self.engine. Before fix: unconditional `self.engine
@@ -1196,5 +1196,5 @@ func codexR3High2_loadModelCleanupIdentityChecked() async throws {
     if h.engine === engineA { h.engine = nil }  // NO-OP if winner already replaced it
     // engineB must survive (not niled by A's stale cleanup).
     #expect(h.engine === engineB,
-        "CODEX-R3-HIGH-2: identity-checked cleanup must NOT nil the winner's engine")
+        "Identity-checked cleanup must NOT nil the winner's engine")
 }

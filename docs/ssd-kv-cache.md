@@ -465,7 +465,9 @@ caps the entire `darkbloom/kv/` tree across all models. Eviction is
 cross-model value-based: lowest benefit-per-byte score evicts first,
 regardless of which model owns the file. A file whose own size exceeds the
 global budget is skipped entirely (no write-then-delete churn). Set the env
-var explicitly to raise/lower it (0 = unlimited).
+var to a positive value to raise/lower the cap; unset / 0 / non-numeric
+derives `min(10 GiB, 50% of free)` (re-evaluated each tick) — NOT unlimited.
+For effectively-unbounded, set a very large explicit value.
 
 Both tiers enforce this budget: the engine block tier
 (`EncryptedPrefixCachePersistence`) and the checkpoint tier

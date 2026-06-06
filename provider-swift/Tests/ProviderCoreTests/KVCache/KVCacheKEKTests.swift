@@ -232,11 +232,11 @@ func kekRoundtripsViaKeychainStorage() async throws {
     try await kek2.wipe()
 }
 
-// MARK: - CODEX-R5 MEDIUM: first-use KEK race (saveIfAbsent first-writer-wins)
+// MARK: - first-use KEK race (saveIfAbsent first-writer-wins)
 
 @Test
 func kekConcurrentFirstUseAdoptsSingleKEK() async throws {
-    // CODEX-R5 MEDIUM regression: two KVCacheKEK instances sharing the SAME
+    // Two KVCacheKEK instances sharing the SAME
     // storage (e.g. two model loads on a fresh machine) must converge on ONE
     // KEK. Before the fix, loadOrCreate used a clobbering save(): both generated
     // different KEKs and the later overwrote the earlier, stranding files the
@@ -256,7 +256,7 @@ func kekConcurrentFirstUseAdoptsSingleKEK() async throws {
     let rawB = try await b.withUnsafeBytes { Data($0) }
 
     #expect(rawA == rawB,
-        "CODEX-R5-MEDIUM: concurrent first-use must converge on a single KEK (first writer wins, loser adopts)")
+        "Concurrent first-use must converge on a single KEK (first writer wins, loser adopts)")
 
     // And it matches what actually persisted (the winner), so files written by
     // either instance decrypt after a restart.

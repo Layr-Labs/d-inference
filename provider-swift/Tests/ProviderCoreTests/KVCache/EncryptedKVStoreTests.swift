@@ -399,7 +399,7 @@ func sweepStaleTempFilesRemovesOrphansKeepsRealFiles() throws {
     #expect(fm.fileExists(atPath: index.path), "index.json must be kept")
 }
 
-// MARK: - CODEX-R4 HIGH (C2): header-only readMetadataOnly
+// MARK: - header-only readMetadataOnly
 //
 // C2 is a memory/perf fix: readMetadataOnly used to map+copy the entire
 // multi-GB ciphertext body (via splitHeaderAndBody's `subdata`) only to discard

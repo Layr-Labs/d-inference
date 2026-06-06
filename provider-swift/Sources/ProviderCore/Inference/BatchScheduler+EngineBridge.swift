@@ -334,4 +334,13 @@ extension BatchScheduler {
         if admitted { bridge.admittedAt = .now }
         activeBridges[id] = bridge
     }
+
+    /// Test accessor: is a bridge still tracked for `id`? This is the exact
+    /// signal `confirmEnqueuedOrAbort` checks after `addRequest` to detect a
+    /// request that was cancelled / timed-out while the submit task was
+    /// suspended (the cancel/timeout path `dropBridge`'d it) and must therefore
+    /// be aborted rather than handed to `runBridge`.
+    func _bridgeIsActiveForTest(_ id: String) -> Bool {
+        activeBridges[id] != nil
+    }
 }

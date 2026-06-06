@@ -366,17 +366,33 @@ public actor BatchScheduler {
     /// this request in the abort snapshot and (b) still run `scheduler.addRequest`
     /// on a stopped scheduler → the request never steps and the stream hangs.
     /// `addRequest`'s continuation resumes only AFTER its queued block ran, so by
-    /// the time this is called the request IS registered. Re-check currency here;
-    /// if superseded, explicitly abort the just-added request (removes it from the
-    /// stopped/new scheduler and delivers a terminal output to unblock the stream)
-    /// and tear down the bridge. Returns true iff safe to proceed to runBridge.
+    /// the time this is called the request IS registered. Two ways it can be
+    /// unsafe to proceed to `runBridge`:
+    ///
+    ///   1. The engine was superseded (reload/unload) during the submit awaits —
+    ///      `!engineStillCurrent`. The add landed on a stopped/replaced engine.
+    ///   2. The request was cancelled or timed out WHILE the submit task was
+    ///      suspended (planner.admit / KV reserve / checkpoint restore). The
+    ///      cancel path / pending-timeout watchdog called `abortRequest` — which
+    ///      no-op'd because the engine had no collector yet — and `dropBridge`'d
+    ///      this id, so its bridge is gone from `activeBridges`. The submit task
+    ///      then resumed and enqueued the request anyway; without this check it
+    ///      would run untracked (KV/planner budget not accounted, no bridge to
+    ///      tear it down) — the residual gap left after the pre-registration
+    ///      cleanup fix.
+    ///
+    /// In either case abort the just-added request on the engine we added to
+    /// (removes it from the scheduler and delivers a terminal output to unblock
+    /// any stream) and drop the bridge. Returns true iff safe to runBridge.
     private func confirmEnqueuedOrAbort(
         requestId: String, capturedEpoch: UInt64, capturedEngine: BatchedEngine
     ) async -> Bool {
-        if engineStillCurrent(capturedEpoch, capturedEngine) { return true }
-        // Superseded after the add landed: abort it on the engine we added to so
-        // it doesn't linger on a stopped scheduler, then drop our bookkeeping.
+        let superseded = !engineStillCurrent(capturedEpoch, capturedEngine)
+        let bridgeDropped = activeBridges[requestId] == nil
+        if !superseded && !bridgeDropped { return true }
         _ = capturedEngine.core.abortRequest(requestId)
+        // dropBridge is idempotent: a no-op if the cancel/timeout path already
+        // removed this id, otherwise releases KV + cancels the planner entry.
         await dropBridge(requestId: requestId)
         return false
     }

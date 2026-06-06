@@ -289,8 +289,40 @@ struct BatchSchedulerBudgetTests {
         await scheduler.cancel(requestId: "r1")
 
         #expect(await scheduler.activeTokenBudgetUsed == 0,
-            "CODEX-MEDIUM: cancel must drop the bridge for a not-yet-registered request")
+            "Cancel must drop the bridge for a not-yet-registered request")
         #expect(await kvBudget.outstandingReservedBytes() == 0,
-            "CODEX-MEDIUM: cancel must release the KV reservation for a not-yet-registered request")
+            "Cancel must release the KV reservation for a not-yet-registered request")
+    }
+
+    /// Regression for the residual gap after the pre-registration cleanup fix:
+    /// a request cancelled WHILE its submit task is suspended (planner.admit /
+    /// KV reserve / checkpoint restore) has its bridge `dropBridge`'d by the
+    /// cancel path. When the submit task later resumes and enqueues, the
+    /// post-`addRequest` guard (`confirmEnqueuedOrAbort`) must detect the missing
+    /// bridge and refuse to proceed — otherwise the cancelled request runs
+    /// untracked and leaks its KV reservation. This pins the SIGNAL that guard
+    /// uses: after a cancel, the bridge is gone. (The full submit→suspend→cancel→
+    /// resume interleaving needs a live engine — `BatchedEngine` is concrete and
+    /// can't be stubbed — so the guard wiring itself is verified by inspection;
+    /// this test pins the bridge-presence signal it keys on.)
+    @Test("a cancelled request's bridge is gone, so the post-addRequest guard bails")
+    func cancelledRequestBridgeIsDroppedBeforeResume() async {
+        let kvBudget = GlobalKVCacheBudget()
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
+
+        await scheduler._testSeedBridge(id: "r1", promptTokens: 100, maxTokens: 100)
+        _ = await kvBudget.reserve(requestID: "r1", kvBytesPerToken: 1024, tokenCount: 200)
+        #expect(await scheduler._bridgeIsActiveForTest("r1"), "precondition: bridge tracked")
+
+        // Cancel arrives while the (hypothetical) submit task is still suspended
+        // pre-addRequest. The bridge must be gone afterward — the exact condition
+        // confirmEnqueuedOrAbort checks (`activeBridges[id] == nil`) to bail.
+        await scheduler.cancel(requestId: "r1")
+
+        #expect(await scheduler._bridgeIsActiveForTest("r1") == false,
+            "a cancelled request must leave no bridge for the resumed submit to proceed on")
+        #expect(await kvBudget.outstandingReservedBytes() == 0,
+            "the cancelled request's KV reservation must be released, not leaked")
     }
 }

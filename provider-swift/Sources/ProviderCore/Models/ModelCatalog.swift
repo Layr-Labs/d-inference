@@ -558,6 +558,53 @@ public struct ModelCatalogClient: Sendable {
     }
 }
 
+// MARK: - Revision tracking
+
+/// Revision record persisted alongside a downloaded model so a later run can
+/// tell whether the cached copy matches the catalog's current revision without
+/// re-hashing multi-GB weights. Written to
+/// `~/.cache/huggingface/hub/models--{org}--{name}/.darkbloom-revision.json`.
+public struct LocalRevision: Codable, Sendable, Equatable {
+    public let modelID: String
+    public let version: String?
+    public let aggregateSHA256: String?
+
+    public init(modelID: String, version: String?, aggregateSHA256: String?) {
+        self.modelID = modelID
+        self.version = version
+        self.aggregateSHA256 = aggregateSHA256
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case version
+        case aggregateSHA256 = "aggregate_sha256"
+    }
+}
+
+/// How the cached copy of a model compares to the catalog's current revision.
+public enum RevisionStatus: Sendable, Equatable {
+    /// No copy of the model is present on disk.
+    case notInstalled
+    /// Cached revision matches the catalog.
+    case upToDate
+    /// Installed, but with no recorded revision (predates revision tracking)
+    /// or insufficient revision info on one side to compare.
+    case unknown
+    /// Cached revision differs from the catalog's current revision.
+    case outdated(local: String?, catalog: String?)
+}
+
+/// Result of a revision-aware download (`downloadIfOutdated`).
+public enum UpdateOutcome: Sendable, Equatable {
+    case notInstalled
+    case upToDate
+    /// Installed but with no recorded revision, and `replaceUntracked` was
+    /// false — left untouched.
+    case untracked
+    case replaced(from: String?, to: String?)
+}
+
 // MARK: - Downloader
 
 public struct ModelDownloader: Sendable {
@@ -618,10 +665,66 @@ public struct ModelDownloader: Sendable {
                 manifest = try await fetchManifestFromCDN(model: model)
             }
             try await downloadManifestModel(model: model, manifest: manifest, onProgress: onProgress)
+            try writeInstalledRevision(for: model, manifest: manifest)
             return
         }
 
         try await downloadLegacyModelFromCDN(model: model, onProgress: onProgress)
+        try writeInstalledRevision(for: model, manifest: nil)
+    }
+
+    /// Download `model` only if the locally cached revision differs from the
+    /// catalog's current revision, then atomically replace the cached copy.
+    ///
+    /// - If the model is not installed at all, returns `.notInstalled` without
+    ///   downloading -- this is an *update* operation, not a first install
+    ///   (use `download(model:)` to install).
+    /// - If the cached revision matches the catalog, returns `.upToDate`.
+    /// - If the cached revision is outdated -- or untracked when
+    ///   `replaceUntracked` is true -- the new revision is downloaded into a
+    ///   staging directory and atomically swapped in (the manifest path keeps
+    ///   the old snapshot serving until the swap), returning `.replaced`.
+    ///
+    /// `replaceUntracked` defaults to false so that installs predating revision
+    /// tracking are left in place rather than re-downloaded en masse the first
+    /// time this runs; pass true to force-refresh and record their revision.
+    @discardableResult
+    public func downloadIfOutdated(
+        model: CatalogModel,
+        replaceUntracked: Bool = false,
+        onProgress: (@Sendable (ProgressEvent) -> Void)? = nil
+    ) async throws -> UpdateOutcome {
+        let status = ModelDownloader.revisionStatus(for: model)
+        switch status {
+        case .notInstalled:
+            return .notInstalled
+        case .upToDate:
+            return .upToDate
+        case .unknown where !replaceUntracked:
+            return .untracked
+        case .outdated, .unknown:
+            let previous = ModelDownloader.localRevision(for: model.id)
+            try await download(model: model, onProgress: onProgress)
+            return .replaced(
+                from: previous?.version ?? previous?.aggregateSHA256,
+                to: model.version ?? model.aggregateSHA256
+            )
+        }
+    }
+
+    /// Persist the installed revision next to the model's cache directory.
+    /// Prefers the manifest's values (most precise) and falls back to the
+    /// catalog entry for legacy (manifest-less) downloads.
+    private func writeInstalledRevision(for model: CatalogModel, manifest: ModelManifest?) throws {
+        let revision = LocalRevision(
+            modelID: model.id,
+            version: manifest?.version ?? model.version,
+            aggregateSHA256: manifest?.aggregateSHA256 ?? model.aggregateSHA256
+        )
+        try ModelDownloader.writeRevision(
+            revision,
+            modelDir: ModelDownloader.cacheModelDirectory(for: model.id)
+        )
     }
 
     private func fetchManifestFromCDN(model: CatalogModel) async throws -> ModelManifest {
@@ -953,6 +1056,68 @@ public struct ModelDownloader: Sendable {
         guard FileManager.default.fileExists(atPath: modelDir.path) else { return false }
         try FileManager.default.removeItem(at: modelDir)
         return true
+    }
+
+    // MARK: - Revision tracking
+
+    /// Filename recording the installed revision of a model, written next to
+    /// the HuggingFace `snapshots/` and `refs/` directories.
+    static let revisionFileName = ".darkbloom-revision.json"
+
+    static func revisionFileURL(modelDir: URL) -> URL {
+        modelDir.appendingPathComponent(revisionFileName)
+    }
+
+    /// Read the recorded revision for a model directory, if present.
+    static func readRevision(modelDir: URL) -> LocalRevision? {
+        guard let data = try? Data(contentsOf: revisionFileURL(modelDir: modelDir)) else { return nil }
+        return try? JSONDecoder().decode(LocalRevision.self, from: data)
+    }
+
+    /// Persist the revision for a model directory (atomic write).
+    static func writeRevision(_ revision: LocalRevision, modelDir: URL) throws {
+        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(revision)
+        try data.write(to: revisionFileURL(modelDir: modelDir), options: .atomic)
+    }
+
+    /// The recorded revision for a cached model ID, or nil if the model is not
+    /// installed or predates revision tracking.
+    public static func localRevision(for modelID: String) -> LocalRevision? {
+        readRevision(modelDir: cacheModelDirectory(for: modelID))
+    }
+
+    /// Pure comparison of a recorded local revision against a catalog entry.
+    /// Factored out (and `internal`) so it can be unit-tested without touching
+    /// the on-disk cache. Callers should use `revisionStatus(for:)`.
+    ///
+    /// Prefers the content hash (`aggregate_sha256`) when both sides advertise
+    /// one -- it detects re-publishes that reuse the same version string -- and
+    /// falls back to the version string otherwise.
+    static func compareRevision(local: LocalRevision?, installed: Bool, catalog: CatalogModel) -> RevisionStatus {
+        guard installed else { return .notInstalled }
+        guard let local else { return .unknown }
+
+        if let localAgg = local.aggregateSHA256, let catAgg = catalog.aggregateSHA256 {
+            return localAgg == catAgg
+                ? .upToDate
+                : .outdated(local: local.version ?? localAgg, catalog: catalog.version ?? catAgg)
+        }
+        if let localVer = local.version, let catVer = catalog.version {
+            return localVer == catVer
+                ? .upToDate
+                : .outdated(local: localVer, catalog: catVer)
+        }
+        // Not enough revision info on one side to compare.
+        return .unknown
+    }
+
+    /// Determine whether the cached copy of `model` matches the catalog's
+    /// current revision.
+    public static func revisionStatus(for model: CatalogModel) -> RevisionStatus {
+        let modelDir = cacheModelDirectory(for: model.id)
+        let installed = FileManager.default.fileExists(atPath: modelDir.path)
+        return compareRevision(local: readRevision(modelDir: modelDir), installed: installed, catalog: model)
     }
 
     // MARK: - Internals

@@ -262,6 +262,100 @@ struct ModelCatalogTests {
         #expect(!snapshotEntries.contains { $0.hasPrefix(".local-staging-") })
     }
 
+    // MARK: - Revision tracking
+
+    private func makeCatalogModel(
+        id: String = "org/model",
+        version: String? = nil,
+        aggregateSHA256: String? = nil
+    ) -> CatalogModel {
+        CatalogModel(
+            id: id,
+            s3Name: "model",
+            displayName: "Model",
+            sizeGb: 1.0,
+            version: version,
+            aggregateSHA256: aggregateSHA256
+        )
+    }
+
+    @Test("compareRevision reports notInstalled when the model is absent")
+    func compareRevisionNotInstalled() {
+        let status = ModelDownloader.compareRevision(
+            local: nil,
+            installed: false,
+            catalog: makeCatalogModel(version: "v2", aggregateSHA256: "bbbb")
+        )
+        #expect(status == .notInstalled)
+    }
+
+    @Test("compareRevision reports unknown when installed without a recorded revision")
+    func compareRevisionUnknownWhenUntracked() {
+        let status = ModelDownloader.compareRevision(
+            local: nil,
+            installed: true,
+            catalog: makeCatalogModel(version: "v2", aggregateSHA256: "bbbb")
+        )
+        #expect(status == .unknown)
+    }
+
+    @Test("compareRevision prefers the aggregate hash over the version string")
+    func compareRevisionPrefersAggregateHash() {
+        // Version strings match but content hashes differ -> outdated.
+        let local = LocalRevision(modelID: "org/model", version: "v1", aggregateSHA256: "aaaa")
+        let outdated = ModelDownloader.compareRevision(
+            local: local,
+            installed: true,
+            catalog: makeCatalogModel(version: "v1", aggregateSHA256: "bbbb")
+        )
+        #expect(outdated == .outdated(local: "v1", catalog: "v1"))
+
+        // Same content hash -> up to date even if version strings differ.
+        let upToDate = ModelDownloader.compareRevision(
+            local: LocalRevision(modelID: "org/model", version: "v1", aggregateSHA256: "aaaa"),
+            installed: true,
+            catalog: makeCatalogModel(version: "v2", aggregateSHA256: "aaaa")
+        )
+        #expect(upToDate == .upToDate)
+    }
+
+    @Test("compareRevision falls back to the version string when no hashes are present")
+    func compareRevisionFallsBackToVersion() {
+        let outdated = ModelDownloader.compareRevision(
+            local: LocalRevision(modelID: "org/model", version: "v1", aggregateSHA256: nil),
+            installed: true,
+            catalog: makeCatalogModel(version: "v2", aggregateSHA256: nil)
+        )
+        #expect(outdated == .outdated(local: "v1", catalog: "v2"))
+
+        let upToDate = ModelDownloader.compareRevision(
+            local: LocalRevision(modelID: "org/model", version: "v2", aggregateSHA256: nil),
+            installed: true,
+            catalog: makeCatalogModel(version: "v2", aggregateSHA256: nil)
+        )
+        #expect(upToDate == .upToDate)
+    }
+
+    @Test("revision file round-trips through write and read")
+    func revisionFileRoundTrips() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-rev-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let revision = LocalRevision(modelID: "org/model", version: "2026-06-01", aggregateSHA256: "feedface")
+        try ModelDownloader.writeRevision(revision, modelDir: dir)
+
+        let readBack = ModelDownloader.readRevision(modelDir: dir)
+        #expect(readBack == revision)
+    }
+
+    @Test("readRevision returns nil for a directory with no revision file")
+    func readRevisionMissingFile() {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-rev-missing-\(UUID().uuidString)", isDirectory: true)
+        #expect(ModelDownloader.readRevision(modelDir: dir) == nil)
+    }
+
 }
 
 // Mirror of the private wrapper used inside ModelCatalog.swift so we can

@@ -25,7 +25,7 @@ key is unreachable (`OSStatus -34018`) and the cache **silently disables**.
 (commit `334e67c1`) that lets the unsigned build run the cache logic end-to-end
 with a process-random in-memory KEK.
 
-The model under test is **`gemma-4-26b-a4b-it-8bit`**, which routes to the
+The model under test is **`gemma-4-26b`**, which routes to the
 **checkpoint tier** (sliding-window). Two non-obvious consequences:
 
 | Knob | Default for Gemma | Why we override |
@@ -69,10 +69,12 @@ ls -lh .build/release/darkbloom .build/release/mlx.metallib
 ```
 
 Confirm the model is present (no download needed — it's in the HF cache from
-prior runs):
+prior runs). `gemma-4-26b` is the serveable alias for
+`mlx-community/gemma-4-26b-a4b-it-8bit` (arch `gemma4`, ~31 GB est. memory):
 
 ```bash
-.build/release/darkbloom models --all | grep -i gemma-4-26b
+.build/release/darkbloom models list --all | grep -i gemma-4-26b
+# expect: "mlx-community/gemma-4-26b-a4b-it-8bit  gemma4  8bit ... 26.0 GB" and the "gemma-4-26b" alias
 ```
 
 ---
@@ -143,7 +145,7 @@ export DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS=0
 export DARKBLOOM_PREFIX_CACHE_MAX_GB=4
 export DARKBLOOM_PREFIX_CACHE_DISK_GB=1          # tiny on purpose for the smoke test
 .build/release/darkbloom start --local --no-auth \
-    --model gemma-4-26b-a4b-it-8bit --port 8000 2>&1 | tee ~/soak/smoke_server.log
+    --model gemma-4-26b --port 8000 2>&1 | tee ~/soak/smoke_server.log
 ```
 
 Wait for `Standalone server listening on 127.0.0.1:8000`. Confirm the cache came
@@ -168,7 +170,7 @@ cd ~/soak
 ```bash
 cd ~/soak
 python3 load_soak.py --base-url http://127.0.0.1:8000/v1 \
-    --model gemma-4-26b-a4b-it-8bit --duration-minutes 3 \
+    --model gemma-4-26b --duration-minutes 3 \
     --concurrency 4 --max-tokens 64 --out smoke_client.csv
 ```
 
@@ -201,7 +203,7 @@ export DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS=0
 export DARKBLOOM_PREFIX_CACHE_MAX_GB=4
 export DARKBLOOM_PREFIX_CACHE_DISK_GB=4
 .build/release/darkbloom start --local --no-auth \
-    --model gemma-4-26b-a4b-it-8bit --port 8000 2>&1 | tee ~/soak/soak_server.log
+    --model gemma-4-26b --port 8000 2>&1 | tee ~/soak/soak_server.log
 ```
 
 **Pane 2 — monitor (auto-stops at 4 h + a 5-min tail):**
@@ -218,7 +220,7 @@ cd ~/soak
 ```bash
 cd ~/soak
 python3 load_soak.py --base-url http://127.0.0.1:8000/v1 \
-    --model gemma-4-26b-a4b-it-8bit --duration-minutes 240 \
+    --model gemma-4-26b --duration-minutes 240 \
     --concurrency 4 --max-tokens 128 --shared-fraction 0.70 \
     --report-every-seconds 60 --out soak_client.csv
 ```

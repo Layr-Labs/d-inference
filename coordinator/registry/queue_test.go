@@ -248,3 +248,38 @@ func TestFailQueuedRequestsForModelSkipsSelfRoute(t *testing.T) {
 	default:
 	}
 }
+
+// TestFailQueuedRequestsForModelSkipsPreferOwner verifies prefer waiters also
+// survive a PUBLIC-unservable verdict (their own busy machine may free up, and
+// they can still take the public fleet once it has capacity).
+func TestFailQueuedRequestsForModelSkipsPreferOwner(t *testing.T) {
+	q := NewRequestQueue(10, 30*time.Second)
+	model := "queue-prefer"
+
+	public := &QueuedRequest{
+		RequestID:  "pub",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "pub", Model: model},
+	}
+	prefer := &QueuedRequest{
+		RequestID:  "prefer",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "prefer", Model: model, PreferOwner: true, OwnerAccountID: "acct-A"},
+	}
+	_ = q.Enqueue(public)
+	_ = q.Enqueue(prefer)
+
+	if failed := q.FailQueuedRequestsForModel(model); failed != 1 {
+		t.Fatalf("failed=%d, want 1 (only the public waiter)", failed)
+	}
+	if q.QueueSize(model) != 1 {
+		t.Fatalf("queue size = %d, want 1 (prefer waiter must remain)", q.QueueSize(model))
+	}
+	select {
+	case <-prefer.ResponseCh:
+		t.Fatal("prefer waiter must NOT be failed by a public-unservable verdict")
+	default:
+	}
+}

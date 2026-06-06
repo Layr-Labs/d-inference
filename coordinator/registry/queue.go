@@ -238,7 +238,12 @@ func (q *RequestQueue) FailQueuedRequestsForModel(model string) int {
 	failed := 0
 	var survivors []*QueuedRequest
 	for _, req := range queue {
-		if req.Pending != nil && req.Pending.SelfRouteOnly {
+		if req.Pending != nil && (req.Pending.SelfRouteOnly || req.Pending.PreferOwner) {
+			// Exclusive self-route AND prefer waiters are owner-scoped: a PUBLIC
+			// capacity verdict ignores the caller's own machine, so it must not
+			// fail them. Their own (busy) machine may free up; a prefer waiter
+			// could also still take the public fleet once it has capacity. They
+			// drain on availability or time out naturally via CleanStale.
 			survivors = append(survivors, req)
 			continue
 		}

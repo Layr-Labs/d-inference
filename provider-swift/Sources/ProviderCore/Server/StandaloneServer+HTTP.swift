@@ -71,6 +71,9 @@ extension StandaloneServer {
             availableModels: { [weak self] in
                 guard let self else { return [] }
                 return await self.advertisedModelIds()
+            },
+            onServerRunning: { [weak self] _ in
+                await self?.markBound()
             }
         )
     }

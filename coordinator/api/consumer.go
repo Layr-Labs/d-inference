@@ -1500,18 +1500,38 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Primary is slow. Attempt speculative backup dispatch.
 			s.ddIncr("inference.speculative_dispatch", []string{"model:" + model})
 
-			backupExclude := make(map[string]struct{}, len(excludeProviders)+1)
-			for id := range excludeProviders {
-				backupExclude[id] = struct{}{}
-			}
-			backupExclude[provider.ID] = struct{}{}
+			var backupProvider *registry.Provider
+			var backupPR *registry.PendingRequest
 
-			backupProvider, backupPR, _, _, _ := s.dispatchOneProvider(
-				r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
-				estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
-				isResponsesAPI, policy, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
-				backupExclude,
-			)
+			// Do NOT speculatively race a paid PUBLIC backup against a prefer
+			// request that is being served by the caller's OWN machine: the user
+			// opted into "prefer my machine (free)", so a slow owned machine must
+			// be waited on, not raced (and billed) by the public fleet. (Exclusive
+			// self-route is already safe — its backup selection is owned-only and
+			// returns nil when there's no other owned machine.) When the prefer
+			// primary is itself a public provider (the owner owns nothing / fell
+			// back), normal speculative behaviour applies.
+			skipBackup := false
+			if policy.prefer {
+				provider.Mu().Lock()
+				skipBackup = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
+				provider.Mu().Unlock()
+			}
+
+			if !skipBackup {
+				backupExclude := make(map[string]struct{}, len(excludeProviders)+1)
+				for id := range excludeProviders {
+					backupExclude[id] = struct{}{}
+				}
+				backupExclude[provider.ID] = struct{}{}
+
+				backupProvider, backupPR, _, _, _ = s.dispatchOneProvider(
+					r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
+					estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
+					isResponsesAPI, policy, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
+					backupExclude,
+				)
+			}
 
 			if backupProvider == nil {
 				// No backup available. Keep waiting for primary with remaining deadline.

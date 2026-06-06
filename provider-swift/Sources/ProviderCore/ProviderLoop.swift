@@ -2146,6 +2146,14 @@ extension ProviderLoop {
             availableModels: { [weak self] in
                 guard let self else { return [] }
                 return await self.advertisedLocalModelIds()
+            },
+            // Fires only once OUR server has actually bound the socket — the
+            // authoritative bind signal. We publish discovery here (never from a
+            // best-effort HTTP probe that a foreign process on the same port
+            // could answer). If the bind fails, runService throws below and this
+            // never runs, so no stale/foreign discovery record is written.
+            onServerRunning: { [weak self] _ in
+                await self?.onLocalEndpointBound(cfg)
             }
         )
         let log = logger
@@ -2155,49 +2163,28 @@ extension ProviderLoop {
             } catch is CancellationError {
                 // expected on shutdown
             } catch {
-                log.error("local endpoint server failed: \(error.localizedDescription)")
-            }
-        }
-        // Verify the bind actually succeeded and warn loudly if not. A port clash
-        // leaves COORDINATOR serving fully intact (we deliberately do not kill the
-        // provider for a local-endpoint failure), but the local endpoint would
-        // otherwise be silently unavailable — so make it operator-visible.
-        let probeHost = cfg.host == "0.0.0.0" ? "127.0.0.1" : cfg.host
-        let probePort = cfg.port
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard self != nil else { return }
-            if await Self.localEndpointHealthy(host: probeHost, port: probePort) {
-                log.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
-                // Publish discovery so `darkbloom local` / local-first clients find
-                // the unified endpoint too — only AFTER confirming the bind, so we
-                // never advertise a dead endpoint (mirrors the --local path).
-                try? LocalEndpoint.writeInfo(LocalEndpoint.Info(
-                    host: cfg.host,
-                    port: cfg.port,
-                    apiKey: cfg.authToken ?? "",
-                    version: ProviderCore.version,
-                    pid: ProcessInfo.processInfo.processIdentifier,
-                    updatedAt: ISO8601DateFormatter().string(from: Date())
-                ))
-            } else {
-                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
+                // A bind failure (e.g. port already in use) lands here. We do NOT
+                // kill the provider — coordinator serving must stay up — but make
+                // the local-endpoint failure loud and operator-actionable.
+                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
             }
         }
     }
 
-    /// Probe the local endpoint's /health to confirm the socket is accepting
-    /// connections. Returns true on any HTTP response within the timeout.
-    private static func localEndpointHealthy(host: String, port: UInt16, timeout: TimeInterval = 2.0) async -> Bool {
-        guard let url = URL(string: "http://\(host):\(port)/health") else { return false }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = timeout
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            return response is HTTPURLResponse
-        } catch {
-            return false
-        }
+    /// Invoked by Hummingbird once the local endpoint socket is bound and
+    /// listening. Publishes the discovery record so `darkbloom local` /
+    /// local-first clients find the unified endpoint — only now that the bind is
+    /// CONFIRMED to be ours.
+    private func onLocalEndpointBound(_ cfg: LocalInferenceHTTPConfig) {
+        logger.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
+        try? LocalEndpoint.writeInfo(LocalEndpoint.Info(
+            host: cfg.host,
+            port: cfg.port,
+            apiKey: cfg.authToken ?? "",
+            version: ProviderCore.version,
+            pid: ProcessInfo.processInfo.processIdentifier,
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        ))
     }
 
     /// Stop the local endpoint server, if running, and remove its discovery record.

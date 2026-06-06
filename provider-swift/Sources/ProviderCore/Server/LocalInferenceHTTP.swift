@@ -49,12 +49,18 @@ public typealias LocalInferenceApplication =
 ///   - tokenizerProvider: resolve a tokenizer for the token-utility endpoints.
 ///   - availableModels: the advertised `/v1/models` catalog (not just the
 ///     currently-resident subset — discovery clients call it before loading).
+/// - Parameter onServerRunning: invoked by Hummingbird ONCE the socket is
+///   actually bound and listening. This is the authoritative "we bound the port"
+///   signal — used to write the discovery record only after a confirmed bind
+///   (so a port collision never advertises a foreign process). If the bind
+///   fails, `runService` throws instead and this never fires.
 func makeLocalInferenceApplication(
     config: LocalInferenceHTTPConfig,
     defaultMaxTokens: Int,
     acquire: @escaping @Sendable (String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel,
     tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
-    availableModels: @escaping @Sendable () async -> [String]
+    availableModels: @escaping @Sendable () async -> [String],
+    onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
 ) -> LocalInferenceApplication {
     let engine = MultiModelBatchSchedulerEngine(
         acquire: acquire,
@@ -74,6 +80,7 @@ func makeLocalInferenceApplication(
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"
-        )
+        ),
+        onServerRunning: onServerRunning
     )
 }

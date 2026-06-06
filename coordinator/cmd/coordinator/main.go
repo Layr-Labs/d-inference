@@ -39,6 +39,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
@@ -448,6 +449,18 @@ func main() {
 				}
 			}
 		}
+	}
+
+	// Configure configuration-profile signing (optional). When a code-signing
+	// identity (e.g. an Apple Developer ID Application .p12) is provided via
+	// PROFILE_SIGNING_P12_B64 / PROFILE_SIGNING_P12_PATH (+ _PASSWORD), the
+	// /v1/enroll .mobileconfig is CMS-signed so macOS shows it as signed/trusted
+	// at install time. Misconfiguration logs and degrades to serving unsigned —
+	// it never blocks startup or enrollment.
+	if signer := profilesign.LoadFromEnv(logger); signer != nil {
+		srv.SetProfileSigner(signer)
+	} else {
+		logger.Info("configuration-profile signing not configured — serving unsigned enrollment profiles")
 	}
 
 	// Start background eviction of stale providers.

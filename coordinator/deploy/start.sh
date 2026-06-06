@@ -125,5 +125,14 @@ else
 fi
 
 # ---- Coordinator (PID 1 — receives SIGTERM from EigenCloud) ----
+# Configuration-profile signing (optional): the coordinator reads the signing
+# identity straight from the environment — no decode step here — and CMS-signs the
+# /v1/enroll .mobileconfig so macOS shows it as signed/trusted at install time.
+# Inject via KMS (same pipeline as MDM_PUSH_P12_B64):
+#   PROFILE_SIGNING_P12_B64       base64 (std or url-safe) DER PKCS#12 bundle
+#   PROFILE_SIGNING_P12_PASSWORD  bundle password
+# Use a code-signing identity (e.g. Apple "Developer ID Application"); the bundle
+# should include the issuing intermediate so devices can chain to a trusted root.
+# If unset or invalid, the coordinator logs and serves profiles unsigned.
 echo "Starting coordinator..."
 exec coordinator

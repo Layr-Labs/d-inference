@@ -83,16 +83,12 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //  2. MDM — enrolls with MicroMDM (SecurityInfo verification)
 //  3. ACME — device-attest-01 (SE key binding via Apple attestation)
 //
-// Display strings (PayloadOrganization, SCEP subject, display names) are branded
-// "Darkbloom". Functional identifiers are deliberately NOT renamed so existing
-// installs keep working and re-enrolls update in place rather than duplicating:
-//   - PayloadIdentifiers (io.darkbloom.enroll.*) and the SCEP/MDM PayloadUUIDs —
-//     macOS keys profile identity (and update-vs-duplicate) on these.
-//   - The MDM push Topic — tied to the APNs push certificate, not a brand name.
-//   - The ACME provisioner path "eigeninference-acme" — this must match the
-//     step-ca provisioner configured in coordinator/deploy/start.sh. Renaming it
-//     would break in-flight cert renewals for already-enrolled devices; a real
-//     rename requires adding a new step-ca provisioner alongside the old one.
+// Display strings are branded "Darkbloom"; functional identifiers are deliberately
+// NOT renamed so existing installs keep working and re-enrolls update in place: the
+// io.darkbloom.enroll.* PayloadIdentifiers + SCEP/MDM PayloadUUIDs (macOS keys
+// profile identity on these), the MDM push Topic (tied to the APNs cert), and the
+// "eigeninference-acme" ACME path (must match step-ca in deploy/start.sh — renaming
+// breaks in-flight cert renewals for enrolled devices; needs a parallel provisioner).
 //
 // AccessRights=1041: profile inspection (1) + device info queries (16) + security queries (1024).
 // This is strictly read-only MDM — no device control or personal data access.

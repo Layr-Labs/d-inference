@@ -218,19 +218,45 @@ func (q *RequestQueue) CleanStale() {
 	}
 }
 
+// PreferWaiterOwners returns the distinct owner account IDs of PreferOwner
+// waiters currently queued for a model. Used by RejectUnservableQueuedRequests
+// to compute owner eligibility OUTSIDE the queue lock (OwnedProviderSummary
+// takes the registry lock), avoiding any q.mu→r.mu nesting.
+func (q *RequestQueue) PreferWaiterOwners(model string) []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	seen := make(map[string]struct{})
+	var owners []string
+	for _, req := range q.queues[model] {
+		if req.Pending != nil && req.Pending.PreferOwner && req.Pending.OwnerAccountID != "" {
+			if _, ok := seen[req.Pending.OwnerAccountID]; !ok {
+				seen[req.Pending.OwnerAccountID] = struct{}{}
+				owners = append(owners, req.Pending.OwnerAccountID)
+			}
+		}
+	}
+	return owners
+}
+
 // FailQueuedRequestsForModel rejects queued requests for a model by sending nil
 // on their ResponseCh. Waiters receive ErrQueueTimeout. Called when the
 // coordinator determines no provider can serve the model (e.g. all load_model
 // attempts failed with no alternative provider).
 //
-// Exclusive self-route waiters (Pending.SelfRouteOnly) are deliberately NOT
-// failed here: this verdict comes from a PUBLIC capacity check, which ignores
-// the caller's own machine. A public load_model failure or lack of public
-// capacity must not reject an owner's self-route request while their own
-// (busy) machine is still eligible to serve it. Those waiters stay queued to be
-// drained when their machine frees up, or to time out naturally via CleanStale
-// (surfacing machine_busy). Returns the number of (public) requests failed.
-func (q *RequestQueue) FailQueuedRequestsForModel(model string) int {
+// Owner-scoped waiters are preserved because this verdict comes from a PUBLIC
+// capacity check, which ignores the caller's own machine:
+//   - Exclusive self-route (Pending.SelfRouteOnly) is ALWAYS preserved — it only
+//     queues after the preflight confirmed the owner has an online machine, so
+//     its own (busy) machine may free up; it never falls back to public.
+//   - Prefer (Pending.PreferOwner) is preserved ONLY when preferOwnerEligible
+//     says the owner currently has an owned provider serving the model (it may
+//     free up). A prefer waiter with NO owned provider is effectively a public
+//     request, so it is failed fast like any other public waiter rather than
+//     left to hit the 120s stale timeout.
+//
+// Preserved waiters drain on availability or time out naturally via CleanStale
+// (surfacing machine_busy). Returns the number of requests failed.
+func (q *RequestQueue) FailQueuedRequestsForModel(model string, preferOwnerEligible map[string]bool) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -238,14 +264,15 @@ func (q *RequestQueue) FailQueuedRequestsForModel(model string) int {
 	failed := 0
 	var survivors []*QueuedRequest
 	for _, req := range queue {
-		if req.Pending != nil && (req.Pending.SelfRouteOnly || req.Pending.PreferOwner) {
-			// Exclusive self-route AND prefer waiters are owner-scoped: a PUBLIC
-			// capacity verdict ignores the caller's own machine, so it must not
-			// fail them. Their own (busy) machine may free up; a prefer waiter
-			// could also still take the public fleet once it has capacity. They
-			// drain on availability or time out naturally via CleanStale.
-			survivors = append(survivors, req)
-			continue
+		if p := req.Pending; p != nil {
+			if p.SelfRouteOnly {
+				survivors = append(survivors, req)
+				continue
+			}
+			if p.PreferOwner && preferOwnerEligible[p.OwnerAccountID] {
+				survivors = append(survivors, req)
+				continue
+			}
 		}
 		req.markDone()
 		select {

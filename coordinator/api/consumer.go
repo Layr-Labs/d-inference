@@ -231,14 +231,27 @@ func (s *Server) dispatchOneProvider(
 		pr.Timing.RoutedAt = time.Now()
 	}
 
-	if s.billing != nil && !policy.enabled && !providerHasPayoutDestination(provider) {
+	// A request settles FREE when it's served by a machine the caller owns:
+	// exclusive self-route (policy.enabled) always, OR a prefer request whose
+	// SELECTED provider is the caller's own machine (settlement refunds it to
+	// zero). In that case there is no payout and no reservation to top up — and
+	// applying a provider custom price above the platform rate would wrongly 429
+	// the free owned route, so skip both the payout warning and the top-up.
+	settlesFree := policy.enabled
+	if !settlesFree && policy.prefer {
+		provider.Mu().Lock()
+		settlesFree = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
+		provider.Mu().Unlock()
+	}
+
+	if s.billing != nil && !settlesFree && !providerHasPayoutDestination(provider) {
 		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
 			"provider_id", provider.ID)
 	}
 
-	// Free self-route requests are settled at zero cost (handleComplete), so
-	// there is no reservation to top up for a provider's custom price.
-	if s.billing != nil && !policy.enabled {
+	// Free (owned) requests are settled at zero cost (handleComplete), so there
+	// is no reservation to top up for a provider's custom price.
+	if s.billing != nil && !settlesFree {
 		_, err := s.reserveAdditionalForProvider(pr, provider)
 		if err != nil {
 			cleanupPending()

@@ -150,7 +150,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                 )}
               </div>
 
-              {/* My Machine (free self-route) toggle */}
+              {/* My Machine (prefer self-route, paid fallback) toggle */}
               <button
                 type="button"
                 onClick={() => {
@@ -160,8 +160,8 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                 }}
                 title={
                   useMyMachine
-                    ? "Routing only to your own machine — free, and never falls back to paid providers"
-                    : "Route this chat only to a Darkbloom node you run (free)"
+                    ? "Prefer your own machine (free when it serves). If it's offline or busy, this falls back to the paid network so you're never stuck."
+                    : "Prefer a Darkbloom node you run (free when it serves); falls back to the paid network if it can't"
                 }
                 aria-pressed={useMyMachine}
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border-2 transition-all ${
@@ -172,7 +172,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
               >
                 <Cpu size={12} />
                 <span className="hidden sm:inline">My Machine</span>
-                {useMyMachine && <span className="text-[10px] opacity-80">· Free</span>}
+                {useMyMachine && <span className="text-[10px] opacity-80">· Free, else paid</span>}
               </button>
             </div>
 

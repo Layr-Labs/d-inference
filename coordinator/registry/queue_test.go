@@ -225,7 +225,7 @@ func TestFailQueuedRequestsForModelSkipsSelfRoute(t *testing.T) {
 		t.Fatalf("enqueue self-route: %v", err)
 	}
 
-	failed := q.FailQueuedRequestsForModel(model)
+	failed := q.FailQueuedRequestsForModel(model, nil)
 	if failed != 1 {
 		t.Fatalf("failed=%d, want 1 (only the public waiter)", failed)
 	}
@@ -249,10 +249,10 @@ func TestFailQueuedRequestsForModelSkipsSelfRoute(t *testing.T) {
 	}
 }
 
-// TestFailQueuedRequestsForModelSkipsPreferOwner verifies prefer waiters also
-// survive a PUBLIC-unservable verdict (their own busy machine may free up, and
-// they can still take the public fleet once it has capacity).
-func TestFailQueuedRequestsForModelSkipsPreferOwner(t *testing.T) {
+// TestFailQueuedRequestsForModelSkipsEligiblePreferOwner verifies a prefer
+// waiter whose owner HAS an owned provider for the model survives a
+// public-unservable verdict (its own busy machine may free up).
+func TestFailQueuedRequestsForModelSkipsEligiblePreferOwner(t *testing.T) {
 	q := NewRequestQueue(10, 30*time.Second)
 	model := "queue-prefer"
 
@@ -271,15 +271,52 @@ func TestFailQueuedRequestsForModelSkipsPreferOwner(t *testing.T) {
 	_ = q.Enqueue(public)
 	_ = q.Enqueue(prefer)
 
-	if failed := q.FailQueuedRequestsForModel(model); failed != 1 {
+	// PreferWaiterOwners surfaces the prefer owner so the caller can compute
+	// eligibility; here acct-A has an owned provider for the model.
+	owners := q.PreferWaiterOwners(model)
+	if len(owners) != 1 || owners[0] != "acct-A" {
+		t.Fatalf("PreferWaiterOwners = %v, want [acct-A]", owners)
+	}
+	eligible := map[string]bool{"acct-A": true}
+
+	if failed := q.FailQueuedRequestsForModel(model, eligible); failed != 1 {
 		t.Fatalf("failed=%d, want 1 (only the public waiter)", failed)
 	}
 	if q.QueueSize(model) != 1 {
-		t.Fatalf("queue size = %d, want 1 (prefer waiter must remain)", q.QueueSize(model))
+		t.Fatalf("queue size = %d, want 1 (eligible prefer waiter must remain)", q.QueueSize(model))
 	}
 	select {
 	case <-prefer.ResponseCh:
-		t.Fatal("prefer waiter must NOT be failed by a public-unservable verdict")
+		t.Fatal("eligible prefer waiter must NOT be failed by a public-unservable verdict")
 	default:
+	}
+}
+
+// TestFailQueuedRequestsForModelFailsOwnerlessPreferWaiter verifies a prefer
+// waiter whose owner has NO owned provider is failed fast (it's effectively a
+// public request), not left to hit the 120s stale timeout.
+func TestFailQueuedRequestsForModelFailsOwnerlessPreferWaiter(t *testing.T) {
+	q := NewRequestQueue(10, 30*time.Second)
+	model := "queue-prefer-noowner"
+
+	prefer := &QueuedRequest{
+		RequestID:  "prefer",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "prefer", Model: model, PreferOwner: true, OwnerAccountID: "acct-A"},
+	}
+	_ = q.Enqueue(prefer)
+
+	// acct-A has no owned provider → not eligible → must be failed.
+	if failed := q.FailQueuedRequestsForModel(model, map[string]bool{"acct-A": false}); failed != 1 {
+		t.Fatalf("failed=%d, want 1 (owner-less prefer waiter must fail fast)", failed)
+	}
+	select {
+	case p := <-prefer.ResponseCh:
+		if p != nil {
+			t.Fatal("owner-less prefer waiter should receive a nil rejection")
+		}
+	default:
+		t.Fatal("owner-less prefer waiter was not failed")
 	}
 }

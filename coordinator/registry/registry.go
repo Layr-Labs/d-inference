@@ -1695,7 +1695,18 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 		return
 	}
 
-	failed := r.queue.FailQueuedRequestsForModel(modelID)
+	// Prefer waiters are preserved only when their owner actually has an owned
+	// provider serving this model (it may free up). A prefer waiter with no
+	// owned provider is just waiting on the (now-unservable) public fleet, so it
+	// should fail fast like any public request. Compute eligibility here —
+	// OUTSIDE the queue lock — since OwnedProviderSummary takes the registry lock.
+	preferOwnerEligible := make(map[string]bool)
+	for _, owner := range r.queue.PreferWaiterOwners(modelID) {
+		_, servesModel := r.OwnedProviderSummary(owner, modelID)
+		preferOwnerEligible[owner] = servesModel > 0
+	}
+
+	failed := r.queue.FailQueuedRequestsForModel(modelID, preferOwnerEligible)
 	if failed > 0 {
 		r.logger.Warn("rejected queued requests for unservable model",
 			"model_id", modelID,

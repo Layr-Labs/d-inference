@@ -275,7 +275,21 @@ struct Start: AsyncParsableCommand {
         // --local; --no-auth opts out of the token (trusted/airgapped only).
         var localEndpointConfig: LocalInferenceHTTPConfig?
         if localEndpoint {
-            let token = noAuth ? nil : (try? LocalEndpoint.loadOrCreateToken())
+            // FAIL CLOSED: if auth is requested (no --no-auth) but the token
+            // can't be created/read, abort rather than silently opening the
+            // endpoint unauthenticated — otherwise an unwritable ~/.darkbloom
+            // would expose it (especially under --bind 0.0.0.0). Mirrors --local.
+            let token: String?
+            if noAuth {
+                token = nil
+            } else {
+                do {
+                    token = try LocalEndpoint.loadOrCreateToken()
+                } catch {
+                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/.darkbloom permissions, or pass --no-auth for a trusted/airgapped setup.")
+                    throw ExitCode.failure
+                }
+            }
             localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
             print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `darkbloom local`)" : "  (auth disabled)")")

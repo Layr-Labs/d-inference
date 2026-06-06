@@ -30,7 +30,9 @@ interface AppState {
   selectedModel: string;
   models: Model[];
   sidebarOpen: boolean;
-  // "Use my machine, for free" — route chat to the user's own provider only.
+  // "Use my machine" — prefer the user's own provider (free when it serves),
+  // falling back to the paid network when it can't (sends X-Darkbloom-Route:
+  // prefer). Not free-only — that strict ceiling is the per-key self_route_only.
   useMyMachine: boolean;
 
   // Actions

@@ -49,6 +49,14 @@ struct Start: AsyncParsableCommand {
     mutating func run() async throws {
         Darkbloom.ensureLogging()
 
+        // --local (coordinator-less) and --local-endpoint (alongside the
+        // coordinator) are mutually exclusive serve modes; reject the ambiguous
+        // combination rather than silently picking one.
+        if local && localEndpoint {
+            printError("--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less local server, or --local-endpoint to serve a local endpoint alongside the coordinator.")
+            throw ExitCode.failure
+        }
+
         // GPU is required. Reject CPU fallback up-front so we never
         // come up reporting healthy and then silently churn at 0.5 tok/s.
         do {

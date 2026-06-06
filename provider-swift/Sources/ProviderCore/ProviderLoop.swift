@@ -125,10 +125,9 @@ public actor ProviderLoop {
     private var requestToModel: [String: String] = [:]
 
     /// Per-model count of in-flight requests from the LOCAL HTTP endpoint
-    /// (unified mode). Local requests aren't tracked in `requestToModel`
-    /// (that's coordinator-request bookkeeping), so this is what keeps eviction
-    /// and the idle monitor from pulling a model out from under a local stream.
-    private var localReservations: [String: Int] = [:]
+    /// (unified mode), used to keep eviction and the idle monitor from pulling a
+    /// model out from under a local stream. See `LocalReservationCounter`.
+    private var localReservations = LocalReservationCounter()
 
     /// The running local OpenAI HTTP server task (unified mode), if any.
     private var localServerTask: Task<Void, Never>?
@@ -2170,6 +2169,17 @@ extension ProviderLoop {
             guard self != nil else { return }
             if await Self.localEndpointHealthy(host: probeHost, port: probePort) {
                 log.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
+                // Publish discovery so `darkbloom local` / local-first clients find
+                // the unified endpoint too — only AFTER confirming the bind, so we
+                // never advertise a dead endpoint (mirrors the --local path).
+                try? LocalEndpoint.writeInfo(LocalEndpoint.Info(
+                    host: cfg.host,
+                    port: cfg.port,
+                    apiKey: cfg.authToken ?? "",
+                    version: ProviderCore.version,
+                    pid: ProcessInfo.processInfo.processIdentifier,
+                    updatedAt: ISO8601DateFormatter().string(from: Date())
+                ))
             } else {
                 log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
             }
@@ -2190,10 +2200,12 @@ extension ProviderLoop {
         }
     }
 
-    /// Stop the local endpoint server, if running.
+    /// Stop the local endpoint server, if running, and remove its discovery record.
     func stopLocalEndpoint() {
+        guard localServerTask != nil else { return }
         localServerTask?.cancel()
         localServerTask = nil
+        LocalEndpoint.removeInfo()
     }
 
     /// Acquire a resident model for a LOCAL request: ensure it's loaded, then
@@ -2216,7 +2228,7 @@ extension ProviderLoop {
         guard let slot = modelSlots[modelId] else {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
-        localReservations[modelId, default: 0] += 1
+        localReservations.reserve(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in
             await self?.releaseLocalReservation(mid)
@@ -2231,19 +2243,14 @@ extension ProviderLoop {
 
     /// Drop one local in-flight reservation for a model.
     func releaseLocalReservation(_ modelId: String) {
-        guard let n = localReservations[modelId] else { return }
-        if n <= 1 {
-            localReservations.removeValue(forKey: modelId)
-        } else {
-            localReservations[modelId] = n - 1
-        }
+        localReservations.release(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
     }
 
     /// Whether a model currently has a local request in flight. Used by the idle
     /// monitor and eviction so they never unload a model a local stream is using.
     func hasLocalReservation(_ modelId: String) -> Bool {
-        (localReservations[modelId] ?? 0) > 0
+        localReservations.isReserved(modelId)
     }
 
     /// Resolve a tokenizer for the local token-utility endpoints. Read-only, so

@@ -1462,6 +1462,72 @@ threats:
       Changes to IdleTimeoutPolicy.swift or the inference loop that could defer
       or skip idle detection should be reviewed.
 
+  - id: T-041
+    trust_boundary: TB-007
+    stride: Information_Disclosure
+    title: Cross-tenant prefix-cache sharing + TTFT timing oracle (default-on)
+    description: >
+      The encrypted prefix KV cache (DARKBLOOM_PREFIX_CACHE) is shared across all
+      consumers on a provider — the provider cannot see tenant identity, so a KV
+      prefix cached for one consumer is reused for any other consumer whose prompt
+      shares that prefix. This creates two cross-tenant leaks that AT-REST
+      encryption does NOT mitigate (it only defends disk theft / a foreign process,
+      not co-tenants on the same live provider):
+        1. TTFT timing oracle: the time-to-first-token difference between a cache
+           HIT and a MISS lets a consumer who already knows (or guesses) an exact
+           prompt prefix detect whether another consumer recently submitted it —
+           i.e. confirm the presence of a known prefix in another tenant's traffic.
+        2. Plaintext on-disk metadata (the GCM AAD, not encrypted) carries a STABLE
+           tokenPrefixHash = SHA-256 of the prefix token IDs, plus tokenCount /
+           model binding / timestamps. A disk observer (NOT a co-tenant — see T-028
+           for the in-memory variant) can hash a guessed prefix and test it against
+           on-disk filenames/metadata to confirm a known prefix was cached.
+      As of 2026-06, the cache is ON BY DEFAULT (operator decision); it was
+      previously opt-in. Default-on makes this channel the baseline exposure for
+      every provider unless explicitly disabled.
+    adversaries: [ADV-002]
+    affected_assets: [A-001]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Inference/BatchScheduler.swift
+      - provider-swift/Sources/ProviderCore/KVCache/EncryptedPrefixCachePersistence.swift
+      - provider-swift/Sources/ProviderCore/KVCache/PrefixCacheManager.swift
+      - provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift
+    mitigations:
+      - description: >
+          AES-256-GCM encryption at rest (per-file DEK wrapped by an SE-derived KEK)
+          — closes disk-theft + foreign-process reads, but NOT the cross-tenant
+          sharing or TTFT timing channel.
+        status: implemented
+      - description: >
+          Opt-out switch: DARKBLOOM_PREFIX_CACHE=0 (also false/off/no) fully disables
+          the cache (engine runs with prefixCache: nil → no sharing, no exposure).
+          Untrusted multi-tenant deployments MUST set this.
+        status: implemented
+      - description: >
+          ACCEPTED RISK (SEC-035): default-on accepts the cross-tenant timing/
+          sharing channel as the baseline for trusted / single-tenant deployments,
+          per an explicit operator decision. Requires a per-deployment threat-model
+          sign-off before serving multi-tenant traffic. Status is "open" because
+          this is a documented accepted risk, not a code mitigation.
+        status: open
+      - description: >
+          Per-deployment gating by trust level (e.g. force-off for shared/untrusted
+          multi-tenant, on only for single-tenant / hardware-trust) is not enforced
+          in code — the operator must opt out manually.
+        status: open
+      - description: >
+          HMAC the on-disk tokenPrefixHash with a per-install secret so a disk
+          observer cannot recompute it from a guessed prefix (mitigates leak #2).
+        status: open
+    open_findings: [SEC-035]
+    severity: medium
+    detection_hint: >
+      Any change to the DARKBLOOM_PREFIX_CACHE default/gating in
+      BatchScheduler.makePrefixCacheBackingIfEnabled, to prefix sharing across
+      consumers, or to what the plaintext file metadata exposes (tokenPrefixHash,
+      tokenCount) must be reviewed against this cross-tenant channel. Making the
+      cache default-on (done 2026-06) or removing the opt-out raises this exposure.
+
   # ── TB-008: Coordinator → Payments ───────────────────────────
 
   - id: T-030

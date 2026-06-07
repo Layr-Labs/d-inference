@@ -4185,13 +4185,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Resolve a public alias to a concrete build id (see handleChatCompletions).
-	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(parsed, rawBody, model)
+	// resolveRequestedModel already rewrites parsed["model"] to the build, and
+	// this handler builds the provider body fresh from `parsed` (see
+	// inferenceBody below), so there's no rawBody to thread through here.
+	buildModel, publicModel, _, ok := s.resolveRequestedModel(parsed, rawBody, model)
 	if !ok {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
 		return
 	}
-	model, rawBody = buildModel, resolvedBody
+	model = buildModel
 
 	if !s.registry.IsModelInCatalog(model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",

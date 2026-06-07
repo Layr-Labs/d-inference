@@ -433,6 +433,11 @@ public actor CoordinatorClient {
 
     private var shutdownRequested = false
 
+    /// Mutable advertised-model list. Seeded from `config.models`; background
+    /// prefetch (Layer 3) appends newly-verified builds so re-registration and
+    /// reconnects pick them up without dropping the currently-served model.
+    private let advertisedModelStore: AdvertisedModelStore
+
     public init(
         config: CoordinatorClientConfig,
         stats: AtomicProviderStats,
@@ -441,6 +446,37 @@ public actor CoordinatorClient {
         self.config = config
         self.stats = stats
         self.state = state
+        self.advertisedModelStore = AdvertisedModelStore(config.models)
+    }
+
+    /// Add a runtime-verified build to the advertised set so the coordinator
+    /// sees it on the NEXT registration (reconnect). Returns true if the model
+    /// was newly advertised. The store always holds the FULL union (startup ∪
+    /// prefetched), so the currently-served model is never dropped during the
+    /// transition — registration carries old + new.
+    ///
+    /// Why not force a mid-connection re-register here: re-sending a `register`
+    /// on the live socket makes the coordinator construct a brand-new provider
+    /// record — resetting reputation, re-running attestation, and starting a
+    /// SECOND challenge loop alongside the first. That is too disruptive to the
+    /// model this provider is actively serving. The clean instant-pickup path is
+    /// a dedicated, non-resetting coordinator `models_update` message (Layer 4);
+    /// until then the new build is loadable locally immediately (it is in the
+    /// advertised set + appears warm in heartbeats once loaded) and is added to
+    /// the coordinator's advertised inventory on the next reconnect.
+    @discardableResult
+    public func advertiseModel(_ model: ModelInfo) -> Bool {
+        let isNew = advertisedModelStore.add(model)
+        if isNew {
+            logger.info("advertiseModel(\(model.id)): added to advertised set (\(self.advertisedModelStore.models.count) total); coordinator picks it up on next registration")
+        }
+        return isNew
+    }
+
+    /// Snapshot of the current advertised model list (startup ∪ runtime
+    /// prefetched builds).
+    public func currentAdvertisedModels() -> [ModelInfo] {
+        advertisedModelStore.models
     }
 
     /// Start the connection loop. Returns an AsyncStream of events for the caller
@@ -745,9 +781,9 @@ public actor CoordinatorClient {
             eventContinuation?.yield(.loadModel(modelId: load.modelId))
 
         case .prefetchModel(let pf):
-            // Background download-only request. The downloader + status
-            // reporting are wired in Layer 3 (provider prefetch); for now we
-            // acknowledge receipt without acting so the protocol round-trips.
+            // Background download-only request. Forwarded to ProviderLoop, which
+            // downloads + verifies the build on disk (no GPU load) and replies
+            // with prefetch_model_status messages.
             logger.info("Received coordinator-driven prefetch for: \(pf.modelId) (priority=\(pf.priority))")
             eventContinuation?.yield(.prefetchModel(modelId: pf.modelId, priority: pf.priority))
 
@@ -775,8 +811,12 @@ public actor CoordinatorClient {
             envScrubbed: true,
             hypervisorActive: SecurityChecks.isHypervisorActive()
         )
+        // Read the live advertised list (startup ∪ prefetched builds) rather
+        // than the immutable `config.models`, so a re-registration after a
+        // verified prefetch carries the updated set.
         let jsonData = try CoordinatorClientCodec.encodeRegistration(
             from: config,
+            models: advertisedModelStore.models,
             privacyCapabilities: privacyCapabilities,
             apnsDeviceTokenOverride: apnsTokenOverride,
             modelWeightHashOverrides: modelWeightHashOverrides

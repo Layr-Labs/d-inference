@@ -6,6 +6,7 @@ import Foundation
 public enum CoordinatorClientCodec {
     public static func registrationMessage(
         from config: CoordinatorClientConfig,
+        models: [ModelInfo]? = nil,
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
@@ -21,11 +22,14 @@ public enum CoordinatorClientCodec {
         // daemon-start values so a reconnect registers with the hashes of the
         // weights actually on disk (the coordinator's per-model catalog filter
         // keys off models[].weight_hash).
+        // The advertised set may be overridden on a reconnect (prefetch re-advertise);
+        // weight-hash overrides are then patched on top of whichever set we send.
+        let baseModels = models ?? config.models
         let effectiveModels: [ModelInfo]
         if modelWeightHashOverrides.isEmpty {
-            effectiveModels = config.models
+            effectiveModels = baseModels
         } else {
-            effectiveModels = config.models.map { model in
+            effectiveModels = baseModels.map { model in
                 var patched = model
                 if let fresh = modelWeightHashOverrides[model.id] {
                     patched.weightHash = fresh
@@ -55,6 +59,7 @@ public enum CoordinatorClientCodec {
 
     public static func encodeRegistration(
         from config: CoordinatorClientConfig,
+        models: [ModelInfo]? = nil,
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
@@ -63,6 +68,7 @@ public enum CoordinatorClientCodec {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
                 from: config,
+                models: models,
                 version: version,
                 privacyCapabilities: privacyCapabilities,
                 apnsDeviceTokenOverride: apnsDeviceTokenOverride,

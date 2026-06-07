@@ -624,6 +624,151 @@ public struct ModelDownloader: Sendable {
         try await downloadLegacyModelFromCDN(model: model, onProgress: onProgress)
     }
 
+    // MARK: - Resume-aware prefetch (background, no GPU load)
+
+    /// Resolve the manifest for a catalog model via the same paths `download`
+    /// uses (coordinator registry first, CDN fallback). Exposed so the prefetch
+    /// coordinator can size total bytes / short-circuit before starting.
+    public func resolveManifest(model: CatalogModel) async throws -> ModelManifest {
+        if let catalogClient {
+            return try await catalogClient.fetchManifest(modelID: model.id)
+        }
+        return try await fetchManifestFromCDN(model: model)
+    }
+
+    /// Download + verify a manifest model on disk WITHOUT loading it into GPU,
+    /// resuming an interrupted prefetch instead of restarting from zero.
+    ///
+    /// Resume strategy: a STABLE per-model staging directory (keyed by the
+    /// manifest's `r2Prefix`, not a random UUID) survives an interrupted
+    /// prefetch. On re-entry, any file already present in staging that matches
+    /// its manifest size AND SHA-256 is skipped; only missing/corrupt files are
+    /// re-fetched. Per-file SHA is verified as each file lands; the aggregate
+    /// hash is verified before the snapshot is published. The published snapshot
+    /// is the same `snapshots/local` layout `download` produces, so
+    /// `ModelScanner` discovers it immediately.
+    ///
+    /// `onByteProgress(done, total)` reports cumulative verified-on-disk bytes
+    /// against the manifest total (already-present files count as done up front).
+    public func prefetch(
+        model: CatalogModel,
+        manifest: ModelManifest,
+        onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws {
+        guard manifest.modelID == model.id else {
+            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
+        }
+        guard manifest.files.count == manifest.fileCount else {
+            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
+        }
+        guard !manifest.files.isEmpty else {
+            throw ModelCatalogError.downloadFailed("manifest contains no files")
+        }
+        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
+            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
+        }
+        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
+            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
+        }
+
+        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
+
+        // STABLE staging dir keyed by the manifest prefix so an interrupted
+        // prefetch can resume. `r2Prefix` is path-like (e.g.
+        // "v2/org__name/version"); flatten it to a single safe component.
+        let stagingName = ".prefetch-staging-" + manifest.r2Prefix
+            .replacingOccurrences(of: "/", with: "__")
+            .replacingOccurrences(of: "\\", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: manifest.totalSizeBytes)
+
+        let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
+            let relativePath = try Self.validatedManifestRelativePath(file.path)
+            return (
+                file: file,
+                destination: stagingDir.appendingPathComponent(relativePath, isDirectory: false),
+                url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
+            )
+        }
+
+        // Bytes already verified on disk (resumed files) count toward progress
+        // immediately. `progress` is updated as each file completes.
+        let total = manifest.totalSizeBytes
+        let progress = PrefetchByteProgress()
+        for job in jobs where Self.fileMatches(job.destination, size: job.file.sizeBytes, sha256: job.file.sha256) {
+            progress.add(job.file.sizeBytes)
+        }
+        onByteProgress?(progress.done, total)
+
+        // Sequential downloads (one at a time) so prefetch yields to inference
+        // and never saturates bandwidth the way the foreground 4-way concurrent
+        // download does. Each file: skip-if-valid, else fetch + verify.
+        for job in jobs {
+            try Task.checkCancellation()
+            if Self.fileMatches(job.destination, size: job.file.sizeBytes, sha256: job.file.sha256) {
+                continue
+            }
+            try await downloadManifestFileWithResume(job)
+            progress.add(job.file.sizeBytes)
+            onByteProgress?(progress.done, total)
+        }
+
+        try Task.checkCancellation()
+
+        // Aggregate hash over the staged files (same ordering rule as download).
+        let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
+        guard aggregate == manifest.aggregateSHA256 else {
+            throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
+        }
+
+        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
+        try writeMainRef(for: model.id)
+        // Staging was consumed by publishStagedSnapshot (moved/replaced); make a
+        // best-effort cleanup in case the platform left a husk behind.
+        try? FileManager.default.removeItem(at: stagingDir)
+        onByteProgress?(total, total)
+    }
+
+    /// Whether a file at `url` already exists with the expected size and SHA-256.
+    /// Used by prefetch resume to skip already-valid files.
+    static func fileMatches(_ url: URL, size: Int64, sha256: String) -> Bool {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let onDisk = attrs[.size] as? Int64, onDisk == size else {
+            return false
+        }
+        guard let digest = WeightHasher.hashSingleFile(at: url) else { return false }
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return hex == sha256.lowercased()
+    }
+
+    /// Download a single manifest file into its staging destination, resuming
+    /// from a `.part` file when present, verifying size + SHA-256 before
+    /// promoting to the final staged path. Reuses the resume-capable
+    /// `downloadFile` helper (Range requests, Content-Range validation, retries).
+    private func downloadManifestFileWithResume(
+        _ job: (file: ManifestFile, destination: URL, url: String)
+    ) async throws {
+        let ok = try await downloadFile(
+            from: job.url,
+            to: job.destination,
+            label: job.file.path,
+            onProgress: nil,
+            required: true,
+            expectedSHA256: job.file.sha256.lowercased()
+        )
+        guard ok else {
+            throw ModelCatalogError.downloadFailed("\(job.file.path): required file could not be fetched")
+        }
+        let size = fileSize(job.destination)
+        guard size == job.file.sizeBytes else {
+            throw ModelCatalogError.downloadFailed("\(job.file.path): size \(size) != manifest size \(job.file.sizeBytes)")
+        }
+    }
+
     private func fetchManifestFromCDN(model: CatalogModel) async throws -> ModelManifest {
         guard let r2Prefix = model.r2Prefix else {
             throw ModelCatalogError.downloadFailed("model missing r2_prefix")
@@ -1242,4 +1387,76 @@ public struct ModelDownloader: Sendable {
         }
     }
 
+}
+
+// MARK: - Prefetch byte-progress accumulator
+
+/// Tiny thread-safe cumulative byte counter for prefetch progress. The
+/// per-file downloads run sequentially, but the accumulator is `Sendable` so it
+/// can be read from progress callbacks without data races.
+private final class PrefetchByteProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _done: Int64 = 0
+    func add(_ bytes: Int64) { lock.lock(); _done += bytes; lock.unlock() }
+    var done: Int64 { lock.lock(); defer { lock.unlock() }; return _done }
+}
+
+// MARK: - ModelPrefetcher abstraction
+
+/// Abstraction over "make a model build available + verified on disk" so the
+/// prefetch coordinator (Layer 3) can be unit-tested with an injected fake that
+/// simulates success, resume, hash failure, and cancellation WITHOUT hitting
+/// the network or downloading real multi-GB weights.
+///
+/// The real conformer (`ModelDownloader`) fetches the manifest from the
+/// coordinator/CDN, downloads + resumes + verifies, and publishes the snapshot.
+public protocol ModelPrefetcher: Sendable {
+    /// Download (resuming if interrupted) and verify the model on disk without
+    /// loading it into GPU. Reports cumulative verified bytes vs. total via
+    /// `onByteProgress`. Throws on hash mismatch, fetch failure, or
+    /// cancellation; returns normally only when the build is on disk and
+    /// aggregate-hash-verified.
+    func prefetchToDisk(
+        modelID: String,
+        onByteProgress: @Sendable @escaping (_ done: Int64, _ total: Int64) -> Void
+    ) async throws
+}
+
+/// Production `ModelPrefetcher` backed by the coordinator catalog + R2 CDN.
+///
+/// Resolves the catalog entry (for `r2Prefix`/`aggregateSHA256`), then the
+/// manifest, then runs the resume-aware verified download. A short-circuit for
+/// "already on disk and valid" is handled one layer up (the prefetch
+/// coordinator) so this type stays a thin IO conformer.
+public struct CatalogModelPrefetcher: ModelPrefetcher {
+    private let catalogClient: ModelCatalogClient
+    private let downloader: ModelDownloader
+
+    public init(coordinatorURL: String, urlSession: URLSession = .shared) {
+        let client = ModelCatalogClient(coordinatorURL: coordinatorURL, urlSession: urlSession)
+        self.catalogClient = client
+        self.downloader = ModelDownloader(urlSession: urlSession, catalogClient: client)
+    }
+
+    public init(catalogClient: ModelCatalogClient, downloader: ModelDownloader) {
+        self.catalogClient = catalogClient
+        self.downloader = downloader
+    }
+
+    public func prefetchToDisk(
+        modelID: String,
+        onByteProgress: @Sendable @escaping (_ done: Int64, _ total: Int64) -> Void
+    ) async throws {
+        let catalog = try await catalogClient.fetchCatalog()
+        guard let model = catalog.first(where: { $0.id == modelID }) else {
+            throw ModelCatalogError.modelNotInCatalog(modelID)
+        }
+        guard model.r2Prefix != nil, model.aggregateSHA256 != nil else {
+            throw ModelCatalogError.downloadFailed(
+                "model '\(modelID)' has no manifest (r2_prefix/aggregate_sha256); cannot prefetch"
+            )
+        }
+        let manifest = try await downloader.resolveManifest(model: model)
+        try await downloader.prefetch(model: model, manifest: manifest, onByteProgress: onByteProgress)
+    }
 }

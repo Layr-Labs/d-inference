@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +102,11 @@ func advanceMigration(m store.ModelMigration, snap migrationSnapshot) migrationA
 		if target > cur+step {
 			target = cur + step
 		}
+		// Ramp DOWN is intentional and self-healing: if `to`-coverage drops
+		// (e.g. a provider transiently de-advertises the new build), the weight
+		// eases back toward the old build instead of over-routing to shrunken
+		// capacity. This is never a black-hole — ResolveModel still prefers a
+		// build with a live provider — and it settles once Status=complete.
 		if target < cur-step {
 			target = cur - step
 		}
@@ -307,12 +313,12 @@ func sentKey(alias, provider, build string) string {
 
 func splitSentKey(key, build string) (alias, provider string, ok bool) {
 	// key = alias \x00 provider \x00 build
-	first := indexByte(key, '\x00')
+	first := strings.IndexByte(key, '\x00')
 	if first < 0 {
 		return "", "", false
 	}
 	rest := key[first+1:]
-	second := indexByte(rest, '\x00')
+	second := strings.IndexByte(rest, '\x00')
 	if second < 0 {
 		return "", "", false
 	}
@@ -321,15 +327,6 @@ func splitSentKey(key, build string) (alias, provider string, ok bool) {
 		return "", "", false
 	}
 	return key[:first], provider, true
-}
-
-func indexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
 }
 
 func sliceToSet(ids []string) map[string]bool {

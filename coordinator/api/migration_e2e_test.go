@@ -19,6 +19,45 @@ func registerBuildsProvider(srv *Server, id string, builds ...string) {
 	srv.registry.Register(id, nil, &protocol.RegisterMessage{Models: models})
 }
 
+// Directly construct the dangerous window the ramp can briefly create: the new
+// build carries a high routing weight but NO provider serves it yet. The
+// resolution guard must still never hand traffic to it (it falls back to the
+// build that has live capacity), so the public alias never black-holes.
+func TestResolveNeverBlackHolesDuringRamp(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	seedActiveModel(t, st, fp8, "fp8")
+	seedActiveModel(t, st, qat, "qat")
+
+	// Only fp8 has a live provider; qat is "ramping" at weight 60 with none.
+	registerBuildsProvider(srv, "p1", fp8)
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		Builds: []store.ModelAliasBuild{
+			{BuildID: fp8, Weight: 40, Active: true},
+			{BuildID: qat, Weight: 60, Active: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	for i := 0; i < 200; i++ {
+		build, _, ok := reg.ResolveModel("gemma-4-26b")
+		if !ok {
+			t.Fatal("alias failed to resolve")
+		}
+		if build != fp8 {
+			t.Fatalf("resolved to %q which has no serving provider — black-hole during ramp", build)
+		}
+	}
+}
+
 // The headline guarantee: while the migration controller ramps an alias from
 // fp8 to qat-4bit — with providers finishing their background prefetch and
 // re-advertising the new build over time — every resolution of the public alias

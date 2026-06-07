@@ -324,6 +324,49 @@ import Testing
     #expect(verified["error"] == nil)
 }
 
+@Test func modelsUpdateRoundTripsAndReusesModelInfoEncoding() throws {
+    // A verified prefetch advertises the authoritative ModelInfo (incl. the
+    // computed weight hash) out-of-band so the coordinator can cross-check it
+    // before routing. The wire form reuses the SAME ModelInfo shape as
+    // register's models[]: {"type":"models_update","models":[{...}]}.
+    let info = ModelInfo(
+        id: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+        modelType: "gemma3",
+        quantization: "4bit",
+        sizeBytes: 15_600_000_000,
+        estimatedMemoryGb: 16.0,
+        weightHash: String(repeating: "ab", count: 32)
+    )
+    let message: ProviderMessage = .modelsUpdate(ProviderMessage.ModelsUpdate(models: [info]))
+
+    let encoded = try ProviderProtocolCodec.encodeProviderMessage(message)
+    let object = try jsonObject(encoded)
+    #expect(object["type"] as? String == "models_update")
+
+    // models[] carries the snake_case ModelInfo fields including weight_hash.
+    let models = try #require(object["models"] as? [[String: Any]])
+    #expect(models.count == 1)
+    let m = models[0]
+    #expect(m["id"] as? String == info.id)
+    #expect(m["model_type"] as? String == "gemma3")
+    #expect(m["quantization"] as? String == "4bit")
+    #expect((m["size_bytes"] as? NSNumber)?.int64Value == 15_600_000_000)
+    #expect(m["weight_hash"] as? String == info.weightHash)
+
+    // Full round-trip through the Codable envelope preserves the message.
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: encoded)
+    #expect(decoded == message)
+
+    // Decodes a Go-emitted wire form too (forward compat with the coordinator).
+    let goWire = #"{"type":"models_update","models":[{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"weight_hash":"deadbeef"}]}"#
+    guard case .modelsUpdate(let u) = try ProviderProtocolCodec.decodeProviderMessage(from: goWire) else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(u.models.count == 1)
+    #expect(u.models[0].id == "org/m")
+    #expect(u.models[0].weightHash == "deadbeef")
+}
+
 @Test func coordinatorMessagesDecodeAndEncodeWithSnakeCaseKeys() throws {
     let encryptedRequest = #"{"type":"inference_request","request_id":"go-enc-req-1","body":null,"encrypted_body":{"ephemeral_public_key":"ZXBoZW1lcmFs","ciphertext":"Y2lwaGVy"}}"#
     let request = try ProviderProtocolCodec.decodeCoordinatorMessage(from: encryptedRequest)

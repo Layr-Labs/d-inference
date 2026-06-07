@@ -479,6 +479,22 @@ private final class AdvertisedRecorder: @unchecked Sendable {
     var ids: [String] { lock.lock(); defer { lock.unlock() }; return _ids }
 }
 
+/// Thread-safe recorder for outbound messages flowing through a `SendHandle`,
+/// so tests can assert which `models_update` payloads were emitted. Each entry
+/// in `modelsUpdates()` is the `models` array from one emitted update.
+private final class OutboundRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _messages: [OutboundMessage] = []
+    func record(_ message: OutboundMessage) { lock.lock(); _messages.append(message); lock.unlock() }
+    func modelsUpdates() -> [[ModelInfo]] {
+        lock.lock(); defer { lock.unlock() }
+        return _messages.compactMap { msg in
+            if case .modelsUpdate(let models) = msg { return models }
+            return nil
+        }
+    }
+}
+
 /// Fake prefetcher that succeeds without touching the network — used by the
 /// ProviderLoop-level integration test where a valid snapshot is pre-seeded on
 /// disk so `applyVerifiedPrefetch`'s scan + weight-hash succeed.
@@ -558,7 +574,13 @@ struct ProviderLoopPrefetchTests {
             preCheck: { _ in .needsFetch },
             onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
         )
-        await loop.installPrefetchCoordinatorForTesting(coord, client: client)
+        // Capture outbound messages so we can assert a `models_update` is emitted
+        // on verify (the authoritative ModelInfo + weight hash for the coordinator
+        // to cross-check before routing). This is the SAME send handle used for
+        // prefetch status, injected here for the test.
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
 
         // Before: only the startup model is advertised.
         let beforeCount = await loop.advertisedModelCount()
@@ -567,9 +589,7 @@ struct ProviderLoopPrefetchTests {
         #expect(!newAdvertisedBefore)
 
         // Fire a prefetch via the real handler.
-        let sink = RecordingSink()
-        await loop.handlePrefetchModelRequest(modelId: newModelID, priority: 1, send: SendHandle { _ in })
-        _ = sink
+        await loop.handlePrefetchModelRequest(modelId: newModelID, priority: 1, send: capturingSend)
 
         // Wait for the new build to be advertised (verified → re-advertise hook).
         let advertised = await waitUntil(timeout: .seconds(10)) {
@@ -590,6 +610,22 @@ struct ProviderLoopPrefetchTests {
         // And it rides on the advertised ModelInfo for reconnect registration.
         let advertisedInfo = await client.currentAdvertisedModels().first { $0.id == newModelID }
         #expect(advertisedInfo?.weightHash == recordedHash)
+
+        // A `models_update` outbound message was emitted carrying the build id
+        // AND a non-empty weight hash (the security-gap fix: the coordinator can
+        // now cross-check the verified build's hash before routing).
+        let emittedUpdate = await waitUntil(timeout: .seconds(5)) {
+            outbound.modelsUpdates().contains { models in
+                models.contains { $0.id == newModelID }
+            }
+        }
+        #expect(emittedUpdate)
+        let updatedInfo = outbound.modelsUpdates()
+            .flatMap { $0 }
+            .first { $0.id == newModelID }
+        #expect(updatedInfo != nil)
+        #expect(updatedInfo?.weightHash == recordedHash)
+        #expect(!(updatedInfo?.weightHash?.isEmpty ?? true))
     }
 
     @Test("prefetch of an already-advertised+hashed model short-circuits to verified")

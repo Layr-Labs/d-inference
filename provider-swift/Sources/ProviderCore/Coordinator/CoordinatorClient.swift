@@ -313,6 +313,10 @@ public enum OutboundMessage: Sendable {
         bytesTotal: Int64,
         error: String?
     )
+    /// Authoritative out-of-band advertisement of newly-available builds
+    /// (e.g. a verified prefetch), carrying full `ModelInfo` including the
+    /// computed weight hash so the coordinator can cross-check before routing.
+    case modelsUpdate(models: [ModelInfo])
 }
 
 public struct AttestationResponsePayload: Sendable {

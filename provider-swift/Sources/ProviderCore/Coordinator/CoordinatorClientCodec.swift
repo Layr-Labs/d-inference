@@ -161,6 +161,9 @@ public enum CoordinatorClientCodec {
                 bytesTotal: bytesTotal,
                 error: error
             ))
+
+        case .modelsUpdate(let models):
+            return .modelsUpdate(ProviderMessage.ModelsUpdate(models: models))
         }
     }
 

@@ -683,7 +683,6 @@ public struct ModelDownloader: Sendable {
             .replacingOccurrences(of: "\\", with: "__")
         let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: manifest.totalSizeBytes)
 
         let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
             let relativePath = try Self.validatedManifestRelativePath(file.path)
@@ -694,14 +693,30 @@ public struct ModelDownloader: Sendable {
             )
         }
 
+        // Classify each file once (hashing is expensive) into already-valid vs
+        // still-needed. Reused for both progress seeding and the capacity check.
+        let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
+
         // Bytes already verified on disk (resumed files) count toward progress
         // immediately. `progress` is updated as each file completes.
         let total = manifest.totalSizeBytes
         let progress = PrefetchByteProgress()
-        for job in jobs where Self.fileMatches(job.destination, size: job.file.sizeBytes, sha256: job.file.sha256) {
+        for (job, valid) in zip(jobs, alreadyValid) where valid {
             progress.add(job.file.sizeBytes)
         }
         onByteProgress?(progress.done, total)
+
+        // Capacity pre-check must account for already-staged bytes: on a resumed
+        // prefetch most files are present + valid, so we only need free space for
+        // the files we still have to download. Demanding the FULL model size here
+        // would spuriously fail a resume that has plenty of room for what remains.
+        // Publishing is a same-volume move of the staging dir, so staged bytes
+        // need no extra headroom.
+        let remainingBytes = Self.remainingBytesToFetch(
+            sizes: jobs.map(\.file.sizeBytes),
+            alreadyValid: alreadyValid
+        )
+        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: remainingBytes)
 
         // Sequential downloads (one at a time) so prefetch yields to inference
         // and never saturates bandwidth the way the foreground 4-way concurrent
@@ -1374,6 +1389,18 @@ public struct ModelDownloader: Sendable {
         // fallback for files moved from URLSession temp locations.
         guard let digest = WeightHasher.hashSingleFile(at: url) else { return nil }
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Bytes that still need to be downloaded for a (possibly resumed) prefetch:
+    /// the sum of sizes of files NOT already present-and-valid in staging. On a
+    /// fresh prefetch every file is needed (== manifest total); on a resume most
+    /// are already valid, so only the gap is required. Drives the disk capacity
+    /// pre-check so a resume isn't spuriously rejected for lacking room for bytes
+    /// that are already on disk. `sizes` and `alreadyValid` are parallel arrays.
+    static func remainingBytesToFetch(sizes: [Int64], alreadyValid: [Bool]) -> Int64 {
+        zip(sizes, alreadyValid).reduce(Int64(0)) { acc, pair in
+            pair.1 ? acc : acc + pair.0
+        }
     }
 
     private static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {

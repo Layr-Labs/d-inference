@@ -211,6 +211,14 @@ public actor ProviderLoop {
     /// re-register the updated advertised set. Set in `run()`.
     private var coordinatorClient: CoordinatorClient?
 
+    /// The live outbound send handle (same one prefetch status flows through).
+    /// Retained so `applyVerifiedPrefetch` can push an out-of-band
+    /// `models_update` carrying the verified build's authoritative `ModelInfo`
+    /// (including its computed weight hash) for the coordinator to cross-check
+    /// before routing. Set in `run()`; injectable in tests via
+    /// `installPrefetchCoordinatorForTesting`.
+    private var outboundSend: SendHandle?
+
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
     private var preloadTasks: [String: Task<Void, Never>] = [:]
 
@@ -514,8 +522,11 @@ public actor ProviderLoop {
 
         // Retain the coordinator client so the verified-prefetch hook can
         // re-register the updated advertised model set, and build the
-        // background prefetch coordinator (Layer 3).
+        // background prefetch coordinator (Layer 3). Retain the send handle too
+        // so applyVerifiedPrefetch can emit a `models_update` over the live
+        // connection without threading a handle through the prefetch callbacks.
         self.coordinatorClient = coordinator
+        self.outboundSend = send
         self.prefetchCoordinator = makePrefetchCoordinator()
 
         // Start the idle-timeout monitor before processing events so that
@@ -1405,6 +1416,12 @@ public actor ProviderLoop {
         if let coordinatorClient {
             await coordinatorClient.advertiseModel(info)
         }
+        // Push the authoritative ModelInfo (incl. the just-computed weight hash)
+        // to the coordinator out-of-band so it can cross-check the build against
+        // the catalog before routing -- without waiting for a reconnect's
+        // `register`, and without the disruption of re-registering. The local
+        // `advertiseModel` above still carries the union on the next reconnect.
+        outboundSend?.send(.modelsUpdate(models: [info]))
     }
 
     /// Test seam: number of advertised models (startup ∪ prefetched).
@@ -1424,10 +1441,12 @@ public actor ProviderLoop {
     /// exercise the handler without the real download path.
     func installPrefetchCoordinatorForTesting(
         _ coordinator: ModelPrefetchCoordinator,
-        client: CoordinatorClient
+        client: CoordinatorClient,
+        send: SendHandle? = nil
     ) {
         self.coordinatorClient = client
         self.prefetchCoordinator = coordinator
+        if let send { self.outboundSend = send }
     }
 
     /// Scan the on-disk snapshot for a freshly-prefetched model to produce an

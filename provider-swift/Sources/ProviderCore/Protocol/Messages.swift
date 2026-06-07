@@ -13,6 +13,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case codeAttestationResponse(CodeAttestationResponse)
     case loadModelStatus(LoadModelStatus)
     case prefetchModelStatus(PrefetchModelStatus)
+    case modelsUpdate(ModelsUpdate)
 
     public struct Register: Sendable, Equatable {
         public var hardware: HardwareInfo
@@ -203,6 +204,23 @@ public enum ProviderMessage: Sendable, Equatable {
         }
     }
 
+    /// Authoritative, out-of-band update to the provider's advertised model
+    /// inventory. Emitted after a coordinator-driven prefetch is downloaded AND
+    /// verified on disk so the coordinator can cross-check the freshly-available
+    /// build (including its computed weight hash) against the catalog BEFORE
+    /// routing to it -- without the disruption of a full re-`register` (which
+    /// would reset reputation and restart the attestation challenge loop).
+    ///
+    /// `models` reuses the SAME `ModelInfo` encoding as `register`'s `models[]`,
+    /// so the wire form is `{"type":"models_update","models":[{...}]}`.
+    public struct ModelsUpdate: Sendable, Equatable {
+        public var models: [ModelInfo]
+
+        public init(models: [ModelInfo]) {
+            self.models = models
+        }
+    }
+
     public struct AttestationResponse: Sendable, Equatable {
         public var nonce: String
         public var signature: String
@@ -282,6 +300,7 @@ extension ProviderMessage: Codable {
         case codeAttestationResponse = "code_attestation_response"
         case loadModelStatus = "load_model_status"
         case prefetchModelStatus = "prefetch_model_status"
+        case modelsUpdate = "models_update"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -449,6 +468,11 @@ extension ProviderMessage: Codable {
                 try container.encode(p.bytesTotal, forKey: .bytesTotal)
             }
             try container.encodeIfPresent(p.error, forKey: .error)
+
+        case .modelsUpdate(let u):
+            try container.encode(TypeValue.modelsUpdate, forKey: .type)
+            // Reuse the ModelInfo encoding shared with `register`'s models[].
+            try container.encode(u.models, forKey: .models)
         }
     }
 
@@ -570,6 +594,11 @@ extension ProviderMessage: Codable {
                 bytesDone: try container.decodeIfPresent(Int64.self, forKey: .bytesDone) ?? 0,
                 bytesTotal: try container.decodeIfPresent(Int64.self, forKey: .bytesTotal) ?? 0,
                 error: try container.decodeIfPresent(String.self, forKey: .error)
+            ))
+
+        case .modelsUpdate:
+            self = .modelsUpdate(ModelsUpdate(
+                models: try container.decode([ModelInfo].self, forKey: .models)
             ))
         }
     }

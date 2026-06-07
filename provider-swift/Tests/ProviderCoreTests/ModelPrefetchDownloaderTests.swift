@@ -400,6 +400,90 @@ struct ModelPrefetchDownloaderTests {
         #expect(!FileManager.default.fileExists(atPath: stagingDir.path))
     }
 
+    @Test("disk capacity pre-check counts only the bytes still to fetch on a resume")
+    func capacityPreCheckCountsRemainingBytesOnResume() async throws {
+        // A resumed prefetch must size its capacity pre-check to the REMAINING
+        // (not-yet-valid) files, not the full model. Otherwise a resume that has
+        // ample room for what's left would be spuriously rejected for lacking
+        // room equal to the whole model.
+        //
+        // Direct check of the pure remaining-bytes computation that the capacity
+        // pre-check feeds: when most files are already valid, only the missing
+        // file's size is required.
+        let sizes: [Int64] = [10_000_000_000, 2_000_000_000, 500_000_000] // 12.5 GB total
+        // First two already staged+valid; only the third (500 MB) remains.
+        let remaining = ModelDownloader.remainingBytesToFetch(
+            sizes: sizes,
+            alreadyValid: [true, true, false]
+        )
+        #expect(remaining == 500_000_000) // NOT the 12.5 GB total
+        // A fresh prefetch (nothing valid) requires the full total.
+        let fresh = ModelDownloader.remainingBytesToFetch(
+            sizes: sizes,
+            alreadyValid: [false, false, false]
+        )
+        #expect(fresh == 12_500_000_000)
+        // A fully-staged resume requires zero new bytes (capacity check is a noop).
+        let none = ModelDownloader.remainingBytesToFetch(
+            sizes: sizes,
+            alreadyValid: [true, true, true]
+        )
+        #expect(none == 0)
+
+        // End-to-end: pre-stage the large file as valid, leave a tiny file to
+        // fetch. The capacity pre-check (now sized to remaining bytes) must NOT
+        // reject the resume, and prefetch completes + publishes.
+        PrefetchURLProtocol.reset()
+        let modelID = "test-org/prefetch-capacity-\(UUID().uuidString)"
+        let prefix = "v2/prefetch-capacity/v1"
+        // "Large" relative to the tiny remaining file; both small in absolute
+        // terms so the real volume always has room (we're proving the check is
+        // sized to REMAINING bytes, which is what the resume path relies on).
+        let bigBytes = Data((0..<200_000).map { UInt8(($0 &* 7) & 0xFF) })
+        let smallBytes = Data("small remaining file".utf8)
+        let files = [
+            ManifestFile(path: "big.safetensors", sizeBytes: Int64(bigBytes.count), sha256: sha256Hex(bigBytes), role: "weight"),
+            ManifestFile(path: "small.json", sizeBytes: Int64(smallBytes.count), sha256: sha256Hex(smallBytes), role: "config"),
+        ]
+        let aggregate = aggregateHash(files: [
+            ("big.safetensors", bigBytes),
+            ("small.json", smallBytes),
+        ])
+        let manifest = ModelManifest(
+            schemaVersion: 1, modelID: modelID, version: "v1", r2Prefix: prefix,
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(bigBytes.count + smallBytes.count),
+            fileCount: 2, files: files, createdAt: Date(timeIntervalSince1970: 0)
+        )
+        PrefetchURLProtocol.files = [
+            "/\(prefix)/big.safetensors": bigBytes,
+            "/\(prefix)/small.json": smallBytes,
+        ]
+
+        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        // Pre-seed staging with the VALID big file (interrupted prior prefetch).
+        let stagingName = ".prefetch-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        try bigBytes.write(to: stagingDir.appendingPathComponent("big.safetensors"))
+
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Capacity", sizeGb: 0.001,
+                                 r2Prefix: prefix, aggregateSHA256: aggregate)
+
+        // Resume succeeds: the capacity pre-check (sized to the small remaining
+        // file) passes, only the small file is fetched, and the snapshot publishes.
+        try await downloader.prefetch(model: model, manifest: manifest)
+        let fetched = PrefetchURLProtocol.fetchedPaths()
+        #expect(fetched.contains("/\(prefix)/small.json"))
+        #expect(!fetched.contains("/\(prefix)/big.safetensors")) // big was skipped
+        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("big.safetensors")) == bigBytes)
+        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("small.json")) == smallBytes)
+    }
+
     @Test("prefetch fails on aggregate hash mismatch and does not publish")
     func prefetchAggregateMismatchFails() async throws {
         PrefetchURLProtocol.reset()

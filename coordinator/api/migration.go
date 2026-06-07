@@ -42,8 +42,16 @@ func newMigrationController(s *Server) *MigrationController {
 
 // migrationSnapshot is the fleet state advanceMigration reasons over.
 type migrationSnapshot struct {
-	servingFrom map[string]bool // providers currently serving the old build
-	servingTo   map[string]bool // providers currently serving the new build
+	// prefetchCandidates are providers advertising the old build that we may
+	// tell to prefetch the new one (advertise-based — we prefetch onto any live
+	// node). nil falls back to servingFrom for older tests.
+	prefetchCandidates map[string]bool
+	// servingFrom/servingTo are the providers that can actually ROUTE the old /
+	// new build (the real routing gate), used for ramp coverage and done — so a
+	// non-routable old provider (private-only, stale, untrusted) never pins the
+	// ramp below 100%.
+	servingFrom map[string]bool
+	servingTo   map[string]bool
 	inflight    map[string]bool // providers told to prefetch, not yet serving `to`
 	healthOK    bool            // safe to ramp more traffic onto the new build
 	currentTo   int             // new build's current routing weight (0..100)
@@ -78,8 +86,12 @@ func advanceMigration(m store.ModelMigration, snap migrationSnapshot) migrationA
 	if batch <= 0 {
 		batch = 1
 	}
+	candidates := snap.prefetchCandidates
+	if candidates == nil {
+		candidates = snap.servingFrom
+	}
 	var targets []string
-	for id := range snap.servingFrom {
+	for id := range candidates {
 		if snap.servingTo[id] || snap.inflight[id] {
 			continue
 		}
@@ -187,15 +199,21 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 	// done) is ROUTABILITY-based — the weight only follows capacity that can
 	// actually serve the new build, so we never ramp onto a build that merely
 	// advertises but can't route (stale challenge, untrusted, runtime-unverified).
-	servingFrom := sliceToSet(mc.s.registry.ProvidersServingBuild(m.FromBuild))
+	// Targeting is advertise-based (prefetch onto any live node that has the old
+	// build); coverage/done are routability-based (only nodes that can actually
+	// serve public traffic count), so a private-only / stale / untrusted old
+	// provider can't pin the ramp below 100%.
+	prefetchCandidates := sliceToSet(mc.s.registry.ProvidersServingBuild(m.FromBuild))
+	servingFrom := sliceToSet(mc.s.registry.RoutableProviderIDsForBuild(m.FromBuild))
 	servingTo := sliceToSet(mc.s.registry.RoutableProviderIDsForBuild(m.ToBuild))
-	mc.dropUnmigratable(m, servingFrom, servingTo)
+	mc.dropUnmigratable(m, servingFrom, prefetchCandidates, servingTo)
 	snap := migrationSnapshot{
-		servingFrom: servingFrom,
-		servingTo:   servingTo,
-		inflight:    mc.inflightSet(m, servingTo),
-		healthOK:    mc.toBuildHealthy(m, servingTo),
-		currentTo:   mc.currentToWeight(m),
+		prefetchCandidates: prefetchCandidates,
+		servingFrom:        servingFrom,
+		servingTo:          servingTo,
+		inflight:           mc.inflightSet(m, servingTo),
+		healthOK:           mc.toBuildHealthy(m, servingTo),
+		currentTo:          mc.currentToWeight(m),
 	}
 
 	act := advanceMigration(m, snap)
@@ -251,7 +269,7 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 // not serve `to`). Those providers run a binary that doesn't support prefetch,
 // so they can't be migrated; keeping them in the coverage/done math would stall
 // the migration forever on un-upgraded nodes.
-func (mc *MigrationController) dropUnmigratable(m store.ModelMigration, servingFrom, servingTo map[string]bool) {
+func (mc *MigrationController) dropUnmigratable(m store.ModelMigration, servingFrom, prefetchCandidates, servingTo map[string]bool) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	now := time.Now()
@@ -266,7 +284,11 @@ func (mc *MigrationController) dropUnmigratable(m store.ModelMigration, servingF
 		if mc.s.registry.ProviderAckedPrefetch(id) {
 			continue // it speaks prefetch — just still downloading, keep waiting
 		}
+		// Sent a while ago, never acked, not serving → its binary doesn't speak
+		// prefetch. Exclude from both coverage (so done can converge) and
+		// targeting (stop hammering it).
 		delete(servingFrom, id)
+		delete(prefetchCandidates, id)
 		mc.s.logger.Warn("migration: excluding provider that never acked prefetch",
 			"alias", m.AliasID, "provider", id, "to", m.ToBuild)
 	}
@@ -348,6 +370,13 @@ func (mc *MigrationController) inflightSet(m store.ModelMigration, servingTo map
 		}
 		if servingTo[provider] {
 			// It finished and re-advertised; stop tracking.
+			delete(mc.sent, key)
+			continue
+		}
+		// Terminal failure since we sent it (transient disk/network/hash error):
+		// clear the marker so the next tick re-sends (and the provider resumes
+		// from its on-disk staging) instead of waiting out the full resend TTL.
+		if failedAt, ok := mc.s.registry.PrefetchFailedAt(provider, m.ToBuild); ok && failedAt.After(ts) {
 			delete(mc.sent, key)
 			continue
 		}

@@ -630,8 +630,12 @@ type Registry struct {
 
 	// prefetchAcked tracks the last time each provider acknowledged a prefetch
 	// (sent any prefetch_model_status), proving its binary speaks the protocol.
-	prefetchAckMu sync.Mutex
-	prefetchAcked map[string]time.Time
+	// prefetchFailed tracks the last terminal prefetch failure per provider+build
+	// so the migration controller can retry promptly instead of waiting out the
+	// resend TTL. Both are guarded by prefetchAckMu.
+	prefetchAckMu  sync.Mutex
+	prefetchAcked  map[string]time.Time
+	prefetchFailed map[string]time.Time
 
 	store store.Store
 
@@ -1058,6 +1062,84 @@ func (r *Registry) ResolveModel(requested string) (buildID string, isAlias bool,
 	return weightedPickBuild(pool), true, true
 }
 
+// ResolveModelConstrained is ResolveModel, but when a request is restricted to
+// specific providers — a serial allowlist or self-route to the owner's own
+// machines — it only treats a build as servable if an ELIGIBLE provider (one
+// that both matches the constraint and can route the build) can serve it. This
+// stops an alias from resolving to a build that's routable somewhere globally
+// but absent from the request's allowed provider set (which would then fail at
+// dispatch). With no constraints it is identical to ResolveModel.
+func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []string, ownerAccountID string, selfRouteOnly, preferOwner bool) (buildID string, isAlias bool, ok bool) {
+	if len(allowedSerials) == 0 && !selfRouteOnly {
+		return r.ResolveModel(requested)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	builds, found := r.modelAliases[requested]
+	if !found {
+		return requested, false, true
+	}
+	allowed := make(map[string]struct{}, len(allowedSerials))
+	for _, s := range allowedSerials {
+		if s != "" {
+			allowed[s] = struct{}{}
+		}
+	}
+	now := time.Now()
+	var servable, all []BuildRef
+	for _, b := range builds {
+		if b.Weight <= 0 || b.BuildID == "" {
+			continue
+		}
+		all = append(all, b)
+		if r.anyEligibleProviderCanRouteLocked(b.BuildID, allowed, ownerAccountID, selfRouteOnly, preferOwner, now) {
+			servable = append(servable, b)
+		}
+	}
+	pool := servable
+	if len(pool) == 0 {
+		pool = all
+	}
+	if len(pool) == 0 {
+		return "", true, false
+	}
+	return weightedPickBuild(pool), true, true
+}
+
+// anyEligibleProviderCanRouteLocked reports whether some provider both matches
+// the request's constraint (serial allowlist and/or self-route ownership) and
+// can route the build. Self-route to an OWNED machine relaxes trust and allows
+// private-only providers, mirroring snapshotProviderLocked. Caller holds r.mu.
+func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSerials map[string]struct{}, ownerAccountID string, selfRouteOnly, preferOwner bool, now time.Time) bool {
+	for _, p := range r.providers {
+		p.mu.Lock()
+		ok := func() bool {
+			if len(allowedSerials) > 0 {
+				if _, in := allowedSerials[p.AttestationResult.SerialNumber]; !in || p.AttestationResult.SerialNumber == "" {
+					return false
+				}
+			}
+			owned := p.AccountID != "" && p.AccountID == ownerAccountID
+			if selfRouteOnly && !owned {
+				return false
+			}
+			minTrust := r.MinTrustLevel
+			allowPrivate := false
+			if owned && (selfRouteOnly || preferOwner) {
+				minTrust = TrustNone
+				allowPrivate = true
+			}
+			return r.providerCanRouteBuildLocked(p, buildID, minTrust, now, allowPrivate)
+		}()
+		p.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
 // providerCanRouteBuildLocked is the single source of truth for "could this
 // provider actually serve this build right now" — the same gates
 // snapshotProviderLocked applies (advertises the build + in catalog, not
@@ -1065,14 +1147,14 @@ func (r *Registry) ResolveModel(requested string) (buildID string, isAlias bool,
 // capable, fresh challenge, AND the model fits the provider's RAM), minus the
 // per-request capacity/headroom checks. Cold-but-healthy providers pass (no warm
 // slot required — they load on first demand). Caller holds r.mu (RLock) and p.mu.
-func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time) bool {
+func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
 	if !r.providerServesCatalogModelLocked(p, buildID) {
 		return false
 	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}
-	if p.PrivateOnly {
+	if p.PrivateOnly && !allowPrivate {
 		return false
 	}
 	if trustRank(p.TrustLevel) < trustRank(minTrust) {
@@ -1101,7 +1183,7 @@ func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
 	minTrust := r.MinTrustLevel
 	for _, p := range r.providers {
 		p.mu.Lock()
-		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now)
+		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now, false)
 		p.mu.Unlock()
 		if ok {
 			return true
@@ -1207,7 +1289,7 @@ func (r *Registry) RoutableProviderIDsForBuild(buildID string) []string {
 	var ids []string
 	for id, p := range r.providers {
 		p.mu.Lock()
-		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now)
+		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now, false)
 		p.mu.Unlock()
 		if ok {
 			ids = append(ids, id)
@@ -1239,6 +1321,28 @@ func (r *Registry) ProviderAckedPrefetch(providerID string) bool {
 	t, ok := r.prefetchAcked[providerID]
 	r.prefetchAckMu.Unlock()
 	return ok && time.Since(t) <= prefetchAckTTL
+}
+
+// RecordPrefetchFailure notes a terminal prefetch failure for a provider+build.
+func (r *Registry) RecordPrefetchFailure(providerID, buildID string) {
+	if providerID == "" || buildID == "" {
+		return
+	}
+	r.prefetchAckMu.Lock()
+	if r.prefetchFailed == nil {
+		r.prefetchFailed = make(map[string]time.Time)
+	}
+	r.prefetchFailed[providerID+"\x00"+buildID] = time.Now()
+	r.prefetchAckMu.Unlock()
+}
+
+// PrefetchFailedAt returns the time of the last terminal prefetch failure for a
+// provider+build, if any.
+func (r *Registry) PrefetchFailedAt(providerID, buildID string) (time.Time, bool) {
+	r.prefetchAckMu.Lock()
+	t, ok := r.prefetchFailed[providerID+"\x00"+buildID]
+	r.prefetchAckMu.Unlock()
+	return t, ok
 }
 
 // weightedPickBuild chooses a build proportional to its weight.

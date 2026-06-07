@@ -57,12 +57,19 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 	}
 
 	builds := make([]store.ModelAliasBuild, 0, len(req.Builds))
+	seen := make(map[string]bool, len(req.Builds))
 	for _, b := range req.Builds {
 		b.BuildID = strings.TrimSpace(b.BuildID)
 		if b.BuildID == "" {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "build_id is required for every build", withParam("builds")))
 			return
 		}
+		if seen[b.BuildID] {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+				"duplicate build_id "+b.BuildID+" in alias", withParam("builds")))
+			return
+		}
+		seen[b.BuildID] = true
 		if b.BuildID == req.AliasID {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "an alias cannot reference itself", withParam("builds")))
 			return

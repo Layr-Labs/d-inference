@@ -529,6 +529,9 @@ func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry
 		"error", msg.Error,
 	)
 	s.registry.RecordPrefetchAck(providerID)
+	if msg.Status == protocol.PrefetchModelStatusFailed {
+		s.registry.RecordPrefetchFailure(providerID, msg.ModelID)
+	}
 	s.ddIncr("provider.prefetch_status", []string{"model:" + msg.ModelID, "status:" + msg.Status})
 	if msg.BytesTotal > 0 {
 		s.ddGauge("provider.prefetch_progress_pct",

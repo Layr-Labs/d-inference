@@ -129,6 +129,44 @@ func TestResolveModelWeightedSplit(t *testing.T) {
 	}
 }
 
+// A self-route request must resolve the alias to a build the OWNER's machine
+// can serve, not to a build only a public (non-owned) provider has.
+func TestResolveModelConstrainedSelfRoutePrefersOwnerBuild(t *testing.T) {
+	reg := New(testLogger())
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+
+	owner := registerProviderWithModel(reg, "owner", fp8)
+	makeProviderRoutable(owner)
+	owner.mu.Lock()
+	owner.AccountID = "acct-1"
+	owner.mu.Unlock()
+
+	other := registerProviderWithModel(reg, "other", qat)
+	makeProviderRoutable(other)
+	other.mu.Lock()
+	other.AccountID = "acct-2"
+	other.mu.Unlock()
+
+	reg.SetModelAliases(map[string][]BuildRef{
+		"gemma-4-26b": {{BuildID: fp8, Weight: 50}, {BuildID: qat, Weight: 50}},
+	})
+
+	// Self-route to acct-1 (owns the fp8 machine): qat is only on the non-owned
+	// machine, so resolution must pick fp8 every time.
+	for i := 0; i < 50; i++ {
+		b, isAlias, ok := reg.ResolveModelConstrained("gemma-4-26b", nil, "acct-1", true, false)
+		if !ok || !isAlias || b != fp8 {
+			t.Fatalf("self-route should resolve to owner's build fp8, got %q (isAlias=%v ok=%v)", b, isAlias, ok)
+		}
+	}
+	// No constraints → delegates to ResolveModel (weighted across both builds).
+	b, _, ok := reg.ResolveModelConstrained("gemma-4-26b", nil, "", false, false)
+	if !ok || (b != fp8 && b != qat) {
+		t.Fatalf("unconstrained resolve = %q ok=%v", b, ok)
+	}
+}
+
 func TestResolveModelNoUsableBuild(t *testing.T) {
 	reg := New(testLogger())
 	// Alias exists but every build is drained (weight 0) → not resolvable.

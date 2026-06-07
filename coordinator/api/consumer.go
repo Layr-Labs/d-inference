@@ -182,8 +182,9 @@ func rewriteChunkModel(chunk string, pr *registry.PendingRequest) string {
 // pass through unchanged (publicModel == buildModel). ok=false means the alias
 // currently has no usable build; the caller should surface a model_unavailable
 // error.
-func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, requested string) (buildModel, publicModel string, newRawBody []byte, ok bool) {
-	buildID, isAlias, resolved := s.registry.ResolveModel(requested)
+func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, requested string, allowedProviderSerials []string, policy selfRoutePolicy) (buildModel, publicModel string, newRawBody []byte, ok bool) {
+	buildID, isAlias, resolved := s.registry.ResolveModelConstrained(
+		requested, allowedProviderSerials, policy.ownerAccountID, policy.enabled, policy.prefer)
 	if !resolved {
 		return "", requested, rawBody, false
 	}
@@ -1038,17 +1039,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id. From
-	// here on, `model` is the build used for routing/billing/serving while
-	// `publicModel` is what we echo back so the consumer never sees the quant.
-	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(parsed, rawBody, model)
-	if !ok {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
-		return
-	}
-	model, rawBody = buildModel, resolvedBody
-
 	// Accept either chat completions format (messages) or Responses API
 	// format (input). The provider's backend handles both natively.
 	messages, _ := parsed["messages"].([]any)
@@ -1073,6 +1063,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// self-routing; it cannot name a machine — ownership is matched on the
 	// coordinator-stamped provider AccountID, so nothing here is forgeable.
 	policy := s.resolveSelfRoutePolicy(r)
+
+	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id, now
+	// that routing constraints (serial allowlist / self-route) are known so the
+	// pick only considers builds the constrained provider set can actually
+	// serve. From here on `model` is the build (routing/billing/serving) while
+	// `publicModel` is echoed back so the consumer never sees the quant.
+	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(
+		parsed, rawBody, model, allowedProviderSerials, policy)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
+		return
+	}
+	model, rawBody = buildModel, resolvedBody
 
 	isResponsesAPI := input != nil && len(messages) == 0
 
@@ -2720,6 +2724,13 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 									writeJSON(w, http.StatusOK, respObj)
 									return
 								}
+							} else {
+								// Native passthrough (object=="response"): the provider
+								// echoed the concrete build id; rewrite it to the public
+								// alias so the consumer never sees the quant/build.
+								if pr.PublicModel != "" {
+									obj["model"] = consumerModel(pr)
+								}
 							}
 							if pr.SESignature != "" {
 								obj["se_signature"] = pr.SESignature
@@ -3362,10 +3373,15 @@ func (s *Server) aliasModelEntries(
 				continue
 			}
 			covered = append(covered, b.BuildID)
-			if cap, ok := capByModel[b.BuildID]; ok {
-				routable += cap.RoutableProviders
-				warm += cap.WarmProviders
-				canAccept = canAccept || cap.CanAccept
+			// Only positive-weight builds count toward the alias's advertised
+			// capacity — alias routing never selects a drained (weight 0) build,
+			// so its providers must not inflate the alias's routable/can_accept.
+			if b.Weight > 0 {
+				if cap, ok := capByModel[b.BuildID]; ok {
+					routable += cap.RoutableProviders
+					warm += cap.WarmProviders
+					canAccept = canAccept || cap.CanAccept
+				}
 			}
 			// Only a build with positive weight can be the primary — an alias
 			// whose builds are all drained (weight 0) resolves to nothing, so it
@@ -4188,11 +4204,23 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// Resolve a public alias to a concrete build id (see handleChatCompletions).
-	// resolveRequestedModel already rewrites parsed["model"] to the build, and
-	// this handler builds the provider body fresh from `parsed` (see
-	// inferenceBody below), so there's no rawBody to thread through here.
-	buildModel, publicModel, _, ok := s.resolveRequestedModel(parsed, rawBody, model)
+	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
+	if hasProviderAllowlist {
+		stripProviderRoutingFields(parsed)
+	}
+
+	// "Use my own machine, for free" opt-in (see handleChatCompletions).
+	policy := s.resolveSelfRoutePolicy(r)
+
+	// Resolve a public alias to a concrete build id, constraint-aware (after
+	// allowlist/self-route are known). resolveRequestedModel rewrites
+	// parsed["model"] to the build; this handler builds the provider body fresh
+	// from `parsed` (inferenceBody below), so rawBody isn't threaded here.
+	buildModel, publicModel, _, ok := s.resolveRequestedModel(parsed, rawBody, model, allowedProviderSerials, policy)
 	if !ok {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
@@ -4205,18 +4233,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model), withParam("model")))
 		return
 	}
-
-	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-		return
-	}
-	if hasProviderAllowlist {
-		stripProviderRoutingFields(parsed)
-	}
-
-	// "Use my own machine, for free" opt-in (see handleChatCompletions).
-	policy := s.resolveSelfRoutePolicy(r)
 
 	// Completions and Anthropic messages both use the max_tokens field (never
 	// max_output_tokens, which is Responses API only). Inject a default if

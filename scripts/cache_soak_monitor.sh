@@ -97,9 +97,13 @@ fi
 RAW_OFFSET=0
 
 count_new_markers() {
-  # $1 = regex; counts matches in RAW_LOG bytes after RAW_OFFSET.
-  # Uses the window slice captured into $WINDOW (set by snapshot_window).
-  printf '%s' "$WINDOW" | grep -E -c "$1" 2>/dev/null || echo 0
+  # $1 = regex; counts matches in the current $WINDOW slice. grep -c exits 1
+  # when the count is 0, so we must NOT use `|| echo 0` (that double-prints and
+  # corrupts the CSV row). Capture, normalize empty -> 0, always succeed.
+  local n
+  n=$(printf '%s' "$WINDOW" | grep -E -c "$1" 2>/dev/null)
+  [ -z "$n" ] && n=0
+  printf '%s' "$n"
 }
 
 START_EPOCH=$(date +%s)

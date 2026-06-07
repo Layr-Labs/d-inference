@@ -40,9 +40,10 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-# A long, fixed "system prompt" used by the SHARED-prefix requests. The point is
-# a stable, multi-hundred-token prefix whose KV is worth caching and reusing.
-SHARED_PREFIX = (
+# A long, fixed "system prompt" base. Repeated to a multi-hundred-token block
+# whose KV crosses the model's checkpoint boundaries (Gemma window 1024 ->
+# boundaries [256, 512, 1024]) and is therefore worth caching and reusing.
+_BASE = (
     "You are a meticulous senior systems engineer assisting with a long-running "
     "distributed inference service. Follow these standing instructions precisely "
     "on every reply. Be concise, technically exact, and never speculate beyond "
@@ -52,7 +53,25 @@ SHARED_PREFIX = (
     "the mechanism that upholds it, then the failure mode if it were violated. "
     "Prefer first principles; enumerate the full state space before concluding. "
     "Treat every cache, key, and file as a security boundary. "
-) * 6  # ~ several hundred tokens of stable prefix
+)
+SHARED_PREFIX = _BASE * 6  # ~ several hundred tokens of stable prefix
+
+
+def build_prefix_pool(pool_size, repeat):
+    """K DISTINCT long prefixes. Each is the common base repeated `repeat` times
+    plus a pool-unique tag, so every prefix is its own cacheable checkpoint chain
+    but they all cross the same boundaries. Reusing a pool member across requests
+    drives: 1st use -> RAM store; 2nd use -> SSD promotion (write-back); reuse
+    after RAM eviction -> SSD reload (decrypt). With pool_size * file_bytes >
+    DISK_GB the SSD disk-eviction path engages too. The smoke run showed one
+    promoted checkpoint ≈ 110 MB, so ~40 distinct prefixes saturate a 4 GB disk
+    budget and force SSD eviction."""
+    pool = []
+    for i in range(pool_size):
+        # Tag FIRST so the prefixes diverge from token 0 (distinct digests at
+        # every checkpoint boundary), then the shared instruction body.
+        pool.append(f"[session-context #{i:04d}] " + (_BASE * repeat))
+    return pool
 
 
 def _percentile(values, pct):
@@ -119,20 +138,40 @@ class Stats:
         }
 
 
-def make_prompt(args, n):
-    """Return (messages, is_shared). Shared = long stable prefix + tiny suffix."""
+def make_prompt(args, n, pool):
+    """Return (messages, kind).
+
+    Two regimes:
+
+    * pool mode (--prefix-pool > 0, the soak default): pick one of K distinct
+      long prefixes and append a tiny unique suffix. Repeated selection of the
+      same prefix drives RAM-store -> SSD-promotion -> (after eviction)
+      SSD-reload/decrypt; K large enough vs DISK_GB drives SSD disk-eviction.
+      A small `--unique-fraction` of requests use a one-off long prompt for
+      churn so the pool members keep getting evicted and reloaded.
+
+    * legacy mode (--prefix-pool 0): the original shared/diverse split, kept for
+      back-compat with the simple smoke test.
+    """
+    if pool:
+        if random.random() < args.unique_fraction:
+            filler = " ".join(f"token{random.randint(0, 1_000_000)}" for _ in range(args.diverse_words))
+            content = f"Unique request {n} {filler}. In one sentence, describe a distributed cache."
+            return [{"role": "user", "content": content}], "unique"
+        idx = random.randint(0, len(pool) - 1)
+        suffix = f" [q{n}] In one sentence, summarize the standing instructions above."
+        return [{"role": "user", "content": pool[idx] + suffix}], f"pool{idx}"
+    # legacy shared/diverse split
     if random.random() < args.shared_fraction:
         suffix = f" Question #{n % args.shared_variants}: summarize the above in one sentence."
-        content = SHARED_PREFIX + suffix
-        return [{"role": "user", "content": content}], True
-    # Diverse: a unique long prompt (drives stores + eviction).
+        return [{"role": "user", "content": SHARED_PREFIX + suffix}], "shared"
     filler = " ".join(f"token{random.randint(0, 1_000_000)}" for _ in range(args.diverse_words))
     content = f"Unique request {n} {filler}. In one sentence, describe a distributed cache."
-    return [{"role": "user", "content": content}], False
+    return [{"role": "user", "content": content}], "diverse"
 
 
-def do_request(args, n, stats):
-    messages, _shared = make_prompt(args, n)
+def do_request(args, n, stats, pool):
+    messages, _kind = make_prompt(args, n, pool)
     body = json.dumps({
         "model": args.model,
         "messages": messages,
@@ -175,16 +214,30 @@ def main():
     p.add_argument("--duration-minutes", type=float, default=240.0)
     p.add_argument("--concurrency", type=int, default=4)
     p.add_argument("--max-tokens", type=int, default=128)
+    p.add_argument("--prefix-pool", type=int, default=48,
+                   help="POOL MODE (soak default): number of DISTINCT long prefixes "
+                        "reused across requests. Each promotes to SSD on 2nd use; "
+                        "pool_size * file_bytes > DISK_GB forces SSD eviction; reuse "
+                        "after RAM/SSD eviction forces decrypt-reload. 0 = legacy "
+                        "shared/diverse mode.")
+    p.add_argument("--prefix-repeat", type=int, default=6,
+                   help="how many times the instruction base is repeated per pool "
+                        "prefix (controls prefix length / checkpoint chain depth)")
+    p.add_argument("--unique-fraction", type=float, default=0.15,
+                   help="pool mode: fraction of requests that are one-off long prompts "
+                        "(churn so pool members keep getting evicted and reloaded)")
     p.add_argument("--shared-fraction", type=float, default=0.70,
-                   help="fraction of requests using the shared long prefix (cache hits)")
+                   help="legacy mode: fraction using the single shared long prefix")
     p.add_argument("--shared-variants", type=int, default=8,
-                   help="number of distinct shared-prefix suffixes (each a reusable checkpoint)")
+                   help="legacy mode: number of distinct shared-prefix suffixes")
     p.add_argument("--diverse-words", type=int, default=400,
-                   help="filler words per diverse prompt (drives stores + eviction)")
+                   help="filler words per unique/diverse prompt (drives stores + eviction)")
     p.add_argument("--request-timeout", type=float, default=600.0)
     p.add_argument("--report-every-seconds", type=float, default=60.0)
     p.add_argument("--out", default="soak_client.csv")
     args = p.parse_args()
+
+    pool = build_prefix_pool(args.prefix_pool, args.prefix_repeat) if args.prefix_pool > 0 else []
 
     stats = Stats()
     deadline = time.monotonic() + args.duration_minutes * 60.0
@@ -204,7 +257,7 @@ def main():
             with stats.lock:
                 counter["n"] += 1
                 n = counter["n"]
-            do_request(args, n, stats)
+            do_request(args, n, stats, pool)
 
     def reporter():
         last = time.monotonic()
@@ -230,14 +283,18 @@ def main():
                   + (f"  ERR={snap['err_kinds']}" if snap['err_kinds'] else ""),
                   flush=True)
 
+    if pool:
+        mode = f"pool={args.prefix_pool}x(base*{args.prefix_repeat}) unique={args.unique_fraction:.0%}"
+    else:
+        mode = f"legacy shared={args.shared_fraction:.0%}"
     print(f"soak: {args.duration_minutes}min @ concurrency={args.concurrency} "
-          f"model={args.model} shared={args.shared_fraction:.0%} -> {args.out}", flush=True)
+          f"model={args.model} {mode} -> {args.out}", flush=True)
     rep = threading.Thread(target=reporter, daemon=True)
     rep.start()
     try:
-        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
             for _ in range(args.concurrency):
-                pool.submit(worker)
+                ex.submit(worker)
             while time.monotonic() < deadline and not stop.is_set():
                 time.sleep(1.0)
     except KeyboardInterrupt:

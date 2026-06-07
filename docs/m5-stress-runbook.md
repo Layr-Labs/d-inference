@@ -169,14 +169,21 @@ cd ~/soak
 
 ```bash
 cd ~/soak
+# Small pool (8) + tiny disk budget (set DISK_GB=1 on the server) so SSD
+# promotion, disk-eviction, AND decrypt-reload all fire within 3 minutes.
 python3 load_soak.py --base-url http://127.0.0.1:8000/v1 \
     --model gemma-4-26b --duration-minutes 3 \
-    --concurrency 4 --max-tokens 64 --out smoke_client.csv
+    --concurrency 4 --max-tokens 64 \
+    --prefix-pool 8 --prefix-repeat 6 --unique-fraction 0.15 \
+    --out smoke_client.csv
 ```
 
 **Smoke pass criteria** (all must hold before the 4 h run):
 - `smoke_client.csv`: `cum_err` is 0 (or only transient startup errors), tokens flowing.
-- `smoke_samples.csv`: `disk_kb` grows above 0; `store` and/or `sweep`/`evict` counts > 0.
+- `smoke_samples.csv`: `disk_kb` grows above 0; `store` > 0 and `sweep`/`evict` > 0.
+- Raw provider log shows SSD activity: `wrote N chunks` (store), and ideally a
+  `disk sweep`/`evicted for global budget` (SSD eviction). Decrypt-reload is not
+  logged on success — a sustained re-hit with 0 `decrypt_fail` is the signal.
 - `smoke_events.log`: **no** `decrypt_fail`, **no** `DISABLED`.
 - Server log: no crash / fatalError / Swift trap.
 
@@ -221,13 +228,28 @@ cd ~/soak
 cd ~/soak
 python3 load_soak.py --base-url http://127.0.0.1:8000/v1 \
     --model gemma-4-26b --duration-minutes 240 \
-    --concurrency 4 --max-tokens 128 --shared-fraction 0.70 \
+    --concurrency 4 --max-tokens 128 \
+    --prefix-pool 48 --prefix-repeat 6 --unique-fraction 0.15 \
     --report-every-seconds 60 --out soak_client.csv
 ```
 
-The driver mix: **70 %** repeat a long shared prefix (drives hits + checkpoint
-promotion + reload), **30 %** unique long prompts (drives stores → disk growth →
-eviction). Adjust `--concurrency` up if the GPU is underused (watch `tok_per_s`).
+**Why pool mode (not the simple shared/diverse split).** SSD persistence is a
+**2nd-use promotion**: a checkpoint flushes to SSD only when a prefix already in
+RAM is *hit again* (`PrefixCacheManager.lookup`, the `Task.detached
+persistDigest` branch). A single shared prefix therefore promotes **once** and a
+diverse one-off **never** — so the simple split exercises store + RAM eviction
+but leaves the SSD **disk-eviction** and **decrypt-on-reload** paths cold.
+
+Pool mode uses **48 distinct long prefixes**, each reused across requests:
+- 1st use → RAM store; 2nd use → **SSD promotion** (write-back, ~115 MB/file for
+  this model's 512-token checkpoint).
+- 48 × ~115 MB ≫ `DISK_GB=4` → **SSD disk-eviction** (`enforceDiskBudget`).
+- 48 prefixes vs a RAM budget that holds ~35 → re-hitting an evicted prefix is a
+  RAM miss + index hit → **`loadFromSSD` decrypt-reload**.
+- `--unique-fraction 0.15` adds one-off churn so pool members keep getting
+  evicted and reloaded.
+
+Adjust `--concurrency` up if the GPU is underused (watch `tok_per_s`).
 
 When the load driver exits, Ctrl-C the server in Pane 1.
 

@@ -412,6 +412,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			// "started" status: no action — load is in progress.
 
+		case protocol.TypePrefetchModelStatus:
+			statusMsg := msg.Payload.(*protocol.PrefetchModelStatusMessage)
+			// The migration controller (Layer 4) is the consumer of this
+			// signal; for now we observe progress. The terminal "verified"
+			// state means the build is on disk and hash-checked but NOT
+			// loaded into GPU — the provider re-advertises it on its next
+			// register/heartbeat so the registry learns it can serve it.
+			s.handlePrefetchModelStatus(providerID, provider, statusMsg)
+
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}
@@ -497,6 +506,24 @@ func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID strin
 		s.logger.Warn("code-attest timed out awaiting WebSocket response", "provider_id", providerID)
 	case <-ctx.Done():
 	}
+}
+
+// handlePrefetchModelStatus records a provider's background-prefetch progress.
+// Prefetch downloads + verifies a build on disk without loading it into GPU;
+// the terminal "verified" state means the build is ready to advertise. The
+// migration controller (Layer 4) will react to these transitions to advance
+// a ramp/drain; for now we observe progress. The provider re-advertises a
+// verified build on its next register/heartbeat, so routing picks it up
+// independently of this signal.
+func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry.Provider, msg *protocol.PrefetchModelStatusMessage) {
+	s.logger.Info("provider prefetch_model_status",
+		"provider_id", providerID,
+		"model_id", msg.ModelID,
+		"status", msg.Status,
+		"bytes_done", msg.BytesDone,
+		"bytes_total", msg.BytesTotal,
+		"error", msg.Error,
+	)
 }
 
 // attachProviderLocation resolves the provider's approximate geographic

@@ -1485,6 +1485,54 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 	return nil
 }
 
+// SendPrefetchModel instructs a provider to download + verify a model build
+// in the background without loading it into GPU memory. It mirrors
+// SendLoadModel but carries no expectation that the model becomes warm; the
+// provider replies asynchronously with prefetch_model_status messages and
+// re-advertises the build once it is verified on disk. Used by the migration
+// controller (Layer 4) to pre-stage a new build across the fleet before
+// flipping routing to it.
+func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) error {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerID)
+	}
+
+	msg := protocol.PrefetchModelMessage{
+		Type:     protocol.TypePrefetchModel,
+		ModelID:  modelID,
+		Priority: priority,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal prefetch_model message: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.mu.Lock()
+	conn := p.Conn
+	p.mu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("provider %q has no active connection", providerID)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		return fmt.Errorf("failed to send prefetch_model to provider %q: %w", providerID, err)
+	}
+
+	r.logger.Info("sent prefetch_model to provider",
+		"provider_id", providerID,
+		"model_id", modelID,
+		"priority", priority,
+	)
+	return nil
+}
+
 // TriggerModelSwaps checks for queued requests that have no warm provider
 // and sends load_model to cold providers that have the model available on
 // disk. This enables demand-driven model swapping: when requests queue for

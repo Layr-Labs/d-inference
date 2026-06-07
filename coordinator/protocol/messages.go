@@ -41,6 +41,7 @@ const (
 	// attestation_response: this is the WebSocket return leg of the push round-trip.
 	TypeCodeAttestationResponse = "code_attestation_response"
 	TypeLoadModelStatus         = "load_model_status"
+	TypePrefetchModelStatus     = "prefetch_model_status"
 
 	// Coordinator → Provider.
 	TypeInferenceRequest     = "inference_request"
@@ -48,6 +49,7 @@ const (
 	TypeAttestationChallenge = "attestation_challenge"
 	TypeRuntimeStatus        = "runtime_status"
 	TypeLoadModel            = "load_model"
+	TypePrefetchModel        = "prefetch_model"
 	TypeTrustStatus          = "trust_status"
 )
 
@@ -57,6 +59,18 @@ const (
 	LoadModelStatusStarted   = "started"
 	LoadModelStatusSucceeded = "succeeded"
 	LoadModelStatusFailed    = "failed"
+)
+
+// PrefetchModelStatus is the lifecycle state reported by a provider in
+// response to a PrefetchModelMessage. Unlike a load, a prefetch only
+// downloads + verifies the model on disk; it does NOT load weights into
+// GPU memory, so "verified" (not "succeeded") is the terminal success
+// state: the build is on disk, hash-checked, and ready to be advertised.
+const (
+	PrefetchModelStatusStarted     = "started"
+	PrefetchModelStatusDownloading = "downloading"
+	PrefetchModelStatusVerified    = "verified"
+	PrefetchModelStatusFailed      = "failed"
 )
 
 // ---------------------------------------------------------------------------
@@ -311,6 +325,36 @@ type LoadModelStatusMessage struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// PrefetchModelMessage instructs a provider to download AND verify a model
+// build in the background WITHOUT loading it into GPU memory and without
+// disrupting whatever model it is currently serving. It is the transport
+// for zero-downtime model migrations: the coordinator tells a provider to
+// fetch the new build ahead of time, then flips routing once the provider
+// reports the build verified-on-disk.
+//
+// Priority is an advisory hint (higher = more urgent); the provider may use
+// it to order concurrent prefetches. Sent only to Swift-runtime providers.
+type PrefetchModelMessage struct {
+	Type     string `json:"type"`
+	ModelID  string `json:"model_id"`
+	Priority int    `json:"priority,omitempty"`
+}
+
+// PrefetchModelStatusMessage is the provider's progress/terminal reply to a
+// PrefetchModelMessage. Status is one of PrefetchModelStatusStarted,
+// PrefetchModelStatusDownloading, PrefetchModelStatusVerified,
+// PrefetchModelStatusFailed. BytesDone/BytesTotal report download progress
+// (best-effort; may be 0 when unknown). On failure, Error carries a
+// human-readable reason.
+type PrefetchModelStatusMessage struct {
+	Type       string `json:"type"`
+	ModelID    string `json:"model_id"`
+	Status     string `json:"status"`
+	BytesDone  int64  `json:"bytes_done,omitempty"`
+	BytesTotal int64  `json:"bytes_total,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 // AttestationChallengeMessage is sent by the coordinator to challenge a provider
 // to prove it still holds its private key.
 type AttestationChallengeMessage struct {
@@ -484,6 +528,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg LoadModelStatusMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal load_model_status: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypePrefetchModelStatus:
+		var msg PrefetchModelStatusMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal prefetch_model_status: %w", err)
 		}
 		pm.Payload = &msg
 

@@ -510,6 +510,12 @@ public actor ProviderLoop {
                 case .loadModel(let modelId):
                     handleLoadModelRequest(modelId: modelId, send: send)
 
+                case .prefetchModel(let modelId, let priority):
+                    // Background download-only. The real downloader + status
+                    // reporting land in Layer 3 (provider prefetch); for now we
+                    // log receipt so the protocol path is exercised end to end.
+                    logger.info("Received prefetch request for \(modelId) (priority=\(priority)); handler arrives in Layer 3")
+
                 case .trustStatus(let trustLevel, let status, let reason):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
                 }

@@ -22,6 +22,11 @@ public enum CoordinatorEvent: Sendable {
     /// (off-thread) and reply with a `loadModelStatus` outbound message
     /// when the load completes or fails.
     case loadModel(modelId: String)
+    /// Coordinator-driven background prefetch. Provider should download +
+    /// verify the build on disk (off-thread, no GPU load) and reply with
+    /// `prefetchModelStatus` outbound messages. `priority` orders concurrent
+    /// prefetches (higher = sooner). Handler wired in Layer 3.
+    case prefetchModel(modelId: String, priority: Int)
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
 }
@@ -301,6 +306,13 @@ public enum OutboundMessage: Sendable {
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case prefetchModelStatus(
+        modelId: String,
+        status: ProviderMessage.PrefetchModelStatus.Status,
+        bytesDone: Int64,
+        bytesTotal: Int64,
+        error: String?
+    )
 }
 
 public struct AttestationResponsePayload: Sendable {
@@ -731,6 +743,13 @@ public actor CoordinatorClient {
         case .loadModel(let load):
             logger.info("Received coordinator-driven preload for: \(load.modelId)")
             eventContinuation?.yield(.loadModel(modelId: load.modelId))
+
+        case .prefetchModel(let pf):
+            // Background download-only request. The downloader + status
+            // reporting are wired in Layer 3 (provider prefetch); for now we
+            // acknowledge receipt without acting so the protocol round-trips.
+            logger.info("Received coordinator-driven prefetch for: \(pf.modelId) (priority=\(pf.priority))")
+            eventContinuation?.yield(.prefetchModel(modelId: pf.modelId, priority: pf.priority))
 
         case .trustStatus(let ts):
             logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")

@@ -272,6 +272,58 @@ import Testing
     #expect(failedObj["error"] as? String == "GPU OOM")
 }
 
+@Test func prefetchModelMessagesRoundTripWithCoordinator() throws {
+    // Coordinator → provider prefetch request (decode a Go-emitted wire form).
+    let goPrefetchRequest = #"{"type":"prefetch_model","model_id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","priority":5}"#
+    let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goPrefetchRequest)
+    guard case .prefetchModel(let pf) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(pf.modelId == "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
+    #expect(pf.priority == 5)
+
+    // priority is omitempty on the Go side: a request without it decodes to 0.
+    let noPriority = #"{"type":"prefetch_model","model_id":"m"}"#
+    guard case .prefetchModel(let pf0) = try ProviderProtocolCodec.decodeCoordinatorMessage(from: noPriority) else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(pf0.priority == 0)
+
+    // Encoding a zero priority must omit the key (byte-compatible with Go).
+    let zeroEncoded = try ProviderProtocolCodec.encodeCoordinatorMessage(
+        .prefetchModel(CoordinatorMessage.PrefetchModel(modelId: "m"))
+    )
+    #expect(try jsonObject(zeroEncoded)["priority"] == nil)
+
+    // Provider → coordinator status replies across the full lifecycle.
+    let model = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+    let replies: [ProviderMessage] = [
+        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(modelId: model, status: .started)),
+        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
+            modelId: model, status: .downloading, bytesDone: 1_048_576, bytesTotal: 15_600_000_000)),
+        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(modelId: model, status: .verified)),
+        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
+            modelId: model, status: .failed, error: "hash mismatch")),
+    ]
+    for reply in replies {
+        let encoded = try ProviderProtocolCodec.encodeProviderMessage(reply)
+        let object = try jsonObject(encoded)
+        #expect(object["type"] as? String == "prefetch_model_status")
+        #expect(object["model_id"] as? String == model)
+        let roundTripped = try ProviderProtocolCodec.decodeProviderMessage(from: encoded)
+        #expect(roundTripped == reply)
+    }
+
+    // Progress fields appear only when non-zero; verified carries neither.
+    let downloading = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(replies[1]))
+    #expect(downloading["bytes_done"] as? Int64 == 1_048_576)
+    #expect(downloading["bytes_total"] as? Int64 == 15_600_000_000)
+    let verified = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(replies[2]))
+    #expect(verified["bytes_done"] == nil)
+    #expect(verified["bytes_total"] == nil)
+    #expect(verified["error"] == nil)
+}
+
 @Test func coordinatorMessagesDecodeAndEncodeWithSnakeCaseKeys() throws {
     let encryptedRequest = #"{"type":"inference_request","request_id":"go-enc-req-1","body":null,"encrypted_body":{"ephemeral_public_key":"ZXBoZW1lcmFs","ciphertext":"Y2lwaGVy"}}"#
     let request = try ProviderProtocolCodec.decodeCoordinatorMessage(from: encryptedRequest)

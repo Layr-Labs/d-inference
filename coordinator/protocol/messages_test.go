@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -338,6 +339,79 @@ func TestProviderMessageUnmarshalLoadModelStatus(t *testing.T) {
 	}
 	if status.ModelID != "qwen" || status.Status != LoadModelStatusFailed || status.Error != "GPU OOM" {
 		t.Fatalf("decoded status = %+v", status)
+	}
+}
+
+func TestPrefetchModelMessageMarshal(t *testing.T) {
+	msg := PrefetchModelMessage{
+		Type:     TypePrefetchModel,
+		ModelID:  "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+		Priority: 5,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var out PrefetchModelMessage
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Type != TypePrefetchModel || out.ModelID != msg.ModelID || out.Priority != 5 {
+		t.Fatalf("round-trip mismatch: %+v", out)
+	}
+
+	// Priority is omitempty: a zero priority must not appear on the wire so
+	// the Swift `if p.priority != 0` mirror stays byte-compatible.
+	zero, _ := json.Marshal(PrefetchModelMessage{Type: TypePrefetchModel, ModelID: "m"})
+	if bytes.Contains(zero, []byte("priority")) {
+		t.Fatalf("zero priority should be omitted: %s", zero)
+	}
+}
+
+func TestProviderMessageUnmarshalPrefetchModelStatus(t *testing.T) {
+	data := []byte(`{"type":"prefetch_model_status","model_id":"gemma","status":"downloading","bytes_done":1048576,"bytes_total":15600000000}`)
+
+	var msg ProviderMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != TypePrefetchModelStatus {
+		t.Fatalf("Type=%q, want %q", msg.Type, TypePrefetchModelStatus)
+	}
+	status, ok := msg.Payload.(*PrefetchModelStatusMessage)
+	if !ok {
+		t.Fatalf("Payload=%T, want *PrefetchModelStatusMessage", msg.Payload)
+	}
+	if status.ModelID != "gemma" || status.Status != PrefetchModelStatusDownloading {
+		t.Fatalf("decoded status = %+v", status)
+	}
+	if status.BytesDone != 1048576 || status.BytesTotal != 15600000000 {
+		t.Fatalf("byte counts = %d/%d", status.BytesDone, status.BytesTotal)
+	}
+}
+
+func TestPrefetchModelStatusVerifiedRoundTrip(t *testing.T) {
+	msg := PrefetchModelStatusMessage{
+		Type:    TypePrefetchModelStatus,
+		ModelID: "gemma",
+		Status:  PrefetchModelStatusVerified,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Zero byte counts are omitempty (terminal "verified" carries no progress).
+	if bytes.Contains(data, []byte("bytes_done")) || bytes.Contains(data, []byte("bytes_total")) {
+		t.Fatalf("zero byte counts should be omitted: %s", data)
+	}
+	var pm ProviderMessage
+	if err := json.Unmarshal(data, &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	status := pm.Payload.(*PrefetchModelStatusMessage)
+	if status.Status != PrefetchModelStatusVerified || status.BytesDone != 0 {
+		t.Fatalf("decoded = %+v", status)
 	}
 }
 

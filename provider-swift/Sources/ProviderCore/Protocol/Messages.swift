@@ -12,6 +12,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case attestationResponse(AttestationResponse)
     case codeAttestationResponse(CodeAttestationResponse)
     case loadModelStatus(LoadModelStatus)
+    case prefetchModelStatus(PrefetchModelStatus)
 
     public struct Register: Sendable, Equatable {
         public var hardware: HardwareInfo
@@ -168,6 +169,40 @@ public enum ProviderMessage: Sendable, Equatable {
         }
     }
 
+    /// Progress/terminal reply to a `CoordinatorMessage.prefetchModel`. A
+    /// prefetch only downloads + verifies the build on disk; it does NOT load
+    /// weights into GPU. `verified` is the terminal success state (build is on
+    /// disk and hash-checked, ready to advertise). `bytesDone`/`bytesTotal`
+    /// are best-effort progress (0 when unknown).
+    public struct PrefetchModelStatus: Sendable, Equatable {
+        public enum Status: String, Sendable, Equatable {
+            case started
+            case downloading
+            case verified
+            case failed
+        }
+
+        public var modelId: String
+        public var status: Status
+        public var bytesDone: Int64
+        public var bytesTotal: Int64
+        public var error: String?
+
+        public init(
+            modelId: String,
+            status: Status,
+            bytesDone: Int64 = 0,
+            bytesTotal: Int64 = 0,
+            error: String? = nil
+        ) {
+            self.modelId = modelId
+            self.status = status
+            self.bytesDone = bytesDone
+            self.bytesTotal = bytesTotal
+            self.error = error
+        }
+    }
+
     public struct AttestationResponse: Sendable, Equatable {
         public var nonce: String
         public var signature: String
@@ -246,6 +281,7 @@ extension ProviderMessage: Codable {
         case attestationResponse = "attestation_response"
         case codeAttestationResponse = "code_attestation_response"
         case loadModelStatus = "load_model_status"
+        case prefetchModelStatus = "prefetch_model_status"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -297,6 +333,9 @@ extension ProviderMessage: Codable {
         case modelHashes = "model_hashes"
         // LoadModelStatus
         case modelId = "model_id"
+        // PrefetchModelStatus
+        case bytesDone = "bytes_done"
+        case bytesTotal = "bytes_total"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -397,6 +436,19 @@ extension ProviderMessage: Codable {
             try container.encode(l.modelId, forKey: .modelId)
             try container.encode(l.status.rawValue, forKey: .status)
             try container.encodeIfPresent(l.error, forKey: .error)
+
+        case .prefetchModelStatus(let p):
+            try container.encode(TypeValue.prefetchModelStatus, forKey: .type)
+            try container.encode(p.modelId, forKey: .modelId)
+            try container.encode(p.status.rawValue, forKey: .status)
+            // Mirror the Go `omitempty` tags so the wire stays identical.
+            if p.bytesDone != 0 {
+                try container.encode(p.bytesDone, forKey: .bytesDone)
+            }
+            if p.bytesTotal != 0 {
+                try container.encode(p.bytesTotal, forKey: .bytesTotal)
+            }
+            try container.encodeIfPresent(p.error, forKey: .error)
         }
     }
 
@@ -502,6 +554,23 @@ extension ProviderMessage: Codable {
                 status: status,
                 error: try container.decodeIfPresent(String.self, forKey: .error)
             ))
+
+        case .prefetchModelStatus:
+            let raw = try container.decode(String.self, forKey: .status)
+            guard let status = PrefetchModelStatus.Status(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .status,
+                    in: container,
+                    debugDescription: "unknown prefetch_model_status value: \(raw)"
+                )
+            }
+            self = .prefetchModelStatus(PrefetchModelStatus(
+                modelId: try container.decode(String.self, forKey: .modelId),
+                status: status,
+                bytesDone: try container.decodeIfPresent(Int64.self, forKey: .bytesDone) ?? 0,
+                bytesTotal: try container.decodeIfPresent(Int64.self, forKey: .bytesTotal) ?? 0,
+                error: try container.decodeIfPresent(String.self, forKey: .error)
+            ))
         }
     }
 }
@@ -514,6 +583,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case attestationChallenge(AttestationChallenge)
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
+    case prefetchModel(PrefetchModel)
     case trustStatus(TrustStatus)
 
     public struct InferenceRequest: Sendable, Equatable {
@@ -560,6 +630,20 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public init(modelId: String) { self.modelId = modelId }
     }
 
+    /// Coordinator-driven background prefetch. Provider should download AND
+    /// verify the named build on disk WITHOUT loading it into GPU and without
+    /// disrupting the model it is currently serving, then reply with
+    /// `prefetchModelStatus` messages (terminal: `verified`). `priority` is an
+    /// advisory ordering hint for concurrent prefetches (higher = sooner).
+    public struct PrefetchModel: Sendable, Equatable {
+        public var modelId: String
+        public var priority: Int
+        public init(modelId: String, priority: Int = 0) {
+            self.modelId = modelId
+            self.priority = priority
+        }
+    }
+
     /// Coordinator informs the provider of its current trust level and status.
     /// Providers that learn they are "self_signed" or "untrusted" can
     /// auto-report unified logs for troubleshooting.
@@ -584,6 +668,7 @@ extension CoordinatorMessage: Codable {
         case attestationChallenge = "attestation_challenge"
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
+        case prefetchModel = "prefetch_model"
         case trustStatus = "trust_status"
     }
 
@@ -595,6 +680,7 @@ extension CoordinatorMessage: Codable {
         case nonce, timestamp
         case verified, mismatches
         case modelId = "model_id"
+        case priority
         case trustLevel = "trust_level"
         case status, reason
     }
@@ -628,6 +714,14 @@ extension CoordinatorMessage: Codable {
         case .loadModel(let l):
             try container.encode(TypeValue.loadModel, forKey: .type)
             try container.encode(l.modelId, forKey: .modelId)
+
+        case .prefetchModel(let p):
+            try container.encode(TypeValue.prefetchModel, forKey: .type)
+            try container.encode(p.modelId, forKey: .modelId)
+            // Mirror the Go `omitempty` tag on priority.
+            if p.priority != 0 {
+                try container.encode(p.priority, forKey: .priority)
+            }
 
         case .trustStatus(let t):
             try container.encode(TypeValue.trustStatus, forKey: .type)
@@ -671,6 +765,12 @@ extension CoordinatorMessage: Codable {
         case .loadModel:
             self = .loadModel(LoadModel(
                 modelId: try container.decode(String.self, forKey: .modelId)
+            ))
+
+        case .prefetchModel:
+            self = .prefetchModel(PrefetchModel(
+                modelId: try container.decode(String.self, forKey: .modelId),
+                priority: try container.decodeIfPresent(Int.self, forKey: .priority) ?? 0
             ))
 
         case .trustStatus:

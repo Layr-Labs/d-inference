@@ -139,6 +139,18 @@ assets:
     sensitivity: critical
     notes: Stored on persistent disk in coordinator container. Compromise breaks ACME trust chain.
 
+  - id: A-013
+    name: profile_signing_identity
+    description: >
+      Code-signing identity (Apple Developer ID Application .p12 — cert + private key)
+      used to CMS-sign the /v1/enroll .mobileconfig. Injected via KMS as
+      PROFILE_SIGNING_P12_B64 (+ PROFILE_SIGNING_P12_PASSWORD).
+    sensitivity: critical
+    notes: >
+      Compromise lets an attacker sign profiles (and binaries) macOS treats as coming
+      from the registered developer. Optional — when unset the coordinator serves
+      profiles unsigned.
+
 # ─────────────────────────────────────────────────────────────
 # TRUST BOUNDARIES
 # ─────────────────────────────────────────────────────────────
@@ -1693,9 +1705,56 @@ threats:
     mitigations:
       - description: baseURL should be set in production; fallback to Host header is the risk.
         status: open
+      - description: >
+          enroll.go now generates SCEP/MDM/ACME URLs via the shared resolveBaseURL
+          (configured EIGENINFERENCE_BASE_URL), not a separate Host-derived value, so
+          when baseURL is set the Host-header fallback is unreachable for the profile.
+          This matters more now that the profile is CMS-signed (a spoofed Host would
+          otherwise yield a Darkbloom-signed profile pointing enrollment at an
+          attacker host).
+        status: implemented
     open_findings: [SEC-013]
     severity: medium
     detection_hint: >
       Changes to URL generation in server.go, enroll.go, or consumer.go should
       verify that production baseURL is required and the Host-header fallback
       cannot be reached in production deployments.
+
+  # ── TB-006: Profile-signing credential (added with CMS profile signing) ──
+
+  - id: T-041
+    trust_boundary: TB-006
+    stride: Spoofing
+    title: Configuration-profile signing identity exfiltration or misuse
+    description: >
+      The Developer ID Application signing identity is injected into the coordinator
+      environment as PROFILE_SIGNING_P12_B64 (+ PROFILE_SIGNING_P12_PASSWORD) and used
+      to CMS-sign the /v1/enroll .mobileconfig. A compromised coordinator process,
+      misconfigured KMS policy, or environment-variable leak would let an attacker
+      sign arbitrary profiles (or binaries) that macOS treats as coming from the
+      registered developer — a higher-value code-signing trust abuse than payment
+      secrets. Same injection pattern and risk class as the Solana mnemonic (T-032).
+    adversaries: [ADV-003]
+    affected_assets: [A-013]
+    affected_files:
+      - coordinator/profilesign/signer.go
+      - coordinator/cmd/coordinator/main.go
+      - coordinator/api/enroll.go
+    mitigations:
+      - description: Identity stored in KMS, injected at runtime (same pipeline as MDM_PUSH_P12_B64).
+        status: implemented
+      - description: Coordinator runs in AMD SEV-SNP TEE; memory encrypted by hardware.
+        status: implemented
+      - description: >
+          LoadFromEnv never logs the p12 or password (only signer CN/org/expiry), and
+          fails closed to unsigned on a missing/invalid/expired identity rather than
+          stamping an untrusted signature.
+        status: implemented
+      - description: Zero the decoded p12/password from memory after key extraction.
+        status: open
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Any change in coordinator/profilesign or main.go that logs, transmits, or
+      persists PROFILE_SIGNING_P12_B64 / _PASSWORD or the decoded key outside the
+      signer must be treated as a high-severity issue.

@@ -227,29 +227,173 @@ describe("LinkPage", () => {
 // =========================================================================
 
 describe("ProvidersPage", () => {
-  it("renders without crashing and shows dashboard heading", async () => {
+  it("shows onboarding actions when no machines are linked", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByRole("heading", { name: "Provider Dashboard" });
-    expect(screen.getByText("Your linked provider machines.")).toBeInTheDocument();
-  });
-
-  it("shows provider summary stats", async () => {
-    const ProvidersPage = (await import("@/app/providers/page")).default;
-    render(<ProvidersPage />);
-
-    await screen.findByRole("heading", { name: "Provider Dashboard" });
-    expect(screen.getByText("We're rebuilding this page")).toBeInTheDocument();
-    expect(screen.getByText("Earnings page")).toBeInTheDocument();
-  });
-
-  it("shows onboarding actions when no devices are linked", async () => {
-    const ProvidersPage = (await import("@/app/providers/page")).default;
-    render(<ProvidersPage />);
-
-    await screen.findByText("No provider devices linked yet");
+    await screen.findByText("No provider machines linked yet");
     expect(screen.getByText("Set up a provider")).toBeInTheDocument();
     expect(screen.getByText("Open calculator")).toBeInTheDocument();
+  });
+
+  it("renders the fleet, verdict, and a machine card when a machine is linked", async () => {
+    const healthy = {
+      id: "m1",
+      account_id: "acct-test",
+      status: "serving",
+      online: true,
+      hardware: { chip_name: "Apple M3 Max", memory_gb: 64, gpu_cores: 40 },
+      models: [{ id: "mlx-community/Qwen3.5-9B-MLX-4bit" }],
+      trust_level: "hardware",
+      attested: true,
+      mda_verified: true,
+      acme_verified: true,
+      se_key_bound: true,
+      secure_enclave: true,
+      sip_enabled: true,
+      secure_boot_enabled: true,
+      authenticated_root_enabled: true,
+      runtime_verified: true,
+      failed_challenges: 0,
+      pending_requests: 1,
+      max_concurrency: 8,
+      decode_tps: 50,
+      system_metrics: { memory_pressure: 0.3, cpu_usage: 0.2, thermal_state: "nominal" },
+      reputation: {
+        score: 0.9, total_jobs: 100, successful_jobs: 99, failed_jobs: 1,
+        total_uptime_seconds: 3600, avg_response_time_ms: 200, challenges_passed: 5, challenges_failed: 0,
+      },
+      lifetime_requests_served: 100,
+      lifetime_tokens_generated: 1_000_000,
+      earnings_total_micro_usd: 5_000_000,
+      earnings_count: 100,
+      version: "0.3.10",
+      last_challenge_verified: new Date().toISOString(),
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/me/providers")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                providers: [healthy],
+                latest_provider_version: "0.3.10",
+                min_provider_version: "0.3.10",
+                heartbeat_timeout_seconds: 90,
+                challenge_max_age_seconds: 360,
+              }),
+              { status: 200 }
+            )
+          );
+        }
+        if (url.includes("/api/me/summary")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                account_id: "acct-test",
+                available_balance_micro_usd: 5_000_000,
+                withdrawable_balance_micro_usd: 5_000_000,
+                payout_ready: true,
+                lifetime_micro_usd: 5_000_000,
+                lifetime_jobs: 100,
+                last_24h_micro_usd: 1_000_000,
+                last_24h_jobs: 20,
+                last_7d_micro_usd: 5_000_000,
+                last_7d_jobs: 100,
+                counts: { total: 1, online: 0, serving: 1, offline: 0, untrusted: 0, hardware: 1, needs_attention: 0 },
+                latest_provider_version: "0.3.10",
+                min_provider_version: "0.3.10",
+              }),
+              { status: 200 }
+            )
+          );
+        }
+        return Promise.resolve(new Response(JSON.stringify({ providers: [] }), { status: 200 }));
+      })
+    );
+
+    const ProvidersPage = (await import("@/app/providers/page")).default;
+    render(<ProvidersPage />);
+
+    await screen.findByText("Apple M3 Max");
+    expect(screen.getByRole("heading", { name: "Fleet" })).toBeInTheDocument();
+    expect(
+      screen.getByText("All clear — every machine is routable and earning.")
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces problems: attention feed, NOT-EARNING verdict, and a fix for a mixed fleet", async () => {
+    const machine = (over: Record<string, unknown>) => ({
+      id: "x",
+      account_id: "acct-test",
+      status: "online",
+      online: true,
+      hardware: { chip_name: "Apple M2", memory_gb: 32, gpu_cores: 19 },
+      models: [{ id: "mlx-community/Qwen3.5-9B-MLX-4bit" }],
+      trust_level: "hardware",
+      attested: true,
+      mda_verified: true,
+      acme_verified: true,
+      se_key_bound: true,
+      secure_enclave: true,
+      sip_enabled: true,
+      secure_boot_enabled: true,
+      authenticated_root_enabled: true,
+      runtime_verified: true,
+      failed_challenges: 0,
+      pending_requests: 0,
+      max_concurrency: 8,
+      reputation: {
+        score: 0.8, total_jobs: 50, successful_jobs: 49, failed_jobs: 1,
+        total_uptime_seconds: 3600, avg_response_time_ms: 250, challenges_passed: 5, challenges_failed: 0,
+      },
+      lifetime_requests_served: 50,
+      lifetime_tokens_generated: 500_000,
+      earnings_total_micro_usd: 1_000_000,
+      earnings_count: 50,
+      version: "0.3.10",
+      last_challenge_verified: new Date().toISOString(),
+      ...over,
+    });
+
+    const blocked = machine({ id: "b1", trust_level: "self_signed", hardware: { chip_name: "Apple M2", memory_gb: 32 } });
+    const offline = machine({ id: "o1", status: "offline", online: false, hardware: { chip_name: "Mac Studio", memory_gb: 192 } });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/me/providers")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                providers: [blocked, offline],
+                latest_provider_version: "0.3.10",
+                min_provider_version: "0.3.10",
+                heartbeat_timeout_seconds: 90,
+                challenge_max_age_seconds: 360,
+              }),
+              { status: 200 }
+            )
+          );
+        }
+        return Promise.resolve(new Response(JSON.stringify({ providers: [] }), { status: 200 }));
+      })
+    );
+
+    const ProvidersPage = (await import("@/app/providers/page")).default;
+    render(<ProvidersPage />);
+
+    // Attention feed renders for an unhealthy fleet (not the all-clear strip).
+    await screen.findByText("Needs attention");
+    expect(
+      screen.queryByText("All clear — every machine is routable and earning.")
+    ).not.toBeInTheDocument();
+    // The blocked machine's card shows the NOT-EARNING hero verb.
+    expect(screen.getAllByText(/NOT EARNING/i).length).toBeGreaterThan(0);
+    // The offline machine surfaces its start command as the fix.
+    expect(screen.getAllByText("darkbloom start").length).toBeGreaterThan(0);
   });
 });

@@ -39,6 +39,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
@@ -448,6 +449,15 @@ func main() {
 				}
 			}
 		}
+	}
+
+	// Optional profile signing: when a code-signing identity (e.g. Developer ID
+	// Application .p12) is supplied via PROFILE_SIGNING_P12_B64/_PATH (+ _PASSWORD),
+	// CMS-sign the /v1/enroll .mobileconfig. Misconfig degrades to unsigned.
+	if signer := profilesign.LoadFromEnv(logger); signer != nil {
+		srv.SetProfileSigner(signer)
+	} else {
+		logger.Info("configuration-profile signing not configured — serving unsigned enrollment profiles")
 	}
 
 	// Start background eviction of stale providers.

@@ -125,5 +125,8 @@ else
 fi
 
 # ---- Coordinator (PID 1 — receives SIGTERM from EigenCloud) ----
+# Optional profile signing: the coordinator reads PROFILE_SIGNING_P12_B64 (+
+# _PASSWORD) straight from the env and CMS-signs the /v1/enroll .mobileconfig.
+# Inject via KMS like MDM_PUSH_P12_B64; unset/invalid → profiles served unsigned.
 echo "Starting coordinator..."
 exec coordinator

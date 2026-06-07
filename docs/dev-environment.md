@@ -96,6 +96,7 @@ The d-inference dev environment runs on Google Cloud (GCP project `sepolia-ai`, 
 | `EIGENINFERENCE_DATABASE_URL` | `eigeninference-database-url` | bootstrap writes Cloud SQL conn string (via cloud-sql-proxy on 127.0.0.1:5432) |
 | `MICROMDM_API_KEY` / `EIGENINFERENCE_MDM_API_KEY` | `eigeninference-micromdm-api-key` | same value for both — keep in sync |
 | `MDM_PUSH_P12_B64` | `eigeninference-mdm-push-p12-b64` | Apple push cert (base64url-encoded PKCS#12) |
+| `PROFILE_SIGNING_P12_B64` / `PROFILE_SIGNING_P12_PASSWORD` | `eigeninference-profile-signing-p12-b64` / `…-password` | Developer ID Application identity (base64 PKCS#12 + password) used to CMS-sign the `/v1/enroll` profile. **Optional** — unset serves profiles unsigned. |
 
 Non-secret configuration is baked into `deploy/gcp/cloudbuild.yaml` via `--set-env-vars`. If you need to change one (e.g. flip `MIN_TRUST`), edit that file — the next deploy picks it up.
 

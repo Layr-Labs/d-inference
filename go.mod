@@ -8,11 +8,13 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/openai/openai-go v1.12.0
+	github.com/smallstep/pkcs7 v0.2.1
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.49.0
 	golang.org/x/time v0.15.0
 	gopkg.in/DataDog/dd-trace-go.v1 v1.74.8
 	nhooyr.io/websocket v1.8.17
+	software.sslmate.com/src/go-pkcs12 v0.7.1
 )
 
 require (

@@ -70,7 +70,8 @@ type MemoryStore struct {
 	activeModelVersion map[string]int64 // modelID → modelVersionID
 	modelVersionSeq    int64
 	publishingAPIKeys  map[string]*PublishingAPIKey
-	modelAliases       map[string]*ModelAlias // aliasID → alias
+	modelAliases       map[string]*ModelAlias     // aliasID → alias
+	modelMigrations    map[string]*ModelMigration // aliasID → migration
 
 	// Users (Privy)
 	usersByPrivyID         map[string]*User // privyUserID → user
@@ -140,6 +141,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		modelPrices:                   make(map[string]ModelPrice),
 		modelRegistry:                 make(map[string]*ModelRegistryEntry),
 		modelAliases:                  make(map[string]*ModelAlias),
+		modelMigrations:               make(map[string]*ModelMigration),
 		modelVersions:                 make(map[string]*ModelVersion),
 		modelVersionByID:              make(map[int64]*ModelVersion),
 		modelVersionFiles:             make(map[int64][]ModelVersionFile),
@@ -1614,6 +1616,57 @@ func (s *MemoryStore) DeleteModelAlias(aliasID string) error {
 	defer s.mu.Unlock()
 
 	delete(s.modelAliases, aliasID)
+	return nil
+}
+
+func (s *MemoryStore) UpsertModelMigration(m *ModelMigration) error {
+	if m == nil || m.AliasID == "" {
+		return fmt.Errorf("model migration requires a non-empty alias_id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	cp := *m
+	if existing, ok := s.modelMigrations[m.AliasID]; ok && !existing.CreatedAt.IsZero() {
+		cp.CreatedAt = existing.CreatedAt
+	} else if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	s.modelMigrations[m.AliasID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) GetModelMigration(aliasID string) (*ModelMigration, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	m, ok := s.modelMigrations[aliasID]
+	if !ok {
+		return nil, false, nil
+	}
+	cp := *m
+	return &cp, true, nil
+}
+
+func (s *MemoryStore) ListModelMigrations() ([]ModelMigration, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ModelMigration, 0, len(s.modelMigrations))
+	for _, m := range s.modelMigrations {
+		out = append(out, *m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AliasID < out[j].AliasID })
+	return out, nil
+}
+
+func (s *MemoryStore) DeleteModelMigration(aliasID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.modelMigrations, aliasID)
 	return nil
 }
 

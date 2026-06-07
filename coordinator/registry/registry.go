@@ -1068,6 +1068,32 @@ func (r *Registry) anyProviderAdvertisesLocked(buildID string) bool {
 	return false
 }
 
+// ProvidersServingBuild returns the ids of online providers that currently
+// advertise the given concrete build. Used by the migration controller to
+// decide which providers still need to prefetch a new build and to measure how
+// far a build has propagated across the fleet.
+func (r *Registry) ProvidersServingBuild(buildID string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var ids []string
+	for id, p := range r.providers {
+		p.mu.Lock()
+		serves := false
+		for _, m := range p.Models {
+			if m.ID == buildID {
+				serves = true
+				break
+			}
+		}
+		online := p.Status == StatusOnline
+		p.mu.Unlock()
+		if serves && online {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // weightedPickBuild chooses a build proportional to its weight.
 func weightedPickBuild(builds []BuildRef) string {
 	total := 0

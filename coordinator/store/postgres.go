@@ -437,6 +437,18 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 
+		// Model migrations (zero-downtime build cutover driven by the controller).
+		`CREATE TABLE IF NOT EXISTS model_migrations (
+			alias_id TEXT PRIMARY KEY,
+			from_build TEXT NOT NULL,
+			to_build TEXT NOT NULL,
+			batch_size INT NOT NULL DEFAULT 1,
+			max_step_percent INT NOT NULL DEFAULT 25,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+
 		// Releases (provider binary versioning)
 		`CREATE TABLE IF NOT EXISTS releases (
 			version TEXT NOT NULL,

@@ -274,6 +274,17 @@ type Store interface {
 	// DeleteModelAlias removes an alias definition.
 	DeleteModelAlias(aliasID string) error
 
+	// --- Model Migrations (zero-downtime build cutover) ---
+
+	// UpsertModelMigration creates or replaces a migration (idempotent on AliasID).
+	UpsertModelMigration(m *ModelMigration) error
+	// GetModelMigration returns the migration for an alias; ok is false when none.
+	GetModelMigration(aliasID string) (m *ModelMigration, ok bool, err error)
+	// ListModelMigrations returns every migration regardless of status.
+	ListModelMigrations() ([]ModelMigration, error)
+	// DeleteModelMigration removes a migration record.
+	DeleteModelMigration(aliasID string) error
+
 	// --- Releases (provider binary versioning) ---
 
 	// SetRelease adds or updates a release in the store.
@@ -886,6 +897,33 @@ type ModelAliasBuild struct {
 	Weight  int    `json:"weight"`
 	Active  bool   `json:"active"`
 }
+
+// ModelMigration is a declarative request to move an alias's traffic from one
+// build to another with zero downtime: prefetch the new build across the fleet,
+// then ramp the alias weight toward it and drain the old build. Progress is
+// reflected in the alias's build weights; this row carries the intent + policy.
+type ModelMigration struct {
+	AliasID   string `json:"alias_id"`
+	FromBuild string `json:"from_build"`
+	ToBuild   string `json:"to_build"`
+	// BatchSize bounds how many providers are told to prefetch per control tick
+	// so a migration never knocks too much capacity offline downloading at once.
+	BatchSize int `json:"batch_size"`
+	// MaxStepPercent caps how many percentage points the new build's routing
+	// weight can rise per tick, so traffic ramps smoothly instead of jumping.
+	MaxStepPercent int       `json:"max_step_percent"`
+	Status         string    `json:"status"` // active | paused | complete | rolledback
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// Migration status constants.
+const (
+	MigrationActive     = "active"
+	MigrationPaused     = "paused"
+	MigrationComplete   = "complete"
+	MigrationRolledBack = "rolledback"
+)
 
 // ModelAlias is a stable, consumer-facing model name (e.g. "gemma-4-26b") that
 // resolves to one or more concrete registry builds (raw HuggingFace ids such as

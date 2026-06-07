@@ -1486,6 +1486,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/models/aliases", s.handleModelAliasList)
 	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
 	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
+	// Zero-downtime build migrations (prefetch → ramp → drain).
+	s.mux.HandleFunc("GET /v1/admin/migrations", s.handleMigrationList)
+	s.mux.HandleFunc("POST /v1/admin/migrations", s.handleMigrationStart)
+	s.mux.HandleFunc("POST /v1/admin/migrations/{aliasID}/{action}", s.handleMigrationAction)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin

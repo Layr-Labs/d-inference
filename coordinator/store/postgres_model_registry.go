@@ -495,3 +495,75 @@ func unmarshalAliasBuilds(data []byte) []ModelAliasBuild {
 	}
 	return out
 }
+
+// --- Model migrations ---
+
+func (s *PostgresStore) UpsertModelMigration(m *ModelMigration) error {
+	if m == nil || m.AliasID == "" {
+		return fmt.Errorf("store: model migration requires a non-empty alias_id")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO model_migrations (alias_id, from_build, to_build, batch_size, max_step_percent, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, COALESCE(NULLIF($7::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), NOW())
+		ON CONFLICT (alias_id) DO UPDATE SET
+		  from_build = $2, to_build = $3, batch_size = $4, max_step_percent = $5, status = $6, updated_at = NOW()`,
+		m.AliasID, m.FromBuild, m.ToBuild, m.BatchSize, m.MaxStepPercent, m.Status, m.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("store: upsert model migration: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetModelMigration(aliasID string) (*ModelMigration, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var m ModelMigration
+	err := s.pool.QueryRow(ctx, `
+		SELECT alias_id, from_build, to_build, batch_size, max_step_percent, status, created_at, updated_at
+		FROM model_migrations WHERE alias_id = $1`, aliasID).
+		Scan(&m.AliasID, &m.FromBuild, &m.ToBuild, &m.BatchSize, &m.MaxStepPercent, &m.Status, &m.CreatedAt, &m.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("store: get model migration: %w", err)
+	}
+	return &m, true, nil
+}
+
+func (s *PostgresStore) ListModelMigrations() ([]ModelMigration, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT alias_id, from_build, to_build, batch_size, max_step_percent, status, created_at, updated_at
+		FROM model_migrations ORDER BY alias_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list model migrations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ModelMigration
+	for rows.Next() {
+		var m ModelMigration
+		if err := rows.Scan(&m.AliasID, &m.FromBuild, &m.ToBuild, &m.BatchSize, &m.MaxStepPercent, &m.Status, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan model migration: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) DeleteModelMigration(aliasID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `DELETE FROM model_migrations WHERE alias_id = $1`, aliasID); err != nil {
+		return fmt.Errorf("store: delete model migration: %w", err)
+	}
+	return nil
+}

@@ -160,12 +160,16 @@ func TestZeroDowntimeAliasMigration(t *testing.T) {
 		}
 		mc.runMigration(*mig)
 
-		// Simulate one more provider finishing its background prefetch: the
-		// real production signal is prefetch_model_status:verified, which the
-		// coordinator turns into an in-place advertise via MarkBuildPrefetched
-		// (the provider keeps serving the old build throughout).
+		// Simulate one more provider finishing its background prefetch: the real
+		// production signal is the models_update message, which the coordinator
+		// turns into an in-place advertise via MergeProviderModels (weight hash
+		// cross-checked against the catalog). The provider keeps serving the old
+		// build throughout. seedActiveModel registers the catalog hash as
+		// testHash, so the update must carry that hash to be accepted.
 		if migrated < len(providers) {
-			reg.MarkBuildPrefetched(providers[migrated], qat)
+			reg.MergeProviderModels(providers[migrated], []protocol.ModelInfo{
+				{ID: qat, ModelType: "chat", WeightHash: testHash},
+			})
 			migrated++
 		}
 	}

@@ -18,6 +18,12 @@ const migrationTick = 20 * time.Second
 // recently told to fetch the new build but hasn't finished (re-advertised) yet.
 const prefetchResendTTL = 10 * time.Minute
 
+// migrationAckGrace is how long after sending prefetch we wait for a provider
+// to acknowledge (any prefetch_model_status) before concluding its binary
+// doesn't support prefetch. Such providers can't be migrated and are excluded
+// so they never stall the ramp/done from converging on capable providers.
+const migrationAckGrace = 2 * time.Minute
+
 // MigrationController drives zero-downtime build cutovers. Each tick it asks the
 // registry which providers serve the old vs new build, tells a bounded batch of
 // old-build providers to prefetch the new build, and ramps the alias's routing
@@ -183,6 +189,7 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 	// advertises but can't route (stale challenge, untrusted, runtime-unverified).
 	servingFrom := sliceToSet(mc.s.registry.ProvidersServingBuild(m.FromBuild))
 	servingTo := sliceToSet(mc.s.registry.RoutableProviderIDsForBuild(m.ToBuild))
+	mc.dropUnmigratable(m, servingFrom, servingTo)
 	snap := migrationSnapshot{
 		servingFrom: servingFrom,
 		servingTo:   servingTo,
@@ -236,6 +243,32 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 		}
 		mc.s.ddIncr("migration.completed", aliasTag)
 		mc.s.logger.Info("migration complete", "alias", m.AliasID, "to", m.ToBuild)
+	}
+}
+
+// dropUnmigratable removes from servingFrom any provider that was told to
+// prefetch long enough ago to have acknowledged but never did (and still does
+// not serve `to`). Those providers run a binary that doesn't support prefetch,
+// so they can't be migrated; keeping them in the coverage/done math would stall
+// the migration forever on un-upgraded nodes.
+func (mc *MigrationController) dropUnmigratable(m store.ModelMigration, servingFrom, servingTo map[string]bool) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	now := time.Now()
+	for id := range servingFrom {
+		if servingTo[id] {
+			continue
+		}
+		ts, sent := mc.sent[sentKey(m.AliasID, id, m.ToBuild)]
+		if !sent || now.Sub(ts) < migrationAckGrace {
+			continue // not yet sent, or still within the ack grace window
+		}
+		if mc.s.registry.ProviderAckedPrefetch(id) {
+			continue // it speaks prefetch — just still downloading, keep waiting
+		}
+		delete(servingFrom, id)
+		mc.s.logger.Warn("migration: excluding provider that never acked prefetch",
+			"alias", m.AliasID, "provider", id, "to", m.ToBuild)
 	}
 }
 

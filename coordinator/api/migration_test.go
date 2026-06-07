@@ -215,3 +215,42 @@ func TestMigrationStartEndpoint(t *testing.T) {
 		t.Fatalf("rollback status = %q", m2.Status)
 	}
 }
+
+// Deleting an alias must also remove its migration — otherwise the controller
+// would keep ramping and applyWeights would recreate the deleted alias.
+func TestDeletingAliasStopsMigration(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	seedActiveModel(t, st, fp8, "fp8")
+	seedActiveModel(t, st, qat, "qat")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", Active: true,
+		Builds: []store.ModelAliasBuild{{BuildID: fp8, Weight: 100, Active: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertModelMigration(&store.ModelMigration{
+		AliasID: "gemma-4-26b", FromBuild: fp8, ToBuild: qat, Status: store.MigrationActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/admin/models/aliases/gemma-4-26b", nil)
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete alias status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok, _ := st.GetModelMigration("gemma-4-26b"); ok {
+		t.Fatal("migration should be removed when its alias is deleted")
+	}
+	if _, ok, _ := st.GetModelAlias("gemma-4-26b"); ok {
+		t.Fatal("alias should be deleted")
+	}
+}

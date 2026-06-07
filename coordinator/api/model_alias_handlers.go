@@ -133,6 +133,11 @@ func (s *Server) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to delete alias"))
 		return
 	}
+	// Also drop any migration for this alias — otherwise the controller would
+	// keep ticking and applyWeights would recreate the alias we just deleted.
+	if err := s.store.DeleteModelMigration(aliasID); err != nil {
+		s.logger.Warn("alias deleted but migration cleanup failed", "alias", aliasID, "error", err)
+	}
 	s.SyncModelCatalog()
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "alias_id": aliasID})
 }

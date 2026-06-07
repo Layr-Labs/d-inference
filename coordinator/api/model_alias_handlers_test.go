@@ -149,6 +149,44 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 	}
 }
 
+// An alias whose builds are all drained (weight 0) resolves to nothing, so it
+// must not be advertised in /v1/models (it would 503).
+func TestAliasModelEntriesSkipsAllDrained(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	seedActiveModel(t, st, fp8, "fp8")
+	seedActiveModel(t, st, qat, "qat")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		Builds: []store.ModelAliasBuild{
+			{BuildID: fp8, Weight: 0, Active: true},
+			{BuildID: qat, Weight: 0, Active: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, registryByID, err := srv.activeCatalogLookups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogByID := map[string]store.SupportedModel{
+		fp8: {ID: fp8, Active: true, ModelType: "text"},
+		qat: {ID: qat, Active: true, ModelType: "text"},
+	}
+	entries, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
+	if len(entries) != 0 {
+		t.Fatalf("fully-drained alias must not be listed, got %+v", entries)
+	}
+	if len(hidden) != 0 {
+		t.Fatalf("a skipped alias must not hide its builds, got %v", hidden)
+	}
+}
+
 // Alias upsert rejects builds that don't reference a registered model and
 // self-references, and delete removes the alias.
 func TestModelAliasValidationAndDelete(t *testing.T) {

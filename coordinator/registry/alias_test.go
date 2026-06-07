@@ -87,10 +87,10 @@ func TestResolveModelPrefersServableBuild(t *testing.T) {
 	reg := New(testLogger())
 	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
 	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	// Both builds have positive weight, but ONLY fp8 has a registered provider.
+	// Both builds have positive weight, but ONLY fp8 has a routable provider.
 	// The ramping qat build has no provider yet, so traffic must still resolve
 	// to fp8 (the zero-downtime fallback) rather than black-holing on qat.
-	registerProviderWithModel(reg, "p-fp8", fp8)
+	makeProviderRoutable(registerProviderWithModel(reg, "p-fp8", fp8))
 	reg.SetModelAliases(map[string][]BuildRef{
 		"gemma-4-26b": {{BuildID: fp8, Weight: 50}, {BuildID: qat, Weight: 50}},
 	})
@@ -107,8 +107,8 @@ func TestResolveModelWeightedSplit(t *testing.T) {
 	reg := New(testLogger())
 	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
 	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	registerProviderWithModel(reg, "p-fp8", fp8)
-	registerProviderWithModel(reg, "p-qat", qat)
+	makeProviderRoutable(registerProviderWithModel(reg, "p-fp8", fp8))
+	makeProviderRoutable(registerProviderWithModel(reg, "p-qat", qat))
 	reg.SetModelAliases(map[string][]BuildRef{
 		"gemma-4-26b": {{BuildID: fp8, Weight: 30}, {BuildID: qat, Weight: 70}},
 	})
@@ -144,7 +144,7 @@ func TestResolveModelNoUsableBuild(t *testing.T) {
 	}
 }
 
-func TestMarkBuildPrefetchedMakesProviderServeBuild(t *testing.T) {
+func TestMergeProviderModelsMakesProviderServeBuild(t *testing.T) {
 	reg := New(testLogger())
 	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
 	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
@@ -154,26 +154,46 @@ func TestMarkBuildPrefetchedMakesProviderServeBuild(t *testing.T) {
 		t.Fatalf("qat should have no providers yet, got %v", got)
 	}
 
-	// Simulate a verified prefetch of qat on p1.
-	if !reg.MarkBuildPrefetched("p1", qat) {
-		t.Fatal("MarkBuildPrefetched should report a newly added build")
+	// Simulate the models_update a provider sends after a verified prefetch.
+	merged := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: qat, ModelType: "gemma", WeightHash: "abc"}})
+	if len(merged) != 1 || merged[0] != qat {
+		t.Fatalf("merge should report qat, got %v", merged)
 	}
-	// Idempotent: second call is a no-op.
-	if reg.MarkBuildPrefetched("p1", qat) {
-		t.Fatal("MarkBuildPrefetched should be idempotent")
-	}
-
 	got := reg.ProvidersServingBuild(qat)
 	if len(got) != 1 || got[0] != "p1" {
 		t.Fatalf("p1 should now serve qat, got %v", got)
 	}
-	// ModelType is inherited from the existing fp8 entry (same logical model).
+	// The authoritative ModelType from the update is used.
 	if mt := reg.ModelType(qat); mt != "gemma" {
-		t.Fatalf("inherited model type = %q, want gemma", mt)
+		t.Fatalf("model type = %q, want gemma", mt)
+	}
+	// Re-merge updates in place (no duplicate entry).
+	reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: qat, ModelType: "gemma", WeightHash: "abc"}})
+	if got := reg.ProvidersServingBuild(qat); len(got) != 1 {
+		t.Fatalf("re-merge should not duplicate, got %v", got)
 	}
 	// Unknown provider is a safe no-op.
-	if reg.MarkBuildPrefetched("nope", qat) {
-		t.Fatal("unknown provider should be a no-op")
+	if m := reg.MergeProviderModels("nope", []protocol.ModelInfo{{ID: qat}}); m != nil {
+		t.Fatalf("unknown provider should be a no-op, got %v", m)
+	}
+}
+
+// A models_update whose weight hash doesn't match the catalog's expected hash is
+// rejected — a bad/buggy prefetch must never become routable.
+func TestMergeProviderModelsRejectsHashMismatch(t *testing.T) {
+	reg := New(testLogger())
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	registerProviderWithModel(reg, "p1", "mlx-community/base")
+	reg.SetModelCatalog([]CatalogEntry{{ID: qat, WeightHash: "EXPECTED"}})
+
+	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: qat, WeightHash: "WRONG"}}); len(m) != 0 {
+		t.Fatalf("hash mismatch must be rejected, got %v", m)
+	}
+	if got := reg.ProvidersServingBuild(qat); len(got) != 0 {
+		t.Fatalf("rejected build must not be advertised, got %v", got)
+	}
+	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: qat, WeightHash: "EXPECTED"}}); len(m) != 1 {
+		t.Fatalf("matching hash must merge, got %v", m)
 	}
 }
 

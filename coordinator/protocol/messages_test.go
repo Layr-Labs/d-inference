@@ -391,6 +391,31 @@ func TestProviderMessageUnmarshalPrefetchModelStatus(t *testing.T) {
 	}
 }
 
+func TestProviderMessageUnmarshalModelsUpdate(t *testing.T) {
+	// The wire form a provider sends after a verified prefetch (mirrors the
+	// Swift ModelInfo encoding used by `register`).
+	data := []byte(`{"type":"models_update","models":[{"id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","size_bytes":15600000000,"model_type":"chat","quantization":"4bit","weight_hash":"abc123"}]}`)
+
+	var msg ProviderMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != TypeModelsUpdate {
+		t.Fatalf("Type=%q, want %q", msg.Type, TypeModelsUpdate)
+	}
+	upd, ok := msg.Payload.(*ModelsUpdateMessage)
+	if !ok {
+		t.Fatalf("Payload=%T, want *ModelsUpdateMessage", msg.Payload)
+	}
+	if len(upd.Models) != 1 {
+		t.Fatalf("models len = %d, want 1", len(upd.Models))
+	}
+	m := upd.Models[0]
+	if m.ID != "mlx-community/gemma-4-26B-A4B-it-qat-4bit" || m.ModelType != "chat" || m.WeightHash != "abc123" {
+		t.Fatalf("decoded model = %+v", m)
+	}
+}
+
 func TestPrefetchModelStatusVerifiedRoundTrip(t *testing.T) {
 	msg := PrefetchModelStatusMessage{
 		Type:    TypePrefetchModelStatus,

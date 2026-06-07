@@ -412,6 +412,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			// "started" status: no action — load is in progress.
 
+		case protocol.TypeModelsUpdate:
+			updateMsg := msg.Payload.(*protocol.ModelsUpdateMessage)
+			s.handleModelsUpdate(providerID, provider, updateMsg)
+
 		case protocol.TypePrefetchModelStatus:
 			statusMsg := msg.Payload.(*protocol.PrefetchModelStatusMessage)
 			// The migration controller (Layer 4) is the consumer of this
@@ -510,11 +514,11 @@ func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID strin
 
 // handlePrefetchModelStatus records a provider's background-prefetch progress.
 // Prefetch downloads + verifies a build on disk without loading it into GPU.
-// On the terminal "verified" state we merge the build into the provider's
-// advertised models in place so it becomes routable immediately — this is the
-// signal the migration controller's ramp depends on (it measures how many
-// providers serve the new build) and closes the loop without waiting for the
-// provider to reconnect.
+// Any status acknowledges that the provider's binary speaks the prefetch
+// protocol (so the migration controller won't stall waiting on it). The
+// authoritative "this build is now servable" signal is the separate
+// models_update message (handleModelsUpdate), which carries the weight hash —
+// the terminal "verified" status here is just observability/progress.
 func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry.Provider, msg *protocol.PrefetchModelStatusMessage) {
 	s.logger.Info("provider prefetch_model_status",
 		"provider_id", providerID,
@@ -524,20 +528,30 @@ func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry
 		"bytes_total", msg.BytesTotal,
 		"error", msg.Error,
 	)
+	s.registry.RecordPrefetchAck(providerID)
 	s.ddIncr("provider.prefetch_status", []string{"model:" + msg.ModelID, "status:" + msg.Status})
 	if msg.BytesTotal > 0 {
 		s.ddGauge("provider.prefetch_progress_pct",
 			float64(msg.BytesDone)/float64(msg.BytesTotal)*100,
 			[]string{"provider_id:" + providerID, "model:" + msg.ModelID})
 	}
-	if msg.Status == protocol.PrefetchModelStatusVerified {
-		if s.registry.MarkBuildPrefetched(providerID, msg.ModelID) {
-			s.logger.Info("provider now advertises prefetched build",
-				"provider_id", providerID, "model_id", msg.ModelID)
-			// Release any requests queued for this build now that a provider
-			// can (cold-)serve it.
-			s.registry.DrainQueuedRequestsForModel(msg.ModelID)
-		}
+}
+
+// handleModelsUpdate merges a provider's authoritative model inventory update
+// (sent after a verified prefetch) into its advertised models in place. Each
+// build's weight hash is cross-checked against the catalog before it becomes
+// routable, so a bad/buggy prefetch never takes traffic. This is the signal the
+// migration controller's ramp depends on, and it closes the loop without
+// waiting for the provider to reconnect or resetting its trust/reputation.
+func (s *Server) handleModelsUpdate(providerID string, provider *registry.Provider, msg *protocol.ModelsUpdateMessage) {
+	s.registry.RecordPrefetchAck(providerID)
+	merged := s.registry.MergeProviderModels(providerID, msg.Models)
+	for _, id := range merged {
+		s.logger.Info("provider now advertises build (models_update)",
+			"provider_id", providerID, "model_id", id)
+		// Release any requests queued for this build now that a provider can
+		// (cold-)serve it.
+		s.registry.DrainQueuedRequestsForModel(id)
 	}
 }
 

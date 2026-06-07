@@ -42,6 +42,7 @@ const (
 	TypeCodeAttestationResponse = "code_attestation_response"
 	TypeLoadModelStatus         = "load_model_status"
 	TypePrefetchModelStatus     = "prefetch_model_status"
+	TypeModelsUpdate            = "models_update"
 
 	// Coordinator → Provider.
 	TypeInferenceRequest     = "inference_request"
@@ -340,6 +341,19 @@ type PrefetchModelMessage struct {
 	Priority int    `json:"priority,omitempty"`
 }
 
+// ModelsUpdateMessage is an authoritative, out-of-band update to the provider's
+// advertised model inventory. A provider sends it after a coordinator-driven
+// prefetch is downloaded AND verified on disk, carrying the full ModelInfo
+// (including the computed weight hash) for the newly-available build. The
+// coordinator cross-checks each WeightHash against the catalog before merging,
+// so a verified build becomes routable immediately — without the disruption of
+// a full re-register (which would reset reputation and restart the challenge
+// loop) and without bypassing weight-hash verification.
+type ModelsUpdateMessage struct {
+	Type   string      `json:"type"`
+	Models []ModelInfo `json:"models"`
+}
+
 // PrefetchModelStatusMessage is the provider's progress/terminal reply to a
 // PrefetchModelMessage. Status is one of PrefetchModelStatusStarted,
 // PrefetchModelStatusDownloading, PrefetchModelStatusVerified,
@@ -535,6 +549,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg PrefetchModelStatusMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal prefetch_model_status: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeModelsUpdate:
+		var msg ModelsUpdateMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal models_update: %w", err)
 		}
 		pm.Payload = &msg
 

@@ -628,6 +628,11 @@ type Registry struct {
 	// sync time. nil = no aliases configured.
 	modelAliases map[string][]BuildRef
 
+	// prefetchAcked tracks the last time each provider acknowledged a prefetch
+	// (sent any prefetch_model_status), proving its binary speaks the protocol.
+	prefetchAckMu sync.Mutex
+	prefetchAcked map[string]time.Time
+
 	store store.Store
 
 	tpsRegistry *TPSRegistry
@@ -1036,14 +1041,15 @@ func (r *Registry) ResolveModel(requested string) (buildID string, isAlias bool,
 			continue
 		}
 		all = append(all, b)
-		if r.anyProviderAdvertisesLocked(b.BuildID) {
+		if r.anyProviderCanRouteBuildLocked(b.BuildID) {
 			servable = append(servable, b)
 		}
 	}
 	pool := servable
 	if len(pool) == 0 {
-		// No ramping build has capacity yet — fall back to weighted choice over
-		// all active builds so the request queues against a real build.
+		// No build is routable yet — fall back to a weighted choice over all
+		// active builds so the request queues against a real build instead of
+		// failing outright.
 		pool = all
 	}
 	if len(pool) == 0 {
@@ -1052,57 +1058,108 @@ func (r *Registry) ResolveModel(requested string) (buildID string, isAlias bool,
 	return weightedPickBuild(pool), true, true
 }
 
-// anyProviderAdvertisesLocked reports whether any registered provider currently
-// advertises the given concrete build id. Caller must hold r.mu.
-func (r *Registry) anyProviderAdvertisesLocked(buildID string) bool {
+// providerCanRouteBuildLocked is the single source of truth for "could this
+// provider actually serve this build right now" — the same gates
+// snapshotProviderLocked applies (advertises the build + in catalog, not
+// offline/untrusted, public, trust ≥ floor, runtime verified, private-text
+// capable, fresh challenge, AND the model fits the provider's RAM), minus the
+// per-request capacity/headroom checks. Cold-but-healthy providers pass (no warm
+// slot required — they load on first demand). Caller holds r.mu (RLock) and p.mu.
+func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time) bool {
+	if !r.providerServesCatalogModelLocked(p, buildID) {
+		return false
+	}
+	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if p.PrivateOnly {
+		return false
+	}
+	if trustRank(p.TrustLevel) < trustRank(minTrust) {
+		return false
+	}
+	if !p.RuntimeVerified || !providerSupportsPrivateTextLocked(p) {
+		return false
+	}
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		return false
+	}
+	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.
+	// migrating to a larger build than the source). totalMemory prefers the
+	// backend-reported figure, matching snapshotProviderLocked.
+	totalMemoryGB := float64(p.Hardware.MemoryGB)
+	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
+		totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+	}
+	return modelFitsHardware(r.catalogMinRAMGbLocked(buildID), r.catalogSizeGBLocked(buildID), totalMemoryGB)
+}
+
+// anyProviderCanRouteBuildLocked reports whether at least one provider could
+// route the build right now. Caller holds r.mu.
+func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
+	now := time.Now()
+	minTrust := r.MinTrustLevel
 	for _, p := range r.providers {
 		p.mu.Lock()
-		for _, m := range p.Models {
-			if m.ID == buildID {
-				p.mu.Unlock()
-				return true
-			}
-		}
+		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now)
 		p.mu.Unlock()
+		if ok {
+			return true
+		}
 	}
 	return false
 }
 
-// MarkBuildPrefetched records that a provider has finished prefetching and
-// verifying a build on disk, by merging it into the provider's advertised
-// Models in place. This is what lets a verified prefetch become routable
-// WITHOUT waiting for the provider to reconnect (heartbeats only carry
-// warm_models, not the full Models list) and WITHOUT resetting the provider's
-// trust/reputation/challenge state (a full re-register would). The build joins
-// as a "cold" candidate (advertised, not yet loaded); the existing cold→warm
-// machinery loads it on first demand. ModelType is inherited from the
-// provider's existing models (a migration's from/to are the same logical
-// model); the authoritative ModelInfo (incl. weight hash) arrives on the next
-// reconnect, and attestation covers the on-disk hash independently. Returns
-// true if the build was newly added.
-func (r *Registry) MarkBuildPrefetched(providerID, buildID string) bool {
-	if buildID == "" {
-		return false
+// MergeProviderModels merges provider-reported model descriptors into the
+// provider's advertised Models in place — used for the models_update message a
+// provider sends after a verified prefetch, so a new build becomes routable
+// WITHOUT a reconnect and WITHOUT resetting trust/reputation/challenge state.
+// Each model's WeightHash is cross-checked against the catalog's expected hash;
+// a mismatch is REJECTED (the build is not made routable) so a bad or buggy
+// prefetch can never take traffic. Returns the build ids that were merged.
+func (r *Registry) MergeProviderModels(providerID string, models []protocol.ModelInfo) []string {
+	if len(models) == 0 {
+		return nil
 	}
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
+	expected := make(map[string]string, len(models))
+	for _, m := range models {
+		if e, has := r.modelCatalog[m.ID]; has {
+			expected[m.ID] = e.WeightHash
+		}
+	}
 	r.mu.RUnlock()
 	if !ok {
-		return false
+		return nil
 	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	modelType := ""
-	for _, m := range p.Models {
-		if m.ID == buildID {
-			return false // already advertised
+	var merged []string
+	for _, m := range models {
+		if m.ID == "" {
+			continue
 		}
-		if modelType == "" && m.ModelType != "" {
-			modelType = m.ModelType
+		if exp := expected[m.ID]; exp != "" && m.WeightHash != "" && !strings.EqualFold(m.WeightHash, exp) {
+			r.logger.Warn("models_update weight-hash mismatch; rejecting build",
+				"provider_id", providerID, "model_id", m.ID, "expected", exp, "got", m.WeightHash)
+			continue
 		}
+		replaced := false
+		for i := range p.Models {
+			if p.Models[i].ID == m.ID {
+				p.Models[i] = m
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			p.Models = append(p.Models, m)
+		}
+		merged = append(merged, m.ID)
 	}
-	p.Models = append(p.Models, protocol.ModelInfo{ID: buildID, ModelType: modelType})
-	return true
+	return merged
 }
 
 // ProvidersServingBuild returns the ids of live providers that currently
@@ -1150,20 +1207,38 @@ func (r *Registry) RoutableProviderIDsForBuild(buildID string) []string {
 	var ids []string
 	for id, p := range r.providers {
 		p.mu.Lock()
-		ok := r.providerServesCatalogModelLocked(p, buildID) &&
-			p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			!p.PrivateOnly &&
-			trustRank(p.TrustLevel) >= trustRank(minTrust) &&
-			p.RuntimeVerified &&
-			providerSupportsPrivateTextLocked(p) &&
-			!p.LastChallengeVerified.IsZero() &&
-			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now)
 		p.mu.Unlock()
 		if ok {
 			ids = append(ids, id)
 		}
 	}
 	return ids
+}
+
+// RecordPrefetchAck notes that a provider acknowledged a prefetch (it sent any
+// prefetch_model_status), which proves its binary speaks the prefetch protocol.
+// The migration controller uses this to avoid stalling forever on old providers
+// that silently drop prefetch_model.
+func (r *Registry) RecordPrefetchAck(providerID string) {
+	if providerID == "" {
+		return
+	}
+	r.prefetchAckMu.Lock()
+	if r.prefetchAcked == nil {
+		r.prefetchAcked = make(map[string]time.Time)
+	}
+	r.prefetchAcked[providerID] = time.Now()
+	r.prefetchAckMu.Unlock()
+}
+
+// ProviderAckedPrefetch reports whether a provider has acknowledged a prefetch
+// within the recent past (i.e. it supports the prefetch protocol).
+func (r *Registry) ProviderAckedPrefetch(providerID string) bool {
+	r.prefetchAckMu.Lock()
+	t, ok := r.prefetchAcked[providerID]
+	r.prefetchAckMu.Unlock()
+	return ok && time.Since(t) <= prefetchAckTTL
 }
 
 // weightedPickBuild chooses a build proportional to its weight.

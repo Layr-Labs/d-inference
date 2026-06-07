@@ -3367,13 +3367,17 @@ func (s *Server) aliasModelEntries(
 				warm += cap.WarmProviders
 				canAccept = canAccept || cap.CanAccept
 			}
-			if b.Weight > bestWeight {
+			// Only a build with positive weight can be the primary — an alias
+			// whose builds are all drained (weight 0) resolves to nothing, so it
+			// must not be advertised in /v1/models (it would 503).
+			if b.Weight > 0 && b.Weight > bestWeight {
 				bestWeight = b.Weight
 				primary = b.BuildID
 			}
 		}
 		if primary == "" {
-			// No in-catalog build backs this alias yet — don't advertise it.
+			// No usable (in-catalog, weight>0) build backs this alias — don't
+			// advertise it.
 			continue
 		}
 		for _, id := range covered {

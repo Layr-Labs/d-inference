@@ -111,8 +111,14 @@ public actor BatchScheduler {
     /// to the default.
     static let defaultPrefixCacheStatsIntervalSecs = 120
     static func prefixCacheStatsIntervalSecs() -> Int {
-        guard let v = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS"]
-        else { return defaultPrefixCacheStatsIntervalSecs }
+        resolveStatsInterval(
+            env: ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS"])
+    }
+
+    /// Pure stats-interval policy (testable). Unset / malformed / negative ⇒
+    /// default; `0` ⇒ disabled; a positive value sets the cadence in seconds.
+    static func resolveStatsInterval(env: String?) -> Int {
+        guard let v = env else { return defaultPrefixCacheStatsIntervalSecs }
         guard let n = Int(v), n >= 0 else { return defaultPrefixCacheStatsIntervalSecs }
         return n  // n == 0 ⇒ disabled
     }

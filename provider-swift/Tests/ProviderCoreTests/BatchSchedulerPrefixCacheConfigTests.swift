@@ -97,4 +97,18 @@ struct BatchSchedulerPrefixCacheConfigTests {
         let free = BatchScheduler.volumeFreeBytes(at: FileManager.default.temporaryDirectory)
         #expect(free != nil && free! > 0, "should read the temp volume's free capacity")
     }
+
+    // The hit/miss stats logger interval: unset/malformed/negative ⇒ default,
+    // `0` ⇒ disabled, positive ⇒ that cadence. Pure resolver (no process env).
+    @Test("resolveStatsInterval: default / disable / override semantics")
+    func statsInterval() {
+        let dflt = BatchScheduler.defaultPrefixCacheStatsIntervalSecs
+        #expect(BatchScheduler.resolveStatsInterval(env: nil) == dflt)        // unset
+        #expect(BatchScheduler.resolveStatsInterval(env: "") == dflt)         // empty ⇒ malformed
+        #expect(BatchScheduler.resolveStatsInterval(env: "abc") == dflt)      // garbage
+        #expect(BatchScheduler.resolveStatsInterval(env: "-5") == dflt)       // negative
+        #expect(BatchScheduler.resolveStatsInterval(env: "0") == 0)           // explicit disable
+        #expect(BatchScheduler.resolveStatsInterval(env: "30") == 30)         // override
+        #expect(BatchScheduler.resolveStatsInterval(env: "120") == 120)
+    }
 }

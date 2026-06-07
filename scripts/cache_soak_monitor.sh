@@ -97,11 +97,15 @@ RE_EPHEMERAL='EPHEMERAL in-memory KEK'                  # confirms escape hatch 
 
 # ---- CSV header ---------------------------------------------------------------
 if [ ! -s "$OUT_CSV" ]; then
-  echo "ts,elapsed_s,disk_kb,file_count,rss_kb,cpu_speed_limit,active,store,sweep,evict,ram_evict,decrypt_fail,mb1_drop,hash_mismatch,disabled,ephemeral" > "$OUT_CSV"
+  echo "ts,elapsed_s,disk_kb,file_count,rss_kb,cpu_speed_limit,active,store,sweep,evict,ram_evict,decrypt_fail,mb1_drop,hash_mismatch,disabled,ephemeral,hit_rate" > "$OUT_CSV"
 fi
 
 # byte offset into RAW_LOG already consumed
 RAW_OFFSET=0
+# latest cumulative hit rate seen in a "prefix cache stats: ... hitRate=NN.N%"
+# line (logged every DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS, default 120s).
+# Persisted across ticks since the stats line is sparser than the sample tick.
+HIT_RATE=NA
 
 count_new_markers() {
   # $1 = regex; counts matches in the current $WINDOW slice. grep -c exits 1
@@ -173,7 +177,12 @@ while true; do
   C_DISABLED=$(count_new_markers "$RE_DISABLED")
   C_EPHEM=$(count_new_markers "$RE_EPHEMERAL")
 
-  echo "$(ts),$ELAPSED,$DISK_KB,$FILE_COUNT,$RSS_KB,$CPU_SPEED_LIMIT,$C_ACTIVE,$C_STORE,$C_SWEEP,$C_EVICT,$C_RAMEVICT,$C_DECFAIL,$C_MB1,$C_HASH,$C_DISABLED,$C_EPHEM" >> "$OUT_CSV"
+  # latest cumulative hit rate from the periodic "prefix cache stats:" line, if
+  # one appeared in this window. Persists across ticks (sparser than the tick).
+  NEW_RATE=$(printf '%s' "$WINDOW" | grep -oE 'hitRate=[0-9.]+' | tail -1 | cut -d= -f2)
+  [ -n "$NEW_RATE" ] && HIT_RATE=$NEW_RATE
+
+  echo "$(ts),$ELAPSED,$DISK_KB,$FILE_COUNT,$RSS_KB,$CPU_SPEED_LIMIT,$C_ACTIVE,$C_STORE,$C_SWEEP,$C_EVICT,$C_RAMEVICT,$C_DECFAIL,$C_MB1,$C_HASH,$C_DISABLED,$C_EPHEM,$HIT_RATE" >> "$OUT_CSV"
 
   # --- notable events to the events log ---
   if [ "$C_DECFAIL" -gt 0 ]; then
@@ -192,8 +201,8 @@ while true; do
   fi
 
   # progress to stdout
-  printf '[%6ss] disk=%sMB files=%s rss=%sMB cpu_lim=%s | store=%s sweep=%s ssd_evict=%s ram_evict=%s decfail=%s mb1=%s hashmis=%s\n' \
-    "$ELAPSED" "$(( DISK_KB / 1024 ))" "$FILE_COUNT" "$(( RSS_KB / 1024 ))" "$CPU_SPEED_LIMIT" \
+  printf '[%6ss] disk=%sMB files=%s rss=%sMB cpu_lim=%s hit=%s%% | store=%s sweep=%s ssd_evict=%s ram_evict=%s decfail=%s mb1=%s hashmis=%s\n' \
+    "$ELAPSED" "$(( DISK_KB / 1024 ))" "$FILE_COUNT" "$(( RSS_KB / 1024 ))" "$CPU_SPEED_LIMIT" "$HIT_RATE" \
     "$C_STORE" "$C_SWEEP" "$C_EVICT" "$C_RAMEVICT" "$C_DECFAIL" "$C_MB1" "$C_HASH"
 
   sleep "$INTERVAL"

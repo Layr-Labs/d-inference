@@ -33,7 +33,9 @@ import MLXLLM
 import MLXLMCommon
 import os
 
-private let prefixCacheLogger = Logger(subsystem: "dev.darkbloom.provider", category: "prefix-cache-wiring")
+// `internal` (not `private`) so the BatchScheduler extension files
+// (e.g. +EngineBridge) can log under the same category.
+let prefixCacheLogger = Logger(subsystem: "dev.darkbloom.provider", category: "prefix-cache-wiring")
 
 /// Continuous-batching scheduler. Wraps a single `MLXLMCommon.BatchedEngine`
 /// per loaded model. The engine owns the GPU step loop; this actor owns
@@ -92,6 +94,28 @@ public actor BatchScheduler {
 
     /// Watchdog for planner-pending requests that exceed `pendingTimeout`.
     var pendingTimeoutTask: Task<Void, Never>?
+
+    /// Periodic prefix-cache hit/miss stats logger. Started in `loadModel`
+    /// when a checkpoint-tier manager is installed, cancelled in
+    /// `stopCurrentEngine`. Logs a single line per interval so operators (and
+    /// soak harnesses) can read the live hit rate, which `snapshotStats()`
+    /// otherwise only exposes to in-process tests. Covers the CHECKPOINT tier
+    /// only — the engine tier (`EncryptedPrefixCachePersistence`) keeps no
+    /// hit/miss counters, so pure-attention `.engine` models log nothing here.
+    var prefixCacheStatsTask: Task<Void, Never>?
+    /// Interval (seconds) for the stats logger. Default 120s when a checkpoint
+    /// manager is active (one info line every two minutes is negligible even
+    /// across a fleet, and gives hit-rate observability out of the box). A
+    /// positive `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` overrides the
+    /// interval; `0` disables the logger entirely; a malformed value falls back
+    /// to the default.
+    static let defaultPrefixCacheStatsIntervalSecs = 120
+    static func prefixCacheStatsIntervalSecs() -> Int {
+        guard let v = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS"]
+        else { return defaultPrefixCacheStatsIntervalSecs }
+        guard let n = Int(v), n >= 0 else { return defaultPrefixCacheStatsIntervalSecs }
+        return n  // n == 0 ⇒ disabled
+    }
     /// Bumped on every `loadModel` / `stopCurrentEngine` so stale model
     /// loads can detect they've been superseded.
     var generationEpoch: UInt64 = 0
@@ -297,6 +321,9 @@ public actor BatchScheduler {
         self.planner = makePlanner(activeTokenBudget: tokenBudgetMax)
         // Engine has no pending-queue TTL; we enforce `pendingTimeout`.
         startPendingTimeoutWatchdog()
+        // Periodic checkpoint-tier hit/miss logger (no-op if disabled or
+        // engine-tier model). Cancelled in stopCurrentEngine.
+        startPrefixCacheStatsLogger()
     }
 
     /// Snapshot model bytes + tokenizer + architecture out of the
@@ -1313,6 +1340,10 @@ public actor BatchScheduler {
         generationEpoch &+= 1
         pendingTimeoutTask?.cancel()
         pendingTimeoutTask = nil
+        // Log a final stats line before teardown, then stop the periodic logger.
+        await logPrefixCacheStats()
+        prefixCacheStatsTask?.cancel()
+        prefixCacheStatsTask = nil
 
         if let engine = self.engine {
             _ = engine.core.abortAllRequests()

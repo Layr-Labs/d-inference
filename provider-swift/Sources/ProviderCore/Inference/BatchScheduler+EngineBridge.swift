@@ -274,6 +274,44 @@ extension BatchScheduler {
         }
     }
 
+    // MARK: - Prefix-cache stats logger
+
+    /// Spawn the periodic checkpoint-tier hit/miss logger. Called from
+    /// `loadModel` after the checkpoint manager is installed; cancelled (and
+    /// re-spawned) on every `stopCurrentEngine` / `loadModel` cycle. No-op when
+    /// the interval is 0 (disabled) or there is no checkpoint manager (engine
+    /// tier / cache off). Snapshots are cheap (a struct copy across the manager
+    /// actor), so a 2-minute cadence is free.
+    func startPrefixCacheStatsLogger() {
+        prefixCacheStatsTask?.cancel()
+        prefixCacheStatsTask = nil
+        let interval = Self.prefixCacheStatsIntervalSecs()
+        guard interval > 0, checkpointManager != nil else { return }
+        let scheduler = self
+        prefixCacheStatsTask = Task.detached {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(interval))
+                if Task.isCancelled { return }
+                await scheduler.logPrefixCacheStats()
+            }
+        }
+    }
+
+    /// Read the checkpoint manager's cumulative counters and emit one info
+    /// line. Hit rate = (ramHits + ssdHits) / (ramHits + ssdHits + misses).
+    /// `misses` here counts only lookups that found neither RAM nor SSD entry
+    /// — i.e. genuine cold/unique prompts — so the rate reflects reuse of
+    /// cacheable prefixes, not the unique-prompt floor the workload injects.
+    func logPrefixCacheStats() async {
+        guard let mgr = checkpointManager else { return }
+        let s = await mgr.snapshotStats()
+        let lookups = s.ramHits + s.ssdHits + s.misses
+        let hits = s.ramHits + s.ssdHits
+        let rate = lookups > 0 ? (Double(hits) * 100.0 / Double(lookups)) : 0.0
+        prefixCacheLogger.info(
+            "prefix cache stats: lookups=\(lookups) hits=\(hits) (ram=\(s.ramHits) ssd=\(s.ssdHits)) misses=\(s.misses) hitRate=\(String(format: "%.1f", rate))% stores=\(s.stores) ssdFlushes=\(s.ssdFlushes) diskEvictions=\(s.diskEvictions) ssdReadErrors=\(s.ssdReadErrors) modelMismatch=\(s.modelMismatches) shapeMismatch=\(s.shapeMismatches) prefixHashMismatch=\(s.prefixHashMismatches)")
+    }
+
     /// Watchdog body: abort bridges still waiting for engine admission
     /// past `pendingTimeout`. A long prefill is admitted but emits no
     /// decoded token yet; admittedAt != nil filters those out so they

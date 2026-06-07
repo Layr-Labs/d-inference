@@ -314,6 +314,17 @@ and run the post-run analysis (pass/fail report against §7).
   The client CSV measures only TTFB/total/tokens/errors. Actual cache behavior
   comes from the provider's unified-logging markers, which `cache_soak_monitor.sh`
   captures via `log stream --predicate 'subsystem == "dev.darkbloom.provider"'`.
+- **Hit/miss IS logged** (since the stats-logger change): the checkpoint-tier
+  scheduler emits `prefix cache stats: lookups=.. hits=.. (ram=.. ssd=..)
+  misses=.. hitRate=NN.N% stores=.. ssdFlushes=.. diskEvictions=..
+  ssdReadErrors=..` every 120 s (override/disable with
+  `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS`; `0` disables). The monitor
+  parses the latest `hitRate=` into the `hit_rate` CSV column. Note this covers
+  the **checkpoint tier** (Gemma); pure-attention `.engine` models have no
+  hit/miss counters and log nothing here. `misses` counts only lookups that hit
+  neither RAM nor SSD (genuine cold/unique prompts) — so for the pool workload
+  the steady-state hit rate reflects pool reuse, with the ~15% unique-prompt
+  injection as the miss floor.
 - Successful SSD **reads/decrypts are not logged** (only failures are). So a
   zero `decrypt_fail` count + sustained disk reuse is the success signal, not an
   explicit "hit" line.

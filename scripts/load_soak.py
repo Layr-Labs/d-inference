@@ -57,15 +57,34 @@ _BASE = (
 SHARED_PREFIX = _BASE * 6  # ~ several hundred tokens of stable prefix
 
 
+# Calibration: tokens produced per `_BASE` repeat, measured against the real
+# server tokenizer (usage.prompt_tokens). Default is a conservative estimate;
+# override with --tokens-per-base after a one-shot calibration request so
+# --prompt-tokens lands close to the intended length (and crosses the intended
+# checkpoint boundaries). gpt-oss past-window ladder = 2048/4096/8192/...; a
+# ~4-8k-token prefix crosses several of those, exercising the proven bit-exact
+# restore PAST the 128-token sliding window.
+DEFAULT_TOKENS_PER_BASE = 140.0
+
+
+def repeats_for_tokens(target_tokens, tokens_per_base):
+    """How many _BASE repeats approximate `target_tokens`. >=1."""
+    if target_tokens <= 0:
+        return None
+    return max(1, round(target_tokens / max(1.0, tokens_per_base)))
+
+
 def build_prefix_pool(pool_size, repeat):
     """K DISTINCT long prefixes. Each is the common base repeated `repeat` times
     plus a pool-unique tag, so every prefix is its own cacheable checkpoint chain
     but they all cross the same boundaries. Reusing a pool member across requests
     drives: 1st use -> RAM store; 2nd use -> SSD promotion (write-back); reuse
     after RAM eviction -> SSD reload (decrypt). With pool_size * file_bytes >
-    DISK_GB the SSD disk-eviction path engages too. The smoke run showed one
-    promoted checkpoint ≈ 110 MB, so ~40 distinct prefixes saturate a 4 GB disk
-    budget and force SSD eviction."""
+    DISK_GB the SSD disk-eviction path engages too.
+
+    For the SHORT-window models (gpt-oss window=128) a large `repeat` (long
+    prefix) is what crosses the past-window ladder; for Gemma (window=1024) the
+    Gemma run used repeat=6 (~700 tok) to cross 256/512."""
     pool = []
     for i in range(pool_size):
         # Tag FIRST so the prefixes diverge from token 0 (distinct digests at
@@ -150,15 +169,22 @@ def make_prompt(args, n, pool):
       A small `--unique-fraction` of requests use a one-off long prompt for
       churn so the pool members keep getting evicted and reloaded.
 
+      --rotate flips selection from RANDOM to ROUND-ROBIN (idx = n % K). With a
+      pool LARGER than the RAM tier, round-robin guarantees that by the time a
+      prefix comes around again it has been RAM-evicted, so every touch after
+      the first cycle is a RAM-miss + SSD reload (decrypt) — the heaviest SSD
+      stress, which a high-hit-rate model (gpt-oss ~99% under random reuse)
+      otherwise never produces because the hot set stays RAM-resident.
+
     * legacy mode (--prefix-pool 0): the original shared/diverse split, kept for
       back-compat with the simple smoke test.
     """
     if pool:
-        if random.random() < args.unique_fraction:
+        if args.unique_fraction > 0 and random.random() < args.unique_fraction:
             filler = " ".join(f"token{random.randint(0, 1_000_000)}" for _ in range(args.diverse_words))
             content = f"Unique request {n} {filler}. In one sentence, describe a distributed cache."
             return [{"role": "user", "content": content}], "unique"
-        idx = random.randint(0, len(pool) - 1)
+        idx = (n % len(pool)) if args.rotate else random.randint(0, len(pool) - 1)
         suffix = f" [q{n}] In one sentence, summarize the standing instructions above."
         return [{"role": "user", "content": pool[idx] + suffix}], f"pool{idx}"
     # legacy shared/diverse split
@@ -223,9 +249,22 @@ def main():
     p.add_argument("--prefix-repeat", type=int, default=6,
                    help="how many times the instruction base is repeated per pool "
                         "prefix (controls prefix length / checkpoint chain depth)")
+    p.add_argument("--prompt-tokens", type=int, default=0,
+                   help="TARGET prefix length in tokens; when >0 it overrides "
+                        "--prefix-repeat (repeat = round(prompt-tokens / tokens-per-base)). "
+                        "Use ~4000-8000 for gpt-oss to cross the past-window ladder "
+                        "(2048/4096/8192).")
+    p.add_argument("--tokens-per-base", type=float, default=DEFAULT_TOKENS_PER_BASE,
+                   help="measured tokens produced per _BASE repeat for the target "
+                        "model's tokenizer; calibrate once (usage.prompt_tokens) so "
+                        "--prompt-tokens lands accurately.")
     p.add_argument("--unique-fraction", type=float, default=0.15,
                    help="pool mode: fraction of requests that are one-off long prompts "
                         "(churn so pool members keep getting evicted and reloaded)")
+    p.add_argument("--rotate", action="store_true",
+                   help="pool mode: ROUND-ROBIN through the pool (idx = n %% K) instead "
+                        "of random. With pool > RAM-tier capacity this guarantees every "
+                        "post-first-cycle touch is a RAM-miss + SSD reload (max SSD stress).")
     p.add_argument("--shared-fraction", type=float, default=0.70,
                    help="legacy mode: fraction using the single shared long prefix")
     p.add_argument("--shared-variants", type=int, default=8,
@@ -237,7 +276,11 @@ def main():
     p.add_argument("--out", default="soak_client.csv")
     args = p.parse_args()
 
-    pool = build_prefix_pool(args.prefix_pool, args.prefix_repeat) if args.prefix_pool > 0 else []
+    # --prompt-tokens (if set) overrides --prefix-repeat via the calibration.
+    effective_repeat = args.prefix_repeat
+    if args.prompt_tokens > 0:
+        effective_repeat = repeats_for_tokens(args.prompt_tokens, args.tokens_per_base)
+    pool = build_prefix_pool(args.prefix_pool, effective_repeat) if args.prefix_pool > 0 else []
 
     stats = Stats()
     deadline = time.monotonic() + args.duration_minutes * 60.0
@@ -284,7 +327,8 @@ def main():
                   flush=True)
 
     if pool:
-        mode = f"pool={args.prefix_pool}x(base*{args.prefix_repeat}) unique={args.unique_fraction:.0%}"
+        tok = f" ~{args.prompt_tokens}tok" if args.prompt_tokens > 0 else ""
+        mode = f"pool={args.prefix_pool}x(base*{effective_repeat}{tok}) unique={args.unique_fraction:.0%}"
     else:
         mode = f"legacy shared={args.shared_fraction:.0%}"
     print(f"soak: {args.duration_minutes}min @ concurrency={args.concurrency} "

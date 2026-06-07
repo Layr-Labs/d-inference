@@ -1,5 +1,5 @@
 import ProviderDashboardContent from "./ProviderDashboardContent";
 
-export default function ProvidersPage() {
+export default function ProvidersPage(): JSX.Element {
   return <ProviderDashboardContent />;
 }

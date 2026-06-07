@@ -6,7 +6,12 @@
 ///     `.verified`/`.failed` over the provider WebSocket
 ///   - coalesces duplicate prefetches for the same model id (one task, many
 ///     status subscribers — mirroring `ProviderLoop`'s preload coalescing)
-///   - is fully cancellable (shutdown cancels every in-flight prefetch task)
+///   - schedules concurrent requests by PRIORITY under a bounded concurrency
+///     (default: a single in-flight prefetch at a time). When several builds are
+///     requested at once, the highest-priority one is serviced first; the rest
+///     wait in a priority queue and are dispatched as the in-flight slot frees.
+///   - is fully cancellable (shutdown cancels every in-flight prefetch task and
+///     drops anything still queued)
 ///   - short-circuits to `.verified` when the build is already
 ///     loaded/on-disk-and-valid
 ///   - fires a re-advertise hook on `.verified` so the coordinator learns the
@@ -59,7 +64,33 @@ public actor ModelPrefetchCoordinator {
     /// Status sinks waiting on the terminal result of an in-flight prefetch.
     private var statusSubscribers: [String: [any PrefetchStatusSink]] = [:]
 
+    /// Maximum number of prefetches running concurrently. Defaults to 1 so the
+    /// highest-priority build downloads first and a low-priority build never
+    /// steals bandwidth/IO from a more urgent one; the queue orders the rest.
+    private let maxConcurrent: Int
+
+    /// Requests accepted but not yet started (the in-flight slots are full).
+    /// Ordered by priority on dequeue: the highest-priority waiter runs next.
+    private var pendingQueue: [PendingPrefetch] = []
+    /// Subscribers attached to a queued (not-yet-started) request, keyed by id.
+    /// Folded into `statusSubscribers` when the request is dispatched. A second
+    /// request for a queued id coalesces here instead of enqueuing twice.
+    private var queuedSubscribers: [String: [any PrefetchStatusSink]] = [:]
+    /// Highest priority seen for a queued id (a later, more-urgent duplicate
+    /// promotes the queued entry instead of starting a second download).
+    private var queuedPriority: [String: Int] = [:]
+    /// Monotonic sequence so equal-priority requests dispatch FIFO (stable
+    /// ordering — first-requested wins a priority tie).
+    private var enqueueSeq: UInt64 = 0
+
     private var isShuttingDown = false
+
+    /// A request waiting in the priority queue for an in-flight slot.
+    private struct PendingPrefetch {
+        let modelId: String
+        let priority: Int
+        let seq: UInt64
+    }
 
     /// Progress throttle: emit a `.downloading` update at most once per this
     /// interval OR when cumulative progress advances by `progressStepFraction`.
@@ -75,20 +106,27 @@ public actor ModelPrefetchCoordinator {
         prefetcher: any ModelPrefetcher,
         preCheck: @escaping @Sendable (String) async -> PrefetchPreCheck,
         onVerified: @escaping @Sendable (String) async -> Void,
+        maxConcurrent: Int = 1,
         onTaskStarted: (@Sendable (String) -> Void)? = nil
     ) {
         self.prefetcher = prefetcher
         self.preCheck = preCheck
         self.onVerified = onVerified
+        self.maxConcurrent = max(1, maxConcurrent)
         self.onTaskStarted = onTaskStarted
     }
 
     /// Number of in-flight prefetch tasks (test/diagnostics).
     public func inFlightCount() -> Int { prefetchTasks.count }
 
+    /// Number of requests waiting in the priority queue (test/diagnostics).
+    public func queuedCount() -> Int { pendingQueue.count }
+
     /// Handle a coordinator `prefetch_model` request. Emits `.started`
-    /// immediately, coalesces duplicates, and spawns a low-priority background
-    /// task for new downloads.
+    /// immediately and coalesces duplicates. New requests join a priority queue;
+    /// the scheduler dispatches the highest-priority waiter as an in-flight slot
+    /// frees (`maxConcurrent`, default 1), so a more urgent build always runs
+    /// before a less urgent one.
     public func handlePrefetch(modelId: String, priority: Int, sink: any PrefetchStatusSink) {
         if isShuttingDown {
             sink.emit(modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0, error: "provider is shutting down")
@@ -102,8 +140,64 @@ public actor ModelPrefetchCoordinator {
             return
         }
 
-        statusSubscribers[modelId] = [sink]
+        // Coalesce: a still-queued prefetch for this id absorbs the duplicate.
+        // A more-urgent duplicate promotes the queued entry's priority so it is
+        // dispatched sooner, without starting a second download.
+        if queuedSubscribers[modelId] != nil {
+            queuedSubscribers[modelId, default: []].append(sink)
+            if priority > (queuedPriority[modelId] ?? Int.min) {
+                queuedPriority[modelId] = priority
+                promoteQueuedPriority(modelId: modelId, to: priority)
+            }
+            sink.emit(modelId: modelId, status: .started, bytesDone: 0, bytesTotal: 0, error: nil)
+            return
+        }
+
+        // New request: emit `.started`, then either dispatch now (slot free) or
+        // enqueue by priority.
         sink.emit(modelId: modelId, status: .started, bytesDone: 0, bytesTotal: 0, error: nil)
+        queuedSubscribers[modelId] = [sink]
+        queuedPriority[modelId] = priority
+        enqueueSeq += 1
+        pendingQueue.append(PendingPrefetch(modelId: modelId, priority: priority, seq: enqueueSeq))
+        pumpScheduler()
+    }
+
+    /// Raise the recorded priority of a queued entry (a later, more-urgent
+    /// duplicate jumps the queue ahead of lower-priority waiters).
+    private func promoteQueuedPriority(modelId: String, to priority: Int) {
+        guard let idx = pendingQueue.firstIndex(where: { $0.modelId == modelId }) else { return }
+        let existing = pendingQueue[idx]
+        pendingQueue[idx] = PendingPrefetch(modelId: modelId, priority: priority, seq: existing.seq)
+    }
+
+    /// Dispatch queued requests (highest priority first, FIFO on ties) until the
+    /// in-flight slots are full or the queue drains. The single source of truth
+    /// for starting a prefetch task.
+    private func pumpScheduler() {
+        guard !isShuttingDown else { return }
+        while prefetchTasks.count < maxConcurrent, !pendingQueue.isEmpty {
+            // Pick the highest-priority waiter; break ties by enqueue order.
+            var bestIdx = 0
+            for i in pendingQueue.indices {
+                let c = pendingQueue[i]
+                let b = pendingQueue[bestIdx]
+                if c.priority > b.priority || (c.priority == b.priority && c.seq < b.seq) {
+                    bestIdx = i
+                }
+            }
+            let next = pendingQueue.remove(at: bestIdx)
+            dispatch(next)
+        }
+    }
+
+    /// Move a dequeued request into the in-flight set and spawn its background
+    /// download task.
+    private func dispatch(_ pending: PendingPrefetch) {
+        let modelId = pending.modelId
+        // Fold queued subscribers into the live subscriber set.
+        statusSubscribers[modelId] = queuedSubscribers.removeValue(forKey: modelId) ?? []
+        queuedPriority.removeValue(forKey: modelId)
 
         let taskId = UUID()
         prefetchTaskIds[modelId] = taskId
@@ -128,6 +222,18 @@ public actor ModelPrefetchCoordinator {
     /// state and the references are dropped here.
     public func shutdown(timeout: Duration = .seconds(10)) async {
         isShuttingDown = true
+        // Fail anything still queued (never started) so its subscribers get a
+        // terminal status instead of hanging forever, then drop the queue.
+        let queued = queuedSubscribers
+        queuedSubscribers.removeAll()
+        queuedPriority.removeAll()
+        pendingQueue.removeAll()
+        for (modelId, sinks) in queued {
+            for sink in sinks {
+                sink.emit(modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0, error: "provider is shutting down")
+            }
+        }
+
         let tasks = Array(prefetchTasks.values)
         for task in tasks { task.cancel() }
         prefetchTasks.removeAll()
@@ -221,6 +327,8 @@ public actor ModelPrefetchCoordinator {
         for sink in subscribers {
             sink.emit(modelId: modelId, status: status, bytesDone: bytesDone, bytesTotal: bytesTotal, error: error)
         }
+        // The in-flight slot just freed — dispatch the next queued waiter.
+        pumpScheduler()
     }
 
     /// Deferred cleanup: only clears the entry if it still belongs to this task.
@@ -229,6 +337,9 @@ public actor ModelPrefetchCoordinator {
             prefetchTasks.removeValue(forKey: modelId)
             prefetchTaskIds.removeValue(forKey: modelId)
             statusSubscribers.removeValue(forKey: modelId)
+            // A freed slot may let a queued waiter run. Safe even when `finish`
+            // already pumped: the loop is a no-op when nothing is dispatchable.
+            pumpScheduler()
         }
     }
 }

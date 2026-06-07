@@ -11,10 +11,16 @@ private final class PrefetchURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var files: [String: Data] = [:]
     /// records every path the downloader actually requested.
     nonisolated(unsafe) static var requestedPaths: [String] = []
+    /// paths that should FAIL with a transport error (simulating a network
+    /// drop). Used by the interrupt/resume test to abort mid-prefetch.
+    nonisolated(unsafe) static var failPaths: Set<String> = []
+    /// If set, only the FIRST `dropAfterBytes` bytes of a matching path are
+    /// delivered before the connection is dropped (true mid-stream interrupt).
+    nonisolated(unsafe) static var dropAfterBytes: [String: Int] = [:]
     private static let lock = NSLock()
 
     static func reset() {
-        lock.lock(); files = [:]; requestedPaths = []; lock.unlock()
+        lock.lock(); files = [:]; requestedPaths = []; failPaths = []; dropAfterBytes = [:]; lock.unlock()
     }
 
     static func record(_ path: String) {
@@ -23,6 +29,24 @@ private final class PrefetchURLProtocol: URLProtocol, @unchecked Sendable {
 
     static func fetchedPaths() -> [String] {
         lock.lock(); defer { lock.unlock() }; return requestedPaths
+    }
+
+    /// Clear only the request log (keep `files`), so a second prefetch round can
+    /// assert exactly which paths IT touched.
+    static func clearRequested() {
+        lock.lock(); requestedPaths = []; lock.unlock()
+    }
+
+    static func setFailPaths(_ paths: Set<String>) {
+        lock.lock(); failPaths = paths; lock.unlock()
+    }
+
+    private static func shouldFail(_ path: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }; return failPaths.contains(path)
+    }
+
+    private static func dropBytes(_ path: String) -> Int? {
+        lock.lock(); defer { lock.unlock() }; return dropAfterBytes[path]
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -34,6 +58,12 @@ private final class PrefetchURLProtocol: URLProtocol, @unchecked Sendable {
         }
         let path = url.path
         Self.record(path)
+        // Simulated network drop: fail the request with a transport-level error
+        // exactly the way URLSession surfaces a dropped connection.
+        if Self.shouldFail(path) {
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            return
+        }
         guard let body = Self.files[path] else {
             let resp = HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)!
             client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
@@ -54,6 +84,13 @@ private final class PrefetchURLProtocol: URLProtocol, @unchecked Sendable {
         }
         let resp = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+        // True mid-stream interrupt: deliver a prefix of the body, then drop the
+        // connection so the transfer aborts partway through.
+        if let drop = Self.dropBytes(path), drop < data.count {
+            client?.urlProtocol(self, didLoad: data.prefix(drop))
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            return
+        }
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
@@ -190,6 +227,177 @@ struct ModelPrefetchDownloaderTests {
         // Final snapshot is complete + correct.
         #expect(try Data(contentsOf: cacheDir.appendingPathComponent("config.json")) == configBytes)
         #expect(try Data(contentsOf: cacheDir.appendingPathComponent("model.safetensors")) == weightBytes)
+    }
+
+    @Test("prefetch interrupted mid-download resumes from disk and never re-fetches completed files")
+    func prefetchInterruptThenResume() async throws {
+        // DAR-136 "never restart from zero": a network drop partway through a
+        // prefetch must (a) leave already-downloaded files on disk in staging,
+        // (b) NOT delete staging, and (c) on retry skip every already-valid file
+        // and fetch only what is missing, then publish + clean up.
+        PrefetchURLProtocol.reset()
+        let modelID = "test-org/prefetch-interrupt-\(UUID().uuidString)"
+        let prefix = "v2/prefetch-interrupt/v1"
+
+        // N = 4 files; the prefetch loop fetches them in manifest order. We
+        // interrupt at file index K = 2 (0-based: files[2]) so files[0..1] land
+        // and files[2..3] do not.
+        let names = ["a-config.json", "b-tokenizer.json", "c-shard0.safetensors", "d-shard1.safetensors"]
+        var files: [ManifestFile] = []
+        var served: [String: Data] = [:]
+        var pairs: [(String, Data)] = []
+        for name in names {
+            let bytes = Data("payload-for-\(name)-\(UUID().uuidString)".utf8)
+            files.append(ManifestFile(path: name, sizeBytes: Int64(bytes.count), sha256: sha256Hex(bytes), role: "weight"))
+            served["/\(prefix)/\(name)"] = bytes
+            pairs.append((name, bytes))
+        }
+        let aggregate = aggregateHash(files: pairs)
+        let manifest = ModelManifest(
+            schemaVersion: 1, modelID: modelID, version: "v1", r2Prefix: prefix,
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(pairs.reduce(0) { $0 + $1.1.count }),
+            fileCount: files.count, files: files, createdAt: Date(timeIntervalSince1970: 0)
+        )
+        PrefetchURLProtocol.files = served
+
+        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        // Production staging-dir naming rule (keyed by r2Prefix).
+        let stagingName = ".prefetch-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
+
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Interrupt", sizeGb: 0.001,
+                                 r2Prefix: prefix, aggregateSHA256: aggregate)
+
+        // ---- Attempt 1: drop the connection on file index 2 (c-shard0) and
+        // everything after it. files[0..1] should land in staging; the call
+        // throws; staging survives. ----
+        PrefetchURLProtocol.setFailPaths([
+            "/\(prefix)/\(names[2])",
+            "/\(prefix)/\(names[3])",
+        ])
+
+        var attempt1Threw = false
+        do {
+            try await downloader.prefetch(model: model, manifest: manifest)
+        } catch {
+            attempt1Threw = true
+        }
+        #expect(attempt1Threw)
+
+        // Staging dir was NOT deleted (resume-on-disk guarantee).
+        #expect(FileManager.default.fileExists(atPath: stagingDir.path))
+        // Nothing was published to the live snapshot dir.
+        #expect(!FileManager.default.fileExists(atPath: cacheDir.path))
+
+        // Files 0..1 are on disk in staging AND pass fileMatches (size + SHA).
+        for i in 0..<2 {
+            let staged = stagingDir.appendingPathComponent(names[i])
+            #expect(FileManager.default.fileExists(atPath: staged.path), "expected \(names[i]) to survive the interrupt")
+            #expect(ModelDownloader.fileMatches(staged, size: files[i].sizeBytes, sha256: files[i].sha256),
+                    "\(names[i]) should be a complete, valid staged file")
+        }
+        // Files 2..3 are NOT present (interrupted before/at them).
+        for i in 2..<4 {
+            let staged = stagingDir.appendingPathComponent(names[i])
+            #expect(!FileManager.default.fileExists(atPath: staged.path), "\(names[i]) should not exist after the drop")
+        }
+
+        // ---- Attempt 2 (resume): the network is healthy again. The already-valid
+        // files MUST be skipped (never requested); only the missing ones fetched.
+        // We assert the skip by clearing the request log and checking that round 2
+        // touched ONLY the missing paths. ----
+        PrefetchURLProtocol.setFailPaths([])
+        PrefetchURLProtocol.clearRequested()
+
+        try await downloader.prefetch(model: model, manifest: manifest)
+
+        let round2 = Set(PrefetchURLProtocol.fetchedPaths())
+        // Already-valid files were skipped (proving resume never restarts work).
+        #expect(!round2.contains("/\(prefix)/\(names[0])"), "config should NOT be re-fetched on resume")
+        #expect(!round2.contains("/\(prefix)/\(names[1])"), "tokenizer should NOT be re-fetched on resume")
+        // The missing files were fetched.
+        #expect(round2.contains("/\(prefix)/\(names[2])"))
+        #expect(round2.contains("/\(prefix)/\(names[3])"))
+
+        // The aggregate verified and the snapshot was published to the live dir.
+        for (i, name) in names.enumerated() {
+            let published = cacheDir.appendingPathComponent(name)
+            #expect(try Data(contentsOf: published) == served["/\(prefix)/\(name)"], "published \(name) must match served bytes")
+            _ = i
+        }
+        // refs/main points at the local snapshot so ModelScanner discovers it.
+        let mainRef = modelDir.appendingPathComponent("refs/main")
+        #expect(try String(contentsOf: mainRef, encoding: .utf8) == "local")
+        // Staging was cleaned up after a successful publish.
+        #expect(!FileManager.default.fileExists(atPath: stagingDir.path), "staging should be removed after publish")
+    }
+
+    @Test("prefetch resumes after a mid-stream connection drop without re-fetching completed files")
+    func prefetchResumesPartialFile() async throws {
+        // Variant of the interrupt test where the connection drops MID-STREAM
+        // (partial bytes delivered) rather than before the file starts. A
+        // half-transferred file must NEVER be promoted as valid (size + per-file
+        // SHA reject the truncation), so the prefetch throws; the earlier,
+        // already-complete file survives in staging; and on retry that completed
+        // file is skipped while the dropped one is re-fetched to completion.
+        PrefetchURLProtocol.reset()
+        let modelID = "test-org/prefetch-partial-\(UUID().uuidString)"
+        let prefix = "v2/prefetch-partial/v1"
+        let names = ["a-config.json", "b-weights.safetensors"]
+        var files: [ManifestFile] = []
+        var served: [String: Data] = [:]
+        var pairs: [(String, Data)] = []
+        for name in names {
+            // Large enough that a prefix is a meaningful partial.
+            let bytes = Data((0..<4096).map { UInt8(($0 &* 31 &+ name.count) & 0xFF) })
+            files.append(ManifestFile(path: name, sizeBytes: Int64(bytes.count), sha256: sha256Hex(bytes), role: "weight"))
+            served["/\(prefix)/\(name)"] = bytes
+            pairs.append((name, bytes))
+        }
+        let aggregate = aggregateHash(files: pairs)
+        let manifest = ModelManifest(
+            schemaVersion: 1, modelID: modelID, version: "v1", r2Prefix: prefix,
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(pairs.reduce(0) { $0 + $1.1.count }),
+            fileCount: files.count, files: files, createdAt: Date(timeIntervalSince1970: 0)
+        )
+        PrefetchURLProtocol.files = served
+
+        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Partial", sizeGb: 0.001,
+                                 r2Prefix: prefix, aggregateSHA256: aggregate)
+
+        // Attempt 1: config lands fine; weights drop after 1500/4096 bytes on
+        // every attempt → the file's 3 retries exhaust and prefetch throws.
+        PrefetchURLProtocol.dropAfterBytes = ["/\(prefix)/\(names[1])": 1500]
+
+        var threw = false
+        do { try await downloader.prefetch(model: model, manifest: manifest) } catch { threw = true }
+        #expect(threw)
+        // config completed and survives; snapshot not published.
+        let stagingName = ".prefetch-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
+        let stagingDir = cacheDir.deletingLastPathComponent().appendingPathComponent(stagingName, isDirectory: true)
+        #expect(ModelDownloader.fileMatches(stagingDir.appendingPathComponent(names[0]), size: files[0].sizeBytes, sha256: files[0].sha256))
+        #expect(!FileManager.default.fileExists(atPath: cacheDir.path))
+
+        // Attempt 2: healthy. config skipped, weights fetched to completion.
+        PrefetchURLProtocol.dropAfterBytes = [:]
+        PrefetchURLProtocol.clearRequested()
+        try await downloader.prefetch(model: model, manifest: manifest)
+
+        let round2 = Set(PrefetchURLProtocol.fetchedPaths())
+        #expect(!round2.contains("/\(prefix)/\(names[0])"), "completed config must not be re-fetched")
+        #expect(round2.contains("/\(prefix)/\(names[1])"))
+        #expect(try Data(contentsOf: cacheDir.appendingPathComponent(names[1])) == served["/\(prefix)/\(names[1])"])
+        #expect(!FileManager.default.fileExists(atPath: stagingDir.path))
     }
 
     @Test("prefetch fails on aggregate hash mismatch and does not publish")

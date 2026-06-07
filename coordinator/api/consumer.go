@@ -1307,6 +1307,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			queuePR := &registry.PendingRequest{
 				RequestID:              requestID,
 				Model:                  model,
+				PublicModel:            publicModel,
 				ConsumerKey:            consumerKey,
 				KeyID:                  keyIDFromContext(r.Context()),
 				KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),

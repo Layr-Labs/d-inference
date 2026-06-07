@@ -102,6 +102,7 @@ func (s *Server) handleMigrationStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.SyncModelCatalog()
+	s.ddIncr("migration.started", []string{"alias:" + req.AliasID})
 	s.logger.Info("migration started", "alias", req.AliasID, "from", req.FromBuild, "to", req.ToBuild, "batch", batch, "step", step)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "migration": m})
 }
@@ -184,6 +185,7 @@ func (s *Server) handleMigrationAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.SyncModelCatalog()
+	s.ddIncr("migration.action", []string{"alias:" + aliasID, "action:" + action})
 	s.logger.Info("migration action", "alias", aliasID, "action", action, "status", m.Status)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "migration": m})
 }

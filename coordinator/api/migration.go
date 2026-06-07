@@ -193,12 +193,18 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 
 	act := advanceMigration(m, snap)
 
+	// Fleet-coverage gauges so an operator can watch a migration progress.
+	aliasTag := []string{"alias:" + m.AliasID}
+	mc.s.ddGauge("migration.providers_from", float64(len(servingFrom)), aliasTag)
+	mc.s.ddGauge("migration.providers_to_routable", float64(len(servingTo)), aliasTag)
+
 	for _, id := range act.prefetchTargets {
 		if err := mc.s.registry.SendPrefetchModel(id, m.ToBuild, 10); err != nil {
 			mc.s.logger.Warn("migration prefetch send failed", "alias", m.AliasID, "provider", id, "error", err)
 			continue
 		}
 		mc.markSent(m, id)
+		mc.s.ddIncr("migration.prefetch_sent", aliasTag)
 		mc.s.logger.Info("migration prefetch sent", "alias", m.AliasID, "provider", id, "to", m.ToBuild)
 	}
 
@@ -208,6 +214,9 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 	if cur, ok, err := mc.s.store.GetModelMigration(m.AliasID); err != nil || !ok || cur.Status != store.MigrationActive {
 		return
 	}
+
+	// The new build's current routing share — the headline migration gauge.
+	mc.s.ddGauge("migration.to_weight", float64(act.toWeight), aliasTag)
 
 	if act.toWeight != snap.currentTo {
 		if err := mc.applyWeights(m, act.fromWeight, act.toWeight); err != nil {
@@ -225,6 +234,7 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 			mc.s.logger.Error("migration complete persist failed", "alias", m.AliasID, "error", err)
 			return
 		}
+		mc.s.ddIncr("migration.completed", aliasTag)
 		mc.s.logger.Info("migration complete", "alias", m.AliasID, "to", m.ToBuild)
 	}
 }

@@ -524,6 +524,12 @@ func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry
 		"bytes_total", msg.BytesTotal,
 		"error", msg.Error,
 	)
+	s.ddIncr("provider.prefetch_status", []string{"model:" + msg.ModelID, "status:" + msg.Status})
+	if msg.BytesTotal > 0 {
+		s.ddGauge("provider.prefetch_progress_pct",
+			float64(msg.BytesDone)/float64(msg.BytesTotal)*100,
+			[]string{"provider_id:" + providerID, "model:" + msg.ModelID})
+	}
 	if msg.Status == protocol.PrefetchModelStatusVerified {
 		if s.registry.MarkBuildPrefetched(providerID, msg.ModelID) {
 			s.logger.Info("provider now advertises prefetched build",

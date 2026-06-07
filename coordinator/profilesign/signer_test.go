@@ -214,6 +214,23 @@ func TestNewSignerWrongPassword(t *testing.T) {
 	}
 }
 
+// TestLoadFromEnvExpiredCertDisablesSigning is a regression for the P2 finding:
+// an expired/not-yet-valid signing cert must degrade to unsigned (nil signer)
+// rather than stamping an untrusted CMS signature.
+func TestLoadFromEnvExpiredCertDisablesSigning(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	now := time.Now()
+	p12, password := makeTestP12(t, "Expired Signer", "Darkbloom", now.Add(-48*time.Hour), now.Add(-time.Hour))
+
+	t.Setenv("PROFILE_SIGNING_P12_PATH", "")
+	t.Setenv("PROFILE_SIGNING_P12_B64", base64.StdEncoding.EncodeToString(p12))
+	t.Setenv("PROFILE_SIGNING_P12_PASSWORD", password)
+
+	if s := LoadFromEnv(logger); s != nil {
+		t.Error("expected nil signer (degrade to unsigned) for an expired signing certificate")
+	}
+}
+
 func TestLoadFromEnv(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 

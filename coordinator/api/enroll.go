@@ -43,12 +43,14 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		"serial_number", req.SerialNumber,
 	)
 
-	// Derive base URL from the incoming request (respects reverse proxy headers)
-	scheme := "https"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
-		scheme = "http"
-	}
-	baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+	// Use the configured canonical base URL (EIGENINFERENCE_BASE_URL) for the
+	// SCEP/MDM/ACME enrollment endpoints. Critically, since the profile is now
+	// CMS-signed, deriving these from a client-controlled Host header would let an
+	// attacker obtain a Darkbloom-signed .mobileconfig that points enrollment at
+	// their own host — the signature would launder a malicious enrollment profile.
+	// resolveBaseURL pins the configured URL and only falls back to the request
+	// Host when no canonical URL is set (local/dev).
+	baseURL := s.resolveBaseURL(r)
 
 	body := []byte(generateCombinedProfile(req.SerialNumber, baseURL))
 

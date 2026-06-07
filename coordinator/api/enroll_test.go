@@ -277,6 +277,37 @@ func TestHandleEnrollUnsignedFallback(t *testing.T) {
 	}
 }
 
+// TestHandleEnrollPinsCanonicalBaseURL is a regression for the P1 finding: when a
+// canonical base URL is configured, a spoofed Host header must NOT end up in the
+// (signed) profile's SCEP/MDM/ACME URLs — otherwise an attacker could obtain a
+// Darkbloom-signed profile pointing enrollment at their own host.
+func TestHandleEnrollPinsCanonicalBaseURL(t *testing.T) {
+	srv := enrollTestServer(t)
+	srv.SetBaseURL("https://api.darkbloom.dev")
+	srv.SetProfileSigner(newTestProfileSigner(t))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(`{"serial_number":"ABCD1234EFGH"}`))
+	req.Host = "evil.example.com" // spoofed Host header
+	req.Header.Set("X-Forwarded-Proto", "https")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	p7, err := pkcs7.Parse(w.Body.Bytes())
+	if err != nil {
+		t.Fatalf("served profile is not valid PKCS7/CMS: %v", err)
+	}
+	content := string(p7.Content)
+	if !strings.Contains(content, "https://api.darkbloom.dev/scep") {
+		t.Error("signed profile did not use the configured canonical base URL")
+	}
+	if strings.Contains(content, "evil.example.com") {
+		t.Error("spoofed Host header leaked into the signed profile")
+	}
+}
+
 func TestHandleEnrollInvalidSerial(t *testing.T) {
 	srv := enrollTestServer(t)
 

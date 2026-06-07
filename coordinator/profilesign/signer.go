@@ -182,19 +182,26 @@ func LoadFromEnv(logger *slog.Logger) *Signer {
 		return nil
 	}
 
+	// Refuse to sign with an invalid cert. Stamping a CMS signature with an
+	// expired/not-yet-valid certificate is worse than serving unsigned: macOS
+	// shows the profile as signed-but-untrusted and keeps breaking installs until
+	// the process is restarted with a rotated identity. Degrade to unsigned.
+	if signer.Expired(time.Now()) {
+		logger.Error("profile signing disabled: signing certificate is expired or not yet valid — serving unsigned instead of an untrusted signature",
+			"signer_cn", signer.CommonName(),
+			"not_before", signer.leaf.NotBefore.Format(time.RFC3339),
+			"not_after", signer.NotAfter().Format(time.RFC3339),
+		)
+		return nil
+	}
+
 	logger.Info("configuration-profile signing enabled",
 		"signer_cn", signer.CommonName(),
 		"signer_org", signer.Organization(),
 		"not_after", signer.NotAfter().Format(time.RFC3339),
 		"chain_len", len(signer.chain),
 	)
-	switch {
-	case signer.Expired(time.Now()):
-		logger.Error("profile signing certificate is EXPIRED or not yet valid — installs will show as untrusted",
-			"not_before", signer.leaf.NotBefore.Format(time.RFC3339),
-			"not_after", signer.NotAfter().Format(time.RFC3339),
-		)
-	case time.Until(signer.NotAfter()) < expiryWarnWindow:
+	if time.Until(signer.NotAfter()) < expiryWarnWindow {
 		logger.Warn("profile signing certificate expires soon — plan rotation",
 			"not_after", signer.NotAfter().Format(time.RFC3339),
 			"days_left", int(time.Until(signer.NotAfter()).Hours()/24),

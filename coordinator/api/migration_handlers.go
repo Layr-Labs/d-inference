@@ -157,13 +157,22 @@ func (s *Server) handleMigrationAction(w http.ResponseWriter, r *http.Request) {
 	case "rollback":
 		// Revert traffic to the old build immediately, then stop the migration.
 		m.Status = store.MigrationRolledBack
-		if alias, aok, _ := s.store.GetModelAlias(aliasID); aok {
+		alias, aok, aerr := s.store.GetModelAlias(aliasID)
+		if aerr != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to read alias for rollback"))
+			return
+		}
+		if aok {
 			setBuildWeight(alias, m.FromBuild, 100)
 			setBuildWeight(alias, m.ToBuild, 0)
 			if err := s.store.UpsertModelAlias(alias); err != nil {
 				writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to revert alias weights"))
 				return
 			}
+		} else {
+			// Alias vanished out from under the migration — nothing to revert,
+			// but record the rollback so the controller stops. Log it loudly.
+			s.logger.Warn("migration rollback: alias not found, only status updated", "alias", aliasID)
 		}
 	default:
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "unknown action: "+action))

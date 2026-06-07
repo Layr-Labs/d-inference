@@ -1105,10 +1105,12 @@ func (r *Registry) MarkBuildPrefetched(providerID, buildID string) bool {
 	return true
 }
 
-// ProvidersServingBuild returns the ids of online providers that currently
-// advertise the given concrete build. Used by the migration controller to
-// decide which providers still need to prefetch a new build and to measure how
-// far a build has propagated across the fleet.
+// ProvidersServingBuild returns the ids of live providers that currently
+// advertise the given concrete build. "Live" mirrors the routing gate's coarse
+// liveness — anything that is not offline/untrusted, INCLUDING busy providers
+// (StatusServing/idle), which must still count or a busy fleet would look like
+// it has un-migrated capacity. Used by the migration controller to pick
+// prefetch targets (providers that have the old build and need the new one).
 func (r *Registry) ProvidersServingBuild(buildID string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1122,9 +1124,42 @@ func (r *Registry) ProvidersServingBuild(buildID string) []string {
 				break
 			}
 		}
-		online := p.Status == StatusOnline
+		live := p.Status != StatusOffline && p.Status != StatusUntrusted
 		p.mu.Unlock()
-		if serves && online {
+		if serves && live {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// RoutableProviderIDsForBuild returns the ids of providers that would actually
+// pass the routing gate for the build right now — the SAME checks
+// snapshotProviderLocked applies (advertises the build, not offline/untrusted,
+// public, trust ≥ floor, runtime verified, private-text capable, fresh
+// challenge), minus per-request capacity/headroom. Cold-but-healthy providers
+// count (no warm slot required — they load on first demand). The migration
+// controller uses THIS (not ProvidersServingBuild) to measure how much of the
+// fleet can truly serve the new build, so the ramp never shifts traffic onto a
+// build that advertises capacity it can't route.
+func (r *Registry) RoutableProviderIDsForBuild(buildID string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	now := time.Now()
+	minTrust := r.MinTrustLevel
+	var ids []string
+	for id, p := range r.providers {
+		p.mu.Lock()
+		ok := r.providerServesCatalogModelLocked(p, buildID) &&
+			p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			!p.PrivateOnly &&
+			trustRank(p.TrustLevel) >= trustRank(minTrust) &&
+			p.RuntimeVerified &&
+			providerSupportsPrivateTextLocked(p) &&
+			!p.LastChallengeVerified.IsZero() &&
+			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		p.mu.Unlock()
+		if ok {
 			ids = append(ids, id)
 		}
 	}

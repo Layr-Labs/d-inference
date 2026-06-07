@@ -4,19 +4,51 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// registerProvider advertises the given builds from a provider (online).
+// registerBuildsProvider registers a fully ROUTABLE provider advertising the
+// given builds — trust + fresh challenge + runtime verified + private-text caps
+// — so it passes the same gate real routing applies. The migration controller's
+// ramp coverage is routability-based, so bare (un-routable) providers would not
+// count.
 func registerBuildsProvider(srv *Server, id string, builds ...string) {
 	models := make([]protocol.ModelInfo, 0, len(builds))
+	slots := make([]protocol.BackendSlotCapacity, 0, len(builds))
 	for _, b := range builds {
 		models = append(models, protocol.ModelInfo{ID: b, ModelType: "chat", Quantization: "4bit"})
+		slots = append(slots, protocol.BackendSlotCapacity{Model: b, State: "running"})
 	}
-	srv.registry.Register(id, nil, &protocol.RegisterMessage{Models: models})
+	p := srv.registry.Register(id, nil, &protocol.RegisterMessage{
+		Hardware:                protocol.Hardware{MemoryGB: 64, MemoryAvailableGB: 60},
+		Models:                  models,
+		Backend:                 registry.BackendMLXSwift,
+		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities: &protocol.PrivacyCapabilities{
+			TextBackendInprocess:    true,
+			TextProxyDisabled:       true,
+			PythonRuntimeLocked:     true,
+			DangerousModulesBlocked: true,
+			SIPEnabled:              true,
+			AntiDebugEnabled:        true,
+			CoreDumpsDisabled:       true,
+			EnvScrubbed:             true,
+		},
+	})
+	p.Mu().Lock()
+	p.TrustLevel = registry.TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"}
+	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 64, Slots: slots}
+	p.Mu().Unlock()
 }
 
 // Directly construct the dangerous window the ramp can briefly create: the new

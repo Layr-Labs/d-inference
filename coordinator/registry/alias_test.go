@@ -2,6 +2,7 @@ package registry
 
 import (
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -10,6 +11,43 @@ func registerProviderWithModel(reg *Registry, id, modelID string) *Provider {
 	msg := testRegisterMessage()
 	msg.Models = []protocol.ModelInfo{{ID: modelID, SizeBytes: 5_000_000_000, ModelType: "gemma", Quantization: "4bit"}}
 	return reg.Register(id, nil, msg)
+}
+
+func makeProviderRoutable(p *Provider) {
+	p.mu.Lock()
+	p.TrustLevel = TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.mu.Unlock()
+}
+
+// Regression guard for the migration black-hole risk: a provider that merely
+// advertises a build but can't actually route it (stale challenge) must be
+// excluded from RoutableProviderIDsForBuild (the controller's ramp signal),
+// even though ProvidersServingBuild (prefetch targeting) still sees it.
+func TestRoutableProviderIDsExcludeUnroutable(t *testing.T) {
+	reg := New(testLogger())
+	const build = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+
+	good := registerProviderWithModel(reg, "good", build)
+	makeProviderRoutable(good)
+
+	stale := registerProviderWithModel(reg, "stale", build)
+	makeProviderRoutable(stale)
+	stale.mu.Lock()
+	stale.LastChallengeVerified = time.Time{} // never challenged → unroutable
+	stale.mu.Unlock()
+
+	serving := reg.ProvidersServingBuild(build)
+	if len(serving) != 2 {
+		t.Fatalf("ProvidersServingBuild should see both advertisers, got %v", serving)
+	}
+	routable := reg.RoutableProviderIDsForBuild(build)
+	if len(routable) != 1 || routable[0] != "good" {
+		t.Fatalf("only the routable provider should count, got %v", routable)
+	}
 }
 
 func TestResolveModelPassthroughForNonAlias(t *testing.T) {

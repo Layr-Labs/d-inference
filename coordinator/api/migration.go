@@ -176,8 +176,13 @@ func (mc *MigrationController) runOnce() {
 }
 
 func (mc *MigrationController) runMigration(m store.ModelMigration) {
+	// servingFrom (prefetch targets) is advertise-based — we prefetch onto any
+	// live provider that still has the old build. servingTo (ramp coverage +
+	// done) is ROUTABILITY-based — the weight only follows capacity that can
+	// actually serve the new build, so we never ramp onto a build that merely
+	// advertises but can't route (stale challenge, untrusted, runtime-unverified).
 	servingFrom := sliceToSet(mc.s.registry.ProvidersServingBuild(m.FromBuild))
-	servingTo := sliceToSet(mc.s.registry.ProvidersServingBuild(m.ToBuild))
+	servingTo := sliceToSet(mc.s.registry.RoutableProviderIDsForBuild(m.ToBuild))
 	snap := migrationSnapshot{
 		servingFrom: servingFrom,
 		servingTo:   servingTo,
@@ -195,6 +200,13 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 		}
 		mc.markSent(m, id)
 		mc.s.logger.Info("migration prefetch sent", "alias", m.AliasID, "provider", id, "to", m.ToBuild)
+	}
+
+	// Re-read the migration immediately before any state mutation so an admin
+	// pause/resume/rollback that landed during this tick is not clobbered by a
+	// stale in-flight decision (the handler persists the terminal state first).
+	if cur, ok, err := mc.s.store.GetModelMigration(m.AliasID); err != nil || !ok || cur.Status != store.MigrationActive {
+		return
 	}
 
 	if act.toWeight != snap.currentTo {

@@ -764,7 +764,39 @@ func (s *Server) SyncModelCatalog() {
 	}
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
+
+	s.syncModelAliases()
 	s.invalidateCatalogCache()
+}
+
+// syncModelAliases loads public-alias → build mappings from the store into the
+// registry so consumer requests for an alias (e.g. "gemma-4-26b") resolve to a
+// concrete build. Only active aliases and active builds are installed; an alias
+// whose builds are all drained (weight 0) or inactive contributes nothing.
+func (s *Server) syncModelAliases() {
+	aliases, err := s.store.ListModelAliases()
+	if err != nil {
+		s.logger.Error("model alias sync failed", "error", err)
+		return
+	}
+	resolved := make(map[string][]registry.BuildRef, len(aliases))
+	for _, a := range aliases {
+		if !a.Active {
+			continue
+		}
+		builds := make([]registry.BuildRef, 0, len(a.Builds))
+		for _, b := range a.Builds {
+			if !b.Active || b.BuildID == "" {
+				continue
+			}
+			builds = append(builds, registry.BuildRef{BuildID: b.BuildID, Weight: b.Weight})
+		}
+		if len(builds) > 0 {
+			resolved[a.AliasID] = builds
+		}
+	}
+	s.registry.SetModelAliases(resolved)
+	s.logger.Info("model aliases synced to registry", "active_aliases", len(resolved))
 }
 
 // invalidateCatalogCache removes all cached model catalog responses so the
@@ -1449,6 +1481,11 @@ func (s *Server) routes() {
 	// (bare GET/POST/DELETE /v1/admin/models) was removed; the model_registry is
 	// the single source of truth. Use register + the per-model action endpoints.
 	s.mux.HandleFunc("POST /v1/admin/models/register", s.handleRegisterModel)
+	// Public model aliases (stable names → concrete builds). More-specific
+	// patterns take precedence over the POST /v1/admin/models/ subtree below.
+	s.mux.HandleFunc("GET /v1/admin/models/aliases", s.handleModelAliasList)
+	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
+	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin

@@ -425,6 +425,18 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_publishing_api_keys_hash ON publishing_api_keys(key_hash)`,
 
+		// Model aliases (public-facing names → concrete builds). builds is a
+		// JSONB array of {build_id, weight, active}. Lets us swap the underlying
+		// quant (fp8 → qat-4bit) behind a stable consumer-facing model name.
+		`CREATE TABLE IF NOT EXISTS model_aliases (
+			alias_id TEXT PRIMARY KEY,
+			display_name TEXT NOT NULL DEFAULT '',
+			builds JSONB NOT NULL DEFAULT '[]'::jsonb,
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+
 		// Releases (provider binary versioning)
 		`CREATE TABLE IF NOT EXISTS releases (
 			version TEXT NOT NULL,

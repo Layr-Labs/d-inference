@@ -149,6 +149,55 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 // queuing for 120s — queueing can't help a model that will never fit.
 const errModelTooLarge = "model too large for any available provider"
 
+// consumerModel returns the model name to echo back to the consumer: the public
+// alias they requested when set, otherwise the concrete build id (raw-id
+// requests and any internal caller that didn't populate PublicModel).
+func consumerModel(pr *registry.PendingRequest) string {
+	if pr.PublicModel != "" {
+		return pr.PublicModel
+	}
+	return pr.Model
+}
+
+// rewriteChunkModel replaces the concrete build id in a streamed SSE chunk's
+// "model" field with the public alias the consumer requested, so streaming
+// responses never expose the underlying build/quant. No-op when the request
+// used a raw build id (PublicModel == Model) or no alias was set. Uses a
+// precise key+value string replace (both compact and spaced JSON forms) to
+// avoid parsing every chunk on the hot path.
+func rewriteChunkModel(chunk string, pr *registry.PendingRequest) string {
+	if pr.PublicModel == "" || pr.PublicModel == pr.Model {
+		return chunk
+	}
+	chunk = strings.ReplaceAll(chunk, `"model":"`+pr.Model+`"`, `"model":"`+pr.PublicModel+`"`)
+	chunk = strings.ReplaceAll(chunk, `"model": "`+pr.Model+`"`, `"model": "`+pr.PublicModel+`"`)
+	return chunk
+}
+
+// resolveRequestedModel maps the consumer-requested model — which may be a
+// public alias like "gemma-4-26b" — to the concrete build id used for routing,
+// billing, and serving, returning the public name to echo back to the consumer.
+// When the request used an alias it rewrites parsed["model"] and returns an
+// updated rawBody so the provider receives the concrete build. Raw build ids
+// pass through unchanged (publicModel == buildModel). ok=false means the alias
+// currently has no usable build; the caller should surface a model_unavailable
+// error.
+func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, requested string) (buildModel, publicModel string, newRawBody []byte, ok bool) {
+	buildID, isAlias, resolved := s.registry.ResolveModel(requested)
+	if !resolved {
+		return "", requested, rawBody, false
+	}
+	if !isAlias {
+		return requested, requested, rawBody, true
+	}
+	parsed["model"] = buildID
+	rb, err := json.Marshal(parsed)
+	if err != nil {
+		rb = rawBody
+	}
+	return buildID, requested, rb, true
+}
+
 // dispatchOneProvider encrypts and sends an inference request to a single
 // provider. It returns the pending request and provider on success, or an
 // error string on failure. The excludeProviders set is updated on failure.
@@ -157,6 +206,7 @@ const errModelTooLarge = "model too large for any available provider"
 func (s *Server) dispatchOneProvider(
 	r *http.Request,
 	model string,
+	publicModel string,
 	rawBody []byte,
 	consumerKey string,
 	consumerLocation *store.ProviderLocation,
@@ -179,6 +229,7 @@ func (s *Server) dispatchOneProvider(
 	pr = &registry.PendingRequest{
 		RequestID:              requestID,
 		Model:                  model,
+		PublicModel:            publicModel,
 		ConsumerKey:            consumerKey,
 		KeyID:                  keyIDFromContext(r.Context()),
 		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
@@ -979,12 +1030,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Per-key model allow-list enforcement (phase 3).
+	// Per-key model allow-list enforcement (phase 3). Checked on the
+	// consumer-requested name (alias or raw id) before alias resolution.
 	if !s.keyModelAllowed(r.Context(), model) {
 		writeJSON(w, http.StatusForbidden, errorResponse("model_not_allowed",
 			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
 		return
 	}
+
+	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id. From
+	// here on, `model` is the build used for routing/billing/serving while
+	// `publicModel` is what we echo back so the consumer never sees the quant.
+	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(parsed, rawBody, model)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
+		return
+	}
+	model, rawBody = buildModel, resolvedBody
 
 	// Accept either chat completions format (messages) or Responses API
 	// format (input). The provider's backend handles both natively.
@@ -1200,7 +1263,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var dispatchErr string
 		var dispatchErrCode int
 		provider, pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
-			r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
+			r, model, publicModel, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 			estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
 			isResponsesAPI, policy, timing, excludeProviders,
 		)
@@ -1551,7 +1614,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				backupExclude[provider.ID] = struct{}{}
 
 				backupProvider, backupPR, _, _, _ = s.dispatchOneProvider(
-					r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
+					r, model, publicModel, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 					estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
 					isResponsesAPI, policy, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
 					backupExclude,
@@ -2226,6 +2289,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		if !sawResponsesAPI {
 			firstChunk = normalizeSSEChunk(firstChunk)
 		}
+		firstChunk = rewriteChunkModel(firstChunk, pr)
 		fmt.Fprintf(w, "%s\n\n", firstChunk)
 		flusher.Flush()
 	}
@@ -2288,6 +2352,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			if !sawResponsesAPI {
 				chunk = normalizeSSEChunk(chunk)
 			}
+			chunk = rewriteChunkModel(chunk, pr)
 			fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
 
@@ -2355,7 +2420,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 		"response": map[string]any{
 			"id":           responseID,
 			"created_at":   createdAt,
-			"model":        pr.Model,
+			"model":        consumerModel(pr),
 			"service_tier": nil,
 		},
 	})
@@ -2566,7 +2631,7 @@ func writeResponsesStreamOutput(w http.ResponseWriter, flusher http.Flusher, pr 
 		"response": map[string]any{
 			"id":                 responseID,
 			"created_at":         createdAt,
-			"model":              pr.Model,
+			"model":              consumerModel(pr),
 			"incomplete_details": nil,
 			"usage":              buildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
 			"service_tier":       nil,
@@ -2631,7 +2696,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 								return
 							}
 							if objType == "chat.completion" {
-								normalizeCompleteChatResponse(obj, pr.Model)
+								normalizeCompleteChatResponse(obj, consumerModel(pr))
 								// Keep the passthrough path consistent with the
 								// SSE-reconstruction path: surface the provider's
 								// accurate reasoning-token count if its raw usage
@@ -2650,7 +2715,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 										writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
 										return
 									}
-									respObj := chatCompletionToResponses(chatResp, pr.Model, pr.SESignature, pr.ResponseHash)
+									respObj := chatCompletionToResponses(chatResp, consumerModel(pr), pr.SESignature, pr.ResponseHash)
 									writeJSON(w, http.StatusOK, respObj)
 									return
 								}
@@ -2676,9 +2741,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					}
 					var resp any
 					if pr.IsResponsesAPI {
-						resp = buildResponsesResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+						resp = buildResponsesResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.SESignature, pr.ResponseHash)
 					} else {
-						resp = buildNonStreamingResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.SESignature, pr.ResponseHash)
 					}
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
@@ -3259,6 +3324,100 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 // including attestation metadata (trust level, Secure Enclave status,
 // provider count) for each model. Capacity fields (routable_providers,
 // warm_providers, can_accept) are included from the live capacity snapshot.
+// aliasModelEntries builds the consumer-facing /v1/models entries for active
+// public aliases and returns the set of underlying build ids those aliases
+// cover (so the caller can hide them from the default listing). Each alias
+// entry derives its metadata from its primary (highest-weight, in-catalog)
+// build, and aggregates live capacity across all of the alias's builds so the
+// alias's routable/warm counts reflect every quant currently serving it.
+func (s *Server) aliasModelEntries(
+	capByModel map[string]*registry.ModelCapacity,
+	catalogByID map[string]store.SupportedModel,
+	registryByID map[string]store.ModelRegistryEntry,
+) ([]types.ModelEntry, map[string]struct{}) {
+	hidden := make(map[string]struct{})
+	aliases, err := s.store.ListModelAliases()
+	if err != nil {
+		s.logger.Error("model registry: failed to list aliases", "error", err)
+		return nil, hidden
+	}
+
+	entries := make([]types.ModelEntry, 0, len(aliases))
+	for _, a := range aliases {
+		if !a.Active {
+			continue
+		}
+		// Primary build = highest-weight active build that exists in the catalog.
+		var primary string
+		bestWeight := -1
+		routable, warm := 0, 0
+		canAccept := false
+		covered := make([]string, 0, len(a.Builds))
+		for _, b := range a.Builds {
+			if !b.Active || b.BuildID == "" {
+				continue
+			}
+			if _, ok := catalogByID[b.BuildID]; !ok {
+				continue
+			}
+			covered = append(covered, b.BuildID)
+			if cap, ok := capByModel[b.BuildID]; ok {
+				routable += cap.RoutableProviders
+				warm += cap.WarmProviders
+				canAccept = canAccept || cap.CanAccept
+			}
+			if b.Weight > bestWeight {
+				bestWeight = b.Weight
+				primary = b.BuildID
+			}
+		}
+		if primary == "" {
+			// No in-catalog build backs this alias yet — don't advertise it.
+			continue
+		}
+		for _, id := range covered {
+			hidden[id] = struct{}{}
+		}
+
+		cm := catalogByID[primary]
+		reg, hasReg := registryByID[primary]
+		displayName := a.DisplayName
+		if displayName == "" {
+			displayName = cm.DisplayName
+		}
+		metadata := types.ModelMetadata{
+			ModelType:         cm.ModelType,
+			Quantization:      "", // an alias spans quants; omit the per-build quant
+			DisplayName:       displayName,
+			RoutableProviders: routable,
+			WarmProviders:     warm,
+			CanAccept:         canAccept,
+		}
+		entry := types.ModelEntry{
+			ID:       a.AliasID,
+			Object:   "model",
+			OwnedBy:  "eigeninference",
+			Name:     displayName,
+			Metadata: metadata,
+		}
+		// Pricing / context / features come from the primary build's registry
+		// entry. Quantization is intentionally left blank on the alias.
+		primaryQuant := ""
+		if hasReg {
+			primaryQuant = reg.Quantization
+		}
+		s.openRouterModelFieldsFor(primary, primaryQuant, reg, hasReg).applyToModelEntry(&entry)
+		entry.Quantization = ""
+		var caps []string
+		if hasReg {
+			caps = reg.Capabilities
+		}
+		entry.InputModalities, entry.OutputModalities = deriveModalities(cm.ModelType, caps)
+		entries = append(entries, entry)
+	}
+	return entries, hidden
+}
+
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	models := s.registry.ListModels()
 
@@ -3279,10 +3438,20 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := make([]types.ModelEntry, 0, len(models))
+	// Public aliases are the consumer-facing model names; their underlying
+	// quant builds are hidden by default so consumers never see the quant.
+	// Pass ?include_builds=1 (ops/debug) to also list the raw builds.
+	includeBuilds := r.URL.Query().Get("include_builds") == "1"
+	aliasEntries, hiddenBuilds := s.aliasModelEntries(capByModel, catalogByID, registryByID)
+
+	data := make([]types.ModelEntry, 0, len(models)+len(aliasEntries))
+	data = append(data, aliasEntries...)
 	for _, m := range models {
 		cm, inCatalog := catalogByID[m.ID]
 		if len(catalogByID) > 0 && !inCatalog {
+			continue
+		}
+		if _, hidden := hiddenBuilds[m.ID]; hidden && !includeBuilds {
 			continue
 		}
 		metadata := types.ModelMetadata{
@@ -4006,12 +4175,23 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required", withParam("model")))
 		return
 	}
-	// Per-key model allow-list enforcement (phase 3).
+	// Per-key model allow-list enforcement (phase 3). Checked on the requested
+	// name (alias or raw id) before alias resolution.
 	if !s.keyModelAllowed(r.Context(), model) {
 		writeJSON(w, http.StatusForbidden, errorResponse("model_not_allowed",
 			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
 		return
 	}
+
+	// Resolve a public alias to a concrete build id (see handleChatCompletions).
+	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(parsed, rawBody, model)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
+		return
+	}
+	model, rawBody = buildModel, resolvedBody
+
 	if !s.registry.IsModelInCatalog(model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model), withParam("model")))
@@ -4126,6 +4306,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	pr := &registry.PendingRequest{
 		RequestID:              requestID,
 		Model:                  model,
+		PublicModel:            publicModel,
 		ConsumerKey:            consumerKey,
 		KeyID:                  keyIDFromContext(r.Context()),
 		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),

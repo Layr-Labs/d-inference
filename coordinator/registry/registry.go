@@ -69,9 +69,15 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
-	RequestID   string
-	ProviderID  string
-	Model       string
+	RequestID  string
+	ProviderID string
+	// Model is the CONCRETE build id used for routing, admission, billing, and
+	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
+	Model string
+	// PublicModel is the consumer-facing name the caller requested (e.g.
+	// "gemma-4-26b"). When the request used a raw build id directly this equals
+	// Model. Responses echo PublicModel so consumers never see the quant/build.
+	PublicModel string
 	ConsumerKey string
 	// KeyID is the public ID of the API key that originated the request, used
 	// for per-key usage and spend attribution. Empty for account-scoped/legacy
@@ -617,6 +623,11 @@ type Registry struct {
 
 	modelCatalog map[string]CatalogEntry
 
+	// modelAliases maps a public-facing alias id (e.g. "gemma-4-26b") to the
+	// concrete builds it resolves to. Populated by SetModelAliases at catalog
+	// sync time. nil = no aliases configured.
+	modelAliases map[string][]BuildRef
+
 	store store.Store
 
 	tpsRegistry *TPSRegistry
@@ -949,6 +960,131 @@ func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 		catalog[e.ID] = e
 	}
 	r.modelCatalog = catalog
+}
+
+// BuildRef is one concrete build an alias resolves to, with a relative routing
+// weight. Weight 0 means "drained" — the build still works but receives no new
+// alias traffic (used to retire the old quant at the end of a migration).
+type BuildRef struct {
+	BuildID string
+	Weight  int
+}
+
+// SetModelAliases installs the public-alias → builds mapping. Only builds with
+// weight > 0 are considered routable for an alias; pass nil to clear all
+// aliases. Callers should pass only ACTIVE builds (the store/sync layer filters
+// inactive ones out).
+func (r *Registry) SetModelAliases(aliases map[string][]BuildRef) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(aliases) == 0 {
+		r.modelAliases = nil
+		return
+	}
+	m := make(map[string][]BuildRef, len(aliases))
+	for alias, builds := range aliases {
+		cp := make([]BuildRef, len(builds))
+		copy(cp, builds)
+		m[alias] = cp
+	}
+	r.modelAliases = m
+}
+
+// IsAlias reports whether requested is a configured public alias.
+func (r *Registry) IsAlias(requested string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.modelAliases[requested]
+	return ok
+}
+
+// AliasBuilds returns the configured builds for an alias (copy), or nil.
+func (r *Registry) AliasBuilds(alias string) []BuildRef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	builds, ok := r.modelAliases[alias]
+	if !ok {
+		return nil
+	}
+	cp := make([]BuildRef, len(builds))
+	copy(cp, builds)
+	return cp
+}
+
+// ResolveModel maps a requested model id to a concrete build id for routing.
+//
+//   - If requested is NOT an alias, it is returned unchanged (isAlias=false,
+//     ok=true) — raw build ids keep working for backward compatibility.
+//   - If requested IS an alias, one active build is chosen by weight, PREFERRING
+//     builds that currently have at least one registered provider advertising
+//     them. This is the zero-downtime guarantee: while a new build is ramping
+//     and few providers have it yet, traffic still resolves to a build that can
+//     actually be served instead of black-holing. ok=false only when the alias
+//     has no usable (weight>0) builds at all.
+func (r *Registry) ResolveModel(requested string) (buildID string, isAlias bool, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	builds, found := r.modelAliases[requested]
+	if !found {
+		return requested, false, true
+	}
+
+	var servable, all []BuildRef
+	for _, b := range builds {
+		if b.Weight <= 0 || b.BuildID == "" {
+			continue
+		}
+		all = append(all, b)
+		if r.anyProviderAdvertisesLocked(b.BuildID) {
+			servable = append(servable, b)
+		}
+	}
+	pool := servable
+	if len(pool) == 0 {
+		// No ramping build has capacity yet — fall back to weighted choice over
+		// all active builds so the request queues against a real build.
+		pool = all
+	}
+	if len(pool) == 0 {
+		return "", true, false
+	}
+	return weightedPickBuild(pool), true, true
+}
+
+// anyProviderAdvertisesLocked reports whether any registered provider currently
+// advertises the given concrete build id. Caller must hold r.mu.
+func (r *Registry) anyProviderAdvertisesLocked(buildID string) bool {
+	for _, p := range r.providers {
+		p.mu.Lock()
+		for _, m := range p.Models {
+			if m.ID == buildID {
+				p.mu.Unlock()
+				return true
+			}
+		}
+		p.mu.Unlock()
+	}
+	return false
+}
+
+// weightedPickBuild chooses a build proportional to its weight.
+func weightedPickBuild(builds []BuildRef) string {
+	total := 0
+	for _, b := range builds {
+		total += b.Weight
+	}
+	if total <= 0 {
+		return builds[0].BuildID
+	}
+	n := rand.Intn(total)
+	for _, b := range builds {
+		n -= b.Weight
+		if n < 0 {
+			return b.BuildID
+		}
+	}
+	return builds[len(builds)-1].BuildID
 }
 
 // ModelType returns the model type string for the given model ID, or

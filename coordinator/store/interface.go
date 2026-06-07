@@ -262,6 +262,18 @@ type Store interface {
 	FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error)
 	MarkPublishingAPIKeyUsed(id string) error
 
+	// --- Model Aliases (public-facing names → concrete builds) ---
+
+	// UpsertModelAlias creates or replaces an alias definition (idempotent on
+	// AliasID). Builds is stored verbatim; resolution happens in the registry.
+	UpsertModelAlias(alias *ModelAlias) error
+	// GetModelAlias returns the alias by id; ok is false when not found.
+	GetModelAlias(aliasID string) (alias *ModelAlias, ok bool, err error)
+	// ListModelAliases returns every alias (active and inactive).
+	ListModelAliases() ([]ModelAlias, error)
+	// DeleteModelAlias removes an alias definition.
+	DeleteModelAlias(aliasID string) error
+
 	// --- Releases (provider binary versioning) ---
 
 	// SetRelease adds or updates a release in the store.
@@ -864,6 +876,29 @@ type ModelRegistryRecord struct {
 	ModelRegistryEntry
 	ActiveVersion *ModelVersion      `json:"active_version,omitempty"`
 	Files         []ModelVersionFile `json:"files,omitempty"`
+}
+
+// ModelAliasBuild is one underlying build a public alias resolves to. Weight
+// is a relative routing weight (higher = more traffic) used during a migration
+// ramp; Active gates whether the build participates in resolution right now.
+type ModelAliasBuild struct {
+	BuildID string `json:"build_id"`
+	Weight  int    `json:"weight"`
+	Active  bool   `json:"active"`
+}
+
+// ModelAlias is a stable, consumer-facing model name (e.g. "gemma-4-26b") that
+// resolves to one or more concrete registry builds (raw HuggingFace ids such as
+// "mlx-community/gemma-4-26B-A4B-it-qat-4bit"). Consumers only ever see the
+// alias; the coordinator resolves it to a concrete build for routing/billing.
+// This is what makes a quant swap (fp8 → qat-4bit) invisible to clients.
+type ModelAlias struct {
+	AliasID     string            `json:"alias_id"`
+	DisplayName string            `json:"display_name"`
+	Builds      []ModelAliasBuild `json:"builds"`
+	Active      bool              `json:"active"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // ModelManifest mirrors the minimal darkbloom-publish manifest JSON.

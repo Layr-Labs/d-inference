@@ -80,8 +80,15 @@ trap cleanup EXIT INT TERM
 # Inference/BatchScheduler.swift.
 RE_ACTIVE='encrypted prefix cache active'
 RE_STORE='wrote [0-9]+ chunks to'                       # EncryptedKVStore.write (debug)
-RE_SWEEP='prefix cache disk sweep: now'                 # budget sweep (info)
-RE_EVICT='evicted for global budget|evicted prefix cache entry'
+# SSD disk eviction: under the GlobalDiskAccountant (the active authority when
+# DARKBLOOM_PREFIX_CACHE_DISK_GB is set) eviction shows as "global disk budget
+# exceeded … enforcing" + "signaled owned model … to free". The legacy
+# per-model enforceDiskBudget path is silent (no log), so the accountant line is
+# the on-log proof of SSD eviction; the disk_kb plateau is the corroborating
+# signal. RAM-tier eviction is "evicted prefix cache entry".
+RE_SWEEP='global disk budget exceeded|disk sweep: now'  # SSD budget enforcement trigger
+RE_EVICT='signaled owned model .* to free|evicted for global budget|deleted unowned model'
+RE_RAM_EVICT='evicted prefix cache entry'               # RAM LRU eviction
 RE_DECRYPT_FAIL='decrypt failed|prefix read failed'     # corruption / wrong-key
 RE_MB1_DROP='MB-1:.*(mismatch|dropping)'                # model/weight binding drop
 RE_HASH_MISMATCH='prefix-hash mismatch'                 # index stale/corrupt
@@ -90,7 +97,7 @@ RE_EPHEMERAL='EPHEMERAL in-memory KEK'                  # confirms escape hatch 
 
 # ---- CSV header ---------------------------------------------------------------
 if [ ! -s "$OUT_CSV" ]; then
-  echo "ts,elapsed_s,disk_kb,file_count,rss_kb,cpu_speed_limit,active,store,sweep,evict,decrypt_fail,mb1_drop,hash_mismatch,disabled,ephemeral" > "$OUT_CSV"
+  echo "ts,elapsed_s,disk_kb,file_count,rss_kb,cpu_speed_limit,active,store,sweep,evict,ram_evict,decrypt_fail,mb1_drop,hash_mismatch,disabled,ephemeral" > "$OUT_CSV"
 fi
 
 # byte offset into RAW_LOG already consumed
@@ -159,13 +166,14 @@ while true; do
   C_STORE=$(count_new_markers "$RE_STORE")
   C_SWEEP=$(count_new_markers "$RE_SWEEP")
   C_EVICT=$(count_new_markers "$RE_EVICT")
+  C_RAMEVICT=$(count_new_markers "$RE_RAM_EVICT")
   C_DECFAIL=$(count_new_markers "$RE_DECRYPT_FAIL")
   C_MB1=$(count_new_markers "$RE_MB1_DROP")
   C_HASH=$(count_new_markers "$RE_HASH_MISMATCH")
   C_DISABLED=$(count_new_markers "$RE_DISABLED")
   C_EPHEM=$(count_new_markers "$RE_EPHEMERAL")
 
-  echo "$(ts),$ELAPSED,$DISK_KB,$FILE_COUNT,$RSS_KB,$CPU_SPEED_LIMIT,$C_ACTIVE,$C_STORE,$C_SWEEP,$C_EVICT,$C_DECFAIL,$C_MB1,$C_HASH,$C_DISABLED,$C_EPHEM" >> "$OUT_CSV"
+  echo "$(ts),$ELAPSED,$DISK_KB,$FILE_COUNT,$RSS_KB,$CPU_SPEED_LIMIT,$C_ACTIVE,$C_STORE,$C_SWEEP,$C_EVICT,$C_RAMEVICT,$C_DECFAIL,$C_MB1,$C_HASH,$C_DISABLED,$C_EPHEM" >> "$OUT_CSV"
 
   # --- notable events to the events log ---
   if [ "$C_DECFAIL" -gt 0 ]; then
@@ -184,9 +192,9 @@ while true; do
   fi
 
   # progress to stdout
-  printf '[%6ss] disk=%sMB files=%s rss=%sMB cpu_lim=%s | store=%s sweep=%s evict=%s decfail=%s mb1=%s hashmis=%s\n' \
+  printf '[%6ss] disk=%sMB files=%s rss=%sMB cpu_lim=%s | store=%s sweep=%s ssd_evict=%s ram_evict=%s decfail=%s mb1=%s hashmis=%s\n' \
     "$ELAPSED" "$(( DISK_KB / 1024 ))" "$FILE_COUNT" "$(( RSS_KB / 1024 ))" "$CPU_SPEED_LIMIT" \
-    "$C_STORE" "$C_SWEEP" "$C_EVICT" "$C_DECFAIL" "$C_MB1" "$C_HASH"
+    "$C_STORE" "$C_SWEEP" "$C_EVICT" "$C_RAMEVICT" "$C_DECFAIL" "$C_MB1" "$C_HASH"
 
   sleep "$INTERVAL"
 done

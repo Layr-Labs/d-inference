@@ -283,8 +283,9 @@ pgrep -fl darkbloom
 |---|-----------|--------|------|
 | 1 | No crash / Swift trap / fatalError | `soak_server.log` | clean |
 | 2 | No client errors beyond transient | `soak_client.csv` `cum_err` | ≈0, no sustained band |
-| 3 | Disk footprint bounded by budget | `soak_samples.csv` `disk_kb` | stays ≲ `DISK_GB` (4 GB ≈ 4.2 M KB), plateaus rather than growing unbounded |
-| 4 | Eviction actually fires | `soak_samples.csv` `sweep`/`evict` | > 0 once disk fills |
+| 3 | Disk footprint bounded by budget | `soak_samples.csv` `disk_kb` | stays ≲ `DISK_GB` (4 GB ≈ 4.2 M KB), plateaus rather than growing unbounded. **This plateau is the primary SSD-eviction proof.** |
+| 4 | SSD eviction actually fires | `sweep`/`evict` cols + raw log | `global disk budget exceeded … enforcing` + `signaled owned model … to free` once disk fills. (The legacy per-model `enforceDiskBudget` is silent — the **GlobalDiskAccountant** is the active authority and logs every enforcement.) |
+| 4b | RAM eviction fires | `ram_evict` col | > 0 (LRU under `MAX_GB`) |
 | 5 | **No decryption failures** | `soak_events.log` / `decrypt_fail` col | **0** |
 | 6 | No MB-1 / hash-mismatch drops mid-run | `mb1_drop`, `hash_mismatch` cols | 0 (a few at startup from reconcile are acceptable; document) |
 | 7 | Memory bounded | `soak_samples.csv` `rss_kb` | plateaus; no monotonic leak over 4 h |

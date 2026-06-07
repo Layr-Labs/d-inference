@@ -526,7 +526,7 @@ struct ProviderLoopPrefetchTests {
         return modelDir
     }
 
-    private func makeLoop(models: [ModelInfo]) throws -> ProviderLoop {
+    private func makeLoop(models: [ModelInfo], maxModelSlots: UInt64 = 2) throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
             hardware: HardwareInfo(
@@ -538,7 +538,7 @@ struct ProviderLoopPrefetchTests {
             models: models,
             config: ProviderConfig(
                 provider: ProviderSettings(name: "prefetch-unit-test", memoryReserveGB: 1),
-                backend: BackendSettings(continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: 2),
+                backend: BackendSettings(continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: maxModelSlots),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
@@ -626,6 +626,77 @@ struct ProviderLoopPrefetchTests {
         #expect(updatedInfo != nil)
         #expect(updatedInfo?.weightHash == recordedHash)
         #expect(!(updatedInfo?.weightHash?.isEmpty ?? true))
+    }
+
+    @Test("verified prefetch raises the effective slot cap so old+new can be resident together")
+    func verifiedPrefetchRaisesEffectiveSlotCap() async throws {
+        let startupModel = ModelInfo(id: "org/startup", sizeBytes: 1, estimatedMemoryGb: 1)
+        let newModelID = "org/prefetched-\(UUID().uuidString)"
+        let modelDir = try seedSnapshot(modelID: newModelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        // Operator default: 3 concurrent slots. A provider that boots advertising
+        // ONE model used to freeze its cap at 1 (PR #283 P2 bug) and could not
+        // hold a prefetched build alongside the one it serves.
+        let loop = try makeLoop(models: [startupModel], maxModelSlots: 3)
+        let client = makeClient()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: NoopSuccessPrefetcher(),
+            preCheck: { _ in .needsFetch },
+            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+
+        // Before: one model advertised, so the effective cap is 1.
+        let beforeCap = await loop.maxModelSlotsForTesting()
+        #expect(beforeCap == 1)
+
+        // Fire a prefetch; wait for the new build to become advertised.
+        await loop.handlePrefetchModelRequest(modelId: newModelID, priority: 1, send: capturingSend)
+        let advertised = await waitUntil(timeout: .seconds(10)) {
+            await loop.isModelAdvertised(newModelID)
+        }
+        #expect(advertised)
+
+        // After: two models advertised, so the effective cap rose to 2 (≤ the
+        // configured hard cap of 3) — old and new can be resident concurrently.
+        let afterCap = await loop.maxModelSlotsForTesting()
+        #expect(afterCap == 2)
+        #expect(await loop.advertisedModelCount() == 2)
+    }
+
+    @Test("effective slot cap never exceeds the operator-configured hard cap")
+    func effectiveSlotCapHonorsHardCap() async throws {
+        let startupModel = ModelInfo(id: "org/startup", sizeBytes: 1, estimatedMemoryGb: 1)
+        let newModelID = "org/prefetched-\(UUID().uuidString)"
+        let modelDir = try seedSnapshot(modelID: newModelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        // Operator opted out of concurrency with a hard cap of 1.
+        let loop = try makeLoop(models: [startupModel], maxModelSlots: 1)
+        let client = makeClient()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: NoopSuccessPrefetcher(),
+            preCheck: { _ in .needsFetch },
+            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+
+        #expect(await loop.maxModelSlotsForTesting() == 1)
+
+        await loop.handlePrefetchModelRequest(modelId: newModelID, priority: 1, send: capturingSend)
+        let advertised = await waitUntil(timeout: .seconds(10)) {
+            await loop.isModelAdvertised(newModelID)
+        }
+        #expect(advertised)
+        // Two models advertised, but the cap stays at 1: the configured hard cap
+        // (memory-safety opt-out) is never exceeded.
+        #expect(await loop.advertisedModelCount() == 2)
+        #expect(await loop.maxModelSlotsForTesting() == 1)
     }
 
     @Test("prefetch of an already-advertised+hashed model short-circuits to verified")

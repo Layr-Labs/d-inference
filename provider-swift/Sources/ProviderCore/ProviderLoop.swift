@@ -148,8 +148,28 @@ public actor ProviderLoop {
     /// BatchScheduler and worker task. Keyed by model ID.
     private var modelSlots: [String: ModelSlot] = [:]
 
-    /// Hard cap on concurrent model slots to prevent coordinator-driven OOM.
-    private let maxModelSlots: Int
+    /// Operator-configured hard cap on concurrent model slots
+    /// (`backend.maxModelSlots`). This is the memory-safety ceiling: the
+    /// effective cap never exceeds it. A provider configured with `1` has opted
+    /// out of concurrency and stays single-slot regardless of how many builds
+    /// it advertises.
+    private let configuredMaxModelSlots: Int
+
+    /// Number of de-duplicated models advertised at startup. The effective cap
+    /// never drops below this, so a provider that booted advertising N models
+    /// can always hold those N resident (subject to the configured hard cap).
+    private let startupModelCount: Int
+
+    /// Effective concurrent-slot cap. Tracks the LIVE advertised-model count
+    /// rather than freezing it at startup, so a verified prefetch that adds a
+    /// new build (via `applyVerifiedPrefetch`) lets the provider hold old+new
+    /// resident concurrently during a zero-downtime migration. Always clamped
+    /// to `[1, configuredMaxModelSlots]` and floored at `startupModelCount`.
+    /// Read by the slot-cap guards as the current cap.
+    private var maxModelSlots: Int {
+        let live = max(startupModelCount, advertisedModels.count)
+        return max(1, min(configuredMaxModelSlots, live))
+    }
 
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
@@ -332,7 +352,13 @@ public actor ProviderLoop {
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
-        self.maxModelSlots = max(1, min(config.models.count, Int(config.config.backend.maxModelSlots)))
+        // The effective cap (`maxModelSlots`) is computed from the live
+        // advertised set; here we capture the operator hard cap and the
+        // de-duplicated startup count it is clamped against. Using the deduped
+        // `advertised.count` (not raw `config.models.count`) keeps the startup
+        // floor consistent with what is actually advertised.
+        self.configuredMaxModelSlots = max(1, Int(config.config.backend.maxModelSlots))
+        self.startupModelCount = max(1, advertised.count)
         let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
         self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
         // Phase 3: construct the global disk accountant (one per host).
@@ -1409,6 +1435,11 @@ public actor ProviderLoop {
         }.value
 
         let (info, hash) = computed
+        // Adding to `advertisedModels` also raises the effective slot cap
+        // (`maxModelSlots` is computed from this set), so the newly-verified
+        // build can be held resident alongside the model currently being served
+        // during a zero-downtime migration -- bounded by the configured hard
+        // cap (`configuredMaxModelSlots`).
         advertisedModels[modelId] = info
         if let hash { modelHashes[modelId] = hash }
         syncWarmModelState()
@@ -1435,6 +1466,10 @@ public actor ProviderLoop {
 
     /// Test seam: exposes the prefetch pre-check decision.
     func prefetchPreCheckForTesting(_ id: String) -> PrefetchPreCheck { prefetchPreCheck(modelId: id) }
+
+    /// Test seam: the current effective concurrent-slot cap (tracks the live
+    /// advertised set, clamped to `[1, backend.maxModelSlots]`).
+    func maxModelSlotsForTesting() -> Int { maxModelSlots }
 
     /// Test seam: install a fake prefetcher and (re)build the prefetch
     /// coordinator against a given coordinator client. Used by unit tests to

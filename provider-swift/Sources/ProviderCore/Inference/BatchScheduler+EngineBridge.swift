@@ -308,8 +308,12 @@ extension BatchScheduler {
         let lookups = s.ramHits + s.ssdHits + s.misses
         let hits = s.ramHits + s.ssdHits
         let rate = lookups > 0 ? (Double(hits) * 100.0 / Double(lookups)) : 0.0
+        // os.Logger redacts non-literal interpolations (String(format:)) as
+        // <private> by default; mark the rate .public so the hit rate is
+        // actually readable. Integer interpolations default to public already.
+        let rateStr = String(format: "%.1f", rate)
         prefixCacheLogger.info(
-            "prefix cache stats: lookups=\(lookups) hits=\(hits) (ram=\(s.ramHits) ssd=\(s.ssdHits)) misses=\(s.misses) hitRate=\(String(format: "%.1f", rate))% stores=\(s.stores) ssdFlushes=\(s.ssdFlushes) diskEvictions=\(s.diskEvictions) ssdReadErrors=\(s.ssdReadErrors) modelMismatch=\(s.modelMismatches) shapeMismatch=\(s.shapeMismatches) prefixHashMismatch=\(s.prefixHashMismatches)")
+            "prefix cache stats: lookups=\(lookups) hits=\(hits) (ram=\(s.ramHits) ssd=\(s.ssdHits)) misses=\(s.misses) hitRate=\(rateStr, privacy: .public)% stores=\(s.stores) ssdFlushes=\(s.ssdFlushes) diskEvictions=\(s.diskEvictions) ssdReadErrors=\(s.ssdReadErrors) modelMismatch=\(s.modelMismatches) shapeMismatch=\(s.shapeMismatches) prefixHashMismatch=\(s.prefixHashMismatches)")
     }
 
     /// Watchdog body: abort bridges still waiting for engine admission

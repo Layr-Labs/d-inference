@@ -106,6 +106,39 @@ func TestResolveModelNoUsableBuild(t *testing.T) {
 	}
 }
 
+func TestMarkBuildPrefetchedMakesProviderServeBuild(t *testing.T) {
+	reg := New(testLogger())
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	registerProviderWithModel(reg, "p1", fp8) // serves only fp8
+
+	if got := reg.ProvidersServingBuild(qat); len(got) != 0 {
+		t.Fatalf("qat should have no providers yet, got %v", got)
+	}
+
+	// Simulate a verified prefetch of qat on p1.
+	if !reg.MarkBuildPrefetched("p1", qat) {
+		t.Fatal("MarkBuildPrefetched should report a newly added build")
+	}
+	// Idempotent: second call is a no-op.
+	if reg.MarkBuildPrefetched("p1", qat) {
+		t.Fatal("MarkBuildPrefetched should be idempotent")
+	}
+
+	got := reg.ProvidersServingBuild(qat)
+	if len(got) != 1 || got[0] != "p1" {
+		t.Fatalf("p1 should now serve qat, got %v", got)
+	}
+	// ModelType is inherited from the existing fp8 entry (same logical model).
+	if mt := reg.ModelType(qat); mt != "gemma" {
+		t.Fatalf("inherited model type = %q, want gemma", mt)
+	}
+	// Unknown provider is a safe no-op.
+	if reg.MarkBuildPrefetched("nope", qat) {
+		t.Fatal("unknown provider should be a no-op")
+	}
+}
+
 func TestSetModelAliasesClearAndCopy(t *testing.T) {
 	reg := New(testLogger())
 	builds := []BuildRef{{BuildID: "b1", Weight: 100}}

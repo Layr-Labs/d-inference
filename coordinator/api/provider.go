@@ -509,12 +509,12 @@ func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID strin
 }
 
 // handlePrefetchModelStatus records a provider's background-prefetch progress.
-// Prefetch downloads + verifies a build on disk without loading it into GPU;
-// the terminal "verified" state means the build is ready to advertise. The
-// migration controller (Layer 4) will react to these transitions to advance
-// a ramp/drain; for now we observe progress. The provider re-advertises a
-// verified build on its next register/heartbeat, so routing picks it up
-// independently of this signal.
+// Prefetch downloads + verifies a build on disk without loading it into GPU.
+// On the terminal "verified" state we merge the build into the provider's
+// advertised models in place so it becomes routable immediately — this is the
+// signal the migration controller's ramp depends on (it measures how many
+// providers serve the new build) and closes the loop without waiting for the
+// provider to reconnect.
 func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry.Provider, msg *protocol.PrefetchModelStatusMessage) {
 	s.logger.Info("provider prefetch_model_status",
 		"provider_id", providerID,
@@ -524,6 +524,15 @@ func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry
 		"bytes_total", msg.BytesTotal,
 		"error", msg.Error,
 	)
+	if msg.Status == protocol.PrefetchModelStatusVerified {
+		if s.registry.MarkBuildPrefetched(providerID, msg.ModelID) {
+			s.logger.Info("provider now advertises prefetched build",
+				"provider_id", providerID, "model_id", msg.ModelID)
+			// Release any requests queued for this build now that a provider
+			// can (cold-)serve it.
+			s.registry.DrainQueuedRequestsForModel(msg.ModelID)
+		}
+	}
 }
 
 // attachProviderLocation resolves the provider's approximate geographic

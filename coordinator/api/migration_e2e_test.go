@@ -128,10 +128,12 @@ func TestZeroDowntimeAliasMigration(t *testing.T) {
 		}
 		mc.runMigration(*mig)
 
-		// Simulate one more provider finishing its prefetch and re-advertising
-		// BOTH builds (the provider keeps serving the old build during transition).
+		// Simulate one more provider finishing its background prefetch: the
+		// real production signal is prefetch_model_status:verified, which the
+		// coordinator turns into an in-place advertise via MarkBuildPrefetched
+		// (the provider keeps serving the old build throughout).
 		if migrated < len(providers) {
-			registerBuildsProvider(srv, providers[migrated], fp8, qat)
+			reg.MarkBuildPrefetched(providers[migrated], qat)
 			migrated++
 		}
 	}

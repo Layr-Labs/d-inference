@@ -1068,6 +1068,43 @@ func (r *Registry) anyProviderAdvertisesLocked(buildID string) bool {
 	return false
 }
 
+// MarkBuildPrefetched records that a provider has finished prefetching and
+// verifying a build on disk, by merging it into the provider's advertised
+// Models in place. This is what lets a verified prefetch become routable
+// WITHOUT waiting for the provider to reconnect (heartbeats only carry
+// warm_models, not the full Models list) and WITHOUT resetting the provider's
+// trust/reputation/challenge state (a full re-register would). The build joins
+// as a "cold" candidate (advertised, not yet loaded); the existing cold→warm
+// machinery loads it on first demand. ModelType is inherited from the
+// provider's existing models (a migration's from/to are the same logical
+// model); the authoritative ModelInfo (incl. weight hash) arrives on the next
+// reconnect, and attestation covers the on-disk hash independently. Returns
+// true if the build was newly added.
+func (r *Registry) MarkBuildPrefetched(providerID, buildID string) bool {
+	if buildID == "" {
+		return false
+	}
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	modelType := ""
+	for _, m := range p.Models {
+		if m.ID == buildID {
+			return false // already advertised
+		}
+		if modelType == "" && m.ModelType != "" {
+			modelType = m.ModelType
+		}
+	}
+	p.Models = append(p.Models, protocol.ModelInfo{ID: buildID, ModelType: modelType})
+	return true
+}
+
 // ProvidersServingBuild returns the ids of online providers that currently
 // advertise the given concrete build. Used by the migration controller to
 // decide which providers still need to prefetch a new build and to measure how

@@ -734,8 +734,18 @@ public struct ModelDownloader: Sendable {
         try Task.checkCancellation()
 
         // Aggregate hash over the staged files (same ordering rule as download).
+        // Every per-file SHA already verified above, so reaching here with a
+        // mismatch means the staged files are internally valid but do not match
+        // the claimed aggregate — i.e. the manifest's aggregate is wrong/corrupt.
+        // If we keep staging, `fileMatches` would skip all files on every future
+        // attempt and re-fail the aggregate forever (a permanent poison state).
+        // Clear staging so a corrected manifest re-downloads cleanly. (Per-file
+        // and network/transport failures throw BEFORE this point and deliberately
+        // leave staging intact so they can resume — only the aggregate-mismatch
+        // path clears it.)
         let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
         guard aggregate == manifest.aggregateSHA256 else {
+            try? FileManager.default.removeItem(at: stagingDir)
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
         }
 
@@ -1216,70 +1226,22 @@ public struct ModelDownloader: Sendable {
 
         var lastError: Error?
         for attempt in 1...3 {
-            let existingBytes = fileSize(partial)
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            // Model shards are multi-GB files. A 60-second request timeout
-            // causes legitimate downloads to fail; let URLSession stream to a
-            // temporary file with a longer timeout instead of iterating
-            // one byte at a time in Swift.
-            request.timeoutInterval = 6 * 60 * 60
-            if existingBytes > 0 {
-                request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
-            }
-
             do {
-                let (tempFile, response) = try await urlSession.download(for: request)
-                defer { try? fm.removeItem(at: tempFile) }
-
-                guard let http = response as? HTTPURLResponse else {
-                    try? fm.removeItem(at: partial)
-                    throw ModelCatalogError.downloadFailed("\(label): unexpected response type")
-                }
-
-                if http.statusCode == 404 || http.statusCode == 403 {
-                    try? fm.removeItem(at: partial)
-                    if required {
-                        throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
-                    }
+                // True byte-level resume: stream the HTTP body straight to the
+                // `.part` file as bytes arrive (appending when a `.part` prefix
+                // already exists), so a mid-stream connection drop leaves the
+                // received prefix on disk and the next attempt picks up where it
+                // left off via a `Range` request — never restarting from zero.
+                let ok = try await streamDownload(
+                    from: url,
+                    to: partial,
+                    label: label,
+                    required: required
+                )
+                guard ok else {
+                    // Optional file that does not exist (404/403). `streamDownload`
+                    // already removed any stale `.part`.
                     return false
-                }
-                guard (200..<300).contains(http.statusCode) else {
-                    try? fm.removeItem(at: partial)
-                    throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
-                }
-
-                // URLSession.download(for:) returns a temp file that the
-                // system may reclaim after this call returns. Promote it to a
-                // stable .part file before hashing or moving to the final path.
-                if http.statusCode == 206 {
-                    // Validate Content-Range to ensure the server resumed at
-                    // the correct offset. Expected: "bytes <start>-<end>/<total>".
-                    let expectedStart = UInt64(existingBytes)
-                    let rangeVerified: Bool
-                    if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
-                       let rangeStart = Self.parseContentRangeStart(contentRange) {
-                        rangeVerified = (rangeStart == expectedStart)
-                    } else {
-                        // Missing or unparseable Content-Range -- cannot verify
-                        // the server resumed at the correct offset.
-                        rangeVerified = false
-                    }
-
-                    if rangeVerified {
-                        try Self.appendDownloadedRange(tempFile, to: partial, label: label)
-                    } else {
-                        // Range unverifiable or mismatched -- discard the stale
-                        // partial and replace it with the server's fresh response.
-                        // The next download attempt (if needed) will resume from
-                        // this new position, or the SHA check below will detect
-                        // a truncated file.
-                        try? fm.removeItem(at: partial)
-                        try fm.moveItem(at: tempFile, to: partial)
-                    }
-                } else {
-                    try? fm.removeItem(at: partial)
-                    try fm.moveItem(at: tempFile, to: partial)
                 }
 
                 if let expectedSHA256 {
@@ -1297,6 +1259,9 @@ public struct ModelDownloader: Sendable {
                     }
                     let size = fileSize(partial)
                     guard actual == expectedSHA256 else {
+                        // The `.part` is corrupt (hash mismatch). Delete it so the
+                        // next attempt re-fetches this file cleanly from byte 0
+                        // rather than appending onto bad bytes forever.
                         try? fm.removeItem(at: partial)
                         throw ModelCatalogError.downloadFailed(
                             "\(label): SHA-256 mismatch (size=\(size), expected=\(expectedSHA256.prefix(16))…, got=\(actual.prefix(16))…)"
@@ -1308,6 +1273,10 @@ public struct ModelDownloader: Sendable {
                 let downloaded = fileSize(destination)
                 onProgress?(ProgressEvent(file: label, bytesDownloaded: downloaded, bytesTotal: downloaded))
                 return true
+            } catch is CancellationError {
+                // Cancellation must propagate immediately and leave the `.part`
+                // intact so a later run can resume it. Never retry.
+                throw CancellationError()
             } catch {
                 lastError = error
                 if attempt < 3 {
@@ -1323,25 +1292,139 @@ public struct ModelDownloader: Sendable {
         return false
     }
 
-    private static func appendDownloadedRange(_ source: URL, to destination: URL, label: String) throws {
+    /// Stream an HTTP GET body incrementally into `partial`, appending to any
+    /// bytes already present (true byte-level resume).
+    ///
+    /// Behavior:
+    /// - If `partial` already has N bytes, sends `Range: bytes=N-`.
+    /// - 206 with a `Content-Range` whose start == N → append to `partial`.
+    /// - 200 (server ignored the Range / no range support) → truncate `partial`
+    ///   and write from byte 0 (restart THIS file only).
+    /// - 206 whose start != N (server resumed at the wrong offset) → truncate and
+    ///   restart this file rather than append onto a mismatched stream.
+    /// - 404/403 → remove `partial`; throw if `required`, else return false.
+    /// - On a mid-stream transport drop, the bytes received so far stay in
+    ///   `partial` and the error propagates (the caller retries with a fresh
+    ///   `Range` request that appends the remainder).
+    ///
+    /// `Task.checkCancellation()` is checked between chunks so cancellation stops
+    /// promptly and leaves a resumable `.part`.
+    private func streamDownload(
+        from url: URL,
+        to partial: URL,
+        label: String,
+        required: Bool
+    ) async throws -> Bool {
+        let fm = FileManager.default
+        let existingBytes = fileSize(partial)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        // Model shards are multi-GB files. A short request timeout causes
+        // legitimate downloads to fail; the streaming byte sequence keeps the
+        // connection alive across the whole transfer.
+        request.timeoutInterval = 6 * 60 * 60
+        if existingBytes > 0 {
+            request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
+        }
+
+        let (byteStream, response) = try await urlSession.bytes(for: request)
+
+        guard let http = response as? HTTPURLResponse else {
+            try? fm.removeItem(at: partial)
+            throw ModelCatalogError.downloadFailed("\(label): unexpected response type")
+        }
+
+        if http.statusCode == 404 || http.statusCode == 403 {
+            try? fm.removeItem(at: partial)
+            if required {
+                throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
+            }
+            // Drain so the connection can be reused; ignore the bytes.
+            for try await _ in byteStream {}
+            return false
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            try? fm.removeItem(at: partial)
+            throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
+        }
+
+        // Decide whether we append to the existing prefix or restart this file.
+        var append = false
+        if existingBytes > 0, http.statusCode == 206 {
+            // Validate the server resumed at our offset before appending.
+            if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+               let rangeStart = Self.parseContentRangeStart(contentRange),
+               rangeStart == UInt64(existingBytes) {
+                append = true
+            }
+        }
+        // 200 (no range support) or an unverifiable/mismatched 206 → restart
+        // THIS file only: truncate the stale prefix and write from byte 0.
+        if !append {
+            try? fm.removeItem(at: partial)
+        }
+
+        if !fm.fileExists(atPath: partial.path) {
+            fm.createFile(atPath: partial.path, contents: nil)
+        }
+
+        let writer: FileHandle
         do {
-            let reader = try FileHandle(forReadingFrom: source)
-            defer { try? reader.close() }
-
-            let writer = try FileHandle(forWritingTo: destination)
-            defer { try? writer.close() }
-
+            writer = try FileHandle(forWritingTo: partial)
+        } catch {
+            throw ModelCatalogError.downloadFailed("\(label): could not open .part for writing (\(error.localizedDescription))")
+        }
+        defer { try? writer.close() }
+        if append {
             try writer.seekToEnd()
-            while true {
-                guard let chunk = try reader.read(upToCount: 4 * 1_048_576), !chunk.isEmpty else {
-                    break
+        } else {
+            try writer.truncate(atOffset: 0)
+        }
+
+        // Buffer chunks so we don't issue a write() syscall per byte. Flush as
+        // each buffer fills (and at the end) so the bytes are durable on disk —
+        // a mid-stream drop leaves a resumable prefix. CRITICAL: if the stream
+        // errors mid-transfer (connection drop), flush whatever was buffered
+        // before rethrowing so EVERY received byte lands in `.part` and the
+        // retry resumes from exactly where the drop happened (never from zero).
+        var buffer = Data()
+        buffer.reserveCapacity(Self.streamFlushThreshold)
+        var sinceCancelCheck = 0
+        do {
+            for try await byte in byteStream {
+                buffer.append(byte)
+                sinceCancelCheck += 1
+                if buffer.count >= Self.streamFlushThreshold {
+                    try writer.write(contentsOf: buffer)
+                    buffer.removeAll(keepingCapacity: true)
                 }
-                try writer.write(contentsOf: chunk)
+                // Check cancellation periodically (every ~64KB) without paying
+                // the cost on every single byte. The partial flush above means a
+                // cancelled transfer still leaves a resumable .part.
+                if sinceCancelCheck >= Self.streamFlushThreshold {
+                    sinceCancelCheck = 0
+                    if Task.isCancelled {
+                        if !buffer.isEmpty { try writer.write(contentsOf: buffer) }
+                        throw CancellationError()
+                    }
+                }
             }
         } catch {
-            throw ModelCatalogError.downloadFailed("\(label): could not append resumed download (\(error.localizedDescription))")
+            // Persist the prefix received before the drop, then propagate so the
+            // caller retries with a `Range` request that appends the remainder.
+            if !buffer.isEmpty { try? writer.write(contentsOf: buffer) }
+            throw error
         }
+        if !buffer.isEmpty {
+            try writer.write(contentsOf: buffer)
+        }
+        return true
     }
+
+    /// Flush the streaming download buffer to disk every 64 KB. Also the
+    /// cadence at which cancellation is checked during streaming.
+    private static let streamFlushThreshold = 65536
 
     /// Parse the start offset from a Content-Range header value.
     /// Expected format: "bytes 12345-67890/123456".

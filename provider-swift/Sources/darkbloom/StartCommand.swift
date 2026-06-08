@@ -46,8 +46,26 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
 
+    /// Public URL of the Darkbloom Terms of Service.
+    static let termsURL = "https://darkbloom.dev/terms.html"
+
+    /// Prints a one-line terms-of-service notice. Starting the provider is the
+    /// act of acceptance — there is no separate yes/no prompt — so this is an
+    /// informational notice, not a gate. Shown only for the user-facing
+    /// invocation; the launchd-relaunched `--foreground` child skips it since
+    /// the user already saw it when they ran `darkbloom start`.
+    private func printTermsNotice() {
+        print("By starting the provider, you agree to the Darkbloom Terms of Service:")
+        print("  \(Start.termsURL)")
+        print()
+    }
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+
+        if !foreground {
+            printTermsNotice()
+        }
 
         // --local (coordinator-less) and --local-endpoint (alongside the
         // coordinator) are mutually exclusive serve modes; reject the ambiguous

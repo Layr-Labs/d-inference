@@ -43,25 +43,54 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		"serial_number", req.SerialNumber,
 	)
 
-	// Derive base URL from the incoming request (respects reverse proxy headers)
-	scheme := "https"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
-		scheme = "http"
+	// Use the configured canonical base URL (EIGENINFERENCE_BASE_URL) for the
+	// SCEP/MDM/ACME enrollment endpoints. Critically, since the profile is now
+	// CMS-signed, deriving these from a client-controlled Host header would let an
+	// attacker obtain a Darkbloom-signed .mobileconfig that points enrollment at
+	// their own host — the signature would launder a malicious enrollment profile.
+	// resolveBaseURL pins the configured URL and only falls back to the request
+	// Host when no canonical URL is set (local/dev).
+	baseURL := s.resolveBaseURL(r)
+
+	body := []byte(generateCombinedProfile(req.SerialNumber, baseURL))
+
+	// CMS-sign the profile so macOS shows it as signed at install time. Signing is
+	// install-time trust only (does not affect the SCEP/MDM/ACME chain inside). If
+	// no signer is configured or signing fails, serve unsigned so enrollment is
+	// never blocked — but make the failure loud (error log + metric).
+	switch {
+	case s.profileSigner == nil:
+		s.ddIncr("enroll.profile_unsigned", nil)
+	default:
+		signed, err := s.profileSigner.Sign(body)
+		if err != nil {
+			s.logger.Error("profile signing failed — serving unsigned profile",
+				"serial_number", req.SerialNumber, "error", err)
+			s.ddIncr("enroll.profile_sign_error", nil)
+		} else {
+			body = signed
+			s.ddIncr("enroll.profile_signed", nil)
+		}
 	}
-	baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
 
-	profile := generateCombinedProfile(req.SerialNumber, baseURL)
-
+	// A signed .mobileconfig keeps the same MIME type as an unsigned one.
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="EigenInference-Enroll-%s.mobileconfig"`, req.SerialNumber))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="Darkbloom-Enroll-%s.mobileconfig"`, req.SerialNumber))
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(profile))
+	w.Write(body)
 }
 
 // generateCombinedProfile creates a .mobileconfig with three payloads:
 //  1. SCEP — MDM identity certificate (for enrollment)
 //  2. MDM — enrolls with MicroMDM (SecurityInfo verification)
 //  3. ACME — device-attest-01 (SE key binding via Apple attestation)
+//
+// Display strings are branded "Darkbloom"; functional identifiers are deliberately
+// NOT renamed so existing installs keep working and re-enrolls update in place: the
+// io.darkbloom.enroll.* PayloadIdentifiers + SCEP/MDM PayloadUUIDs (macOS keys
+// profile identity on these), the MDM push Topic (tied to the APNs cert), and the
+// "eigeninference-acme" ACME path (must match step-ca in deploy/start.sh — renaming
+// breaks in-flight cert renewals for enrolled devices; needs a parallel provisioner).
 //
 // AccessRights=1041: profile inspection (1) + device info queries (16) + security queries (1024).
 // This is strictly read-only MDM — no device control or personal data access.
@@ -110,13 +139,13 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
           <array>
             <array>
               <string>O</string>
-              <string>EigenInference</string>
+              <string>Darkbloom</string>
             </array>
           </array>
           <array>
             <array>
               <string>CN</string>
-              <string>EigenInference Identity</string>
+              <string>Darkbloom Identity</string>
             </array>
           </array>
         </array>
@@ -130,7 +159,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadIdentifier</key>
       <string>io.darkbloom.enroll.scep</string>
       <key>PayloadOrganization</key>
-      <string>EigenInference</string>
+      <string>Darkbloom</string>
       <key>PayloadType</key>
       <string>com.apple.security.scep</string>
       <key>PayloadUUID</key>
@@ -153,7 +182,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadIdentifier</key>
       <string>io.darkbloom.enroll.mdm</string>
       <key>PayloadOrganization</key>
-      <string>EigenInference</string>
+      <string>Darkbloom</string>
       <key>PayloadType</key>
       <string>com.apple.mdm</string>
       <key>PayloadUUID</key>
@@ -187,7 +216,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadDescription</key>
       <string>Generates a hardware-bound key in the Secure Enclave. Apple verifies your device is genuine and a certificate is issued binding the key to your Mac.</string>
       <key>PayloadOrganization</key>
-      <string>EigenInference</string>
+      <string>Darkbloom</string>
       <key>DirectoryURL</key>
       <string>%s/acme/eigeninference-acme/directory</string>
       <key>ClientIdentifier</key>
@@ -226,7 +255,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
   <key>PayloadIdentifier</key>
   <string>io.darkbloom.enroll.%s</string>
   <key>PayloadOrganization</key>
-  <string>EigenInference</string>
+  <string>Darkbloom</string>
   <key>PayloadType</key>
   <string>Configuration</string>
   <key>PayloadUUID</key>

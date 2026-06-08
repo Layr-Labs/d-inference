@@ -40,6 +40,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -162,15 +163,16 @@ type Server struct {
 	billing                *billing.Service
 	logger                 *slog.Logger
 	mux                    *http.ServeMux
-	challengeInterval      time.Duration     // 0 means use DefaultChallengeInterval
-	skipChallenge          bool              // if true, skip attestation challenges entirely (testing only)
-	privyAuth              *auth.PrivyAuth   // Privy JWT authentication (nil if not configured)
-	adminEmails            map[string]bool   // emails that have admin access
-	adminKey               string            // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient              *mdm.Client       // MicroMDM client for provider security verification
-	mdmWebhookSecret       string            // optional shared secret MicroMDM must present on the webhook
-	stepCARootCert         *x509.Certificate // step-ca root CA for ACME cert verification
-	stepCAIntermediateCert *x509.Certificate // step-ca intermediate CA
+	challengeInterval      time.Duration       // 0 means use DefaultChallengeInterval
+	skipChallenge          bool                // if true, skip attestation challenges entirely (testing only)
+	privyAuth              *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
+	adminEmails            map[string]bool     // emails that have admin access
+	adminKey               string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient              *mdm.Client         // MicroMDM client for provider security verification
+	mdmWebhookSecret       string              // optional shared secret MicroMDM must present on the webhook
+	stepCARootCert         *x509.Certificate   // step-ca root CA for ACME cert verification
+	stepCAIntermediateCert *x509.Certificate   // step-ca intermediate CA
+	profileSigner          *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -665,6 +667,13 @@ func (s *Server) emitPanic(ctx context.Context, message, stack string, fields ma
 func (s *Server) SetStepCACerts(root, intermediate *x509.Certificate) {
 	s.stepCARootCert = root
 	s.stepCAIntermediateCert = intermediate
+}
+
+// SetProfileSigner configures the CMS signing identity used to sign the
+// enrollment .mobileconfig served by /v1/enroll. When unset (nil), profiles are
+// served unsigned (the historical behaviour).
+func (s *Server) SetProfileSigner(signer *profilesign.Signer) {
+	s.profileSigner = signer
 }
 
 // SetBilling configures the billing service for multi-chain payments and referrals.

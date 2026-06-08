@@ -103,6 +103,46 @@ func (ct *challengeTracker) remove(nonce string) *pendingChallenge {
 	return pc
 }
 
+// codeAttestTracker tracks the outstanding APNs code-identity challenge for a
+// connection — the WebSocket return leg of the push round-trip. It is SEPARATE
+// from challengeTracker (which is the liveness/SE challenge) so the two flows
+// never collide. Keyed by the base64 nonce we pushed.
+type codeAttestTracker struct {
+	mu      sync.Mutex
+	pending map[string]chan *protocol.CodeAttestationResponseMessage
+}
+
+func newCodeAttestTracker() *codeAttestTracker {
+	return &codeAttestTracker{pending: make(map[string]chan *protocol.CodeAttestationResponseMessage)}
+}
+
+func (t *codeAttestTracker) await(nonce string) chan *protocol.CodeAttestationResponseMessage {
+	ch := make(chan *protocol.CodeAttestationResponseMessage, 1)
+	t.mu.Lock()
+	t.pending[nonce] = ch
+	t.mu.Unlock()
+	return ch
+}
+
+func (t *codeAttestTracker) cancel(nonce string) {
+	t.mu.Lock()
+	delete(t.pending, nonce)
+	t.mu.Unlock()
+}
+
+func (t *codeAttestTracker) deliver(resp *protocol.CodeAttestationResponseMessage) {
+	if resp == nil {
+		return
+	}
+	t.mu.Lock()
+	ch := t.pending[resp.Nonce]
+	delete(t.pending, resp.Nonce)
+	t.mu.Unlock()
+	if ch != nil {
+		ch <- resp
+	}
+}
+
 // handleProviderWS upgrades the connection to WebSocket and manages the
 // provider's lifecycle: registration, heartbeats, and inference responses.
 func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +175,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult, r *http.Request) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
+	codeTracker := newCodeAttestTracker()
 
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
@@ -301,6 +342,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
 			})
 
+			// v0.6.0: APNs code-identity attestation, once per connection. Runs
+			// only when an attestor is configured; otherwise the provider simply
+			// never becomes CodeAttested (fail-closed at the routing chokepoint).
+			// The code-identity proof and the SIP/liveness pillar compose at the
+			// routing gate (providerSupportsPrivateTextLocked requires both).
+			if s.codeAttestor != nil {
+				saferun.Go(s.logger, "codeAttest", func() {
+					s.sendCodeIdentityChallenge(loopCtx, providerID, provider, codeTracker)
+				})
+			}
+
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
 			s.registry.Heartbeat(providerID, hbMsg)
@@ -332,6 +384,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.handleAttestationResponse(providerID, provider, respMsg, tracker)
 
+		case protocol.TypeCodeAttestationResponse:
+			respMsg := msg.Payload.(*protocol.CodeAttestationResponseMessage)
+			codeTracker.deliver(respMsg)
+
 		case protocol.TypeLoadModelStatus:
 			statusMsg := msg.Payload.(*protocol.LoadModelStatusMessage)
 			s.logger.Info("provider load_model_status",
@@ -359,6 +415,84 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}
+	}
+}
+
+// CodeAttestResponseTimeout bounds how long the coordinator waits for the
+// provider's WebSocket reply to an APNs code-identity challenge. Generous because
+// a background push may be briefly delayed; the provider's local decrypt+sign is
+// sub-second.
+const CodeAttestResponseTimeout = 90 * time.Second
+
+// sendCodeIdentityChallenge runs the per-connection APNs code-identity round-trip
+// (v0.6.0): it pushes E_K(nonce) to the provider's device, awaits the provider's
+// code_attestation_response over the WebSocket, verifies it (the returned nonce
+// equals the one we pushed AND Sign_SE over that nonce verifies against the SE
+// public key bound at registration), and marks the connection CodeAttested on
+// success. Fail-closed: any failure leaves CodeAttested false, so once the
+// rollout flag is on the provider is not routed private traffic. The nonce is a
+// base64 string; it is encrypted to the provider's X25519 key K via the same E2E
+// path used for inference bodies, and the signature is the SE P-256 key (K is
+// decrypt-only — there is no Sign_K). See docs/apns-code-attestation-design.md.
+func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID string, provider *registry.Provider, ct *codeAttestTracker) {
+	if s.codeAttestor == nil || provider == nil {
+		return
+	}
+	provider.Mu().Lock()
+	deviceToken := provider.APNsDeviceToken
+	env := provider.APNsEnvironment
+	pubKey := provider.PublicKey
+	var sePubKey string
+	if provider.AttestationResult != nil {
+		sePubKey = provider.AttestationResult.PublicKey
+	}
+	provider.Mu().Unlock()
+
+	if deviceToken == "" || pubKey == "" || sePubKey == "" {
+		s.logger.Warn("code-attest skipped: missing device token, encryption key, or SE key",
+			"provider_id", providerID,
+			"has_token", deviceToken != "",
+			"has_pubkey", pubKey != "",
+			"has_se_key", sePubKey != "",
+		)
+		return
+	}
+
+	nonceBytes := make([]byte, 32)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		s.logger.Error("code-attest nonce generation failed", "provider_id", providerID, "error", err)
+		return
+	}
+	nonceB64 := base64.StdEncoding.EncodeToString(nonceBytes)
+
+	respCh := ct.await(nonceB64)
+	defer ct.cancel(nonceB64)
+
+	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	err := s.codeAttestor.SendCodeChallenge(sendCtx, deviceToken, env, pubKey, nonceB64)
+	cancel()
+	if err != nil {
+		s.logger.Warn("code-attest push send failed", "provider_id", providerID, "error", err)
+		return
+	}
+
+	select {
+	case resp := <-respCh:
+		if resp == nil || resp.Nonce != nonceB64 {
+			s.logger.Warn("code-attest response nonce mismatch", "provider_id", providerID)
+			return
+		}
+		// Verify Sign_SE(nonceB64) against the SE public key bound to THIS
+		// connection at registration — never a key supplied in the response.
+		if err := attestation.VerifyChallengeSignature(sePubKey, resp.Signature, nonceB64); err != nil {
+			s.logger.Warn("code-attest signature verification failed", "provider_id", providerID, "error", err)
+			return
+		}
+		provider.SetCodeAttested(true)
+		s.logger.Info("provider code-attested via APNs", "provider_id", providerID)
+	case <-time.After(CodeAttestResponseTimeout):
+		s.logger.Warn("code-attest timed out awaiting WebSocket response", "provider_id", providerID)
+	case <-ctx.Done():
 	}
 }
 

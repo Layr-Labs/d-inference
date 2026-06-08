@@ -10,6 +10,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case inferenceComplete(InferenceComplete)
     case inferenceError(InferenceError)
     case attestationResponse(AttestationResponse)
+    case codeAttestationResponse(CodeAttestationResponse)
     case loadModelStatus(LoadModelStatus)
 
     public struct Register: Sendable, Equatable {
@@ -31,6 +32,11 @@ public enum ProviderMessage: Sendable, Equatable {
         /// When true, this machine serves only its owner's self-route requests,
         /// never the public fleet. Mirrors RegisterMessage.PrivateOnly (Go).
         public var privateOnly: Bool
+        /// APNs code-identity attestation (v0.6.0). Device token the coordinator
+        /// pushes the E_K(nonce) challenge to + which APNs environment it belongs
+        /// to. Mirrors RegisterMessage.APNsDeviceToken/APNsEnvironment (Go).
+        public var apnsDeviceToken: String?
+        public var apnsEnvironment: String?
 
         public init(
             hardware: HardwareInfo,
@@ -48,7 +54,9 @@ public enum ProviderMessage: Sendable, Equatable {
             runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
             privacyCapabilities: PrivacyCapabilities? = nil,
-            privateOnly: Bool = false
+            privateOnly: Bool = false,
+            apnsDeviceToken: String? = nil,
+            apnsEnvironment: String? = nil
         ) {
             self.hardware = hardware
             self.models = models
@@ -66,6 +74,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
             self.privateOnly = privateOnly
+            self.apnsDeviceToken = apnsDeviceToken
+            self.apnsEnvironment = apnsEnvironment
         }
     }
 
@@ -206,6 +216,21 @@ public enum ProviderMessage: Sendable, Equatable {
             self.modelHashes = modelHashes
         }
     }
+
+    /// Reply to the APNs-delivered code-identity challenge (E_K(nonce) push).
+    /// Returns the decrypted nonce (proves K-possession) + Sign_SE(nonce) (the
+    /// separate SE P-256 key — K is X25519/decrypt-only). The WebSocket return
+    /// leg of the push round-trip; distinct from the liveness AttestationResponse.
+    /// Mirrors CodeAttestationResponseMessage (Go).
+    public struct CodeAttestationResponse: Sendable, Equatable {
+        public var nonce: String
+        public var signature: String
+
+        public init(nonce: String, signature: String) {
+            self.nonce = nonce
+            self.signature = signature
+        }
+    }
 }
 
 // MARK: - ProviderMessage Codable
@@ -219,6 +244,7 @@ extension ProviderMessage: Codable {
         case inferenceComplete = "inference_complete"
         case inferenceError = "inference_error"
         case attestationResponse = "attestation_response"
+        case codeAttestationResponse = "code_attestation_response"
         case loadModelStatus = "load_model_status"
     }
 
@@ -238,6 +264,8 @@ extension ProviderMessage: Codable {
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
         case privateOnly = "private_only"
+        case apnsDeviceToken = "apns_device_token"
+        case apnsEnvironment = "apns_environment"
         // Heartbeat
         case status
         case activeModel = "active_model"
@@ -299,6 +327,8 @@ extension ProviderMessage: Codable {
             if r.privateOnly {
                 try container.encode(true, forKey: .privateOnly)
             }
+            try container.encodeIfPresent(r.apnsDeviceToken, forKey: .apnsDeviceToken)
+            try container.encodeIfPresent(r.apnsEnvironment, forKey: .apnsEnvironment)
 
         case .heartbeat(let h):
             try container.encode(TypeValue.heartbeat, forKey: .type)
@@ -357,6 +387,11 @@ extension ProviderMessage: Codable {
                 try container.encode(a.modelHashes, forKey: .modelHashes)
             }
 
+        case .codeAttestationResponse(let c):
+            try container.encode(TypeValue.codeAttestationResponse, forKey: .type)
+            try container.encode(c.nonce, forKey: .nonce)
+            try container.encode(c.signature, forKey: .signature)
+
         case .loadModelStatus(let l):
             try container.encode(TypeValue.loadModelStatus, forKey: .type)
             try container.encode(l.modelId, forKey: .modelId)
@@ -387,7 +422,9 @@ extension ProviderMessage: Codable {
                 runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
-                privateOnly: try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false
+                privateOnly: try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false,
+                apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
+                apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment)
             ))
 
         case .heartbeat:
@@ -443,6 +480,12 @@ extension ProviderMessage: Codable {
                 runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 modelHashes: try container.decodeIfPresent([String: String].self, forKey: .modelHashes) ?? [:]
+            ))
+
+        case .codeAttestationResponse:
+            self = .codeAttestationResponse(CodeAttestationResponse(
+                nonce: try container.decode(String.self, forKey: .nonce),
+                signature: try container.decode(String.self, forKey: .signature)
             ))
 
         case .loadModelStatus:

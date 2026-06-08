@@ -99,6 +99,15 @@ public enum ProviderProtocolCodec {
             try fields.append(("template_hashes", encodeValue(register.templateHashes)))
         }
         try appendIfPresent(register.privacyCapabilities, key: "privacy_capabilities", to: &fields)
+        // IMPORTANT: this raw-attestation path bypasses the Codable encoder in
+        // Messages.swift, so EVERY Register field must be mirrored here too or it
+        // silently drops for every ATTESTED registration (the production-common
+        // case). private_only was historically missing here; apns_* added v0.6.0.
+        if register.privateOnly {
+            try fields.append(("private_only", encodeValue(true)))
+        }
+        try appendIfPresent(register.apnsDeviceToken, key: "apns_device_token", to: &fields)
+        try appendIfPresent(register.apnsEnvironment, key: "apns_environment", to: &fields)
 
         return makeObject(fields)
     }

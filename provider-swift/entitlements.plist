@@ -4,6 +4,12 @@
 <dict>
     <key>com.apple.application-identifier</key>
     <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
+    <!-- v0.6.0 APNs code-identity attestation. Restricted entitlement: the
+         embedded provisioning profile MUST authorize it or AMFI Killed:9 at
+         launch. CI (release-swift.yml) guards both the profile grant and the
+         signed-binary value so the entitlement never ships without a push profile. -->
+    <key>com.apple.developer.aps-environment</key>
+    <string>production</string>
     <key>com.apple.security.hypervisor</key>
     <true/>
     <key>com.apple.security.network.client</key>

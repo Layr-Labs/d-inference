@@ -67,6 +67,89 @@ import Testing
     #expect(register.privateOnly == true)
 }
 
+@Test func registerEncodesAPNsFieldsOnlyWhenPresent() throws {
+    // Omitted when nil (mirrors Go `omitempty`).
+    let off = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm"
+    ))
+    let offObject = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(off))
+    #expect(offObject["apns_device_token"] == nil)
+    #expect(offObject["apns_environment"] == nil)
+
+    // Present: snake_case keys, round-trips back to the same values.
+    let on = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm",
+        apnsDeviceToken: "cb1ceb489ec9",
+        apnsEnvironment: "production"
+    ))
+    let onData = try ProviderProtocolCodec.encodeProviderMessage(on)
+    let onObject = try jsonObject(onData)
+    #expect(onObject["apns_device_token"] as? String == "cb1ceb489ec9")
+    #expect(onObject["apns_environment"] as? String == "production")
+
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: onData)
+    guard case .register(let register) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(register.apnsDeviceToken == "cb1ceb489ec9")
+    #expect(register.apnsEnvironment == "production")
+}
+
+@Test func registerWithAttestationPreservesAPNsAndPrivateOnly() throws {
+    // The raw-attestation encoding path (ProtocolCodec.encodeRegisterPreservingRawAttestation)
+    // BYPASSES the Codable encoder, so the Codable-path tests above don't cover it.
+    // This is the ATTESTED registration (production-common): every Register field
+    // must survive this path too, or it silently drops on the wire.
+    let raw = #"{"signature":"sig","blob":{"a":1,"b":[true,false]}}"#
+    let message = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm",
+        attestation: RawJSON(rawBytes: Data(raw.utf8)),
+        privateOnly: true,
+        apnsDeviceToken: "cb1ceb489ec9",
+        apnsEnvironment: "production"
+    ))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(message)
+    let object = try jsonObject(data)
+    #expect(object["apns_device_token"] as? String == "cb1ceb489ec9")
+    #expect(object["apns_environment"] as? String == "production")
+    #expect(object["private_only"] as? Bool == true)
+    // Raw attestation bytes preserved verbatim (the reason this path exists).
+    let json = String(data: data, encoding: .utf8) ?? ""
+    #expect(json.contains(#""attestation":\#(raw)"#))
+
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    guard case .register(let r) = decoded else { throw TestFailure.unexpectedMessage }
+    #expect(r.apnsDeviceToken == "cb1ceb489ec9")
+    #expect(r.apnsEnvironment == "production")
+    #expect(r.privateOnly == true)
+}
+
+@Test func codeAttestationResponseEncodesSnakeCaseAndRoundTrips() throws {
+    // The WebSocket return leg of the APNs push round-trip. Must match the Go
+    // CodeAttestationResponseMessage wire shape (type=code_attestation_response).
+    let message = ProviderMessage.codeAttestationResponse(
+        ProviderMessage.CodeAttestationResponse(nonce: "bm9uY2U=", signature: "c2ln")
+    )
+    let data = try ProviderProtocolCodec.encodeProviderMessage(message)
+    let object = try jsonObject(data)
+    #expect(object["type"] as? String == "code_attestation_response")
+    #expect(object["nonce"] as? String == "bm9uY2U=")
+    #expect(object["signature"] as? String == "c2ln")
+
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    guard case .codeAttestationResponse(let resp) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(resp.nonce == "bm9uY2U=")
+    #expect(resp.signature == "c2ln")
+}
+
 @Test func providerMessagesRoundTripThroughCodableEnvelope() throws {
     let messages: [ProviderMessage] = [
         .register(ProviderMessage.Register(

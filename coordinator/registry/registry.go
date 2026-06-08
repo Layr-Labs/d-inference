@@ -215,6 +215,12 @@ type Provider struct {
 	// serves only its owner's self-route requests. Reported at registration.
 	PrivateOnly bool
 
+	// APNs code-identity attestation (v0.6.0). The device token the coordinator
+	// pushes the E_K(nonce) code-identity challenge to, bound 1:1 to PublicKey (K).
+	// Reported at registration; populated once the provider runs its APNs module.
+	APNsDeviceToken string // hex device token from registerForRemoteNotifications
+	APNsEnvironment string // "production" | "development" (selects the APNs host)
+
 	// Benchmark data reported at registration
 	PrefillTPS float64 // prefill tokens per second
 	DecodeTPS  float64 // decode tokens per second
@@ -267,6 +273,19 @@ type Provider struct {
 	// WebSocket and a running challenge loop.
 	untrustedRecoverable bool
 
+	// CodeAttested is true once this connection passed the APNs code-identity
+	// round-trip (E_K(nonce) push → provider returns the decrypted nonce + a
+	// Sign_SE signature over the WS). In-memory + per-connection: a fresh Provider
+	// is created on every (re)connect (default false) and discarded on Disconnect,
+	// so a SIP downgrade — which needs a reboot that drops the WS — forces
+	// re-attestation. Never persisted.
+	CodeAttested bool
+	// codeAttestationRequired gates whether CodeAttested is ENFORCED for routing.
+	// Set at registration from the registry rollout flag, so the requirement is
+	// switched on only once APNs infra + provider support ship; until then the
+	// fleet routes as before. Fail-closed once true (no self-route exemption).
+	codeAttestationRequired bool
+
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
 }
@@ -281,6 +300,12 @@ func providerSupportsPrivateTextLocked(p *Provider) bool {
 	// Require coordinator-verified SIP (from attestation challenge) rather
 	// than trusting the provider's self-reported SIPEnabled field.
 	if !p.ChallengeVerifiedSIP {
+		return false
+	}
+	// v0.6.0 APNs code-identity gate — the SINGLE chokepoint, no self-route
+	// exemption (gate everyone). Enforced only when the rollout flag is on, so the
+	// fleet keeps routing until APNs attestation is deployed; fail-closed after.
+	if p.codeAttestationRequired && !p.CodeAttested {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -372,6 +397,41 @@ func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.ChallengeVerifiedSIP = v
+}
+
+// SetCodeAttested records the result of the APNs code-identity round-trip
+// (thread-safe). Set true only after the provider returns a valid decrypted
+// nonce + Sign_SE over the WebSocket; in-memory only (never persisted).
+func (p *Provider) SetCodeAttested(v bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.CodeAttested = v
+}
+
+// GetCodeAttested reports whether this connection passed code-identity
+// attestation (thread-safe).
+func (p *Provider) GetCodeAttested() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.CodeAttested
+}
+
+// CodeAttestationRequired reports whether code-identity attestation is enforced
+// for this provider's connection (the rollout flag stamped at registration).
+func (p *Provider) CodeAttestationRequired() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.codeAttestationRequired
+}
+
+// SetCodeAttestationRequired toggles the v0.6.0 APNs code-identity rollout flag.
+// When true, providers registered afterward must pass code-identity attestation
+// (CodeAttested) to be routed private/text traffic. Call once at startup after
+// the APNs attestor is configured.
+func (r *Registry) SetCodeAttestationRequired(v bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.codeAttestationRequired = v
 }
 
 // Mu returns the provider's mutex for external callers that need to read
@@ -546,6 +606,14 @@ type Registry struct {
 	queue *RequestQueue
 
 	MinTrustLevel TrustLevel
+
+	// codeAttestationRequired is the v0.6.0 APNs code-identity rollout flag. When
+	// true, providers must pass the APNs code-identity round-trip (CodeAttested)
+	// to be routed private/text traffic. Default false so the fleet keeps routing
+	// until APNs infra + provider support are deployed; set true (via
+	// SetCodeAttestationRequired) once the attestor is configured. Stamped onto
+	// each Provider at registration.
+	codeAttestationRequired bool
 
 	modelCatalog map[string]CatalogEntry
 
@@ -1155,6 +1223,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: msg.EncryptedResponseChunks,
 		PrivateOnly:             msg.PrivateOnly,
+		APNsDeviceToken:         msg.APNsDeviceToken,
+		APNsEnvironment:         msg.APNsEnvironment,
+		codeAttestationRequired: r.codeAttestationRequired,
 		PrefillTPS:              msg.PrefillTPS,
 		DecodeTPS:               msg.DecodeTPS,
 		TrustLevel:              TrustNone,

@@ -23,7 +23,9 @@ public enum CoordinatorClientCodec {
             runtimeHash: config.runtimeHashes?.runtimeHash,
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],
             privacyCapabilities: privacyCapabilities,
-            privateOnly: config.privateOnly
+            privateOnly: config.privateOnly,
+            apnsDeviceToken: config.apnsDeviceToken,
+            apnsEnvironment: config.apnsEnvironment
         ))
     }
 
@@ -102,6 +104,12 @@ public enum CoordinatorClientCodec {
                 runtimeHash: payload.runtimeHash,
                 templateHashes: payload.templateHashes,
                 modelHashes: payload.modelHashes
+            ))
+
+        case .codeAttestationResponse(let nonce, let signature):
+            return .codeAttestationResponse(ProviderMessage.CodeAttestationResponse(
+                nonce: nonce,
+                signature: signature
             ))
 
         case .loadModelStatus(let modelId, let status, let error):

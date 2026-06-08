@@ -234,6 +234,11 @@ public struct CoordinatorClientConfig: Sendable {
     /// serves it exclusively to its owner's self-route requests, never the
     /// public fleet.
     public let privateOnly: Bool
+    /// APNs code-identity (v0.6.0): the device token to push the E_K(nonce)
+    /// code-identity challenge to, and which APNs environment it belongs to.
+    /// nil on headless/no-GUI boxes (no token) — those register un-attested.
+    public let apnsDeviceToken: String?
+    public let apnsEnvironment: String?
 
     public init(
         url: String,
@@ -248,7 +253,9 @@ public struct CoordinatorClientConfig: Sendable {
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
         privacyCapabilities: PrivacyCapabilities? = nil,
-        privateOnly: Bool = false
+        privateOnly: Bool = false,
+        apnsDeviceToken: String? = nil,
+        apnsEnvironment: String? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -263,6 +270,8 @@ public struct CoordinatorClientConfig: Sendable {
         self.modelHashes = modelHashes
         self.privacyCapabilities = privacyCapabilities
         self.privateOnly = privateOnly
+        self.apnsDeviceToken = apnsDeviceToken
+        self.apnsEnvironment = apnsEnvironment
     }
 }
 
@@ -290,6 +299,7 @@ public enum OutboundMessage: Sendable {
     case inferenceComplete(requestId: String, usage: UsageInfo, seSignature: String?, responseHash: String?)
     case inferenceError(requestId: String, error: String, statusCode: UInt16)
     case attestationResponse(AttestationResponsePayload)
+    case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
 }
 

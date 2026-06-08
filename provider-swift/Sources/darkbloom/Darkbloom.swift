@@ -3,7 +3,15 @@ import ArgumentParser
 import Logging
 import ProviderCore
 
-@main
+// NOTE: entry point lives in main.swift (not @main here). The long-running serve
+// modes are hosted under an NSApplication(.accessory) run loop so the process can
+// receive APNs code-identity challenges (v0.6.0); see ProviderAppKitHost. All
+// other commands run through the normal async dispatch.
+//
+// The availability annotation is required because we invoke `Darkbloom.main()`
+// from main.swift instead of via `@main` (which would synthesize it): an async
+// root ParsableCommand must be annotated to run asynchronously.
+@available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
 struct Darkbloom: AsyncParsableCommand {
 
     // Bootstrap swift-log to write to stderr so launchd captures output

@@ -288,68 +288,70 @@ def main():
     counter = {"n": 0}
     clock = {"start": time.monotonic()}
 
-    fout = open(args.out, "w", newline="")
-    writer = csv.writer(fout)
-    writer.writerow(["elapsed_s", "ok", "err", "req_per_s", "tok_per_s",
-                     "ttfb_p50", "ttfb_p95", "ttfb_p99", "total_p50", "total_p95",
-                     "cum_ok", "cum_err", "err_kinds"])
-    fout.flush()
+    # Context manager so the CSV handle is always closed deterministically,
+    # even if an exception fires during setup or the soak run.
+    with open(args.out, "w", newline="") as fout:
+        writer = csv.writer(fout)
+        writer.writerow(["elapsed_s", "ok", "err", "req_per_s", "tok_per_s",
+                         "ttfb_p50", "ttfb_p95", "ttfb_p99", "total_p50", "total_p95",
+                         "cum_ok", "cum_err", "err_kinds"])
+        fout.flush()
 
-    def worker():
-        while not stop.is_set() and time.monotonic() < deadline:
-            with stats.lock:
-                counter["n"] += 1
-                n = counter["n"]
-            do_request(args, n, stats, pool)
+        def worker():
+            while not stop.is_set() and time.monotonic() < deadline:
+                with stats.lock:
+                    counter["n"] += 1
+                    n = counter["n"]
+                do_request(args, n, stats, pool)
 
-    def reporter():
-        last = time.monotonic()
-        while not stop.is_set() and time.monotonic() < deadline:
-            stop.wait(args.report_every_seconds)
-            now = time.monotonic()
-            window = now - last
-            last = now
-            if window <= 0:
-                continue
-            snap = stats.snapshot_and_reset(window)
-            elapsed = round(now - clock["start"], 1)
-            line = [elapsed, snap["ok"], snap["err"], snap["req_per_s"],
-                    snap["tok_per_s"], snap["ttfb_p50"], snap["ttfb_p95"],
-                    snap["ttfb_p99"], snap["total_p50"], snap["total_p95"],
-                    stats.total_ok, stats.total_err, json.dumps(snap["err_kinds"])]
-            writer.writerow(line)
-            fout.flush()
-            print(f"[{elapsed:8.0f}s] ok={snap['ok']:4d} err={snap['err']:3d} "
-                  f"req/s={snap['req_per_s']:6.2f} tok/s={snap['tok_per_s']:7.1f} "
-                  f"ttfb p50/p95/p99={snap['ttfb_p50']:.2f}/{snap['ttfb_p95']:.2f}/{snap['ttfb_p99']:.2f}s "
-                  f"cum_err={stats.total_err}"
-                  + (f"  ERR={snap['err_kinds']}" if snap['err_kinds'] else ""),
-                  flush=True)
+        def reporter():
+            last = time.monotonic()
+            while not stop.is_set() and time.monotonic() < deadline:
+                stop.wait(args.report_every_seconds)
+                now = time.monotonic()
+                window = now - last
+                last = now
+                if window <= 0:
+                    continue
+                snap = stats.snapshot_and_reset(window)
+                elapsed = round(now - clock["start"], 1)
+                line = [elapsed, snap["ok"], snap["err"], snap["req_per_s"],
+                        snap["tok_per_s"], snap["ttfb_p50"], snap["ttfb_p95"],
+                        snap["ttfb_p99"], snap["total_p50"], snap["total_p95"],
+                        stats.total_ok, stats.total_err, json.dumps(snap["err_kinds"])]
+                writer.writerow(line)
+                fout.flush()
+                print(f"[{elapsed:8.0f}s] ok={snap['ok']:4d} err={snap['err']:3d} "
+                      f"req/s={snap['req_per_s']:6.2f} tok/s={snap['tok_per_s']:7.1f} "
+                      f"ttfb p50/p95/p99={snap['ttfb_p50']:.2f}/{snap['ttfb_p95']:.2f}/{snap['ttfb_p99']:.2f}s "
+                      f"cum_err={stats.total_err}"
+                      + (f"  ERR={snap['err_kinds']}" if snap['err_kinds'] else ""),
+                      flush=True)
 
-    if pool:
-        tok = f" ~{args.prompt_tokens}tok" if args.prompt_tokens > 0 else ""
-        mode = f"pool={args.prefix_pool}x(base*{effective_repeat}{tok}) unique={args.unique_fraction:.0%}"
-    else:
-        mode = f"legacy shared={args.shared_fraction:.0%}"
-    print(f"soak: {args.duration_minutes}min @ concurrency={args.concurrency} "
-          f"model={args.model} {mode} -> {args.out}", flush=True)
-    rep = threading.Thread(target=reporter, daemon=True)
-    rep.start()
-    try:
-        with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-            for _ in range(args.concurrency):
-                ex.submit(worker)
-            while time.monotonic() < deadline and not stop.is_set():
-                time.sleep(1.0)
-    except KeyboardInterrupt:
-        print("\ninterrupted — draining", flush=True)
-    finally:
-        stop.set()
-        time.sleep(0.2)
-        fout.flush(); fout.close()
-        print(f"\nDONE: cum_ok={stats.total_ok} cum_err={stats.total_err} "
-              f"cum_tokens={stats.total_tokens}. CSV: {args.out}", flush=True)
-        sys.exit(1 if stats.total_ok == 0 else 0)
+        if pool:
+            tok = f" ~{args.prompt_tokens}tok" if args.prompt_tokens > 0 else ""
+            mode = f"pool={args.prefix_pool}x(base*{effective_repeat}{tok}) unique={args.unique_fraction:.0%}"
+        else:
+            mode = f"legacy shared={args.shared_fraction:.0%}"
+        print(f"soak: {args.duration_minutes}min @ concurrency={args.concurrency} "
+              f"model={args.model} {mode} -> {args.out}", flush=True)
+        rep = threading.Thread(target=reporter, daemon=True)
+        rep.start()
+        try:
+            with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+                for _ in range(args.concurrency):
+                    ex.submit(worker)
+                while time.monotonic() < deadline and not stop.is_set():
+                    time.sleep(1.0)
+        except KeyboardInterrupt:
+            print("\ninterrupted — draining", flush=True)
+        finally:
+            stop.set()
+            time.sleep(0.2)
+            fout.flush()  # the `with` closes the handle on exit (incl. SystemExit)
+            print(f"\nDONE: cum_ok={stats.total_ok} cum_err={stats.total_err} "
+                  f"cum_tokens={stats.total_tokens}. CSV: {args.out}", flush=True)
+            sys.exit(1 if stats.total_ok == 0 else 0)
 
 
 if __name__ == "__main__":

@@ -712,9 +712,14 @@ public struct ModelDownloader: Sendable {
         // would spuriously fail a resume that has plenty of room for what remains.
         // Publishing is a same-volume move of the staging dir, so staged bytes
         // need no extra headroom.
+        // Count bytes already saved in each file's resumable `.part` so a tight-
+        // disk resume isn't rejected for lacking room equal to a whole shard when
+        // the byte-resume below will only append the missing suffix via `Range`.
+        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
         let remainingBytes = Self.remainingBytesToFetch(
             sizes: jobs.map(\.file.sizeBytes),
-            alreadyValid: alreadyValid
+            alreadyValid: alreadyValid,
+            partBytes: partBytes
         )
         try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: remainingBytes)
 
@@ -914,17 +919,17 @@ public struct ModelDownloader: Sendable {
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
-        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: manifest.totalSizeBytes)
 
-        let stagingDir = snapshotsDir.appendingPathComponent(".local-staging-\(UUID().uuidString)", isDirectory: true)
+        // STABLE staging dir keyed by the manifest prefix (NOT a random UUID) so an
+        // interrupted foreground download resumes — already-completed files are
+        // skipped instead of re-fetching the whole model. Same resume contract as
+        // the background `prefetch` path: staging is kept on a transient failure
+        // and cleared only on an aggregate-hash mismatch (poison) below.
+        let stagingName = ".local-staging-" + manifest.r2Prefix
+            .replacingOccurrences(of: "/", with: "__")
+            .replacingOccurrences(of: "\\", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-
-        var completed = false
-        defer {
-            if !completed {
-                try? FileManager.default.removeItem(at: stagingDir)
-            }
-        }
 
         let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
             let relativePath = try Self.validatedManifestRelativePath(file.path)
@@ -934,6 +939,23 @@ public struct ModelDownloader: Sendable {
                 url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
             )
         }
+
+        // Resume: skip files already staged + valid, and size the capacity
+        // pre-check to only the bytes that remain (less anything already saved in a
+        // `.part`) so a near-complete resume isn't rejected for lacking room equal
+        // to the whole model. Only the not-yet-valid files are enqueued below.
+        let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
+        // The foreground per-file downloader does a full GET (it does NOT byte-
+        // resume — it deletes any stale `.part`), so only fully-valid files are
+        // creditable here; every not-yet-valid file needs its full size. (Only the
+        // background `prefetch` path byte-resumes and may credit `.part` bytes.)
+        try Self.ensureAvailableCapacity(
+            at: snapshotsDir,
+            requiredBytes: Self.remainingBytesToFetch(
+                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid
+            )
+        )
+        let pending = zip(jobs, alreadyValid).filter { !$0.1 }.map(\.0)
 
         // Set up delegate-based session for progress tracking.
         let tracker = DownloadProgressTracker()
@@ -957,8 +979,8 @@ public struct ModelDownloader: Sendable {
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 var next = 0
-                for _ in 0..<min(concurrency, jobs.count) {
-                    let job = jobs[next]
+                for _ in 0..<min(concurrency, pending.count) {
+                    let job = pending[next]
                     next += 1
                     group.addTask {
                         try await self.downloadManifestFileWithProgress(
@@ -968,8 +990,8 @@ public struct ModelDownloader: Sendable {
                 }
 
                 while try await group.next() != nil {
-                    if next < jobs.count {
-                        let job = jobs[next]
+                    if next < pending.count {
+                        let job = pending[next]
                         next += 1
                         group.addTask {
                             try await self.downloadManifestFileWithProgress(
@@ -989,17 +1011,36 @@ public struct ModelDownloader: Sendable {
             renderTask.cancel()
             // One last render so the user sees where things stopped.
             renderer.render(tracker.allProgress)
+            // Keep staging ONLY if it holds resumable content (a completed file or
+            // a `.part`); otherwise remove the empty husk so a first-file failure
+            // doesn't leave a stray staging dir behind. (Size check only — a
+            // promoted file is full-size + SHA-verified; size/SHA failures are
+            // removed before this point.)
+            let hasResumable = jobs.contains {
+                fileSize($0.destination) == $0.file.sizeBytes
+                    || fileSize($0.destination.appendingPathExtension("part")) > 0
+            }
+            if !hasResumable {
+                try? FileManager.default.removeItem(at: stagingDir)
+            }
             throw error
         }
 
         let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
         guard aggregate == manifest.aggregateSHA256 else {
+            // Internally-valid files that don't match the claimed aggregate = a
+            // poisoned manifest; clear staging so a corrected manifest re-downloads
+            // (otherwise skip-valid would re-fail the aggregate forever). Transient
+            // per-file/network failures throw earlier and deliberately KEEP staging
+            // so the next attempt resumes.
+            try? FileManager.default.removeItem(at: stagingDir)
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
         }
 
         try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
         try writeMainRef(for: model.id)
-        completed = true
+        // Staging was consumed by publishStagedSnapshot; best-effort husk cleanup.
+        try? FileManager.default.removeItem(at: stagingDir)
     }
 
     /// Download a single manifest file using delegate-based URLSession for
@@ -1474,16 +1515,23 @@ public struct ModelDownloader: Sendable {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Bytes that still need to be downloaded for a (possibly resumed) prefetch:
-    /// the sum of sizes of files NOT already present-and-valid in staging. On a
-    /// fresh prefetch every file is needed (== manifest total); on a resume most
-    /// are already valid, so only the gap is required. Drives the disk capacity
-    /// pre-check so a resume isn't spuriously rejected for lacking room for bytes
-    /// that are already on disk. `sizes` and `alreadyValid` are parallel arrays.
-    static func remainingBytesToFetch(sizes: [Int64], alreadyValid: [Bool]) -> Int64 {
-        zip(sizes, alreadyValid).reduce(Int64(0)) { acc, pair in
-            pair.1 ? acc : acc + pair.0
+    /// Bytes still to fetch on a (possibly resumed) prefetch/download. For each
+    /// file not already fully valid on disk, this is its size MINUS any bytes
+    /// already saved in its resumable `.part` file — a byte-resume appends to that
+    /// prefix via HTTP `Range`, so those bytes don't need re-downloading and must
+    /// not be charged against free disk (otherwise a near-complete resume of a big
+    /// shard is rejected for lacking room equal to the whole shard).
+    /// `partBytes[i]` is the size of file i's `.part` (0 if none / not resumable);
+    /// each term is floored at 0 so a stale over-long `.part` can't go negative.
+    /// Omitting `partBytes` degrades to "sum of not-yet-valid file sizes".
+    static func remainingBytesToFetch(sizes: [Int64], alreadyValid: [Bool], partBytes: [Int64] = []) -> Int64 {
+        var total: Int64 = 0
+        for i in sizes.indices {
+            if i < alreadyValid.count, alreadyValid[i] { continue }
+            let have = i < partBytes.count ? max(0, partBytes[i]) : 0
+            total += max(0, sizes[i] - have)
         }
+        return total
     }
 
     private static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {

@@ -216,6 +216,79 @@ func TestMigrationStartEndpoint(t *testing.T) {
 	}
 }
 
+// Starting a second migration for an alias while one is already active is
+// rejected (409). Overlapping migrations would strand the prior split's builds
+// at nonzero weight, so the operator must pause/rollback the active one first.
+func TestMigrationStartRejectsActiveMigration(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	const qat2 = "mlx-community/gemma-4-26B-A4B-it-qat-5bit"
+	seedActiveModel(t, st, fp8, "fp8")
+	seedActiveModel(t, st, qat, "qat")
+	seedActiveModel(t, st, qat2, "qat2")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		Builds: []store.ModelAliasBuild{{BuildID: fp8, Weight: 100, Active: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := func(from, to string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{
+			"alias_id": "gemma-4-26b", "from_build": from, "to_build": to,
+			"batch_size": 2, "max_step_percent": 20,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := start(fp8, qat); rec.Code != http.StatusOK {
+		t.Fatalf("first start = %d body=%s", rec.Code, rec.Body.String())
+	}
+	// Second start while the first is active must be rejected with 409.
+	if rec := start(fp8, qat2); rec.Code != http.StatusConflict {
+		t.Fatalf("second start status = %d (want 409); body=%s", rec.Code, rec.Body.String())
+	}
+	// The active migration must be unchanged by the rejected start (still →qat).
+	if m, ok, _ := st.GetModelMigration("gemma-4-26b"); !ok || m.ToBuild != qat {
+		t.Fatalf("active migration was mutated by the rejected start: %+v", m)
+	}
+
+	// Pausing does NOT make a restart safe (the paused split's `to` build stays at
+	// nonzero weight), so a paused migration also blocks a new start.
+	pause := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations/gemma-4-26b/pause", nil)
+	pause.Header.Set("Authorization", "Bearer publish-secret")
+	pauseRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(pauseRec, pause)
+	if pauseRec.Code != http.StatusOK {
+		t.Fatalf("pause = %d body=%s", pauseRec.Code, pauseRec.Body.String())
+	}
+	if rec := start(fp8, qat2); rec.Code != http.StatusConflict {
+		t.Fatalf("start while paused = %d (want 409); body=%s", rec.Code, rec.Body.String())
+	}
+
+	// After rollback, a new migration is allowed again (the guard only blocks
+	// while a migration is ACTIVE or PAUSED, not after it is rolled back).
+	rb := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations/gemma-4-26b/rollback", nil)
+	rb.Header.Set("Authorization", "Bearer publish-secret")
+	rbRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rbRec, rb)
+	if rbRec.Code != http.StatusOK {
+		t.Fatalf("rollback = %d body=%s", rbRec.Code, rbRec.Body.String())
+	}
+	if rec := start(fp8, qat2); rec.Code != http.StatusOK {
+		t.Fatalf("start after rollback = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // Deleting an alias must also remove its migration — otherwise the controller
 // would keep ramping and applyWeights would recreate the deleted alias.
 func TestDeletingAliasStopsMigration(t *testing.T) {

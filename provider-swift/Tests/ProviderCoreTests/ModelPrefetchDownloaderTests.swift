@@ -701,6 +701,23 @@ struct ModelPrefetchDownloaderTests {
         )
         #expect(none == 0)
 
+        // Codex P2 fix: bytes already saved in a `.part` must be credited so a
+        // near-complete resume of a big shard isn't charged the whole shard. Here
+        // the 10 GB shard already has 9.5 GB in its `.part`, the 2 GB file is fully
+        // valid, and the 0.5 GB file is untouched → only 0.5 GB (shard remainder)
+        // + 0.5 GB = 1.0 GB remains, NOT 10.5 GB.
+        let withPart = ModelDownloader.remainingBytesToFetch(
+            sizes: sizes,
+            alreadyValid: [false, true, false],
+            partBytes: [9_500_000_000, 0, 0]
+        )
+        #expect(withPart == 1_000_000_000)
+        // A stale `.part` longer than the file can't drive the requirement below 0.
+        let overlong = ModelDownloader.remainingBytesToFetch(
+            sizes: [1_000], alreadyValid: [false], partBytes: [5_000]
+        )
+        #expect(overlong == 0)
+
         // End-to-end: pre-stage the large file as valid, leave a tiny file to
         // fetch. The capacity pre-check (now sized to remaining bytes) must NOT
         // reject the resume, and prefetch completes + publishes.
@@ -753,6 +770,65 @@ struct ModelPrefetchDownloaderTests {
         #expect(!fetched.contains("/\(prefix)/big.safetensors")) // big was skipped
         #expect(try Data(contentsOf: cacheDir.appendingPathComponent("big.safetensors")) == bigBytes)
         #expect(try Data(contentsOf: cacheDir.appendingPathComponent("small.json")) == smallBytes)
+    }
+
+    @Test("foreground download resumes: already-valid staged files are skipped, only missing files fetched")
+    func foregroundDownloadResumesFromStaging() async throws {
+        // The foreground (serve-time) download path must also resume an interrupted
+        // download instead of restarting from zero: a file already staged + valid is
+        // skipped and only the missing file is fetched. (Previously the foreground
+        // path used a throwaway UUID staging dir and re-downloaded everything.)
+        PrefetchURLProtocol.reset()
+        let modelID = "test-org/fg-resume-\(UUID().uuidString)"
+        let prefix = "v2/fg-resume/v1"
+        let bigBytes = Data((0..<300_000).map { UInt8(($0 &* 13) & 0xFF) })
+        let smallBytes = Data("foreground remaining file".utf8)
+        let files = [
+            ManifestFile(path: "model-00001-of-00001.safetensors", sizeBytes: Int64(bigBytes.count), sha256: sha256Hex(bigBytes), role: "weight"),
+            ManifestFile(path: "config.json", sizeBytes: Int64(smallBytes.count), sha256: sha256Hex(smallBytes), role: "config"),
+        ]
+        let aggregate = aggregateHash(files: [
+            ("model-00001-of-00001.safetensors", bigBytes),
+            ("config.json", smallBytes),
+        ])
+        let manifest = ModelManifest(
+            schemaVersion: 1, modelID: modelID, version: "v1", r2Prefix: prefix,
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(bigBytes.count + smallBytes.count),
+            fileCount: 2, files: files, createdAt: Date(timeIntervalSince1970: 0)
+        )
+        // Serve manifest.json the same way the CDN decoder expects (iso8601 dates,
+        // explicit snake_case CodingKeys round-trip through manifestDecoder).
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        PrefetchURLProtocol.files = [
+            "/\(prefix)/manifest.json": try enc.encode(manifest),
+            "/\(prefix)/model-00001-of-00001.safetensors": bigBytes,
+            "/\(prefix)/config.json": smallBytes,
+        ]
+
+        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        // Pre-seed the FOREGROUND staging dir with the VALID big file (an
+        // interrupted prior foreground download).
+        let stagingName = ".local-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        try bigBytes.write(to: stagingDir.appendingPathComponent("model-00001-of-00001.safetensors"))
+
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "FG", sizeGb: 0.001,
+                                 r2Prefix: prefix, aggregateSHA256: aggregate)
+
+        try await downloader.download(model: model)
+
+        let fetched = PrefetchURLProtocol.fetchedPaths()
+        #expect(fetched.contains("/\(prefix)/config.json")) // missing file fetched
+        #expect(!fetched.contains("/\(prefix)/model-00001-of-00001.safetensors")) // staged file skipped
+        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("model-00001-of-00001.safetensors")) == bigBytes)
+        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("config.json")) == smallBytes)
     }
 
     @Test("prefetch fails on aggregate hash mismatch and does not publish")

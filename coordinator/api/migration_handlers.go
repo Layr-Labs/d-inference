@@ -68,6 +68,19 @@ func (s *Server) handleMigrationStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject if a migration for this alias is already in progress (active OR
+	// paused). Overlapping migrations would strand the previous split's builds at
+	// nonzero weight (the controller only adjusts this migration's from/to), so
+	// the old build keeps taking alias traffic. Pausing does NOT make a restart
+	// safe — the paused split's `to` build is still at nonzero weight — so a
+	// paused migration blocks too; roll it back first, then start the next leg.
+	if existing, ok, err := s.store.GetModelMigration(req.AliasID); err == nil && ok &&
+		(existing.Status == store.MigrationActive || existing.Status == store.MigrationPaused) {
+		writeJSON(w, http.StatusConflict, errorResponse("conflict",
+			"a migration for "+req.AliasID+" is already in progress (status "+existing.Status+", from "+existing.FromBuild+" to "+existing.ToBuild+"); roll it back before starting another"))
+		return
+	}
+
 	// Ensure the alias contains both builds. from keeps its current weight (or
 	// 100 if absent); to starts drained at 0 and the controller ramps it up.
 	if buildWeight(alias, req.FromBuild) < 0 {

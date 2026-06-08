@@ -72,6 +72,11 @@ extension StandaloneServer {
                 guard let self else { return [] }
                 return await self.advertisedModelIds()
             },
+            // The --local path can't carry a per-request prompt_cache_key, so
+            // allow a fixed per-server scope via DARKBLOOM_PREFIX_CACHE_SCOPE.
+            // "" ⇒ unscoped (default). Used to validate cross-tenant isolation
+            // on a single box (two servers, two scopes, one cache dir).
+            cacheScope: ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_SCOPE"] ?? "",
             onServerRunning: { [weak self] _ in
                 await self?.markBound()
             }

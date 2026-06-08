@@ -122,7 +122,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         acquire: @escaping @Sendable (String) async throws -> AcquiredModel,
         tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
         availableModels: @escaping @Sendable () async -> [String],
-        defaultMaxTokens: Int = 4096
+        defaultMaxTokens: Int = 4096,
+        cacheScope: String = ""
     ) {
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
@@ -133,7 +134,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = nil
-        self.cacheScope = ""
+        // Fixed per-server scope for the standalone (--local) path, which can't
+        // carry a per-request prompt_cache_key through the upstream router. ""
+        // ⇒ unscoped (default). Set via DARKBLOOM_PREFIX_CACHE_SCOPE; used to
+        // exercise/validate cross-tenant isolation on a single box.
+        self.cacheScope = cacheScope
     }
 
     // MARK: - MLXServerEngine

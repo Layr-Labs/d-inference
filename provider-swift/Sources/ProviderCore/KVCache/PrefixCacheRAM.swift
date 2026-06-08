@@ -1,34 +1,19 @@
-/// PrefixCacheRAM — the in-process, decrypted RAM tier of the SSD KV
-/// cache (design doc §4.1, phase P1).
+/// PrefixCacheRAM — the in-process, decrypted RAM tier of the SSD KV cache
+/// (design doc §4.1). Holds recently-used prefix KV snapshots as live
+/// `[any KVCache]` (one per layer, extracted to single-row form via
+/// `BatchedCache.extractBatched(row)`) so a repeat request whose prompt prefix
+/// matches a cached checkpoint hits RAM (~ms) instead of decrypting from SSD or
+/// cold-prefilling. A plain `final class` (NOT `Sendable` — stores MLXArrays);
+/// owned and serialized by the `PrefixCacheManager` actor.
 ///
-/// Holds recently-used prefix KV snapshots as live `[any KVCache]`
-/// (one cache per transformer layer, already extracted to single-row
-/// / single-stream form via `BatchedCache.extractBatched(row)`). A
-/// repeat request whose prompt prefix is byte-identical to a cached
-/// checkpoint hits RAM (~ms) instead of decrypting from SSD or running
-/// a cold prefill.
-///
-/// Scope of P1: RAM only — no SSD, no encryption, no BatchScheduler
-/// wiring. Those are later phases. This type is a plain `final class`
-/// (NOT `Sendable`: it stores non-Sendable MLXArrays). It is meant to
-/// be owned and serialized by the `PrefixCacheManager` actor in P3;
-/// the unit tests exercise it single-threaded.
-///
-/// MODEL BINDING (MB-1): entries are keyed by `(modelHash,
-/// prefixDigest)`. A lookup for model B structurally cannot return
-/// model A's entry — the RAM-tier half of the model-binding guarantee
-/// (the SSD tier adds the metadata equality check in §8.1.1).
-///
-/// SNAPSHOT INTEGRITY: `get` returns `copy()` of each stored cache, so
-/// the caller may mutate the returned caches (seed a batch row, decode)
-/// without corrupting the stored snapshot. `put` takes ownership of the
-/// caches it is given — the caller must not mutate them afterward.
-/// Regression-guarded by `getReturnsIndependentCopy`.
-///
-/// EVICTION: LRU by a monotonic use-counter (not wall-clock — keeps the
-/// type deterministic and avoids `Date.now()`). Bounded by both an
-/// entry count and a byte budget; `put` evicts least-recently-used
-/// entries until both are satisfied.
+/// - MB-1 (model binding): entries are keyed by `(modelHash, prefixDigest)`, so
+///   a lookup for model B can't return model A's entry. The SSD tier adds the
+///   metadata equality check (§8.1.1).
+/// - Snapshot integrity: `get` returns a `copy()` of each cache (caller may
+///   mutate freely); `put` takes ownership (caller must not mutate after).
+///   Guarded by `getReturnsIndependentCopy`.
+/// - Eviction: LRU by a monotonic use-counter (deterministic, no wall-clock),
+///   bounded by both an entry count and a byte budget.
 
 import Foundation
 import MLX

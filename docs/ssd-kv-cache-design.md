@@ -487,7 +487,7 @@ batch row without copy.
 ### 8.1.1 MANDATORY model-binding guard
 
 > See the read-path flowchart:
-> [`ssd-kv-cache-model-binding.svg`](ssd-kv-cache-model-binding.svg)
+> [`ssd-kv-cache-model-binding.png`](ssd-kv-cache-model-binding.png)
 > (source: [`ssd-kv-cache-model-binding.mmd`](ssd-kv-cache-model-binding.mmd)).
 > It shows where MB-1 sits — between metadata-read and decrypt — and why
 > the AES-GCM layer alone would let a wrong-model file through. Open the

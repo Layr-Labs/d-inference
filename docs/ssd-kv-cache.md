@@ -585,4 +585,4 @@ case.
 
 Design rationale, threat model, phased plan, open questions:
 **[ssd-kv-cache-design.md](ssd-kv-cache-design.md)**. Model-binding diagram:
-`ssd-kv-cache-model-binding.svg`.
+[`ssd-kv-cache-model-binding.png`](ssd-kv-cache-model-binding.png).

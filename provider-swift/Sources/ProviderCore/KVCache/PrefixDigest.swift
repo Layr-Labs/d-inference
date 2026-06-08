@@ -90,12 +90,37 @@ public enum PrefixDigest {
     /// Domain-separation tag mixed in before any tokens.
     private static let domainTag = Data("dbkv-prefix-v1".utf8)
 
-    /// Compute the digest of exactly the first `length` tokens.
+    /// Per-tenant scope tag, mixed in AFTER the domain tag and BEFORE the
+    /// tokens. `scope` is an opaque per-consumer string (e.g.
+    /// `SHA256(prompt_cache_key)`); folding it into the digest makes a cached
+    /// prefix for tenant A undiscoverable by tenant B (closes the TB-007
+    /// cross-tenant prefix-sharing channel for the checkpoint tier).
+    ///
+    /// BACK-COMPAT INVARIANT: an EMPTY scope mixes in NOTHING, so the digest is
+    /// byte-identical to the pre-scope implementation. Existing on-disk
+    /// checkpoint files (written unscoped) therefore still match an unscoped
+    /// lookup. A non-empty scope is length-prefixed (`"dbkv-scope-v1" ‖
+    /// u64(len) ‖ scopeBytes`) so it can't collide with token data or with a
+    /// different-length scope.
+    private static let scopeTag = Data("dbkv-scope-v1".utf8)
+
+    private static func mixScope(_ scope: String, into hasher: inout SHA256) {
+        guard !scope.isEmpty else { return }  // empty ⇒ identical to pre-scope digest
+        let bytes = Data(scope.utf8)
+        hasher.update(data: scopeTag)
+        var len = UInt64(bytes.count).littleEndian
+        withUnsafeBytes(of: &len) { hasher.update(data: Data($0)) }
+        hasher.update(data: bytes)
+    }
+
+    /// Compute the digest of exactly the first `length` tokens, scoped to
+    /// `scope` (empty ⇒ unscoped, byte-identical to the legacy digest).
     /// `length` must be in `0...tokens.count`.
-    public static func digest(tokens: [Int], length: Int) -> Data {
+    public static func digest(tokens: [Int], length: Int, scope: String = "") -> Data {
         precondition(length >= 0 && length <= tokens.count, "length out of range")
         var hasher = SHA256()
         hasher.update(data: domainTag)
+        mixScope(scope, into: &hasher)
         for i in 0..<length {
             appendToken(tokens[i], to: &hasher)
         }
@@ -104,9 +129,11 @@ public enum PrefixDigest {
 
     /// Compute `(length, digest)` for every checkpoint boundary `≤
     /// tokens.count`, ascending by length. Single pass over the tokens.
+    /// `scope` (empty ⇒ unscoped) is folded in identically to `digest(...)`.
     public static func checkpoints(
         tokens: [Int],
-        boundaries: [Int] = defaultCheckpoints
+        boundaries: [Int] = defaultCheckpoints,
+        scope: String = ""
     ) -> [(length: Int, digest: Data)] {
         // Dedup so a caller passing a duplicated boundary doesn't get a
         // double-emitted checkpoint.
@@ -115,6 +142,7 @@ public enum PrefixDigest {
 
         var hasher = SHA256()
         hasher.update(data: domainTag)
+        mixScope(scope, into: &hasher)
 
         var result: [(length: Int, digest: Data)] = []
         var bi = 0

@@ -1,4 +1,5 @@
 import Foundation
+import Crypto
 
 // MARK: - Request Types
 
@@ -25,6 +26,12 @@ public struct ChatCompletionRequest: Codable, Sendable {
     public let response_format: ResponseFormat?
     /// User identifier for rate-limit / abuse tracking.
     public let user: String?
+    /// OpenAI-compatible opaque per-consumer cache key. When present, scopes
+    /// the prefix cache so a cached prefix for one consumer can't be hit by
+    /// another (closes the TB-007 cross-tenant prefix-sharing channel for the
+    /// checkpoint tier). Rides INSIDE the E2E-sealed body, so the coordinator
+    /// never sees it; the provider reads it after decryption.
+    public let prompt_cache_key: String?
 
     public init(
         model: String,
@@ -42,7 +49,8 @@ public struct ChatCompletionRequest: Codable, Sendable {
         tools: [ToolDefinition]? = nil,
         tool_choice: ToolChoice? = nil,
         response_format: ResponseFormat? = nil,
-        user: String? = nil
+        user: String? = nil,
+        prompt_cache_key: String? = nil
     ) {
         self.model = model
         self.messages = messages
@@ -60,6 +68,23 @@ public struct ChatCompletionRequest: Codable, Sendable {
         self.tool_choice = tool_choice
         self.response_format = response_format
         self.user = user
+        self.prompt_cache_key = prompt_cache_key
+    }
+
+    /// Per-tenant prefix-cache scope for this request. Policy (provider-only):
+    /// `SHA256(prompt_cache_key)` when present, else `SHA256(user)` when
+    /// present, else "" (unscoped — shared cache, current behavior). Hashing
+    /// keeps the on-disk/in-memory scope opaque and fixed-width regardless of
+    /// the raw key. Empty inputs (`""`) are treated as absent.
+    public var cacheScope: String {
+        if let k = prompt_cache_key, !k.isEmpty { return Self.scopeHash(k) }
+        if let u = user, !u.isEmpty { return Self.scopeHash(u) }
+        return ""
+    }
+
+    static func scopeHash(_ s: String) -> String {
+        let d = SHA256.hash(data: Data(s.utf8))
+        return d.map { String(format: "%02x", $0) }.joined()
     }
 }
 

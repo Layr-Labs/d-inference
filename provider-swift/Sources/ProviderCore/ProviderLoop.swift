@@ -655,6 +655,10 @@ public actor ProviderLoop {
         // Harmony reads it to set the reasoning budget; other models
         // ignore the extra template variable.
         let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
+        // Per-tenant prefix-cache scope (prompt_cache_key / user). Decoded from
+        // the sealed body like reasoning_effort; threaded into the engine so the
+        // checkpoint cache is partitioned per consumer. "" ⇒ unscoped.
+        let cacheScope = Self.extractCacheScope(from: decryptedData)
 
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
         // then waits for the first chunk with the full inference timeout, so we
@@ -796,7 +800,8 @@ public actor ProviderLoop {
                 reserveModel: { _ in },
                 releaseModel: { _ in },
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-                reasoningEffort: reasoningEffort
+                reasoningEffort: reasoningEffort,
+                cacheScope: cacheScope
             )
 
             // Force-stream so we get SSE frames even if the original request

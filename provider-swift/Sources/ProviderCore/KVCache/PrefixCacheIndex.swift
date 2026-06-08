@@ -114,10 +114,13 @@ public final class PrefixCacheIndex {
     public func findLongestCheckpoint(
         modelHash: String,
         tokens: [Int],
-        boundaries: [Int] = PrefixDigest.defaultCheckpoints
+        boundaries: [Int] = PrefixDigest.defaultCheckpoints,
+        scope: String = ""
     ) -> PrefixIndexEntry? {
         guard let modelEntries = byModel[modelHash], !modelEntries.isEmpty else { return nil }
-        let checkpoints = PrefixDigest.checkpoints(tokens: tokens, boundaries: boundaries)
+        // Scoped digests: a different scope yields different boundary digests,
+        // so a scope-A lookup can never match a scope-B index entry.
+        let checkpoints = PrefixDigest.checkpoints(tokens: tokens, boundaries: boundaries, scope: scope)
         // Longest first.
         for cp in checkpoints.reversed() {
             if let entry = modelEntries[cp.digest.dbkvHexString] {

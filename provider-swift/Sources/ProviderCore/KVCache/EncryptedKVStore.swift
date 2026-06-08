@@ -98,6 +98,14 @@ public struct EncryptedKVStoreMetadata: Codable, Sendable, Equatable {
     public let chunkPlaintextSizes: [Int]
     public let createdAt: Int64
     public let expiresAt: Int64?
+    /// Per-tenant cache scope (e.g. `SHA256(prompt_cache_key)`). Bound into the
+    /// GCM AAD via the metadata JSON, and re-checked on read (MB-1-style), so a
+    /// file written under scope A cannot be opened/served under scope B even if
+    /// a filename/digest collision were engineered. OPTIONAL + nil-by-default:
+    /// an unscoped write omits the key entirely (synthesized Codable +
+    /// JSONEncoder drop nil), so the AAD bytes of pre-scope files are unchanged
+    /// and they still decrypt. nil and "" are treated as the same unscoped value.
+    public let scope: String?
     public let schema: String
 
     public init(
@@ -114,7 +122,8 @@ public struct EncryptedKVStoreMetadata: Codable, Sendable, Equatable {
         metaState: [String],
         chunkPlaintextSizes: [Int],
         createdAt: Int64 = Int64(Date().timeIntervalSince1970),
-        expiresAt: Int64? = nil
+        expiresAt: Int64? = nil,
+        scope: String? = nil
     ) {
         self.magic = "DBKV"
         self.formatVersion = Int(EncryptedKVStore.formatVersion)
@@ -132,6 +141,9 @@ public struct EncryptedKVStoreMetadata: Codable, Sendable, Equatable {
         self.chunkPlaintextSizes = chunkPlaintextSizes
         self.createdAt = createdAt
         self.expiresAt = expiresAt
+        // Normalize "" to nil so empty-scope writes stay byte-identical to
+        // pre-scope files (no `scope` key in the JSON/AAD).
+        self.scope = (scope?.isEmpty == false) ? scope : nil
         self.schema = "darkbloom.kv.v1"
     }
 }

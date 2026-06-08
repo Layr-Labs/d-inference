@@ -80,6 +80,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// allowed set is model-specific and lives in each model's Jinja
     /// template, so passing through is the format-agnostic choice.
     private let reasoningEffort: String?
+    /// Per-tenant prefix-cache scope (`SHA256(prompt_cache_key)`/`user`, ""
+    /// ⇒ unscoped). Threaded into `submitTokenized` so the checkpoint cache is
+    /// partitioned per consumer (closes the TB-007 cross-tenant channel).
+    private let cacheScope: String
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -87,7 +91,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         reserveModel: @escaping @Sendable (String) async -> Void = { _ in },
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
-        reasoningEffort: String? = nil
+        reasoningEffort: String? = nil,
+        cacheScope: String = ""
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -95,6 +100,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = reasoningEffort
+        self.cacheScope = cacheScope
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -127,6 +133,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = nil
+        self.cacheScope = ""
     }
 
     // MARK: - MLXServerEngine
@@ -227,7 +234,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             temperature: temperature,
             topP: request.topP,
             topK: request.topK,
-            requestId: requestId
+            requestId: requestId,
+            cacheScope: cacheScope
         )
 
         return AsyncThrowingStream { continuation in

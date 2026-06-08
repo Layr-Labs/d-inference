@@ -216,6 +216,60 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         String(binding.modelHash.replacingOccurrences(of: "sha256:", with: "").prefix(12))
     }
 
+    /// Per-tenant scope (`SHA256(prompt_cache_key)`, empty ⇒ unscoped) recovered
+    /// by the write paths, which hold a digest but not the scope string and must
+    /// stamp it into the AAD metadata `scope`. Two complementary keyings:
+    ///   • by UNSCOPED prefix-digest hex — for `store` (the capture hook gives
+    ///     it tokens only; it computes the unscoped digest to recover scope,
+    ///     THEN forms the scoped digest);
+    ///   • by SCOPED checkpoint-digest hex — for `flushToSSD`/`persistDigest`,
+    ///     which iterate RAM entries keyed by the scoped digest.
+    /// `lookup` (tokens + scope in hand) populates both; `store` also re-records
+    /// the scoped keying so a flush of a first-written (never-looked-up)
+    /// checkpoint still finds its scope. Unscoped ("") is never recorded
+    /// (writers default to "" — byte-identical back-compat).
+    ///
+    /// FAIL-OPEN SEMANTICS (intentional, security-reviewed): this map is a
+    /// best-effort *write-side* scope recovery, NEVER a read/match control —
+    /// reads always recompute the digest from `(tokens, scope)`, so a wrong/
+    /// missing map entry can never make tenant B MATCH tenant A's key (no
+    /// cross-tenant content hit). The only failure mode is a scoped checkpoint
+    /// getting stamped UNSCOPED (scope "") when its entry was evicted between
+    /// `lookup` and the capture-hook `store` — which merely re-exposes that one
+    /// entry to the *existence/TTFT timing oracle* (TB-007), not its contents.
+    /// In practice `store` runs microseconds after its own `lookup` (same B==1
+    /// request), so only a wholesale wipe by an interleaving request is a risk;
+    /// the cap is generous and eviction is bounded, so this is a rare, benign
+    /// degradation, not a leak. (A fully race-free fix would thread `scope`
+    /// through the engine's `onCheckpointCapture` hook — deferred with the
+    /// engine-tier scoping work.)
+    private var scopeByDigest: [String: String] = [:]
+    private static let scopeMapCap = 65536
+
+    private func recordScopeDigest(_ digestHex: String, _ scope: String) {
+        guard !scope.isEmpty else { return }
+        // Bounded backstop. removeAll only triggers far above the working set of
+        // any single batch, so it cannot drop an in-flight request's just-
+        // recorded scope before that request's store() runs.
+        if scopeByDigest.count > Self.scopeMapCap { scopeByDigest.removeAll(keepingCapacity: true) }
+        scopeByDigest[digestHex] = scope
+    }
+
+    /// Record `scope` under BOTH the unscoped and scoped digests of every
+    /// checkpoint-boundary of `tokens`.
+    private func recordScope(_ scope: String, tokens: [Int]) {
+        guard !scope.isEmpty else { return }
+        let unscoped = PrefixDigest.checkpoints(tokens: tokens, boundaries: boundaries)
+        let scoped = PrefixDigest.checkpoints(tokens: tokens, boundaries: boundaries, scope: scope)
+        for cp in unscoped { recordScopeDigest(cp.digest.dbkvHexString, scope) }
+        for cp in scoped { recordScopeDigest(cp.digest.dbkvHexString, scope) }
+    }
+
+    /// Recover the scope for a digest hex (empty ⇒ unscoped/back-compat).
+    private func scopeFor(_ digestHex: String) -> String {
+        scopeByDigest[digestHex] ?? ""
+    }
+
     public init(
         binding: PrefixCacheModelBinding,
         ram: PrefixCacheRAM,
@@ -293,14 +347,17 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// Find the longest cached checkpoint whose prefix is byte-identical
     /// to `tokens`. RAM first, then SSD (with the MB-1 guard). Returns
     /// fresh, caller-owned caches via `sending`, or nil on miss.
-    public func lookup(tokens: [Int]) async -> PrefixLookupResult? {
+    public func lookup(tokens: [Int], scope: String = "") async -> PrefixLookupResult? {
         // A closed (deregistered/unloaded) manager must not
         // serve hits. Without this, a lookup that started before unload — or one
         // racing teardown — could return KV from a manager whose model is gone,
         // which (combined with the stale-engine submit window) risks seeding a
         // superseded engine. The SSD path re-checks `closed` after its read await.
         guard !closed else { return nil }
-        let checkpoints = PrefixDigest.checkpoints(tokens: tokens, boundaries: boundaries)
+        // Record this request's scope for the boundary prefixes so the
+        // capture-hook-driven store() (tokens-only) can recover it.
+        recordScope(scope, tokens: tokens)
+        let checkpoints = PrefixDigest.checkpoints(tokens: tokens, boundaries: boundaries, scope: scope)
         guard !checkpoints.isEmpty else {
             stats.misses += 1
             return nil
@@ -317,8 +374,9 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                 if ssdEnabled,
                    hit.tokenCount >= minPersistTokens,
                    index?.entry(modelHash: binding.modelHash, digestHex: digestHex) == nil {
+                    let cpScope = scope
                     Task.detached { [weak self] in
-                        await self?.persistDigest(cp.digest)
+                        await self?.persistDigest(cp.digest, scope: cpScope)
                     }
                 }
                 return PrefixLookupResult(caches: hit.caches, tokenCount: hit.tokenCount, tier: .ram)
@@ -326,7 +384,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         }
 
         // SSD tier.
-        if ssdEnabled, let result = await loadFromSSD(tokens: tokens) {
+        if ssdEnabled, let result = await loadFromSSD(tokens: tokens, scope: scope) {
             stats.ssdHits += 1
             return result
         }
@@ -367,10 +425,10 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         await notifyAccountant()
     }
 
-    private func loadFromSSD(tokens: [Int]) async -> PrefixLookupResult? {
+    private func loadFromSSD(tokens: [Int], scope: String = "") async -> PrefixLookupResult? {
         guard let index, let kek, let cacheDir else { return nil }
         guard let entry = index.findLongestCheckpoint(
-            modelHash: binding.modelHash, tokens: tokens, boundaries: boundaries
+            modelHash: binding.modelHash, tokens: tokens, boundaries: boundaries, scope: scope
         ) else { return nil }
 
         // Path safety: the on-disk index JSON is plaintext and NOT
@@ -423,6 +481,19 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             stats.prefixHashMismatches += 1
             logger.warning("SSD prefix-hash mismatch (index stale/corrupt) — dropping \(entry.digestHex, privacy: .public)")
             await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
+            return nil
+        }
+        // Per-tenant scope re-check (defense-in-depth on top of the scoped
+        // digest, which already makes a cross-scope filename match infeasible).
+        // Normalize nil/"" to the same unscoped value. A mismatch should be
+        // unreachable — the scoped digest in findLongestCheckpoint guarantees
+        // the matched entry was keyed with THIS scope — so REFUSE without
+        // deleting: the file legitimately belongs to another scope (only the
+        // owning scope's lookup may reclaim it), exactly like a foreign file.
+        let fileScope = meta.scope ?? ""
+        guard fileScope == scope else {
+            stats.modelMismatches += 1
+            logger.warning("SSD scope mismatch — refusing (not deleting) entry \(entry.digestHex, privacy: .public)")
             return nil
         }
 
@@ -487,8 +558,16 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     public func store(tokens: [Int], checkpointLength: Int, caches: SendableKVCaches) async -> Bool {
         guard !closed else { return false }
         guard checkpointLength > 0, checkpointLength <= tokens.count else { return false }
-        let digest = PrefixDigest.digest(tokens: tokens, length: checkpointLength)
+        // Recover the originating request's scope. The capture hook hands us
+        // tokens only, so key off the UNSCOPED digest (which lookup recorded).
+        // Empty ⇒ unscoped (back-compat). Then form the SCOPED digest that
+        // actually keys the cache, and re-record it so a later flush/promote of
+        // this checkpoint (which sees only the scoped digest) recovers the scope.
+        let unscopedHex = PrefixDigest.digest(tokens: tokens, length: checkpointLength).dbkvHexString
+        let scope = scopeFor(unscopedHex)
+        let digest = PrefixDigest.digest(tokens: tokens, length: checkpointLength, scope: scope)
         let digestHex = digest.dbkvHexString
+        recordScopeDigest(digestHex, scope)
         let stored = ram.put(
             modelHash: binding.modelHash, digest: digest,
             caches: caches.caches, tokenCount: checkpointLength
@@ -524,7 +603,8 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                 vocabSize: binding.vocabSize, numLayers: binding.numLayers,
                 kvHeads: binding.kvHeads, headDim: binding.headDim, tokenCount: checkpointLength,
                 tokenPrefixHash: digestHex, kvCacheClass: "mixed",
-                metaState: [layoutJSON], chunkPlaintextSizes: chunks.map { $0.count }, createdAt: now()
+                metaState: [layoutJSON], chunkPlaintextSizes: chunks.map { $0.count }, createdAt: now(),
+                scope: scope
             )
             try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
 
@@ -620,7 +700,8 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                     kvCacheClass: "mixed",
                     metaState: [layoutJSON],
                     chunkPlaintextSizes: chunks.map { $0.count },
-                    createdAt: now()
+                    createdAt: now(),
+                    scope: scopeFor(digestHex)
                 )
                 try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
 
@@ -774,7 +855,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// Called by 2nd-use promotion (detached Task, non-blocking).
     /// Returns true if successfully persisted, false otherwise.
     @discardableResult
-    private func persistDigest(_ digest: Data) async -> Bool {
+    private func persistDigest(_ digest: Data, scope: String = "") async -> Bool {
         guard !closed else { return false }
         guard ssdEnabled, let index, let kek, let cacheDir else { return false }
         let digestHex = digest.dbkvHexString
@@ -813,7 +894,8 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                 kvCacheClass: "mixed",
                 metaState: [layoutJSON],
                 chunkPlaintextSizes: chunks.map { $0.count },
-                createdAt: now()
+                createdAt: now(),
+                scope: scope
             )
             try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
 

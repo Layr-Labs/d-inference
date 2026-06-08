@@ -506,3 +506,69 @@ extension PrefixCacheManager {
         await flushIndexNow()
     }
 }
+
+// MARK: - Per-tenant scope isolation (TB-007 checkpoint tier)
+
+// Production flow: lookup(scope:) records the request's scope, then the
+// capture-hook store() recovers it. These tests mirror that order (lookup then
+// store) so store() stamps the right scope.
+
+@Test
+func managerScopedRamHitSameScope() async {
+    let (mgr, _) = makeManager(model: "m", ssd: false)
+    let tokens = prompt(10)
+    _ = await mgr.lookup(tokens: tokens, scope: "tenant-A")  // cold miss, records scope
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    // Same scope ⇒ hit.
+    let hit = await mgr.lookup(tokens: tokens, scope: "tenant-A")
+    #expect(hit?.tier == .ram)
+    #expect(hit?.tokenCount == 8)
+}
+
+@Test
+func managerScopedRamMissDifferentScope() async {
+    let (mgr, _) = makeManager(model: "m", ssd: false)
+    let tokens = prompt(10)
+    _ = await mgr.lookup(tokens: tokens, scope: "tenant-A")
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    // Different scope, identical tokens ⇒ MISS (cross-tenant isolation).
+    let miss = await mgr.lookup(tokens: tokens, scope: "tenant-B")
+    #expect(miss == nil, "tenant B must not hit tenant A's scoped checkpoint")
+    // Unscoped lookup of the same tokens also misses a scoped entry.
+    let unscopedMiss = await mgr.lookup(tokens: tokens, scope: "")
+    #expect(unscopedMiss == nil, "unscoped lookup must not hit a scoped checkpoint")
+}
+
+@Test
+func managerUnscopedAndScopedDoNotCross() async {
+    let (mgr, _) = makeManager(model: "m", ssd: false)
+    let tokens = prompt(10)
+    // Store UNSCOPED (legacy behavior).
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    #expect(await mgr.lookup(tokens: tokens, scope: "") != nil, "unscoped hits unscoped")
+    #expect(await mgr.lookup(tokens: tokens, scope: "tenant-A") == nil,
+            "a scoped lookup must not hit the unscoped checkpoint")
+}
+
+@Test
+func managerScopedSSDRoundtripAndIsolation() async throws {
+    let (mgr, _) = makeManager(model: "m", ssd: true)
+    let tokens = prompt(10)
+    _ = await mgr.lookup(tokens: tokens, scope: "tenant-A")   // records scope
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()
+    // Wipe RAM so the next hit must come from SSD (decrypt path).
+    await mgr.clearRAM()
+    // Same scope ⇒ SSD hit.
+    let hit = await mgr.lookup(tokens: tokens, scope: "tenant-A")
+    #expect(hit?.tier == .ssd, "same-scope lookup should reload from SSD")
+    // Different scope ⇒ SSD miss (the scoped digest never matches B's index key).
+    let miss = await mgr.lookup(tokens: tokens, scope: "tenant-B")
+    #expect(miss == nil, "tenant B must not reload tenant A's SSD checkpoint")
+    let stats = await mgr.snapshotStats()
+    #expect(stats.ssdReadErrors == 0)
+}

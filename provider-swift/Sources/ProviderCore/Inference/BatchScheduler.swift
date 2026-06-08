@@ -369,9 +369,9 @@ public actor BatchScheduler {
     /// in the async submit path because the engine step loop can't await the
     /// manager actor. The tokenCount guard mirrors the scheduler's so a
     /// degenerate hit (no suffix) is never attached.
-    private func maybeRestoreCheckpoint(_ req: Request, promptTokens: [Int]) async {
+    private func maybeRestoreCheckpoint(_ req: Request, promptTokens: [Int], scope: String) async {
         guard let mgr = checkpointManager else { return }
-        guard let hit = await mgr.lookup(tokens: promptTokens),
+        guard let hit = await mgr.lookup(tokens: promptTokens, scope: scope),
               hit.tokenCount >= 1, hit.tokenCount < promptTokens.count
         else { return }
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
@@ -994,7 +994,8 @@ public actor BatchScheduler {
         topP: Float? = nil,
         topK: Int? = nil,
         seed: UInt64? = nil,
-        requestId: String? = nil
+        requestId: String? = nil,
+        cacheScope: String = ""
     ) async -> AsyncStream<GenerationEvent> {
         let id = requestId ?? "req-\(UUID().uuidString.prefix(12))"
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
@@ -1073,7 +1074,7 @@ public actor BatchScheduler {
             prompt: promptTokens as AnyHashable,
             samplingParams: sp
         )
-        await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
+        await maybeRestoreCheckpoint(req, promptTokens: promptTokens, scope: cacheScope)
         // Re-check the engine is still the one we captured (a reload/
         // unload may have run during the awaits above). Enqueuing onto a stopped/
         // superseded engine hangs the request or runs it on the wrong model.
@@ -1229,7 +1230,7 @@ public actor BatchScheduler {
             prompt: promptTokens as AnyHashable,
             samplingParams: sp
         )
-        await maybeRestoreCheckpoint(req, promptTokens: promptTokens)
+        await maybeRestoreCheckpoint(req, promptTokens: promptTokens, scope: request.cacheScope)
         // Re-check the captured engine is still current after the awaits.
         // releaseRequestResources (not bare dropBridge): a cancel/timeout during
         // planner.admit could have dropped the bridge BEFORE we reserved KV, so

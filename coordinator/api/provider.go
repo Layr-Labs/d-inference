@@ -966,8 +966,12 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// Verify fresh binary hash when a known-good policy is configured. A
 	// reported binary hash only counts when the response is signed by the
 	// provider key from a valid registration attestation.
+	//
+	// v0.6.0: binaryHash is self-reported and demoted to drift telemetry — APNs
+	// code-identity attestation is the real code-identity signal — so this gate
+	// deroutes a provider only when enforcement is explicitly enabled (rollback).
 	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
-	if policyConfigured {
+	if s.binaryHashEnforce && policyConfigured {
 		attestationResult := provider.AttestationResult
 		if attestationResult == nil || !attestationResult.Valid || attestationResult.PublicKey == "" {
 			s.logger.Error("provider cannot prove binary hash without valid attestation",
@@ -1816,7 +1820,12 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 
 	// Verify binary hash against known-good hashes. Once a binary hash policy is
 	// configured, omission is a policy violation, not an Open Mode downgrade.
-	if policyConfigured {
+	//
+	// v0.6.0: binaryHash is self-reported and demoted to drift telemetry (APNs
+	// code-identity attestation is the real signal); this gate deroutes only when
+	// enforcement is explicitly enabled (rollback). The attestation-validity and
+	// key-binding checks above remain gated on policyConfigured and are unchanged.
+	if s.binaryHashEnforce && policyConfigured {
 		if result.BinaryHash == "" {
 			s.logger.Warn("provider binary hash missing while known-good policy is configured",
 				"provider_id", providerID,

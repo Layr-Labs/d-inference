@@ -265,6 +265,13 @@ func main() {
 		srv.AddKnownBinaryHashes(hashes)
 		logger.Info("additional binary hashes from env var", "count", len(hashes))
 	}
+	// v0.6.0: self-reported binaryHash is demoted to drift telemetry by default
+	// (APNs code-identity attestation is the real signal). Set this to re-enable
+	// the legacy derouting-on-mismatch behavior (rollback only).
+	if os.Getenv("EIGENINFERENCE_BINARYHASH_ENFORCE") == "true" {
+		srv.SetBinaryHashEnforcement(true)
+		logger.Warn("binaryHash enforcement ENABLED via EIGENINFERENCE_BINARYHASH_ENFORCE (legacy; APNs code-identity is the real signal)")
+	}
 
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from

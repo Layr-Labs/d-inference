@@ -188,6 +188,14 @@ type Server struct {
 	releaseBinaryHashPolicyConfigured bool
 	binaryHashPolicyConfigured        bool
 
+	// binaryHashEnforce gates whether a self-reported binaryHash mismatch actually
+	// DEROUTES a provider. Default false as of v0.6.0: binaryHash is self-reported
+	// (worthless against a malicious provider) and is demoted to drift telemetry —
+	// APNs code-identity attestation is the real code-identity signal. The policy
+	// machinery is retained for drift comparison and rollback
+	// (EIGENINFERENCE_BINARYHASH_ENFORCE=true).
+	binaryHashEnforce bool
+
 	// knownRuntimeManifest holds accepted runtime component hashes.
 	// When set, providers whose runtime hashes don't match are marked as
 	// unverified and excluded from routing (but not disconnected).
@@ -770,6 +778,14 @@ func (s *Server) invalidateCatalogCache() {
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
+// SetBinaryHashEnforcement toggles whether a self-reported binaryHash mismatch
+// deroutes a provider. Default false (v0.6.0): binaryHash is demoted to drift
+// telemetry; APNs code-identity attestation is the real signal. Enable only for
+// rollback or to test the legacy enforcement path.
+func (s *Server) SetBinaryHashEnforcement(enabled bool) {
+	s.binaryHashEnforce = enabled
+}
+
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.
 func (s *Server) SetKnownBinaryHashes(hashes []string) {
 	normalized := normalizeKnownBinaryHashes(hashes, s.logger)

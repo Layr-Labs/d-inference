@@ -1,8 +1,16 @@
 # Provider Code-Identity Attestation via APNs — Design Doc
 
 Status: **Implemented (Phases 1–3) + verified-foundations.** Most claims below are empirically
-proven on-box (macOS 26.5 laptop + M5 Max as root) or confirmed against Apple documentation. Where
-something is still an open risk, it is marked **⚠️ TEST**.
+proven on-box (macOS 26.5 laptop + M5 Max as root, macOS 26.4) or confirmed against Apple
+documentation. Where something is still an open risk, it is marked **⚠️ TEST**.
+
+> **Update (June 2026) — R-snoop re-verified closed + post-review hardening.** A clean on-box re-test
+> shows the encrypted `code_challenge` is **not** harvestable by root (redacted `<private>` in the
+> log; absent from every on-disk store; CLI un-redaction removed on 26.4) — correcting the earlier
+> "R-snoop is real" claim (see **§1.6.1**). Alert mode is safe only because the provider requests no
+> `UNUserNotificationCenter` authorization (invariant). Four post-review fixes landed on this PR:
+> delegate strong-retain (release-build brick), early-push buffering, late-token re-registration,
+> and drain-queues-on-`CodeAttested` — each with tests; both reviewers PASS.
 
 **Build status (June 2026, worktree `apns-r2-test`, both reviewers PASS):**
 - **Phase 1 — protocol contract:** ✅ `RegisterMessage` APNs fields + `code_attestation_response`
@@ -91,17 +99,52 @@ and join — **with ~0% inference-time overhead and no human allowlist.**
   ("who may *use* the key") is **securityd/AMFI-enforced OS policy** (depends on SIP being on).
 
 ### 1.6 Caught by testing — would have broken a naive build
-- **R-snoop is real:** with SIP **on**, **root can read the push payload nonce from the unified
-  log** (`log show` found it). A **plaintext** challenge nonce is therefore **relayable** (root
-  reads it from logs → hands to a fake binary → fake passes attestation). → The challenge **must be
-  encrypted to the provider's key `K`** (logged ciphertext is useless: root can't use `K` and can't
-  read the genuine process). Prompts are **not** affected — they ride the WebSocket, not the push.
+- **R-snoop — re-verified, does NOT reproduce (see §1.6.1):** an earlier ad-hoc run suggested root
+  could read the push nonce from the unified log, which drove the decision to encrypt the challenge.
+  A **clean re-test on macOS 26.4** shows the payload is redacted (`<private>`) in the log and is
+  **never on disk** — the earlier positive was a grep false-positive (it matched the probe app's
+  *directory name*, not the payload). We **still encrypt the challenge to the provider's key `K`**
+  (`E_K(nonce)`) as **defense-in-depth** — it protects on older macOS, under a user-enabled
+  private-data logging profile, or via any other log facility, and costs nothing. The logged
+  ciphertext is useless to a root attacker who does not hold `K`. Prompts are **not** affected —
+  they ride the WebSocket, not the push.
 - **APNs app-push needs the user's GUI/Aqua session** — over SSH (non-GUI) the agent got
   `NO_CALLBACK`; via `launchctl asuser <uid>` (GUI session) it got a token. The provider already
   runs as a **gui-domain LaunchAgent** (`io.darkbloom.provider`), so this is satisfied — *provided
   a user is logged in.*
 - **Load-bearing detail:** it's the **absence of `get-task-allow`** (not "Hardened Runtime" in
   general) that blocks even-root injection. Notarization strips it; we must guarantee it's absent.
+
+### 1.6.1 R-snoop re-verified on-box — the encrypted payload is **not** harvestable (June 2026)
+
+A focused re-test on the M5 Max (macOS **26.4**, as root) **does not reproduce** the "root reads the
+challenge from the log" finding. The earlier positive was a measurement artifact — a grep that
+matched the probe app's *directory name* (`rsnoop-probe`), not the payload (a false positive of
+exactly that class was caught and corrected during this re-test). Grepping for the actual payload
+markers shows the challenge is redacted and never on disk:
+
+| Harvest surface (as root) | Result |
+|---|---|
+| Unified log (`log show`, all processes) | `apsd` logs `payload <private>`; marker-only grep (`RSNOOPepk-…`) = **0** |
+| Un-redact via CLI (`log config … private_data:on`) | rejected — `Invalid Modes` |
+| Install a private-data logging profile (CLI) | blocked — "profiles tool no longer supports installs" (GUI/MDM only) |
+| Notification Center DB (alert push) | **0** — provider requests no notification auth, so an alert is never persisted |
+| apsd on-disk store + keychain + prefs + `/var/db` | **0** (background **and** alert) |
+| Our own provider logs | never logs the ciphertext or nonce |
+
+**Invariant that keeps alert mode safe:** the provider registers for *remote* notifications only and
+**never requests `UNUserNotificationCenter` authorization** — so an `APNS_MODE=alert` push is never
+presented or persisted to the root-readable Notification Center DB. If that ever changes, the
+attestation push must be forced background-only. (Documented at both ends: `ProviderAppKitHost.swift`
++ `coordinator/apns/attestor.go`.)
+
+**Scope & residual:** verified on macOS **26.4** (min target is 15 — treat the claim as "current
+macOS"). The `E_K(nonce)` encryption (§3.0) is retained as defense-in-depth for older macOS / any
+other log facility. A *determined* attacker on their own hardware could manually install a
+private-data logging profile via System Settings (conspicuous, persistent) **and** harvest a genuine
+device token **and** race the genuine `T↔K` registration — the same "patient insider on own hardware"
+residual in §3.5, not a casual `log show` harvest. Reproduction tooling (not shipped):
+`apns-r2-probe/run-m5-rsnoop.sh`, `run-m5-ondisk.sh`.
 
 ### 1.7 APNs rate limits (the reason we checked before designing)
 - **Background pushes** (`apns-push-type: background`, `content-available:1`, **priority 5**) are
@@ -158,8 +201,10 @@ only the genuine process can use. The chain, with the empirical anchor for each 
 
 2. **The challenge is `E_K(nonce)`, never a raw nonce.** It is encrypted to the provider's registered
    X25519 key `K` (`NodeKeyPair` — a **raw, in-memory libsodium key, NOT keychain-stored and NOT
-   Secure-Enclave-backed**; the SE only holds P-256). *Required because* **root can read the push
-   payload from the unified log** (proven on the M5 Max: `log show` surfaced a plaintext nonce). The
+   Secure-Enclave-backed**; the SE only holds P-256). *Defense-in-depth against a log-readable
+   payload* — a clean re-test on macOS 26.4 shows the payload is redacted `<private>` and not
+   harvestable from log or disk (§1.6.1), but encrypting `E_K(nonce)` still protects on older macOS /
+   under user-enabled private logging, at zero cost. The
    logged ciphertext is useless to root because **`K` exists only inside the genuine process's memory,
    and that memory is unreadable**: SIP-on + Hardened Runtime (no `get-task-allow`) ⟹ even root gets
    `task_for_pid → kr=5`, lldb/dtrace denied (proven as root on the M5 Max). **The keychain-ACL +
@@ -291,6 +336,13 @@ that is **circular** against a malicious operator — it is liveness, not proof.
   team-signed). This is also why APNs *upgrades* the previously-worthless self-reported `binaryHash`
   into a real check: once APNs proves it's our genuine unmodified code, that code's self-reported
   cdhash is trustworthy → pair with the transparency log for version/downgrade control.
+- **R-snoop (log/disk harvest of the challenge) — verified closed on current macOS** (§1.6.1): the
+  encrypted payload is redacted (`<private>`) in the unified log and absent from every on-disk store
+  (apsd store, Notification Center DB) for background **and** alert pushes; CLI un-redaction is
+  removed on macOS 26.4. **Alert mode is safe only because the provider requests no
+  `UNUserNotificationCenter` authorization** — an invariant enforced by code review + comments at
+  both ends. Residual: a determined attacker on their own hardware could manually enable private-data
+  logging via the GUI **and** harvest a genuine token **and** race the `T↔K` registration.
 - **Irreducible:** requires a logged-in GUI session; APNs delivery is best-effort (availability, not
   confidentiality); and the whole thing assumes SIP-on, which we attest but the user could lower
   (→ caught by MDA → fail-closed).

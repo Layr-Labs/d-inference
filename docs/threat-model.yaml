@@ -1532,28 +1532,54 @@ threats:
   - id: T-034
     trust_boundary: TB-009
     stride: Tampering
-    title: Binary hash in attestation blob does not match running binary
+    title: Provider runs modified code while advertising a trusted identity
     description: >
-      The attestation blob includes a SHA-256 hash of the darkbloom binary at
-      startup. If hash computation is deferred, skipped, or computed over the wrong
-      path, a provider can run a modified binary while advertising a blessed hash.
+      The original control was a SHA-256 binary hash in the attestation blob. That
+      hash is SELF-REPORTED by the provider's own (possibly modified) code, so it is
+      worthless against a malicious operator: a fork can report a blessed hash while
+      running prompt-logging code. The real control is APNs code-identity attestation
+      (v0.6.0): only our genuine, Team-ID-signed, push-provisioned binary can RECEIVE
+      an APNs push for our App-ID, and only the genuine hardened process can DECRYPT
+      the E_K(nonce) challenge with its in-memory key K and sign the nonce with its
+      registration-bound SE key — verified once per WebSocket connection.
     adversaries: [ADV-001]
     affected_assets: [A-010, A-011]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift
-      - provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift
-      - coordinator/internal/attestation/**
+      - coordinator/apns/attestor.go
+      - coordinator/api/provider.go
+      - coordinator/registry/registry.go
+      - provider-swift/Sources/ProviderCore/ProviderLoop.swift
+      - provider-swift/Sources/darkbloom/ProviderAppKitHost.swift
     mitigations:
-      - description: BinaryHasher computes SHA-256 of the running executable at startup.
+      - description: >
+          APNs code-identity round-trip: coordinator pushes E_K(nonce) to the
+          registration-bound device token; provider decrypts with K and replies
+          nonce + Sign_SE(nonce) over the WebSocket; coordinator verifies the nonce
+          matches and the SE signature verifies against the registration-bound key.
         status: implemented
-      - description: Coordinator verifies binary hash against the registry of blessed hashes.
+      - description: >
+          CodeAttested gate at the single routing chokepoint
+          (providerSupportsPrivateTextLocked), fail-closed, no self-route exemption;
+          enforced when an attestor is configured (rollout flag, default-off).
         status: implemented
+      - description: >
+          Self-reported binaryHash DEMOTED to drift telemetry — derouting on mismatch
+          is behind a default-off binaryHashEnforce flag. It is no longer relied on as
+          a code-identity control.
+        status: implemented
+      - description: >
+          Strongest version (cross-cutting): reproducible build + public transparency
+          log of blessed cdhashes, so the genuine APNs-proven binary's self-reported
+          cdhash becomes auditable (version/downgrade control).
+        status: open
     open_findings: []
     severity: critical
     detection_hint: >
-      Changes to BinaryHasher.swift, AttestationBuilder, or coordinator-side binary
-      hash verification must preserve the invariant that the hash covers the actual
-      running binary, not a copy or cached value.
+      Changes to coordinator/apns, the per-connection push-attest step in
+      api/provider.go, the CodeAttested gate in registry, or the provider's
+      decrypt→Sign_SE→reply handler must preserve the property that only genuine,
+      Apple-provisioned code can pass. Re-relying on binaryHash as a security control
+      (vs telemetry) is a regression.
 
   - id: T-035
     trust_boundary: TB-009
@@ -1758,3 +1784,52 @@ threats:
       Any change in coordinator/profilesign or main.go that logs, transmits, or
       persists PROFILE_SIGNING_P12_B64 / _PASSWORD or the decoded key outside the
       signer must be treated as a high-severity issue.
+
+  # ── TB-009: APNs code-identity mechanism's own attack surface ──
+
+  - id: T-042
+    trust_boundary: TB-009
+    stride: Spoofing
+    title: Forged code-identity via attacker-key challenge + log/disk harvest (R-snoop)
+    description: >
+      The APNs challenge (T-034) is encrypted to the provider's self-reported key K.
+      A fork that registers its OWN key K' could, in principle, harvest the pushed
+      E_K'(nonce) from a root-readable surface on its own machine and decrypt it with
+      K' — passing attestation without being genuine code. This requires the push
+      payload to be readable by root AND a genuine App-ID device token bound to K'.
+      Residual: a determined attacker on their own hardware could manually enable
+      private-data logging via the GUI AND harvest a genuine token AND race the
+      genuine T↔K registration — the "patient insider on own hardware" class
+      (consistent with T-037 and the irreducible residuals), not a casual log read.
+    adversaries: [ADV-001]
+    affected_assets: [A-001, A-010]
+    affected_files:
+      - coordinator/apns/attestor.go
+      - provider-swift/Sources/darkbloom/ProviderAppKitHost.swift
+      - provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift
+    mitigations:
+      - description: >
+          R-snoop verified CLOSED on current macOS (26.4, on-box): the encrypted
+          code_challenge is redacted (<private>) in the unified log and absent from
+          every on-disk store (apsd store, Notification Center DB) for background AND
+          alert pushes; CLI un-redaction (log config private_data:on / profiles
+          install) is removed. See docs/apns-code-attestation-design.md §1.6.1.
+        status: implemented
+      - description: >
+          INVARIANT — the provider requests no UNUserNotificationCenter authorization,
+          so an alert-mode push is never presented/persisted to the root-readable
+          Notification Center DB. Enforced by code review + comments at both ends
+          (ProviderAppKitHost.swift, coordinator/apns/attestor.go).
+        status: implemented
+      - description: >
+          Challenge encrypted as E_K(nonce) (defense-in-depth for older macOS / a
+          user-enabled private-data logging profile); the SE signature is verified
+          against the key bound at registration, never a key supplied in the response.
+        status: implemented
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Reopens if any change (a) makes the provider request user-notification
+      authorization, (b) carries code_challenge in an alert-rendering payload, or
+      (c) logs the push payload. The closed-verification scope is current macOS
+      (min target is 15); re-verify on a version bump.

@@ -405,6 +405,9 @@ public actor CoordinatorClient {
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
+    /// Device token that arrived after the initial registration (APNs slow at
+    /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
+    private var apnsTokenOverride: String?
 
     private var shutdownRequested = false
 
@@ -445,6 +448,18 @@ public actor CoordinatorClient {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         eventContinuation?.finish()
         outboundRouter.finish()
+    }
+
+    /// Re-register over a fresh connection carrying a device token that arrived
+    /// after the initial registration. Cancelling the socket (without setting
+    /// `shutdownRequested`) surfaces as a connection error, so the reconnect loop
+    /// re-runs `sendRegistration` with the override token — letting the
+    /// coordinator bind T↔K and push the code-identity challenge. No-op if the
+    /// token is unchanged.
+    public func refreshAPNsToken(_ token: String) {
+        guard apnsTokenOverride != token else { return }
+        apnsTokenOverride = token
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
     }
 
     // MARK: - Connection Loop
@@ -726,7 +741,8 @@ public actor CoordinatorClient {
         )
         let jsonData = try CoordinatorClientCodec.encodeRegistration(
             from: config,
-            privacyCapabilities: privacyCapabilities
+            privacyCapabilities: privacyCapabilities,
+            apnsDeviceTokenOverride: apnsTokenOverride
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed

@@ -7,9 +7,16 @@ public enum CoordinatorClientCodec {
     public static func registrationMessage(
         from config: CoordinatorClientConfig,
         version: String = ProviderCore.version,
-        privacyCapabilities: PrivacyCapabilities? = nil
+        privacyCapabilities: PrivacyCapabilities? = nil,
+        apnsDeviceTokenOverride: String? = nil
     ) -> ProviderMessage {
-        .register(ProviderMessage.Register(
+        // A token that arrived after the config was built (APNs slow at startup)
+        // overrides the config value so a reconnect re-registers WITH it.
+        let effectiveToken = apnsDeviceTokenOverride ?? config.apnsDeviceToken
+        let effectiveEnv = apnsDeviceTokenOverride != nil
+            ? (config.apnsEnvironment ?? "production")
+            : config.apnsEnvironment
+        return .register(ProviderMessage.Register(
             hardware: config.hardware,
             models: config.models,
             backend: config.backendName,
@@ -24,21 +31,23 @@ public enum CoordinatorClientCodec {
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],
             privacyCapabilities: privacyCapabilities,
             privateOnly: config.privateOnly,
-            apnsDeviceToken: config.apnsDeviceToken,
-            apnsEnvironment: config.apnsEnvironment
+            apnsDeviceToken: effectiveToken,
+            apnsEnvironment: effectiveEnv
         ))
     }
 
     public static func encodeRegistration(
         from config: CoordinatorClientConfig,
         version: String = ProviderCore.version,
-        privacyCapabilities: PrivacyCapabilities? = nil
+        privacyCapabilities: PrivacyCapabilities? = nil,
+        apnsDeviceTokenOverride: String? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
                 from: config,
                 version: version,
-                privacyCapabilities: privacyCapabilities
+                privacyCapabilities: privacyCapabilities,
+                apnsDeviceTokenOverride: apnsDeviceTokenOverride
             )
         )
     }

@@ -16,11 +16,20 @@ enum ProviderAppKitHost {
         return args.contains("--foreground") || args.contains("--local")
     }
 
+    /// Strong reference that keeps the app delegate alive for the lifetime of the
+    /// (never-returning) host. `NSApplication.delegate` is a WEAK reference, so
+    /// without an independent strong ref ARC may release the delegate right after
+    /// assignment — especially under `-O` — which means
+    /// `applicationDidFinishLaunching` never fires and the process does nothing
+    /// (no push registration, no serve). This is the only owner.
+    @MainActor private static var retainedDelegate: ProviderAppDelegate?
+
     /// Takes over the main thread with the AppKit event loop (does not return).
     @MainActor
     static func runHosted(_ args: [String]) -> Never {
         let app = NSApplication.shared
         let delegate = ProviderAppDelegate(args: args)
+        Self.retainedDelegate = delegate // strong ref; NSApplication.delegate is weak
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
@@ -41,6 +50,14 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        // INVARIANT: register for REMOTE notifications only — never request
+        // UNUserNotificationCenter (user-notification) authorization. The
+        // attestation push carries the encrypted `code_challenge`; with
+        // user-notification auth, an alert-mode push (APNS_MODE=alert) would be
+        // presented and PERSISTED to the root-readable Notification Center DB,
+        // reintroducing a payload-harvest surface that is otherwise closed
+        // (apsd redacts the payload as <private> and keeps no cleartext copy —
+        // verified on macOS 26.4, see docs/apns-code-attestation-design.md).
         NSApplication.shared.registerForRemoteNotifications()
         let args = self.args
         Task {

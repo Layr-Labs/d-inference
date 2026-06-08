@@ -490,6 +490,9 @@ func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID strin
 		}
 		provider.SetCodeAttested(true)
 		s.logger.Info("provider code-attested via APNs", "provider_id", providerID)
+		// Newly eligible for private routing — drain requests that queued waiting
+		// for an attested provider instead of waiting for the next heartbeat tick.
+		s.registry.DrainQueuedRequestsForProvider(provider)
 	case <-time.After(CodeAttestResponseTimeout):
 		s.logger.Warn("code-attest timed out awaiting WebSocket response", "provider_id", providerID)
 	case <-ctx.Done():

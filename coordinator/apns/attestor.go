@@ -311,6 +311,14 @@ func BuildCodeChallengePayload(nonceB64, providerPubKeyB64 string, mode Mode) ([
 	}
 	aps := map[string]any{"content-available": 1}
 	if mode == ModeAlert {
+		// Alert mode improves delivery reliability (priority 10, not background-
+		// throttled). It is safe ONLY because the provider does NOT request
+		// user-notification authorization: without it, the alert is never
+		// presented or persisted to the root-readable Notification Center DB, so
+		// the encrypted code_challenge leaves no on-disk cleartext copy. If the
+		// provider ever adds UNUserNotificationCenter authorization, this dict
+		// must be dropped for the attestation push (keep it background-only).
+		// See the INVARIANT in provider-swift ProviderAppKitHost.swift.
 		aps["alert"] = map[string]any{"title": "Darkbloom", "body": "attestation"}
 	}
 	return json.Marshal(map[string]any{

@@ -394,6 +394,20 @@ public actor ProviderLoop {
             guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
             Task { await self.handleCodeChallenge(challenge, send: send) }
         }
+
+        // If the device token wasn't ready at registration (APNs slow / GUI
+        // session still coming up), keep watching: when it arrives, reconnect so
+        // registration re-runs WITH the token. Otherwise the provider would stay
+        // un-attested (and unroutable under enforcement) until the process restarts.
+        if apnsDeviceToken == nil {
+            let log = logger
+            Task {
+                if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
+                    log.info("APNs device token arrived after registration — reconnecting to re-register with token")
+                    await coordinator.refreshAPNsToken(late)
+                }
+            }
+        }
         #endif
 
         // Start the idle-timeout monitor before processing events so that

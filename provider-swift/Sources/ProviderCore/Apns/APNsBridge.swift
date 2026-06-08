@@ -15,6 +15,14 @@ public final class APNsBridge: @unchecked Sendable {
     private let lock = NSLock()
     private var deviceToken: String?
     private var pushHandler: (@Sendable ([String: Any]) -> Void)?
+    /// Pushes that arrived before the handler was installed. A code-identity
+    /// challenge can land in the window between `registerForRemoteNotifications`
+    /// and `ProviderLoop` calling `setPushHandler` (and the coordinator pushes
+    /// only once per connection, with no provider-side retry), so dropping one
+    /// would strand the provider un-attested until the next reconnect. Buffer
+    /// them (bounded) and flush when the handler arrives.
+    private var pendingPushes: [[String: Any]] = []
+    private let maxPendingPushes = 16
 
     private init() {}
 
@@ -44,18 +52,29 @@ public final class APNsBridge: @unchecked Sendable {
         return currentDeviceToken()
     }
 
-    /// Installs the handler the app delegate invokes for each incoming push.
+    /// Installs the handler the app delegate invokes for each incoming push, then
+    /// flushes any pushes that arrived before it was installed.
     public func setPushHandler(_ handler: @escaping @Sendable ([String: Any]) -> Void) {
         lock.lock()
         pushHandler = handler
+        let buffered = pendingPushes
+        pendingPushes.removeAll()
         lock.unlock()
+        // Deliver buffered pushes outside the lock (the handler may re-enter).
+        for userInfo in buffered { handler(userInfo) }
     }
 
     /// Called by the app delegate on didReceiveRemoteNotification.
     public func deliverPush(_ userInfo: [String: Any]) {
         lock.lock()
-        let h = pushHandler
-        lock.unlock()
-        h?(userInfo)
+        if let h = pushHandler {
+            lock.unlock()
+            h(userInfo)
+        } else {
+            // No handler yet — buffer (bounded, newest-wins) so the push isn't lost.
+            pendingPushes.append(userInfo)
+            if pendingPushes.count > maxPendingPushes { pendingPushes.removeFirst() }
+            lock.unlock()
+        }
     }
 }

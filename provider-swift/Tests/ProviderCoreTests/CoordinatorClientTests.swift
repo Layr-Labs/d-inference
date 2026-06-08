@@ -46,6 +46,31 @@ import Testing
     #expect(register.privacyCapabilities?.textBackendInprocess == true)
 }
 
+@Test func registrationHonorsLateApnsTokenOverride() throws {
+    // Provider started without an APNs token (slow APNs / GUI still coming up),
+    // so the config carries none. A token that arrives later must override the
+    // config so a reconnect re-registers WITH it (environment=production).
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj"
+    )
+
+    // No override and no config token → no APNs fields on the wire.
+    let base = try clientJSONObject(CoordinatorClientCodec.encodeRegistration(from: config))
+    #expect(base["apns_device_token"] == nil)
+    #expect(base["apns_environment"] == nil)
+
+    // Late token override → token present + environment production.
+    let withTok = try clientJSONObject(
+        CoordinatorClientCodec.encodeRegistration(from: config, apnsDeviceTokenOverride: "deadbeefcafe")
+    )
+    #expect(withTok["apns_device_token"] as? String == "deadbeefcafe")
+    #expect(withTok["apns_environment"] as? String == "production")
+}
+
 @Test func coordinatorOutboundMessagesUseProviderEnvelope() throws {
     let accepted = try CoordinatorClientCodec.encodeOutboundMessageString(
         .inferenceAccepted(requestId: "req-1")

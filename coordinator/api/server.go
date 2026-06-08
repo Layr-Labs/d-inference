@@ -158,12 +158,17 @@ func (s *Server) latestReleasedVersion() string {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
-	registry               *registry.Registry
-	store                  store.Store
-	ledger                 *payments.Ledger
-	billing                *billing.Service
-	logger                 *slog.Logger
-	mux                    *http.ServeMux
+	registry *registry.Registry
+	store    store.Store
+	ledger   *payments.Ledger
+	billing  *billing.Service
+	logger   *slog.Logger
+	mux      *http.ServeMux
+	// migrationMu serializes a migration's state mutations (alias weights +
+	// status) between the background controller tick and the admin
+	// pause/resume/rollback handlers, so a rollback can't be clobbered by an
+	// in-flight ramp tick (TOCTOU on the per-method store locks).
+	migrationMu            sync.Mutex
 	challengeInterval      time.Duration             // 0 means use DefaultChallengeInterval
 	skipChallenge          bool                      // if true, skip attestation challenges entirely (testing only)
 	privyAuth              *auth.PrivyAuth           // Privy JWT authentication (nil if not configured)

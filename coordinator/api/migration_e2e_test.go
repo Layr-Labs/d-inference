@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,85 @@ func registerBuildsProvider(srv *Server, id string, builds ...string) {
 	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"}
 	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 64, Slots: slots}
 	p.Mu().Unlock()
+}
+
+// The headline guarantee at the function level: the consumer-facing model name
+// is the alias, and the concrete build is never substituted in.
+func TestConsumerModelAndChunkRewriteNeverLeakBuild(t *testing.T) {
+	const build = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	const alias = "gemma-4-26b"
+
+	// Aliased request: echo the alias, rewrite the build out of SSE chunks.
+	pr := &registry.PendingRequest{Model: build, PublicModel: alias}
+	if got := consumerModel(pr); got != alias {
+		t.Fatalf("consumerModel = %q, want alias %q", got, alias)
+	}
+	compact := `data: {"id":"x","model":"` + build + `","choices":[]}`
+	spaced := `data: {"id":"x","model": "` + build + `","choices":[]}`
+	if out := rewriteChunkModel(compact, pr); strings.Contains(out, build) || !strings.Contains(out, alias) {
+		t.Fatalf("compact chunk still leaks build: %q", out)
+	}
+	if out := rewriteChunkModel(spaced, pr); strings.Contains(out, build) || !strings.Contains(out, alias) {
+		t.Fatalf("spaced chunk still leaks build: %q", out)
+	}
+
+	// Raw-id request (no alias): echo the build, and the chunk rewrite is a no-op.
+	raw := &registry.PendingRequest{Model: build, PublicModel: build}
+	if got := consumerModel(raw); got != build {
+		t.Fatalf("raw consumerModel = %q, want %q", got, build)
+	}
+	if out := rewriteChunkModel(compact, raw); out != compact {
+		t.Fatalf("raw-id chunk should be unchanged, got %q", out)
+	}
+	// Unset PublicModel (internal callers) falls back to Model and never panics.
+	none := &registry.PendingRequest{Model: build}
+	if got := consumerModel(none); got != build {
+		t.Fatalf("empty PublicModel should fall back to build, got %q", got)
+	}
+}
+
+// A rolled-back migration must not be re-ramped by an in-flight controller tick:
+// the tick re-reads status under migrationMu and bails, leaving reverted weights.
+func TestRolledBackMigrationNotReRamped(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	seedActiveModel(t, st, fp8, "fp8")
+	seedActiveModel(t, st, qat, "qat")
+	for _, p := range []string{"p1", "p2"} {
+		registerBuildsProvider(srv, p, fp8, qat) // both serve both → would ramp
+	}
+	// Alias already reverted to the old build, migration already rolled back.
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", Active: true,
+		Builds: []store.ModelAliasBuild{
+			{BuildID: fp8, Weight: 100, Active: true},
+			{BuildID: qat, Weight: 0, Active: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertModelMigration(&store.ModelMigration{
+		AliasID: "gemma-4-26b", FromBuild: fp8, ToBuild: qat,
+		BatchSize: 1, MaxStepPercent: 50, Status: store.MigrationRolledBack,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	// A stale "active" copy of the migration drives a tick (simulating an
+	// in-flight tick racing the rollback). It must NOT re-ramp.
+	stale := store.ModelMigration{AliasID: "gemma-4-26b", FromBuild: fp8, ToBuild: qat, BatchSize: 1, MaxStepPercent: 50, Status: store.MigrationActive}
+	newMigrationController(srv).runMigration(stale)
+
+	alias, _, _ := st.GetModelAlias("gemma-4-26b")
+	if buildWeight(alias, qat) != 0 || buildWeight(alias, fp8) != 100 {
+		t.Fatalf("rolled-back weights were clobbered by a tick: fp8=%d qat=%d", buildWeight(alias, fp8), buildWeight(alias, qat))
+	}
 }
 
 // Directly construct the dangerous window the ramp can briefly create: the new

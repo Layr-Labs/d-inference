@@ -104,7 +104,25 @@ func (s *Server) handleMigrationStart(w http.ResponseWriter, r *http.Request) {
 	s.SyncModelCatalog()
 	s.ddIncr("migration.started", []string{"alias:" + req.AliasID})
 	s.logger.Info("migration started", "alias", req.AliasID, "from", req.FromBuild, "to", req.ToBuild, "batch", batch, "step", step)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "migration": m})
+
+	// Diagnostic: warn (don't refuse — capable providers may be added later) if
+	// no current old-build provider's hardware can fit the new build, since the
+	// ramp can't progress until one exists.
+	resp := map[string]any{"status": "ok", "migration": m}
+	canFit := false
+	for _, id := range s.registry.ProvidersServingBuild(req.FromBuild) {
+		if s.registry.ProviderCanFitBuild(id, req.ToBuild) {
+			canFit = true
+			break
+		}
+	}
+	if !canFit {
+		warning := "no current provider serving " + req.FromBuild + " has the hardware to fit " + req.ToBuild +
+			"; the ramp will not progress until a capable provider is available"
+		s.logger.Warn("migration start: "+warning, "alias", req.AliasID)
+		resp["warning"] = warning
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleMigrationList returns all migrations with live progress. GET /v1/admin/migrations.
@@ -144,6 +162,13 @@ func (s *Server) handleMigrationAction(w http.ResponseWriter, r *http.Request) {
 	}
 	aliasID := strings.TrimSpace(r.PathValue("aliasID"))
 	action := strings.TrimSpace(r.PathValue("action"))
+
+	// Serialize with the controller tick so a rollback/pause can't be clobbered
+	// by an in-flight ramp (and vice versa). The whole read-modify-write runs
+	// under the lock.
+	s.migrationMu.Lock()
+	defer s.migrationMu.Unlock()
+
 	m, ok, err := s.store.GetModelMigration(aliasID)
 	if err != nil || !ok {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no migration for alias "+aliasID))
@@ -156,8 +181,22 @@ func (s *Server) handleMigrationAction(w http.ResponseWriter, r *http.Request) {
 	case "resume":
 		m.Status = store.MigrationActive
 	case "rollback":
-		// Revert traffic to the old build immediately, then stop the migration.
 		m.Status = store.MigrationRolledBack
+	default:
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "unknown action: "+action))
+		return
+	}
+
+	// Persist the status change FIRST so that even if the weight revert below
+	// fails, the controller (which re-reads status under the same lock) will not
+	// keep ramping a rolled-back migration.
+	if err := s.store.UpsertModelMigration(m); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to update migration"))
+		return
+	}
+
+	if action == "rollback" {
+		// Revert all traffic to the old build immediately.
 		alias, aok, aerr := s.store.GetModelAlias(aliasID)
 		if aerr != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to read alias for rollback"))
@@ -172,17 +211,9 @@ func (s *Server) handleMigrationAction(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			// Alias vanished out from under the migration — nothing to revert,
-			// but record the rollback so the controller stops. Log it loudly.
+			// but the rollback status is already recorded. Log it loudly.
 			s.logger.Warn("migration rollback: alias not found, only status updated", "alias", aliasID)
 		}
-	default:
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "unknown action: "+action))
-		return
-	}
-
-	if err := s.store.UpsertModelMigration(m); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to update migration"))
-		return
 	}
 	s.SyncModelCatalog()
 	s.ddIncr("migration.action", []string{"alias:" + aliasID, "action:" + action})

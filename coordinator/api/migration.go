@@ -233,9 +233,14 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 		mc.s.logger.Info("migration prefetch sent", "alias", m.AliasID, "provider", id, "to", m.ToBuild)
 	}
 
-	// Re-read the migration immediately before any state mutation so an admin
-	// pause/resume/rollback that landed during this tick is not clobbered by a
-	// stale in-flight decision (the handler persists the terminal state first).
+	// Serialize the state mutation with the admin pause/resume/rollback handlers
+	// so a rollback can't be clobbered by this in-flight ramp tick. Inside the
+	// lock we re-read the migration and bail unless it is still active (the
+	// handlers persist their terminal state under the same lock). Prefetch sends
+	// above stay OUTSIDE the lock (they do network I/O).
+	mc.s.migrationMu.Lock()
+	defer mc.s.migrationMu.Unlock()
+
 	if cur, ok, err := mc.s.store.GetModelMigration(m.AliasID); err != nil || !ok || cur.Status != store.MigrationActive {
 		return
 	}
@@ -264,17 +269,26 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 	}
 }
 
-// dropUnmigratable removes from servingFrom any provider that was told to
-// prefetch long enough ago to have acknowledged but never did (and still does
-// not serve `to`). Those providers run a binary that doesn't support prefetch,
-// so they can't be migrated; keeping them in the coverage/done math would stall
-// the migration forever on un-upgraded nodes.
+// dropUnmigratable removes from servingFrom/prefetchCandidates any old-build
+// provider that can never complete the migration, so it doesn't pin coverage/
+// done below 100%: (a) one whose hardware can't fit the new build (e.g. a
+// small-RAM node migrating to a larger build), or (b) one told to prefetch long
+// enough ago to have acknowledged but never did (its binary doesn't speak
+// prefetch). A provider that acked and is merely still downloading is kept.
 func (mc *MigrationController) dropUnmigratable(m store.ModelMigration, servingFrom, prefetchCandidates, servingTo map[string]bool) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	now := time.Now()
 	for id := range servingFrom {
 		if servingTo[id] {
+			continue
+		}
+		// Permanent exclusion: this provider's hardware can't hold the new build.
+		if !mc.s.registry.ProviderCanFitBuild(id, m.ToBuild) {
+			delete(servingFrom, id)
+			delete(prefetchCandidates, id)
+			mc.s.logger.Warn("migration: excluding provider that can't fit the new build",
+				"alias", m.AliasID, "provider", id, "to", m.ToBuild)
 			continue
 		}
 		ts, sent := mc.sent[sentKey(m.AliasID, id, m.ToBuild)]
@@ -338,20 +352,16 @@ func setBuildWeight(alias *store.ModelAlias, buildID string, weight int) {
 	alias.Builds = append(alias.Builds, store.ModelAliasBuild{BuildID: buildID, Weight: weight, Active: true})
 }
 
-// toBuildHealthy gates the ramp: don't shift more traffic onto the new build if
-// providers already serve it but none can currently accept requests (e.g. all
-// at capacity or rejecting). When no provider serves it yet, ramp is held near
-// zero by coverage anyway, so we report healthy and let prefetch proceed.
+// toBuildHealthy gates the ramp. It must NOT use a saturation-sensitive signal
+// (e.g. ModelCapacitySnapshot.RoutableProviders, which drops to 0 once providers
+// are busy): the ramp itself drives canary traffic onto the new build, which
+// saturates it, which would then freeze the ramp — a self-inflicted deadlock.
+// `servingTo` here is the routability-based coverage set (counts busy/cold
+// providers), so "the new build has at least one provider that can route it" is
+// the right, saturation-insensitive gate. A real error-rate / TTFT health gate
+// (auto-pause on a genuinely bad build) is a tracked follow-up.
 func (mc *MigrationController) toBuildHealthy(m store.ModelMigration, servingTo map[string]bool) bool {
-	if len(servingTo) == 0 {
-		return true
-	}
-	for _, cap := range mc.s.registry.ModelCapacitySnapshot() {
-		if cap.ModelID == m.ToBuild {
-			return cap.RoutableProviders > 0
-		}
-	}
-	return true
+	return len(servingTo) > 0
 }
 
 func (mc *MigrationController) inflightSet(m store.ModelMigration, servingTo map[string]bool) map[string]bool {

@@ -167,6 +167,46 @@ func TestResolveModelConstrainedSelfRoutePrefersOwnerBuild(t *testing.T) {
 	}
 }
 
+func TestPublicNameForBuild(t *testing.T) {
+	reg := New(testLogger())
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	reg.SetModelAliases(map[string][]BuildRef{
+		"gemma-4-26b": {{BuildID: fp8, Weight: 50}, {BuildID: qat, Weight: 50}},
+	})
+	if got := reg.PublicNameForBuild(fp8); got != "gemma-4-26b" {
+		t.Fatalf("fp8 should map to alias, got %q", got)
+	}
+	if got := reg.PublicNameForBuild(qat); got != "gemma-4-26b" {
+		t.Fatalf("qat should map to alias, got %q", got)
+	}
+	// A build not part of any alias is returned unchanged (it is its own public name).
+	if got := reg.PublicNameForBuild("mlx-community/other"); got != "mlx-community/other" {
+		t.Fatalf("non-alias build should pass through, got %q", got)
+	}
+}
+
+func TestProviderCanFitBuild(t *testing.T) {
+	reg := New(testLogger())
+	const small = "mlx-community/small"
+	const big = "mlx-community/big"
+	// testRegisterMessage advertises a 64 GB machine.
+	registerProviderWithModel(reg, "p1", small)
+	reg.SetModelCatalog([]CatalogEntry{
+		{ID: small, MinRAMGB: 16},
+		{ID: big, MinRAMGB: 200},
+	})
+	if !reg.ProviderCanFitBuild("p1", small) {
+		t.Fatal("64GB machine should fit a 16GB-min build")
+	}
+	if reg.ProviderCanFitBuild("p1", big) {
+		t.Fatal("64GB machine must NOT fit a 200GB-min build")
+	}
+	if reg.ProviderCanFitBuild("nope", small) {
+		t.Fatal("unknown provider can't fit anything")
+	}
+}
+
 func TestResolveModelNoUsableBuild(t *testing.T) {
 	reg := New(testLogger())
 	// Alias exists but every build is drained (weight 0) → not resolvable.

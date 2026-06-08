@@ -999,6 +999,32 @@ func (r *Registry) SetModelAliases(aliases map[string][]BuildRef) {
 	r.modelAliases = m
 }
 
+// PublicNameForBuild returns the public alias a concrete build is exposed under
+// (the consumer-facing name), or the build id unchanged if it isn't part of any
+// alias. This lets consumer-facing surfaces (e.g. usage history) show the alias
+// while billing/stats/earnings keep storing the concrete build. If several
+// aliases map to the build, the lexicographically-first is returned for
+// stability.
+func (r *Registry) PublicNameForBuild(buildID string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	best := ""
+	for alias, builds := range r.modelAliases {
+		for _, b := range builds {
+			if b.BuildID == buildID {
+				if best == "" || alias < best {
+					best = alias
+				}
+				break
+			}
+		}
+	}
+	if best == "" {
+		return buildID
+	}
+	return best
+}
+
 // IsAlias reports whether requested is a configured public alias.
 func (r *Registry) IsAlias(requested string) bool {
 	r.mu.RLock()
@@ -1321,6 +1347,28 @@ func (r *Registry) ProviderAckedPrefetch(providerID string) bool {
 	t, ok := r.prefetchAcked[providerID]
 	r.prefetchAckMu.Unlock()
 	return ok && time.Since(t) <= prefetchAckTTL
+}
+
+// ProviderCanFitBuild reports whether a provider's hardware could ever hold the
+// build (the same memory gate routing applies). Used by the migration controller
+// to exclude a small-RAM old-build provider that can never serve a larger new
+// build, so it doesn't pin the ramp/done below 100%.
+func (r *Registry) ProviderCanFitBuild(providerID, buildID string) bool {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	minRAM := r.catalogMinRAMGbLocked(buildID)
+	sizeGB := r.catalogSizeGBLocked(buildID)
+	r.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	p.mu.Lock()
+	total := float64(p.Hardware.MemoryGB)
+	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
+		total = p.BackendCapacity.TotalMemoryGB
+	}
+	p.mu.Unlock()
+	return modelFitsHardware(minRAM, sizeGB, total)
 }
 
 // RecordPrefetchFailure notes a terminal prefetch failure for a provider+build.

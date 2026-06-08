@@ -4082,6 +4082,13 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Usage is recorded against the concrete build (correct for billing/stats/
+	// earnings), but the consumer must only ever see the public model name —
+	// map each build back to its alias for display.
+	for i := range entries {
+		entries[i].Model = s.registry.PublicNameForBuild(entries[i].Model)
+	}
+
 	writeJSON(w, http.StatusOK, types.UsageResponse{
 		Usage: entries,
 	})

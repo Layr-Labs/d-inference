@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
@@ -163,16 +164,17 @@ type Server struct {
 	billing                *billing.Service
 	logger                 *slog.Logger
 	mux                    *http.ServeMux
-	challengeInterval      time.Duration       // 0 means use DefaultChallengeInterval
-	skipChallenge          bool                // if true, skip attestation challenges entirely (testing only)
-	privyAuth              *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
-	adminEmails            map[string]bool     // emails that have admin access
-	adminKey               string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient              *mdm.Client         // MicroMDM client for provider security verification
-	mdmWebhookSecret       string              // optional shared secret MicroMDM must present on the webhook
-	stepCARootCert         *x509.Certificate   // step-ca root CA for ACME cert verification
-	stepCAIntermediateCert *x509.Certificate   // step-ca intermediate CA
-	profileSigner          *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
+	challengeInterval      time.Duration             // 0 means use DefaultChallengeInterval
+	skipChallenge          bool                      // if true, skip attestation challenges entirely (testing only)
+	privyAuth              *auth.PrivyAuth           // Privy JWT authentication (nil if not configured)
+	adminEmails            map[string]bool           // emails that have admin access
+	adminKey               string                    // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient              *mdm.Client               // MicroMDM client for provider security verification
+	mdmWebhookSecret       string                    // optional shared secret MicroMDM must present on the webhook
+	stepCARootCert         *x509.Certificate         // step-ca root CA for ACME cert verification
+	stepCAIntermediateCert *x509.Certificate         // step-ca intermediate CA
+	profileSigner          *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
+	codeAttestor           apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -185,6 +187,14 @@ type Server struct {
 	manualBinaryHashPolicyConfigured  bool
 	releaseBinaryHashPolicyConfigured bool
 	binaryHashPolicyConfigured        bool
+
+	// binaryHashEnforce gates whether a self-reported binaryHash mismatch actually
+	// DEROUTES a provider. Default false as of v0.6.0: binaryHash is self-reported
+	// (worthless against a malicious provider) and is demoted to drift telemetry —
+	// APNs code-identity attestation is the real code-identity signal. The policy
+	// machinery is retained for drift comparison and rollback
+	// (EIGENINFERENCE_BINARYHASH_ENFORCE=true).
+	binaryHashEnforce bool
 
 	// knownRuntimeManifest holds accepted runtime component hashes.
 	// When set, providers whose runtime hashes don't match are marked as
@@ -712,6 +722,16 @@ func (s *Server) SetMDMClient(client *mdm.Client) {
 	s.mdmClient = client
 }
 
+// SetCodeAttestor wires the APNs code-identity attestor (v0.6.0) and ENABLES
+// enforcement: providers that register afterward must pass the code-identity
+// round-trip (CodeAttested) to be routed private/text traffic. Passing nil
+// leaves the feature disabled (providers route as before). Call once during
+// server setup, before providers connect.
+func (s *Server) SetCodeAttestor(a apns.CodeIdentityAttestor) {
+	s.codeAttestor = a
+	s.registry.SetCodeAttestationRequired(a != nil)
+}
+
 // SetMDMWebhookSecret configures an optional shared secret that MicroMDM must
 // present (as ?token= or the X-Webhook-Token header) when calling the webhook.
 // When empty, the webhook relies solely on the solicited-command (CommandUUID)
@@ -758,6 +778,14 @@ func (s *Server) invalidateCatalogCache() {
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
+// SetBinaryHashEnforcement toggles whether a self-reported binaryHash mismatch
+// deroutes a provider. Default false (v0.6.0): binaryHash is demoted to drift
+// telemetry; APNs code-identity attestation is the real signal. Enable only for
+// rollback or to test the legacy enforcement path.
+func (s *Server) SetBinaryHashEnforcement(enabled bool) {
+	s.binaryHashEnforce = enabled
+}
+
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.
 func (s *Server) SetKnownBinaryHashes(hashes []string) {
 	normalized := normalizeKnownBinaryHashes(hashes, s.logger)

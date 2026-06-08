@@ -67,6 +67,48 @@ func testMakeTextRoutable(p *Provider) {
 	p.ChallengeVerifiedSIP = true
 }
 
+// TestCodeAttestationGate verifies the v0.6.0 APNs code-identity gate at the
+// single routing chokepoint: off by default (rollout flag), fail-closed when
+// required-but-unattested, routable once attested.
+func TestCodeAttestationGate(t *testing.T) {
+	mk := func() *Provider {
+		p := &Provider{
+			Backend:                 BackendMLXSwift,
+			PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
+			EncryptedResponseChunks: true,
+			PrivacyCapabilities: &protocol.PrivacyCapabilities{
+				TextBackendInprocess: true,
+				TextProxyDisabled:    true,
+				AntiDebugEnabled:     true,
+				CoreDumpsDisabled:    true,
+				EnvScrubbed:          true,
+			},
+		}
+		testMakeTextRoutable(p)
+		return p
+	}
+
+	// Rollout flag OFF: routable regardless of CodeAttested (no fleet regression).
+	if p := mk(); !providerSupportsPrivateTextLocked(p) {
+		t.Fatal("expected routable when codeAttestationRequired is off")
+	}
+
+	// Rollout flag ON, not attested: blocked (fail-closed, no self-route exemption).
+	p := mk()
+	p.codeAttestationRequired = true
+	if providerSupportsPrivateTextLocked(p) {
+		t.Fatal("expected NOT routable when required and !CodeAttested")
+	}
+
+	// Rollout flag ON, attested: routable.
+	p = mk()
+	p.codeAttestationRequired = true
+	p.CodeAttested = true
+	if !providerSupportsPrivateTextLocked(p) {
+		t.Fatal("expected routable when required and CodeAttested")
+	}
+}
+
 func TestRegisterAndGetProvider(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

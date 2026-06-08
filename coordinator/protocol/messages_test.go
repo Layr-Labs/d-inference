@@ -117,6 +117,75 @@ func contains(s, sub string) bool {
 	return false
 }
 
+func TestRegisterMessageAPNsFieldsSymmetry(t *testing.T) {
+	// A register payload exactly as the Swift ProviderMessage encoder emits it
+	// with the v0.6.0 APNs code-identity fields present.
+	swiftJSON := `{
+		"type": "register",
+		"hardware": {},
+		"models": [],
+		"backend": "mlx",
+		"public_key": "abc",
+		"apns_device_token": "cb1ceb489ec9",
+		"apns_environment": "production"
+	}`
+	var decoded RegisterMessage
+	if err := json.Unmarshal([]byte(swiftJSON), &decoded); err != nil {
+		t.Fatalf("unmarshal swift payload: %v", err)
+	}
+	if decoded.APNsDeviceToken != "cb1ceb489ec9" {
+		t.Errorf("apns_device_token did not decode: %q", decoded.APNsDeviceToken)
+	}
+	if decoded.APNsEnvironment != "production" {
+		t.Errorf("apns_environment did not decode: %q", decoded.APNsEnvironment)
+	}
+
+	// Both fields are omitempty: an empty register must not emit them (Swift omits
+	// them when nil, so the Go encoder must too, or symmetry tests drift).
+	data, _ := json.Marshal(RegisterMessage{Type: TypeRegister})
+	if contains(string(data), "apns_device_token") || contains(string(data), "apns_environment") {
+		t.Errorf("empty APNs fields should be omitted, got %s", data)
+	}
+
+	// Round-trip with values.
+	data, _ = json.Marshal(RegisterMessage{Type: TypeRegister, APNsDeviceToken: "tok", APNsEnvironment: "development"})
+	var back RegisterMessage
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	if back.APNsDeviceToken != "tok" || back.APNsEnvironment != "development" {
+		t.Errorf("APNs fields round-trip failed: %+v from %s", back, data)
+	}
+}
+
+func TestCodeAttestationResponseMessageMarshal(t *testing.T) {
+	msg := CodeAttestationResponseMessage{
+		Type:      TypeCodeAttestationResponse,
+		Nonce:     "bm9uY2U=",
+		Signature: "c2ln",
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Decode via the ProviderMessage envelope — the discriminator path the
+	// coordinator's read loop uses to route this message.
+	var pm ProviderMessage
+	if err := json.Unmarshal(data, &pm); err != nil {
+		t.Fatalf("envelope unmarshal: %v", err)
+	}
+	if pm.Type != TypeCodeAttestationResponse {
+		t.Errorf("type = %q, want %q", pm.Type, TypeCodeAttestationResponse)
+	}
+	got, ok := pm.Payload.(*CodeAttestationResponseMessage)
+	if !ok {
+		t.Fatalf("payload type = %T, want *CodeAttestationResponseMessage", pm.Payload)
+	}
+	if got.Nonce != "bm9uY2U=" || got.Signature != "c2ln" {
+		t.Errorf("round-trip mismatch: %+v", got)
+	}
+}
+
 func TestHeartbeatMessageMarshal(t *testing.T) {
 	msg := HeartbeatMessage{
 		Type:        TypeHeartbeat,

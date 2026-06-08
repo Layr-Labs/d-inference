@@ -323,6 +323,18 @@ jobs:
           if app_id and not (app_id.endswith('io.darkbloom.provider') or app_id.endswith('*')):
               errors.append(f"application-identifier mismatch: {app_id}")
 
+          # v0.6.0 APNs code-identity: the embedded profile MUST grant
+          # aps-environment=production, or the signed binary AMFI-kills at launch
+          # (restricted entitlement without an authorizing profile). This is the
+          # only build-time guard against shipping the entitlement with a stale,
+          # non-push profile. Profiles key it short ('aps-environment') or long.
+          aps = ents.get('aps-environment') or ents.get('com.apple.developer.aps-environment')
+          if aps != 'production':
+              errors.append(
+                  f"profile does not grant aps-environment=production (got {aps!r}); "
+                  "regenerate the push-enabled provisioning profile and update PROVISIONING_PROFILE_BASE64"
+              )
+
           expiry = p.get('ExpirationDate')
           if expiry is not None:
               # ExpirationDate is a naive UTC datetime from plistlib.
@@ -436,6 +448,31 @@ jobs:
             echo "$ENTITLEMENTS"
             exit 1
           fi
+          # v0.6.0 APNs code-identity assertions on the signed CLI:
+          #   (a) aps-environment present AND == production (parse the value, not a
+          #       bare grep — a dev profile would set 'development' and silently
+          #       register against the wrong APNs host).
+          #   (b) get-task-allow ABSENT — its absence (not "hardened runtime" per
+          #       se) is what blocks even-root debugger attach / dylib injection;
+          #       Developer ID + notarization strips it.
+          rm -f /tmp/cli-ents.plist
+          codesign -d --entitlements /tmp/cli-ents.plist --xml "$APP/Contents/MacOS/$CLI_NAME" 2>/dev/null || true
+          # Fail loudly if extraction produced nothing — otherwise the
+          # get-task-allow check below would pass vacuously on an empty file.
+          if [ ! -s /tmp/cli-ents.plist ]; then
+            echo "::error::Failed to extract entitlements from signed CLI for APNs/get-task-allow verification"
+            exit 1
+          fi
+          APS_ENV=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.aps-environment' /tmp/cli-ents.plist 2>/dev/null || echo "")
+          if [ "$APS_ENV" != "production" ]; then
+            echo "::error::Signed CLI aps-environment must be 'production' (got '${APS_ENV:-<absent>}'). Regenerate the push provisioning profile + entitlements (v0.6.0 APNs code-identity)."
+            exit 1
+          fi
+          if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' /tmp/cli-ents.plist 2>/dev/null | grep -qi true; then
+            echo "::error::Signed CLI has get-task-allow=true — defeats even-root injection resistance. It must be absent (Developer ID + notarized strips it)."
+            exit 1
+          fi
+          echo "APNs code-identity entitlements verified: aps-environment=production, get-task-allow absent"
           if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
             if [ ! -f "$APP/Contents/embedded.provisionprofile" ]; then
               echo "::error::Provisioning profile secret set but not embedded in app bundle"

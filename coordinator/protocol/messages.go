@@ -36,7 +36,11 @@ const (
 	TypeInferenceComplete      = "inference_complete"
 	TypeInferenceError         = "inference_error"
 	TypeAttestationResponse    = "attestation_response"
-	TypeLoadModelStatus        = "load_model_status"
+	// TypeCodeAttestationResponse is the provider's reply to the APNs-delivered
+	// code-identity challenge (E_K(nonce) push). Distinct from the liveness
+	// attestation_response: this is the WebSocket return leg of the push round-trip.
+	TypeCodeAttestationResponse = "code_attestation_response"
+	TypeLoadModelStatus         = "load_model_status"
 
 	// Coordinator → Provider.
 	TypeInferenceRequest     = "inference_request"
@@ -106,6 +110,12 @@ type RegisterMessage struct {
 	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
 	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
 	PrivateOnly             bool            `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
+
+	// APNs code-identity attestation (v0.6.0): the device token the coordinator
+	// pushes the E_K(nonce) code-identity challenge to, and which APNs environment
+	// that token belongs to. Bound 1:1 to PublicKey (K) at registration.
+	APNsDeviceToken string `json:"apns_device_token,omitempty"` // hex device token from registerForRemoteNotifications
+	APNsEnvironment string `json:"apns_environment,omitempty"`  // "production" | "development" (selects the APNs host)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
 	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
@@ -340,6 +350,26 @@ type AttestationResponseMessage struct {
 	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }
 
+// CodeAttestationResponseMessage is the provider's reply to the APNs-delivered
+// code-identity challenge. The coordinator pushed E_K(nonce) (a nonce encrypted
+// to the provider's registered X25519 key K) over APNs; only our genuine,
+// Apple-provisioned binary can receive that push, and only the genuine process
+// can decrypt it with K. The provider returns:
+//   - Nonce:     the DECRYPTED nonce (proves it could decrypt E_K(nonce) ⟹ holds K)
+//   - Signature: Sign_SE(nonce) from the persistent Secure-Enclave P-256 key
+//     (proves it holds the SE identity bound to K at registration)
+//
+// Note: K is X25519 (decrypt-only); the signature comes from the separate SE key.
+// The coordinator verifies Nonce == the nonce it pushed, and Signature against
+// the SE public key bound to this connection at registration — never a key
+// supplied in this message. This binds the Apple-gated push proof onto THIS
+// WebSocket connection.
+type CodeAttestationResponseMessage struct {
+	Type      string `json:"type"`
+	Nonce     string `json:"nonce"`     // decrypted challenge nonce, base64 (must equal the pushed nonce)
+	Signature string `json:"signature"` // base64 SE-key (P-256) signature over the nonce bytes
+}
+
 // ---------------------------------------------------------------------------
 // Runtime verification messages
 // ---------------------------------------------------------------------------
@@ -440,6 +470,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg AttestationResponseMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal attestation_response: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeCodeAttestationResponse:
+		var msg CodeAttestationResponseMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal code_attestation_response: %w", err)
 		}
 		pm.Payload = &msg
 

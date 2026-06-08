@@ -234,6 +234,11 @@ public struct CoordinatorClientConfig: Sendable {
     /// serves it exclusively to its owner's self-route requests, never the
     /// public fleet.
     public let privateOnly: Bool
+    /// APNs code-identity (v0.6.0): the device token to push the E_K(nonce)
+    /// code-identity challenge to, and which APNs environment it belongs to.
+    /// nil on headless/no-GUI boxes (no token) — those register un-attested.
+    public let apnsDeviceToken: String?
+    public let apnsEnvironment: String?
 
     public init(
         url: String,
@@ -248,7 +253,9 @@ public struct CoordinatorClientConfig: Sendable {
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
         privacyCapabilities: PrivacyCapabilities? = nil,
-        privateOnly: Bool = false
+        privateOnly: Bool = false,
+        apnsDeviceToken: String? = nil,
+        apnsEnvironment: String? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -263,6 +270,8 @@ public struct CoordinatorClientConfig: Sendable {
         self.modelHashes = modelHashes
         self.privacyCapabilities = privacyCapabilities
         self.privateOnly = privateOnly
+        self.apnsDeviceToken = apnsDeviceToken
+        self.apnsEnvironment = apnsEnvironment
     }
 }
 
@@ -290,6 +299,7 @@ public enum OutboundMessage: Sendable {
     case inferenceComplete(requestId: String, usage: UsageInfo, seSignature: String?, responseHash: String?)
     case inferenceError(requestId: String, error: String, statusCode: UInt16)
     case attestationResponse(AttestationResponsePayload)
+    case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
 }
 
@@ -395,6 +405,9 @@ public actor CoordinatorClient {
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
+    /// Device token that arrived after the initial registration (APNs slow at
+    /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
+    private var apnsTokenOverride: String?
 
     private var shutdownRequested = false
 
@@ -435,6 +448,18 @@ public actor CoordinatorClient {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         eventContinuation?.finish()
         outboundRouter.finish()
+    }
+
+    /// Re-register over a fresh connection carrying a device token that arrived
+    /// after the initial registration. Cancelling the socket (without setting
+    /// `shutdownRequested`) surfaces as a connection error, so the reconnect loop
+    /// re-runs `sendRegistration` with the override token — letting the
+    /// coordinator bind T↔K and push the code-identity challenge. No-op if the
+    /// token is unchanged.
+    public func refreshAPNsToken(_ token: String) {
+        guard apnsTokenOverride != token else { return }
+        apnsTokenOverride = token
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
     }
 
     // MARK: - Connection Loop
@@ -716,7 +741,8 @@ public actor CoordinatorClient {
         )
         let jsonData = try CoordinatorClientCodec.encodeRegistration(
             from: config,
-            privacyCapabilities: privacyCapabilities
+            privacyCapabilities: privacyCapabilities,
+            apnsDeviceTokenOverride: apnsTokenOverride
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed

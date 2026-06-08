@@ -351,6 +351,18 @@ public actor ProviderLoop {
             logger.warning("mlx.metallib not found near binary -- inference will fail at first GPU call")
         }
 
+        // APNs code-identity (v0.6.0): wait briefly for the device token the app
+        // delegate captures after registerForRemoteNotifications. Present only on
+        // a logged-in macOS GUI session running under the AppKit host; a headless
+        // / no-GUI box gets nil and registers un-attested (fail-closed at routing).
+        var apnsDeviceToken: String?
+        #if os(macOS)
+        apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
+        if apnsDeviceToken == nil {
+            logger.warning("no APNs device token (no GUI session / not push-provisioned) — registering un-attested")
+        }
+        #endif
+
         // 4. Create coordinator client config
         let coordinatorConfig = CoordinatorClientConfig(
             url: loopConfig.coordinatorURL,
@@ -365,7 +377,9 @@ public actor ProviderLoop {
             runtimeHashes: runtimeWithMetallib,
             modelHashes: loopConfig.modelHashes,
             privacyCapabilities: privacyCapabilitiesForRegistration(),
-            privateOnly: loopConfig.config.coordinator.privateOnly
+            privateOnly: loopConfig.config.coordinator.privateOnly,
+            apnsDeviceToken: apnsDeviceToken,
+            apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
         )
 
         // 4. Create coordinator client and start connection
@@ -377,6 +391,33 @@ public actor ProviderLoop {
 
         let (events, sendFn) = await coordinator.start()
         let send = SendHandle(sendFn)
+
+        // APNs code-identity (v0.6.0): answer pushed code-identity challenges by
+        // decrypting E_K(nonce) with K and signing the nonce with the SE key, then
+        // replying over THIS WebSocket. The app delegate delivers pushes via the
+        // bridge; we hop into the actor to use K + the signer + this send handle.
+        #if os(macOS)
+        APNsBridge.shared.setPushHandler { [weak self] userInfo in
+            // Extract the Sendable EncryptedPayload synchronously here so the
+            // non-Sendable [String: Any] never crosses into the actor Task.
+            guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
+            Task { await self.handleCodeChallenge(challenge, send: send) }
+        }
+
+        // If the device token wasn't ready at registration (APNs slow / GUI
+        // session still coming up), keep watching: when it arrives, reconnect so
+        // registration re-runs WITH the token. Otherwise the provider would stay
+        // un-attested (and unroutable under enforcement) until the process restarts.
+        if apnsDeviceToken == nil {
+            let log = logger
+            Task {
+                if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
+                    log.info("APNs device token arrived after registration — reconnecting to re-register with token")
+                    await coordinator.refreshAPNsToken(late)
+                }
+            }
+        }
+        #endif
 
         // Start the idle-timeout monitor before processing events so that
         // a rogue model-load (e.g. during `attestation_challenge` priming)
@@ -2073,6 +2114,55 @@ public actor ProviderLoop {
             logger.info("Attestation challenge response sent")
         } catch {
             logger.error("Failed to sign attestation challenge: \(error)")
+        }
+    }
+
+    // MARK: - Code-identity (APNs) challenge
+
+    /// Decrypts an E_K(nonce) code-identity challenge and produces the WebSocket
+    /// reply: the recovered nonce (proof of K-possession) + Sign_SE(nonce). Pure
+    /// and testable. K (NodeKeyPair, X25519) is decrypt-only — the signature is
+    /// the separate Secure-Enclave P-256 key. The coordinator verifies both
+    /// (nonce equality + the SE signature against the registration-bound SE key).
+    static func answerCodeChallenge(
+        challenge: EncryptedPayload,
+        keyPair: NodeKeyPair,
+        signer: any AttestationSigner
+    ) throws -> (nonce: String, signature: String) {
+        let nonceData = try keyPair.decryptPayload(challenge)
+        guard let nonceB64 = String(data: nonceData, encoding: .utf8) else {
+            throw NSError(domain: "ProviderCore.codeAttest", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "decrypted code-challenge nonce is not UTF-8"])
+        }
+        let sig = try signer.sign(Data(nonceB64.utf8))
+        return (nonceB64, sig.base64EncodedString())
+    }
+
+    /// Extracts the code_challenge EncryptedPayload from an APNs push userInfo.
+    static func extractCodeChallenge(_ userInfo: [String: Any]) -> EncryptedPayload? {
+        guard let cc = userInfo["code_challenge"],
+              let data = try? JSONSerialization.data(withJSONObject: cc)
+        else {
+            return nil
+        }
+        return try? JSONDecoder().decode(EncryptedPayload.self, from: data)
+    }
+
+    /// Handles an inbound APNs code-identity challenge (delivered by the app
+    /// delegate): decrypt E_K(nonce) with K, sign the nonce with the SE key, and
+    /// reply over the WebSocket. Only the genuine hardened process can do both,
+    /// which is what binds the Apple-gated push proof onto this connection.
+    func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle) {
+        guard let signer = self.signer else {
+            logger.warning("code-identity challenge received but no Secure Enclave signer is available")
+            return
+        }
+        do {
+            let answer = try Self.answerCodeChallenge(challenge: challenge, keyPair: keyPair, signer: signer)
+            send.send(.codeAttestationResponse(nonce: answer.nonce, signature: answer.signature))
+            logger.info("code-identity challenge answered over WebSocket")
+        } catch {
+            logger.error("failed to answer code-identity challenge: \(error)")
         }
     }
 

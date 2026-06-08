@@ -211,6 +211,43 @@ func TestDrainQueuedRequestsPopulatesDecision(t *testing.T) {
 	}
 }
 
+func TestDrainQueuedRequestsForProvider(t *testing.T) {
+	reg := New(testLogger())
+	model := "attest-drain-model"
+	p := makeSchedulerProvider(t, reg, "p1", model, 90)
+
+	// nil provider is a safe no-op (never panics).
+	reg.DrainQueuedRequestsForProvider(nil)
+
+	req := &QueuedRequest{
+		RequestID:  "queued-attest",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:             "queued-attest",
+			Model:                 model,
+			RequestedMaxTokens:    256,
+			EstimatedPromptTokens: 50,
+		},
+	}
+	if err := reg.Queue().Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// Draining by provider (as on a CodeAttested flip) must dispatch the queued
+	// request to that provider's model without waiting for a heartbeat.
+	reg.DrainQueuedRequestsForProvider(p)
+
+	select {
+	case assigned := <-req.ResponseCh:
+		if assigned == nil || assigned.ID != p.ID {
+			t.Fatalf("expected dispatch to %q, got %+v", p.ID, assigned)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for provider-drain dispatch")
+	}
+}
+
 func TestDrainQueuedRequestsSkipsUnassignableTargetedRequest(t *testing.T) {
 	reg := New(testLogger())
 	model := "queue-targeted-model"

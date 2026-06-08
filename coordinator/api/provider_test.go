@@ -499,6 +499,7 @@ func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
 
 	pubKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
@@ -540,6 +541,7 @@ func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
 
 	pubKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
@@ -578,6 +580,7 @@ func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{"not-a-sha256"})
+	srv.SetBinaryHashEnforcement(true) // v0.6.0: exercise the legacy enforcement path
 
 	pubKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
@@ -844,6 +847,7 @@ func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfi
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
 
 	regMsg := &protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
@@ -1240,6 +1244,7 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
 
 	pubKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
@@ -1289,6 +1294,7 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	otherKnownHash := strings.Repeat("f", 64)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest, otherKnownHash})
+	srv.SetBinaryHashEnforcement(true) // v0.6.0: exercise the legacy enforcement path
 
 	pubKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
@@ -1338,6 +1344,7 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
 
 	pubKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
@@ -1476,6 +1483,7 @@ func TestChallengeResponseRejectsUnsignedBinaryHashWhenPolicyConfigured(t *testi
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
 
 	pubKey := testPublicKeyB64()
 	p := reg.Register("provider-1", nil, &protocol.RegisterMessage{

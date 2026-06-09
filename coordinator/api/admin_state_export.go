@@ -1,0 +1,199 @@
+package api
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/stateexport"
+)
+
+// State-export env vars (all namespaced under env.EnvPrefix == "EIGENINFERENCE").
+const (
+	// envStateExportEnabled is the master switch. When != "true" the route 404s.
+	envStateExportEnabled = env.EnvPrefix + "_STATE_EXPORT_ENABLED"
+	// envStateExportRecipient is an age recipient ("age1..."). When set, output is
+	// encrypted to it; this is the default-secure path.
+	envStateExportRecipient = env.EnvPrefix + "_STATE_EXPORT_RECIPIENT"
+	// envStateExportAllowPlaintext permits a raw (unencrypted) zip ONLY when no
+	// recipient is configured. Must be explicitly "true".
+	envStateExportAllowPlaintext = env.EnvPrefix + "_STATE_EXPORT_ALLOW_PLAINTEXT"
+	// envStateExportRoot overrides the export root (primarily for tests).
+	envStateExportRoot = env.EnvPrefix + "_STATE_EXPORT_ROOT"
+)
+
+// resolveStateExportRoot picks the directory to archive:
+// EIGENINFERENCE_STATE_EXPORT_ROOT -> USER_PERSISTENT_DATA_PATH -> /mnt/disks/userdata.
+func resolveStateExportRoot() string {
+	return env.FirstNonEmpty(
+		os.Getenv(envStateExportRoot),
+		os.Getenv("USER_PERSISTENT_DATA_PATH"),
+		"/mnt/disks/userdata",
+	)
+}
+
+// handleAdminStateExport handles GET /v1/admin/state-export — it streams a
+// consistent (and, by default, encrypted) archive of the coordinator's sealed
+// on-disk state under /data for migration off EigenCloud (DAR-70).
+//
+// Triple gate, fail-closed, in order:
+//  1. master switch (404 when off — route stays invisible/inert),
+//  2. admin auth (s.isAdminAuthorized writes its own 403),
+//  3. output protection (encrypt to recipient, else 412 unless plaintext allowed).
+func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	// (a) Master switch — 404 when disabled so the route is indistinguishable
+	// from an unregistered path.
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv(envStateExportEnabled)), "true") {
+		http.NotFound(w, r)
+		return
+	}
+
+	// (b) Admin auth — writes 403 itself on failure.
+	if !s.isAdminAuthorized(w, r) {
+		s.logger.Warn("state-export: unauthorized access attempt",
+			"remote_addr", r.RemoteAddr, "authorized", false)
+		return
+	}
+
+	// (c) Output protection. Encrypted by default.
+	recipientStr := strings.TrimSpace(os.Getenv(envStateExportRecipient))
+	allowPlaintext := strings.EqualFold(strings.TrimSpace(os.Getenv(envStateExportAllowPlaintext)), "true")
+	encrypted := recipientStr != ""
+
+	if !encrypted && !allowPlaintext {
+		writeJSON(w, http.StatusPreconditionFailed, errorResponse("precondition_failed",
+			"set "+envStateExportRecipient+" to an age recipient, or set "+
+				envStateExportAllowPlaintext+"=true to download unencrypted"))
+		s.logger.Warn("state-export: refused (no recipient, plaintext not allowed)",
+			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", false)
+		return
+	}
+
+	root := resolveStateExportRoot()
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("export_error",
+			"state export root is unavailable"))
+		s.logger.Error("state-export: root unavailable",
+			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", encrypted,
+			"root", root, "error", fmt.Sprint(err))
+		return
+	}
+
+	// Compute the download filename / content-type BEFORE writing headers.
+	epoch := strconv.FormatInt(time.Now().Unix(), 10)
+	var filename, contentType string
+	if encrypted {
+		filename = "darkbloom-state-" + epoch + ".zip.age"
+		contentType = "application/octet-stream"
+	} else {
+		filename = "darkbloom-state-" + epoch + ".zip"
+		contentType = "application/zip"
+	}
+
+	// Validate the recipient up front (before any header is written) so a parse
+	// failure is a clean 500 rather than a half-written stream.
+	if encrypted {
+		if err := stateexport.ValidateRecipient(recipientStr); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse("export_error",
+				"state export recipient is misconfigured"))
+			// Do not log the recipient material; log only that parsing failed.
+			s.logger.Error("state-export: recipient parse failed",
+				"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", true)
+			return
+		}
+	}
+
+	// PHASE A — snapshot+validate every *.db into a controlled staging dir BEFORE
+	// writing any response status/bytes. Any failure here is fail-clean: we emit a
+	// real 500 and the client gets ZERO archive bytes. This is what closes the
+	// "partial archive after 200" + "/tmp leak" findings: copies live in one
+	// staging dir we always RemoveAll, and a torn db that can't snapshot aborts
+	// the whole export up front.
+	arch := stateexport.NewArchiver()
+	arch.Logger = s.logger
+	staged, stageErr := arch.Stage(root)
+	if stageErr != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("export_error",
+			"state export could not produce a consistent snapshot"))
+		s.logger.Error("state-export: staging failed (no bytes written)",
+			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", encrypted,
+			"root", root, "error", stageErr.Error())
+		return
+	}
+	// Always release the staging dir + validated db copies, even on a mid-stream
+	// failure or panic.
+	defer staged.Cleanup()
+
+	// PHASE B — only now commit to a 200 and stream the zip.
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.WriteHeader(http.StatusOK)
+
+	// Writer chain (streamed, never buffered):
+	//   archiver -> [age encrypt] -> countingWriter -> http.ResponseWriter
+	// The counter wraps the response so it tallies the actual bytes sent to the
+	// client (ciphertext when encrypted).
+	counter := &countingWriter{w: w}
+
+	var sink io.Writer = counter
+	var ageWriter io.WriteCloser
+	if encrypted {
+		aw, err := stateexport.EncryptWriter(counter, recipientStr)
+		if err != nil {
+			// Headers already sent; we can only abort the stream.
+			s.logger.Error("state-export: age writer init failed after headers",
+				"remote_addr", r.RemoteAddr, "error", err.Error())
+			return
+		}
+		ageWriter = aw
+		sink = aw
+	}
+
+	res, archErr := arch.Write(staged, sink)
+
+	// For encrypted streams, MUST close the age writer to flush the final chunk.
+	if ageWriter != nil {
+		if cerr := ageWriter.Close(); cerr != nil && archErr == nil {
+			archErr = cerr
+		}
+	}
+
+	if archErr != nil {
+		// Headers/body already in flight — cannot change status. Log the failure;
+		// the truncated stream signals the error to the client.
+		s.logger.Error("state-export: archive failed mid-stream",
+			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", encrypted,
+			"bytes", counter.n, "files", res.Files, "error", archErr.Error())
+		return
+	}
+
+	s.logger.Info("state-export: completed",
+		"remote_addr", r.RemoteAddr,
+		"authorized", true,
+		"encrypted", encrypted,
+		"files", res.Files,
+		"snapshotted_dbs", res.SnapshottedDBs,
+		"bytes", counter.n,
+		"duration_ms", time.Since(start).Milliseconds(),
+		"outcome", "ok",
+	)
+}
+
+// countingWriter tallies bytes written for the audit log without buffering.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}

@@ -3,6 +3,7 @@ module github.com/eigeninference/d-inference
 go 1.25.0
 
 require (
+	filippo.io/age v1.3.1
 	github.com/DataDog/datadog-go/v5 v5.8.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
@@ -10,6 +11,7 @@ require (
 	github.com/openai/openai-go v1.12.0
 	github.com/smallstep/pkcs7 v0.2.1
 	github.com/stretchr/testify v1.11.1
+	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.49.0
 	golang.org/x/time v0.15.0
 	gopkg.in/DataDog/dd-trace-go.v1 v1.74.8
@@ -18,6 +20,7 @@ require (
 )
 
 require (
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/DataDog/datadog-agent/comp/core/tagger/origindetection v0.67.0 // indirect
 	github.com/DataDog/datadog-agent/pkg/obfuscate v0.67.0 // indirect
 	github.com/DataDog/datadog-agent/pkg/proto v0.67.0 // indirect

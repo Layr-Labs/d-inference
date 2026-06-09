@@ -236,7 +236,7 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let (models, modelHashes) = attachWeightHashes(to: selectedModels)
+        let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
 
@@ -321,6 +321,7 @@ struct Start: AsyncParsableCommand {
             authToken: authToken,
             runtimeHashes: runtimeHashes,
             modelHashes: modelHashes,
+            modelHashFingerprints: modelHashFingerprints,
             localEndpoint: localEndpointConfig
         )
 

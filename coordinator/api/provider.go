@@ -1056,29 +1056,32 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Legacy fallback for providers that report only active_model_hash with no
-	// model_hashes map: the response does not say WHICH model the hash belongs
-	// to, so accept it if it matches ANY advertised model's catalog hash.
-	// (Comparing against the heartbeat-derived "current model" is inherently
-	// racy — see above.)
-	if len(resp.ModelHashes) == 0 && resp.ActiveModelHash != "" {
+	// The bare active_model_hash names no model, so the strongest race-free
+	// statement it admits is membership: when EVERY advertised model has an
+	// enforced catalog hash, a hash that matches none of them is tampered.
+	// This runs regardless of model_hashes — a map holding only empty or
+	// unknown entries must not suppress it — and stays inconclusive (skipped)
+	// when any advertised model is unenforced, since the bare hash could
+	// legitimately belong to that model. (Comparing against the
+	// heartbeat-derived "current model" instead is inherently racy — see
+	// above.)
+	if resp.ActiveModelHash != "" {
 		provider.Mu().Lock()
 		models := provider.Models
 		provider.Mu().Unlock()
-		enforced := false
+		allEnforced := len(models) > 0
 		matched := false
 		for _, m := range models {
 			expectedHash := s.registry.CatalogWeightHash(m.ID)
 			if expectedHash == "" {
-				continue
-			}
-			enforced = true
-			if resp.ActiveModelHash == expectedHash {
-				matched = true
+				allEnforced = false
 				break
 			}
+			if resp.ActiveModelHash == expectedHash {
+				matched = true
+			}
 		}
-		if enforced && !matched {
+		if allEnforced && !matched {
 			s.logger.Error("provider active model hash matches no advertised model — possible model swap",
 				"provider_id", providerID,
 				"got", registry.TruncHash(resp.ActiveModelHash),

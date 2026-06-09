@@ -72,6 +72,11 @@ public struct ProviderLoopConfig: Sendable {
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
+    /// Snapshot fingerprints captured at the same time as `modelHashes` (see
+    /// `WeightHasher.snapshotFingerprint`). Seeding these lets the first
+    /// `ensureModelLoaded` skip a full re-read of weights that were already
+    /// hashed at startup; without them the first load re-hashes every byte.
+    public let modelHashFingerprints: [String: String]
     /// When set, the provider also serves a local OpenAI-compatible HTTP
     /// endpoint off the SAME loaded models it serves to the coordinator
     /// (unified mode). nil = coordinator-only (the default).
@@ -85,6 +90,7 @@ public struct ProviderLoopConfig: Sendable {
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
+        modelHashFingerprints: [String: String] = [:],
         localEndpoint: LocalInferenceHTTPConfig? = nil
     ) {
         self.coordinatorURL = coordinatorURL
@@ -94,6 +100,7 @@ public struct ProviderLoopConfig: Sendable {
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
+        self.modelHashFingerprints = modelHashFingerprints
         self.localEndpoint = localEndpoint
     }
 }
@@ -185,8 +192,9 @@ public actor ProviderLoop {
     /// weight hash was last computed. A model whose fingerprint is unchanged at
     /// reload skips the full multi-second re-hash — idle-unload/lazy-reload
     /// cycles happen hourly, and re-reading ~30 GB of unchanged weights each
-    /// time would tax cold-start TTFT for nothing.
-    private var modelHashFingerprints: [String: String] = [:]
+    /// time would tax cold-start TTFT for nothing. Seeded from the config so
+    /// the FIRST load doesn't re-read weights already hashed at startup.
+    private var modelHashFingerprints: [String: String]
 
     /// The running coordinator client, kept so weight-hash refreshes can be
     /// pushed into reconnect registrations (models[].weight_hash drives the
@@ -276,6 +284,7 @@ public actor ProviderLoop {
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
         self.liveModelHashes = config.modelHashes
+        self.modelHashFingerprints = config.modelHashFingerprints
     }
 
     static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {

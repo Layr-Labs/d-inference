@@ -13,8 +13,12 @@ package api
 // tampered hash of model A → false "model swap" hard-untrust.
 //
 // The fix validates the model-keyed resp.ModelHashes map against the catalog
-// — exact and race-free — with a membership fallback for legacy responses
-// that carry only active_model_hash.
+// — exact and race-free. The bare active_model_hash is additionally checked
+// by membership (it must match SOME advertised model's catalog hash), which
+// runs regardless of the map — so a map of only empty/unknown entries cannot
+// suppress it — but only when every advertised model has an enforced catalog
+// hash; otherwise the bare hash could legitimately belong to an unenforced
+// model and proves nothing.
 
 import (
 	"context"
@@ -46,13 +50,25 @@ func challengeExchange(
 	activeModelHash string,
 ) registry.ProviderStatus {
 	t.Helper()
+	return challengeExchangeWithCatalog(t, []registry.CatalogEntry{
+		{ID: "model-gemma", WeightHash: gemmaHash},
+		{ID: "model-gptoss", WeightHash: gptOSSHash},
+	}, modelHashes, activeModelHash)
+}
+
+// challengeExchangeWithCatalog is challengeExchange with a caller-supplied
+// model catalog (to exercise unenforced catalog entries).
+func challengeExchangeWithCatalog(
+	t *testing.T,
+	catalog []registry.CatalogEntry,
+	modelHashes map[string]string,
+	activeModelHash string,
+) registry.ProviderStatus {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	reg.SetModelCatalog([]registry.CatalogEntry{
-		{ID: "model-gemma", WeightHash: gemmaHash},
-		{ID: "model-gptoss", WeightHash: gptOSSHash},
-	})
+	reg.SetModelCatalog(catalog)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
@@ -196,5 +212,39 @@ func TestChallengeLegacyActiveHashMatchingNothingUntrusts(t *testing.T) {
 	status := challengeExchange(t, nil, "deadbeef"+gemmaHash[8:])
 	if status != registry.StatusUntrusted {
 		t.Fatalf("legacy response with unknown hash was not untrusted (status=%s)", status)
+	}
+}
+
+// TestChallengeUselessMapDoesNotSuppressActiveHashCheck: a model_hashes map
+// holding only empty or unknown entries must not act as a bypass — the bare
+// active_model_hash membership check still runs and rejects a bogus hash.
+// (Review finding: with the fallback gated on len(resp.ModelHashes) == 0, a
+// malicious provider could send {"model-gemma": ""} plus a bad active hash
+// and skip both checks.)
+func TestChallengeUselessMapDoesNotSuppressActiveHashCheck(t *testing.T) {
+	status := challengeExchange(t,
+		map[string]string{"model-gemma": "", "not-in-catalog": "ffff" + gemmaHash[4:]},
+		"deadbeef"+gemmaHash[8:],
+	)
+	if status != registry.StatusUntrusted {
+		t.Fatalf("useless model_hashes map suppressed the active-hash check (status=%s)", status)
+	}
+}
+
+// TestChallengeBareHashSkippedWhenAnyModelUnenforced: when an advertised model
+// has no enforced catalog hash, a bare active_model_hash matching nothing is
+// inconclusive — it could legitimately be that model's hash — so the provider
+// must NOT be untrusted.
+func TestChallengeBareHashSkippedWhenAnyModelUnenforced(t *testing.T) {
+	status := challengeExchangeWithCatalog(t,
+		[]registry.CatalogEntry{
+			{ID: "model-gemma", WeightHash: gemmaHash},
+			{ID: "model-gptoss", WeightHash: ""}, // unenforced
+		},
+		nil,
+		"deadbeef"+gemmaHash[8:], // plausibly model-gptoss's real hash
+	)
+	if status == registry.StatusUntrusted {
+		t.Fatal("bare hash untrusted despite an unenforced advertised model (inconclusive check)")
 	}
 }

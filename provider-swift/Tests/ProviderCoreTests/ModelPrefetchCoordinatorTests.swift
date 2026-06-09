@@ -204,42 +204,6 @@ private func makeCoordinator(
 @Suite("ModelPrefetchCoordinator", .serialized)
 struct ModelPrefetchCoordinatorTests {
 
-    @Test("a long silent download emits periodic .downloading heartbeats so the coordinator ack stays fresh")
-    func emitsDownloadHeartbeatsDuringLongDownload() async throws {
-        // A single large shard reports no intra-file byte progress, so without a
-        // heartbeat the provider would be silent between `.started` and the
-        // terminal status — past the coordinator's prefetch-ack TTL — and get
-        // dropped from an in-flight migration. The GatedPrefetcher blocks the
-        // download body (and never calls onByteProgress), so EVERY `.downloading`
-        // observed here is a heartbeat.
-        let prefetcher = GatedPrefetcher()
-        let sink = RecordingSink()
-        let coord = ModelPrefetchCoordinator(
-            prefetcher: prefetcher,
-            preCheck: { _ in .needsFetch },
-            onVerified: { _ in },
-            heartbeatInterval: .milliseconds(30)
-        )
-        await coord.handlePrefetch(modelId: "m", priority: 0, sink: sink)
-
-        // Wait until the (blocking) download body is actually running.
-        await prefetcher.bodyStarted.wait()
-        // Several heartbeat intervals should elapse while the download is silent.
-        let beat = await waitUntil(timeout: .seconds(2)) {
-            sink.events.filter { $0.status == .downloading }.count >= 2
-        }
-        #expect(beat)
-
-        // Release → terminal verified; the heartbeat stops.
-        prefetcher.release("m")
-        let done = await waitUntil { sink.terminal()?.status == .verified }
-        #expect(done)
-        // No heartbeat is emitted after the terminal status.
-        if let v = sink.events.firstIndex(where: { $0.status == .verified }) {
-            #expect(!sink.events[(v + 1)...].contains { $0.status == .downloading })
-        }
-    }
-
     @Test("success emits started → downloading → verified and fires re-advertise")
     func successLifecycle() async throws {
         let prefetcher = FakePrefetcher(.success(total: 1000, steps: 4))

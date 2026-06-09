@@ -1476,18 +1476,18 @@ public actor ProviderLoop {
         // desired/previous pair). We do NOT force-unload a resident slot; the idle
         // monitor reclaims it.
         if let previous = desiredSwapDrop.removeValue(forKey: modelId), previous != modelId {
-            dropAdvertisedBuild(previous)
+            await dropAdvertisedBuild(previous)
         }
     }
 
     /// Locally retire a superseded build: stop advertising it (so no new requests
     /// route to it and the next register won't re-announce it) and forget its hash.
     /// The GPU slot, if resident, is left to the idle monitor — a lazy drop.
-    private func dropAdvertisedBuild(_ buildID: String) {
+    private func dropAdvertisedBuild(_ buildID: String) async {
         guard advertisedModels[buildID] != nil else { return }
         advertisedModels.removeValue(forKey: buildID)
         modelHashes.removeValue(forKey: buildID)
-        coordinatorClient?.unadvertiseModel(buildID)
+        await coordinatorClient?.unadvertiseModel(buildID)
         syncWarmModelState()
         logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
     }
@@ -1507,7 +1507,7 @@ public actor ProviderLoop {
             // Already converged (advertised + verified) → just ensure the old build
             // is no longer advertised locally.
             if advertisedModels[desired] != nil, modelHashes[desired] != nil {
-                if let previous { dropAdvertisedBuild(previous) }
+                if let previous { await dropAdvertisedBuild(previous) }
                 desiredSwapDrop.removeValue(forKey: desired)
                 continue
             }

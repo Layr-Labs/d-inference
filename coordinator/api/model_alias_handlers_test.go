@@ -2,13 +2,19 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
+	"nhooyr.io/websocket"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -32,8 +38,14 @@ func seedActiveModel(t *testing.T, st store.Store, modelID, displayName string) 
 	}
 }
 
-// Admin can create a public alias over two builds; the alias becomes routable
-// and /v1/models shows the alias while hiding the raw builds by default.
+const (
+	aliasFP8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	aliasQAT = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+)
+
+// Admin can create a public alias pointing at a desired build (+ previous); the
+// alias becomes routable and /v1/models shows the alias while hiding the raw
+// builds by default.
 func TestModelAliasCreateAndListing(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -41,20 +53,16 @@ func TestModelAliasCreateAndListing(t *testing.T) {
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
-	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
-	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	seedActiveModel(t, st, fp8, "Gemma 4 26B (fp8)")
-	seedActiveModel(t, st, qat, "Gemma 4 26B (qat-4bit)")
+	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B (fp8)")
+	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B (qat-4bit)")
 	srv.SyncModelCatalog()
 
-	// Create the alias: fp8 draining (weight 30), qat ramping (weight 70).
+	// Create the alias: desired = qat, previous = fp8.
 	body, _ := json.Marshal(map[string]any{
-		"alias_id":     "gemma-4-26b",
-		"display_name": "Gemma 4 26B",
-		"builds": []map[string]any{
-			{"build_id": fp8, "weight": 30},
-			{"build_id": qat, "weight": 70},
-		},
+		"alias_id":       "gemma-4-26b",
+		"display_name":   "Gemma 4 26B",
+		"desired_build":  aliasQAT,
+		"previous_build": aliasFP8,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer publish-secret")
@@ -64,17 +72,16 @@ func TestModelAliasCreateAndListing(t *testing.T) {
 		t.Fatalf("create alias status = %d body = %s", rec.Code, rec.Body.String())
 	}
 
-	// The registry now resolves the alias to a concrete build.
+	// The registry resolves the alias; with no providers it queues against desired.
 	if !reg.IsAlias("gemma-4-26b") {
 		t.Fatal("registry did not learn the alias after sync")
 	}
 	build, isAlias, ok := reg.ResolveModel("gemma-4-26b")
-	if !isAlias || !ok || (build != fp8 && build != qat) {
-		t.Fatalf("resolve = %q isAlias=%v ok=%v", build, isAlias, ok)
+	if !isAlias || !ok || build != aliasQAT {
+		t.Fatalf("resolve = %q isAlias=%v ok=%v, want desired qat", build, isAlias, ok)
 	}
 
-	// /v1/models shows the alias and hides the raw builds. Call the handler
-	// directly to bypass requireAuth (same pattern as the OpenRouter list test).
+	// /v1/models shows the alias and hides the raw builds.
 	listReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	listRec := httptest.NewRecorder()
 	srv.handleListModels(listRec, listReq)
@@ -91,34 +98,35 @@ func TestModelAliasCreateAndListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	var aliasName string
+	leaked := false
 	for _, m := range resp.Data {
 		if m.ID == "gemma-4-26b" {
 			aliasName = m.Name
+		}
+		if m.ID == aliasFP8 || m.ID == aliasQAT {
+			leaked = true
 		}
 	}
 	if aliasName != "Gemma 4 26B" {
 		t.Fatalf("alias not listed with display name: data=%+v", resp.Data)
 	}
+	if leaked {
+		t.Fatalf("raw builds should be hidden behind the alias: data=%+v", resp.Data)
+	}
 }
 
 // aliasModelEntries returns the alias entry and the set of builds it covers
-// (which the listing hides by default). Exercised directly so we don't need a
-// live WebSocket provider just to populate registry.ListModels().
+// (desired + previous), aggregating capacity across both.
 func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 
-	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
-	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	seedActiveModel(t, st, fp8, "Gemma 4 26B (fp8)")
-	seedActiveModel(t, st, qat, "Gemma 4 26B (qat-4bit)")
+	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B (fp8)")
+	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B (qat-4bit)")
 	if err := st.UpsertModelAlias(&store.ModelAlias{
 		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
-		Builds: []store.ModelAliasBuild{
-			{BuildID: fp8, Weight: 30, Active: true},
-			{BuildID: qat, Weight: 70, Active: true},
-		},
+		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,45 +135,48 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalogByID := map[string]store.SupportedModel{fp8: {ID: fp8, Active: true, ModelType: "text"}, qat: {ID: qat, Active: true, ModelType: "text"}}
+	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}, aliasQAT: {ID: aliasQAT, Active: true, ModelType: "text"}}
 	capByModel := map[string]*registry.ModelCapacity{
-		fp8: {ModelID: fp8, RoutableProviders: 2, WarmProviders: 1, CanAccept: true},
-		qat: {ModelID: qat, RoutableProviders: 1, WarmProviders: 0, CanAccept: false},
+		aliasQAT: {ModelID: aliasQAT, RoutableProviders: 2, WarmProviders: 1, CanAccept: true},
+		aliasFP8: {ModelID: aliasFP8, RoutableProviders: 1, WarmProviders: 0, CanAccept: false},
 	}
 
 	entries, hidden := srv.aliasModelEntries(capByModel, catalogByID, registryByID)
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("expected one alias entry, got %+v", entries)
 	}
-	// Capacity aggregates across both builds.
+	// Capacity aggregates across desired + previous (2 + 1 = 3 routable).
 	if entries[0].Metadata.RoutableProviders != 3 || !entries[0].Metadata.CanAccept {
 		t.Fatalf("alias capacity not aggregated: %+v", entries[0].Metadata)
 	}
-	if _, ok := hidden[fp8]; !ok {
-		t.Fatalf("fp8 build should be hidden: %v", hidden)
+	if _, ok := hidden[aliasFP8]; !ok {
+		t.Fatalf("fp8 (previous) build should be hidden: %v", hidden)
 	}
-	if _, ok := hidden[qat]; !ok {
-		t.Fatalf("qat build should be hidden: %v", hidden)
+	if _, ok := hidden[aliasQAT]; !ok {
+		t.Fatalf("qat (desired) build should be hidden: %v", hidden)
 	}
 }
 
-// An alias whose builds are all drained (weight 0) resolves to nothing, so it
-// must not be advertised in /v1/models (it would 503).
-func TestAliasModelEntriesSkipsAllDrained(t *testing.T) {
+// An alias whose desired build isn't in the catalog yet falls back to the
+// previous build for its primary metadata; an alias with no in-catalog build is
+// not advertised.
+func TestAliasModelEntriesDesiredNotInCatalog(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 
-	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
-	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	seedActiveModel(t, st, fp8, "fp8")
-	seedActiveModel(t, st, qat, "qat")
+	seedActiveModel(t, st, aliasFP8, "fp8 only")
+	// Only fp8 (previous) is in the catalog; qat (desired) isn't registered yet.
 	if err := st.UpsertModelAlias(&store.ModelAlias{
 		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
-		Builds: []store.ModelAliasBuild{
-			{BuildID: fp8, Weight: 0, Active: true},
-			{BuildID: qat, Weight: 0, Active: true},
-		},
+		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An alias whose desired build is empty / has no in-catalog build is skipped.
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "ghost", DisplayName: "Ghost", Active: true,
+		DesiredBuild: "mlx-community/not-registered",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -174,30 +185,66 @@ func TestAliasModelEntriesSkipsAllDrained(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalogByID := map[string]store.SupportedModel{
-		fp8: {ID: fp8, Active: true, ModelType: "text"},
-		qat: {ID: qat, Active: true, ModelType: "text"},
-	}
+	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}}
 	entries, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
-	if len(entries) != 0 {
-		t.Fatalf("fully-drained alias must not be listed, got %+v", entries)
+	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
+		t.Fatalf("only the alias with an in-catalog build should list, got %+v", entries)
 	}
-	if len(hidden) != 0 {
-		t.Fatalf("a skipped alias must not hide its builds, got %v", hidden)
+	if _, ok := hidden[aliasFP8]; !ok {
+		t.Fatalf("previous build should still be hidden, got %v", hidden)
+	}
+	if _, ok := hidden["mlx-community/not-registered"]; ok {
+		t.Fatalf("a skipped alias must not hide its build, got %v", hidden)
 	}
 }
 
-// Alias upsert rejects builds that don't reference a registered model and
-// self-references, and delete removes the alias.
-func TestModelAliasValidationAndDelete(t *testing.T) {
+// Routing through aliasModelEntries / ResolveModel: when only the previous build
+// has routable providers the alias resolves to previous; once desired is routable
+// it resolves to desired.
+func TestAliasRoutingDesiredAndPrevious(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	seedActiveModel(t, st, aliasFP8, "fp8")
+	seedActiveModel(t, st, aliasQAT, "qat")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	// Only the previous build is routable → resolve to previous.
+	registerBuildsProvider(srv, "p-prev", aliasFP8)
+	for i := 0; i < 50; i++ {
+		if b, _, ok := reg.ResolveModel("gemma-4-26b"); !ok || b != aliasFP8 {
+			t.Fatalf("should route to previous fp8, got %q ok=%v", b, ok)
+		}
+	}
+
+	// Now the desired build becomes routable → resolve to desired.
+	registerBuildsProvider(srv, "p-desired", aliasQAT)
+	for i := 0; i < 50; i++ {
+		if b, _, ok := reg.ResolveModel("gemma-4-26b"); !ok || b != aliasQAT {
+			t.Fatalf("should route to desired qat once routable, got %q ok=%v", b, ok)
+		}
+	}
+}
+
+// Alias upsert rejects unregistered builds, self-references, and a missing
+// desired build; a revert is just re-PUT with desired set back.
+func TestModelAliasValidationAndRevert(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
-	const real = "mlx-community/gemma-4-26b-a4b-it-fp8"
-	seedActiveModel(t, st, real, "Gemma 4 26B (fp8)")
+	seedActiveModel(t, st, aliasFP8, "fp8")
+	seedActiveModel(t, st, aliasQAT, "qat")
 	srv.SyncModelCatalog()
 
 	post := func(body map[string]any) int {
@@ -209,24 +256,40 @@ func TestModelAliasValidationAndDelete(t *testing.T) {
 		return rec.Code
 	}
 
-	// Phantom build → 400.
-	if code := post(map[string]any{"alias_id": "g", "builds": []map[string]any{{"build_id": "does/not-exist", "weight": 1}}}); code != http.StatusBadRequest {
+	// Phantom desired build → 400.
+	if code := post(map[string]any{"alias_id": "g", "desired_build": "does/not-exist"}); code != http.StatusBadRequest {
 		t.Fatalf("phantom build status = %d, want 400", code)
 	}
+	// Phantom previous build → 400.
+	if code := post(map[string]any{"alias_id": "g", "desired_build": aliasQAT, "previous_build": "does/not-exist"}); code != http.StatusBadRequest {
+		t.Fatalf("phantom previous status = %d, want 400", code)
+	}
 	// Self-reference → 400.
-	if code := post(map[string]any{"alias_id": "g", "builds": []map[string]any{{"build_id": "g", "weight": 1}}}); code != http.StatusBadRequest {
+	if code := post(map[string]any{"alias_id": "g", "desired_build": "g"}); code != http.StatusBadRequest {
 		t.Fatalf("self-ref status = %d, want 400", code)
 	}
-	// Missing builds → 400.
+	// Missing desired_build → 400.
 	if code := post(map[string]any{"alias_id": "g"}); code != http.StatusBadRequest {
-		t.Fatalf("no-builds status = %d, want 400", code)
+		t.Fatalf("no-desired status = %d, want 400", code)
 	}
-	// Valid → 200.
-	if code := post(map[string]any{"alias_id": "gemma-4-26b", "builds": []map[string]any{{"build_id": real, "weight": 100}}}); code != http.StatusOK {
+	// Valid rollout: desired = qat, previous = fp8 → 200.
+	if code := post(map[string]any{"alias_id": "gemma-4-26b", "desired_build": aliasQAT, "previous_build": aliasFP8}); code != http.StatusOK {
 		t.Fatalf("valid alias status = %d, want 200", code)
 	}
-	if !reg.IsAlias("gemma-4-26b") {
-		t.Fatal("alias not active after create")
+	if b, _, _ := reg.ResolveModel("gemma-4-26b"); b != aliasQAT {
+		t.Fatalf("after rollout resolve = %q, want qat", b)
+	}
+
+	// Revert: re-PUT with desired back to fp8, no previous → 200.
+	if code := post(map[string]any{"alias_id": "gemma-4-26b", "desired_build": aliasFP8}); code != http.StatusOK {
+		t.Fatalf("revert status = %d, want 200", code)
+	}
+	saved, _, _ := st.GetModelAlias("gemma-4-26b")
+	if saved.DesiredBuild != aliasFP8 || saved.PreviousBuild != "" {
+		t.Fatalf("revert not persisted: desired=%q previous=%q", saved.DesiredBuild, saved.PreviousBuild)
+	}
+	if b, _, _ := reg.ResolveModel("gemma-4-26b"); b != aliasFP8 {
+		t.Fatalf("after revert resolve = %q, want fp8", b)
 	}
 
 	// Delete it.
@@ -247,10 +310,127 @@ func TestModelAliasRequiresAuth(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
-	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases", bytes.NewReader([]byte(`{"alias_id":"x","builds":[]}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases", bytes.NewReader([]byte(`{"alias_id":"x","desired_build":"y"}`)))
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code == http.StatusOK {
 		t.Fatalf("unauthenticated alias write should be rejected, got %d", rec.Code)
+	}
+}
+
+// A provider that connects over the real WebSocket path and advertises a build
+// under an existing alias is pushed desired_models right after register.
+func TestProviderReceivesDesiredModelsAfterRegister(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv.challengeInterval = time.Hour // don't race the desired_models read with a challenge
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	seedActiveModel(t, st, aliasFP8, "fp8")
+	seedActiveModel(t, st, aliasQAT, "qat")
+	// Alias exists BEFORE the provider connects: desired = qat, previous = fp8.
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Provider advertises the previous build (fp8) and runs a feature-version
+	// Swift binary, so it qualifies for desired_models.
+	regMsg := protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{MachineModel: "Mac15,8", ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: aliasFP8, ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 registry.BackendMLXSwift,
+		Version:                 minProviderVersionForDesiredModels,
+		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+
+	// Read until we see desired_models (other messages like trust_status may
+	// arrive first).
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("did not receive desired_models after register")
+		}
+		readCtx, readCancel := context.WithTimeout(ctx, 2*time.Second)
+		_, data, rerr := conn.Read(readCtx)
+		readCancel()
+		if rerr != nil {
+			t.Fatalf("read: %v", rerr)
+		}
+		var env struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &env); err != nil {
+			continue
+		}
+		if env.Type != protocol.TypeDesiredModels {
+			continue
+		}
+		var msg protocol.DesiredModelsMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatalf("decode desired_models: %v", err)
+		}
+		if len(msg.Models) != 1 {
+			t.Fatalf("desired_models entries = %d, want 1: %+v", len(msg.Models), msg.Models)
+		}
+		e := msg.Models[0]
+		if e.ModelName != "gemma-4-26b" || e.DesiredBuild != aliasQAT || e.PreviousBuild != aliasFP8 {
+			t.Fatalf("desired_models entry mismatch: %+v", e)
+		}
+		return
+	}
+}
+
+// The headline guarantee at the function level: the consumer-facing model name
+// is the alias, and the concrete build is never substituted in.
+func TestConsumerModelAndChunkRewriteNeverLeakBuild(t *testing.T) {
+	const build = aliasQAT
+	const alias = "gemma-4-26b"
+
+	pr := &registry.PendingRequest{Model: build, PublicModel: alias}
+	if got := consumerModel(pr); got != alias {
+		t.Fatalf("consumerModel = %q, want alias %q", got, alias)
+	}
+	compact := `data: {"id":"x","model":"` + build + `","choices":[]}`
+	spaced := `data: {"id":"x","model": "` + build + `","choices":[]}`
+	if out := rewriteChunkModel(compact, pr); strings.Contains(out, build) || !strings.Contains(out, alias) {
+		t.Fatalf("compact chunk still leaks build: %q", out)
+	}
+	if out := rewriteChunkModel(spaced, pr); strings.Contains(out, build) || !strings.Contains(out, alias) {
+		t.Fatalf("spaced chunk still leaks build: %q", out)
+	}
+
+	raw := &registry.PendingRequest{Model: build, PublicModel: build}
+	if got := consumerModel(raw); got != build {
+		t.Fatalf("raw consumerModel = %q, want %q", got, build)
+	}
+	if out := rewriteChunkModel(compact, raw); out != compact {
+		t.Fatalf("raw-id chunk should be unchanged, got %q", out)
+	}
+	none := &registry.PendingRequest{Model: build}
+	if got := consumerModel(none); got != build {
+		t.Fatalf("empty PublicModel should fall back to build, got %q", got)
 	}
 }

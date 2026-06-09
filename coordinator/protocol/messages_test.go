@@ -1125,3 +1125,51 @@ func TestBackendSlotCapacityBackwardCompatDecode(t *testing.T) {
 		t.Errorf("num_running = %d, want 2", slot.NumRunning)
 	}
 }
+
+// TestDesiredModelsMessageMarshal verifies the desired_models wire shape the
+// coordinator emits round-trips, including the snake_case keys the Swift decoder
+// expects and the omitempty behavior of previous_build (so Go's omission ↔ the
+// Swift optional). This is the protocol-symmetry guard for desired_models.
+func TestDesiredModelsMessageMarshal(t *testing.T) {
+	msg := DesiredModelsMessage{
+		Type: TypeDesiredModels,
+		Models: []DesiredModelEntry{
+			{ModelName: "gemma-4-26b", DesiredBuild: "mlx-community/gemma-4-26B-A4B-it-qat-4bit", PreviousBuild: "mlx-community/gemma-4-26b-a4b-it-fp8"},
+			{ModelName: "qwen3.5-9b", DesiredBuild: "mlx-community/Qwen3.5-9B-MLX-4bit"}, // no previous
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Exact wire-key expectations.
+	s := string(data)
+	for _, want := range []string{`"type":"desired_models"`, `"model_name":"gemma-4-26b"`, `"desired_build":"mlx-community/gemma-4-26B-A4B-it-qat-4bit"`, `"previous_build":"mlx-community/gemma-4-26b-a4b-it-fp8"`} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Errorf("marshaled JSON missing %q: %s", want, s)
+		}
+	}
+	// previous_build is omitempty: the second entry (no previous) must not emit it.
+	if c := bytes.Count(data, []byte(`"previous_build"`)); c != 1 {
+		t.Errorf("previous_build should appear exactly once (omitempty), got %d in %s", c, s)
+	}
+
+	var decoded DesiredModelsMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Type != TypeDesiredModels {
+		t.Errorf("type = %q, want %q", decoded.Type, TypeDesiredModels)
+	}
+	if len(decoded.Models) != 2 {
+		t.Fatalf("models len = %d, want 2", len(decoded.Models))
+	}
+	if decoded.Models[0].ModelName != "gemma-4-26b" || decoded.Models[0].PreviousBuild != "mlx-community/gemma-4-26b-a4b-it-fp8" {
+		t.Errorf("entry 0 round-trip mismatch: %+v", decoded.Models[0])
+	}
+	if decoded.Models[1].PreviousBuild != "" {
+		t.Errorf("entry 1 previous_build should be empty, got %q", decoded.Models[1].PreviousBuild)
+	}
+}

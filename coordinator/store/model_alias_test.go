@@ -79,3 +79,42 @@ func TestMemoryModelAliasMissing(t *testing.T) {
 		t.Fatalf("missing alias: ok=%v err=%v", ok, err)
 	}
 }
+
+// RetiredBuilds round-trips through the memory store and the stored slice is
+// isolated from caller mutation (clone semantics).
+func TestModelAliasRetiredBuildsRoundTripAndIsolation(t *testing.T) {
+	st := NewMemory(Config{})
+	alias := &ModelAlias{
+		AliasID:       "gemma-4-26b",
+		DesiredBuild:  "qat",
+		RetiredBuilds: []string{"fp8", "fp16"},
+		Active:        true,
+	}
+	if err := st.UpsertModelAlias(alias); err != nil {
+		t.Fatal(err)
+	}
+	// Mutating the caller's slice after upsert must not affect stored state.
+	alias.RetiredBuilds[0] = "mutated"
+
+	got, found, err := st.GetModelAlias("gemma-4-26b")
+	if err != nil || !found {
+		t.Fatalf("get: found=%v err=%v", found, err)
+	}
+	if len(got.RetiredBuilds) != 2 || got.RetiredBuilds[0] != "fp8" || got.RetiredBuilds[1] != "fp16" {
+		t.Fatalf("retired builds = %v, want [fp8 fp16]", got.RetiredBuilds)
+	}
+	// Mutating the returned slice must not affect stored state either.
+	got.RetiredBuilds[1] = "mutated"
+	again, _, _ := st.GetModelAlias("gemma-4-26b")
+	if again.RetiredBuilds[1] != "fp16" {
+		t.Fatalf("stored retired builds mutated through returned copy: %v", again.RetiredBuilds)
+	}
+
+	listed, err := st.ListModelAliases()
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("list: %v err=%v", listed, err)
+	}
+	if len(listed[0].RetiredBuilds) != 2 {
+		t.Fatalf("list retired builds = %v", listed[0].RetiredBuilds)
+	}
+}

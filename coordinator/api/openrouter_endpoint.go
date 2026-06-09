@@ -38,6 +38,12 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// Public aliases get the same treatment as /v1/models: the alias is the
+	// purchasable entry and its member builds are hidden, so the marketplace
+	// never lists a raw quant build that a migration will later retire (a
+	// retired build would otherwise stay listed and black-hole requests).
+	aliasEntries, hiddenBuilds := s.openRouterAliasEntries(catalogByID, registryByID, aggTypeByID)
+
 	// Stable output order.
 	ids := make([]string, 0, len(catalogByID))
 	for id := range catalogByID {
@@ -45,8 +51,12 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 	}
 	sort.Strings(ids)
 
-	data := make([]types.OpenRouterModel, 0, len(ids))
+	data := make([]types.OpenRouterModel, 0, len(ids)+len(aliasEntries))
+	data = append(data, aliasEntries...)
 	for _, id := range ids {
+		if _, hidden := hiddenBuilds[id]; hidden {
+			continue
+		}
 		cm := catalogByID[id]
 		// Text-only feed: prefer the provider-reported type, fall back to the
 		// catalog type. Excludes only known non-text modalities
@@ -87,6 +97,107 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, types.OpenRouterModelsResponse{Data: data})
+}
+
+// openRouterAliasEntries builds the OpenRouter feed entries for public model
+// aliases and the set of member build ids to hide from the raw listing —
+// mirroring aliasModelEntries on /v1/models. The entry's identity (id, slug)
+// is the ALIAS so the marketplace listing is stable across build migrations;
+// per-build fields (pricing, context, readiness) come from the alias's primary
+// build (the desired build when in catalog, else the previous build).
+// HuggingFaceID stays the primary build's real HF path — OpenRouter ingests it
+// for model metadata, and a fabricated path would break that; the routing name
+// consumers send/receive is still only ever the alias.
+func (s *Server) openRouterAliasEntries(
+	catalogByID map[string]store.SupportedModel,
+	registryByID map[string]store.ModelRegistryEntry,
+	aggTypeByID map[string]string,
+) ([]types.OpenRouterModel, map[string]struct{}) {
+	hidden := make(map[string]struct{})
+	aliases, err := s.store.ListModelAliases()
+	if err != nil {
+		s.logger.Error("openrouter models: failed to list aliases", "error", err)
+		return nil, hidden
+	}
+	sort.Slice(aliases, func(i, j int) bool { return aliases[i].AliasID < aliases[j].AliasID })
+
+	entries := make([]types.OpenRouterModel, 0, len(aliases))
+	for _, a := range aliases {
+		if !a.Active || a.DesiredBuild == "" {
+			continue
+		}
+		members := make([]string, 0, 2)
+		if _, ok := catalogByID[a.DesiredBuild]; ok {
+			members = append(members, a.DesiredBuild)
+		}
+		if a.PreviousBuild != "" {
+			if _, ok := catalogByID[a.PreviousBuild]; ok {
+				members = append(members, a.PreviousBuild)
+			}
+		}
+		if len(members) == 0 {
+			// No in-catalog build backs this alias — nothing servable to list.
+			continue
+		}
+		primary := members[0]
+		for _, b := range members {
+			hidden[b] = struct{}{}
+		}
+
+		cm := catalogByID[primary]
+		modelType := cm.ModelType
+		if at, ok := aggTypeByID[primary]; ok {
+			modelType = at
+		}
+		if isNonTextModelType(modelType) {
+			continue
+		}
+
+		reg, hasReg := registryByID[primary]
+		displayName := a.DisplayName
+		if displayName == "" {
+			displayName = openRouterModelName(cm, reg, hasReg, a.AliasID)
+		}
+		entry := types.OpenRouterModel{
+			ID:                a.AliasID,
+			HuggingFaceID:     primary,
+			Name:              displayName,
+			InputModalities:   []string{"text"},
+			OutputModalities:  []string{"text"},
+			SupportedFeatures: []string{},
+			IsReady:           true,
+		}
+		// Per-build feed fields from the primary build's registry entry; the
+		// quantization is intentionally blank — an alias spans quants.
+		s.openRouterModelFieldsFor(primary, "", reg, hasReg).applyToFeed(&entry)
+		if hasReg {
+			entry.IsReady = openRouterIsReady(reg.Metadata)
+			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(a.AliasID, reg.Metadata)}
+		} else {
+			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(a.AliasID, nil)}
+		}
+		entry.Datacenters = s.aliasDatacenters(members)
+
+		entries = append(entries, entry)
+	}
+	return entries, hidden
+}
+
+// aliasDatacenters unions the datacenter country codes across an alias's member
+// builds (providers may be mid-migration, serving either build).
+func (s *Server) aliasDatacenters(members []string) []types.OpenRouterDatacenter {
+	seen := make(map[string]struct{})
+	var dcs []types.OpenRouterDatacenter
+	for _, m := range members {
+		for _, dc := range s.modelDatacenters(m) {
+			if _, dup := seen[dc.CountryCode]; dup {
+				continue
+			}
+			seen[dc.CountryCode] = struct{}{}
+			dcs = append(dcs, dc)
+		}
+	}
+	return dcs
 }
 
 // openRouterModelName resolves the feed display name for a model: the catalog

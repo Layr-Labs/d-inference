@@ -964,10 +964,14 @@ func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 
 // AliasTarget is the declarative resolution target for a public alias: a single
 // Desired build the fleet converges to, with an optional still-acceptable
-// Previous build during a staggered rollout. No weights, no ramp.
+// Previous build during a staggered rollout. No weights, no ramp. Retired holds
+// former members (rotated out by later upserts) — never routed, but used to
+// recognize a returning provider that was offline through a retirement as part
+// of this alias's fleet so it still receives desired_models.
 type AliasTarget struct {
 	Desired  string
 	Previous string
+	Retired  []string
 }
 
 // SetModelAliases installs the public-alias → {desired, previous} mapping. Pass
@@ -1243,6 +1247,10 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 	}
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
+	// hasCatalog mirrors modelAllowedByCatalogLocked: a nil catalog (dev/test
+	// setups) imposes no membership gate; a present catalog makes membership
+	// mandatory for merging.
+	hasCatalog := r.modelCatalog != nil
 	expected := make(map[string]string, len(models))
 	for _, m := range models {
 		if e, has := r.modelCatalog[m.ID]; has {
@@ -1271,6 +1279,16 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 	present := make(map[string]struct{}, len(models))
 	for _, m := range models {
 		if m.ID == "" {
+			continue
+		}
+		// A build the catalog has never heard of is rejected outright (when a
+		// catalog exists). It could never be routed anyway
+		// (modelAllowedByCatalogLocked), and merging it would let a provider
+		// grow its own p.Models without bound via repeated models_update
+		// messages carrying fabricated ids.
+		if _, inCatalog := expected[m.ID]; hasCatalog && !inCatalog {
+			r.logger.Warn("models_update for build not in catalog; rejecting",
+				"provider_id", providerID, "model_id", m.ID)
 			continue
 		}
 		// When the catalog pins an expected hash, a models_update MUST carry a
@@ -1945,14 +1963,20 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 // public alias it should converge to (plus the still-acceptable previous build).
 // The provider reconciles on its own: background-prefetch any missing desired
 // build, then hard-swap (advertise new, drop old) once verified. Mirrors
-// SendPrefetchModel — fire-and-forget over the provider's WebSocket. A no-op
-// (nil) when there are no entries to send. Callers MUST gate this on
-// backend == mlx-swift AND a provider version that understands desired_models,
-// because a pre-feature provider's strict decoder throws on unknown message
-// types.
+// SendPrefetchModel — fire-and-forget over the provider's WebSocket.
+//
+// An EMPTY entries set is still sent ("nothing is desired"): the provider's
+// reconcile treats any build it was previously converging to but that is absent
+// from the latest set as stale, so an alias delete/repoint that leaves a
+// provider with no remaining entries MUST reach it — otherwise an in-flight
+// prefetch for the removed alias would complete and hard-swap anyway. Callers
+// MUST gate this on backend == mlx-swift AND a provider version that
+// understands desired_models, because a pre-feature provider's strict decoder
+// throws on unknown message types.
 func (r *Registry) SendDesiredModels(providerID string, entries []protocol.DesiredModelEntry) error {
-	if len(entries) == 0 {
-		return nil
+	if entries == nil {
+		// Marshal as "models": [] — the Swift decoder requires an array.
+		entries = []protocol.DesiredModelEntry{}
 	}
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
@@ -2022,7 +2046,20 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		}
 		_, hasDesired := advertised[t.Desired]
 		_, hasPrevious := advertised[t.Previous]
-		if !hasDesired && !(t.Previous != "" && hasPrevious) {
+		// A provider advertising only a RETIRED member (offline through a
+		// retirement, e.g. previous_build cleared at the end of a rollout) is
+		// still part of this alias's fleet — without this it would never learn
+		// the desired build and serve zero alias traffic until manual action.
+		hasRetired := false
+		if !hasDesired && !hasPrevious {
+			for _, b := range t.Retired {
+				if _, ok := advertised[b]; ok {
+					hasRetired = true
+					break
+				}
+			}
+		}
+		if !hasDesired && !(t.Previous != "" && hasPrevious) && !hasRetired {
 			continue
 		}
 		entries = append(entries, protocol.DesiredModelEntry{

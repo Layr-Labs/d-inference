@@ -145,6 +145,14 @@ Provider-side prefetch progress is logged as `provider prefetch_model_status`
 `provider now advertises build (models_update)` /
 `models_update hard-swap: dropping retired build` on the coordinator.
 
+**Failed downloads retry themselves.** A provider whose desired-build prefetch
+fails (network blip, CDN hiccup) retries with bounded backoff (30s → 60s → 2m →
+5m → 10m), resuming from the bytes already on disk. After the budget is
+exhausted it logs `giving up until the next desired_models push` and stays on
+its current build. **Manual unstick:** re-POST the alias upsert (Step 4 body,
+unchanged) — the fan-out resets every provider's retry budget and triggers an
+immediate re-prefetch.
+
 ## Step 6 — Revert (human)
 
 There is no separate rollback endpoint — a revert is the same operation as a
@@ -167,16 +175,15 @@ acceptable until they re-converge.
 
 ## Step 7 — Retire the old build (human, manual)
 
-> **Do NOT clear `previous_build` until EVERY provider has swapped to the desired
-> build.** `desired_models` is fanned out only to providers that already advertise
-> the desired *or* previous build (the conservative membership policy). Once
-> `previous_build` is cleared, a provider that still advertises *only* the old
-> build matches neither condition, so it stops receiving `desired_models`
-> entirely and can never be told to converge — its capacity is stranded on the
-> retired raw build until it reconnects/re-advertises. There is no
-> migration-controller safety net to catch this anymore. Confirm the rollout is
-> complete first: check `/v1/models` capacity for the alias, or that the previous
-> build has zero routable providers, before retiring it.
+> **Prefer clearing `previous_build` only after EVERY provider has swapped to
+> the desired build** (check `/v1/models` capacity for the alias, or that the
+> previous build has zero routable providers). Until they converge, stragglers
+> still advertising only the old build serve no alias traffic. They are NOT
+> permanently stranded, though: every upsert records the rotated-out builds in
+> the alias's `retired_builds` lineage, and the registration/fan-out membership
+> gate matches desired, previous, *or* retired members — so a machine that was
+> offline through the retirement is still told to converge when it returns or
+> on the next alias upsert.
 
 Once **all** providers serve the desired build, retire the previous build by
 re-PUTting the alias **without** `previous_build`:

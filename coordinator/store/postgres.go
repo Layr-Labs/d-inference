@@ -446,6 +446,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Declarative desired/previous build pointers (additive migration).
 		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS desired_build TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS previous_build TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		// Alias lineage: former desired/previous builds rotated out by later
+		// upserts, so a provider returning from a long offline period is still
+		// recognized as part of the alias's fleet.
+		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS retired_builds JSONB NOT NULL DEFAULT '[]'::jsonb; EXCEPTION WHEN others THEN NULL; END $$`,
 		// Backfill desired_build from the old `builds` JSON: pick the highest-weight
 		// active build of each alias that hasn't been migrated yet. DISTINCT ON keeps
 		// exactly one (highest-weight) build per alias so the UPDATE...FROM join is

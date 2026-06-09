@@ -339,14 +339,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 			// Declaratively tell the provider the desired build per alias it
 			// already serves, so a fresh/reconnected provider converges without a
-			// separate catalog pull. Gated on Swift backend + feature version: a
-			// pre-feature provider's strict decoder throws on unknown types.
+			// separate catalog pull. Sent even when EMPTY: a provider that
+			// reconnects (same process, prefetch state intact) after the alias it
+			// was converging to was deleted/repointed must learn that nothing is
+			// desired anymore, or its in-flight prefetch would hard-swap anyway.
+			// Gated on Swift backend + feature version: a pre-feature provider's
+			// strict decoder throws on unknown types.
 			if s.providerSupportsDesiredModels(regMsg.Backend, regMsg.Version) {
-				if entries := s.registry.DesiredModelsForProvider(providerID); len(entries) > 0 {
-					if err := s.registry.SendDesiredModels(providerID, entries); err != nil {
-						s.logger.Warn("failed to send desired_models after register",
-							"provider_id", providerID, "error", err)
-					}
+				if err := s.registry.SendDesiredModels(providerID, s.registry.DesiredModelsForProvider(providerID)); err != nil {
+					s.logger.Warn("failed to send desired_models after register",
+						"provider_id", providerID, "error", err)
 				}
 			}
 

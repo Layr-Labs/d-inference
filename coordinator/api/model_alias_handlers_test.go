@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -675,5 +676,233 @@ func TestHandleUsageUsesRecordedPublicModelOnly(t *testing.T) {
 	}
 	if got["req-raw"] != aliasQAT {
 		t.Fatalf("raw usage model = %q, want concrete build", got["req-raw"])
+	}
+}
+
+// alias_id is spliced into consumer-visible JSON (SSE chunk rewriting) and the
+// DELETE URL path; JSON-special or multi-segment ids must be rejected at the
+// door. Regression for the security review's alias-charset finding.
+func TestAliasIDCharsetValidation(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	seedActiveModel(t, st, aliasQAT, "qat")
+	srv.SyncModelCatalog()
+
+	post := func(aliasID string) int {
+		b, _ := json.Marshal(map[string]any{"alias_id": aliasID, "desired_build": aliasQAT})
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for _, bad := range []string{
+		`gemma"4`,                               // double quote — would corrupt rewritten SSE chunk JSON
+		`gemma\4`,                               // backslash — same
+		"gemma/4-26b",                           // slash — multi-segment, undeletable via path param
+		"gemma 4",                               // space
+		"gemma\n4",                              // control char
+		"..",                                    // traversal
+		strings.Repeat("g", maxAliasIDLength+1), // too long
+	} {
+		if code := post(bad); code != http.StatusBadRequest {
+			t.Fatalf("alias_id %q accepted with status %d, want 400", bad, code)
+		}
+	}
+	for _, good := range []string{"gemma-4-26b", "gpt-oss_120b.v2", "G4"} {
+		if code := post(good); code != http.StatusOK {
+			t.Fatalf("alias_id %q rejected with status %d, want 200", good, code)
+		}
+	}
+}
+
+// retiredBuildsAfterUpsert keeps the alias lineage: rotated-out members are
+// retained (bounded), re-promoted members leave the list.
+func TestRetiredBuildsAfterUpsert(t *testing.T) {
+	// No prior alias → no lineage.
+	if got := retiredBuildsAfterUpsert(nil, "b2", ""); got != nil {
+		t.Fatalf("no prior should yield nil, got %v", got)
+	}
+	// Rotation: desired b1→b2 (previous b1) retires nothing (b1 still a member);
+	// then b2→b3 with previous cleared retires both b2 and b1.
+	step1 := retiredBuildsAfterUpsert(&store.ModelAlias{DesiredBuild: "b1"}, "b2", "b1")
+	if len(step1) != 0 {
+		t.Fatalf("members must not be retired, got %v", step1)
+	}
+	step2 := retiredBuildsAfterUpsert(&store.ModelAlias{DesiredBuild: "b2", PreviousBuild: "b1"}, "b3", "")
+	if len(step2) != 2 || step2[0] != "b2" || step2[1] != "b1" {
+		t.Fatalf("rotated-out members should be retired, got %v", step2)
+	}
+	// Re-promotion: b1 comes back as desired → leaves the lineage.
+	step3 := retiredBuildsAfterUpsert(&store.ModelAlias{DesiredBuild: "b3", RetiredBuilds: []string{"b2", "b1"}}, "b1", "")
+	if len(step3) != 2 || step3[0] != "b2" || step3[1] != "b3" {
+		t.Fatalf("re-promoted build must leave lineage and old desired must join, got %v", step3)
+	}
+	// Bound: the oldest entries are dropped first.
+	var many []string
+	for i := 0; i < maxRetiredBuilds+4; i++ {
+		many = append(many, "old-"+strconv.Itoa(i))
+	}
+	bounded := retiredBuildsAfterUpsert(&store.ModelAlias{DesiredBuild: "bX", RetiredBuilds: many}, "bY", "")
+	if len(bounded) != maxRetiredBuilds {
+		t.Fatalf("lineage should be bounded to %d, got %d", maxRetiredBuilds, len(bounded))
+	}
+	if bounded[0] == "old-0" {
+		t.Fatal("oldest entry should be dropped first")
+	}
+}
+
+// The HTTP upsert path persists lineage: finishing a rollout (previous cleared)
+// moves the old build into retired_builds, and the registry gate then matches a
+// returning provider that only advertises the retired build.
+func TestAliasUpsertRecordsRetiredLineage(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	seedActiveModel(t, st, aliasFP8, "fp8")
+	seedActiveModel(t, st, aliasQAT, "qat")
+	srv.SyncModelCatalog()
+
+	post := func(body map[string]any) int {
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Rollout: desired=qat, previous=fp8. Then Step 7: clear previous.
+	if code := post(map[string]any{"alias_id": "gemma-4-26b", "desired_build": aliasQAT, "previous_build": aliasFP8}); code != http.StatusOK {
+		t.Fatalf("rollout upsert = %d", code)
+	}
+	if code := post(map[string]any{"alias_id": "gemma-4-26b", "desired_build": aliasQAT}); code != http.StatusOK {
+		t.Fatalf("retirement upsert = %d", code)
+	}
+	saved, _, _ := st.GetModelAlias("gemma-4-26b")
+	if len(saved.RetiredBuilds) != 1 || saved.RetiredBuilds[0] != aliasFP8 {
+		t.Fatalf("fp8 should be in retired lineage, got %v", saved.RetiredBuilds)
+	}
+
+	// The registry gate sees the lineage: a provider advertising only fp8
+	// (offline through the retirement) is still told to converge to qat.
+	reg.Register("p-returning", nil, &protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		Models:   []protocol.ModelInfo{{ID: aliasFP8, ModelType: "gemma"}},
+		Backend:  registry.BackendMLXSwift,
+		Version:  minProviderVersionForDesiredModels,
+	})
+	entries := reg.DesiredModelsForProvider("p-returning")
+	if len(entries) != 1 || entries[0].DesiredBuild != aliasQAT {
+		t.Fatalf("returning provider should be told qat via lineage, got %+v", entries)
+	}
+}
+
+// Deleting an alias fans the post-delete desired state out to the fleet. A
+// provider whose ONLY desired entry came from the deleted alias must receive an
+// EMPTY desired_models — that is what marks its in-flight prefetch stale.
+func TestAliasDeleteFansOutEmptyDesiredModels(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv.challengeInterval = time.Hour
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	seedActiveModel(t, st, aliasFP8, "fp8")
+	seedActiveModel(t, st, aliasQAT, "qat")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", Active: true,
+		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	regMsg := protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{MachineModel: "Mac15,8", ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: aliasFP8, ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 registry.BackendMLXSwift,
+		Version:                 minProviderVersionForDesiredModels,
+		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+
+	// Initial post-register desired_models: the rollout entry.
+	readDesiredModels(ctx, t, conn, func(msg protocol.DesiredModelsMessage) bool {
+		return len(msg.Models) == 1 && msg.Models[0].DesiredBuild == aliasQAT
+	}, "initial desired_models (qat)")
+
+	// Delete the alias via the admin endpoint.
+	del := httptest.NewRequest(http.MethodDelete, "/v1/admin/models/aliases/gemma-4-26b", nil)
+	del.Header.Set("Authorization", "Bearer publish-secret")
+	delRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(delRec, del)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", delRec.Code, delRec.Body.String())
+	}
+
+	// The provider's only desired entry came from the deleted alias → it must
+	// receive an EMPTY desired_models (not silence).
+	readDesiredModels(ctx, t, conn, func(msg protocol.DesiredModelsMessage) bool {
+		return len(msg.Models) == 0
+	}, "post-delete empty desired_models")
+}
+
+// Registering a concrete model whose id collides with an existing public alias
+// is rejected — the alias map would hijack raw-id requests for it (reverse of
+// the alias upsert's namespace guard).
+func TestRegisterModelRejectsAliasCollision(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	seedActiveModel(t, st, aliasQAT, "qat")
+	srv.SyncModelCatalog()
+
+	// Create the alias first.
+	if err := st.UpsertModelAlias(&store.ModelAlias{AliasID: "gemma-4-26b", Active: true, DesiredBuild: aliasQAT}); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model_id":           "gemma-4-26b", // collides with the alias
+		"version":            "v1",
+		"quantization":       "4bit",
+		"max_context_length": 131072,
+		"max_output_length":  8192,
+		"min_ram_gb":         24,
+		"input_price":        50000,
+		"output_price":       200000,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("register over alias status = %d, want 409 (body=%s)", rec.Code, rec.Body.String())
 	}
 }

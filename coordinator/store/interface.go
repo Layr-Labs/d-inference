@@ -893,10 +893,17 @@ type ModelRegistryRecord struct {
 // (fp8 → qat-4bit) invisible to clients: a rollout is just setting DesiredBuild,
 // a revert is setting it back. There are no weights, ramps, or migrations.
 type ModelAlias struct {
-	AliasID       string    `json:"alias_id"`
-	DisplayName   string    `json:"display_name"`
-	DesiredBuild  string    `json:"desired_build"`            // the single build providers should converge to
-	PreviousBuild string    `json:"previous_build,omitempty"` // still-acceptable during rollout; "" when none
+	AliasID       string `json:"alias_id"`
+	DisplayName   string `json:"display_name"`
+	DesiredBuild  string `json:"desired_build"`            // the single build providers should converge to
+	PreviousBuild string `json:"previous_build,omitempty"` // still-acceptable during rollout; "" when none
+	// RetiredBuilds is the alias's lineage: former desired/previous builds
+	// rotated out by later upserts. Kept so a provider that was offline through
+	// a retirement (still advertising only a retired build) is recognized as
+	// part of this alias's fleet at re-registration and told to converge. A
+	// build promoted back to desired/previous leaves this list. Bounded; oldest
+	// entries dropped first.
+	RetiredBuilds []string  `json:"retired_builds,omitempty"`
 	Active        bool      `json:"active"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`

@@ -1565,9 +1565,13 @@ func (s *MemoryStore) MarkPublishingAPIKeyUsed(id string) error {
 }
 
 func cloneModelAlias(a *ModelAlias) ModelAlias {
-	// All fields are value types (strings/bool/time.Time), so a shallow copy
-	// is already a deep copy.
-	return *a
+	cp := *a
+	// RetiredBuilds is the only reference-typed field; copy it so callers can't
+	// mutate stored state through the returned value.
+	if a.RetiredBuilds != nil {
+		cp.RetiredBuilds = append([]string(nil), a.RetiredBuilds...)
+	}
+	return cp
 }
 
 func (s *MemoryStore) UpsertModelAlias(alias *ModelAlias) error {

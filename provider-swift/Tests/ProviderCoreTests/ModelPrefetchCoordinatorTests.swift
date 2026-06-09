@@ -1095,6 +1095,93 @@ struct ProviderLoopPrefetchTests {
         await coord.shutdown(timeout: .seconds(3))
     }
 
+    @Test("a failed desired-build prefetch retries with bounded backoff, and a fresh push resets the budget")
+    func failedDesiredPrefetchSchedulesBoundedRetries() async throws {
+        // One transient download failure must not strand the provider on the old
+        // build: each failure of a still-desired build schedules one retry per
+        // configured delay, then gives up until the next desired_models push.
+        let desiredBuild = "org/desired-\(UUID().uuidString)"
+
+        let loop = try makeLoop(models: [])
+        let client = makeClient()
+        let prefetcher = FailingCountingPrefetcher()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: prefetcher,
+            preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
+            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+        await loop.setDesiredPrefetchRetryDelaysForTesting([.milliseconds(20), .milliseconds(20)])
+
+        let entry = CoordinatorMessage.DesiredModelEntry(
+            modelName: "alias-a", desiredBuild: desiredBuild, previousBuild: nil
+        )
+        await loop.reconcileDesiredModelsForTesting([entry], send: capturingSend)
+
+        // Initial attempt + exactly 2 retries (the delay budget), then no more.
+        let exhausted = await waitUntil(timeout: .seconds(5)) { prefetcher.count(for: desiredBuild) == 3 }
+        #expect(exhausted)
+        try? await Task.sleep(for: .milliseconds(120))
+        #expect(prefetcher.count(for: desiredBuild) == 3)
+        #expect(await loop.pendingDesiredPrefetchRetriesForTesting() == 0)
+
+        // A fresh declarative push resets the budget: one immediate reconcile
+        // attempt plus two more retries.
+        await loop.reconcileDesiredModelsForTesting([entry], send: capturingSend)
+        let resumed = await waitUntil(timeout: .seconds(5)) { prefetcher.count(for: desiredBuild) == 6 }
+        #expect(resumed)
+
+        await coord.shutdown(timeout: .seconds(3))
+    }
+
+    @Test("a pending prefetch retry is cancelled when the build leaves the desired set")
+    func failedDesiredPrefetchRetryStopsAfterRetarget() async throws {
+        let oldDesired = "org/old-desired-\(UUID().uuidString)"
+        let newDesired = "org/new-desired-\(UUID().uuidString)"
+
+        let loop = try makeLoop(models: [])
+        let client = makeClient()
+        let prefetcher = FailingCountingPrefetcher()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: prefetcher,
+            preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
+            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+        // Long enough that the retarget below reliably lands inside the backoff.
+        await loop.setDesiredPrefetchRetryDelaysForTesting([.milliseconds(300)])
+
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(
+                modelName: "alias-a", desiredBuild: oldDesired, previousBuild: nil
+            )],
+            send: capturingSend
+        )
+        // First attempt failed and a retry timer is pending.
+        let scheduled = await waitUntil(timeout: .seconds(5)) {
+            if prefetcher.count(for: oldDesired) != 1 { return false }
+            return await loop.pendingDesiredPrefetchRetriesForTesting() == 1
+        }
+        #expect(scheduled)
+
+        // Operator retargets the alias before the retry fires: the pending retry
+        // for the stale build is cancelled.
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(
+                modelName: "alias-a", desiredBuild: newDesired, previousBuild: nil
+            )],
+            send: capturingSend
+        )
+        try? await Task.sleep(for: .milliseconds(500))
+        #expect(prefetcher.count(for: oldDesired) == 1)
+
+        await coord.shutdown(timeout: .seconds(3))
+    }
+
     private func makeLoopWithHashes(models: [ModelInfo], hashes: [String: String]) throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -1113,6 +1200,24 @@ struct ProviderLoopPrefetchTests {
             modelHashes: hashes
         )
         return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    }
+}
+
+/// Prefetcher that always fails, counting attempts per model id — drives the
+/// desired-build retry policy tests.
+private final class FailingCountingPrefetcher: ModelPrefetcher, @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+    func count(for modelID: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return counts[modelID] ?? 0
+    }
+    func prefetchToDisk(
+        modelID: String,
+        onByteProgress: @Sendable @escaping (Int64, Int64) -> Void
+    ) async throws {
+        lock.withLock { counts[modelID, default: 0] += 1 }
+        throw ModelCatalogError.downloadFailed("simulated transient network failure")
     }
 }
 

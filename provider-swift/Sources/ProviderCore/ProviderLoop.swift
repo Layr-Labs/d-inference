@@ -56,6 +56,28 @@ struct SendHandlePrefetchSink: PrefetchStatusSink {
     }
 }
 
+/// Wraps a `PrefetchStatusSink` and additionally notifies the host on terminal
+/// `.failed` statuses. `ProviderLoop` uses this to schedule a bounded-backoff
+/// retry when a DESIRED build's background prefetch fails (one transient
+/// network/CDN error must not strand the provider on the old build until the
+/// next coordinator push — the resume-aware downloader makes a retry cheap).
+struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
+    let base: any PrefetchStatusSink
+    let onFailed: @Sendable (String) -> Void
+    func emit(
+        modelId: String,
+        status: ProviderMessage.PrefetchModelStatus.Status,
+        bytesDone: Int64,
+        bytesTotal: Int64,
+        error: String?
+    ) {
+        base.emit(modelId: modelId, status: status, bytesDone: bytesDone, bytesTotal: bytesTotal, error: error)
+        if status == .failed {
+            onFailed(modelId)
+        }
+    }
+}
+
 private final class OneShotBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
@@ -232,6 +254,23 @@ public actor ProviderLoop {
     /// in flight, a late verified callback for that old build is ignored.
     private var desiredPrefetchTargets = Set<String>()
     private var staleDesiredPrefetches = Set<String>()
+
+    /// Priority used for desired-build convergence prefetches (reconcile +
+    /// retry), between an explicit coordinator `prefetch_model` default and
+    /// urgent operator pushes.
+    static let desiredModelsPrefetchPriority = 5
+
+    /// Bounded-backoff retry state for failed DESIRED-build prefetches. One
+    /// transient download failure must not strand the provider on the old build
+    /// until an operator re-POSTs the alias: each failure of a still-desired
+    /// build schedules one retry per delay below, then gives up until the next
+    /// desired_models push (which resets the budget). Delays are injectable for
+    /// tests via `setDesiredPrefetchRetryDelaysForTesting`.
+    private var desiredPrefetchRetryDelays: [Duration] = [
+        .seconds(30), .seconds(60), .seconds(120), .seconds(300), .seconds(600),
+    ]
+    private var desiredPrefetchRetryAttempts: [String: Int] = [:]
+    private var desiredPrefetchRetryTasks: [String: Task<Void, Never>] = [:]
 
     /// Background model-build prefetcher. Owns coalescing, throttled progress,
     /// cancellation, and the verified→advertise hook (which also performs the
@@ -644,6 +683,11 @@ public actor ProviderLoop {
         autoUpdateTask = nil
         autoReportTask?.cancel()
         autoReportTask = nil
+        // Cancel any scheduled desired-build prefetch retries before tearing
+        // the prefetch subsystem down.
+        for task in desiredPrefetchRetryTasks.values { task.cancel() }
+        desiredPrefetchRetryTasks.removeAll()
+        desiredPrefetchRetryAttempts.removeAll()
         // Cancel background prefetch downloads (no GPU slot, but they hold a
         // network connection and disk staging we want to release promptly).
         if let prefetchCoordinator {
@@ -1395,11 +1439,70 @@ public actor ProviderLoop {
             return
         }
         logger.info("Prefetch request for \(modelId) (priority=\(priority))")
+        // Failed terminal statuses feed the desired-build retry policy; for a
+        // build that is not (or no longer) a desired target the notification is
+        // a no-op (handleDesiredPrefetchFailure guards on the desired set).
+        let sink = RetryNotifyingPrefetchSink(
+            base: SendHandlePrefetchSink(send: send),
+            onFailed: { [weak self] failedModelId in
+                guard let self else { return }
+                Task { await self.handleDesiredPrefetchFailure(modelId: failedModelId, send: send) }
+            }
+        )
         await prefetchCoordinator.handlePrefetch(
             modelId: modelId,
             priority: priority,
-            sink: SendHandlePrefetchSink(send: send)
+            sink: sink
         )
+    }
+
+    /// React to a terminal `.failed` prefetch status for a build. If the build
+    /// is still a desired target (and not stale), schedule a single
+    /// bounded-backoff retry — the resume-aware downloader continues from the
+    /// bytes already on disk, so retries are cheap. After the delay budget is
+    /// exhausted the provider stays on its current build until the next
+    /// desired_models push (operator re-POST or reconnect), which resets the
+    /// budget and retries immediately via reconcile.
+    private func handleDesiredPrefetchFailure(modelId: String, send: SendHandle) async {
+        guard !isShuttingDown,
+              desiredPrefetchTargets.contains(modelId),
+              !staleDesiredPrefetches.contains(modelId),
+              desiredPrefetchRetryTasks[modelId] == nil
+        else { return }
+        let attempt = (desiredPrefetchRetryAttempts[modelId] ?? 0) + 1
+        guard attempt <= desiredPrefetchRetryDelays.count else {
+            logger.warning("Prefetch for desired build \(modelId) failed after \(attempt - 1) retries; giving up until the next desired_models push")
+            return
+        }
+        desiredPrefetchRetryAttempts[modelId] = attempt
+        let delay = desiredPrefetchRetryDelays[attempt - 1]
+        logger.info("Scheduling desired-build prefetch retry \(attempt)/\(desiredPrefetchRetryDelays.count) for \(modelId) in \(delay)")
+        desiredPrefetchRetryTasks[modelId] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            await self.retryDesiredPrefetch(modelId: modelId, send: send)
+        }
+    }
+
+    /// Fire a scheduled desired-build prefetch retry, re-checking that the
+    /// build is still wanted (the desired set may have changed during the
+    /// backoff sleep).
+    private func retryDesiredPrefetch(modelId: String, send: SendHandle) async {
+        desiredPrefetchRetryTasks.removeValue(forKey: modelId)
+        guard !isShuttingDown,
+              desiredPrefetchTargets.contains(modelId),
+              !staleDesiredPrefetches.contains(modelId)
+        else { return }
+        logger.info("Retrying prefetch for desired build \(modelId)")
+        await handlePrefetchModelRequest(modelId: modelId, priority: Self.desiredModelsPrefetchPriority, send: send)
+    }
+
+    /// Cancel and clear any scheduled prefetch retry for a build (used when the
+    /// build leaves the desired set or a fresh desired_models push resets the
+    /// retry budget).
+    private func clearDesiredPrefetchRetryState(for modelId: String) {
+        desiredPrefetchRetryTasks.removeValue(forKey: modelId)?.cancel()
+        desiredPrefetchRetryAttempts.removeValue(forKey: modelId)
     }
 
     /// Pre-check used by the prefetch coordinator to short-circuit when a build
@@ -1526,6 +1629,7 @@ public actor ProviderLoop {
         for stale in desiredPrefetchTargets.subtracting(currentDesired) {
             desiredSwapDrop.removeValue(forKey: stale)
             staleDesiredPrefetches.insert(stale)
+            clearDesiredPrefetchRetryState(for: stale)
         }
         desiredPrefetchTargets = currentDesired
 
@@ -1533,6 +1637,10 @@ public actor ProviderLoop {
             let desired = entry.desiredBuild
             guard !desired.isEmpty else { continue }
             staleDesiredPrefetches.remove(desired)
+            // A fresh declarative push resets the retry budget (and supersedes
+            // any pending backoff timer — the loop below re-prefetches a missing
+            // desired build immediately).
+            clearDesiredPrefetchRetryState(for: desired)
             let previous = (entry.previousBuild?.isEmpty == false) ? entry.previousBuild : nil
             if let previous, previous != desired {
                 desiredSwapDrop[desired] = previous
@@ -1558,7 +1666,7 @@ public actor ProviderLoop {
                 continue
             }
             logger.info("desired_models: \(entry.modelName) → converging to \(desired)")
-            await handlePrefetchModelRequest(modelId: desired, priority: 5, send: send)
+            await handlePrefetchModelRequest(modelId: desired, priority: Self.desiredModelsPrefetchPriority, send: send)
         }
     }
 
@@ -1586,6 +1694,15 @@ public actor ProviderLoop {
     /// Test seam: the current effective concurrent-slot cap (tracks the live
     /// advertised set, clamped to `[1, backend.maxModelSlots]`).
     func maxModelSlotsForTesting() -> Int { maxModelSlots }
+
+    /// Test seam: override the desired-build prefetch retry backoff schedule
+    /// (the production default waits tens of seconds between attempts).
+    func setDesiredPrefetchRetryDelaysForTesting(_ delays: [Duration]) {
+        desiredPrefetchRetryDelays = delays
+    }
+
+    /// Test seam: number of scheduled (not yet fired) desired-prefetch retries.
+    func pendingDesiredPrefetchRetriesForTesting() -> Int { desiredPrefetchRetryTasks.count }
 
     /// Test seam: install a fake prefetcher and (re)build the prefetch
     /// coordinator against a given coordinator client. Used by unit tests to

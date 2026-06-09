@@ -45,6 +45,15 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "alias_id is required", withParam("alias_id")))
 		return
 	}
+	// The alias is spliced into consumer-visible JSON (response bodies, SSE
+	// chunk rewriting) and into the DELETE URL path — restrict it to the same
+	// safe charset as registry ids (letters, digits, '.', '_', '-'; no slash so
+	// it stays a single path segment) and a sane length.
+	if len(req.AliasID) > maxAliasIDLength || !validRegistryIdentifier(req.AliasID, false) {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"alias_id may only contain letters, digits, '.', '_' and '-' (max 128 chars)", withParam("alias_id")))
+		return
+	}
 	if req.DesiredBuild == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "desired_build is required", withParam("desired_build")))
 		return
@@ -87,6 +96,7 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 		DisplayName:   req.DisplayName,
 		DesiredBuild:  req.DesiredBuild,
 		PreviousBuild: req.PreviousBuild,
+		RetiredBuilds: retiredBuildsAfterUpsert(s.priorAlias(req.AliasID), req.DesiredBuild, req.PreviousBuild),
 		Active:        active,
 	}
 	if err := s.store.UpsertModelAlias(alias); err != nil {
@@ -104,6 +114,59 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 
 	saved, _, _ := s.store.GetModelAlias(req.AliasID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "alias": saved})
+}
+
+// maxAliasIDLength bounds the public alias id; it appears in URLs, response
+// bodies, and SSE chunks, so it must stay short and single-segment.
+const maxAliasIDLength = 128
+
+// maxRetiredBuilds bounds the per-alias lineage list; the oldest retirements
+// are dropped first once a (pathologically) churned alias exceeds it.
+const maxRetiredBuilds = 16
+
+// priorAlias fetches the existing alias definition, or nil when none exists
+// (or the store errored — treated as "no prior" since upsert will surface real
+// store failures itself).
+func (s *Server) priorAlias(aliasID string) *store.ModelAlias {
+	prior, found, err := s.store.GetModelAlias(aliasID)
+	if err != nil || !found {
+		return nil
+	}
+	return prior
+}
+
+// retiredBuildsAfterUpsert computes the alias's lineage after an upsert: prior
+// retired builds, plus any prior desired/previous member rotated out by the new
+// pointers, minus any build the new pointers re-promote to membership. Bounded
+// to maxRetiredBuilds (oldest dropped first). The lineage lets the registration
+// gate recognize a provider that was offline through a retirement as part of
+// the alias's fleet.
+func retiredBuildsAfterUpsert(prior *store.ModelAlias, newDesired, newPrevious string) []string {
+	if prior == nil {
+		return nil
+	}
+	isMember := func(b string) bool { return b == newDesired || b == newPrevious }
+	var retired []string
+	seen := make(map[string]struct{})
+	add := func(b string) {
+		if b == "" || isMember(b) {
+			return
+		}
+		if _, dup := seen[b]; dup {
+			return
+		}
+		seen[b] = struct{}{}
+		retired = append(retired, b)
+	}
+	for _, b := range prior.RetiredBuilds {
+		add(b)
+	}
+	add(prior.DesiredBuild)
+	add(prior.PreviousBuild)
+	if len(retired) > maxRetiredBuilds {
+		retired = retired[len(retired)-maxRetiredBuilds:]
+	}
+	return retired
 }
 
 // handleModelAliasList returns every configured alias. GET /v1/admin/models/aliases.
@@ -134,6 +197,11 @@ func (s *Server) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.SyncModelCatalog()
+	// Push the post-delete desired state to the fleet. A provider whose ONLY
+	// desired entry came from this alias receives an EMPTY set — that is what
+	// marks its in-flight prefetch stale; without it the prefetch would
+	// complete, hard-swap, and drop a build the operator may still want served.
+	s.fanOutDesiredModels()
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "alias_id": aliasID})
 }
 
@@ -160,11 +228,10 @@ func (s *Server) fanOutDesiredModels() {
 		}
 	})
 	for _, id := range eligibleIDs {
-		entries := s.registry.DesiredModelsForProvider(id)
-		if len(entries) == 0 {
-			continue
-		}
-		if err := s.registry.SendDesiredModels(id, entries); err != nil {
+		// Empty entry sets are sent too: "nothing is desired" is meaningful
+		// state — it marks a provider's in-flight prefetch for a now-deleted/
+		// repointed alias as stale (see SendDesiredModels).
+		if err := s.registry.SendDesiredModels(id, s.registry.DesiredModelsForProvider(id)); err != nil {
 			s.logger.Warn("failed to push desired_models", "provider_id", id, "error", err)
 		}
 	}

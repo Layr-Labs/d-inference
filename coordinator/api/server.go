@@ -795,6 +795,7 @@ func (s *Server) syncModelAliases() {
 		resolved[a.AliasID] = registry.AliasTarget{
 			Desired:  a.DesiredBuild,
 			Previous: a.PreviousBuild,
+			Retired:  a.RetiredBuilds,
 		}
 	}
 	s.registry.SetModelAliases(resolved)

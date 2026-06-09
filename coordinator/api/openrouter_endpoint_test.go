@@ -235,3 +235,65 @@ func TestOpenRouterModelsStaging(t *testing.T) {
 	}
 	t.Fatalf("staged model not found in feed: %s", rec.Body.String())
 }
+
+// Public aliases get the /v1/models treatment in the OpenRouter feed too: the
+// alias is the purchasable entry, member builds are hidden, and the marketplace
+// never sees a raw quant build that a migration will later retire.
+func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B fp8")
+	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B qat")
+	seedActiveModel(t, st, "mlx-community/unrelated-9b", "Unrelated 9B")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	rec := httptest.NewRecorder()
+	srv.handleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var resp types.OpenRouterModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	byID := make(map[string]types.OpenRouterModel, len(resp.Data))
+	for _, m := range resp.Data {
+		byID[m.ID] = m
+	}
+	alias, ok := byID["gemma-4-26b"]
+	if !ok {
+		t.Fatalf("alias entry missing from feed: %+v", resp.Data)
+	}
+	if alias.Name != "Gemma 4 26B" {
+		t.Fatalf("alias display name = %q", alias.Name)
+	}
+	// Identity (slug) is the alias — stable across build migrations. The HF id
+	// stays the primary (desired) build's real HuggingFace path.
+	if alias.OpenRouter == nil || alias.OpenRouter.Slug != "gemma-4-26b" {
+		t.Fatalf("alias slug = %+v, want gemma-4-26b", alias.OpenRouter)
+	}
+	if alias.HuggingFaceID != aliasQAT {
+		t.Fatalf("alias hugging_face_id = %q, want primary build", alias.HuggingFaceID)
+	}
+	// Member builds are hidden from the raw listing.
+	if _, leaked := byID[aliasFP8]; leaked {
+		t.Fatal("previous build leaked into the OpenRouter feed")
+	}
+	if _, leaked := byID[aliasQAT]; leaked {
+		t.Fatal("desired build leaked into the OpenRouter feed")
+	}
+	// Unaliased models keep their raw entries.
+	if _, ok := byID["mlx-community/unrelated-9b"]; !ok {
+		t.Fatal("unaliased model missing from feed")
+	}
+}

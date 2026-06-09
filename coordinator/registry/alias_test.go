@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -481,5 +482,73 @@ func TestDesiredModelsForProviderConservative(t *testing.T) {
 	// Unknown provider → nil.
 	if got := reg.DesiredModelsForProvider("nope"); got != nil {
 		t.Fatalf("unknown provider should be nil, got %+v", got)
+	}
+}
+
+// A provider that was offline through a retirement (still advertising only a
+// RETIRED member of the alias) is still recognized as part of the alias's fleet
+// at registration and told to converge — without this it would be permanently
+// stranded serving zero alias traffic (runbook Step 7 reconnect recovery).
+func TestDesiredModelsForProviderMatchesRetiredLineage(t *testing.T) {
+	reg := New(testLogger())
+	registerProviderWithModel(reg, "p-retired", aliasFP8) // advertises only the retired build
+	registerProviderWithModel(reg, "p-none", "mlx-community/unrelated")
+	// Migration finished: previous cleared, fp8 moved to the retired lineage.
+	reg.SetModelAliases(map[string]AliasTarget{
+		"gemma-4-26b": {Desired: aliasQAT, Retired: []string{aliasFP8}},
+	})
+
+	got := reg.DesiredModelsForProvider("p-retired")
+	if len(got) != 1 || got[0].ModelName != "gemma-4-26b" || got[0].DesiredBuild != aliasQAT {
+		t.Fatalf("returning provider on a retired build should be told the desired build, got %+v", got)
+	}
+	// PreviousBuild in the entry reflects the alias (empty here) — the retired
+	// build is NOT re-blessed as acceptable.
+	if got[0].PreviousBuild != "" {
+		t.Fatalf("retired build must not be re-advertised as previous, got %+v", got[0])
+	}
+	if got := reg.DesiredModelsForProvider("p-none"); len(got) != 0 {
+		t.Fatalf("unrelated provider should not be offered the alias, got %+v", got)
+	}
+}
+
+// A models_update carrying a build id the catalog has never heard of is
+// rejected outright when a catalog exists: it could never be routed, and
+// merging it would let a provider grow its own p.Models without bound via
+// fabricated ids. A nil catalog (dev/test setups) keeps the permissive
+// behavior, mirroring modelAllowedByCatalogLocked.
+func TestMergeProviderModelsRejectsNonCatalogBuild(t *testing.T) {
+	reg := New(testLogger())
+	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
+	reg.SetModelCatalog([]CatalogEntry{{ID: aliasFP8}, {ID: aliasQAT}})
+
+	merged, dropped := reg.MergeProviderModels("p1", []protocol.ModelInfo{
+		{ID: "mlx-community/fabricated-build", ModelType: "gemma"},
+		{ID: aliasQAT, ModelType: "gemma"},
+	})
+	if len(merged) != 1 || merged[0] != aliasQAT {
+		t.Fatalf("only the catalog build should merge, got %v", merged)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("no drops expected, got %v", dropped)
+	}
+
+	// Repeated fabricated-id updates must not grow p.Models.
+	for i := 0; i < 5; i++ {
+		reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: "fake/build-" + strconv.Itoa(i)}})
+	}
+	p := reg.GetProvider("p1")
+	p.mu.Lock()
+	n := len(p.Models)
+	p.mu.Unlock()
+	if n != 2 { // fp8 (registered) + qat (merged)
+		t.Fatalf("p.Models should stay at 2 entries, got %d", n)
+	}
+
+	// Nil catalog (dev mode): non-catalog ids still merge.
+	devReg := New(testLogger())
+	makeProviderRoutable(registerProviderWithModel(devReg, "p1", aliasFP8))
+	if m, _ := devReg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: "anything/goes"}}); len(m) != 1 {
+		t.Fatalf("nil catalog should keep permissive merge, got %v", m)
 	}
 }

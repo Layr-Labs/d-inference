@@ -318,6 +318,6 @@ func vlmMediaErrorLocalizedDescription() {
     // (not the generic Cocoa "operation couldn't be completed") reaches the
     // client via error.localizedDescription.
     let err = VLMRequestInference.MediaError.invalidURL("file:///etc/passwd")
-    #expect(err.localizedDescription == "not a valid media URL: file:///etc/passwd")
+    #expect(err.localizedDescription == "media must be sent as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\") on this end-to-end-encrypted endpoint; remote http(s):// and file:// URLs are rejected. Got: file:///etc/passwd")
     #expect(!err.localizedDescription.contains("couldn’t be completed"))
 }

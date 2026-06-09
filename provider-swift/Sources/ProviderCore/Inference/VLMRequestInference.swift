@@ -52,7 +52,11 @@ public enum VLMRequestInference {
             case .imageDecodeFailed:
                 return "failed to decode image data into a CIImage"
             case .invalidURL(let uri):
-                return "not a valid media URL: \(uri)"
+                // Actionable for clients porting from OpenAI/OpenRouter: our wire
+                // format is identical, but media must be an inline base64 data:
+                // URI — remote/file URLs are rejected for E2E + SSRF safety.
+                let shown = uri.count > 200 ? String(uri.prefix(200)) + "…" : uri
+                return "media must be sent as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\") on this end-to-end-encrypted endpoint; remote http(s):// and file:// URLs are rejected. Got: \(shown)"
             case .videoWriteFailed(let detail):
                 return "failed to write inline video to a temp file (\(detail))"
             }

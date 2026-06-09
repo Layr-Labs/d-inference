@@ -172,6 +172,27 @@ public actor ProviderLoop {
     /// Cached binary hash for attestation responses.
     private var binaryHash: String?
 
+    /// Live per-model weight hashes. Seeded from the startup scan and REFRESHED
+    /// whenever a model is (re)loaded from disk, so attestation challenge
+    /// responses report the weights actually being served — not the state of
+    /// the disk when the daemon started. Previously the startup map was frozen
+    /// for the process lifetime: a model re-published while the daemon ran kept
+    /// the stale hash and tripped the coordinator's model-swap hard-untrust
+    /// even though the disk (and the loaded model) were correct.
+    private var liveModelHashes: [String: String]
+
+    /// Per-model snapshot fingerprints (paths + sizes + mtimes) recorded when a
+    /// weight hash was last computed. A model whose fingerprint is unchanged at
+    /// reload skips the full multi-second re-hash — idle-unload/lazy-reload
+    /// cycles happen hourly, and re-reading ~30 GB of unchanged weights each
+    /// time would tax cold-start TTFT for nothing.
+    private var modelHashFingerprints: [String: String] = [:]
+
+    /// The running coordinator client, kept so weight-hash refreshes can be
+    /// pushed into reconnect registrations (models[].weight_hash drives the
+    /// coordinator's per-model catalog routing filter).
+    private var coordinatorClient: CoordinatorClient?
+
     /// Whether we've already submitted an auto-report for this session.
     /// Set to true after the first trust-triggered report to avoid spamming.
     private var didAutoReport = false
@@ -254,6 +275,7 @@ public actor ProviderLoop {
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
+        self.liveModelHashes = config.modelHashes
     }
 
     static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
@@ -388,6 +410,11 @@ public actor ProviderLoop {
             stats: stats,
             state: state
         )
+        coordinatorClient = coordinator
+        // Seed the client with the current map: a model loaded before the
+        // client existed (e.g. a local-endpoint request during startup) may
+        // already have refreshed a hash, and registration must carry it.
+        await coordinator.updateModelWeightHashes(liveModelHashes)
 
         let (events, sendFn) = await coordinator.start()
         let send = SendHandle(sendFn)
@@ -1691,6 +1718,54 @@ public actor ProviderLoop {
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
 
+            // Re-hash the weights about to be loaded (off-actor: hashing a
+            // large model takes seconds and must not block heartbeats or
+            // challenge handling). The model may have been re-published and
+            // re-downloaded since daemon start; the startup hash would then be
+            // stale and the coordinator would hard-untrust this provider for a
+            // "model swap" even though the disk is correct. Refreshing BEFORE
+            // the slot goes active guarantees a challenge arriving mid-serve
+            // reports the hash of the bytes actually loaded. A snapshot
+            // fingerprint (paths + sizes + mtimes) skips the full re-read when
+            // nothing changed, so routine idle-reload cycles stay cheap.
+            let priorFingerprint = modelHashFingerprints[modelId]
+            let hasPriorHash = liveModelHashes[modelId] != nil
+            let refresh = await Task.detached(priority: .utility) {
+                () -> (fingerprint: String?, hash: String?, skipped: Bool) in
+                let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+                if let fingerprint, fingerprint == priorFingerprint, hasPriorHash {
+                    return (fingerprint, nil, true)  // unchanged — keep cached hash
+                }
+                return (fingerprint, WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId), false)
+            }.value
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
+            // Record the fingerprint ONLY when we have a hash that corresponds
+            // to it (fresh or skip-confirmed). Caching it after a FAILED
+            // re-hash would make the next reload fingerprint-match against the
+            // stale hash and silently skip the retry — turning a transient
+            // read failure into a persistently stale report.
+            if let fingerprint = refresh.fingerprint, refresh.hash != nil || refresh.skipped {
+                modelHashFingerprints[modelId] = fingerprint
+            }
+            if let freshHash = refresh.hash {
+                if liveModelHashes[modelId] != freshHash {
+                    let previous = liveModelHashes[modelId]?.prefix(16) ?? "unset"
+                    logger.info("Weight hash refreshed for \(modelId): \(freshHash.prefix(16))... (was \(previous))")
+                    liveModelHashes[modelId] = freshHash
+                    // Push into the client so a later reconnect re-registers
+                    // with current models[].weight_hash (the coordinator's
+                    // per-model catalog filter uses the register-time value).
+                    if let client = coordinatorClient {
+                        await client.updateModelWeightHashes(liveModelHashes)
+                    }
+                }
+            } else if !refresh.skipped {
+                // Recompute failed: keep the previous value but say so — a
+                // stale hash here is operator-visible as a model-swap untrust.
+                logger.warning("Weight hash recompute failed for \(modelId) — keeping previous value")
+            }
+
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
                 try Task.checkCancellation()
@@ -1706,7 +1781,11 @@ public actor ProviderLoop {
                 kvBudget: kvBudget,
                 diskAccountant: diskAccountant
             )
-            await scheduler.loadModel(container: container, modelId: modelId, weightHash: modelInfo.weightHash)
+            await scheduler.loadModel(
+                container: container,
+                modelId: modelId,
+                weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash
+            )
             if isShuttingDown || Task.isCancelled {
                 await scheduler.unloadModel()
                 throw CancellationError()
@@ -1779,7 +1858,7 @@ public actor ProviderLoop {
         let candidates = currentCandidates.isEmpty ? activeSlots : currentCandidates
         if let mostRecent = candidates.max(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
             state.currentModel = mostRecent.key
-            state.currentModelHash = loopConfig.modelHashes[mostRecent.key]
+            state.currentModelHash = liveModelHashes[mostRecent.key]
         } else {
             state.currentModel = nil
             state.currentModelHash = nil
@@ -2081,7 +2160,7 @@ public actor ProviderLoop {
 
         do {
             let activeModelHash = state.currentModel.flatMap { modelId in
-                loopConfig.modelHashes[modelId]
+                liveModelHashes[modelId]
             }
 
             let response = try builder.buildChallengeResponse(
@@ -2091,7 +2170,7 @@ public actor ProviderLoop {
                 binaryHash: binaryHash,
                 activeModelHash: activeModelHash,
                 runtimeHashes: augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes),
-                modelHashes: loopConfig.modelHashes
+                modelHashes: liveModelHashes
             )
 
             send.send(.attestationResponse(AttestationResponsePayload(

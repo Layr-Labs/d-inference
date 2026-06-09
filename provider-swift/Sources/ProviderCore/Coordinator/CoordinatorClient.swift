@@ -409,6 +409,16 @@ public actor CoordinatorClient {
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
     private var apnsTokenOverride: String?
 
+    /// Live per-model weight hashes pushed by the provider loop when a model
+    /// (re)load discovers the on-disk weights changed (model re-published while
+    /// the daemon runs). Once set, every (re)registration patches
+    /// models[].weight_hash so the coordinator's per-model catalog filter sees
+    /// current values instead of the daemon-start snapshot. Unlike
+    /// refreshAPNsToken this does NOT force a reconnect — challenge responses
+    /// already carry the fresh hashes live; this only keeps future
+    /// registrations consistent.
+    private var modelWeightHashOverrides: [String: String] = [:]
+
     private var shutdownRequested = false
 
     public init(
@@ -460,6 +470,13 @@ public actor CoordinatorClient {
         guard apnsTokenOverride != token else { return }
         apnsTokenOverride = token
         webSocketTask?.cancel(with: .goingAway, reason: nil)
+    }
+
+    /// Record refreshed per-model weight hashes for use in future
+    /// (re)registrations. Called by the provider loop after a model (re)load
+    /// recomputes the on-disk weight hash. See `modelWeightHashOverrides`.
+    public func updateModelWeightHashes(_ hashes: [String: String]) {
+        modelWeightHashOverrides = hashes
     }
 
     // MARK: - Connection Loop
@@ -742,7 +759,8 @@ public actor CoordinatorClient {
         let jsonData = try CoordinatorClientCodec.encodeRegistration(
             from: config,
             privacyCapabilities: privacyCapabilities,
-            apnsDeviceTokenOverride: apnsTokenOverride
+            apnsDeviceTokenOverride: apnsTokenOverride,
+            modelWeightHashOverrides: modelWeightHashOverrides
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed

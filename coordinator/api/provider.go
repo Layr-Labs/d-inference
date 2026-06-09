@@ -1132,7 +1132,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
 	provider.Mu().Unlock()
 
-	// Challenge passed.
+	// Challenge passed. Refresh stored per-model weight hashes BEFORE
+	// RecordChallengeSuccess: its queue drain re-enters routing, and queued
+	// requests must be admitted against the hashes this verified response just
+	// proved — not the registration-time snapshot. The provider recomputes
+	// hashes when it (re)loads a model from disk (e.g. after a model
+	// re-publish), so the registration-time value can go stale mid-connection,
+	// which would silently fail the per-model catalog routing filter until the
+	// next reconnect.
+	s.registry.UpdateModelWeightHashes(providerID, resp.ModelHashes)
+
 	recovered := s.registry.RecordChallengeSuccess(providerID)
 	if recovered {
 		// The provider was transiently untrusted and is now back online. It was

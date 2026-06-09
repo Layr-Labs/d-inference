@@ -53,6 +53,39 @@ public struct WeightHasher: Sendable {
         return hash
     }
 
+    // MARK: - Change Detection
+
+    /// Cheap change-detection fingerprint for a snapshot directory: the sorted
+    /// paths + sizes + mtimes of all integrity files. If the fingerprint is
+    /// unchanged since the last full hash, the weights cannot have drifted
+    /// (threat model: this guards *accidental* drift on honest providers — a
+    /// malicious provider can lie about the reported hash regardless), so the
+    /// expensive full re-read can be skipped on model reload.
+    ///
+    /// Returns nil when the directory has no integrity files or a file cannot
+    /// be stat'ed — callers must treat nil as "unknown" and re-hash.
+    public static func snapshotFingerprint(snapshotDir: URL) -> String? {
+        let (_, paths) = ModelScanner.collectWeightFiles(in: snapshotDir)
+        guard !paths.isEmpty else { return nil }
+        let fm = FileManager.default
+        var parts: [String] = []
+        parts.reserveCapacity(paths.count)
+        for url in paths.sorted(by: { $0.path < $1.path }) {
+            // Stat the TARGET of HF blob-style symlinks, not the link itself —
+            // an in-place blob rewrite behind an unchanged link must still
+            // change the fingerprint. (attributesOfItem does not traverse.)
+            let resolved = url.resolvingSymlinksInPath()
+            guard let attrs = try? fm.attributesOfItem(atPath: resolved.path),
+                let size = attrs[.size] as? UInt64,
+                let mtime = attrs[.modificationDate] as? Date
+            else {
+                return nil
+            }
+            parts.append("\(url.path)|\(size)|\(mtime.timeIntervalSince1970)")
+        }
+        return parts.joined(separator: "\n")
+    }
+
     // MARK: - Hashing Implementation
 
     /// Hash files in sorted filename order, combining per-file digests into a final hash.

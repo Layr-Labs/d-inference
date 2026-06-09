@@ -2237,6 +2237,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		attestResult := p.AttestationResult
 		mdaCertChain := p.MDACertChain
 		mdaResult := p.MDAResult
+		// p.Models is replaced copy-on-write by UpdateModelWeightHashes on the
+		// challenge goroutine, so its slice header must be read under p.mu. Copy
+		// the IDs out within this same locked section rather than ranging the
+		// field after unlock.
+		modelIDs := make([]string, 0, len(p.Models))
+		for _, m := range p.Models {
+			modelIDs = append(modelIDs, m.ID)
+		}
 		p.Mu().Unlock()
 
 		pa := providerAttestation{
@@ -2250,9 +2258,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			ACMEVerified: acmeVerified,
 		}
 
-		for _, m := range p.Models {
-			pa.Models = append(pa.Models, m.ID)
-		}
+		pa.Models = append(pa.Models, modelIDs...)
 
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName

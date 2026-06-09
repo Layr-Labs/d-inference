@@ -51,6 +51,7 @@ const (
 	TypeRuntimeStatus        = "runtime_status"
 	TypeLoadModel            = "load_model"
 	TypePrefetchModel        = "prefetch_model"
+	TypeDesiredModels        = "desired_models"
 	TypeTrustStatus          = "trust_status"
 )
 
@@ -339,6 +340,30 @@ type PrefetchModelMessage struct {
 	Type     string `json:"type"`
 	ModelID  string `json:"model_id"`
 	Priority int    `json:"priority,omitempty"`
+}
+
+// DesiredModelEntry declares, for one public model name (alias), the build the
+// coordinator wants this provider to converge to. DesiredBuild is a single
+// pointer (no weights). PreviousBuild (if set) stays acceptable to serve during
+// a staggered rollout so a not-yet-swapped provider keeps serving.
+type DesiredModelEntry struct {
+	ModelName     string `json:"model_name"`               // clean/public alias, e.g. "gemma-4-26b"
+	DesiredBuild  string `json:"desired_build"`            // concrete build id to converge to
+	PreviousBuild string `json:"previous_build,omitempty"` // still-acceptable build mid-rollout
+}
+
+// DesiredModelsMessage is the coordinator's declarative statement of the desired
+// build per public model name. Sent once right after register and again whenever
+// a desired build changes. The provider reconciles: background-prefetch (resumable)
+// any missing desired build, then hard-swap and emit models_update once verified.
+//
+// This is sent only to providers running the Swift runtime (backend ==
+// "mlx-swift") at or above the version that understands it; the coordinator
+// filters accordingly, because a pre-feature provider's strict decoder throws on
+// unknown message types.
+type DesiredModelsMessage struct {
+	Type   string              `json:"type"`
+	Models []DesiredModelEntry `json:"models"`
 }
 
 // ModelsUpdateMessage is an authoritative, out-of-band update to the provider's

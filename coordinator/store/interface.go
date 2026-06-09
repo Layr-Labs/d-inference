@@ -262,10 +262,11 @@ type Store interface {
 	FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error)
 	MarkPublishingAPIKeyUsed(id string) error
 
-	// --- Model Aliases (public-facing names → concrete builds) ---
+	// --- Model Aliases (public-facing names → a desired concrete build) ---
 
 	// UpsertModelAlias creates or replaces an alias definition (idempotent on
-	// AliasID). Builds is stored verbatim; resolution happens in the registry.
+	// AliasID). The DesiredBuild/PreviousBuild pointers are stored verbatim;
+	// resolution happens in the registry.
 	UpsertModelAlias(alias *ModelAlias) error
 	// GetModelAlias returns the alias by id; ok is false when not found.
 	GetModelAlias(aliasID string) (alias *ModelAlias, ok bool, err error)
@@ -273,17 +274,6 @@ type Store interface {
 	ListModelAliases() ([]ModelAlias, error)
 	// DeleteModelAlias removes an alias definition.
 	DeleteModelAlias(aliasID string) error
-
-	// --- Model Migrations (zero-downtime build cutover) ---
-
-	// UpsertModelMigration creates or replaces a migration (idempotent on AliasID).
-	UpsertModelMigration(m *ModelMigration) error
-	// GetModelMigration returns the migration for an alias; ok is false when none.
-	GetModelMigration(aliasID string) (m *ModelMigration, ok bool, err error)
-	// ListModelMigrations returns every migration regardless of status.
-	ListModelMigrations() ([]ModelMigration, error)
-	// DeleteModelMigration removes a migration record.
-	DeleteModelMigration(aliasID string) error
 
 	// --- Releases (provider binary versioning) ---
 
@@ -889,54 +879,22 @@ type ModelRegistryRecord struct {
 	Files         []ModelVersionFile `json:"files,omitempty"`
 }
 
-// ModelAliasBuild is one underlying build a public alias resolves to. Weight
-// is a relative routing weight (higher = more traffic) used during a migration
-// ramp; Active gates whether the build participates in resolution right now.
-type ModelAliasBuild struct {
-	BuildID string `json:"build_id"`
-	Weight  int    `json:"weight"`
-	Active  bool   `json:"active"`
-}
-
-// ModelMigration is a declarative request to move an alias's traffic from one
-// build to another with zero downtime: prefetch the new build across the fleet,
-// then ramp the alias weight toward it and drain the old build. Progress is
-// reflected in the alias's build weights; this row carries the intent + policy.
-type ModelMigration struct {
-	AliasID   string `json:"alias_id"`
-	FromBuild string `json:"from_build"`
-	ToBuild   string `json:"to_build"`
-	// BatchSize bounds how many providers are told to prefetch per control tick
-	// so a migration never knocks too much capacity offline downloading at once.
-	BatchSize int `json:"batch_size"`
-	// MaxStepPercent caps how many percentage points the new build's routing
-	// weight can rise per tick, so traffic ramps smoothly instead of jumping.
-	MaxStepPercent int       `json:"max_step_percent"`
-	Status         string    `json:"status"` // active | paused | complete | rolledback
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-}
-
-// Migration status constants.
-const (
-	MigrationActive     = "active"
-	MigrationPaused     = "paused"
-	MigrationComplete   = "complete"
-	MigrationRolledBack = "rolledback"
-)
-
 // ModelAlias is a stable, consumer-facing model name (e.g. "gemma-4-26b") that
-// resolves to one or more concrete registry builds (raw HuggingFace ids such as
-// "mlx-community/gemma-4-26B-A4B-it-qat-4bit"). Consumers only ever see the
-// alias; the coordinator resolves it to a concrete build for routing/billing.
-// This is what makes a quant swap (fp8 → qat-4bit) invisible to clients.
+// resolves to a single DESIRED concrete registry build (a raw HuggingFace id
+// such as "mlx-community/gemma-4-26B-A4B-it-qat-4bit"), with an optional
+// PreviousBuild that stays acceptable while providers converge on the desired
+// one. Consumers only ever see the alias; the coordinator resolves it to a
+// concrete build for routing/billing. This is what makes a quant swap
+// (fp8 → qat-4bit) invisible to clients: a rollout is just setting DesiredBuild,
+// a revert is setting it back. There are no weights, ramps, or migrations.
 type ModelAlias struct {
-	AliasID     string            `json:"alias_id"`
-	DisplayName string            `json:"display_name"`
-	Builds      []ModelAliasBuild `json:"builds"`
-	Active      bool              `json:"active"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	AliasID       string    `json:"alias_id"`
+	DisplayName   string    `json:"display_name"`
+	DesiredBuild  string    `json:"desired_build"`            // the single build providers should converge to
+	PreviousBuild string    `json:"previous_build,omitempty"` // still-acceptable during rollout; "" when none
+	Active        bool      `json:"active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // ModelManifest mirrors the minimal darkbloom-publish manifest JSON.

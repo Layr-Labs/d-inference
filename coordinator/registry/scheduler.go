@@ -36,10 +36,6 @@ const (
 	nearTieCostWindowMs      = 3_000.0
 	challengeFreshnessMaxAge = 6 * time.Minute
 
-	// prefetchAckTTL bounds how long a provider's prefetch acknowledgement is
-	// trusted as "this binary supports prefetch" before it must re-ack.
-	prefetchAckTTL = 30 * time.Minute
-
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
 	// the free-memory admission gate.
 	//

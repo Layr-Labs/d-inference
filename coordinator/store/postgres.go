@@ -425,9 +425,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_publishing_api_keys_hash ON publishing_api_keys(key_hash)`,
 
-		// Model aliases (public-facing names → concrete builds). builds is a
-		// JSONB array of {build_id, weight, active}. Lets us swap the underlying
-		// quant (fp8 → qat-4bit) behind a stable consumer-facing model name.
+		// Model aliases (public-facing names → a desired concrete build). An alias
+		// resolves to a single desired_build (the build providers converge to) with
+		// an optional previous_build that stays acceptable during a rollout. Lets us
+		// swap the underlying quant (fp8 → qat-4bit) behind a stable consumer-facing
+		// model name. The legacy `builds` JSONB column is kept (nullable, default
+		// '[]') only so an older coordinator binary doesn't choke on the table; it
+		// is no longer read or written — drop it in a follow-up release.
 		`CREATE TABLE IF NOT EXISTS model_aliases (
 			alias_id TEXT PRIMARY KEY,
 			display_name TEXT NOT NULL DEFAULT '',
@@ -436,18 +440,28 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-
-		// Model migrations (zero-downtime build cutover driven by the controller).
-		`CREATE TABLE IF NOT EXISTS model_migrations (
-			alias_id TEXT PRIMARY KEY,
-			from_build TEXT NOT NULL,
-			to_build TEXT NOT NULL,
-			batch_size INT NOT NULL DEFAULT 1,
-			max_step_percent INT NOT NULL DEFAULT 25,
-			status TEXT NOT NULL DEFAULT 'active',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
+		// Declarative desired/previous build pointers (additive migration).
+		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS desired_build TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS previous_build TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		// Backfill desired_build from the old `builds` JSON: pick the highest-weight
+		// active build of each alias that hasn't been migrated yet. DISTINCT ON keeps
+		// exactly one (highest-weight) build per alias so the UPDATE...FROM join is
+		// deterministic. One-shot; safe to re-run because it only touches rows still
+		// on the empty default.
+		`DO $$ BEGIN
+			UPDATE model_aliases a
+			SET desired_build = sub.build_id
+			FROM (
+				SELECT DISTINCT ON (alias_id) alias_id, (b->>'build_id') AS build_id
+				FROM model_aliases, jsonb_array_elements(builds) AS b
+				WHERE COALESCE((b->>'active')::boolean, true)
+				  AND COALESCE((b->>'weight')::int, 0) > 0
+				ORDER BY alias_id, COALESCE((b->>'weight')::int, 0) DESC
+			) sub
+			WHERE a.alias_id = sub.alias_id AND a.desired_build = '';
+		EXCEPTION WHEN others THEN NULL; END $$`,
+		// The weighted-ramp migration controller is gone; drop its table.
+		`DROP TABLE IF EXISTS model_migrations`,
 
 		// Releases (provider binary versioning)
 		`CREATE TABLE IF NOT EXISTS releases (

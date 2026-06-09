@@ -624,18 +624,9 @@ type Registry struct {
 	modelCatalog map[string]CatalogEntry
 
 	// modelAliases maps a public-facing alias id (e.g. "gemma-4-26b") to the
-	// concrete builds it resolves to. Populated by SetModelAliases at catalog
-	// sync time. nil = no aliases configured.
-	modelAliases map[string][]BuildRef
-
-	// prefetchAcked tracks the last time each provider acknowledged a prefetch
-	// (sent any prefetch_model_status), proving its binary speaks the protocol.
-	// prefetchFailed tracks the last terminal prefetch failure per provider+build
-	// so the migration controller can retry promptly instead of waiting out the
-	// resend TTL. Both are guarded by prefetchAckMu.
-	prefetchAckMu  sync.Mutex
-	prefetchAcked  map[string]time.Time
-	prefetchFailed map[string]time.Time
+	// desired (and optional previous) concrete build it resolves to. Populated by
+	// SetModelAliases at catalog sync time. nil = no aliases configured.
+	modelAliases map[string]aliasTarget
 
 	store store.Store
 
@@ -971,51 +962,49 @@ func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	r.modelCatalog = catalog
 }
 
-// BuildRef is one concrete build an alias resolves to, with a relative routing
-// weight. Weight 0 means "drained" — the build still works but receives no new
-// alias traffic (used to retire the old quant at the end of a migration).
-type BuildRef struct {
-	BuildID string
-	Weight  int
+// aliasTarget is the declarative resolution target for a public alias: a single
+// Desired build the fleet converges to, with an optional still-acceptable
+// Previous build during a staggered rollout. No weights, no ramp.
+type aliasTarget struct {
+	Desired  string
+	Previous string
 }
 
-// SetModelAliases installs the public-alias → builds mapping. Only builds with
-// weight > 0 are considered routable for an alias; pass nil to clear all
-// aliases. Callers should pass only ACTIVE builds (the store/sync layer filters
-// inactive ones out).
-func (r *Registry) SetModelAliases(aliases map[string][]BuildRef) {
+// SetModelAliases installs the public-alias → {desired, previous} mapping. Pass
+// nil (or an empty map) to clear all aliases. Callers pass only ACTIVE aliases
+// (the store/sync layer filters inactive ones out). An alias whose Desired is
+// empty contributes nothing routable.
+func (r *Registry) SetModelAliases(aliases map[string]aliasTarget) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(aliases) == 0 {
 		r.modelAliases = nil
 		return
 	}
-	m := make(map[string][]BuildRef, len(aliases))
-	for alias, builds := range aliases {
-		cp := make([]BuildRef, len(builds))
-		copy(cp, builds)
-		m[alias] = cp
+	m := make(map[string]aliasTarget, len(aliases))
+	for alias, t := range aliases {
+		m[alias] = t
 	}
 	r.modelAliases = m
 }
 
 // PublicNameForBuild returns the public alias a concrete build is exposed under
-// (the consumer-facing name), or the build id unchanged if it isn't part of any
-// alias. This lets consumer-facing surfaces (e.g. usage history) show the alias
-// while billing/stats/earnings keep storing the concrete build. If several
-// aliases map to the build, the lexicographically-first is returned for
-// stability.
+// (the consumer-facing name), or the build id unchanged if it isn't the desired
+// or previous build of any alias. This lets consumer-facing surfaces (e.g. usage
+// history) show the alias while billing/stats/earnings keep storing the concrete
+// build. If several aliases map to the build, the lexicographically-first is
+// returned for stability.
 func (r *Registry) PublicNameForBuild(buildID string) string {
+	if buildID == "" {
+		return buildID
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	best := ""
-	for alias, builds := range r.modelAliases {
-		for _, b := range builds {
-			if b.BuildID == buildID {
-				if best == "" || alias < best {
-					best = alias
-				}
-				break
+	for alias, t := range r.modelAliases {
+		if t.Desired == buildID || t.Previous == buildID {
+			if best == "" || alias < best {
+				best = alias
 			}
 		}
 	}
@@ -1033,59 +1022,34 @@ func (r *Registry) IsAlias(requested string) bool {
 	return ok
 }
 
-// AliasBuilds returns the configured builds for an alias (copy), or nil.
-func (r *Registry) AliasBuilds(alias string) []BuildRef {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	builds, ok := r.modelAliases[alias]
-	if !ok {
-		return nil
-	}
-	cp := make([]BuildRef, len(builds))
-	copy(cp, builds)
-	return cp
-}
-
 // ResolveModel maps a requested model id to a concrete build id for routing.
 //
 //   - If requested is NOT an alias, it is returned unchanged (isAlias=false,
 //     ok=true) — raw build ids keep working for backward compatibility.
-//   - If requested IS an alias, one active build is chosen by weight, PREFERRING
-//     builds that currently have at least one registered provider advertising
-//     them. This is the zero-downtime guarantee: while a new build is ramping
-//     and few providers have it yet, traffic still resolves to a build that can
-//     actually be served instead of black-holing. ok=false only when the alias
-//     has no usable (weight>0) builds at all.
+//   - If requested IS an alias, it resolves to the Desired build when at least
+//     one provider can route it; otherwise to the Previous build when that is
+//     routable; otherwise it returns Desired so the request queues against a
+//     real build instead of black-holing. ok=false only when Desired is empty.
 func (r *Registry) ResolveModel(requested string) (buildID string, isAlias bool, ok bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	builds, found := r.modelAliases[requested]
+	t, found := r.modelAliases[requested]
 	if !found {
 		return requested, false, true
 	}
-
-	var servable, all []BuildRef
-	for _, b := range builds {
-		if b.Weight <= 0 || b.BuildID == "" {
-			continue
-		}
-		all = append(all, b)
-		if r.anyProviderCanRouteBuildLocked(b.BuildID) {
-			servable = append(servable, b)
-		}
-	}
-	pool := servable
-	if len(pool) == 0 {
-		// No build is routable yet — fall back to a weighted choice over all
-		// active builds so the request queues against a real build instead of
-		// failing outright.
-		pool = all
-	}
-	if len(pool) == 0 {
+	if t.Desired == "" {
 		return "", true, false
 	}
-	return weightedPickBuild(pool), true, true
+	if r.anyProviderCanRouteBuildLocked(t.Desired) {
+		return t.Desired, true, true
+	}
+	if t.Previous != "" && r.anyProviderCanRouteBuildLocked(t.Previous) {
+		return t.Previous, true, true
+	}
+	// Neither build is routable yet — resolve to Desired so the request queues
+	// against a real build instead of failing outright.
+	return t.Desired, true, true
 }
 
 // ResolveModelConstrained is ResolveModel, but when a request is restricted to
@@ -1102,7 +1066,7 @@ func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []st
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	builds, found := r.modelAliases[requested]
+	t, found := r.modelAliases[requested]
 	if !found {
 		return requested, false, true
 	}
@@ -1113,25 +1077,19 @@ func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []st
 		}
 	}
 	now := time.Now()
-	var servable []BuildRef
-	for _, b := range builds {
-		if b.Weight <= 0 || b.BuildID == "" {
-			continue
-		}
-		if r.anyEligibleProviderCanRouteLocked(b.BuildID, allowed, ownerAccountID, selfRouteOnly, preferOwner, now) {
-			servable = append(servable, b)
-		}
+	if t.Desired != "" && r.anyEligibleProviderCanRouteLocked(t.Desired, allowed, ownerAccountID, selfRouteOnly, preferOwner, now) {
+		return t.Desired, true, true
+	}
+	if t.Previous != "" && r.anyEligibleProviderCanRouteLocked(t.Previous, allowed, ownerAccountID, selfRouteOnly, preferOwner, now) {
+		return t.Previous, true, true
 	}
 	// Only HARD-constrained requests (serial pin / self-route-only) reach here —
 	// the unconstrained path returned ResolveModel above. So if no allowed+
-	// eligible provider can serve any build, do NOT fall back to the full build
-	// set: that would resolve to a build the allowed providers can't serve (the
-	// exact thing this function exists to prevent) and then queue/fail against the
-	// wrong build, or for self-route leak toward the fleet. Return unavailable.
-	if len(servable) == 0 {
-		return "", true, false
-	}
-	return weightedPickBuild(servable), true, true
+	// eligible provider can serve either build, do NOT fall back to Desired: that
+	// would resolve to a build the allowed providers can't serve (the exact thing
+	// this function exists to prevent) and then queue/fail against the wrong
+	// build, or for self-route leak toward the fleet. Return unavailable.
+	return "", true, false
 }
 
 // anyEligibleProviderCanRouteLocked reports whether some provider both matches
@@ -1225,13 +1183,21 @@ func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
 	return false
 }
 
-// MergeProviderModels merges provider-reported model descriptors into the
-// provider's advertised Models in place — used for the models_update message a
-// provider sends after a verified prefetch, so a new build becomes routable
-// WITHOUT a reconnect and WITHOUT resetting trust/reputation/challenge state.
+// MergeProviderModels applies a provider's authoritative models_update to its
+// advertised Models in place — used for the message a provider sends after it
+// converges on a desired build (background prefetch verified, then hard-swap),
+// so a new build becomes routable WITHOUT a reconnect and WITHOUT resetting
+// trust/reputation/challenge state. It is authoritative-per-alias: the message
+// is the complete, current advertised set for every public alias it references,
+// so any OTHER build of those aliases that the provider previously advertised
+// but did NOT include this time is DROPPED. That is the hard-swap drop path —
+// it stops the retired (previous) quant from keeping routability on a provider
+// that has already swapped to the desired build. Builds unrelated to any
+// referenced alias are never touched.
+//
 // Each model's WeightHash is cross-checked against the catalog's expected hash;
 // a mismatch is REJECTED (the build is not made routable) so a bad or buggy
-// prefetch can never take traffic. Returns the build ids that were merged.
+// prefetch/swap can never take traffic. Returns the build ids that were merged.
 func (r *Registry) MergeProviderModels(providerID string, models []protocol.ModelInfo) []string {
 	if len(models) == 0 {
 		return nil
@@ -1242,6 +1208,40 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 	for _, m := range models {
 		if e, has := r.modelCatalog[m.ID]; has {
 			expected[m.ID] = e.WeightHash
+		}
+	}
+	// Compute the hard-swap drop set: for every alias that has one of the
+	// updated builds as its desired OR previous build, the OTHER build of that
+	// alias is no longer advertised by this provider (it swapped), so drop it.
+	present := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		if m.ID != "" {
+			present[m.ID] = struct{}{}
+		}
+	}
+	drop := make(map[string]struct{})
+	for _, t := range r.modelAliases {
+		members := [2]string{t.Desired, t.Previous}
+		referenced := false
+		for _, b := range members {
+			if b == "" {
+				continue
+			}
+			if _, in := present[b]; in {
+				referenced = true
+				break
+			}
+		}
+		if !referenced {
+			continue
+		}
+		for _, b := range members {
+			if b == "" {
+				continue
+			}
+			if _, in := present[b]; !in {
+				drop[b] = struct{}{}
+			}
 		}
 	}
 	r.mu.RUnlock()
@@ -1274,35 +1274,21 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 		}
 		merged = append(merged, m.ID)
 	}
-	return merged
-}
-
-// ProvidersServingBuild returns the ids of live providers that currently
-// advertise the given concrete build. "Live" mirrors the routing gate's coarse
-// liveness — anything that is not offline/untrusted, INCLUDING busy providers
-// (StatusServing/idle), which must still count or a busy fleet would look like
-// it has un-migrated capacity. Used by the migration controller to pick
-// prefetch targets (providers that have the old build and need the new one).
-func (r *Registry) ProvidersServingBuild(buildID string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var ids []string
-	for id, p := range r.providers {
-		p.mu.Lock()
-		serves := false
+	// Apply the hard-swap drop: remove any alias-sibling build the provider no
+	// longer advertises.
+	if len(drop) > 0 {
+		kept := p.Models[:0]
 		for _, m := range p.Models {
-			if m.ID == buildID {
-				serves = true
-				break
+			if _, gone := drop[m.ID]; gone {
+				r.logger.Info("models_update hard-swap: dropping retired build",
+					"provider_id", providerID, "model_id", m.ID)
+				continue
 			}
+			kept = append(kept, m)
 		}
-		live := p.Status != StatusOffline && p.Status != StatusUntrusted
-		p.mu.Unlock()
-		if serves && live {
-			ids = append(ids, id)
-		}
+		p.Models = kept
 	}
-	return ids
+	return merged
 }
 
 // RoutableProviderIDsForBuild returns the ids of providers that would actually
@@ -1310,10 +1296,9 @@ func (r *Registry) ProvidersServingBuild(buildID string) []string {
 // snapshotProviderLocked applies (advertises the build, not offline/untrusted,
 // public, trust ≥ floor, runtime verified, private-text capable, fresh
 // challenge), minus per-request capacity/headroom. Cold-but-healthy providers
-// count (no warm slot required — they load on first demand). The migration
-// controller uses THIS (not ProvidersServingBuild) to measure how much of the
-// fleet can truly serve the new build, so the ramp never shifts traffic onto a
-// build that advertises capacity it can't route.
+// count (no warm slot required — they load on first demand). Used to measure how
+// much of the fleet can truly serve a build (e.g. rollout progress / hard-swap
+// drop verification in tests) without counting capacity it can't actually route.
 func (r *Registry) RoutableProviderIDsForBuild(buildID string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1329,94 +1314,6 @@ func (r *Registry) RoutableProviderIDsForBuild(buildID string) []string {
 		}
 	}
 	return ids
-}
-
-// RecordPrefetchAck notes that a provider acknowledged a prefetch (it sent any
-// prefetch_model_status), which proves its binary speaks the prefetch protocol.
-// The migration controller uses this to avoid stalling forever on old providers
-// that silently drop prefetch_model.
-func (r *Registry) RecordPrefetchAck(providerID string) {
-	if providerID == "" {
-		return
-	}
-	r.prefetchAckMu.Lock()
-	if r.prefetchAcked == nil {
-		r.prefetchAcked = make(map[string]time.Time)
-	}
-	r.prefetchAcked[providerID] = time.Now()
-	r.prefetchAckMu.Unlock()
-}
-
-// ProviderAckedPrefetch reports whether a provider has acknowledged a prefetch
-// within the recent past (i.e. it supports the prefetch protocol).
-func (r *Registry) ProviderAckedPrefetch(providerID string) bool {
-	r.prefetchAckMu.Lock()
-	t, ok := r.prefetchAcked[providerID]
-	r.prefetchAckMu.Unlock()
-	return ok && time.Since(t) <= prefetchAckTTL
-}
-
-// ProviderCanFitBuild reports whether a provider's hardware could ever hold the
-// build (the same memory gate routing applies). Used by the migration controller
-// to exclude a small-RAM old-build provider that can never serve a larger new
-// build, so it doesn't pin the ramp/done below 100%.
-func (r *Registry) ProviderCanFitBuild(providerID, buildID string) bool {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	minRAM := r.catalogMinRAMGbLocked(buildID)
-	sizeGB := r.catalogSizeGBLocked(buildID)
-	r.mu.RUnlock()
-	if !ok {
-		return false
-	}
-	p.mu.Lock()
-	total := float64(p.Hardware.MemoryGB)
-	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
-		total = p.BackendCapacity.TotalMemoryGB
-	}
-	p.mu.Unlock()
-	return modelFitsHardware(minRAM, sizeGB, total)
-}
-
-// RecordPrefetchFailure notes a terminal prefetch failure for a provider+build.
-func (r *Registry) RecordPrefetchFailure(providerID, buildID string) {
-	if providerID == "" || buildID == "" {
-		return
-	}
-	r.prefetchAckMu.Lock()
-	if r.prefetchFailed == nil {
-		r.prefetchFailed = make(map[string]time.Time)
-	}
-	r.prefetchFailed[providerID+"\x00"+buildID] = time.Now()
-	r.prefetchAckMu.Unlock()
-}
-
-// PrefetchFailedAt returns the time of the last terminal prefetch failure for a
-// provider+build, if any.
-func (r *Registry) PrefetchFailedAt(providerID, buildID string) (time.Time, bool) {
-	r.prefetchAckMu.Lock()
-	t, ok := r.prefetchFailed[providerID+"\x00"+buildID]
-	r.prefetchAckMu.Unlock()
-	return t, ok
-}
-
-// weightedPickBuild chooses a build proportional to its weight.
-func weightedPickBuild(builds []BuildRef) string {
-	total := 0
-	for _, b := range builds {
-		total += b.Weight
-	}
-	if total <= 0 {
-		return builds[0].BuildID
-	}
-	n := rand.Intn(total)
-	for _, b := range builds {
-		n -= b.Weight
-		if n < 0 {
-			return b.BuildID
-		}
-	}
-	return builds[len(builds)-1].BuildID
 }
 
 // ModelType returns the model type string for the given model ID, or
@@ -1999,6 +1896,101 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 		"priority", priority,
 	)
 	return nil
+}
+
+// SendDesiredModels tells a provider, declaratively, the desired build per
+// public alias it should converge to (plus the still-acceptable previous build).
+// The provider reconciles on its own: background-prefetch any missing desired
+// build, then hard-swap (advertise new, drop old) once verified. Mirrors
+// SendPrefetchModel — fire-and-forget over the provider's WebSocket. A no-op
+// (nil) when there are no entries to send. Callers MUST gate this on
+// backend == mlx-swift AND a provider version that understands desired_models,
+// because a pre-feature provider's strict decoder throws on unknown message
+// types.
+func (r *Registry) SendDesiredModels(providerID string, entries []protocol.DesiredModelEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerID)
+	}
+
+	msg := protocol.DesiredModelsMessage{
+		Type:   protocol.TypeDesiredModels,
+		Models: entries,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal desired_models message: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.mu.Lock()
+	conn := p.Conn
+	p.mu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("provider %q has no active connection", providerID)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		return fmt.Errorf("failed to send desired_models to provider %q: %w", providerID, err)
+	}
+
+	r.logger.Info("sent desired_models to provider",
+		"provider_id", providerID,
+		"entries", len(entries),
+	)
+	return nil
+}
+
+// DesiredModelsForProvider builds the desired_models entries to push to a
+// provider. Policy (conservative for this release): emit an entry only for
+// aliases where the provider ALREADY advertises the desired OR previous build —
+// i.e. the provider is already part of this alias's fleet and should converge to
+// the desired build. Aliases the provider has never served are not offered (a
+// brand-new provider must advertise some member of an alias to be told its
+// desired build). An alias with an empty desired build is skipped.
+func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.DesiredModelEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.providers[providerID]
+	if !ok || len(r.modelAliases) == 0 {
+		return nil
+	}
+	p.mu.Lock()
+	advertised := make(map[string]struct{}, len(p.Models))
+	for _, m := range p.Models {
+		if m.ID != "" {
+			advertised[m.ID] = struct{}{}
+		}
+	}
+	p.mu.Unlock()
+
+	var entries []protocol.DesiredModelEntry
+	for alias, t := range r.modelAliases {
+		if t.Desired == "" {
+			continue
+		}
+		_, hasDesired := advertised[t.Desired]
+		_, hasPrevious := advertised[t.Previous]
+		if !hasDesired && !(t.Previous != "" && hasPrevious) {
+			continue
+		}
+		entries = append(entries, protocol.DesiredModelEntry{
+			ModelName:     alias,
+			DesiredBuild:  t.Desired,
+			PreviousBuild: t.Previous,
+		})
+	}
+	// Stable ordering keeps the wire output deterministic (and tests simple).
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ModelName < entries[j].ModelName })
+	return entries
 }
 
 // TriggerModelSwaps checks for queued requests that have no warm provider

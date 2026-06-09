@@ -1024,26 +1024,71 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Verify active model hash if reported and catalog has expected hash.
-	if resp.ActiveModelHash != "" {
-		// Get the current model from the provider's last heartbeat.
-		provider.Mu().Lock()
-		currentModel := provider.CurrentModel
-		provider.Mu().Unlock()
+	// Verify reported model weight hashes against the catalog. The response's
+	// model_hashes map is keyed by model ID, so each entry is compared against
+	// the catalog hash for exactly that model — race-free, and strictly
+	// stronger than checking only the active model.
+	//
+	// The previous check compared resp.ActiveModelHash (the hash of whatever
+	// model the PROVIDER considered current when it built the response)
+	// against the catalog hash of provider.CurrentModel (the model the
+	// COORDINATOR believed current, from the last heartbeat — up to a full
+	// heartbeat interval stale). On a busy multi-model provider the current
+	// model flips between heartbeats, so the two regularly disagreed and a
+	// perfectly correct hash of model B was misread as a tampered hash of
+	// model A ("possible model swap") → false hard-untrust. Hit in prod by
+	// the two busiest dual-model boxes (gemma-4-26b + gpt-oss-20b interleaved).
+	for modelID, hash := range resp.ModelHashes {
+		if hash == "" {
+			continue
+		}
+		expectedHash := s.registry.CatalogWeightHash(modelID)
+		if expectedHash != "" && hash != expectedHash {
+			s.logger.Error("provider model weight hash mismatch — possible model swap",
+				"provider_id", providerID,
+				"model", modelID,
+				"expected", registry.TruncHash(expectedHash),
+				"got", registry.TruncHash(hash),
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "model weight hash mismatch")
+			return
+		}
+	}
 
-		if currentModel != "" {
-			expectedHash := s.registry.CatalogWeightHash(currentModel)
-			if expectedHash != "" && resp.ActiveModelHash != expectedHash {
-				s.logger.Error("provider active model hash mismatch — possible model swap",
-					"provider_id", providerID,
-					"model", currentModel,
-					"expected", registry.TruncHash(expectedHash),
-					"got", registry.TruncHash(resp.ActiveModelHash),
-				)
-				s.registry.MarkUntrusted(providerID)
-				s.handleChallengeFailure(providerID, "active model weight hash mismatch")
-				return
+	// The bare active_model_hash names no model, so the strongest race-free
+	// statement it admits is membership: when EVERY advertised model has an
+	// enforced catalog hash, a hash that matches none of them is tampered.
+	// This runs regardless of model_hashes — a map holding only empty or
+	// unknown entries must not suppress it — and stays inconclusive (skipped)
+	// when any advertised model is unenforced, since the bare hash could
+	// legitimately belong to that model. (Comparing against the
+	// heartbeat-derived "current model" instead is inherently racy — see
+	// above.)
+	if resp.ActiveModelHash != "" {
+		provider.Mu().Lock()
+		models := provider.Models
+		provider.Mu().Unlock()
+		allEnforced := len(models) > 0
+		matched := false
+		for _, m := range models {
+			expectedHash := s.registry.CatalogWeightHash(m.ID)
+			if expectedHash == "" {
+				allEnforced = false
+				break
 			}
+			if resp.ActiveModelHash == expectedHash {
+				matched = true
+			}
+		}
+		if allEnforced && !matched {
+			s.logger.Error("provider active model hash matches no advertised model — possible model swap",
+				"provider_id", providerID,
+				"got", registry.TruncHash(resp.ActiveModelHash),
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "active model weight hash mismatch")
+			return
 		}
 	}
 
@@ -1132,7 +1177,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
 	provider.Mu().Unlock()
 
-	// Challenge passed.
+	// Challenge passed. Refresh stored per-model weight hashes BEFORE
+	// RecordChallengeSuccess: its queue drain re-enters routing, and queued
+	// requests must be admitted against the hashes this verified response just
+	// proved — not the registration-time snapshot. The provider recomputes
+	// hashes when it (re)loads a model from disk (e.g. after a model
+	// re-publish), so the registration-time value can go stale mid-connection,
+	// which would silently fail the per-model catalog routing filter until the
+	// next reconnect.
+	s.registry.UpdateModelWeightHashes(providerID, resp.ModelHashes)
+
 	recovered := s.registry.RecordChallengeSuccess(providerID)
 	if recovered {
 		// The provider was transiently untrusted and is now back online. It was
@@ -2183,6 +2237,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		attestResult := p.AttestationResult
 		mdaCertChain := p.MDACertChain
 		mdaResult := p.MDAResult
+		// p.Models is replaced copy-on-write by UpdateModelWeightHashes on the
+		// challenge goroutine, so its slice header must be read under p.mu. Copy
+		// the IDs out within this same locked section rather than ranging the
+		// field after unlock.
+		modelIDs := make([]string, 0, len(p.Models))
+		for _, m := range p.Models {
+			modelIDs = append(modelIDs, m.ID)
+		}
 		p.Mu().Unlock()
 
 		pa := providerAttestation{
@@ -2196,9 +2258,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			ACMEVerified: acmeVerified,
 		}
 
-		for _, m := range p.Models {
-			pa.Models = append(pa.Models, m.ID)
-		}
+		pa.Models = append(pa.Models, modelIDs...)
 
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName

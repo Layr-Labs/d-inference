@@ -71,6 +71,47 @@ import Testing
     #expect(withTok["apns_environment"] as? String == "production")
 }
 
+@Test func registrationHonorsModelWeightHashOverrides() throws {
+    // The daemon-start weight hash goes stale when a model is re-published and
+    // re-downloaded while the daemon runs. After the loop refreshes the hash at
+    // model (re)load, reconnect registrations must carry the FRESH hash in
+    // models[].weight_hash — the coordinator's per-model catalog filter keys
+    // off the register-time value.
+    var staleModel = clientSampleModel()
+    staleModel.weightHash = "stale-hash-from-daemon-start"
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [staleModel],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj"
+    )
+
+    func registeredModels(_ overrides: [String: String]) throws -> [[String: Any]] {
+        let data = try CoordinatorClientCodec.encodeRegistration(
+            from: config,
+            modelWeightHashOverrides: overrides
+        )
+        let object = try clientJSONObject(data)
+        return object["models"] as? [[String: Any]] ?? []
+    }
+
+    // No overrides → the config (daemon-start) hash goes out unchanged.
+    let base = try registeredModels([:])
+    #expect(base.count == 1)
+    #expect(base[0]["weight_hash"] as? String == "stale-hash-from-daemon-start")
+
+    // Override for this model → registration carries the refreshed hash.
+    let refreshed = try registeredModels([staleModel.id: "fresh-hash-after-reload"])
+    #expect(refreshed.count == 1)
+    #expect(refreshed[0]["weight_hash"] as? String == "fresh-hash-after-reload")
+
+    // Override for a DIFFERENT model → this model's hash is untouched.
+    let unrelated = try registeredModels(["some-other-model": "other-hash"])
+    #expect(unrelated.count == 1)
+    #expect(unrelated[0]["weight_hash"] as? String == "stale-hash-from-daemon-start")
+}
+
 @Test func coordinatorOutboundMessagesUseProviderEnvelope() throws {
     let accepted = try CoordinatorClientCodec.encodeOutboundMessageString(
         .inferenceAccepted(requestId: "req-1")

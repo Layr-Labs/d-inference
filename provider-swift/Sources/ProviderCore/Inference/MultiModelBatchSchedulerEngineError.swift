@@ -45,6 +45,12 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// example a future "request_rejected: ..." path). Surfaces as
     /// 503 — the request was not run and the client may safely retry.
     case requestRejected(String)
+    /// The request carried image/video media but the resolved model is not
+    /// a usable vision-language model (not VLM-capable, or its container is
+    /// unavailable for the non-batched vision path). A client fault that
+    /// will fail identically on retry, so it surfaces as 400 — never let
+    /// media silently fall through to the text-only path.
+    case mediaUnsupportedByModel(String)
 
     public var errorDescription: String? {
         switch self {
@@ -62,6 +68,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .requestRejected(let message):
             return message
+        case .mediaUnsupportedByModel(let id):
+            return
+                "Model '\(id)' does not support image or video input on this provider"
         }
     }
 

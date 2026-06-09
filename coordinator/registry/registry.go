@@ -981,6 +981,46 @@ func (r *Registry) IsModelInCatalog(model string) bool {
 	return ok
 }
 
+// UpdateModelWeightHashes refreshes the stored per-model weight hashes for a
+// provider from a verified attestation challenge response. Providers recompute
+// weight hashes when a model is (re)loaded from disk — e.g. after a model was
+// re-published and re-downloaded while the daemon kept running. Without this,
+// the registry would keep the registration-time snapshot and the per-model
+// catalog filter (modelAllowedByCatalogLocked) would silently stop routing the
+// model to this provider until its next reconnect.
+//
+// Concurrency: the p.Models slice header is replaced (copy-on-write, never
+// mutated in place) under p.mu — NOT under the registry-wide r.mu, which is held
+// only as a read lock to look the provider up in the map. p.mu is therefore the
+// sole lock guarding p.Models, so every reader that ranges p.Models must hold
+// p.mu (see providerModelIDs and the *Locked helpers). Do not rely on r.mu to
+// serialize reads against this write: it does not.
+func (r *Registry) UpdateModelWeightHashes(providerID string, hashes map[string]string) {
+	if len(hashes) == 0 {
+		return
+	}
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	changed := false
+	models := make([]protocol.ModelInfo, len(p.Models))
+	copy(models, p.Models)
+	for i := range models {
+		if h, ok := hashes[models[i].ID]; ok && h != "" && models[i].WeightHash != h {
+			models[i].WeightHash = h
+			changed = true
+		}
+	}
+	if changed {
+		p.Models = models
+	}
+}
+
 // CatalogWeightHash returns the expected weight hash for a model, or empty
 // string if not set or not in catalog.
 func (r *Registry) CatalogWeightHash(model string) string {
@@ -2322,13 +2362,18 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
 			continue
 		}
+		// providerServesCatalogModelLocked ranges p.Models, which is replaced
+		// copy-on-write by UpdateModelWeightHashes under p.mu (not r.mu), so it
+		// must run under p.mu — fold it into the same locked section as the
+		// headroom check rather than calling it after unlock.
 		p.mu.Lock()
 		hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(model)
+		serves := hasHeadroom && r.providerServesCatalogModelLocked(p, model)
 		p.mu.Unlock()
 		if !hasHeadroom {
 			continue
 		}
-		if r.providerServesCatalogModelLocked(p, model) {
+		if serves {
 			candidates = append(candidates, p)
 		}
 	}
@@ -2439,6 +2484,11 @@ func (r *Registry) ListModels() []AggregateModel {
 		attestResult := p.AttestationResult
 		privateReady := providerSupportsPrivateTextLocked(p)
 		privateOnly := p.PrivateOnly
+		// p.Models is replaced copy-on-write by UpdateModelWeightHashes (which
+		// holds only p.mu, not r.mu), so snapshot it here under p.mu rather than
+		// ranging the field after unlock.
+		models := make([]protocol.ModelInfo, len(p.Models))
+		copy(models, p.Models)
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
@@ -2452,7 +2502,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		if !r.trustMeetsMinimum(trust) || !privateReady {
 			continue
 		}
-		for _, m := range p.Models {
+		for _, m := range models {
 			if !r.modelAllowedByCatalogLocked(m) {
 				continue
 			}

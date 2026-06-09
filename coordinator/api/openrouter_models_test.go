@@ -47,6 +47,22 @@ func TestDeriveModalities(t *testing.T) {
 	if !reflect.DeepEqual(in, []string{"text"}) || !reflect.DeepEqual(out, []string{"embedding"}) {
 		t.Errorf("embedding = (%v,%v), want ([text],[embedding])", in, out)
 	}
+
+	in, _ = deriveModalities("text", []string{"video"})
+	if !reflect.DeepEqual(in, []string{"text", "video"}) {
+		t.Errorf("video input = %v, want [text video]", in)
+	}
+
+	in, _ = deriveModalities("text", []string{"video_input"})
+	if !reflect.DeepEqual(in, []string{"text", "video"}) {
+		t.Errorf("video_input alias = %v, want [text video]", in)
+	}
+
+	// Gemma 4-style: image + audio + video together, order preserved, deduped.
+	in, _ = deriveModalities("text", []string{"vision", "audio", "video", "video"})
+	if !reflect.DeepEqual(in, []string{"text", "image", "audio", "video"}) {
+		t.Errorf("multimodal input = %v, want [text image audio video]", in)
+	}
 }
 
 func TestSupportedFeaturesFromCapabilities(t *testing.T) {

@@ -72,6 +72,11 @@ public struct ProviderLoopConfig: Sendable {
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
+    /// Snapshot fingerprints captured at the same time as `modelHashes` (see
+    /// `WeightHasher.snapshotFingerprint`). Seeding these lets the first
+    /// `ensureModelLoaded` skip a full re-read of weights that were already
+    /// hashed at startup; without them the first load re-hashes every byte.
+    public let modelHashFingerprints: [String: String]
     /// When set, the provider also serves a local OpenAI-compatible HTTP
     /// endpoint off the SAME loaded models it serves to the coordinator
     /// (unified mode). nil = coordinator-only (the default).
@@ -85,6 +90,7 @@ public struct ProviderLoopConfig: Sendable {
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
+        modelHashFingerprints: [String: String] = [:],
         localEndpoint: LocalInferenceHTTPConfig? = nil
     ) {
         self.coordinatorURL = coordinatorURL
@@ -94,6 +100,7 @@ public struct ProviderLoopConfig: Sendable {
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
+        self.modelHashFingerprints = modelHashFingerprints
         self.localEndpoint = localEndpoint
     }
 }
@@ -171,6 +178,28 @@ public actor ProviderLoop {
 
     /// Cached binary hash for attestation responses.
     private var binaryHash: String?
+
+    /// Live per-model weight hashes. Seeded from the startup scan and REFRESHED
+    /// whenever a model is (re)loaded from disk, so attestation challenge
+    /// responses report the weights actually being served — not the state of
+    /// the disk when the daemon started. Previously the startup map was frozen
+    /// for the process lifetime: a model re-published while the daemon ran kept
+    /// the stale hash and tripped the coordinator's model-swap hard-untrust
+    /// even though the disk (and the loaded model) were correct.
+    private var liveModelHashes: [String: String]
+
+    /// Per-model snapshot fingerprints (paths + sizes + mtimes) recorded when a
+    /// weight hash was last computed. A model whose fingerprint is unchanged at
+    /// reload skips the full multi-second re-hash — idle-unload/lazy-reload
+    /// cycles happen hourly, and re-reading ~30 GB of unchanged weights each
+    /// time would tax cold-start TTFT for nothing. Seeded from the config so
+    /// the FIRST load doesn't re-read weights already hashed at startup.
+    private var modelHashFingerprints: [String: String]
+
+    /// The running coordinator client, kept so weight-hash refreshes can be
+    /// pushed into reconnect registrations (models[].weight_hash drives the
+    /// coordinator's per-model catalog routing filter).
+    private var coordinatorClient: CoordinatorClient?
 
     /// Whether we've already submitted an auto-report for this session.
     /// Set to true after the first trust-triggered report to avoid spamming.
@@ -254,6 +283,8 @@ public actor ProviderLoop {
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
+        self.liveModelHashes = config.modelHashes
+        self.modelHashFingerprints = config.modelHashFingerprints
     }
 
     static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
@@ -284,6 +315,9 @@ public actor ProviderLoop {
         let scheduler: BatchScheduler
         let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
+        /// Vision-language model (config has `vision_config`). Multimodal
+        /// requests are served from `container` via the non-batched path.
+        let isVLM: Bool
         var lastInferenceAt: ContinuousClock.Instant
     }
 
@@ -388,6 +422,11 @@ public actor ProviderLoop {
             stats: stats,
             state: state
         )
+        coordinatorClient = coordinator
+        // Seed the client with the current map: a model loaded before the
+        // client existed (e.g. a local-endpoint request during startup) may
+        // already have refreshed a hash, and registration must carry it.
+        await coordinator.updateModelWeightHashes(liveModelHashes)
 
         let (events, sendFn) = await coordinator.start()
         let send = SendHandle(sendFn)
@@ -781,6 +820,8 @@ public actor ProviderLoop {
         let log = self.logger
         let tokenizer = slot.tokenizer
         let modelType = loopConfig.models.first(where: { $0.id == modelId })?.modelType
+        let slotContainer = slot.container
+        let slotIsVLM = slot.isVLM
 
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
@@ -835,7 +876,9 @@ public actor ProviderLoop {
             // still going through the upstream library for SSE encoding.
             let providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
-                    [chatRequest.model: .init(scheduler: sched, tokenizer: tokenizer, modelType: modelType)]
+                    [chatRequest.model: .init(
+                        scheduler: sched, tokenizer: tokenizer, modelType: modelType,
+                        container: slotContainer, isVLM: slotIsVLM)]
                 },
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },
@@ -1583,6 +1626,78 @@ public actor ProviderLoop {
 
     // MARK: - Model Loading
 
+    /// Outcome of one weight-hash refresh: the snapshot fingerprint the recorded
+    /// hash corresponds to (nil if the dir couldn't be stat'd), and whether the
+    /// `liveModelHashes` entry now reflects bytes on disk. `effectiveFingerprint`
+    /// is what the after-load TOCTOU check compares against to decide whether the
+    /// bytes drifted between hashing and loading.
+    private struct WeightHashRefreshResult {
+        /// Fingerprint that `liveModelHashes[modelId]` now corresponds to, or nil
+        /// if we have no trustworthy fingerprint (stat failed / recompute failed).
+        let effectiveFingerprint: String?
+    }
+
+    /// Re-hash the weights for `modelId` and update `liveModelHashes` /
+    /// `modelHashFingerprints` to match the bytes on disk, pushing any change into
+    /// the coordinator client. The expensive SHA-256 read runs off-actor (hashing
+    /// a large model takes seconds and must not block heartbeats or challenge
+    /// handling). A snapshot fingerprint (paths + sizes + mtimes) skips the full
+    /// re-read when nothing changed since the last hash, so routine idle-reload
+    /// cycles stay cheap.
+    ///
+    /// The model may have been re-published and re-downloaded since the last hash;
+    /// a stale hash would make the coordinator hard-untrust this provider for a
+    /// "model swap" even though the disk is correct. Returns the fingerprint the
+    /// recorded hash now corresponds to so the caller can detect a post-load drift.
+    private func refreshWeightHash(modelId: String, modelPath: URL) async throws -> WeightHashRefreshResult {
+        let priorFingerprint = modelHashFingerprints[modelId]
+        let hasPriorHash = liveModelHashes[modelId] != nil
+        let refresh = await Task.detached(priority: .utility) {
+            () -> (fingerprint: String?, hash: String?, skipped: Bool) in
+            let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+            if let fingerprint, fingerprint == priorFingerprint, hasPriorHash {
+                return (fingerprint, nil, true)  // unchanged — keep cached hash
+            }
+            return (fingerprint, WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId), false)
+        }.value
+        try Task.checkCancellation()
+        if isShuttingDown { throw CancellationError() }
+
+        // Record the fingerprint ONLY when we have a hash that corresponds to it
+        // (fresh or skip-confirmed). Caching it after a FAILED re-hash would make
+        // the next reload fingerprint-match against the stale hash and silently
+        // skip the retry — turning a transient read failure into a persistently
+        // stale report.
+        let haveTrustworthyHash = refresh.hash != nil || refresh.skipped
+        if let fingerprint = refresh.fingerprint, haveTrustworthyHash {
+            modelHashFingerprints[modelId] = fingerprint
+        }
+        if let freshHash = refresh.hash {
+            if liveModelHashes[modelId] != freshHash {
+                let previous = liveModelHashes[modelId]?.prefix(16) ?? "unset"
+                logger.info("Weight hash refreshed for \(modelId): \(freshHash.prefix(16))... (was \(previous))")
+                liveModelHashes[modelId] = freshHash
+                // Push into the client so a later reconnect re-registers with
+                // current models[].weight_hash (the coordinator's per-model
+                // catalog filter uses the register-time value).
+                if let client = coordinatorClient {
+                    await client.updateModelWeightHashes(liveModelHashes)
+                }
+            }
+        } else if !refresh.skipped {
+            // Recompute failed: keep the previous value but say so — a stale hash
+            // here is operator-visible as a model-swap untrust.
+            logger.warning("Weight hash recompute failed for \(modelId) — keeping previous value")
+        }
+
+        // The effective fingerprint is the one the recorded hash corresponds to.
+        // nil when we couldn't establish a trustworthy hash/fingerprint pair, in
+        // which case the after-load check should re-hash (safe direction).
+        return WeightHashRefreshResult(
+            effectiveFingerprint: haveTrustworthyHash ? refresh.fingerprint : nil
+        )
+    }
+
     private func ensureModelLoaded(modelId: String) async throws {
         if isShuttingDown {
             throw CancellationError()
@@ -1691,6 +1806,12 @@ public actor ProviderLoop {
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
 
+            // Re-hash the weights about to be loaded. Refreshing BEFORE the slot
+            // goes active guarantees a challenge arriving mid-serve reports the
+            // hash of the bytes actually loaded — not the disk state at daemon
+            // start. (See `refreshWeightHash` for the full rationale.)
+            let preLoadRefresh = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
+
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
                 try Task.checkCancellation()
@@ -1699,6 +1820,24 @@ public actor ProviderLoop {
             let container = try await loadModelContainer(from: modelPath)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+
+            // TOCTOU guard: the hash above was computed BEFORE loadModelContainer
+            // read the weights. If a re-download landed in that window,
+            // liveModelHashes would describe different bytes than what was
+            // actually loaded. Re-stat the snapshot fingerprint (cheap) and, only
+            // if it drifted from what the recorded hash corresponds to, recompute
+            // so liveModelHashes/modelHashFingerprints reflect the loaded bytes.
+            // The common case (fingerprint unchanged) costs one stat-based
+            // fingerprint and no re-read. A nil pre-load fingerprint also forces a
+            // re-hash here — we never recorded a trustworthy hash, so re-deriving
+            // it post-load is the safe direction.
+            let postLoadFingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+            if preLoadRefresh.effectiveFingerprint == nil
+                || postLoadFingerprint != preLoadRefresh.effectiveFingerprint {
+                logger.warning(
+                    "Snapshot fingerprint drifted between hash and load for \(modelId) — recomputing weight hash for the bytes actually loaded")
+                _ = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
+            }
             let scheduler = BatchScheduler(
                 maxConcurrentRequests: Self.schedulerMaxConcurrent,
                 pendingTimeout: Self.schedulerPendingTimeout,
@@ -1706,7 +1845,11 @@ public actor ProviderLoop {
                 kvBudget: kvBudget,
                 diskAccountant: diskAccountant
             )
-            await scheduler.loadModel(container: container, modelId: modelId, weightHash: modelInfo.weightHash)
+            await scheduler.loadModel(
+                container: container,
+                modelId: modelId,
+                weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash
+            )
             if isShuttingDown || Task.isCancelled {
                 await scheduler.unloadModel()
                 throw CancellationError()
@@ -1719,6 +1862,7 @@ public actor ProviderLoop {
                 scheduler: scheduler,
                 container: container,
                 tokenizer: tokenizer,
+                isVLM: Self.modelIsVLM(at: modelPath),
                 lastInferenceAt: .now
             )
 
@@ -1770,6 +1914,22 @@ public actor ProviderLoop {
         logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
     }
 
+    /// Weight hashes for ONLY the models currently loaded in memory this session.
+    /// A model is "currently loaded" iff it has a live slot (and isn't tearing
+    /// down) AND we have a known live hash for it. Used by the attestation
+    /// challenge response so the coordinator's model-swap hard-untrust check only
+    /// ever sees hashes for weights we are actually serving — idle/unloaded
+    /// advertised models drop out because they have no slot.
+    private func loadedModelHashesSnapshot() -> [String: String] {
+        var result: [String: String] = [:]
+        for modelId in modelSlots.keys where !modelsUnloading.contains(modelId) {
+            if let hash = liveModelHashes[modelId] {
+                result[modelId] = hash
+            }
+        }
+        return result
+    }
+
     private func syncWarmModelState() {
         let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
         state.warmModels = loaded
@@ -1779,7 +1939,7 @@ public actor ProviderLoop {
         let candidates = currentCandidates.isEmpty ? activeSlots : currentCandidates
         if let mostRecent = candidates.max(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
             state.currentModel = mostRecent.key
-            state.currentModelHash = loopConfig.modelHashes[mostRecent.key]
+            state.currentModelHash = liveModelHashes[mostRecent.key]
         } else {
             state.currentModel = nil
             state.currentModelHash = nil
@@ -1943,10 +2103,31 @@ public actor ProviderLoop {
     }
 
     private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
-        try await LLMModelFactory.shared.loadContainer(
+        // Vision-language models (config declares `vision_config`) load via
+        // VLMModelFactory so image/video requests can run the container's
+        // prepare/generate vision path. Their text path still works through the
+        // batched engine since VLMModel refines LanguageModel.
+        if Self.modelIsVLM(at: directory) {
+            return try await VLMModelFactory.shared.loadContainer(
+                from: directory,
+                using: LocalTokenizerLoader()
+            )
+        }
+        return try await LLMModelFactory.shared.loadContainer(
             from: directory,
             using: LocalTokenizerLoader()
         )
+    }
+
+    /// A model is a vision-language model when its `config.json` declares a
+    /// `vision_config`. Cheap, dependency-free check used to pick the model
+    /// factory and to route multimodal requests.
+    static func modelIsVLM(at directory: URL) -> Bool {
+        let configURL = directory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return json["vision_config"] != nil
     }
 
     // MARK: - Cancellation
@@ -2081,8 +2262,21 @@ public actor ProviderLoop {
 
         do {
             let activeModelHash = state.currentModel.flatMap { modelId in
-                loopConfig.modelHashes[modelId]
+                liveModelHashes[modelId]
             }
+
+            // Report hashes ONLY for models we are CURRENTLY SERVING (a live
+            // slot this session), never for every advertised model. Registration
+            // still advertises all models' startup hashes (the coordinator's
+            // catalog routing filter needs them, and a stale IDLE model there
+            // degrades to a gentle silent deroute). But the challenge response
+            // feeds the coordinator's model-swap *hard-untrust* check: reporting
+            // a hash for an idle, unloaded model would hard-untrust this provider
+            // the moment that model's catalog hash changes (e.g. a re-publish)
+            // before we re-download it — even though we never served stale
+            // weights. A model that has been idle-unloaded drops out
+            // automatically here because it no longer has a slot.
+            let loadedModelHashes = loadedModelHashesSnapshot()
 
             let response = try builder.buildChallengeResponse(
                 nonce: nonce,
@@ -2091,7 +2285,7 @@ public actor ProviderLoop {
                 binaryHash: binaryHash,
                 activeModelHash: activeModelHash,
                 runtimeHashes: augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes),
-                modelHashes: loopConfig.modelHashes
+                modelHashes: loadedModelHashes
             )
 
             send.send(.attestationResponse(AttestationResponsePayload(
@@ -2224,6 +2418,7 @@ struct ProviderLogger: Sendable {
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 // MARK: - Unified local endpoint
 
@@ -2331,7 +2526,9 @@ extension ProviderLoop {
             scheduler: slot.scheduler,
             tokenizer: slot.tokenizer,
             releaseToken: OneShotRelease(release: release, modelId: modelId),
-            modelType: loopConfig.models.first(where: { $0.id == modelId })?.modelType
+            modelType: loopConfig.models.first(where: { $0.id == modelId })?.modelType,
+            container: slot.container,
+            isVLM: slot.isVLM
         )
     }
 

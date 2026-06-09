@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useStore } from "@/lib/store";
 import { streamChat, fetchModels } from "@/lib/api";
+import { toApiMessages } from "@/lib/chat-messages";
 import { useToastStore } from "@/hooks/useToast";
 import { useAuth } from "@/hooks/useAuth";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -83,9 +84,9 @@ export default function ChatPage() {
   }, [activeChat?.messages]);
 
   const handleSend = useCallback(
-    async (content: string) => {
+    async (content: string, images: string[] = []) => {
       const trimmedContent = content.trim();
-      if (!trimmedContent) {
+      if (!trimmedContent && images.length === 0) {
         return;
       }
 
@@ -97,10 +98,8 @@ export default function ChatPage() {
 
       const chat = useStore.getState().chats.find((c) => c.id === chatId);
       if (chat && chat.messages.length === 0) {
-        const title =
-          trimmedContent.length > 40
-            ? trimmedContent.slice(0, 40) + "..."
-            : trimmedContent;
+        const base = trimmedContent || (images.length > 0 ? "Image" : "");
+        const title = base.length > 40 ? base.slice(0, 40) + "..." : base;
         updateChatTitle(chatId, title);
       }
 
@@ -108,6 +107,7 @@ export default function ChatPage() {
         id: generateId(),
         role: "user",
         content: trimmedContent,
+        ...(images.length > 0 ? { images } : {}),
         timestamp: Date.now(),
       };
       const currentChat = useStore
@@ -142,13 +142,9 @@ export default function ChatPage() {
       const abort = new AbortController();
       abortRef.current = abort;
 
-      const userMessages = [...priorMessages, userMsg].map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
       const allMessages = [
         { role: "system" as const, content: SYSTEM_PROMPT },
-        ...userMessages,
+        ...toApiMessages([...priorMessages, userMsg]),
       ];
 
       try {
@@ -270,9 +266,7 @@ export default function ChatPage() {
       // Rebuild message history up to (but not including) the error message
       const allMessages = [
         { role: "system" as const, content: SYSTEM_PROMPT },
-        ...messages
-          .slice(0, errorIdx)
-          .map((m) => ({ role: m.role, content: m.content })),
+        ...toApiMessages(messages.slice(0, errorIdx)),
       ];
 
       streamChat(

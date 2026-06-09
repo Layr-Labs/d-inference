@@ -874,6 +874,13 @@ func providerModelIDs(p *Provider) []string {
 	if p == nil {
 		return nil
 	}
+	// p.Models is replaced (copy-on-write) by UpdateModelWeightHashes when a
+	// challenge response carries refreshed weight hashes, so the slice header
+	// must be read under p.mu. All callers invoke this helper after releasing
+	// p.mu (verified: Heartbeat, RecordChallengeSuccess, SetProviderIdle,
+	// DrainQueuedRequestsForProvider), so taking the lock here cannot deadlock.
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	ids := make([]string, 0, len(p.Models))
 	for _, m := range p.Models {
 		ids = append(ids, m.ID)

@@ -1,12 +1,14 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, ChevronDown, LogIn, Cpu } from "lucide-react";
+import { Send, Square, ChevronDown, LogIn, Cpu, ImagePlus, X } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { trackEvent } from "@/lib/google-analytics";
+import { modelSupportsImages, MAX_IMAGES_PER_MESSAGE } from "@/lib/image-upload";
+import { useImageUpload } from "@/hooks/useImageUpload";
 
 interface ChatInputProps {
-  onSend: (content: string) => void;
+  onSend: (content: string, images: string[]) => void;
   onStop: () => void;
   isStreaming: boolean;
   authenticated?: boolean;
@@ -19,13 +21,27 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
   const { selectedModel, models, setSelectedModel, useMyMachine, setUseMyMachine } = useStore();
   const [modelOpen, setModelOpen] = useState(false);
 
+  const selectedModelObj = models.find((m) => m.id === selectedModel);
+  const supportsImages = modelSupportsImages(selectedModelObj);
+  const {
+    images,
+    imgError,
+    atLimit: atImageLimit,
+    fileInputRef,
+    removeImage,
+    clearImages,
+    handlePaste,
+    handleFileInputChange,
+  } = useImageUpload(supportsImages);
+
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
-    onSend(trimmed);
+    if ((!trimmed && images.length === 0) || isStreaming) return;
+    onSend(trimmed, images);
     setInput("");
+    clearImages();
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [input, isStreaming, onSend]);
+  }, [input, images, isStreaming, onSend, clearImages]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -53,8 +69,6 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
   }, [modelOpen]);
 
   const chatModels = models;
-
-  const selectedModelObj = chatModels.find((m) => m.id === selectedModel);
   const displayModel = selectedModelObj?.display_name
     || selectedModel?.split("/").pop()
     || "Select model";
@@ -86,16 +100,44 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
       <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
         <div className="relative flex flex-col gap-2 bg-bg-white rounded-2xl border border-border-dim
                         shadow-md focus-within:shadow-lg transition-all">
+          {/* Staged image thumbnails */}
+          {images.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-4 pt-3">
+              {images.map((src, i) => (
+                <div key={i} className="relative">
+                  <img
+                    src={src}
+                    alt={`Attachment ${i + 1}`}
+                    className="h-16 w-16 rounded-lg border border-border-dim object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeImage(i)}
+                    aria-label={`Remove image ${i + 1}`}
+                    className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-ink text-white border border-bg-white hover:opacity-90 transition-opacity"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Textarea */}
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder="Send a message..."
             rows={1}
             className="w-full bg-transparent px-4 pt-4 pb-1 text-text-primary placeholder:text-text-tertiary text-[15px] resize-none outline-none"
           />
+
+          {imgError && (
+            <p className="px-4 text-xs text-accent-red" role="alert">{imgError}</p>
+          )}
 
           {/* Bottom bar */}
           <div className="flex items-center justify-between px-3 pb-3">
@@ -174,6 +216,30 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                 <span className="hidden sm:inline">My Machine</span>
                 {useMyMachine && <span className="text-[10px] opacity-80">· Free, else paid</span>}
               </button>
+
+              {/* Image attach — only for vision models (e.g. Gemma 4) */}
+              {supportsImages && (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    multiple
+                    onChange={handleFileInputChange}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isStreaming || atImageLimit}
+                    title={atImageLimit ? `Up to ${MAX_IMAGES_PER_MESSAGE} images` : "Attach image"}
+                    aria-label="Attach image"
+                    className="flex items-center px-2.5 py-1.5 rounded-lg text-xs text-text-tertiary hover:text-text-secondary hover:bg-bg-hover border-2 border-transparent hover:border-border-subtle transition-all disabled:opacity-30 disabled:hover:bg-transparent"
+                  >
+                    <ImagePlus size={14} />
+                  </button>
+                </>
+              )}
             </div>
 
             {/* Right: Send / Stop */}
@@ -188,7 +254,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={!input.trim() || isStreaming}
+                  disabled={(!input.trim() && images.length === 0) || isStreaming}
                   className="flex items-center justify-center w-9 h-9 rounded-xl bg-coral border-2 border-ink text-white
                              disabled:opacity-30 disabled:border-border-subtle
                              hover:opacity-90

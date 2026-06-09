@@ -8,7 +8,8 @@ public enum CoordinatorClientCodec {
         from config: CoordinatorClientConfig,
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
-        apnsDeviceTokenOverride: String? = nil
+        apnsDeviceTokenOverride: String? = nil,
+        modelWeightHashOverrides: [String: String] = [:]
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -16,9 +17,25 @@ public enum CoordinatorClientCodec {
         let effectiveEnv = apnsDeviceTokenOverride != nil
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
+        // Weight hashes refreshed after a model (re)load override the
+        // daemon-start values so a reconnect registers with the hashes of the
+        // weights actually on disk (the coordinator's per-model catalog filter
+        // keys off models[].weight_hash).
+        let effectiveModels: [ModelInfo]
+        if modelWeightHashOverrides.isEmpty {
+            effectiveModels = config.models
+        } else {
+            effectiveModels = config.models.map { model in
+                var patched = model
+                if let fresh = modelWeightHashOverrides[model.id] {
+                    patched.weightHash = fresh
+                }
+                return patched
+            }
+        }
         return .register(ProviderMessage.Register(
             hardware: config.hardware,
-            models: config.models,
+            models: effectiveModels,
             backend: config.backendName,
             version: version,
             publicKey: config.publicKey,
@@ -40,14 +57,16 @@ public enum CoordinatorClientCodec {
         from config: CoordinatorClientConfig,
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
-        apnsDeviceTokenOverride: String? = nil
+        apnsDeviceTokenOverride: String? = nil,
+        modelWeightHashOverrides: [String: String] = [:]
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
                 from: config,
                 version: version,
                 privacyCapabilities: privacyCapabilities,
-                apnsDeviceTokenOverride: apnsDeviceTokenOverride
+                apnsDeviceTokenOverride: apnsDeviceTokenOverride,
+                modelWeightHashOverrides: modelWeightHashOverrides
             )
         )
     }

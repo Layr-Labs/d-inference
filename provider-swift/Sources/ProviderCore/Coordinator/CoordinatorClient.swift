@@ -27,6 +27,11 @@ public enum CoordinatorEvent: Sendable {
     /// `prefetchModelStatus` outbound messages. `priority` orders concurrent
     /// prefetches (higher = sooner). Handler wired in Layer 3.
     case prefetchModel(modelId: String, priority: Int)
+    /// Coordinator's declarative desired-build map. The provider reconciles each
+    /// entry: prefetch the desired build if missing, then hard-swap (advertise
+    /// new, drop the previous build) once verified. Sent after register and on
+    /// every change. Replaces the old push-driven migration ramp.
+    case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
 }
@@ -477,6 +482,17 @@ public actor CoordinatorClient {
         return isNew
     }
 
+    /// Retire a build from the advertised set (hard swap). After this, a register
+    /// or reconnect no longer announces the superseded build to the coordinator.
+    @discardableResult
+    public func unadvertiseModel(_ modelID: String) -> Bool {
+        let removed = advertisedModelStore.remove(id: modelID)
+        if removed {
+            logger.info("unadvertiseModel(\(modelID)): dropped from advertised set (\(self.advertisedModelStore.models.count) total)")
+        }
+        return removed
+    }
+
     /// Snapshot of the current advertised model list (startup ∪ runtime
     /// prefetched builds).
     public func currentAdvertisedModels() -> [ModelInfo] {
@@ -790,6 +806,12 @@ public actor CoordinatorClient {
             // with prefetch_model_status messages.
             logger.info("Received coordinator-driven prefetch for: \(pf.modelId) (priority=\(pf.priority))")
             eventContinuation?.yield(.prefetchModel(modelId: pf.modelId, priority: pf.priority))
+
+        case .desiredModels(let dm):
+            // Declarative desired-state. ProviderLoop reconciles each entry:
+            // prefetch the desired build if missing, then hard-swap once verified.
+            logger.info("Received desired_models from coordinator: \(dm.models.count) entr(ies)")
+            eventContinuation?.yield(.desiredModels(entries: dm.models))
 
         case .trustStatus(let ts):
             logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")

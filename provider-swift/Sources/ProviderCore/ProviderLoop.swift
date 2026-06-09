@@ -222,9 +222,15 @@ public actor ProviderLoop {
     /// verified snapshot).
     private var modelHashes: [String: String]
 
-    /// Background model-build prefetcher (Layer 3). Owns coalescing, throttled
-    /// progress, cancellation, and the verified→re-advertise hook. Built lazily
-    /// in `run()` so it can capture `self` and the live coordinator client.
+    /// Pending hard swaps: desired build id → the previous build to retire locally
+    /// once the desired one verifies. Populated by the declarative `desired_models`
+    /// reconcile, consumed (once) in `applyVerifiedPrefetch`.
+    private var desiredSwapDrop: [String: String] = [:]
+
+    /// Background model-build prefetcher. Owns coalescing, throttled progress,
+    /// cancellation, and the verified→advertise hook (which also performs the
+    /// hard-swap drop of the superseded build). Built lazily in `run()` so it can
+    /// capture `self` and the live coordinator client.
     private var prefetchCoordinator: ModelPrefetchCoordinator?
 
     /// The live coordinator client, retained so the verified-prefetch hook can
@@ -609,6 +615,9 @@ public actor ProviderLoop {
 
                 case .prefetchModel(let modelId, let priority):
                     await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+
+                case .desiredModels(let entries):
+                    await reconcileDesiredModels(entries, send: send)
 
                 case .trustStatus(let trustLevel, let status, let reason):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
@@ -1434,10 +1443,10 @@ public actor ProviderLoop {
         // A verified prefetch whose snapshot we can't scan must NOT be
         // advertised: a synthetic zero-size ModelInfo would be routed with
         // estimatedMemoryGb == 0, bypassing memory sizing/admission until the
-        // real load overcommits. Drop it instead — the migration controller then
-        // simply doesn't count this provider as serving the build (no
-        // models_update is sent), which is the safe outcome.
+        // real load overcommits. Drop it instead — without a models_update the
+        // coordinator simply never routes this build here, which is the safe outcome.
         guard let (info, hash) = computed else {
+            desiredSwapDrop.removeValue(forKey: modelId)
             logger.error("Prefetch verified \(modelId) but its on-disk snapshot could not be scanned; not advertising (would bypass memory sizing)")
             return
         }
@@ -1459,6 +1468,52 @@ public actor ProviderLoop {
         // `register`, and without the disruption of re-registering. The local
         // `advertiseModel` above still carries the union on the next reconnect.
         outboundSend?.send(.modelsUpdate(models: [info]))
+
+        // Hard swap: the desired build is now advertised + announced, so drop the
+        // build it supersedes from our LOCAL advertised set — we stop serving it and
+        // it idle-unloads. The models_update above already makes the coordinator stop
+        // routing the previous build here (it derives the drop from the alias's
+        // desired/previous pair). We do NOT force-unload a resident slot; the idle
+        // monitor reclaims it.
+        if let previous = desiredSwapDrop.removeValue(forKey: modelId), previous != modelId {
+            dropAdvertisedBuild(previous)
+        }
+    }
+
+    /// Locally retire a superseded build: stop advertising it (so no new requests
+    /// route to it and the next register won't re-announce it) and forget its hash.
+    /// The GPU slot, if resident, is left to the idle monitor — a lazy drop.
+    private func dropAdvertisedBuild(_ buildID: String) {
+        guard advertisedModels[buildID] != nil else { return }
+        advertisedModels.removeValue(forKey: buildID)
+        modelHashes.removeValue(forKey: buildID)
+        coordinatorClient?.unadvertiseModel(buildID)
+        syncWarmModelState()
+        logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
+    }
+
+    /// Reconcile the coordinator's declarative desired-state: for each public model
+    /// name, converge to its desired build. Already-serving → ensure the previous
+    /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
+    /// advertises it + drops the previous build once verified).
+    private func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        for entry in entries {
+            let desired = entry.desiredBuild
+            guard !desired.isEmpty else { continue }
+            let previous = (entry.previousBuild?.isEmpty == false) ? entry.previousBuild : nil
+            if let previous, previous != desired {
+                desiredSwapDrop[desired] = previous
+            }
+            // Already converged (advertised + verified) → just ensure the old build
+            // is no longer advertised locally.
+            if advertisedModels[desired] != nil, modelHashes[desired] != nil {
+                if let previous { dropAdvertisedBuild(previous) }
+                desiredSwapDrop.removeValue(forKey: desired)
+                continue
+            }
+            logger.info("desired_models: \(entry.modelName) → converging to \(desired)")
+            await handlePrefetchModelRequest(modelId: desired, priority: 5, send: send)
+        }
     }
 
     /// Test seam: number of advertised models (startup ∪ prefetched).

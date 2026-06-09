@@ -613,6 +613,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
     case prefetchModel(PrefetchModel)
+    case desiredModels(DesiredModels)
     case trustStatus(TrustStatus)
 
     public struct InferenceRequest: Sendable, Equatable {
@@ -673,6 +674,34 @@ public enum CoordinatorMessage: Sendable, Equatable {
         }
     }
 
+    /// One public model name's desired build, from the coordinator's declarative
+    /// desired-state. `previousBuild` (if present) stays acceptable during a
+    /// staggered rollout.
+    public struct DesiredModelEntry: Sendable, Equatable, Codable {
+        public var modelName: String
+        public var desiredBuild: String
+        public var previousBuild: String?
+        public init(modelName: String, desiredBuild: String, previousBuild: String? = nil) {
+            self.modelName = modelName
+            self.desiredBuild = desiredBuild
+            self.previousBuild = previousBuild
+        }
+        enum CodingKeys: String, CodingKey {
+            case modelName = "model_name"
+            case desiredBuild = "desired_build"
+            case previousBuild = "previous_build"
+        }
+    }
+
+    /// Declarative desired-build map (Coordinator → Provider). Sent after register
+    /// and whenever a desired build changes. The provider reconciles each entry:
+    /// background-prefetch the desired build if missing, then hard-swap (advertise
+    /// the new build, drop the previous) and emit a models_update once verified.
+    public struct DesiredModels: Sendable, Equatable {
+        public var models: [DesiredModelEntry]
+        public init(models: [DesiredModelEntry]) { self.models = models }
+    }
+
     /// Coordinator informs the provider of its current trust level and status.
     /// Providers that learn they are "self_signed" or "untrusted" can
     /// auto-report unified logs for troubleshooting.
@@ -698,6 +727,7 @@ extension CoordinatorMessage: Codable {
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
         case prefetchModel = "prefetch_model"
+        case desiredModels = "desired_models"
         case trustStatus = "trust_status"
     }
 
@@ -712,6 +742,7 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason
+        case models
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -751,6 +782,10 @@ extension CoordinatorMessage: Codable {
             if p.priority != 0 {
                 try container.encode(p.priority, forKey: .priority)
             }
+
+        case .desiredModels(let d):
+            try container.encode(TypeValue.desiredModels, forKey: .type)
+            try container.encode(d.models, forKey: .models)
 
         case .trustStatus(let t):
             try container.encode(TypeValue.trustStatus, forKey: .type)
@@ -800,6 +835,11 @@ extension CoordinatorMessage: Codable {
             self = .prefetchModel(PrefetchModel(
                 modelId: try container.decode(String.self, forKey: .modelId),
                 priority: try container.decodeIfPresent(Int.self, forKey: .priority) ?? 0
+            ))
+
+        case .desiredModels:
+            self = .desiredModels(DesiredModels(
+                models: try container.decodeIfPresent([DesiredModelEntry].self, forKey: .models) ?? []
             ))
 
         case .trustStatus:

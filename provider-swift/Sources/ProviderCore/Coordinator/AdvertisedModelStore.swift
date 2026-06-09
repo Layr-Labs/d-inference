@@ -72,4 +72,16 @@ final class AdvertisedModelStore: @unchecked Sendable {
         byID[model.id] = model
         return isNew
     }
+
+    /// Retire a build from the advertised set (a hard swap: once the desired build
+    /// is serving, the superseded build is dropped so the next register no longer
+    /// announces it). No-op when absent; returns true when an entry was removed.
+    @discardableResult
+    func remove(id: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard byID[id] != nil else { return false }
+        byID[id] = nil
+        order.removeAll { $0 == id }
+        return true
+    }
 }

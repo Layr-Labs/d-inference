@@ -16,5 +16,9 @@ public enum ProviderCore {
     /// vllm-mlx, ships only `darkbloom` + `darkbloom-enclave` +
     /// `mlx.metallib`. (`eigeninference-enclave` ships as a backward-
     /// compatibility symlink to `darkbloom-enclave`.)
-    public static let version = "0.5.16"
+    // 0.5.17 ships declarative desired-build support (the `desired_models`
+    // message + provider self-reconcile/hard-swap). The coordinator gates
+    // `desired_models` on provider version >= 0.5.17 (minProviderVersionForDesiredModels)
+    // so pre-feature providers never receive a message their decoder would reject.
+    public static let version = "0.5.17"
 }

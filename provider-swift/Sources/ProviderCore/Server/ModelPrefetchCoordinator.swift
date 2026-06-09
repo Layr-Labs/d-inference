@@ -85,11 +85,6 @@ public actor ModelPrefetchCoordinator {
 
     private var isShuttingDown = false
 
-    /// Last observed (done, total) byte progress per model so the periodic
-    /// heartbeat reports real progress (stays 0/0 for a single-shard build that
-    /// hasn't reported intra-file progress yet).
-    private var lastByteProgress: [String: (Int64, Int64)] = [:]
-
     /// A request waiting in the priority queue for an in-flight slot.
     private struct PendingPrefetch {
         let modelId: String
@@ -107,27 +102,17 @@ public actor ModelPrefetchCoordinator {
     /// fake downloader deterministically.
     private let onTaskStarted: (@Sendable (String) -> Void)?
 
-    /// Interval between `.downloading` heartbeats emitted while a download is in
-    /// flight, so the coordinator's prefetch-support ack stays fresh during a
-    /// long single-file download. `onByteProgress` only fires per completed file,
-    /// so a big single shard would otherwise be silent past the coordinator's ack
-    /// TTL (30 min) and be wrongly dropped from an in-flight migration. Must stay
-    /// well under that TTL.
-    private let heartbeatInterval: Duration
-
     public init(
         prefetcher: any ModelPrefetcher,
         preCheck: @escaping @Sendable (String) async -> PrefetchPreCheck,
         onVerified: @escaping @Sendable (String) async -> Void,
         maxConcurrent: Int = 1,
-        heartbeatInterval: Duration = .seconds(60),
         onTaskStarted: (@Sendable (String) -> Void)? = nil
     ) {
         self.prefetcher = prefetcher
         self.preCheck = preCheck
         self.onVerified = onVerified
         self.maxConcurrent = max(1, maxConcurrent)
-        self.heartbeatInterval = heartbeatInterval
         self.onTaskStarted = onTaskStarted
     }
 
@@ -301,20 +286,6 @@ public actor ModelPrefetchCoordinator {
             Task { await me.emitDownloading(modelId: modelId, bytesDone: done, bytesTotal: total) }
         }
 
-        // Liveness heartbeat: emit a periodic `.downloading` while the download
-        // runs so the coordinator's prefetch-support ack stays fresh even for a
-        // single large shard (where `onByteProgress` only fires once, on
-        // completion). Cancelled the instant the download ends so no heartbeat
-        // races the terminal status.
-        let hbInterval = heartbeatInterval
-        let heartbeat = Task { [weak me] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: hbInterval)
-                if Task.isCancelled { break }
-                await me?.emitHeartbeat(modelId: modelId)
-            }
-        }
-
         let outcome: Result<Void, Error>
         do {
             try await prefetcher.prefetchToDisk(modelID: modelId, onByteProgress: onByteProgress)
@@ -322,7 +293,6 @@ public actor ModelPrefetchCoordinator {
         } catch {
             outcome = .failure(error)
         }
-        heartbeat.cancel()
 
         switch outcome {
         case .success:
@@ -339,24 +309,11 @@ public actor ModelPrefetchCoordinator {
         }
     }
 
-    /// Emit a throttled `.downloading` update to every subscriber, recording the
-    /// latest byte counts so the heartbeat can echo real progress.
+    /// Emit a throttled `.downloading` progress update to every subscriber.
     private func emitDownloading(modelId: String, bytesDone: Int64, bytesTotal: Int64) {
         guard !isShuttingDown else { return }
-        lastByteProgress[modelId] = (bytesDone, bytesTotal)
         for sink in statusSubscribers[modelId] ?? [] {
             sink.emit(modelId: modelId, status: .downloading, bytesDone: bytesDone, bytesTotal: bytesTotal, error: nil)
-        }
-    }
-
-    /// Emit a liveness `.downloading` heartbeat (last-known byte counts) while a
-    /// prefetch task is in flight, keeping the coordinator's ack fresh during a
-    /// long silent download. No-op once the task is gone / shutting down.
-    private func emitHeartbeat(modelId: String) {
-        guard !isShuttingDown, prefetchTasks[modelId] != nil else { return }
-        let (done, total) = lastByteProgress[modelId] ?? (0, 0)
-        for sink in statusSubscribers[modelId] ?? [] {
-            sink.emit(modelId: modelId, status: .downloading, bytesDone: done, bytesTotal: total, error: nil)
         }
     }
 
@@ -373,7 +330,6 @@ public actor ModelPrefetchCoordinator {
         let subscribers = statusSubscribers.removeValue(forKey: modelId) ?? []
         prefetchTasks.removeValue(forKey: modelId)
         prefetchTaskIds.removeValue(forKey: modelId)
-        lastByteProgress.removeValue(forKey: modelId)
         for sink in subscribers {
             sink.emit(modelId: modelId, status: status, bytesDone: bytesDone, bytesTotal: bytesTotal, error: error)
         }
@@ -387,7 +343,6 @@ public actor ModelPrefetchCoordinator {
             prefetchTasks.removeValue(forKey: modelId)
             prefetchTaskIds.removeValue(forKey: modelId)
             statusSubscribers.removeValue(forKey: modelId)
-            lastByteProgress.removeValue(forKey: modelId)
             // A freed slot may let a queued waiter run. Safe even when `finish`
             // already pumped: the loop is a no-op when nothing is dispatchable.
             pumpScheduler()

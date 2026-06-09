@@ -158,6 +158,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let tokenizer: TokenizerHandle
         let modelType: String?
         let releaseBox: OneShotRelease
+        let container: ModelContainer?
+        let isVLM: Bool
         let modelId = request.model
         if let acquire {
             let acquired = try await acquire(modelId)
@@ -165,6 +167,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             tokenizer = acquired.tokenizer
             modelType = acquired.modelType
             releaseBox = acquired.releaseToken
+            container = acquired.container
+            isVLM = acquired.isVLM
         } else {
             try await ensureLoaded(modelId)
             let registry = await (registryProvider?() ?? [:])
@@ -176,6 +180,35 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             modelType = entry.modelType
             await reserveModel(modelId)
             releaseBox = OneShotRelease(release: releaseModel, modelId: modelId)
+            container = entry.container
+            isVLM = entry.isVLM
+        }
+
+        // Multimodal (image/video) requests can't flow through the token-only
+        // batched engine. For VLM models, serve them via the container's
+        // non-batched prepare/generate vision path.
+        if isVLM, let container, VLMRequestInference.hasMedia(request) {
+            let vlmStream = VLMRequestInference.stream(
+                container: container, request: request, defaultMaxTokens: defaultMaxTokens)
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        for try await event in vlmStream {
+                            if Task.isCancelled { break }
+                            continuation.yield(event)
+                        }
+                        await releaseBox.fire()
+                        continuation.finish()
+                    } catch {
+                        await releaseBox.fire()
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { @Sendable _ in
+                    task.cancel()
+                    Task { await releaseBox.fire() }
+                }
+            }
         }
 
         // Tokenize the full OpenAI request (including tools, tool_call_id,

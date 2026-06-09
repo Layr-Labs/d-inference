@@ -284,6 +284,9 @@ public actor ProviderLoop {
         let scheduler: BatchScheduler
         let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
+        /// Vision-language model (config has `vision_config`). Multimodal
+        /// requests are served from `container` via the non-batched path.
+        let isVLM: Bool
         var lastInferenceAt: ContinuousClock.Instant
     }
 
@@ -781,6 +784,8 @@ public actor ProviderLoop {
         let log = self.logger
         let tokenizer = slot.tokenizer
         let modelType = loopConfig.models.first(where: { $0.id == modelId })?.modelType
+        let slotContainer = slot.container
+        let slotIsVLM = slot.isVLM
 
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
@@ -835,7 +840,9 @@ public actor ProviderLoop {
             // still going through the upstream library for SSE encoding.
             let providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
-                    [chatRequest.model: .init(scheduler: sched, tokenizer: tokenizer, modelType: modelType)]
+                    [chatRequest.model: .init(
+                        scheduler: sched, tokenizer: tokenizer, modelType: modelType,
+                        container: slotContainer, isVLM: slotIsVLM)]
                 },
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },
@@ -1719,6 +1726,7 @@ public actor ProviderLoop {
                 scheduler: scheduler,
                 container: container,
                 tokenizer: tokenizer,
+                isVLM: Self.modelIsVLM(at: modelPath),
                 lastInferenceAt: .now
             )
 
@@ -1943,10 +1951,31 @@ public actor ProviderLoop {
     }
 
     private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
-        try await LLMModelFactory.shared.loadContainer(
+        // Vision-language models (config declares `vision_config`) load via
+        // VLMModelFactory so image/video requests can run the container's
+        // prepare/generate vision path. Their text path still works through the
+        // batched engine since VLMModel refines LanguageModel.
+        if Self.modelIsVLM(at: directory) {
+            return try await VLMModelFactory.shared.loadContainer(
+                from: directory,
+                using: LocalTokenizerLoader()
+            )
+        }
+        return try await LLMModelFactory.shared.loadContainer(
             from: directory,
             using: LocalTokenizerLoader()
         )
+    }
+
+    /// A model is a vision-language model when its `config.json` declares a
+    /// `vision_config`. Cheap, dependency-free check used to pick the model
+    /// factory and to route multimodal requests.
+    static func modelIsVLM(at directory: URL) -> Bool {
+        let configURL = directory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return json["vision_config"] != nil
     }
 
     // MARK: - Cancellation
@@ -2224,6 +2253,7 @@ struct ProviderLogger: Sendable {
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 // MARK: - Unified local endpoint
 
@@ -2331,7 +2361,9 @@ extension ProviderLoop {
             scheduler: slot.scheduler,
             tokenizer: slot.tokenizer,
             releaseToken: OneShotRelease(release: release, modelId: modelId),
-            modelType: loopConfig.models.first(where: { $0.id == modelId })?.modelType
+            modelType: loopConfig.models.first(where: { $0.id == modelId })?.modelType,
+            container: slot.container,
+            isVLM: slot.isVLM
         )
     }
 

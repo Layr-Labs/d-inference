@@ -73,6 +73,7 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLMServer", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
@@ -114,6 +115,23 @@ let package = Package(
             name: "kv-se-harness",
             dependencies: ["ProviderCore"],
             path: "Sources/kv-se-harness"
+        ),
+
+        // ----------------------------------------------------------------
+        // vlm-smoke: THROWAWAY harness to test Gemma 4 multimodal (VLM)
+        // inference via the mlx-swift-lm fork's MLXVLM library. NOT a
+        // product. Mirrors the provider's real load path (LocalTokenizerLoader)
+        // but swaps LLMModelFactory -> VLMModelFactory. Safe to delete.
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "vlm-smoke",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/vlm-smoke"
         ),
 
         // ----------------------------------------------------------------

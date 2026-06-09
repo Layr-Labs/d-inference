@@ -362,54 +362,56 @@ func TestMigrationActionStateGuards(t *testing.T) {
 // migration that replaced it on the same alias (operator rolled this one back/
 // completed it and started a replacement within the tick window). The lock
 // re-read compares identity (from/to), not just "some active migration exists".
+//
+// Setup mirrors TestRolledBackMigrationNotReRamped's proven-routable fp8+qat
+// fleet, and asserts on the MIGRATION RECORD (the stale tick's `done` path would
+// overwrite it) rather than alias-ramp magnitude, so the test is deterministic.
 func TestRunMigrationIgnoresStaleReplacedMigration(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 
-	const a = "mlx-community/gemma-4-26b-a4b-it-fp8"
-	const b = "mlx-community/gemma-4-26b-a4b-it-8bit"
-	const c = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	seedActiveModel(t, st, a, "fp8")
-	seedActiveModel(t, st, b, "8bit")
-	seedActiveModel(t, st, c, "qat")
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	seedActiveModel(t, st, fp8, "fp8")
+	seedActiveModel(t, st, qat, "qat")
+	for _, p := range []string{"p1", "p2"} {
+		registerBuildsProvider(srv, p, fp8, qat) // both routable for both builds
+	}
 
-	// Alias mid-migration A→C: all traffic still on A.
+	// The CURRENT (replacement) migration is qat→fp8, active — its start state is
+	// alias qat=100, fp8=0.
 	if err := st.UpsertModelAlias(&store.ModelAlias{
 		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
-		Builds: []store.ModelAliasBuild{{BuildID: a, Weight: 100, Active: true}, {BuildID: c, Weight: 0, Active: true}},
+		Builds: []store.ModelAliasBuild{{BuildID: qat, Weight: 100, Active: true}, {BuildID: fp8, Weight: 0, Active: true}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The CURRENT (replacement) migration in the store is A→C, active.
 	if err := st.UpsertModelMigration(&store.ModelMigration{
-		AliasID: "gemma-4-26b", FromBuild: a, ToBuild: c, BatchSize: 2, MaxStepPercent: 50, Status: store.MigrationActive,
+		AliasID: "gemma-4-26b", FromBuild: qat, ToBuild: fp8, BatchSize: 1, MaxStepPercent: 50, Status: store.MigrationActive,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// A provider serves BOTH A and B, so a STALE A→B tick would otherwise ramp B
-	// to 50% (coverage 1.0, step 50) — a clear clobber if identity isn't checked.
-	registerBuildsProvider(srv, "p-ab", a, b)
 	srv.SyncModelCatalog()
 
-	mc := newMigrationController(srv)
-	// Stale tick: a migration A→B that no longer matches the stored A→C.
-	mc.runMigration(store.ModelMigration{
-		AliasID: "gemma-4-26b", FromBuild: a, ToBuild: b, BatchSize: 2, MaxStepPercent: 50, Status: store.MigrationActive,
+	// A STALE tick for a DIFFERENT migration (fp8→qat) that was replaced by the
+	// qat→fp8 above. With qat already at weight 100 and both providers serving qat,
+	// this tick's decision is `done` — without the identity guard it would mark the
+	// stored migration complete with the wrong (fp8→qat) pair.
+	newMigrationController(srv).runMigration(store.ModelMigration{
+		AliasID: "gemma-4-26b", FromBuild: fp8, ToBuild: qat, BatchSize: 1, MaxStepPercent: 50, Status: store.MigrationActive,
 	})
 
-	// The stored migration is untouched (still A→C active — not overwritten/completed).
+	// The stored (replacement) migration is untouched: still qat→fp8, active —
+	// not overwritten to fp8→qat or marked complete by the stale tick.
 	got, ok, _ := st.GetModelMigration("gemma-4-26b")
-	if !ok || got.ToBuild != c || got.FromBuild != a || got.Status != store.MigrationActive {
+	if !ok || got.FromBuild != qat || got.ToBuild != fp8 || got.Status != store.MigrationActive {
 		t.Fatalf("stale tick clobbered the replacement migration: %+v", got)
 	}
-	// The alias never gained B with a routing weight, and A/C weights are intact.
+	// Alias weights are intact (qat=100, fp8=0).
 	alias, _, _ := st.GetModelAlias("gemma-4-26b")
-	if buildWeight(alias, b) > 0 {
-		t.Fatalf("stale tick added routing weight to B: %+v", alias.Builds)
-	}
-	if buildWeight(alias, a) != 100 || buildWeight(alias, c) != 0 {
-		t.Fatalf("stale tick changed alias weights (want A=100,C=0): %+v", alias.Builds)
+	if buildWeight(alias, qat) != 100 || buildWeight(alias, fp8) != 0 {
+		t.Fatalf("stale tick changed alias weights (want qat=100,fp8=0): %+v", alias.Builds)
 	}
 }
 

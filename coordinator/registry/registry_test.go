@@ -616,6 +616,42 @@ func TestEvictionKeepsFreshProviders(t *testing.T) {
 	}
 }
 
+// TestDisconnectDuplicatesBySerial: providers sharing the kept connection's
+// serial must be removed (the path now relies on Disconnect for teardown).
+func TestDisconnectDuplicatesBySerial(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+
+	const serial = "SERIAL-DUP-1"
+	keep := reg.Register("keep", nil, msg)
+	keep.AttestationResult = &attestation.VerificationResult{SerialNumber: serial}
+	dupA := reg.Register("dupA", nil, msg)
+	dupA.AttestationResult = &attestation.VerificationResult{SerialNumber: serial}
+	dupB := reg.Register("dupB", nil, msg)
+	dupB.AttestationResult = &attestation.VerificationResult{SerialNumber: serial}
+	// A provider from a different device must be left untouched.
+	other := reg.Register("other", nil, msg)
+	other.AttestationResult = &attestation.VerificationResult{SerialNumber: "SERIAL-OTHER"}
+
+	reg.DisconnectDuplicatesBySerial("keep", serial)
+
+	if reg.GetProvider("keep") == nil {
+		t.Error("kept provider should remain registered")
+	}
+	if reg.GetProvider("other") == nil {
+		t.Error("provider with a different serial should not be evicted")
+	}
+	if reg.GetProvider("dupA") != nil {
+		t.Error("duplicate dupA should have been disconnected")
+	}
+	if reg.GetProvider("dupB") != nil {
+		t.Error("duplicate dupB should have been disconnected")
+	}
+	if reg.ProviderCount() != 2 {
+		t.Errorf("provider count = %d, want 2 (keep + other)", reg.ProviderCount())
+	}
+}
+
 func TestEvictionLoopStopsOnCancel(t *testing.T) {
 	reg := New(testLogger())
 	ctx, cancel := context.WithCancel(context.Background())

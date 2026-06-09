@@ -1313,20 +1313,13 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 	r.mu.RUnlock()
 
 	for _, id := range toEvict {
-		r.mu.RLock()
-		p := r.providers[id]
-		r.mu.RUnlock()
-
 		r.logger.Warn("evicting duplicate provider from same device",
 			"evicted_id", id,
 			"kept_id", keepID,
 			"serial", serial,
 		)
+		// Disconnect closes the socket itself.
 		r.Disconnect(id)
-
-		if p != nil && p.Conn != nil {
-			p.Conn.Close(websocket.StatusNormalClosure, "replaced by new connection from same device")
-		}
 	}
 }
 
@@ -1859,6 +1852,19 @@ func (r *Registry) Disconnect(id string) {
 	}
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.mu.Unlock()
+
+	// Tear down the socket. Deleting the map entry only makes the provider
+	// unroutable; its read loop and challenge loop keep running on the open
+	// socket and the coordinator keeps auto-ponging it, so the provider never
+	// detects the drop and never reconnects — a "zombie" that's unroutable yet
+	// still reports stale trust locally. CloseNow unblocks the read loop, which
+	// unwinds the rest, and re-arms the provider's reconnect. CloseNow not Close:
+	// Disconnect runs serially in the eviction loop and Close would block ~5s
+	// waiting for a handshake the stale peer won't send. No-op if already closed;
+	// outside r.mu so it can't stall the registry.
+	if p.Conn != nil {
+		_ = p.Conn.CloseNow()
+	}
 
 	// Close this connection's session row (async; durable uptime history).
 	// Covers both graceful disconnects and evictStale (which calls Disconnect).

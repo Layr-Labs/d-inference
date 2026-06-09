@@ -80,4 +80,56 @@ final class StaleHashRecomputeTest: XCTestCase {
         defer { try? FileManager.default.removeItem(at: empty) }
         XCTAssertNil(WeightHasher.snapshotFingerprint(snapshotDir: empty))
     }
+
+    /// TOCTOU regression: the provider hashes the weights about to be loaded, then
+    /// `loadModelContainer` reads them. If a re-download lands in that window, the
+    /// recorded hash describes the OLD bytes while the loaded model is the NEW
+    /// ones. The fix re-checks the snapshot fingerprint AFTER the load and, on a
+    /// drift, recomputes. This pins the primitives that fix relies on:
+    ///   1. the fingerprint captured at hash time differs from the fingerprint
+    ///      observed after a mid-window rewrite (so the drift check fires), and
+    ///   2. recomputing then yields the hash of the bytes actually on disk.
+    func testFingerprintAfterLoadDetectsMidWindowRewrite() throws {
+        // "Hash time": capture the hash + the fingerprint it corresponds to.
+        let hashAtHashTime = WeightHasher.computeHash(snapshotDir: snapshotDir)
+        let fingerprintAtHashTime = WeightHasher.snapshotFingerprint(snapshotDir: snapshotDir)
+        XCTAssertNotNil(hashAtHashTime)
+        XCTAssertNotNil(fingerprintAtHashTime)
+
+        // A re-download lands BETWEEN hashing and loading: same file name, new
+        // bytes. (Size differs so even a coarse stat-only fingerprint catches it.)
+        try Data("re-downloaded-mid-load-v2".utf8)
+            .write(to: snapshotDir.appendingPathComponent("model.safetensors"))
+
+        // "After load": the post-load fingerprint must NOT equal the one captured
+        // at hash time — this inequality is exactly what triggers the recompute.
+        let fingerprintAfterLoad = WeightHasher.snapshotFingerprint(snapshotDir: snapshotDir)
+        XCTAssertNotNil(fingerprintAfterLoad)
+        XCTAssertNotEqual(
+            fingerprintAfterLoad, fingerprintAtHashTime,
+            "post-load fingerprint must differ after a mid-window rewrite — otherwise the TOCTOU recompute never fires")
+
+        // The triggered recompute must reflect the bytes actually loaded, not the
+        // stale hash captured before the rewrite.
+        let recomputed = WeightHasher.computeHash(snapshotDir: snapshotDir)
+        XCTAssertNotNil(recomputed)
+        XCTAssertNotEqual(
+            recomputed, hashAtHashTime,
+            "recompute after drift must reflect the loaded bytes, not the pre-rewrite hash")
+    }
+
+    /// Negative case: when NO rewrite happens between hash and load, the
+    /// fingerprint is identical, so the after-load check does no extra hashing.
+    func testFingerprintAfterLoadStableWhenNoRewrite() throws {
+        _ = WeightHasher.computeHash(snapshotDir: snapshotDir)
+        let fingerprintAtHashTime = WeightHasher.snapshotFingerprint(snapshotDir: snapshotDir)
+        XCTAssertNotNil(fingerprintAtHashTime)
+
+        // No rewrite occurs (the common case). The post-load fingerprint must
+        // equal the one at hash time so the recompute is skipped.
+        let fingerprintAfterLoad = WeightHasher.snapshotFingerprint(snapshotDir: snapshotDir)
+        XCTAssertEqual(
+            fingerprintAfterLoad, fingerprintAtHashTime,
+            "unchanged weights must yield an identical fingerprint so the after-load recompute is skipped")
+    }
 }

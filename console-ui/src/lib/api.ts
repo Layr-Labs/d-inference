@@ -82,9 +82,23 @@ export interface UsageEntry {
   timestamp: string;
 }
 
+/**
+ * A content part in the OpenAI/OpenRouter multimodal format. Either a text
+ * part or an image part. The image `url` is a base64 `data:` URI — our
+ * provider is end-to-end-encrypted and rejects remote http(s)/file URLs
+ * (the image must ride inside the encrypted prompt). Mirrors the provider's
+ * `OpenAIContentPart`.
+ */
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
-  content: string;
+  // `string` for text-only turns (unchanged wire shape); a parts array when
+  // the turn carries images, matching the standard OpenAI/OpenRouter
+  // `image_url` content-part format.
+  content: string | ChatContentPart[];
 }
 
 export interface TrustMetadata {

@@ -1235,8 +1235,14 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 		if m.ID == "" {
 			continue
 		}
-		if exp := expected[m.ID]; exp != "" && m.WeightHash != "" && !strings.EqualFold(m.WeightHash, exp) {
-			r.logger.Warn("models_update weight-hash mismatch; rejecting build",
+		// When the catalog pins an expected hash, a models_update MUST carry a
+		// non-empty MATCHING hash. A missing hash is rejected just like a
+		// mismatched one — otherwise a buggy/malicious update that omits
+		// weight_hash (or a nil WeightHasher.computeHash on the provider) would be
+		// merged as "validated" and could cut the provider over to an unverified
+		// desired build while dropping the last known-good previous sibling.
+		if exp := expected[m.ID]; exp != "" && !strings.EqualFold(m.WeightHash, exp) {
+			r.logger.Warn("models_update weight-hash missing or mismatched; rejecting build",
 				"provider_id", providerID, "model_id", m.ID, "expected", exp, "got", m.WeightHash)
 			continue
 		}

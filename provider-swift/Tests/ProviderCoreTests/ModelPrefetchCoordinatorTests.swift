@@ -967,6 +967,79 @@ struct ProviderLoopPrefetchTests {
         await coord.shutdown(timeout: .seconds(3))
     }
 
+    /// Seed a snapshot with config.json but NO weight files. scanVerifiedModelInfo
+    /// returns nil (parseModelInfo requires sizeBytes > 0) — the same guard the
+    /// nil-weight-hash case falls into: a verify that can't produce a hashed,
+    /// advertisable build. Used to prove neither path strands the previous build.
+    private func seedConfigOnlySnapshot(modelID: String) throws -> URL {
+        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
+        try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
+        try Data(#"{"model_type":"qwen3"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try "local".write(to: refs.appendingPathComponent("main"), atomically: true, encoding: .utf8)
+        return modelDir
+    }
+
+    @Test("a verify that can't produce an advertisable+hashed build keeps the previous build (no strand)")
+    func verifiedPrefetchUnhashableKeepsPrevious() async throws {
+        // A verify whose snapshot yields no advertisable+hashed ModelInfo (here:
+        // no weight files, so scanVerifiedModelInfo returns nil — the same early
+        // return the nil-weight-hash guard takes) must NOT advertise/emit the
+        // build AND must leave the previous build untouched. Dropping previous
+        // here while the build can't be advertised would strand the provider on
+        // neither — the coordinator's models_update gate would also reject a
+        // hashless build, so the local drop must not run ahead of a real swap.
+        let desiredBuild = "org/unhashable-\(UUID().uuidString)"
+        let previousBuild = "org/previous-\(UUID().uuidString)"
+        let modelDir = try seedConfigOnlySnapshot(modelID: desiredBuild)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        let previousInfo = ModelInfo(id: previousBuild, sizeBytes: 1, estimatedMemoryGb: 1)
+        let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
+        let client = makeClient()
+        _ = await client.advertiseModel(previousInfo)
+
+        let verifiedCalls = AdvertisedRecorder()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: NoopSuccessPrefetcher(),
+            preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(modelId: id)
+                verifiedCalls.record(id)
+            }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(
+                modelName: "alias-a",
+                desiredBuild: desiredBuild,
+                previousBuild: previousBuild
+            )],
+            send: capturingSend
+        )
+
+        // Wait until applyVerifiedPrefetch has fully run.
+        let ran = await waitUntil(timeout: .seconds(10)) { verifiedCalls.ids.contains(desiredBuild) }
+        #expect(ran)
+
+        // The hashless desired build is NOT advertised anywhere, and no
+        // models_update was emitted for it.
+        #expect(!(await loop.isModelAdvertised(desiredBuild)))
+        #expect(await loop.modelHashForTesting(desiredBuild) == nil)
+        #expect(!(await client.currentAdvertisedModels().map(\.id).contains(desiredBuild)))
+        #expect(!outbound.modelsUpdates().flatMap { $0 }.contains { $0.id == desiredBuild })
+        // The previous build is UNTOUCHED — still serving (no unverifiable swap).
+        #expect(await loop.isModelAdvertised(previousBuild))
+        #expect(await client.currentAdvertisedModels().map(\.id).contains(previousBuild))
+
+        await coord.shutdown(timeout: .seconds(3))
+    }
+
     private func makeLoopWithHashes(models: [ModelInfo], hashes: [String: String]) throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",

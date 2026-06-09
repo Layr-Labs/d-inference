@@ -1445,9 +1445,21 @@ public actor ProviderLoop {
         // estimatedMemoryGb == 0, bypassing memory sizing/admission until the
         // real load overcommits. Drop it instead — without a models_update the
         // coordinator simply never routes this build here, which is the safe outcome.
-        guard let (info, hash) = computed else {
+        guard let (info, maybeHash) = computed else {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.error("Prefetch verified \(modelId) but its on-disk snapshot could not be scanned; not advertising (would bypass memory sizing)")
+            return
+        }
+        // A nil weight hash is treated exactly like an unscannable snapshot: do
+        // NOT advertise, emit, or hard-swap. The coordinator's models_update
+        // gate REQUIRES a non-empty matching hash when the catalog pins one, so a
+        // hashless advertise would be rejected there anyway — but worse, dropping
+        // the previous build here while the coordinator rejects the desired one
+        // would strand the provider on neither build. Keep the previous build
+        // serving; the prefetch can be retried.
+        guard let hash = maybeHash, !hash.isEmpty else {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            logger.error("Prefetch verified \(modelId) but the weight hash could not be computed; not advertising (keeping the previous build to avoid an unverifiable swap)")
             return
         }
         // Adding to `advertisedModels` also raises the effective slot cap
@@ -1456,9 +1468,9 @@ public actor ProviderLoop {
         // during a zero-downtime migration -- bounded by the configured hard
         // cap (`configuredMaxModelSlots`).
         advertisedModels[modelId] = info
-        if let hash { modelHashes[modelId] = hash }
+        modelHashes[modelId] = hash
         syncWarmModelState()
-        logger.info("Prefetch verified \(modelId) (weight_hash=\(hash?.prefix(16).description ?? "nil")); advertising (\(advertisedModels.count) model(s) total)")
+        logger.info("Prefetch verified \(modelId) (weight_hash=\(hash.prefix(16))); advertising (\(advertisedModels.count) model(s) total)")
         if let coordinatorClient {
             await coordinatorClient.advertiseModel(info)
         }

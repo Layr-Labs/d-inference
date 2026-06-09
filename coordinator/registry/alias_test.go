@@ -283,6 +283,10 @@ func TestMergeProviderModelsRejectsHashMismatch(t *testing.T) {
 	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, WeightHash: "WRONG"}}); len(m) != 0 {
 		t.Fatalf("hash mismatch must be rejected, got %v", m)
 	}
+	// A MISSING hash is rejected too when the catalog pins one (not merged as valid).
+	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT}}); len(m) != 0 {
+		t.Fatalf("missing hash must be rejected when catalog pins one, got %v", m)
+	}
 	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
 		t.Fatalf("rejected build must not be advertised, got %v", got)
 	}
@@ -325,6 +329,47 @@ func TestMergeProviderModelsRejectedDesiredDoesNotDropPrevious(t *testing.T) {
 	// ...and the previous build must STILL be routable (not collateral-dropped).
 	if got := reg.RoutableProviderIDsForBuild(aliasFP8); len(got) != 1 || got[0] != "p1" {
 		t.Fatalf("previous build must survive a rejected desired update, got %v", got)
+	}
+}
+
+// Regression (re-review): a models_update that OMITS weight_hash for a build
+// whose catalog entry pins an expected hash must be rejected — not merged as if
+// validated — and must NOT drop the previous sibling. A missing hash is as
+// untrusted as a wrong one; merging it would cut the provider over to an
+// unverified build while retiring the last known-good previous build.
+func TestMergeProviderModelsRejectsMissingHashAndKeepsPrevious(t *testing.T) {
+	reg := New(testLogger())
+	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
+	reg.SetModelCatalog([]CatalogEntry{
+		{ID: aliasFP8},
+		{ID: aliasQAT, WeightHash: "EXPECTED"},
+	})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
+	})
+	if got := reg.RoutableProviderIDsForBuild(aliasFP8); len(got) != 1 {
+		t.Fatalf("p1 should serve fp8 initially, got %v", got)
+	}
+
+	// Desired build update with NO weight hash (empty), catalog expects one.
+	merged := reg.MergeProviderModels("p1", []protocol.ModelInfo{
+		{ID: aliasQAT, ModelType: "gemma"}, // WeightHash == ""
+	})
+	if len(merged) != 0 {
+		t.Fatalf("missing-hash desired must be rejected, got merged %v", merged)
+	}
+	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
+		t.Fatalf("hashless desired must not be routable, got %v", got)
+	}
+	if got := reg.RoutableProviderIDsForBuild(aliasFP8); len(got) != 1 || got[0] != "p1" {
+		t.Fatalf("previous build must survive a hashless desired update, got %v", got)
+	}
+
+	// A build with NO catalog-pinned hash is still accepted hashless (the gate
+	// only bites when the catalog pins an expected hash).
+	reg.SetModelCatalog([]CatalogEntry{{ID: aliasFP8}, {ID: aliasQAT}}) // no expected hashes
+	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, ModelType: "gemma"}}); len(m) != 1 {
+		t.Fatalf("hashless build with no pinned catalog hash must merge, got %v", m)
 	}
 }
 

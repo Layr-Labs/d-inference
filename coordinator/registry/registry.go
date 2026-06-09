@@ -626,7 +626,7 @@ type Registry struct {
 	// modelAliases maps a public-facing alias id (e.g. "gemma-4-26b") to the
 	// desired (and optional previous) concrete build it resolves to. Populated by
 	// SetModelAliases at catalog sync time. nil = no aliases configured.
-	modelAliases map[string]aliasTarget
+	modelAliases map[string]AliasTarget
 
 	store store.Store
 
@@ -962,10 +962,10 @@ func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	r.modelCatalog = catalog
 }
 
-// aliasTarget is the declarative resolution target for a public alias: a single
+// AliasTarget is the declarative resolution target for a public alias: a single
 // Desired build the fleet converges to, with an optional still-acceptable
 // Previous build during a staggered rollout. No weights, no ramp.
-type aliasTarget struct {
+type AliasTarget struct {
 	Desired  string
 	Previous string
 }
@@ -974,14 +974,14 @@ type aliasTarget struct {
 // nil (or an empty map) to clear all aliases. Callers pass only ACTIVE aliases
 // (the store/sync layer filters inactive ones out). An alias whose Desired is
 // empty contributes nothing routable.
-func (r *Registry) SetModelAliases(aliases map[string]aliasTarget) {
+func (r *Registry) SetModelAliases(aliases map[string]AliasTarget) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(aliases) == 0 {
 		r.modelAliases = nil
 		return
 	}
-	m := make(map[string]aliasTarget, len(aliases))
+	m := make(map[string]AliasTarget, len(aliases))
 	for alias, t := range aliases {
 		m[alias] = t
 	}

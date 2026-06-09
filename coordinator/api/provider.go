@@ -337,6 +337,19 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 			s.applyACMETrust(providerID, provider, acmeResult)
 
+			// Declaratively tell the provider the desired build per alias it
+			// already serves, so a fresh/reconnected provider converges without a
+			// separate catalog pull. Gated on Swift backend + feature version: a
+			// pre-feature provider's strict decoder throws on unknown types.
+			if s.providerSupportsDesiredModels(regMsg.Backend, regMsg.Version) {
+				if entries := s.registry.DesiredModelsForProvider(providerID); len(entries) > 0 {
+					if err := s.registry.SendDesiredModels(providerID, entries); err != nil {
+						s.logger.Warn("failed to send desired_models after register",
+							"provider_id", providerID, "error", err)
+					}
+				}
+			}
+
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
@@ -418,16 +431,54 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypePrefetchModelStatus:
 			statusMsg := msg.Payload.(*protocol.PrefetchModelStatusMessage)
-			// The migration controller (Layer 4) is the consumer of this
-			// signal; for now we observe progress. The terminal "verified"
-			// state means the build is on disk and hash-checked but NOT
-			// loaded into GPU — the provider re-advertises it on its next
-			// register/heartbeat so the registry learns it can serve it.
+			// Observability only. The terminal "verified" state means the build
+			// is on disk and hash-checked but NOT loaded into GPU — the provider
+			// then emits an authoritative models_update (handleModelsUpdate) so
+			// the registry learns it can serve the build (and drops the old one).
 			s.handlePrefetchModelStatus(providerID, provider, statusMsg)
 
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}
+	}
+}
+
+// handlePrefetchModelStatus records a provider's background-prefetch progress.
+// Prefetch downloads + verifies a build on disk without loading it into GPU. The
+// authoritative "this build is now servable" signal is the separate
+// models_update message (handleModelsUpdate), which carries the weight hash —
+// the terminal "verified" status here is just observability/progress.
+func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry.Provider, msg *protocol.PrefetchModelStatusMessage) {
+	s.logger.Info("provider prefetch_model_status",
+		"provider_id", providerID,
+		"model_id", msg.ModelID,
+		"status", msg.Status,
+		"bytes_done", msg.BytesDone,
+		"bytes_total", msg.BytesTotal,
+		"error", msg.Error,
+	)
+	s.ddIncr("provider.prefetch_status", []string{"model:" + msg.ModelID, "status:" + msg.Status})
+	if msg.BytesTotal > 0 {
+		s.ddGauge("provider.prefetch_progress_pct",
+			float64(msg.BytesDone)/float64(msg.BytesTotal)*100,
+			[]string{"provider_id:" + providerID, "model:" + msg.ModelID})
+	}
+}
+
+// handleModelsUpdate applies a provider's authoritative model inventory update
+// (sent after it converges on a desired build and hard-swaps off the old one)
+// into its advertised models in place. Each build's weight hash is cross-checked
+// against the catalog before it becomes routable, so a bad/buggy swap never takes
+// traffic, and the alias-sibling hard-swap drop retires the old quant — all
+// without waiting for the provider to reconnect or resetting its trust/reputation.
+func (s *Server) handleModelsUpdate(providerID string, provider *registry.Provider, msg *protocol.ModelsUpdateMessage) {
+	merged := s.registry.MergeProviderModels(providerID, msg.Models)
+	for _, id := range merged {
+		s.logger.Info("provider now advertises build (models_update)",
+			"provider_id", providerID, "model_id", id)
+		// Release any requests queued for this build now that a provider can
+		// (cold-)serve it.
+		s.registry.DrainQueuedRequestsForModel(id)
 	}
 }
 

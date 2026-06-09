@@ -145,6 +145,14 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // the python/runtime hash checks via registry.BackendUsesSwiftRuntime.
 var LatestProviderVersion = "0.5.0"
 
+// minProviderVersionForDesiredModels is the first provider version whose Swift
+// runtime understands the desired_models message. The coordinator must NOT send
+// desired_models to any provider below this version (or on a non-Swift backend):
+// a pre-feature provider's strict decoder throws on unknown message types and
+// would disconnect. KEEP THIS IN SYNC with the release that ships Swift
+// desired_models support (ProviderCore.version at that cut).
+const minProviderVersionForDesiredModels = "0.5.17"
+
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when
 // no release record exists.
@@ -158,17 +166,12 @@ func (s *Server) latestReleasedVersion() string {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
-	registry *registry.Registry
-	store    store.Store
-	ledger   *payments.Ledger
-	billing  *billing.Service
-	logger   *slog.Logger
-	mux      *http.ServeMux
-	// migrationMu serializes a migration's state mutations (alias weights +
-	// status) between the background controller tick and the admin
-	// pause/resume/rollback handlers, so a rollback can't be clobbered by an
-	// in-flight ramp tick (TOCTOU on the per-method store locks).
-	migrationMu            sync.Mutex
+	registry               *registry.Registry
+	store                  store.Store
+	ledger                 *payments.Ledger
+	billing                *billing.Service
+	logger                 *slog.Logger
+	mux                    *http.ServeMux
 	challengeInterval      time.Duration             // 0 means use DefaultChallengeInterval
 	skipChallenge          bool                      // if true, skip attestation challenges entirely (testing only)
 	privyAuth              *auth.PrivyAuth           // Privy JWT authentication (nil if not configured)
@@ -774,30 +777,24 @@ func (s *Server) SyncModelCatalog() {
 	s.invalidateCatalogCache()
 }
 
-// syncModelAliases loads public-alias → build mappings from the store into the
-// registry so consumer requests for an alias (e.g. "gemma-4-26b") resolve to a
-// concrete build. Only active aliases and active builds are installed; an alias
-// whose builds are all drained (weight 0) or inactive contributes nothing.
+// syncModelAliases loads public-alias → {desired, previous} build pointers from
+// the store into the registry so consumer requests for an alias (e.g.
+// "gemma-4-26b") resolve to a concrete build. Only active aliases with a
+// non-empty desired build are installed.
 func (s *Server) syncModelAliases() {
 	aliases, err := s.store.ListModelAliases()
 	if err != nil {
 		s.logger.Error("model alias sync failed", "error", err)
 		return
 	}
-	resolved := make(map[string][]registry.BuildRef, len(aliases))
+	resolved := make(map[string]registry.AliasTarget, len(aliases))
 	for _, a := range aliases {
-		if !a.Active {
+		if !a.Active || a.DesiredBuild == "" {
 			continue
 		}
-		builds := make([]registry.BuildRef, 0, len(a.Builds))
-		for _, b := range a.Builds {
-			if !b.Active || b.BuildID == "" {
-				continue
-			}
-			builds = append(builds, registry.BuildRef{BuildID: b.BuildID, Weight: b.Weight})
-		}
-		if len(builds) > 0 {
-			resolved[a.AliasID] = builds
+		resolved[a.AliasID] = registry.AliasTarget{
+			Desired:  a.DesiredBuild,
+			Previous: a.PreviousBuild,
 		}
 	}
 	s.registry.SetModelAliases(resolved)
@@ -1491,10 +1488,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/models/aliases", s.handleModelAliasList)
 	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
 	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
-	// Zero-downtime build migrations (prefetch → ramp → drain).
-	s.mux.HandleFunc("GET /v1/admin/migrations", s.handleMigrationList)
-	s.mux.HandleFunc("POST /v1/admin/migrations", s.handleMigrationStart)
-	s.mux.HandleFunc("POST /v1/admin/migrations/{aliasID}/{action}", s.handleMigrationAction)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin

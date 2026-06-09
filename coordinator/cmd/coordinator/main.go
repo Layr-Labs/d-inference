@@ -487,9 +487,6 @@ func main() {
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
 
-	// Drive any active zero-downtime model migrations (prefetch → ramp → drain).
-	srv.StartMigrationController(ctx)
-
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.ServerConfig.Port,

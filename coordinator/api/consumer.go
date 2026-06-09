@@ -3338,10 +3338,11 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 // warm_providers, can_accept) are included from the live capacity snapshot.
 // aliasModelEntries builds the consumer-facing /v1/models entries for active
 // public aliases and returns the set of underlying build ids those aliases
-// cover (so the caller can hide them from the default listing). Each alias
-// entry derives its metadata from its primary (highest-weight, in-catalog)
-// build, and aggregates live capacity across all of the alias's builds so the
-// alias's routable/warm counts reflect every quant currently serving it.
+// cover (so the caller can hide them from the default listing). Each alias entry
+// derives its metadata from its primary build — the desired build, or the
+// previous build if the desired one isn't in the catalog yet — and aggregates
+// live capacity across both the desired and previous builds so the alias's
+// routable/warm counts reflect every quant currently serving it.
 func (s *Server) aliasModelEntries(
 	capByModel map[string]*registry.ModelCapacity,
 	catalogByID map[string]store.SupportedModel,
@@ -3356,48 +3357,46 @@ func (s *Server) aliasModelEntries(
 
 	entries := make([]types.ModelEntry, 0, len(aliases))
 	for _, a := range aliases {
-		if !a.Active {
+		if !a.Active || a.DesiredBuild == "" {
 			continue
 		}
-		// Primary build = highest-weight active build that exists in the catalog.
+		// Primary build = the desired build when it's in the catalog, else the
+		// previous build (so the alias keeps a real entry while the desired build
+		// is mid-registration). An alias whose builds are all out of catalog
+		// resolves to nothing and must not be advertised (it would 503).
+		members := make([]string, 0, 2)
+		desiredInCatalog := false
+		if _, ok := catalogByID[a.DesiredBuild]; ok {
+			members = append(members, a.DesiredBuild)
+			desiredInCatalog = true
+		}
+		previousInCatalog := false
+		if a.PreviousBuild != "" {
+			if _, ok := catalogByID[a.PreviousBuild]; ok {
+				members = append(members, a.PreviousBuild)
+				previousInCatalog = true
+			}
+		}
 		var primary string
-		bestWeight := -1
+		switch {
+		case desiredInCatalog:
+			primary = a.DesiredBuild
+		case previousInCatalog:
+			primary = a.PreviousBuild
+		default:
+			// No in-catalog build backs this alias — don't advertise it.
+			continue
+		}
+
 		routable, warm := 0, 0
 		canAccept := false
-		covered := make([]string, 0, len(a.Builds))
-		for _, b := range a.Builds {
-			if !b.Active || b.BuildID == "" {
-				continue
+		for _, b := range members {
+			hidden[b] = struct{}{}
+			if cap, ok := capByModel[b]; ok {
+				routable += cap.RoutableProviders
+				warm += cap.WarmProviders
+				canAccept = canAccept || cap.CanAccept
 			}
-			if _, ok := catalogByID[b.BuildID]; !ok {
-				continue
-			}
-			covered = append(covered, b.BuildID)
-			// Only positive-weight builds count toward the alias's advertised
-			// capacity — alias routing never selects a drained (weight 0) build,
-			// so its providers must not inflate the alias's routable/can_accept.
-			if b.Weight > 0 {
-				if cap, ok := capByModel[b.BuildID]; ok {
-					routable += cap.RoutableProviders
-					warm += cap.WarmProviders
-					canAccept = canAccept || cap.CanAccept
-				}
-			}
-			// Only a build with positive weight can be the primary — an alias
-			// whose builds are all drained (weight 0) resolves to nothing, so it
-			// must not be advertised in /v1/models (it would 503).
-			if b.Weight > 0 && b.Weight > bestWeight {
-				bestWeight = b.Weight
-				primary = b.BuildID
-			}
-		}
-		if primary == "" {
-			// No usable (in-catalog, weight>0) build backs this alias — don't
-			// advertise it.
-			continue
-		}
-		for _, id := range covered {
-			hidden[id] = struct{}{}
 		}
 
 		cm := catalogByID[primary]

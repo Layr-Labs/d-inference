@@ -358,6 +358,61 @@ func TestMigrationActionStateGuards(t *testing.T) {
 	}
 }
 
+// A controller tick computed for one migration must NOT mutate a DIFFERENT
+// migration that replaced it on the same alias (operator rolled this one back/
+// completed it and started a replacement within the tick window). The lock
+// re-read compares identity (from/to), not just "some active migration exists".
+func TestRunMigrationIgnoresStaleReplacedMigration(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const a = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const b = "mlx-community/gemma-4-26b-a4b-it-8bit"
+	const c = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	seedActiveModel(t, st, a, "fp8")
+	seedActiveModel(t, st, b, "8bit")
+	seedActiveModel(t, st, c, "qat")
+
+	// Alias mid-migration A→C: all traffic still on A.
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		Builds: []store.ModelAliasBuild{{BuildID: a, Weight: 100, Active: true}, {BuildID: c, Weight: 0, Active: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The CURRENT (replacement) migration in the store is A→C, active.
+	if err := st.UpsertModelMigration(&store.ModelMigration{
+		AliasID: "gemma-4-26b", FromBuild: a, ToBuild: c, BatchSize: 2, MaxStepPercent: 50, Status: store.MigrationActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A provider serves BOTH A and B, so a STALE A→B tick would otherwise ramp B
+	// to 50% (coverage 1.0, step 50) — a clear clobber if identity isn't checked.
+	registerBuildsProvider(srv, "p-ab", a, b)
+	srv.SyncModelCatalog()
+
+	mc := newMigrationController(srv)
+	// Stale tick: a migration A→B that no longer matches the stored A→C.
+	mc.runMigration(store.ModelMigration{
+		AliasID: "gemma-4-26b", FromBuild: a, ToBuild: b, BatchSize: 2, MaxStepPercent: 50, Status: store.MigrationActive,
+	})
+
+	// The stored migration is untouched (still A→C active — not overwritten/completed).
+	got, ok, _ := st.GetModelMigration("gemma-4-26b")
+	if !ok || got.ToBuild != c || got.FromBuild != a || got.Status != store.MigrationActive {
+		t.Fatalf("stale tick clobbered the replacement migration: %+v", got)
+	}
+	// The alias never gained B with a routing weight, and A/C weights are intact.
+	alias, _, _ := st.GetModelAlias("gemma-4-26b")
+	if buildWeight(alias, b) > 0 {
+		t.Fatalf("stale tick added routing weight to B: %+v", alias.Builds)
+	}
+	if buildWeight(alias, a) != 100 || buildWeight(alias, c) != 0 {
+		t.Fatalf("stale tick changed alias weights (want A=100,C=0): %+v", alias.Builds)
+	}
+}
+
 // Deleting an alias must also remove its migration — otherwise the controller
 // would keep ramping and applyWeights would recreate the deleted alias.
 func TestDeletingAliasStopsMigration(t *testing.T) {

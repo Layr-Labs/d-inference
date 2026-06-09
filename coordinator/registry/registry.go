@@ -1113,24 +1113,25 @@ func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []st
 		}
 	}
 	now := time.Now()
-	var servable, all []BuildRef
+	var servable []BuildRef
 	for _, b := range builds {
 		if b.Weight <= 0 || b.BuildID == "" {
 			continue
 		}
-		all = append(all, b)
 		if r.anyEligibleProviderCanRouteLocked(b.BuildID, allowed, ownerAccountID, selfRouteOnly, preferOwner, now) {
 			servable = append(servable, b)
 		}
 	}
-	pool := servable
-	if len(pool) == 0 {
-		pool = all
-	}
-	if len(pool) == 0 {
+	// Only HARD-constrained requests (serial pin / self-route-only) reach here —
+	// the unconstrained path returned ResolveModel above. So if no allowed+
+	// eligible provider can serve any build, do NOT fall back to the full build
+	// set: that would resolve to a build the allowed providers can't serve (the
+	// exact thing this function exists to prevent) and then queue/fail against the
+	// wrong build, or for self-route leak toward the fleet. Return unavailable.
+	if len(servable) == 0 {
 		return "", true, false
 	}
-	return weightedPickBuild(pool), true, true
+	return weightedPickBuild(servable), true, true
 }
 
 // anyEligibleProviderCanRouteLocked reports whether some provider both matches
@@ -1142,7 +1143,13 @@ func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSeri
 		p.mu.Lock()
 		ok := func() bool {
 			if len(allowedSerials) > 0 {
-				if _, in := allowedSerials[p.AttestationResult.SerialNumber]; !in || p.AttestationResult.SerialNumber == "" {
+				// A provider with no attestation result can't be serial-matched
+				// (and dereferencing it would panic) — treat as not eligible.
+				serial := ""
+				if p.AttestationResult != nil {
+					serial = p.AttestationResult.SerialNumber
+				}
+				if _, in := allowedSerials[serial]; !in || serial == "" {
 					return false
 				}
 			}

@@ -241,6 +241,13 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 	mc.s.migrationMu.Lock()
 	defer mc.s.migrationMu.Unlock()
 
+	// Re-read under the lock and bail unless this is still the SAME active
+	// migration the tick decided on. Checking only "some active migration exists"
+	// is not enough: if the operator rolled back/completed THIS migration and
+	// started a REPLACEMENT for the same alias (different from/to) inside the tick
+	// window, applying the stale `m` below would clobber the replacement's alias
+	// weights or mark it complete using the old pair. Compare identity, not just
+	// status.
 	if cur, ok, err := mc.s.store.GetModelMigration(m.AliasID); err != nil || !ok || cur.Status != store.MigrationActive {
 		return
 	}

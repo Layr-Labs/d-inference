@@ -167,6 +167,41 @@ func TestResolveModelConstrainedSelfRoutePrefersOwnerBuild(t *testing.T) {
 	}
 }
 
+// A HARD-constrained request (serial pin or self-route-only) whose constraint no
+// provider can satisfy must return model_unavailable — NOT fall back to a build
+// that only a disallowed/non-owned provider serves (which would then fail at
+// dispatch, or for self-route leak toward the fleet).
+func TestResolveModelConstrainedNoFallbackWhenUnsatisfiable(t *testing.T) {
+	reg := New(testLogger())
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+
+	// Only a NON-owned provider (acct-2) serves a build; acct-1 owns nothing.
+	other := registerProviderWithModel(reg, "other", qat)
+	makeProviderRoutable(other)
+	other.mu.Lock()
+	other.AccountID = "acct-2"
+	other.mu.Unlock()
+
+	reg.SetModelAliases(map[string][]BuildRef{
+		"gemma-4-26b": {{BuildID: fp8, Weight: 50}, {BuildID: qat, Weight: 50}},
+	})
+
+	// Self-route to acct-1: no owned provider serves any build → unavailable, and
+	// must NOT fall back to qat (only the non-owned acct-2 serves it).
+	if b, isAlias, ok := reg.ResolveModelConstrained("gemma-4-26b", nil, "acct-1", true, false); ok || b != "" || !isAlias {
+		t.Fatalf("self-route with no owned provider: want (\"\", true, false), got (%q, %v, %v)", b, isAlias, ok)
+	}
+	// Serial pin to a serial no provider has → also unavailable (no fallback).
+	if b, _, ok := reg.ResolveModelConstrained("gemma-4-26b", []string{"SERIAL-NONE"}, "", false, false); ok || b != "" {
+		t.Fatalf("serial pin with no matching provider: want unavailable, got (%q, ok=%v)", b, ok)
+	}
+	// Sanity: acct-2 self-route (owns qat) still resolves.
+	if b, _, ok := reg.ResolveModelConstrained("gemma-4-26b", nil, "acct-2", true, false); !ok || b != qat {
+		t.Fatalf("acct-2 self-route should resolve to qat, got (%q, ok=%v)", b, ok)
+	}
+}
+
 func TestPublicNameForBuild(t *testing.T) {
 	reg := New(testLogger())
 	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"

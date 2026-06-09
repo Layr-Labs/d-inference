@@ -58,9 +58,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// coordinator-driven preloads so advertised model count cannot become a
     /// memory-unbounded slot cap.
     public var maxModelSlots: UInt64
-    /// Seconds to wait for in-flight requests to complete during a coordinated
-    /// drain before forcing restart. Default: 30.
-    public var drainTimeoutSecs: UInt64
 
     public init(
         port: UInt16 = 8100,
@@ -68,8 +65,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         continuousBatching: Bool = true,
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
-        maxModelSlots: UInt64 = 3,
-        drainTimeoutSecs: UInt64 = 30
+        maxModelSlots: UInt64 = 3
     ) {
         self.port = port
         self.model = model
@@ -77,7 +73,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
         self.maxModelSlots = maxModelSlots
-        self.drainTimeoutSecs = drainTimeoutSecs
     }
 
     enum CodingKeys: String, CodingKey {
@@ -87,7 +82,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
-        case drainTimeoutSecs = "drain_timeout_secs"
     }
 
     public init(from decoder: Decoder) throws {
@@ -98,7 +92,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
-        self.drainTimeoutSecs = try container.decodeIfPresent(UInt64.self, forKey: .drainTimeoutSecs) ?? 30
     }
 }
 
@@ -177,8 +170,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 continuousBatching: true,
                 enabledModels: [],
                 idleTimeoutMins: 60,
-                maxModelSlots: 3,
-                drainTimeoutSecs: 30
+                maxModelSlots: 3
             ),
             coordinator: CoordinatorSettings(
                 url: "wss://api.darkbloom.dev/ws/provider",

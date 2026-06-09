@@ -143,8 +143,8 @@ type PrivacyCapabilities struct {
 type DrainReason string
 
 const (
-	DrainReasonUpdate     DrainReason = "update"      // provider binary update available
-	DrainReasonMaintenance DrainReason = "maintenance" // coordinator-initiated maintenance
+	DrainReasonUpdate       DrainReason = "update"       // provider binary update available
+	DrainReasonMaintenance  DrainReason = "maintenance"  // coordinator-initiated maintenance
 	DrainReasonDecommission DrainReason = "decommission" // provider being removed from fleet
 )
 
@@ -328,20 +328,20 @@ type LoadModelStatusMessage struct {
 // ProviderDrainingMessage is sent by a provider to inform the coordinator
 // that it has entered draining state and will not accept new requests.
 type ProviderDrainingMessage struct {
-	Type        string     `json:"type"`
-	Reason      DrainReason `json:"reason"`
-	Deadline    string     `json:"deadline"`    // RFC3339 deadline when drain must complete
-	InFlight    int        `json:"in_flight"`   // number of in-flight requests at drain start
-	Completed   int        `json:"completed"`   // number of requests completed since drain started
+	Type      string      `json:"type"`
+	Reason    DrainReason `json:"reason"`
+	Deadline  string      `json:"deadline"`  // RFC3339 deadline when drain must complete
+	InFlight  int         `json:"in_flight"` // number of in-flight requests at drain start
+	Completed int         `json:"completed"` // number of requests completed since drain started
 }
 
 // DrainCommandMessage is sent by the coordinator to instruct a provider
 // to begin draining (stop accepting new requests, finish in-flight, then restart).
 type DrainCommandMessage struct {
-	Type     string     `json:"type"`
+	Type     string      `json:"type"`
 	Reason   DrainReason `json:"reason"`
-	Deadline string     `json:"deadline"` // RFC3339 deadline when drain must complete
-	Version  string     `json:"version,omitempty"` // target version for update drains
+	Deadline string      `json:"deadline"`          // RFC3339 deadline when drain must complete
+	Version  string      `json:"version,omitempty"` // target version for update drains
 }
 
 // ProviderDrainError is the error response sent to clients when a provider

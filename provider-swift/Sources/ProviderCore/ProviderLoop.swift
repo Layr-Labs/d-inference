@@ -492,6 +492,8 @@ public actor ProviderLoop {
         autoUpdateTask = nil
         autoReportTask?.cancel()
         autoReportTask = nil
+        drainTask?.cancel()
+        drainTask = nil
         let preloads = Array(preloadTasks.values)
         for task in preloads { task.cancel() }
         cancelLoadWaiters()
@@ -645,15 +647,12 @@ public actor ProviderLoop {
             return
         }
 
-        // Reject new requests during drain
+        // Reject new requests during drain. The coordinator already gates
+        // routing on the provider's draining state; this catches the narrow
+        // race where a request was dispatched just as the drain began. 503
+        // signals the coordinator to treat it as a capacity rejection.
         if isDraining {
-            let retryAfter: Int
-            if let deadline = drainDeadline {
-                retryAfter = max(1, Int(deadline.timeIntervalSinceNow))
-            } else {
-                retryAfter = Int(loopConfig.config.backend.drainTimeoutSecs)
-            }
-            logger.warning("[\(requestId)] Rejecting request during drain (retry-after: \(retryAfter)s)")
+            logger.warning("[\(requestId)] Rejecting request during drain")
             send.send(.inferenceError(
                 requestId: requestId,
                 error: "provider_draining",
@@ -1084,9 +1083,6 @@ public actor ProviderLoop {
 
             // Update state
             await me.updateAggregateCapacity()
-
-            // Record drain completion if draining
-            await me.recordDrainCompletion()
 
             // Send completion
             let attestation = computeResponseAttestation(
@@ -2385,9 +2381,18 @@ extension ProviderLoop {
 
     // MARK: - Coordinated Drain
 
-    /// Handle a drain command from the coordinator. The provider stops accepting
-    /// new requests, waits for in-flight requests to complete (or deadline),
-    /// then restarts to apply the update.
+    /// Handle a drain command from the coordinator.
+    ///
+    /// Flow (download-first to minimize downtime):
+    ///   1. For `.update` drains, download + verify the new bundle IN THE
+    ///      BACKGROUND while still serving requests (the slow part).
+    ///   2. Only once the bundle is staged do we enter draining state (stop
+    ///      accepting new requests).
+    ///   3. Wait for in-flight requests to complete (or the deadline).
+    ///   4. Install the staged bundle (fast file swap) and restart.
+    ///
+    /// If the download/verify fails the provider never drains — it keeps
+    /// serving on the current binary and the coordinator can retry later.
     private func handleDrainCommand(
         reason: DrainReason,
         deadline: String,
@@ -2408,114 +2413,148 @@ extension ProviderLoop {
             return
         }
 
-        // If already draining, update deadline if new one is sooner
-        if isDraining {
-            if let currentDeadline = drainDeadline, parsedDeadline < currentDeadline {
+        // De-dup: a drain flow (download or active drain) is already running.
+        // If we're already actively draining, tighten the deadline if sooner.
+        if drainTask != nil {
+            if isDraining, let currentDeadline = drainDeadline, parsedDeadline < currentDeadline {
                 drainDeadline = parsedDeadline
-                drainReason = reason
-                state.draining = true
-                state.drainReason = reason
                 state.drainDeadline = deadline
                 logger.info("Updated drain deadline to \(deadline)")
             }
             return
         }
 
-        isDraining = true
+        // Record the requested deadline/reason up front; isDraining stays false
+        // until the bundle is staged so the provider keeps serving meanwhile.
         drainDeadline = parsedDeadline
         drainReason = reason
-        drainInFlightAtStart = inflightTasks.count
-        drainCompletedCount = 0
 
-        // Sync to ProviderState for heartbeat
-        state.draining = true
-        state.drainReason = reason
-        state.drainDeadline = deadline
-
-        // Send draining acknowledgment
-        let drainingMsg = ProviderMessage.ProviderDraining(
-            reason: reason,
-            deadline: deadline,
-            inFlight: drainInFlightAtStart,
-            completed: 0
-        )
-        send.send(.providerDraining(drainingMsg))
-
-        // Start drain monitor task
         drainTask = Task {
-            await runDrainMonitor(send: send, version: version)
+            await runDrainFlow(reason: reason, deadlineStr: deadline, version: version, send: send)
         }
     }
 
-    /// Background task that monitors in-flight requests during drain.
-    /// When all complete or deadline expires, triggers restart.
-    private func runDrainMonitor(send: SendHandle, version: String?) async {
-        let _ = loopConfig.config.backend.drainTimeoutSecs
-        let checkInterval: Duration = .seconds(2)
-
-        while isDraining {
-            // Check if deadline has passed
-            if let deadline = drainDeadline, Date() >= deadline {
-                logger.warning("Drain deadline reached, forcing restart")
-                break
+    /// The end-to-end drain flow: stage update (if any) → drain → install → restart.
+    private func runDrainFlow(
+        reason: DrainReason,
+        deadlineStr: String,
+        version: String?,
+        send: SendHandle
+    ) async {
+        // Phase 1 — stage the update in the background (still serving).
+        var staged: (file: URL, release: ReleaseInfo)?
+        if reason == .update {
+            // Respect the operator's auto-update opt-out, same as the periodic monitor.
+            guard loopConfig.config.provider.autoUpdate,
+                  ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil
+            else {
+                logger.info("Drain update skipped: auto-update disabled; not draining")
+                clearDrainState()
+                return
             }
 
-            // Check in-flight count
+            let updater = SelfUpdater(coordinatorBaseURL: loopConfig.coordinatorURL)
+            switch await updater.checkForUpdate() {
+            case .upToDate(let v):
+                logger.info("Drain update: already at latest (\(v)); not draining")
+                clearDrainState()
+                return
+            case .checkFailed(let reason):
+                logger.warning("Drain update: check failed (\(reason)); not draining")
+                clearDrainState()
+                return
+            case .updateAvailable(_, let release):
+                logger.info("Drain update: downloading \(release.version) in background while serving...")
+                switch await updater.downloadAndVerify(release: release) {
+                case .success(let file):
+                    staged = (file, release)
+                    logger.info("Drain update: bundle \(release.version) downloaded + verified; entering drain")
+                case .failure(let err):
+                    logger.warning("Drain update: download/verify failed (\(err)); not draining")
+                    clearDrainState()
+                    return
+                }
+            }
+        }
+
+        if Task.isCancelled || isShuttingDown {
+            clearDrainState()
+            return
+        }
+
+        // Phase 2 — enter draining state (now stop accepting new requests).
+        isDraining = true
+        drainInFlightAtStart = inflightTasks.count
+        drainCompletedCount = 0
+        state.draining = true
+        state.drainReason = reason
+        state.drainDeadline = deadlineStr
+        send.send(.providerDraining(ProviderMessage.ProviderDraining(
+            reason: reason,
+            deadline: deadlineStr,
+            inFlight: drainInFlightAtStart,
+            completed: 0
+        )))
+
+        // Phase 3 — wait for in-flight to finish or the deadline to pass.
+        await waitForDrain(send: send)
+
+        // A shutdown raced the drain (stop/SIGTERM) — don't restart over it.
+        if isShuttingDown {
+            clearDrainState()
+            return
+        }
+
+        // Phase 4 — install the staged bundle (fast), then restart.
+        if let staged {
+            let updater = SelfUpdater(coordinatorBaseURL: loopConfig.coordinatorURL)
+            switch updater.installBundle(from: staged.file, release: staged.release) {
+            case .success:
+                logger.info("Drain update: installed \(staged.release.version), restarting")
+            case .failure(let err):
+                // Install failed AFTER draining. Restarting onto a half-written
+                // bundle is risky; resume serving on the current binary instead.
+                logger.error("Drain update: install failed (\(err)); resuming service without restart")
+                clearDrainState()
+                return
+            }
+        }
+
+        await finishDrainAndExit(restart: reason != .decommission)
+    }
+
+    /// Poll until in-flight requests drain to zero or the deadline elapses,
+    /// emitting progress to the coordinator on each tick.
+    private func waitForDrain(send: SendHandle) async {
+        let checkInterval: Duration = .seconds(2)
+        while isDraining {
+            if isShuttingDown { return }
+            if let deadline = drainDeadline, Date() >= deadline {
+                logger.warning("Drain deadline reached, proceeding to restart")
+                return
+            }
             let currentInFlight = inflightTasks.count
             if currentInFlight == 0 {
-                logger.info("All in-flight requests completed, restarting")
-                break
+                logger.info("All in-flight requests completed")
+                return
             }
-
-            // Update completed count and send progress
-            drainCompletedCount = drainInFlightAtStart - currentInFlight
-            let progressMsg = ProviderMessage.ProviderDraining(
+            drainCompletedCount = max(0, drainInFlightAtStart - currentInFlight)
+            send.send(.providerDraining(ProviderMessage.ProviderDraining(
                 reason: drainReason ?? .update,
                 deadline: drainDeadline.map { drainFormatter.string(from: $0) } ?? "",
                 inFlight: currentInFlight,
                 completed: drainCompletedCount
-            )
-            send.send(.providerDraining(progressMsg))
-
-            // Wait before next check
+            )))
             do {
                 try await Task.sleep(for: checkInterval)
             } catch {
                 return // cancelled
             }
         }
-
-        // Drain complete - run SelfUpdater to apply the binary update, then restart
-        if let version = drainReason == .update ? version : nil {
-            logger.info("Running SelfUpdater to apply version \(version)...")
-            let updater = SelfUpdater(coordinatorBaseURL: loopConfig.coordinatorURL)
-            let result = await updater.update()
-            switch result {
-            case .alreadyUpToDate:
-                logger.info("Already running latest version")
-            case .updated(let from, let to):
-                logger.info("SelfUpdater updated provider v\(from) -> v\(to)")
-            case .downloadFailed(let reason):
-                logger.warning("SelfUpdater download failed: \(reason)")
-            case .hashMismatch(let expected, let got):
-                logger.warning("SelfUpdater hash mismatch (expected \(expected), got \(got))")
-            case .replaceFailed(let reason):
-                logger.warning("SelfUpdater install failed: \(reason)")
-            }
-        }
-        await restartAfterUpdate()
     }
 
-    /// Restart the provider process to apply the update.
-    /// This replaces the current process with the new binary via launchd or execv.
-    private func restartAfterUpdate() async {
-        logger.info("Restarting provider to apply update...")
-
-        // Cancel drain task
-        drainTask?.cancel()
-        drainTask = nil
-
-        // Clear draining state
+    /// Clear all drain state and resume normal serving (no restart).
+    private func clearDrainState() {
         isDraining = false
         drainDeadline = nil
         drainReason = nil
@@ -2524,35 +2563,27 @@ extension ProviderLoop {
         state.draining = false
         state.drainReason = nil
         state.drainDeadline = nil
+        drainTask = nil
+    }
 
-        // Signal shutdown to the run loop
+    /// Terminate the process: restart (update/maintenance) or exit (decommission).
+    private func finishDrainAndExit(restart: Bool) async {
+        // Signal shutdown so the run loop and monitors stop.
         isShuttingDown = true
 
-        // Actually restart the process using the launchd-aware restart
-        // This will either bootout/bootstrap/kickstart (under launchd) or execv (standalone)
+        if !restart {
+            logger.info("Drain complete (decommission), shutting down")
+            exit(0)
+        }
+
+        logger.info("Drain complete, restarting provider...")
         do {
+            // launchd-aware: bootout/bootstrap/kickstart, or execv when standalone.
             try ProcessLifecycle.restartAfterUpdate()
         } catch {
-            logger.error("Failed to restart after update: \(error.localizedDescription)")
-            // If restart fails, exit cleanly and let launchd/CLI wrapper handle it
+            logger.error("Failed to restart after drain: \(error.localizedDescription)")
+            // Exit non-zero so launchd/the CLI wrapper relaunches us.
             exit(1)
-        }
-    }
-
-    /// Check if provider is currently draining (for admission gate).
-    func isProviderDraining() -> Bool {
-        isDraining
-    }
-
-    /// Get drain deadline for admission gate Retry-After calculation.
-    func getDrainDeadline() -> Date? {
-        drainDeadline
-    }
-
-    /// Increment completed count when a request finishes during drain.
-    func recordDrainCompletion() {
-        if isDraining {
-            drainCompletedCount += 1
         }
     }
 }

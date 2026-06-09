@@ -272,6 +272,61 @@ import Testing
     #expect(failedObj["error"] as? String == "GPU OOM")
 }
 
+@Test func drainCommandDecodesGoWholeSecondDeadline() throws {
+    // The coordinator emits deadlines via Go's time.RFC3339 — whole seconds,
+    // NO fractional component. The provider must decode this exact shape.
+    let goDrain = #"{"type":"drain_command","reason":"update","deadline":"2026-06-09T01:30:00Z","version":"0.6.1"}"#
+    let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goDrain)
+    guard case .drainCommand(let drain) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(drain.reason == .update)
+    #expect(drain.deadline == "2026-06-09T01:30:00Z")
+    #expect(drain.version == "0.6.1")
+
+    // The provider parses the deadline with a fractional-seconds-tolerant
+    // fallback. Both shapes must yield a valid Date (regression guard for the
+    // Go RFC3339 ↔ Swift .withFractionalSeconds mismatch).
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var d = f.date(from: drain.deadline)
+    if d == nil {
+        f.formatOptions = [.withInternetDateTime]
+        d = f.date(from: drain.deadline)
+    }
+    #expect(d != nil)
+}
+
+@Test func drainCommandRoundTripsAllReasons() throws {
+    for reason in ["update", "maintenance", "decommission"] {
+        let json = "{\"type\":\"drain_command\",\"reason\":\"\(reason)\",\"deadline\":\"2026-06-09T01:30:00Z\"}"
+        let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: json)
+        guard case .drainCommand(let drain) = decoded else {
+            throw TestFailure.unexpectedMessage
+        }
+        #expect(drain.reason.rawValue == reason)
+        #expect(drain.version == nil) // omitted version decodes to nil
+    }
+}
+
+@Test func providerDrainingEncodesSnakeCaseAndRoundTrips() throws {
+    let msg = ProviderMessage.providerDraining(ProviderMessage.ProviderDraining(
+        reason: .update,
+        deadline: "2026-06-09T01:30:00Z",
+        inFlight: 3,
+        completed: 1
+    ))
+    let encoded = try ProviderProtocolCodec.encodeProviderMessage(msg)
+    let object = try jsonObject(encoded)
+    #expect(object["type"] as? String == "provider_draining")
+    #expect(object["reason"] as? String == "update")
+    #expect(object["in_flight"] as? Int == 3)
+    #expect(object["completed"] as? Int == 1)
+
+    let roundTripped = try ProviderProtocolCodec.decodeProviderMessage(from: encoded)
+    #expect(roundTripped == msg)
+}
+
 @Test func coordinatorMessagesDecodeAndEncodeWithSnakeCaseKeys() throws {
     let encryptedRequest = #"{"type":"inference_request","request_id":"go-enc-req-1","body":null,"encrypted_body":{"ephemeral_public_key":"ZXBoZW1lcmFs","ciphertext":"Y2lwaGVy"}}"#
     let request = try ProviderProtocolCodec.decodeCoordinatorMessage(from: encryptedRequest)

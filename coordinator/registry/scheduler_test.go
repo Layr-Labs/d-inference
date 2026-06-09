@@ -306,6 +306,101 @@ func TestDrainQueuedRequestsSkipsUnassignableTargetedRequest(t *testing.T) {
 	}
 }
 
+func TestReserveProviderSkipsDraining(t *testing.T) {
+	reg := New(testLogger())
+	model := "scheduler-model"
+	healthy := makeSchedulerProvider(t, reg, "healthy", model, 100)
+	draining := makeSchedulerProvider(t, reg, "draining", model, 200) // faster, would win if routable
+
+	draining.mu.Lock()
+	draining.Draining = true
+	draining.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:          "req-drain",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected := reg.ReserveProvider(model, req)
+	if selected == nil {
+		t.Fatal("ReserveProvider returned nil; healthy provider should still be routable")
+	}
+	if selected.ID != healthy.ID {
+		t.Fatalf("selected %q, want %q (draining provider must be skipped)", selected.ID, healthy.ID)
+	}
+}
+
+func TestReserveProviderExNilWhenAllDraining(t *testing.T) {
+	reg := New(testLogger())
+	model := "scheduler-model"
+	p := makeSchedulerProvider(t, reg, "only", model, 100)
+
+	p.mu.Lock()
+	p.Draining = true
+	p.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:          "req-all-drain",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Fatalf("expected nil provider when the only candidate is draining, got %q", selected.ID)
+	}
+	if decision.CandidateCount != 0 {
+		t.Fatalf("decision.CandidateCount=%d, want 0 (draining excluded)", decision.CandidateCount)
+	}
+}
+
+func TestQuickCapacityCheckSkipsDraining(t *testing.T) {
+	reg := New(testLogger())
+	model := "scheduler-model"
+	p := makeSchedulerProvider(t, reg, "only", model, 100)
+
+	// Healthy: counts as a candidate.
+	candidates, _, _ := reg.QuickCapacityCheck(model, 100, 128)
+	if candidates != 1 {
+		t.Fatalf("candidates=%d, want 1 before drain", candidates)
+	}
+
+	p.mu.Lock()
+	p.Draining = true
+	p.mu.Unlock()
+
+	// Draining: no longer a candidate.
+	candidates, _, _ = reg.QuickCapacityCheck(model, 100, 128)
+	if candidates != 0 {
+		t.Fatalf("candidates=%d, want 0 after drain", candidates)
+	}
+}
+
+func TestHeartbeatClearsDrainingState(t *testing.T) {
+	reg := New(testLogger())
+	model := "scheduler-model"
+	p := makeSchedulerProvider(t, reg, "p1", model, 100)
+
+	p.mu.Lock()
+	p.Draining = true
+	p.mu.Unlock()
+
+	// A heartbeat reporting draining=false (the provider restarted/recovered)
+	// must clear the drain gate so routing resumes.
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type:          protocol.TypeHeartbeat,
+		Status:        "idle",
+		SystemMetrics: protocol.SystemMetrics{ThermalState: "nominal"},
+		Draining:      false,
+	})
+
+	p.mu.Lock()
+	draining := p.Draining
+	p.mu.Unlock()
+	if draining {
+		t.Fatal("heartbeat with draining=false should clear p.Draining")
+	}
+}
+
 func TestReserveProviderExWhenNoneAvailable(t *testing.T) {
 	reg := New(testLogger())
 	model := "missing-model"

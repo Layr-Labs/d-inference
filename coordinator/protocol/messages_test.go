@@ -1026,3 +1026,70 @@ func TestBackendSlotCapacityBackwardCompatDecode(t *testing.T) {
 		t.Errorf("num_running = %d, want 2", slot.NumRunning)
 	}
 }
+
+func TestDrainCommandMarshalWholeSecondDeadline(t *testing.T) {
+	// The provider's Swift decoder must be able to parse the deadline. Go's
+	// time.RFC3339 emits whole seconds with no fractional component; pin that
+	// shape here so a deadline-format regression fails this test.
+	msg := DrainCommandMessage{
+		Type:     TypeDrainCommand,
+		Reason:   DrainReasonUpdate,
+		Deadline: "2026-06-09T01:30:00Z",
+		Version:  "0.6.1",
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded DrainCommandMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Reason != DrainReasonUpdate {
+		t.Errorf("reason = %q, want %q", decoded.Reason, DrainReasonUpdate)
+	}
+	if decoded.Deadline != "2026-06-09T01:30:00Z" {
+		t.Errorf("deadline = %q, want whole-second RFC3339", decoded.Deadline)
+	}
+	if decoded.Version != "0.6.1" {
+		t.Errorf("version = %q, want 0.6.1", decoded.Version)
+	}
+}
+
+func TestDrainCommandOmitsEmptyVersion(t *testing.T) {
+	msg := DrainCommandMessage{
+		Type:     TypeDrainCommand,
+		Reason:   DrainReasonMaintenance,
+		Deadline: "2026-06-09T01:30:00Z",
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if _, present := raw["version"]; present {
+		t.Errorf("version key present, want omitted when empty")
+	}
+}
+
+func TestProviderMessageUnmarshalProviderDraining(t *testing.T) {
+	data := []byte(`{"type":"provider_draining","reason":"update","deadline":"2026-06-09T01:30:00Z","in_flight":3,"completed":1}`)
+
+	var msg ProviderMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != TypeProviderDraining {
+		t.Fatalf("Type=%q, want %q", msg.Type, TypeProviderDraining)
+	}
+	draining, ok := msg.Payload.(*ProviderDrainingMessage)
+	if !ok {
+		t.Fatalf("Payload=%T, want *ProviderDrainingMessage", msg.Payload)
+	}
+	if draining.Reason != DrainReasonUpdate || draining.InFlight != 3 || draining.Completed != 1 {
+		t.Fatalf("decoded draining = %+v", draining)
+	}
+}

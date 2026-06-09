@@ -324,6 +324,76 @@ import Testing
     #expect(verified["error"] == nil)
 }
 
+@Test func desiredModelsMessageRoundTripsWithCoordinator() throws {
+    // Coordinator → provider declarative desired-state (decode a Go-emitted wire
+    // form). model_name / desired_build / previous_build are snake_case; the
+    // first entry carries a previous build (mid-rollout), the second does not.
+    let goDesired = #"{"type":"desired_models","models":[{"model_name":"gemma-4-26b","desired_build":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","previous_build":"mlx-community/gemma-4-26B-A4B-it-fp8"},{"model_name":"qwen-0.6b","desired_build":"mlx-community/Qwen3-0.6B-8bit"}]}"#
+    let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goDesired)
+    guard case .desiredModels(let desired) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(desired.models.count == 2)
+    #expect(desired.models[0].modelName == "gemma-4-26b")
+    #expect(desired.models[0].desiredBuild == "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
+    #expect(desired.models[0].previousBuild == "mlx-community/gemma-4-26B-A4B-it-fp8")
+    // omitempty parity: a Go entry without previous_build decodes to nil.
+    #expect(desired.models[1].modelName == "qwen-0.6b")
+    #expect(desired.models[1].desiredBuild == "mlx-community/Qwen3-0.6B-8bit")
+    #expect(desired.models[1].previousBuild == nil)
+
+    // Re-encode and confirm the wire shape: snake_case keys, previous_build
+    // present only on the first entry (omitempty ↔ Swift optional parity), and a
+    // full structural round-trip back to the same value.
+    let encoded = try ProviderProtocolCodec.encodeCoordinatorMessage(decoded)
+    let object = try jsonObject(encoded)
+    #expect(object["type"] as? String == "desired_models")
+    let models = try #require(object["models"] as? [[String: Any]])
+    #expect(models.count == 2)
+    #expect(models[0]["model_name"] as? String == "gemma-4-26b")
+    #expect(models[0]["desired_build"] as? String == "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
+    #expect(models[0]["previous_build"] as? String == "mlx-community/gemma-4-26B-A4B-it-fp8")
+    // Second entry omits previous_build entirely (nil optional → absent key).
+    #expect(models[1]["previous_build"] == nil)
+    #expect(models[1]["desired_build"] as? String == "mlx-community/Qwen3-0.6B-8bit")
+    #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: encoded) == decoded)
+
+    // An empty/absent models array decodes to an empty list (no crash).
+    let empty = try ProviderProtocolCodec.decodeCoordinatorMessage(from: #"{"type":"desired_models"}"#)
+    guard case .desiredModels(let emptyDesired) = empty else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(emptyDesired.models.isEmpty)
+}
+
+@Test func desiredModelEntryCodableRoundTripUsesSnakeCaseKeys() throws {
+    // Direct Codable round-trip of the entry struct (independent of the envelope):
+    // proves the CodingKeys map to snake_case and previous_build omitempty parity.
+    let withPrevious = CoordinatorMessage.DesiredModelEntry(
+        modelName: "gemma-4-26b",
+        desiredBuild: "build-desired",
+        previousBuild: "build-previous"
+    )
+    let encoder = JSONEncoder()
+    let data = try encoder.encode(withPrevious)
+    let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(obj["model_name"] as? String == "gemma-4-26b")
+    #expect(obj["desired_build"] as? String == "build-desired")
+    #expect(obj["previous_build"] as? String == "build-previous")
+    #expect(try JSONDecoder().decode(CoordinatorMessage.DesiredModelEntry.self, from: data) == withPrevious)
+
+    // No previous_build → the key is omitted (Swift synthesized optional encode).
+    let noPrevious = CoordinatorMessage.DesiredModelEntry(
+        modelName: "qwen-0.6b",
+        desiredBuild: "build-desired"
+    )
+    let noPrevData = try encoder.encode(noPrevious)
+    let noPrevObj = try #require(try JSONSerialization.jsonObject(with: noPrevData) as? [String: Any])
+    #expect(noPrevObj["previous_build"] == nil)
+    #expect(noPrevObj.keys.contains("previous_build") == false)
+    #expect(try JSONDecoder().decode(CoordinatorMessage.DesiredModelEntry.self, from: noPrevData) == noPrevious)
+}
+
 @Test func modelsUpdateRoundTripsAndReusesModelInfoEncoding() throws {
     // A verified prefetch advertises the authoritative ModelInfo (incl. the
     // computed weight hash) out-of-band so the coordinator can cross-check it

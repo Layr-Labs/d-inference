@@ -1528,6 +1528,15 @@ public actor ProviderLoop {
     /// Test seam: exposes the prefetch pre-check decision.
     func prefetchPreCheckForTesting(_ id: String) -> PrefetchPreCheck { prefetchPreCheck(modelId: id) }
 
+    /// Test seam: drive the declarative `desired_models` reconcile directly (the
+    /// real entry point, `reconcileDesiredModels`, is private and otherwise only
+    /// reached via the coordinator event loop). Lets a unit test prove that a
+    /// desired build the provider lacks triggers a prefetch, and that the
+    /// previous build is recorded for the hard-swap drop.
+    func reconcileDesiredModelsForTesting(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        await reconcileDesiredModels(entries, send: send)
+    }
+
     /// Test seam: the current effective concurrent-slot cap (tracks the live
     /// advertised set, clamped to `[1, backend.maxModelSlots]`).
     func maxModelSlotsForTesting() -> Int { maxModelSlots }

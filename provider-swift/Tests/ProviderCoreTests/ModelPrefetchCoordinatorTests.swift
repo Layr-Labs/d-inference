@@ -765,6 +765,133 @@ struct ProviderLoopPrefetchTests {
         #expect(prefetcher.callCount == 0)
     }
 
+    @Test("desired_models for a build the provider lacks triggers a prefetch of the desired build")
+    func desiredModelsTriggersPrefetchOfMissingBuild() async throws {
+        // A brand-new provider advertises nothing yet for this alias. It receives
+        // a desired_models entry naming a build it does not have on disk; the
+        // declarative reconcile must kick off a background prefetch OF THE DESIRED
+        // BUILD (not the previous one).
+        let desiredBuild = "org/desired-\(UUID().uuidString)"
+        let previousBuild = "org/previous-\(UUID().uuidString)"
+
+        let loop = try makeLoop(models: [])
+        let client = makeClient()
+        // .blockUntilCancelled lets us assert the prefetch STARTED for the desired
+        // build without racing a completion; we cancel via shutdown at the end.
+        let prefetcher = RecordingBlockingPrefetcher()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: prefetcher,
+            preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
+            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(
+                modelName: "alias-a",
+                desiredBuild: desiredBuild,
+                previousBuild: previousBuild
+            )],
+            send: capturingSend
+        )
+
+        // The desired build's download body started; the previous build was never
+        // prefetched (it's only the drop target, not a fetch target).
+        let started = await waitUntil(timeout: .seconds(5)) {
+            prefetcher.startedIDs.contains(desiredBuild)
+        }
+        #expect(started)
+        #expect(!prefetcher.startedIDs.contains(previousBuild))
+        let inflight = await coord.inFlightCount()
+        #expect(inflight == 1)
+
+        await coord.shutdown(timeout: .seconds(3))
+    }
+
+    @Test("applyVerifiedPrefetch hard-swaps: advertises desired, drops previous from advertisedModels + store, emits models_update")
+    func applyVerifiedPrefetchHardSwapsDroppingPrevious() async throws {
+        // Seed the on-disk snapshot for the DESIRED build so applyVerifiedPrefetch
+        // can scan + hash it. The PREVIOUS build is advertised at startup (loop)
+        // and in the client's AdvertisedModelStore, so we can observe the drop.
+        let desiredBuild = "org/desired-\(UUID().uuidString)"
+        let previousBuild = "org/previous-\(UUID().uuidString)"
+        let modelDir = try seedSnapshot(modelID: desiredBuild)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        let previousInfo = ModelInfo(id: previousBuild, sizeBytes: 1, estimatedMemoryGb: 1)
+        let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
+        let client = makeClient()
+        // Mirror startup advertising into the client store so the hard-swap drop
+        // (unadvertiseModel) has something to remove there too.
+        _ = await client.advertiseModel(previousInfo)
+
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: NoopSuccessPrefetcher(),
+            preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
+            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+
+        // Before: only the previous build is advertised, on both the loop and the
+        // client store.
+        #expect(await loop.isModelAdvertised(previousBuild))
+        #expect(await client.currentAdvertisedModels().map(\.id).contains(previousBuild))
+        #expect(await loop.advertisedModelCount() == 1)
+
+        // Reconcile records previous→desired as the swap target, then prefetches
+        // the (missing) desired build. On .verified, applyVerifiedPrefetch fires.
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(
+                modelName: "alias-a",
+                desiredBuild: desiredBuild,
+                previousBuild: previousBuild
+            )],
+            send: capturingSend
+        )
+
+        // Wait for the hard swap to settle: desired advertised, previous dropped.
+        let swapped = await waitUntil(timeout: .seconds(10)) {
+            let hasDesired = await loop.isModelAdvertised(desiredBuild)
+            let hasPrevious = await loop.isModelAdvertised(previousBuild)
+            return hasDesired && !hasPrevious
+        }
+        #expect(swapped)
+
+        // Desired is now the only advertised build on the loop.
+        #expect(await loop.isModelAdvertised(desiredBuild))
+        #expect(!(await loop.isModelAdvertised(previousBuild)))
+        #expect(await loop.advertisedModelCount() == 1)
+        // The desired build carries a recorded weight hash (attestation coverage).
+        let desiredHash = await loop.modelHashForTesting(desiredBuild)
+        #expect(desiredHash != nil && !(desiredHash!.isEmpty))
+        // The previous build's hash was forgotten on drop.
+        #expect(await loop.modelHashForTesting(previousBuild) == nil)
+
+        // The previous build was also dropped from the client's advertised store
+        // (so the next register no longer announces it); desired is now present.
+        let clientIDs = await client.currentAdvertisedModels().map(\.id)
+        #expect(clientIDs.contains(desiredBuild))
+        #expect(!clientIDs.contains(previousBuild))
+
+        // An authoritative models_update was emitted carrying the DESIRED build
+        // (with its hash) — this is the wire signal the coordinator uses to derive
+        // the previous-build drop from the alias's desired/previous pair.
+        let emitted = await waitUntil(timeout: .seconds(5)) {
+            outbound.modelsUpdates().contains { models in models.contains { $0.id == desiredBuild } }
+        }
+        #expect(emitted)
+        let desiredUpdate = outbound.modelsUpdates().flatMap { $0 }.first { $0.id == desiredBuild }
+        #expect(desiredUpdate?.weightHash == desiredHash)
+        // No emitted models_update advertised the previous build as a fresh build.
+        #expect(!outbound.modelsUpdates().flatMap { $0 }.contains { $0.id == previousBuild })
+
+        await coord.shutdown(timeout: .seconds(3))
+    }
+
     private func makeLoopWithHashes(models: [ModelInfo], hashes: [String: String]) throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -797,6 +924,26 @@ private final class TrackingPrefetcher: ModelPrefetcher, @unchecked Sendable {
         onByteProgress: @Sendable @escaping (Int64, Int64) -> Void
     ) async throws {
         lock.withLock { _count += 1 }
+    }
+}
+
+/// Prefetcher that records every model id whose download body STARTED and then
+/// blocks forever (until task cancellation). Lets a reconcile test assert which
+/// build a `desired_models` entry actually triggered a fetch for, without racing
+/// a completion.
+private final class RecordingBlockingPrefetcher: ModelPrefetcher, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _startedIDs: [String] = []
+    var startedIDs: [String] { lock.lock(); defer { lock.unlock() }; return _startedIDs }
+    func prefetchToDisk(
+        modelID: String,
+        onByteProgress: @Sendable @escaping (Int64, Int64) -> Void
+    ) async throws {
+        lock.withLock { _startedIDs.append(modelID) }
+        while true {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 }
 

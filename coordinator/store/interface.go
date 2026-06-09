@@ -106,6 +106,10 @@ type Store interface {
 	// tracking). keyID may be empty for legacy/account-scoped attribution.
 	RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
 
+	// RecordUsageFullWithPublicModel logs the concrete billing/statistics model
+	// plus the optional consumer-facing model name returned by usage history.
+	RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
+
 	// RecordPayment records a settled payment between consumer and provider.
 	RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error
 
@@ -261,6 +265,19 @@ type Store interface {
 	FindPublishingAPIKeys() []PublishingAPIKey
 	FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error)
 	MarkPublishingAPIKeyUsed(id string) error
+
+	// --- Model Aliases (public-facing names → a desired concrete build) ---
+
+	// UpsertModelAlias creates or replaces an alias definition (idempotent on
+	// AliasID). The DesiredBuild/PreviousBuild pointers are stored verbatim;
+	// resolution happens in the registry.
+	UpsertModelAlias(alias *ModelAlias) error
+	// GetModelAlias returns the alias by id; ok is false when not found.
+	GetModelAlias(aliasID string) (alias *ModelAlias, ok bool, err error)
+	// ListModelAliases returns every alias (active and inactive).
+	ListModelAliases() ([]ModelAlias, error)
+	// DeleteModelAlias removes an alias definition.
+	DeleteModelAlias(aliasID string) error
 
 	// --- Releases (provider binary versioning) ---
 
@@ -515,6 +532,7 @@ type UsageRecord struct {
 	ConsumerKey      string            `json:"consumer_key"`
 	KeyID            string            `json:"key_id,omitempty"`
 	Model            string            `json:"model"`
+	PublicModel      string            `json:"public_model,omitempty"`
 	PromptTokens     int               `json:"prompt_tokens"`
 	CompletionTokens int               `json:"completion_tokens"`
 	RequestLocation  *ProviderLocation `json:"request_location,omitempty"`
@@ -864,6 +882,31 @@ type ModelRegistryRecord struct {
 	ModelRegistryEntry
 	ActiveVersion *ModelVersion      `json:"active_version,omitempty"`
 	Files         []ModelVersionFile `json:"files,omitempty"`
+}
+
+// ModelAlias is a stable, consumer-facing model name (e.g. "gemma-4-26b") that
+// resolves to a single DESIRED concrete registry build (a raw HuggingFace id
+// such as "mlx-community/gemma-4-26B-A4B-it-qat-4bit"), with an optional
+// PreviousBuild that stays acceptable while providers converge on the desired
+// one. Consumers only ever see the alias; the coordinator resolves it to a
+// concrete build for routing/billing. This is what makes a quant swap
+// (fp8 → qat-4bit) invisible to clients: a rollout is just setting DesiredBuild,
+// a revert is setting it back. There are no weights, ramps, or migrations.
+type ModelAlias struct {
+	AliasID       string `json:"alias_id"`
+	DisplayName   string `json:"display_name"`
+	DesiredBuild  string `json:"desired_build"`            // the single build providers should converge to
+	PreviousBuild string `json:"previous_build,omitempty"` // still-acceptable during rollout; "" when none
+	// RetiredBuilds is the alias's lineage: former desired/previous builds
+	// rotated out by later upserts. Kept so a provider that was offline through
+	// a retirement (still advertising only a retired build) is recognized as
+	// part of this alias's fleet at re-registration and told to converge. A
+	// build promoted back to desired/previous leaves this list. Bounded; oldest
+	// entries dropped first.
+	RetiredBuilds []string  `json:"retired_builds,omitempty"`
+	Active        bool      `json:"active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // ModelManifest mirrors the minimal darkbloom-publish manifest JSON.

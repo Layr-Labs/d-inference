@@ -13,6 +13,10 @@ export interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  // Attached images as base64 `data:` URIs (user messages only). Kept in
+  // memory for display + re-send within the session; stripped from persisted
+  // state (see `partialize`) so large base64 blobs don't exhaust localStorage.
+  images?: string[];
   thinking?: string;
   trust?: TrustMetadata;
   streaming?: boolean;
@@ -166,8 +170,16 @@ export const useStore = create<AppState>()(
       partialize: (state) => ({
         chats: state.chats.map((c) => ({
           ...c,
-          // Clear streaming flag on any messages that were mid-stream when page closed
-          messages: c.messages.map((m) => ({ ...m, streaming: false })),
+          messages: c.messages.map((m) => ({
+            ...m,
+            // Clear streaming flag on any messages mid-stream when page closed.
+            streaming: false,
+            // Drop base64 image data from persistence — a few attachments would
+            // exceed the ~5-10MB localStorage quota and silently break saving
+            // the whole chat history. Images stay visible for the live session;
+            // they vanish on reload (follow-up: IndexedDB for durable storage).
+            images: undefined,
+          })),
         })),
         activeChatId: state.activeChatId,
         selectedModel: state.selectedModel,

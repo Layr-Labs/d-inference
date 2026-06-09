@@ -272,6 +272,171 @@ import Testing
     #expect(failedObj["error"] as? String == "GPU OOM")
 }
 
+@Test func prefetchModelMessagesRoundTripWithCoordinator() throws {
+    // Coordinator → provider prefetch request (decode a Go-emitted wire form).
+    let goPrefetchRequest = #"{"type":"prefetch_model","model_id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","priority":5}"#
+    let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goPrefetchRequest)
+    guard case .prefetchModel(let pf) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(pf.modelId == "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
+    #expect(pf.priority == 5)
+
+    // priority is omitempty on the Go side: a request without it decodes to 0.
+    let noPriority = #"{"type":"prefetch_model","model_id":"m"}"#
+    guard case .prefetchModel(let pf0) = try ProviderProtocolCodec.decodeCoordinatorMessage(from: noPriority) else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(pf0.priority == 0)
+
+    // Encoding a zero priority must omit the key (byte-compatible with Go).
+    let zeroEncoded = try ProviderProtocolCodec.encodeCoordinatorMessage(
+        .prefetchModel(CoordinatorMessage.PrefetchModel(modelId: "m"))
+    )
+    #expect(try jsonObject(zeroEncoded)["priority"] == nil)
+
+    // Provider → coordinator status replies across the full lifecycle.
+    let model = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+    let replies: [ProviderMessage] = [
+        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(modelId: model, status: .started)),
+        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
+            modelId: model, status: .downloading, bytesDone: 1_048_576, bytesTotal: 15_600_000_000)),
+        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(modelId: model, status: .verified)),
+        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
+            modelId: model, status: .failed, error: "hash mismatch")),
+    ]
+    for reply in replies {
+        let encoded = try ProviderProtocolCodec.encodeProviderMessage(reply)
+        let object = try jsonObject(encoded)
+        #expect(object["type"] as? String == "prefetch_model_status")
+        #expect(object["model_id"] as? String == model)
+        let roundTripped = try ProviderProtocolCodec.decodeProviderMessage(from: encoded)
+        #expect(roundTripped == reply)
+    }
+
+    // Progress fields appear only when non-zero; verified carries neither.
+    let downloading = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(replies[1]))
+    #expect(downloading["bytes_done"] as? Int64 == 1_048_576)
+    #expect(downloading["bytes_total"] as? Int64 == 15_600_000_000)
+    let verified = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(replies[2]))
+    #expect(verified["bytes_done"] == nil)
+    #expect(verified["bytes_total"] == nil)
+    #expect(verified["error"] == nil)
+}
+
+@Test func desiredModelsMessageRoundTripsWithCoordinator() throws {
+    // Coordinator → provider declarative desired-state (decode a Go-emitted wire
+    // form). model_name / desired_build / previous_build are snake_case; the
+    // first entry carries a previous build (mid-rollout), the second does not.
+    let goDesired = #"{"type":"desired_models","models":[{"model_name":"gemma-4-26b","desired_build":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","previous_build":"mlx-community/gemma-4-26B-A4B-it-fp8"},{"model_name":"qwen-0.6b","desired_build":"mlx-community/Qwen3-0.6B-8bit"}]}"#
+    let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goDesired)
+    guard case .desiredModels(let desired) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(desired.models.count == 2)
+    #expect(desired.models[0].modelName == "gemma-4-26b")
+    #expect(desired.models[0].desiredBuild == "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
+    #expect(desired.models[0].previousBuild == "mlx-community/gemma-4-26B-A4B-it-fp8")
+    // omitempty parity: a Go entry without previous_build decodes to nil.
+    #expect(desired.models[1].modelName == "qwen-0.6b")
+    #expect(desired.models[1].desiredBuild == "mlx-community/Qwen3-0.6B-8bit")
+    #expect(desired.models[1].previousBuild == nil)
+
+    // Re-encode and confirm the wire shape: snake_case keys, previous_build
+    // present only on the first entry (omitempty ↔ Swift optional parity), and a
+    // full structural round-trip back to the same value.
+    let encoded = try ProviderProtocolCodec.encodeCoordinatorMessage(decoded)
+    let object = try jsonObject(encoded)
+    #expect(object["type"] as? String == "desired_models")
+    let models = try #require(object["models"] as? [[String: Any]])
+    #expect(models.count == 2)
+    #expect(models[0]["model_name"] as? String == "gemma-4-26b")
+    #expect(models[0]["desired_build"] as? String == "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
+    #expect(models[0]["previous_build"] as? String == "mlx-community/gemma-4-26B-A4B-it-fp8")
+    // Second entry omits previous_build entirely (nil optional → absent key).
+    #expect(models[1]["previous_build"] == nil)
+    #expect(models[1]["desired_build"] as? String == "mlx-community/Qwen3-0.6B-8bit")
+    #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: encoded) == decoded)
+
+    // An empty/absent models array decodes to an empty list (no crash).
+    let empty = try ProviderProtocolCodec.decodeCoordinatorMessage(from: #"{"type":"desired_models"}"#)
+    guard case .desiredModels(let emptyDesired) = empty else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(emptyDesired.models.isEmpty)
+}
+
+@Test func desiredModelEntryCodableRoundTripUsesSnakeCaseKeys() throws {
+    // Direct Codable round-trip of the entry struct (independent of the envelope):
+    // proves the CodingKeys map to snake_case and previous_build omitempty parity.
+    let withPrevious = CoordinatorMessage.DesiredModelEntry(
+        modelName: "gemma-4-26b",
+        desiredBuild: "build-desired",
+        previousBuild: "build-previous"
+    )
+    let encoder = JSONEncoder()
+    let data = try encoder.encode(withPrevious)
+    let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(obj["model_name"] as? String == "gemma-4-26b")
+    #expect(obj["desired_build"] as? String == "build-desired")
+    #expect(obj["previous_build"] as? String == "build-previous")
+    #expect(try JSONDecoder().decode(CoordinatorMessage.DesiredModelEntry.self, from: data) == withPrevious)
+
+    // No previous_build → the key is omitted (Swift synthesized optional encode).
+    let noPrevious = CoordinatorMessage.DesiredModelEntry(
+        modelName: "qwen-0.6b",
+        desiredBuild: "build-desired"
+    )
+    let noPrevData = try encoder.encode(noPrevious)
+    let noPrevObj = try #require(try JSONSerialization.jsonObject(with: noPrevData) as? [String: Any])
+    #expect(noPrevObj["previous_build"] == nil)
+    #expect(noPrevObj.keys.contains("previous_build") == false)
+    #expect(try JSONDecoder().decode(CoordinatorMessage.DesiredModelEntry.self, from: noPrevData) == noPrevious)
+}
+
+@Test func modelsUpdateRoundTripsAndReusesModelInfoEncoding() throws {
+    // A verified prefetch advertises the authoritative ModelInfo (incl. the
+    // computed weight hash) out-of-band so the coordinator can cross-check it
+    // before routing. The wire form reuses the SAME ModelInfo shape as
+    // register's models[]: {"type":"models_update","models":[{...}]}.
+    let info = ModelInfo(
+        id: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+        modelType: "gemma3",
+        quantization: "4bit",
+        sizeBytes: 15_600_000_000,
+        estimatedMemoryGb: 16.0,
+        weightHash: String(repeating: "ab", count: 32)
+    )
+    let message: ProviderMessage = .modelsUpdate(ProviderMessage.ModelsUpdate(models: [info]))
+
+    let encoded = try ProviderProtocolCodec.encodeProviderMessage(message)
+    let object = try jsonObject(encoded)
+    #expect(object["type"] as? String == "models_update")
+
+    // models[] carries the snake_case ModelInfo fields including weight_hash.
+    let models = try #require(object["models"] as? [[String: Any]])
+    #expect(models.count == 1)
+    let m = models[0]
+    #expect(m["id"] as? String == info.id)
+    #expect(m["model_type"] as? String == "gemma3")
+    #expect(m["quantization"] as? String == "4bit")
+    #expect((m["size_bytes"] as? NSNumber)?.int64Value == 15_600_000_000)
+    #expect(m["weight_hash"] as? String == info.weightHash)
+
+    // Full round-trip through the Codable envelope preserves the message.
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: encoded)
+    #expect(decoded == message)
+
+    // Decodes a Go-emitted wire form too (forward compat with the coordinator).
+    let goWire = #"{"type":"models_update","models":[{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"weight_hash":"deadbeef"}]}"#
+    guard case .modelsUpdate(let u) = try ProviderProtocolCodec.decodeProviderMessage(from: goWire) else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(u.models.count == 1)
+    #expect(u.models[0].id == "org/m")
+    #expect(u.models[0].weightHash == "deadbeef")
+}
+
 @Test func coordinatorMessagesDecodeAndEncodeWithSnakeCaseKeys() throws {
     let encryptedRequest = #"{"type":"inference_request","request_id":"go-enc-req-1","body":null,"encrypted_body":{"ephemeral_public_key":"ZXBoZW1lcmFs","ciphertext":"Y2lwaGVy"}}"#
     let request = try ProviderProtocolCodec.decodeCoordinatorMessage(from: encryptedRequest)

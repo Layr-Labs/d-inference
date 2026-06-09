@@ -140,10 +140,18 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // release has been registered in the store (e.g. in-memory dev setups).
 // Production reads the latest version from the releases table.
 //
-// 0.5.0 is the Swift cutover release: pure Swift CLI, no Python runtime,
-// no vllm-mlx subprocess. Providers reporting backend == "mlx-swift" skip
-// the python/runtime hash checks via registry.BackendUsesSwiftRuntime.
-var LatestProviderVersion = "0.5.0"
+// 0.5.17 is the desired_models cutover release for declarative prefetch/hotswap.
+// Keep this fallback in sync with ProviderCore.version so dev/in-memory
+// coordinators advertise the same floor as the Swift binary they expect.
+var LatestProviderVersion = "0.5.17"
+
+// minProviderVersionForDesiredModels is the first provider version whose Swift
+// runtime understands the desired_models message. The coordinator must NOT send
+// desired_models to any provider below this version (or on a non-Swift backend):
+// a pre-feature provider's strict decoder throws on unknown message types and
+// would disconnect. KEEP THIS IN SYNC with the release that ships Swift
+// desired_models support (ProviderCore.version at that cut).
+const minProviderVersionForDesiredModels = "0.5.17"
 
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when
@@ -764,7 +772,34 @@ func (s *Server) SyncModelCatalog() {
 	}
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
+
+	s.syncModelAliases()
 	s.invalidateCatalogCache()
+}
+
+// syncModelAliases loads public-alias → {desired, previous} build pointers from
+// the store into the registry so consumer requests for an alias (e.g.
+// "gemma-4-26b") resolve to a concrete build. Only active aliases with a
+// non-empty desired build are installed.
+func (s *Server) syncModelAliases() {
+	aliases, err := s.store.ListModelAliases()
+	if err != nil {
+		s.logger.Error("model alias sync failed", "error", err)
+		return
+	}
+	resolved := make(map[string]registry.AliasTarget, len(aliases))
+	for _, a := range aliases {
+		if !a.Active || a.DesiredBuild == "" {
+			continue
+		}
+		resolved[a.AliasID] = registry.AliasTarget{
+			Desired:  a.DesiredBuild,
+			Previous: a.PreviousBuild,
+			Retired:  a.RetiredBuilds,
+		}
+	}
+	s.registry.SetModelAliases(resolved)
+	s.logger.Info("model aliases synced to registry", "active_aliases", len(resolved))
 }
 
 // invalidateCatalogCache removes all cached model catalog responses so the
@@ -1449,9 +1484,21 @@ func (s *Server) routes() {
 	// (bare GET/POST/DELETE /v1/admin/models) was removed; the model_registry is
 	// the single source of truth. Use register + the per-model action endpoints.
 	s.mux.HandleFunc("POST /v1/admin/models/register", s.handleRegisterModel)
+	// Public model aliases (stable names → concrete builds). More-specific
+	// patterns take precedence over the POST /v1/admin/models/ subtree below.
+	s.mux.HandleFunc("GET /v1/admin/models/aliases", s.handleModelAliasList)
+	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
+	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
+
+	// Admin state export (DAR-70) — streams the TEE-sealed /data archive
+	// (step-ca + MicroMDM) for migration off EigenCloud. Always registered, but
+	// inert (404) unless EIGENINFERENCE_STATE_EXPORT_ENABLED=true; admin-gated;
+	// encrypted to an age recipient by default. Auth + output protection are
+	// enforced inside the handler.
+	s.mux.HandleFunc("GET /v1/admin/state-export", s.handleAdminStateExport)
 
 	// Admin CLI auth — Privy email OTP for getting admin tokens without a browser.
 	s.mux.HandleFunc("POST /v1/admin/auth/init", s.handleAdminAuthInit)     // no auth (sends OTP)

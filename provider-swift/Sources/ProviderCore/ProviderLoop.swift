@@ -34,6 +34,50 @@ public final class SendHandle: @unchecked Sendable {
     }
 }
 
+/// Bridges a `SendHandle` to the `PrefetchStatusSink` contract so the prefetch
+/// coordinator can emit status without depending on `OutboundMessage`/transport
+/// types (keeps it independently testable with a recording sink).
+struct SendHandlePrefetchSink: PrefetchStatusSink {
+    let send: SendHandle
+    func emit(
+        modelId: String,
+        status: ProviderMessage.PrefetchModelStatus.Status,
+        bytesDone: Int64,
+        bytesTotal: Int64,
+        error: String?
+    ) {
+        send.send(.prefetchModelStatus(
+            modelId: modelId,
+            status: status,
+            bytesDone: bytesDone,
+            bytesTotal: bytesTotal,
+            error: error
+        ))
+    }
+}
+
+/// Wraps a `PrefetchStatusSink` and additionally notifies the host on terminal
+/// `.failed` statuses. `ProviderLoop` uses this to schedule a bounded-backoff
+/// retry when a DESIRED build's background prefetch fails (one transient
+/// network/CDN error must not strand the provider on the old build until the
+/// next coordinator push — the resume-aware downloader makes a retry cheap).
+struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
+    let base: any PrefetchStatusSink
+    let onFailed: @Sendable (String) -> Void
+    func emit(
+        modelId: String,
+        status: ProviderMessage.PrefetchModelStatus.Status,
+        bytesDone: Int64,
+        bytesTotal: Int64,
+        error: String?
+    ) {
+        base.emit(modelId: modelId, status: status, bytesDone: bytesDone, bytesTotal: bytesTotal, error: error)
+        if status == .failed {
+            onFailed(modelId)
+        }
+    }
+}
+
 private final class OneShotBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
@@ -72,6 +116,11 @@ public struct ProviderLoopConfig: Sendable {
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
+    /// Snapshot fingerprints captured at the same time as `modelHashes` (see
+    /// `WeightHasher.snapshotFingerprint`). Seeding these lets the first
+    /// `ensureModelLoaded` skip a full re-read of weights that were already
+    /// hashed at startup; without them the first load re-hashes every byte.
+    public let modelHashFingerprints: [String: String]
     /// When set, the provider also serves a local OpenAI-compatible HTTP
     /// endpoint off the SAME loaded models it serves to the coordinator
     /// (unified mode). nil = coordinator-only (the default).
@@ -85,6 +134,7 @@ public struct ProviderLoopConfig: Sendable {
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
+        modelHashFingerprints: [String: String] = [:],
         localEndpoint: LocalInferenceHTTPConfig? = nil
     ) {
         self.coordinatorURL = coordinatorURL
@@ -94,6 +144,7 @@ public struct ProviderLoopConfig: Sendable {
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
+        self.modelHashFingerprints = modelHashFingerprints
         self.localEndpoint = localEndpoint
     }
 }
@@ -119,8 +170,28 @@ public actor ProviderLoop {
     /// BatchScheduler and worker task. Keyed by model ID.
     private var modelSlots: [String: ModelSlot] = [:]
 
-    /// Hard cap on concurrent model slots to prevent coordinator-driven OOM.
-    private let maxModelSlots: Int
+    /// Operator-configured hard cap on concurrent model slots
+    /// (`backend.maxModelSlots`). This is the memory-safety ceiling: the
+    /// effective cap never exceeds it. A provider configured with `1` has opted
+    /// out of concurrency and stays single-slot regardless of how many builds
+    /// it advertises.
+    private let configuredMaxModelSlots: Int
+
+    /// Number of de-duplicated models advertised at startup. The effective cap
+    /// never drops below this, so a provider that booted advertising N models
+    /// can always hold those N resident (subject to the configured hard cap).
+    private let startupModelCount: Int
+
+    /// Effective concurrent-slot cap. Tracks the LIVE advertised-model count
+    /// rather than freezing it at startup, so a verified prefetch that adds a
+    /// new build (via `applyVerifiedPrefetch`) lets the provider hold old+new
+    /// resident concurrently during a zero-downtime migration. Always clamped
+    /// to `[1, configuredMaxModelSlots]` and floored at `startupModelCount`.
+    /// Read by the slot-cap guards as the current cap.
+    private var maxModelSlots: Int {
+        let live = max(startupModelCount, advertisedModels.count)
+        return max(1, min(configuredMaxModelSlots, live))
+    }
 
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
@@ -156,6 +227,71 @@ public actor ProviderLoop {
     /// Track that edge so the post-spawn registration does not leave a stale task.
     private var completedBeforeTaskRegistration = Set<String>()
 
+    /// Mutable advertised-model set, seeded from `loopConfig.models`. Background
+    /// prefetch appends newly-verified builds at runtime so they become
+    /// loadable/servable and appear in the local `/v1/models` catalog without a
+    /// restart. Keyed by model id; never drops the currently-served model. The
+    /// `CoordinatorClient` keeps its own mirror (`AdvertisedModelStore`) for the
+    /// registration wire path; these are kept in sync via `advertiseModel`.
+    private var advertisedModels: [String: ModelInfo]
+
+    /// Mutable model weight-hash map, seeded from `loopConfig.modelHashes`.
+    /// Background prefetch records the verified build's weight hash here so the
+    /// attestation challenge response (`active_model_hash` / `model_hashes`) and
+    /// `syncWarmModelState` cover hotswapped models — otherwise the coordinator's
+    /// per-model hash verification would be silently bypassed for them. Keyed by
+    /// model id; weight hashes are immutable per build (a model id maps to one
+    /// verified snapshot).
+    private var modelHashes: [String: String]
+
+    /// Pending hard swaps: desired build id → the previous build to retire locally
+    /// once the desired one verifies. Populated by the declarative `desired_models`
+    /// reconcile, consumed (once) in `applyVerifiedPrefetch`.
+    private var desiredSwapDrop: [String: String] = [:]
+
+    /// Desired builds from the latest declarative reconcile. If a build was once
+    /// desired but disappears from a later desired set while its prefetch is still
+    /// in flight, a late verified callback for that old build is ignored.
+    private var desiredPrefetchTargets = Set<String>()
+    private var staleDesiredPrefetches = Set<String>()
+
+    /// Priority used for desired-build convergence prefetches (reconcile +
+    /// retry), between an explicit coordinator `prefetch_model` default and
+    /// urgent operator pushes.
+    static let desiredModelsPrefetchPriority = 5
+
+    /// Bounded-backoff retry state for failed DESIRED-build prefetches. One
+    /// transient download failure must not strand the provider on the old build
+    /// until an operator re-POSTs the alias: each failure of a still-desired
+    /// build schedules one retry per delay below, then gives up until the next
+    /// desired_models push (which resets the budget). Delays are injectable for
+    /// tests via `setDesiredPrefetchRetryDelaysForTesting`.
+    private var desiredPrefetchRetryDelays: [Duration] = [
+        .seconds(30), .seconds(60), .seconds(120), .seconds(300), .seconds(600),
+    ]
+    private var desiredPrefetchRetryAttempts: [String: Int] = [:]
+    private var desiredPrefetchRetryTasks: [String: Task<Void, Never>] = [:]
+
+    /// Background model-build prefetcher. Owns coalescing, throttled progress,
+    /// cancellation, and the verified→advertise hook (which also performs the
+    /// hard-swap drop of the superseded build). Built lazily in `run()` so it can
+    /// capture `self` and the live coordinator client.
+    private var prefetchCoordinator: ModelPrefetchCoordinator?
+
+    /// The live coordinator client, retained so the verified-prefetch hook can
+    /// re-register the updated advertised set, and so weight-hash refreshes can be
+    /// pushed into reconnect registrations (models[].weight_hash drives the
+    /// coordinator's per-model catalog routing filter). Set in `run()`.
+    private var coordinatorClient: CoordinatorClient?
+
+    /// The live outbound send handle (same one prefetch status flows through).
+    /// Retained so `applyVerifiedPrefetch` can push an out-of-band
+    /// `models_update` carrying the verified build's authoritative `ModelInfo`
+    /// (including its computed weight hash) for the coordinator to cross-check
+    /// before routing. Set in `run()`; injectable in tests via
+    /// `installPrefetchCoordinatorForTesting`.
+    private var outboundSend: SendHandle?
+
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
     private var preloadTasks: [String: Task<Void, Never>] = [:]
 
@@ -171,6 +307,23 @@ public actor ProviderLoop {
 
     /// Cached binary hash for attestation responses.
     private var binaryHash: String?
+
+    /// Live per-model weight hashes. Seeded from the startup scan and REFRESHED
+    /// whenever a model is (re)loaded from disk, so attestation challenge
+    /// responses report the weights actually being served — not the state of
+    /// the disk when the daemon started. Previously the startup map was frozen
+    /// for the process lifetime: a model re-published while the daemon ran kept
+    /// the stale hash and tripped the coordinator's model-swap hard-untrust
+    /// even though the disk (and the loaded model) were correct.
+    private var liveModelHashes: [String: String]
+
+    /// Per-model snapshot fingerprints (paths + sizes + mtimes) recorded when a
+    /// weight hash was last computed. A model whose fingerprint is unchanged at
+    /// reload skips the full multi-second re-hash — idle-unload/lazy-reload
+    /// cycles happen hourly, and re-reading ~30 GB of unchanged weights each
+    /// time would tax cold-start TTFT for nothing. Seeded from the config so
+    /// the FIRST load doesn't re-read weights already hashed at startup.
+    private var modelHashFingerprints: [String: String]
 
     /// Whether we've already submitted an auto-report for this session.
     /// Set to true after the first trust-triggered report to avoid spamming.
@@ -232,6 +385,12 @@ public actor ProviderLoop {
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil
     ) throws {
         self.loopConfig = config
+        var advertised: [String: ModelInfo] = [:]
+        for model in config.models where advertised[model.id] == nil {
+            advertised[model.id] = model
+        }
+        self.advertisedModels = advertised
+        self.modelHashes = config.modelHashes
         if purgeLegacyFiles {
             NodeKeyPair.purgeLegacyFiles()
         }
@@ -241,7 +400,13 @@ public actor ProviderLoop {
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
-        self.maxModelSlots = max(1, min(config.models.count, Int(config.config.backend.maxModelSlots)))
+        // The effective cap (`maxModelSlots`) is computed from the live
+        // advertised set; here we capture the operator hard cap and the
+        // de-duplicated startup count it is clamped against. Using the deduped
+        // `advertised.count` (not raw `config.models.count`) keeps the startup
+        // floor consistent with what is actually advertised.
+        self.configuredMaxModelSlots = max(1, Int(config.config.backend.maxModelSlots))
+        self.startupModelCount = max(1, advertised.count)
         let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
         self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
         // Phase 3: construct the global disk accountant (one per host).
@@ -254,6 +419,8 @@ public actor ProviderLoop {
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
+        self.liveModelHashes = config.modelHashes
+        self.modelHashFingerprints = config.modelHashFingerprints
     }
 
     static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
@@ -284,6 +451,15 @@ public actor ProviderLoop {
         let scheduler: BatchScheduler
         let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
+        /// Vision-language model (config has `vision_config`). Multimodal
+        /// requests are served from `container` via the non-batched path.
+        let isVLM: Bool
+        /// Model type (e.g. "gemma"), captured at load. Authoritative for the
+        /// reasoning-parser choice for as long as the model can serve — read
+        /// this, NOT `advertisedModels[id]`, which goes nil in the hard-swap
+        /// drop window while the slot is still resident (a Gemma build would
+        /// otherwise fall back to the qwen3 parser and leak <think> tokens).
+        let modelType: String?
         var lastInferenceAt: ContinuousClock.Instant
     }
 
@@ -388,6 +564,11 @@ public actor ProviderLoop {
             stats: stats,
             state: state
         )
+        coordinatorClient = coordinator
+        // Seed the client with the current map: a model loaded before the
+        // client existed (e.g. a local-endpoint request during startup) may
+        // already have refreshed a hash, and registration must carry it.
+        await coordinator.updateModelWeightHashes(liveModelHashes)
 
         let (events, sendFn) = await coordinator.start()
         let send = SendHandle(sendFn)
@@ -418,6 +599,13 @@ public actor ProviderLoop {
             }
         }
         #endif
+
+        // Retain the send handle and build the background prefetch coordinator
+        // (Layer 3) so applyVerifiedPrefetch can emit a `models_update` over the
+        // live connection without threading a handle through the prefetch
+        // callbacks. (coordinatorClient was already retained above, at creation.)
+        self.outboundSend = send
+        self.prefetchCoordinator = makePrefetchCoordinator()
 
         // Start the idle-timeout monitor before processing events so that
         // a rogue model-load (e.g. during `attestation_challenge` priming)
@@ -471,6 +659,13 @@ public actor ProviderLoop {
                 case .loadModel(let modelId):
                     handleLoadModelRequest(modelId: modelId, send: send)
 
+                case .prefetchModel(let modelId, let priority):
+                    staleDesiredPrefetches.remove(modelId)
+                    await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+
+                case .desiredModels(let entries):
+                    await reconcileDesiredModels(entries, send: send)
+
                 case .trustStatus(let trustLevel, let status, let reason):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
                 }
@@ -489,6 +684,16 @@ public actor ProviderLoop {
         autoUpdateTask = nil
         autoReportTask?.cancel()
         autoReportTask = nil
+        // Cancel any scheduled desired-build prefetch retries before tearing
+        // the prefetch subsystem down.
+        for task in desiredPrefetchRetryTasks.values { task.cancel() }
+        desiredPrefetchRetryTasks.removeAll()
+        desiredPrefetchRetryAttempts.removeAll()
+        // Cancel background prefetch downloads (no GPU slot, but they hold a
+        // network connection and disk staging we want to release promptly).
+        if let prefetchCoordinator {
+            await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
+        }
         let preloads = Array(preloadTasks.values)
         for task in preloads { task.cancel() }
         cancelLoadWaiters()
@@ -780,7 +985,14 @@ public actor ProviderLoop {
         let signingIdentity = self.signer
         let log = self.logger
         let tokenizer = slot.tokenizer
-        let modelType = loopConfig.models.first(where: { $0.id == modelId })?.modelType
+        // Read modelType from the loaded SLOT, not advertisedModels: the latter
+        // goes nil in the hard-swap drop window while the slot is still resident,
+        // which would silently fall the reasoning parser back to qwen3 and leak
+        // <think> tokens for a Gemma build. The slot carries the type captured at
+        // load, so it is correct for startup, prefetched, AND dropped-resident.
+        let modelType = slot.modelType
+        let slotContainer = slot.container
+        let slotIsVLM = slot.isVLM
 
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
@@ -835,7 +1047,9 @@ public actor ProviderLoop {
             // still going through the upstream library for SSE encoding.
             let providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
-                    [chatRequest.model: .init(scheduler: sched, tokenizer: tokenizer, modelType: modelType)]
+                    [chatRequest.model: .init(
+                        scheduler: sched, tokenizer: tokenizer, modelType: modelType,
+                        container: slotContainer, isVLM: slotIsVLM)]
                 },
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },
@@ -1189,6 +1403,330 @@ public actor ProviderLoop {
                 error: error
             ))
         }
+    }
+
+    // MARK: - Coordinator-driven background prefetch (Layer 3)
+
+    /// Build the prefetch coordinator, wiring the pre-check (already
+    /// loaded/on-disk?) and verified hook (add to advertised set + re-advertise)
+    /// back into this actor. The live path uses the catalog/CDN-backed
+    /// prefetcher; tests inject a fake coordinator via
+    /// `installPrefetchCoordinatorForTesting`.
+    private func makePrefetchCoordinator() -> ModelPrefetchCoordinator {
+        let me = self
+        let prefetcher: any ModelPrefetcher =
+            CatalogModelPrefetcher(coordinatorURL: loopConfig.coordinatorURL)
+        return ModelPrefetchCoordinator(
+            prefetcher: prefetcher,
+            preCheck: { modelId in await me.prefetchPreCheck(modelId: modelId) },
+            onVerified: { modelId in await me.applyVerifiedPrefetch(modelId: modelId) }
+        )
+    }
+
+    /// Handle a coordinator `prefetch_model` request by delegating to the
+    /// background prefetch coordinator. Non-blocking: returns as soon as the
+    /// `.started` status is queued; the download runs on a low-priority task and
+    /// never consumes a GPU slot or blocks inference.
+    func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
+        guard let prefetchCoordinator else {
+            // Defensive: prefetchCoordinator is built in run() before the event
+            // loop starts, so this should be unreachable on the live path.
+            send.send(.prefetchModelStatus(
+                modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0,
+                error: "prefetch subsystem not initialized"))
+            return
+        }
+        if isShuttingDown {
+            send.send(.prefetchModelStatus(
+                modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0,
+                error: "provider is shutting down"))
+            return
+        }
+        logger.info("Prefetch request for \(modelId) (priority=\(priority))")
+        // Failed terminal statuses feed the desired-build retry policy; for a
+        // build that is not (or no longer) a desired target the notification is
+        // a no-op (handleDesiredPrefetchFailure guards on the desired set).
+        let sink = RetryNotifyingPrefetchSink(
+            base: SendHandlePrefetchSink(send: send),
+            onFailed: { [weak self] failedModelId in
+                guard let self else { return }
+                Task { await self.handleDesiredPrefetchFailure(modelId: failedModelId, send: send) }
+            }
+        )
+        await prefetchCoordinator.handlePrefetch(
+            modelId: modelId,
+            priority: priority,
+            sink: sink
+        )
+    }
+
+    /// React to a terminal `.failed` prefetch status for a build. If the build
+    /// is still a desired target (and not stale), schedule a single
+    /// bounded-backoff retry — the resume-aware downloader continues from the
+    /// bytes already on disk, so retries are cheap. After the delay budget is
+    /// exhausted the provider stays on its current build until the next
+    /// desired_models push (operator re-POST or reconnect), which resets the
+    /// budget and retries immediately via reconcile.
+    private func handleDesiredPrefetchFailure(modelId: String, send: SendHandle) async {
+        guard !isShuttingDown,
+              desiredPrefetchTargets.contains(modelId),
+              !staleDesiredPrefetches.contains(modelId),
+              desiredPrefetchRetryTasks[modelId] == nil
+        else { return }
+        let attempt = (desiredPrefetchRetryAttempts[modelId] ?? 0) + 1
+        guard attempt <= desiredPrefetchRetryDelays.count else {
+            logger.warning("Prefetch for desired build \(modelId) failed after \(attempt - 1) retries; giving up until the next desired_models push")
+            return
+        }
+        desiredPrefetchRetryAttempts[modelId] = attempt
+        let delay = desiredPrefetchRetryDelays[attempt - 1]
+        logger.info("Scheduling desired-build prefetch retry \(attempt)/\(desiredPrefetchRetryDelays.count) for \(modelId) in \(delay)")
+        desiredPrefetchRetryTasks[modelId] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            await self.retryDesiredPrefetch(modelId: modelId, send: send)
+        }
+    }
+
+    /// Fire a scheduled desired-build prefetch retry, re-checking that the
+    /// build is still wanted (the desired set may have changed during the
+    /// backoff sleep).
+    private func retryDesiredPrefetch(modelId: String, send: SendHandle) async {
+        desiredPrefetchRetryTasks.removeValue(forKey: modelId)
+        guard !isShuttingDown,
+              desiredPrefetchTargets.contains(modelId),
+              !staleDesiredPrefetches.contains(modelId)
+        else { return }
+        logger.info("Retrying prefetch for desired build \(modelId)")
+        await handlePrefetchModelRequest(modelId: modelId, priority: Self.desiredModelsPrefetchPriority, send: send)
+    }
+
+    /// Cancel and clear any scheduled prefetch retry for a build (used when the
+    /// build leaves the desired set or a fresh desired_models push resets the
+    /// retry budget).
+    private func clearDesiredPrefetchRetryState(for modelId: String) {
+        desiredPrefetchRetryTasks.removeValue(forKey: modelId)?.cancel()
+        desiredPrefetchRetryAttempts.removeValue(forKey: modelId)
+    }
+
+    /// Pre-check used by the prefetch coordinator to short-circuit when a build
+    /// is already available AND its integrity is already established. We only
+    /// short-circuit when:
+    ///   - the model is resident in a GPU slot (it loaded successfully, which
+    ///     proves the on-disk build was usable), OR
+    ///   - it is advertised with a known weight hash (verified at startup or by
+    ///     a prior prefetch).
+    ///
+    /// A bare on-disk presence WITHOUT a recorded hash is deliberately treated
+    /// as `.needsFetch`: the disk snapshot could be stale or corrupt, and
+    /// `.verified` must mean "hash-checked". The prefetcher's resume path makes
+    /// re-verifying an already-complete build cheap (skips valid files, only
+    /// re-hashes), so we do not pay a full re-download for a good build — but we
+    /// never report `.verified` for an unverified snapshot.
+    private func prefetchPreCheck(modelId: String) -> PrefetchPreCheck {
+        if modelSlots[modelId] != nil { return .alreadyAvailable }
+        if advertisedModels[modelId] != nil, modelHashes[modelId] != nil {
+            return .alreadyAvailable
+        }
+        return .needsFetch
+    }
+
+    /// Re-advertise hook fired on `.verified`. Adds the newly-available build to
+    /// the in-memory advertised set (so it is loadable/servable and appears in
+    /// the local `/v1/models` catalog), records its weight hash (so attestation
+    /// covers the hotswapped model), and registers it with the coordinator's
+    /// advertised inventory. The currently-served model is never removed, so
+    /// both old and new are advertised during the transition.
+    ///
+    /// The scan + weight-hash computation run OFF the actor (`Task.detached`,
+    /// utility priority) so hashing a multi-GB build never blocks inference or
+    /// the event loop; only the small dictionary writes happen on the actor.
+    func applyVerifiedPrefetch(modelId: String) async {
+        if staleDesiredPrefetches.remove(modelId) != nil {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            logger.info("Ignoring verified prefetch for stale desired build \(modelId); alias target changed before verification completed")
+            return
+        }
+
+        // Compute ModelInfo + weight hash off-actor (CPU/IO heavy for big
+        // builds). The prefetcher already aggregate-verified the snapshot, so
+        // this hash is over a known-good build. Returns nil if the on-disk
+        // snapshot cannot be resolved/scanned.
+        let computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?)? in
+            guard let info = Self.scanVerifiedModelInfo(modelId: modelId) else { return nil }
+            let hash = WeightHasher.computeHash(for: modelId)
+            var withHash = info
+            withHash.weightHash = hash
+            return (withHash, hash)
+        }.value
+
+        // A verified prefetch whose snapshot we can't scan must NOT be
+        // advertised: a synthetic zero-size ModelInfo would be routed with
+        // estimatedMemoryGb == 0, bypassing memory sizing/admission until the
+        // real load overcommits. Drop it instead — without a models_update the
+        // coordinator simply never routes this build here, which is the safe outcome.
+        guard let (info, maybeHash) = computed else {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            logger.error("Prefetch verified \(modelId) but its on-disk snapshot could not be scanned; not advertising (would bypass memory sizing)")
+            return
+        }
+        // A nil weight hash is treated exactly like an unscannable snapshot: do
+        // NOT advertise, emit, or hard-swap. The coordinator's models_update
+        // gate REQUIRES a non-empty matching hash when the catalog pins one, so a
+        // hashless advertise would be rejected there anyway — but worse, dropping
+        // the previous build here while the coordinator rejects the desired one
+        // would strand the provider on neither build. Keep the previous build
+        // serving; the prefetch can be retried.
+        guard let hash = maybeHash, !hash.isEmpty else {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            logger.error("Prefetch verified \(modelId) but the weight hash could not be computed; not advertising (keeping the previous build to avoid an unverifiable swap)")
+            return
+        }
+        // Adding to `advertisedModels` also raises the effective slot cap
+        // (`maxModelSlots` is computed from this set), so the newly-verified
+        // build can be held resident alongside the model currently being served
+        // during a zero-downtime migration -- bounded by the configured hard
+        // cap (`configuredMaxModelSlots`).
+        advertisedModels[modelId] = info
+        modelHashes[modelId] = hash
+        syncWarmModelState()
+        logger.info("Prefetch verified \(modelId) (weight_hash=\(hash.prefix(16))); advertising (\(advertisedModels.count) model(s) total)")
+        if let coordinatorClient {
+            await coordinatorClient.advertiseModel(info)
+        }
+        // Push the authoritative ModelInfo (incl. the just-computed weight hash)
+        // to the coordinator out-of-band so it can cross-check the build against
+        // the catalog before routing -- without waiting for a reconnect's
+        // `register`, and without the disruption of re-registering. The local
+        // `advertiseModel` above still carries the union on the next reconnect.
+        outboundSend?.send(.modelsUpdate(models: [info]))
+
+        // Hard swap: the desired build is now advertised + announced, so drop the
+        // build it supersedes from our LOCAL advertised set — we stop serving it and
+        // it idle-unloads. The models_update above already makes the coordinator stop
+        // routing the previous build here (it derives the drop from the alias's
+        // desired/previous pair). We do NOT force-unload a resident slot; the idle
+        // monitor reclaims it.
+        if let previous = desiredSwapDrop.removeValue(forKey: modelId), previous != modelId {
+            await dropAdvertisedBuild(previous)
+        }
+    }
+
+    /// Locally retire a superseded build: stop advertising it (so no new requests
+    /// route to it and the next register won't re-announce it) and forget its hash.
+    /// The GPU slot, if resident, is left to the idle monitor — a lazy drop.
+    private func dropAdvertisedBuild(_ buildID: String) async {
+        guard advertisedModels[buildID] != nil else { return }
+        advertisedModels.removeValue(forKey: buildID)
+        modelHashes.removeValue(forKey: buildID)
+        await coordinatorClient?.unadvertiseModel(buildID)
+        syncWarmModelState()
+        logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
+    }
+
+    /// Reconcile the coordinator's declarative desired-state: for each public model
+    /// name, converge to its desired build. Already-serving → ensure the previous
+    /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
+    /// advertises it + drops the previous build once verified).
+    private func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        let currentDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
+        for stale in desiredPrefetchTargets.subtracting(currentDesired) {
+            desiredSwapDrop.removeValue(forKey: stale)
+            staleDesiredPrefetches.insert(stale)
+            clearDesiredPrefetchRetryState(for: stale)
+        }
+        desiredPrefetchTargets = currentDesired
+
+        for entry in entries {
+            let desired = entry.desiredBuild
+            guard !desired.isEmpty else { continue }
+            staleDesiredPrefetches.remove(desired)
+            // A fresh declarative push resets the retry budget (and supersedes
+            // any pending backoff timer — the loop below re-prefetches a missing
+            // desired build immediately).
+            clearDesiredPrefetchRetryState(for: desired)
+            let previous = (entry.previousBuild?.isEmpty == false) ? entry.previousBuild : nil
+            if let previous, previous != desired {
+                desiredSwapDrop[desired] = previous
+            } else {
+                desiredSwapDrop.removeValue(forKey: desired)
+            }
+            // Already converged (advertised + verified) → ensure the old build is
+            // no longer advertised locally AND re-emit the authoritative
+            // models_update for the desired build. The coordinator derives the
+            // previous-build drop from this update (against the alias's
+            // desired/previous pair), so without it the coordinator would keep
+            // routing the previous build to a provider that has locally stopped
+            // advertising it — a state divergence. This matters when the desired
+            // build was verified BEFORE a previous build was set on the alias (the
+            // original verify carried no drop), and the swap is learned later.
+            if let desiredInfo = advertisedModels[desired], modelHashes[desired] != nil {
+                if let previous, advertisedModels[previous] != nil {
+                    await dropAdvertisedBuild(previous)
+                    // Authoritative re-announce so the coordinator drops previous too.
+                    outboundSend?.send(.modelsUpdate(models: [desiredInfo]))
+                }
+                desiredSwapDrop.removeValue(forKey: desired)
+                continue
+            }
+            logger.info("desired_models: \(entry.modelName) → converging to \(desired)")
+            await handlePrefetchModelRequest(modelId: desired, priority: Self.desiredModelsPrefetchPriority, send: send)
+        }
+    }
+
+    /// Test seam: number of advertised models (startup ∪ prefetched).
+    func advertisedModelCount() -> Int { advertisedModels.count }
+
+    /// Test seam: whether a model id is currently advertised.
+    func isModelAdvertised(_ id: String) -> Bool { advertisedModels[id] != nil }
+
+    /// Test seam: recorded weight hash for a model (nil when unknown).
+    func modelHashForTesting(_ id: String) -> String? { modelHashes[id] }
+
+    /// Test seam: exposes the prefetch pre-check decision.
+    func prefetchPreCheckForTesting(_ id: String) -> PrefetchPreCheck { prefetchPreCheck(modelId: id) }
+
+    /// Test seam: drive the declarative `desired_models` reconcile directly (the
+    /// real entry point, `reconcileDesiredModels`, is private and otherwise only
+    /// reached via the coordinator event loop). Lets a unit test prove that a
+    /// desired build the provider lacks triggers a prefetch, and that the
+    /// previous build is recorded for the hard-swap drop.
+    func reconcileDesiredModelsForTesting(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        await reconcileDesiredModels(entries, send: send)
+    }
+
+    /// Test seam: the current effective concurrent-slot cap (tracks the live
+    /// advertised set, clamped to `[1, backend.maxModelSlots]`).
+    func maxModelSlotsForTesting() -> Int { maxModelSlots }
+
+    /// Test seam: override the desired-build prefetch retry backoff schedule
+    /// (the production default waits tens of seconds between attempts).
+    func setDesiredPrefetchRetryDelaysForTesting(_ delays: [Duration]) {
+        desiredPrefetchRetryDelays = delays
+    }
+
+    /// Test seam: number of scheduled (not yet fired) desired-prefetch retries.
+    func pendingDesiredPrefetchRetriesForTesting() -> Int { desiredPrefetchRetryTasks.count }
+
+    /// Test seam: install a fake prefetcher and (re)build the prefetch
+    /// coordinator against a given coordinator client. Used by unit tests to
+    /// exercise the handler without the real download path.
+    func installPrefetchCoordinatorForTesting(
+        _ coordinator: ModelPrefetchCoordinator,
+        client: CoordinatorClient,
+        send: SendHandle? = nil
+    ) {
+        self.coordinatorClient = client
+        self.prefetchCoordinator = coordinator
+        if let send { self.outboundSend = send }
+    }
+
+    /// Scan the on-disk snapshot for a freshly-prefetched model to produce an
+    /// advertised `ModelInfo` (type, quantization, size, memory estimate).
+    /// Static + nonisolated so it can run inside the off-actor hashing task.
+    private static func scanVerifiedModelInfo(modelId: String) -> ModelInfo? {
+        guard let snapshot = ModelScanner.resolveLocalPath(modelID: modelId) else { return nil }
+        return ModelScanner.parseModelInfo(snapshotDir: snapshot, modelName: modelId)
     }
 
     // MARK: - Trust Status & Auto-Report
@@ -1583,6 +2121,78 @@ public actor ProviderLoop {
 
     // MARK: - Model Loading
 
+    /// Outcome of one weight-hash refresh: the snapshot fingerprint the recorded
+    /// hash corresponds to (nil if the dir couldn't be stat'd), and whether the
+    /// `liveModelHashes` entry now reflects bytes on disk. `effectiveFingerprint`
+    /// is what the after-load TOCTOU check compares against to decide whether the
+    /// bytes drifted between hashing and loading.
+    private struct WeightHashRefreshResult {
+        /// Fingerprint that `liveModelHashes[modelId]` now corresponds to, or nil
+        /// if we have no trustworthy fingerprint (stat failed / recompute failed).
+        let effectiveFingerprint: String?
+    }
+
+    /// Re-hash the weights for `modelId` and update `liveModelHashes` /
+    /// `modelHashFingerprints` to match the bytes on disk, pushing any change into
+    /// the coordinator client. The expensive SHA-256 read runs off-actor (hashing
+    /// a large model takes seconds and must not block heartbeats or challenge
+    /// handling). A snapshot fingerprint (paths + sizes + mtimes) skips the full
+    /// re-read when nothing changed since the last hash, so routine idle-reload
+    /// cycles stay cheap.
+    ///
+    /// The model may have been re-published and re-downloaded since the last hash;
+    /// a stale hash would make the coordinator hard-untrust this provider for a
+    /// "model swap" even though the disk is correct. Returns the fingerprint the
+    /// recorded hash now corresponds to so the caller can detect a post-load drift.
+    private func refreshWeightHash(modelId: String, modelPath: URL) async throws -> WeightHashRefreshResult {
+        let priorFingerprint = modelHashFingerprints[modelId]
+        let hasPriorHash = liveModelHashes[modelId] != nil
+        let refresh = await Task.detached(priority: .utility) {
+            () -> (fingerprint: String?, hash: String?, skipped: Bool) in
+            let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+            if let fingerprint, fingerprint == priorFingerprint, hasPriorHash {
+                return (fingerprint, nil, true)  // unchanged — keep cached hash
+            }
+            return (fingerprint, WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId), false)
+        }.value
+        try Task.checkCancellation()
+        if isShuttingDown { throw CancellationError() }
+
+        // Record the fingerprint ONLY when we have a hash that corresponds to it
+        // (fresh or skip-confirmed). Caching it after a FAILED re-hash would make
+        // the next reload fingerprint-match against the stale hash and silently
+        // skip the retry — turning a transient read failure into a persistently
+        // stale report.
+        let haveTrustworthyHash = refresh.hash != nil || refresh.skipped
+        if let fingerprint = refresh.fingerprint, haveTrustworthyHash {
+            modelHashFingerprints[modelId] = fingerprint
+        }
+        if let freshHash = refresh.hash {
+            if liveModelHashes[modelId] != freshHash {
+                let previous = liveModelHashes[modelId]?.prefix(16) ?? "unset"
+                logger.info("Weight hash refreshed for \(modelId): \(freshHash.prefix(16))... (was \(previous))")
+                liveModelHashes[modelId] = freshHash
+                // Push into the client so a later reconnect re-registers with
+                // current models[].weight_hash (the coordinator's per-model
+                // catalog filter uses the register-time value).
+                if let client = coordinatorClient {
+                    await client.updateModelWeightHashes(liveModelHashes)
+                }
+            }
+        } else if !refresh.skipped {
+            // Recompute failed: keep the previous value but say so — a stale hash
+            // here is operator-visible as a model-swap untrust.
+            logger.warning("Weight hash recompute failed for \(modelId) — keeping previous value")
+        }
+
+        // The effective fingerprint is the one the recorded hash corresponds to.
+        // nil when we couldn't establish a trustworthy hash/fingerprint pair, in
+        // which case the after-load check should re-hash (safe direction).
+        return WeightHashRefreshResult(
+            effectiveFingerprint: haveTrustworthyHash ? refresh.fingerprint : nil
+        )
+    }
+
     private func ensureModelLoaded(modelId: String) async throws {
         if isShuttingDown {
             throw CancellationError()
@@ -1618,7 +2228,7 @@ public actor ProviderLoop {
             )
         }
 
-        guard let modelInfo = loopConfig.models.first(where: { $0.id == modelId }) else {
+        guard let modelInfo = advertisedModels[modelId] else {
             throw InferenceError.invalidModelDirectory(
                 "Model '\(modelId)' not in advertised model list"
             )
@@ -1691,6 +2301,12 @@ public actor ProviderLoop {
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
 
+            // Re-hash the weights about to be loaded. Refreshing BEFORE the slot
+            // goes active guarantees a challenge arriving mid-serve reports the
+            // hash of the bytes actually loaded — not the disk state at daemon
+            // start. (See `refreshWeightHash` for the full rationale.)
+            let preLoadRefresh = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
+
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
                 try Task.checkCancellation()
@@ -1699,6 +2315,24 @@ public actor ProviderLoop {
             let container = try await loadModelContainer(from: modelPath)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+
+            // TOCTOU guard: the hash above was computed BEFORE loadModelContainer
+            // read the weights. If a re-download landed in that window,
+            // liveModelHashes would describe different bytes than what was
+            // actually loaded. Re-stat the snapshot fingerprint (cheap) and, only
+            // if it drifted from what the recorded hash corresponds to, recompute
+            // so liveModelHashes/modelHashFingerprints reflect the loaded bytes.
+            // The common case (fingerprint unchanged) costs one stat-based
+            // fingerprint and no re-read. A nil pre-load fingerprint also forces a
+            // re-hash here — we never recorded a trustworthy hash, so re-deriving
+            // it post-load is the safe direction.
+            let postLoadFingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+            if preLoadRefresh.effectiveFingerprint == nil
+                || postLoadFingerprint != preLoadRefresh.effectiveFingerprint {
+                logger.warning(
+                    "Snapshot fingerprint drifted between hash and load for \(modelId) — recomputing weight hash for the bytes actually loaded")
+                _ = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
+            }
             let scheduler = BatchScheduler(
                 maxConcurrentRequests: Self.schedulerMaxConcurrent,
                 pendingTimeout: Self.schedulerPendingTimeout,
@@ -1706,7 +2340,11 @@ public actor ProviderLoop {
                 kvBudget: kvBudget,
                 diskAccountant: diskAccountant
             )
-            await scheduler.loadModel(container: container, modelId: modelId, weightHash: modelInfo.weightHash)
+            await scheduler.loadModel(
+                container: container,
+                modelId: modelId,
+                weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash
+            )
             if isShuttingDown || Task.isCancelled {
                 await scheduler.unloadModel()
                 throw CancellationError()
@@ -1719,6 +2357,8 @@ public actor ProviderLoop {
                 scheduler: scheduler,
                 container: container,
                 tokenizer: tokenizer,
+                isVLM: Self.modelIsVLM(at: modelPath),
+                modelType: modelInfo.modelType,
                 lastInferenceAt: .now
             )
 
@@ -1770,6 +2410,22 @@ public actor ProviderLoop {
         logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
     }
 
+    /// Weight hashes for ONLY the models currently loaded in memory this session.
+    /// A model is "currently loaded" iff it has a live slot (and isn't tearing
+    /// down) AND we have a known live hash for it. Used by the attestation
+    /// challenge response so the coordinator's model-swap hard-untrust check only
+    /// ever sees hashes for weights we are actually serving — idle/unloaded
+    /// advertised models drop out because they have no slot.
+    private func loadedModelHashesSnapshot() -> [String: String] {
+        var result: [String: String] = [:]
+        for modelId in modelSlots.keys where !modelsUnloading.contains(modelId) {
+            if let hash = liveModelHashes[modelId] {
+                result[modelId] = hash
+            }
+        }
+        return result
+    }
+
     private func syncWarmModelState() {
         let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
         state.warmModels = loaded
@@ -1779,7 +2435,7 @@ public actor ProviderLoop {
         let candidates = currentCandidates.isEmpty ? activeSlots : currentCandidates
         if let mostRecent = candidates.max(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
             state.currentModel = mostRecent.key
-            state.currentModelHash = loopConfig.modelHashes[mostRecent.key]
+            state.currentModelHash = liveModelHashes[mostRecent.key]
         } else {
             state.currentModel = nil
             state.currentModelHash = nil
@@ -1870,7 +2526,7 @@ public actor ProviderLoop {
 
         // Without advertised model info we cannot size the load here; let the
         // post-accept path surface the proper 404 rather than guessing.
-        guard let modelInfo = loopConfig.models.first(where: { $0.id == modelId }) else {
+        guard let modelInfo = advertisedModels[modelId] else {
             return false
         }
         let requiredGb = ModelLoadAdmission.requiredToLoadGb(
@@ -1943,10 +2599,31 @@ public actor ProviderLoop {
     }
 
     private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
-        try await LLMModelFactory.shared.loadContainer(
+        // Vision-language models (config declares `vision_config`) load via
+        // VLMModelFactory so image/video requests can run the container's
+        // prepare/generate vision path. Their text path still works through the
+        // batched engine since VLMModel refines LanguageModel.
+        if Self.modelIsVLM(at: directory) {
+            return try await VLMModelFactory.shared.loadContainer(
+                from: directory,
+                using: LocalTokenizerLoader()
+            )
+        }
+        return try await LLMModelFactory.shared.loadContainer(
             from: directory,
             using: LocalTokenizerLoader()
         )
+    }
+
+    /// A model is a vision-language model when its `config.json` declares a
+    /// `vision_config`. Cheap, dependency-free check used to pick the model
+    /// factory and to route multimodal requests.
+    static func modelIsVLM(at directory: URL) -> Bool {
+        let configURL = directory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return json["vision_config"] != nil
     }
 
     // MARK: - Cancellation
@@ -2081,8 +2758,21 @@ public actor ProviderLoop {
 
         do {
             let activeModelHash = state.currentModel.flatMap { modelId in
-                loopConfig.modelHashes[modelId]
+                liveModelHashes[modelId]
             }
+
+            // Report hashes ONLY for models we are CURRENTLY SERVING (a live
+            // slot this session), never for every advertised model. Registration
+            // still advertises all models' startup hashes (the coordinator's
+            // catalog routing filter needs them, and a stale IDLE model there
+            // degrades to a gentle silent deroute). But the challenge response
+            // feeds the coordinator's model-swap *hard-untrust* check: reporting
+            // a hash for an idle, unloaded model would hard-untrust this provider
+            // the moment that model's catalog hash changes (e.g. a re-publish)
+            // before we re-download it — even though we never served stale
+            // weights. A model that has been idle-unloaded drops out
+            // automatically here because it no longer has a slot.
+            let loadedModelHashes = loadedModelHashesSnapshot()
 
             let response = try builder.buildChallengeResponse(
                 nonce: nonce,
@@ -2091,7 +2781,7 @@ public actor ProviderLoop {
                 binaryHash: binaryHash,
                 activeModelHash: activeModelHash,
                 runtimeHashes: augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes),
-                modelHashes: loopConfig.modelHashes
+                modelHashes: loadedModelHashes
             )
 
             send.send(.attestationResponse(AttestationResponsePayload(
@@ -2224,6 +2914,7 @@ struct ProviderLogger: Sendable {
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 // MARK: - Unified local endpoint
 
@@ -2331,7 +3022,11 @@ extension ProviderLoop {
             scheduler: slot.scheduler,
             tokenizer: slot.tokenizer,
             releaseToken: OneShotRelease(release: release, modelId: modelId),
-            modelType: loopConfig.models.first(where: { $0.id == modelId })?.modelType
+            // From the loaded slot, not advertisedModels — correct during the
+            // hard-swap drop window (see ModelSlot.modelType).
+            modelType: slot.modelType,
+            container: slot.container,
+            isVLM: slot.isVLM
         )
     }
 
@@ -2365,6 +3060,6 @@ extension ProviderLoop {
     /// The advertised `/v1/models` catalog for the local endpoint — everything
     /// this provider is configured to serve, not just the resident subset.
     func advertisedLocalModelIds() -> [String] {
-        loopConfig.models.map { $0.id }.sorted()
+        advertisedModels.keys.sorted()
     }
 }

@@ -624,6 +624,181 @@ public struct ModelDownloader: Sendable {
         try await downloadLegacyModelFromCDN(model: model, onProgress: onProgress)
     }
 
+    // MARK: - Resume-aware prefetch (background, no GPU load)
+
+    /// Resolve the manifest for a catalog model via the same paths `download`
+    /// uses (coordinator registry first, CDN fallback). Exposed so the prefetch
+    /// coordinator can size total bytes / short-circuit before starting.
+    public func resolveManifest(model: CatalogModel) async throws -> ModelManifest {
+        if let catalogClient {
+            return try await catalogClient.fetchManifest(modelID: model.id)
+        }
+        return try await fetchManifestFromCDN(model: model)
+    }
+
+    /// Download + verify a manifest model on disk WITHOUT loading it into GPU,
+    /// resuming an interrupted prefetch instead of restarting from zero.
+    ///
+    /// Resume strategy: a STABLE per-model staging directory (keyed by the
+    /// manifest's `r2Prefix`, not a random UUID) survives an interrupted
+    /// prefetch. On re-entry, any file already present in staging that matches
+    /// its manifest size AND SHA-256 is skipped; only missing/corrupt files are
+    /// re-fetched. Per-file SHA is verified as each file lands; the aggregate
+    /// hash is verified before the snapshot is published. The published snapshot
+    /// is the same `snapshots/local` layout `download` produces, so
+    /// `ModelScanner` discovers it immediately.
+    ///
+    /// `onByteProgress(done, total)` reports cumulative verified-on-disk bytes
+    /// against the manifest total (already-present files count as done up front).
+    public func prefetch(
+        model: CatalogModel,
+        manifest: ModelManifest,
+        onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws {
+        guard manifest.modelID == model.id else {
+            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
+        }
+        guard manifest.files.count == manifest.fileCount else {
+            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
+        }
+        guard !manifest.files.isEmpty else {
+            throw ModelCatalogError.downloadFailed("manifest contains no files")
+        }
+        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
+            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
+        }
+        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
+            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
+        }
+
+        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
+
+        // STABLE staging dir keyed by the manifest prefix so an interrupted
+        // prefetch can resume. `r2Prefix` is path-like (e.g.
+        // "v2/org__name/version"); flatten it to a single safe component.
+        let stagingName = ".prefetch-staging-" + manifest.r2Prefix
+            .replacingOccurrences(of: "/", with: "__")
+            .replacingOccurrences(of: "\\", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+
+        let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
+            let relativePath = try Self.validatedManifestRelativePath(file.path)
+            return (
+                file: file,
+                destination: stagingDir.appendingPathComponent(relativePath, isDirectory: false),
+                url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
+            )
+        }
+
+        // Classify each file once (hashing is expensive) into already-valid vs
+        // still-needed. Reused for both progress seeding and the capacity check.
+        let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
+
+        // Bytes already verified on disk (resumed files) count toward progress
+        // immediately. `progress` is updated as each file completes.
+        let total = manifest.totalSizeBytes
+        let progress = PrefetchByteProgress()
+        for (job, valid) in zip(jobs, alreadyValid) where valid {
+            progress.add(job.file.sizeBytes)
+        }
+        onByteProgress?(progress.done, total)
+
+        // Capacity pre-check must account for already-staged bytes: on a resumed
+        // prefetch most files are present + valid, so we only need free space for
+        // the files we still have to download. Demanding the FULL model size here
+        // would spuriously fail a resume that has plenty of room for what remains.
+        // Publishing is a same-volume move of the staging dir, so staged bytes
+        // need no extra headroom.
+        // Count bytes already saved in each file's resumable `.part` so a tight-
+        // disk resume isn't rejected for lacking room equal to a whole shard when
+        // the byte-resume below will only append the missing suffix via `Range`.
+        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
+        let remainingBytes = Self.remainingBytesToFetch(
+            sizes: jobs.map(\.file.sizeBytes),
+            alreadyValid: alreadyValid,
+            partBytes: partBytes
+        )
+        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: remainingBytes)
+
+        // Sequential downloads (one at a time) so prefetch yields to inference
+        // and never saturates bandwidth the way the foreground 4-way concurrent
+        // download does. Each file: skip-if-valid, else fetch + verify.
+        for job in jobs {
+            try Task.checkCancellation()
+            if Self.fileMatches(job.destination, size: job.file.sizeBytes, sha256: job.file.sha256) {
+                continue
+            }
+            try await downloadManifestFileWithResume(job)
+            progress.add(job.file.sizeBytes)
+            onByteProgress?(progress.done, total)
+        }
+
+        try Task.checkCancellation()
+
+        // Aggregate hash over the staged files (same ordering rule as download).
+        // Every per-file SHA already verified above, so reaching here with a
+        // mismatch means the staged files are internally valid but do not match
+        // the claimed aggregate — i.e. the manifest's aggregate is wrong/corrupt.
+        // If we keep staging, `fileMatches` would skip all files on every future
+        // attempt and re-fail the aggregate forever (a permanent poison state).
+        // Clear staging so a corrected manifest re-downloads cleanly. (Per-file
+        // and network/transport failures throw BEFORE this point and deliberately
+        // leave staging intact so they can resume — only the aggregate-mismatch
+        // path clears it.)
+        let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
+        guard aggregate == manifest.aggregateSHA256 else {
+            try? FileManager.default.removeItem(at: stagingDir)
+            throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
+        }
+
+        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
+        try writeMainRef(for: model.id)
+        // Staging was consumed by publishStagedSnapshot (moved/replaced); make a
+        // best-effort cleanup in case the platform left a husk behind.
+        try? FileManager.default.removeItem(at: stagingDir)
+        onByteProgress?(total, total)
+    }
+
+    /// Whether a file at `url` already exists with the expected size and SHA-256.
+    /// Used by prefetch resume to skip already-valid files.
+    static func fileMatches(_ url: URL, size: Int64, sha256: String) -> Bool {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let onDisk = attrs[.size] as? Int64, onDisk == size else {
+            return false
+        }
+        guard let digest = WeightHasher.hashSingleFile(at: url) else { return false }
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return hex == sha256.lowercased()
+    }
+
+    /// Download a single manifest file into its staging destination, resuming
+    /// from a `.part` file when present, verifying size + SHA-256 before
+    /// promoting to the final staged path. Reuses the resume-capable
+    /// `downloadFile` helper (Range requests, Content-Range validation, retries).
+    private func downloadManifestFileWithResume(
+        _ job: (file: ManifestFile, destination: URL, url: String)
+    ) async throws {
+        let ok = try await downloadFile(
+            from: job.url,
+            to: job.destination,
+            label: job.file.path,
+            onProgress: nil,
+            required: true,
+            expectedSHA256: job.file.sha256.lowercased()
+        )
+        guard ok else {
+            throw ModelCatalogError.downloadFailed("\(job.file.path): required file could not be fetched")
+        }
+        let size = fileSize(job.destination)
+        guard size == job.file.sizeBytes else {
+            throw ModelCatalogError.downloadFailed("\(job.file.path): size \(size) != manifest size \(job.file.sizeBytes)")
+        }
+    }
+
     private func fetchManifestFromCDN(model: CatalogModel) async throws -> ModelManifest {
         guard let r2Prefix = model.r2Prefix else {
             throw ModelCatalogError.downloadFailed("model missing r2_prefix")
@@ -744,17 +919,17 @@ public struct ModelDownloader: Sendable {
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
-        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: manifest.totalSizeBytes)
 
-        let stagingDir = snapshotsDir.appendingPathComponent(".local-staging-\(UUID().uuidString)", isDirectory: true)
+        // STABLE staging dir keyed by the manifest prefix (NOT a random UUID) so an
+        // interrupted foreground download resumes — already-completed files are
+        // skipped instead of re-fetching the whole model. Same resume contract as
+        // the background `prefetch` path: staging is kept on a transient failure
+        // and cleared only on an aggregate-hash mismatch (poison) below.
+        let stagingName = ".local-staging-" + manifest.r2Prefix
+            .replacingOccurrences(of: "/", with: "__")
+            .replacingOccurrences(of: "\\", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-
-        var completed = false
-        defer {
-            if !completed {
-                try? FileManager.default.removeItem(at: stagingDir)
-            }
-        }
 
         let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
             let relativePath = try Self.validatedManifestRelativePath(file.path)
@@ -764,6 +939,23 @@ public struct ModelDownloader: Sendable {
                 url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
             )
         }
+
+        // Resume: skip files already staged + valid, and size the capacity
+        // pre-check to only the bytes that remain (less anything already saved in a
+        // `.part`) so a near-complete resume isn't rejected for lacking room equal
+        // to the whole model. Only the not-yet-valid files are enqueued below.
+        let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
+        // The foreground per-file downloader does a full GET (it does NOT byte-
+        // resume — it deletes any stale `.part`), so only fully-valid files are
+        // creditable here; every not-yet-valid file needs its full size. (Only the
+        // background `prefetch` path byte-resumes and may credit `.part` bytes.)
+        try Self.ensureAvailableCapacity(
+            at: snapshotsDir,
+            requiredBytes: Self.remainingBytesToFetch(
+                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid
+            )
+        )
+        let pending = zip(jobs, alreadyValid).filter { !$0.1 }.map(\.0)
 
         // Set up delegate-based session for progress tracking.
         let tracker = DownloadProgressTracker()
@@ -787,8 +979,8 @@ public struct ModelDownloader: Sendable {
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 var next = 0
-                for _ in 0..<min(concurrency, jobs.count) {
-                    let job = jobs[next]
+                for _ in 0..<min(concurrency, pending.count) {
+                    let job = pending[next]
                     next += 1
                     group.addTask {
                         try await self.downloadManifestFileWithProgress(
@@ -798,8 +990,8 @@ public struct ModelDownloader: Sendable {
                 }
 
                 while try await group.next() != nil {
-                    if next < jobs.count {
-                        let job = jobs[next]
+                    if next < pending.count {
+                        let job = pending[next]
                         next += 1
                         group.addTask {
                             try await self.downloadManifestFileWithProgress(
@@ -819,17 +1011,36 @@ public struct ModelDownloader: Sendable {
             renderTask.cancel()
             // One last render so the user sees where things stopped.
             renderer.render(tracker.allProgress)
+            // Keep staging ONLY if it holds resumable content (a completed file or
+            // a `.part`); otherwise remove the empty husk so a first-file failure
+            // doesn't leave a stray staging dir behind. (Size check only — a
+            // promoted file is full-size + SHA-verified; size/SHA failures are
+            // removed before this point.)
+            let hasResumable = jobs.contains {
+                fileSize($0.destination) == $0.file.sizeBytes
+                    || fileSize($0.destination.appendingPathExtension("part")) > 0
+            }
+            if !hasResumable {
+                try? FileManager.default.removeItem(at: stagingDir)
+            }
             throw error
         }
 
         let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
         guard aggregate == manifest.aggregateSHA256 else {
+            // Internally-valid files that don't match the claimed aggregate = a
+            // poisoned manifest; clear staging so a corrected manifest re-downloads
+            // (otherwise skip-valid would re-fail the aggregate forever). Transient
+            // per-file/network failures throw earlier and deliberately KEEP staging
+            // so the next attempt resumes.
+            try? FileManager.default.removeItem(at: stagingDir)
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
         }
 
         try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
         try writeMainRef(for: model.id)
-        completed = true
+        // Staging was consumed by publishStagedSnapshot; best-effort husk cleanup.
+        try? FileManager.default.removeItem(at: stagingDir)
     }
 
     /// Download a single manifest file using delegate-based URLSession for
@@ -1056,70 +1267,22 @@ public struct ModelDownloader: Sendable {
 
         var lastError: Error?
         for attempt in 1...3 {
-            let existingBytes = fileSize(partial)
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            // Model shards are multi-GB files. A 60-second request timeout
-            // causes legitimate downloads to fail; let URLSession stream to a
-            // temporary file with a longer timeout instead of iterating
-            // one byte at a time in Swift.
-            request.timeoutInterval = 6 * 60 * 60
-            if existingBytes > 0 {
-                request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
-            }
-
             do {
-                let (tempFile, response) = try await urlSession.download(for: request)
-                defer { try? fm.removeItem(at: tempFile) }
-
-                guard let http = response as? HTTPURLResponse else {
-                    try? fm.removeItem(at: partial)
-                    throw ModelCatalogError.downloadFailed("\(label): unexpected response type")
-                }
-
-                if http.statusCode == 404 || http.statusCode == 403 {
-                    try? fm.removeItem(at: partial)
-                    if required {
-                        throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
-                    }
+                // True byte-level resume: stream the HTTP body straight to the
+                // `.part` file as bytes arrive (appending when a `.part` prefix
+                // already exists), so a mid-stream connection drop leaves the
+                // received prefix on disk and the next attempt picks up where it
+                // left off via a `Range` request — never restarting from zero.
+                let ok = try await streamDownload(
+                    from: url,
+                    to: partial,
+                    label: label,
+                    required: required
+                )
+                guard ok else {
+                    // Optional file that does not exist (404/403). `streamDownload`
+                    // already removed any stale `.part`.
                     return false
-                }
-                guard (200..<300).contains(http.statusCode) else {
-                    try? fm.removeItem(at: partial)
-                    throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
-                }
-
-                // URLSession.download(for:) returns a temp file that the
-                // system may reclaim after this call returns. Promote it to a
-                // stable .part file before hashing or moving to the final path.
-                if http.statusCode == 206 {
-                    // Validate Content-Range to ensure the server resumed at
-                    // the correct offset. Expected: "bytes <start>-<end>/<total>".
-                    let expectedStart = UInt64(existingBytes)
-                    let rangeVerified: Bool
-                    if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
-                       let rangeStart = Self.parseContentRangeStart(contentRange) {
-                        rangeVerified = (rangeStart == expectedStart)
-                    } else {
-                        // Missing or unparseable Content-Range -- cannot verify
-                        // the server resumed at the correct offset.
-                        rangeVerified = false
-                    }
-
-                    if rangeVerified {
-                        try Self.appendDownloadedRange(tempFile, to: partial, label: label)
-                    } else {
-                        // Range unverifiable or mismatched -- discard the stale
-                        // partial and replace it with the server's fresh response.
-                        // The next download attempt (if needed) will resume from
-                        // this new position, or the SHA check below will detect
-                        // a truncated file.
-                        try? fm.removeItem(at: partial)
-                        try fm.moveItem(at: tempFile, to: partial)
-                    }
-                } else {
-                    try? fm.removeItem(at: partial)
-                    try fm.moveItem(at: tempFile, to: partial)
                 }
 
                 if let expectedSHA256 {
@@ -1137,6 +1300,9 @@ public struct ModelDownloader: Sendable {
                     }
                     let size = fileSize(partial)
                     guard actual == expectedSHA256 else {
+                        // The `.part` is corrupt (hash mismatch). Delete it so the
+                        // next attempt re-fetches this file cleanly from byte 0
+                        // rather than appending onto bad bytes forever.
                         try? fm.removeItem(at: partial)
                         throw ModelCatalogError.downloadFailed(
                             "\(label): SHA-256 mismatch (size=\(size), expected=\(expectedSHA256.prefix(16))…, got=\(actual.prefix(16))…)"
@@ -1148,6 +1314,10 @@ public struct ModelDownloader: Sendable {
                 let downloaded = fileSize(destination)
                 onProgress?(ProgressEvent(file: label, bytesDownloaded: downloaded, bytesTotal: downloaded))
                 return true
+            } catch is CancellationError {
+                // Cancellation must propagate immediately and leave the `.part`
+                // intact so a later run can resume it. Never retry.
+                throw CancellationError()
             } catch {
                 lastError = error
                 if attempt < 3 {
@@ -1163,25 +1333,139 @@ public struct ModelDownloader: Sendable {
         return false
     }
 
-    private static func appendDownloadedRange(_ source: URL, to destination: URL, label: String) throws {
+    /// Stream an HTTP GET body incrementally into `partial`, appending to any
+    /// bytes already present (true byte-level resume).
+    ///
+    /// Behavior:
+    /// - If `partial` already has N bytes, sends `Range: bytes=N-`.
+    /// - 206 with a `Content-Range` whose start == N → append to `partial`.
+    /// - 200 (server ignored the Range / no range support) → truncate `partial`
+    ///   and write from byte 0 (restart THIS file only).
+    /// - 206 whose start != N (server resumed at the wrong offset) → truncate and
+    ///   restart this file rather than append onto a mismatched stream.
+    /// - 404/403 → remove `partial`; throw if `required`, else return false.
+    /// - On a mid-stream transport drop, the bytes received so far stay in
+    ///   `partial` and the error propagates (the caller retries with a fresh
+    ///   `Range` request that appends the remainder).
+    ///
+    /// `Task.checkCancellation()` is checked between chunks so cancellation stops
+    /// promptly and leaves a resumable `.part`.
+    private func streamDownload(
+        from url: URL,
+        to partial: URL,
+        label: String,
+        required: Bool
+    ) async throws -> Bool {
+        let fm = FileManager.default
+        let existingBytes = fileSize(partial)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        // Model shards are multi-GB files. A short request timeout causes
+        // legitimate downloads to fail; the streaming byte sequence keeps the
+        // connection alive across the whole transfer.
+        request.timeoutInterval = 6 * 60 * 60
+        if existingBytes > 0 {
+            request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
+        }
+
+        let (byteStream, response) = try await urlSession.bytes(for: request)
+
+        guard let http = response as? HTTPURLResponse else {
+            try? fm.removeItem(at: partial)
+            throw ModelCatalogError.downloadFailed("\(label): unexpected response type")
+        }
+
+        if http.statusCode == 404 || http.statusCode == 403 {
+            try? fm.removeItem(at: partial)
+            if required {
+                throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
+            }
+            // Drain so the connection can be reused; ignore the bytes.
+            for try await _ in byteStream {}
+            return false
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            try? fm.removeItem(at: partial)
+            throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
+        }
+
+        // Decide whether we append to the existing prefix or restart this file.
+        var append = false
+        if existingBytes > 0, http.statusCode == 206 {
+            // Validate the server resumed at our offset before appending.
+            if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+               let rangeStart = Self.parseContentRangeStart(contentRange),
+               rangeStart == UInt64(existingBytes) {
+                append = true
+            }
+        }
+        // 200 (no range support) or an unverifiable/mismatched 206 → restart
+        // THIS file only: truncate the stale prefix and write from byte 0.
+        if !append {
+            try? fm.removeItem(at: partial)
+        }
+
+        if !fm.fileExists(atPath: partial.path) {
+            fm.createFile(atPath: partial.path, contents: nil)
+        }
+
+        let writer: FileHandle
         do {
-            let reader = try FileHandle(forReadingFrom: source)
-            defer { try? reader.close() }
-
-            let writer = try FileHandle(forWritingTo: destination)
-            defer { try? writer.close() }
-
+            writer = try FileHandle(forWritingTo: partial)
+        } catch {
+            throw ModelCatalogError.downloadFailed("\(label): could not open .part for writing (\(error.localizedDescription))")
+        }
+        defer { try? writer.close() }
+        if append {
             try writer.seekToEnd()
-            while true {
-                guard let chunk = try reader.read(upToCount: 4 * 1_048_576), !chunk.isEmpty else {
-                    break
+        } else {
+            try writer.truncate(atOffset: 0)
+        }
+
+        // Buffer chunks so we don't issue a write() syscall per byte. Flush as
+        // each buffer fills (and at the end) so the bytes are durable on disk —
+        // a mid-stream drop leaves a resumable prefix. CRITICAL: if the stream
+        // errors mid-transfer (connection drop), flush whatever was buffered
+        // before rethrowing so EVERY received byte lands in `.part` and the
+        // retry resumes from exactly where the drop happened (never from zero).
+        var buffer = Data()
+        buffer.reserveCapacity(Self.streamFlushThreshold)
+        var sinceCancelCheck = 0
+        do {
+            for try await byte in byteStream {
+                buffer.append(byte)
+                sinceCancelCheck += 1
+                if buffer.count >= Self.streamFlushThreshold {
+                    try writer.write(contentsOf: buffer)
+                    buffer.removeAll(keepingCapacity: true)
                 }
-                try writer.write(contentsOf: chunk)
+                // Check cancellation periodically (every ~64KB) without paying
+                // the cost on every single byte. The partial flush above means a
+                // cancelled transfer still leaves a resumable .part.
+                if sinceCancelCheck >= Self.streamFlushThreshold {
+                    sinceCancelCheck = 0
+                    if Task.isCancelled {
+                        if !buffer.isEmpty { try writer.write(contentsOf: buffer) }
+                        throw CancellationError()
+                    }
+                }
             }
         } catch {
-            throw ModelCatalogError.downloadFailed("\(label): could not append resumed download (\(error.localizedDescription))")
+            // Persist the prefix received before the drop, then propagate so the
+            // caller retries with a `Range` request that appends the remainder.
+            if !buffer.isEmpty { try? writer.write(contentsOf: buffer) }
+            throw error
         }
+        if !buffer.isEmpty {
+            try writer.write(contentsOf: buffer)
+        }
+        return true
     }
+
+    /// Flush the streaming download buffer to disk every 64 KB. Also the
+    /// cadence at which cancellation is checked during streaming.
+    private static let streamFlushThreshold = 65536
 
     /// Parse the start offset from a Content-Range header value.
     /// Expected format: "bytes 12345-67890/123456".
@@ -1231,6 +1515,25 @@ public struct ModelDownloader: Sendable {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Bytes still to fetch on a (possibly resumed) prefetch/download. For each
+    /// file not already fully valid on disk, this is its size MINUS any bytes
+    /// already saved in its resumable `.part` file — a byte-resume appends to that
+    /// prefix via HTTP `Range`, so those bytes don't need re-downloading and must
+    /// not be charged against free disk (otherwise a near-complete resume of a big
+    /// shard is rejected for lacking room equal to the whole shard).
+    /// `partBytes[i]` is the size of file i's `.part` (0 if none / not resumable);
+    /// each term is floored at 0 so a stale over-long `.part` can't go negative.
+    /// Omitting `partBytes` degrades to "sum of not-yet-valid file sizes".
+    static func remainingBytesToFetch(sizes: [Int64], alreadyValid: [Bool], partBytes: [Int64] = []) -> Int64 {
+        var total: Int64 = 0
+        for i in sizes.indices {
+            if i < alreadyValid.count, alreadyValid[i] { continue }
+            let have = i < partBytes.count ? max(0, partBytes[i]) : 0
+            total += max(0, sizes[i] - have)
+        }
+        return total
+    }
+
     private static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {
         guard requiredBytes > 0 else { return }
         let values = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
@@ -1242,4 +1545,76 @@ public struct ModelDownloader: Sendable {
         }
     }
 
+}
+
+// MARK: - Prefetch byte-progress accumulator
+
+/// Tiny thread-safe cumulative byte counter for prefetch progress. The
+/// per-file downloads run sequentially, but the accumulator is `Sendable` so it
+/// can be read from progress callbacks without data races.
+private final class PrefetchByteProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _done: Int64 = 0
+    func add(_ bytes: Int64) { lock.lock(); _done += bytes; lock.unlock() }
+    var done: Int64 { lock.lock(); defer { lock.unlock() }; return _done }
+}
+
+// MARK: - ModelPrefetcher abstraction
+
+/// Abstraction over "make a model build available + verified on disk" so the
+/// prefetch coordinator (Layer 3) can be unit-tested with an injected fake that
+/// simulates success, resume, hash failure, and cancellation WITHOUT hitting
+/// the network or downloading real multi-GB weights.
+///
+/// The real conformer (`ModelDownloader`) fetches the manifest from the
+/// coordinator/CDN, downloads + resumes + verifies, and publishes the snapshot.
+public protocol ModelPrefetcher: Sendable {
+    /// Download (resuming if interrupted) and verify the model on disk without
+    /// loading it into GPU. Reports cumulative verified bytes vs. total via
+    /// `onByteProgress`. Throws on hash mismatch, fetch failure, or
+    /// cancellation; returns normally only when the build is on disk and
+    /// aggregate-hash-verified.
+    func prefetchToDisk(
+        modelID: String,
+        onByteProgress: @Sendable @escaping (_ done: Int64, _ total: Int64) -> Void
+    ) async throws
+}
+
+/// Production `ModelPrefetcher` backed by the coordinator catalog + R2 CDN.
+///
+/// Resolves the catalog entry (for `r2Prefix`/`aggregateSHA256`), then the
+/// manifest, then runs the resume-aware verified download. A short-circuit for
+/// "already on disk and valid" is handled one layer up (the prefetch
+/// coordinator) so this type stays a thin IO conformer.
+public struct CatalogModelPrefetcher: ModelPrefetcher {
+    private let catalogClient: ModelCatalogClient
+    private let downloader: ModelDownloader
+
+    public init(coordinatorURL: String, urlSession: URLSession = .shared) {
+        let client = ModelCatalogClient(coordinatorURL: coordinatorURL, urlSession: urlSession)
+        self.catalogClient = client
+        self.downloader = ModelDownloader(urlSession: urlSession, catalogClient: client)
+    }
+
+    public init(catalogClient: ModelCatalogClient, downloader: ModelDownloader) {
+        self.catalogClient = catalogClient
+        self.downloader = downloader
+    }
+
+    public func prefetchToDisk(
+        modelID: String,
+        onByteProgress: @Sendable @escaping (_ done: Int64, _ total: Int64) -> Void
+    ) async throws {
+        let catalog = try await catalogClient.fetchCatalog()
+        guard let model = catalog.first(where: { $0.id == modelID }) else {
+            throw ModelCatalogError.modelNotInCatalog(modelID)
+        }
+        guard model.r2Prefix != nil, model.aggregateSHA256 != nil else {
+            throw ModelCatalogError.downloadFailed(
+                "model '\(modelID)' has no manifest (r2_prefix/aggregate_sha256); cannot prefetch"
+            )
+        }
+        let manifest = try await downloader.resolveManifest(model: model)
+        try await downloader.prefetch(model: model, manifest: manifest, onByteProgress: onByteProgress)
+    }
 }

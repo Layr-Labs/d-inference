@@ -165,6 +165,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS cost_micro_usd BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_location JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS public_model TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 
 		// Provider reputation — persistent reputation tracking
 		`CREATE TABLE IF NOT EXISTS provider_reputation (
@@ -210,11 +211,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			id BIGSERIAL PRIMARY KEY,
 			provider_id TEXT NOT NULL,
 			consumer_key_hash TEXT NOT NULL,
-			key_id TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL,
-			prompt_tokens INTEGER NOT NULL,
-			completion_tokens INTEGER NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				key_id TEXT NOT NULL DEFAULT '',
+				model TEXT NOT NULL,
+				public_model TEXT NOT NULL DEFAULT '',
+				prompt_tokens INTEGER NOT NULL,
+				completion_tokens INTEGER NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			request_id TEXT NOT NULL DEFAULT '',
 			cost_micro_usd BIGINT NOT NULL DEFAULT 0,
 			request_location JSONB
@@ -222,6 +224,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Per-key usage attribution — ALTER for DBs upgrading from a usage
 		// table created before key_id existed. Must run AFTER CREATE TABLE usage.
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS key_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS public_model TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		// Indexes for usage queries (stats, billing, per-consumer history).
 		`CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_consumer ON usage(consumer_key_hash, created_at DESC)`,
@@ -424,6 +427,48 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			last_used_at TIMESTAMPTZ
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_publishing_api_keys_hash ON publishing_api_keys(key_hash)`,
+
+		// Model aliases (public-facing names → a desired concrete build). An alias
+		// resolves to a single desired_build (the build providers converge to) with
+		// an optional previous_build that stays acceptable during a rollout. Lets us
+		// swap the underlying quant (fp8 → qat-4bit) behind a stable consumer-facing
+		// model name. The legacy `builds` JSONB column is kept (nullable, default
+		// '[]') only so an older coordinator binary doesn't choke on the table; it
+		// is no longer read or written — drop it in a follow-up release.
+		`CREATE TABLE IF NOT EXISTS model_aliases (
+			alias_id TEXT PRIMARY KEY,
+			display_name TEXT NOT NULL DEFAULT '',
+			builds JSONB NOT NULL DEFAULT '[]'::jsonb,
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		// Declarative desired/previous build pointers (additive migration).
+		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS desired_build TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS previous_build TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		// Alias lineage: former desired/previous builds rotated out by later
+		// upserts, so a provider returning from a long offline period is still
+		// recognized as part of the alias's fleet.
+		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS retired_builds JSONB NOT NULL DEFAULT '[]'::jsonb; EXCEPTION WHEN others THEN NULL; END $$`,
+		// Backfill desired_build from the old `builds` JSON: pick the highest-weight
+		// active build of each alias that hasn't been migrated yet. DISTINCT ON keeps
+		// exactly one (highest-weight) build per alias so the UPDATE...FROM join is
+		// deterministic. One-shot; safe to re-run because it only touches rows still
+		// on the empty default.
+		`DO $$ BEGIN
+			UPDATE model_aliases a
+			SET desired_build = sub.build_id
+			FROM (
+				SELECT DISTINCT ON (alias_id) alias_id, (b->>'build_id') AS build_id
+				FROM model_aliases, jsonb_array_elements(builds) AS b
+				WHERE COALESCE((b->>'active')::boolean, true)
+				  AND COALESCE((b->>'weight')::int, 0) > 0
+				ORDER BY alias_id, COALESCE((b->>'weight')::int, 0) DESC
+			) sub
+			WHERE a.alias_id = sub.alias_id AND a.desired_build = '';
+		EXCEPTION WHEN others THEN NULL; END $$`,
+		// The weighted-ramp migration controller is gone; drop its table.
+		`DROP TABLE IF EXISTS model_migrations`,
 
 		// Releases (provider binary versioning)
 		`CREATE TABLE IF NOT EXISTS releases (
@@ -1154,8 +1199,8 @@ func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd
-		 FROM usage WHERE consumer_key_hash = $1 ORDER BY created_at DESC LIMIT 100`, h)
+		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd
+			 FROM usage WHERE consumer_key_hash = $1 ORDER BY created_at DESC LIMIT 100`, h)
 	if err != nil {
 		return nil
 	}
@@ -1164,7 +1209,7 @@ func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	var records []UsageRecord
 	for rows.Next() {
 		var r UsageRecord
-		if err := rows.Scan(&r.ProviderID, &r.ConsumerKey, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.CreatedAt, &r.RequestID, &r.CostMicroUSD); err != nil {
+		if err := rows.Scan(&r.ProviderID, &r.ConsumerKey, &r.Model, &r.PublicModel, &r.PromptTokens, &r.CompletionTokens, &r.CreatedAt, &r.RequestID, &r.CostMicroUSD); err != nil {
 			continue
 		}
 		records = append(records, r)
@@ -1186,6 +1231,12 @@ func (s *PostgresStore) RecordUsageWithCostAndLocation(providerID, consumerKey, 
 // RecordUsageFull inserts a usage record with full attribution including the
 // originating API key ID for per-key usage and spend tracking.
 func (s *PostgresStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
+	s.RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, "", requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
+}
+
+// RecordUsageFullWithPublicModel inserts a usage record with full attribution,
+// storing both the concrete billing model and optional public display model.
+func (s *PostgresStore) RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
 	h := hashKey(consumerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1193,15 +1244,15 @@ func (s *PostgresStore) RecordUsageFull(providerID, consumerKey, keyID, model, r
 
 	_, _ = s.pool.Exec(ctx,
 		`WITH ins AS (
-			INSERT INTO usage (provider_id, consumer_key_hash, key_id, model, prompt_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			INSERT INTO usage (provider_id, consumer_key_hash, key_id, model, public_model, prompt_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		)
 		UPDATE usage_totals SET
 			total_requests = total_requests + 1,
-			total_prompt_tokens = total_prompt_tokens + $5,
-			total_completion_tokens = total_completion_tokens + $6
+			total_prompt_tokens = total_prompt_tokens + $6,
+			total_completion_tokens = total_completion_tokens + $7
 		WHERE id = 1`,
-		providerID, h, keyID, model, promptTokens, completionTokens, requestID, costMicroUSD, marshalProviderLocation(requestLocation),
+		providerID, h, keyID, model, publicModel, promptTokens, completionTokens, requestID, costMicroUSD, marshalProviderLocation(requestLocation),
 	)
 }
 
@@ -1489,8 +1540,8 @@ func (s *PostgresStore) UsageRecords() []UsageRecord {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
-		 FROM usage ORDER BY created_at DESC LIMIT 10000`,
+		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
+			 FROM usage ORDER BY created_at DESC LIMIT 10000`,
 	)
 	if err != nil {
 		return nil
@@ -1505,6 +1556,7 @@ func (s *PostgresStore) UsageRecords() []UsageRecord {
 			&r.ProviderID,
 			&r.ConsumerKey,
 			&r.Model,
+			&r.PublicModel,
 			&r.PromptTokens,
 			&r.CompletionTokens,
 			&r.Timestamp,
@@ -1530,7 +1582,7 @@ func (s *PostgresStore) UsageRecordsSince(since time.Time) []UsageRecord {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
+		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
 		 FROM usage
 		 WHERE ($1::timestamptz IS NULL OR created_at >= $1)
 		 ORDER BY created_at ASC`,
@@ -1549,6 +1601,7 @@ func (s *PostgresStore) UsageRecordsSince(since time.Time) []UsageRecord {
 			&r.ProviderID,
 			&r.ConsumerKey,
 			&r.Model,
+			&r.PublicModel,
 			&r.PromptTokens,
 			&r.CompletionTokens,
 			&r.Timestamp,

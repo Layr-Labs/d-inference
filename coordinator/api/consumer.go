@@ -149,6 +149,81 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 // queuing for 120s — queueing can't help a model that will never fit.
 const errModelTooLarge = "model too large for any available provider"
 
+// consumerModel returns the model name to echo back to the consumer: the public
+// alias they requested when set, otherwise the concrete build id (raw-id
+// requests and any internal caller that didn't populate PublicModel).
+func consumerModel(pr *registry.PendingRequest) string {
+	if pr.PublicModel != "" {
+		return pr.PublicModel
+	}
+	return pr.Model
+}
+
+// rewriteChunkModel replaces the concrete build id in a streamed SSE chunk's
+// "model" field with the public alias the consumer requested, so streaming
+// responses never expose the underlying build/quant. No-op when the request
+// used a raw build id (PublicModel == Model) or no alias was set. Uses a
+// precise key+value string replace (both compact and spaced JSON forms) to
+// avoid parsing every chunk on the hot path.
+func rewriteChunkModel(chunk string, pr *registry.PendingRequest) string {
+	if pr.PublicModel == "" || pr.PublicModel == pr.Model {
+		return chunk
+	}
+	chunk = strings.ReplaceAll(chunk, `"model":"`+pr.Model+`"`, `"model":"`+pr.PublicModel+`"`)
+	chunk = strings.ReplaceAll(chunk, `"model": "`+pr.Model+`"`, `"model": "`+pr.PublicModel+`"`)
+	return chunk
+}
+
+// resolveRequestedModel maps the consumer-requested model — which may be a
+// public alias like "gemma-4-26b" — to the concrete build id used for routing,
+// billing, and serving, returning the public name to echo back to the consumer.
+// When the request used an alias it rewrites parsed["model"] and returns an
+// updated rawBody so the provider receives the concrete build. Raw build ids
+// pass through unchanged (publicModel == buildModel). ok=false means the alias
+// currently has no usable build; the caller should surface a model_unavailable
+// error.
+func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, requested string, allowedProviderSerials []string, policy selfRoutePolicy) (buildModel, publicModel string, newRawBody []byte, ok bool) {
+	buildID, isAlias, resolved := s.registry.ResolveModelConstrained(
+		requested, allowedProviderSerials, policy.ownerAccountID, policy.enabled, policy.prefer)
+	if !resolved {
+		return "", requested, rawBody, false
+	}
+	if !isAlias {
+		return requested, requested, rawBody, true
+	}
+	parsed["model"] = buildID
+	rb, err := json.Marshal(parsed)
+	if err != nil {
+		rb = rawBody
+	}
+	return buildID, requested, rb, true
+}
+
+// maybeFallbackAliasCapacity keeps public aliases available during a desired-build
+// saturation event. Alias resolution intentionally prefers Desired when it is
+// routable, but if every desired provider is transiently full and Previous has
+// immediate capacity, route this request to Previous instead of returning a fast
+// 429. Hard constraints and permanent model-too-large failures are handled by the
+// caller and do not use this fallback.
+func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, allowedProviderSerials []string) (string, bool) {
+	if publicModel == "" || publicModel == currentModel {
+		return currentModel, false
+	}
+	target, ok := s.registry.AliasTarget(publicModel)
+	if !ok || target.Desired != currentModel || target.Previous == "" {
+		return currentModel, false
+	}
+	if !s.registry.IsModelInCatalog(target.Previous) {
+		return currentModel, false
+	}
+	candidates, _, _ := s.registry.QuickCapacityCheck(target.Previous, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	if candidates <= 0 {
+		return currentModel, false
+	}
+	parsed["model"] = target.Previous
+	return target.Previous, true
+}
+
 // dispatchOneProvider encrypts and sends an inference request to a single
 // provider. It returns the pending request and provider on success, or an
 // error string on failure. The excludeProviders set is updated on failure.
@@ -157,6 +232,7 @@ const errModelTooLarge = "model too large for any available provider"
 func (s *Server) dispatchOneProvider(
 	r *http.Request,
 	model string,
+	publicModel string,
 	rawBody []byte,
 	consumerKey string,
 	consumerLocation *store.ProviderLocation,
@@ -179,6 +255,7 @@ func (s *Server) dispatchOneProvider(
 	pr = &registry.PendingRequest{
 		RequestID:              requestID,
 		Model:                  model,
+		PublicModel:            publicModel,
 		ConsumerKey:            consumerKey,
 		KeyID:                  keyIDFromContext(r.Context()),
 		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
@@ -979,7 +1056,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Per-key model allow-list enforcement (phase 3).
+	// Per-key model allow-list enforcement (phase 3). Checked on the
+	// consumer-requested name (alias or raw id) before alias resolution.
 	if !s.keyModelAllowed(r.Context(), model) {
 		writeJSON(w, http.StatusForbidden, errorResponse("model_not_allowed",
 			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
@@ -1010,6 +1088,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// self-routing; it cannot name a machine — ownership is matched on the
 	// coordinator-stamped provider AccountID, so nothing here is forgeable.
 	policy := s.resolveSelfRoutePolicy(r)
+
+	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id, now
+	// that routing constraints (serial allowlist / self-route) are known so the
+	// pick only considers builds the constrained provider set can actually
+	// serve. From here on `model` is the build (routing/billing/serving) while
+	// `publicModel` is echoed back so the consumer never sees the quant.
+	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(
+		parsed, rawBody, model, allowedProviderSerials, policy)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
+		return
+	}
+	model, rawBody = buildModel, resolvedBody
 
 	isResponsesAPI := input != nil && len(messages) == 0
 
@@ -1117,7 +1209,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !s.registry.IsModelInCatalog(model) {
 		refundReservation()
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model), withParam("model")))
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
 	}
 
@@ -1143,13 +1235,30 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// metrics. Self-route skips this fleet-wide gate — it queues on the
 		// owner's machine instead (handled below).
 		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+		if candidateCount == 0 && capacityRejections > 0 {
+			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials); switched {
+				model = fallbackModel
+				if isResponsesAPI {
+					providerParsed, err := responsesRequestToChatCompletions(parsed)
+					if err != nil {
+						refundReservation()
+						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+						return
+					}
+					rawBody, _ = json.Marshal(providerParsed)
+				} else {
+					rawBody, _ = json.Marshal(parsed)
+				}
+				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+			}
+		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			// Providers serve this model but none can ever fit it — non-retryable.
 			// Surface a clear 503 instead of a 429 the client would retry forever.
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
 			return
 		}
@@ -1160,7 +1269,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
+				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
 			return
 		}
@@ -1200,7 +1309,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var dispatchErr string
 		var dispatchErrCode int
 		provider, pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
-			r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
+			r, model, publicModel, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 			estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
 			isResponsesAPI, policy, timing, excludeProviders,
 		)
@@ -1244,6 +1353,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			queuePR := &registry.PendingRequest{
 				RequestID:              requestID,
 				Model:                  model,
+				PublicModel:            publicModel,
 				ConsumerKey:            consumerKey,
 				KeyID:                  keyIDFromContext(r.Context()),
 				KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
@@ -1282,7 +1392,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						"your machine is at capacity — retry shortly", withCode("machine_busy")))
 				} else {
 					writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-						fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
+						fmt.Sprintf("all providers for model %q are at capacity and queue is full", publicModel),
 						withCode("rate_limit_exceeded")))
 				}
 				return
@@ -1310,7 +1420,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
 				} else {
 					writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-						fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
+						fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", publicModel),
 						withCode("rate_limit_exceeded")))
 				}
 				return
@@ -1551,7 +1661,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				backupExclude[provider.ID] = struct{}{}
 
 				backupProvider, backupPR, _, _, _ = s.dispatchOneProvider(
-					r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
+					r, model, publicModel, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 					estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
 					isResponsesAPI, policy, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
 					backupExclude,
@@ -2226,6 +2336,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		if !sawResponsesAPI {
 			firstChunk = normalizeSSEChunk(firstChunk)
 		}
+		firstChunk = rewriteChunkModel(firstChunk, pr)
 		fmt.Fprintf(w, "%s\n\n", firstChunk)
 		flusher.Flush()
 	}
@@ -2288,6 +2399,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			if !sawResponsesAPI {
 				chunk = normalizeSSEChunk(chunk)
 			}
+			chunk = rewriteChunkModel(chunk, pr)
 			fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
 
@@ -2355,7 +2467,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 		"response": map[string]any{
 			"id":           responseID,
 			"created_at":   createdAt,
-			"model":        pr.Model,
+			"model":        consumerModel(pr),
 			"service_tier": nil,
 		},
 	})
@@ -2566,7 +2678,7 @@ func writeResponsesStreamOutput(w http.ResponseWriter, flusher http.Flusher, pr 
 		"response": map[string]any{
 			"id":                 responseID,
 			"created_at":         createdAt,
-			"model":              pr.Model,
+			"model":              consumerModel(pr),
 			"incomplete_details": nil,
 			"usage":              buildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
 			"service_tier":       nil,
@@ -2631,7 +2743,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 								return
 							}
 							if objType == "chat.completion" {
-								normalizeCompleteChatResponse(obj, pr.Model)
+								normalizeCompleteChatResponse(obj, consumerModel(pr))
 								// Keep the passthrough path consistent with the
 								// SSE-reconstruction path: surface the provider's
 								// accurate reasoning-token count if its raw usage
@@ -2650,9 +2762,16 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 										writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
 										return
 									}
-									respObj := chatCompletionToResponses(chatResp, pr.Model, pr.SESignature, pr.ResponseHash)
+									respObj := chatCompletionToResponses(chatResp, consumerModel(pr), pr.SESignature, pr.ResponseHash)
 									writeJSON(w, http.StatusOK, respObj)
 									return
+								}
+							} else {
+								// Native passthrough (object=="response"): the provider
+								// echoed the concrete build id; rewrite it to the public
+								// alias so the consumer never sees the quant/build.
+								if pr.PublicModel != "" {
+									obj["model"] = consumerModel(pr)
 								}
 							}
 							if pr.SESignature != "" {
@@ -2676,9 +2795,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					}
 					var resp any
 					if pr.IsResponsesAPI {
-						resp = buildResponsesResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+						resp = buildResponsesResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.SESignature, pr.ResponseHash)
 					} else {
-						resp = buildNonStreamingResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.SESignature, pr.ResponseHash)
 					}
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
@@ -3259,6 +3378,108 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 // including attestation metadata (trust level, Secure Enclave status,
 // provider count) for each model. Capacity fields (routable_providers,
 // warm_providers, can_accept) are included from the live capacity snapshot.
+// aliasModelEntries builds the consumer-facing /v1/models entries for active
+// public aliases and returns the set of underlying build ids those aliases
+// cover (so the caller can hide them from the default listing). Each alias entry
+// derives its metadata from its primary build — the desired build, or the
+// previous build if the desired one isn't in the catalog yet — and aggregates
+// live capacity across both the desired and previous builds so the alias's
+// routable/warm counts reflect every quant currently serving it.
+func (s *Server) aliasModelEntries(
+	capByModel map[string]*registry.ModelCapacity,
+	catalogByID map[string]store.SupportedModel,
+	registryByID map[string]store.ModelRegistryEntry,
+) ([]types.ModelEntry, map[string]struct{}) {
+	hidden := make(map[string]struct{})
+	aliases, err := s.store.ListModelAliases()
+	if err != nil {
+		s.logger.Error("model registry: failed to list aliases", "error", err)
+		return nil, hidden
+	}
+
+	entries := make([]types.ModelEntry, 0, len(aliases))
+	for _, a := range aliases {
+		if !a.Active || a.DesiredBuild == "" {
+			continue
+		}
+		// Primary build = the desired build when it's in the catalog, else the
+		// previous build (so the alias keeps a real entry while the desired build
+		// is mid-registration). An alias whose builds are all out of catalog
+		// resolves to nothing and must not be advertised (it would 503).
+		members := make([]string, 0, 2)
+		desiredInCatalog := false
+		if _, ok := catalogByID[a.DesiredBuild]; ok {
+			members = append(members, a.DesiredBuild)
+			desiredInCatalog = true
+		}
+		previousInCatalog := false
+		if a.PreviousBuild != "" {
+			if _, ok := catalogByID[a.PreviousBuild]; ok {
+				members = append(members, a.PreviousBuild)
+				previousInCatalog = true
+			}
+		}
+		var primary string
+		switch {
+		case desiredInCatalog:
+			primary = a.DesiredBuild
+		case previousInCatalog:
+			primary = a.PreviousBuild
+		default:
+			// No in-catalog build backs this alias — don't advertise it.
+			continue
+		}
+
+		routable, warm := 0, 0
+		canAccept := false
+		for _, b := range members {
+			hidden[b] = struct{}{}
+			if cap, ok := capByModel[b]; ok {
+				routable += cap.RoutableProviders
+				warm += cap.WarmProviders
+				canAccept = canAccept || cap.CanAccept
+			}
+		}
+
+		cm := catalogByID[primary]
+		reg, hasReg := registryByID[primary]
+		displayName := a.DisplayName
+		if displayName == "" {
+			displayName = cm.DisplayName
+		}
+		metadata := types.ModelMetadata{
+			ModelType:         cm.ModelType,
+			Quantization:      "", // an alias spans quants; omit the per-build quant
+			DisplayName:       displayName,
+			RoutableProviders: routable,
+			WarmProviders:     warm,
+			CanAccept:         canAccept,
+		}
+		entry := types.ModelEntry{
+			ID:       a.AliasID,
+			Object:   "model",
+			OwnedBy:  "eigeninference",
+			Name:     displayName,
+			Metadata: metadata,
+		}
+		// Pricing / context / features come from the primary build's registry
+		// entry. Quantization is intentionally left blank on the alias.
+		primaryQuant := ""
+		if hasReg {
+			primaryQuant = reg.Quantization
+		}
+		s.openRouterModelFieldsFor(primary, primaryQuant, reg, hasReg).applyToModelEntry(&entry)
+		entry.Quantization = ""
+		var caps []string
+		if hasReg {
+			caps = reg.Capabilities
+		}
+		entry.InputModalities, entry.OutputModalities = deriveModalities(cm.ModelType, caps)
+		entries = append(entries, entry)
+	}
+	return entries, hidden
+}
+
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	models := s.registry.ListModels()
 
@@ -3279,10 +3500,20 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := make([]types.ModelEntry, 0, len(models))
+	// Public aliases are the consumer-facing model names; their underlying
+	// quant builds are hidden by default so consumers never see the quant.
+	// Pass ?include_builds=1 (ops/debug) to also list the raw builds.
+	includeBuilds := r.URL.Query().Get("include_builds") == "1"
+	aliasEntries, hiddenBuilds := s.aliasModelEntries(capByModel, catalogByID, registryByID)
+
+	data := make([]types.ModelEntry, 0, len(models)+len(aliasEntries))
+	data = append(data, aliasEntries...)
 	for _, m := range models {
 		cm, inCatalog := catalogByID[m.ID]
 		if len(catalogByID) > 0 && !inCatalog {
+			continue
+		}
+		if _, hidden := hiddenBuilds[m.ID]; hidden && !includeBuilds {
 			continue
 		}
 		metadata := types.ModelMetadata{
@@ -3881,9 +4112,13 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 			if jobID == "" {
 				jobID = u.ProviderID
 			}
+			model := u.Model
+			if u.PublicModel != "" {
+				model = u.PublicModel
+			}
 			entries = append(entries, payments.UsageEntry{
 				JobID:            jobID,
-				Model:            u.Model,
+				Model:            model,
 				PromptTokens:     u.PromptTokens,
 				CompletionTokens: u.CompletionTokens,
 				CostMicroUSD:     u.CostMicroUSD,
@@ -4006,15 +4241,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required", withParam("model")))
 		return
 	}
-	// Per-key model allow-list enforcement (phase 3).
+	// Per-key model allow-list enforcement (phase 3). Checked on the requested
+	// name (alias or raw id) before alias resolution.
 	if !s.keyModelAllowed(r.Context(), model) {
 		writeJSON(w, http.StatusForbidden, errorResponse("model_not_allowed",
 			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
-		return
-	}
-	if !s.registry.IsModelInCatalog(model) {
-		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model), withParam("model")))
 		return
 	}
 
@@ -4029,6 +4260,24 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
 	policy := s.resolveSelfRoutePolicy(r)
+
+	// Resolve a public alias to a concrete build id, constraint-aware (after
+	// allowlist/self-route are known). resolveRequestedModel rewrites
+	// parsed["model"] to the build; this handler builds the provider body fresh
+	// from `parsed` (inferenceBody below), so rawBody isn't threaded here.
+	buildModel, publicModel, _, ok := s.resolveRequestedModel(parsed, rawBody, model, allowedProviderSerials, policy)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
+		return
+	}
+	model = buildModel
+
+	if !s.registry.IsModelInCatalog(model) {
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
+		return
+	}
 
 	// Completions and Anthropic messages both use the max_tokens field (never
 	// max_output_tokens, which is Responses API only). Inject a default if
@@ -4102,11 +4351,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
 		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+		if candidateCount == 0 && capacityRejections > 0 {
+			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials); switched {
+				model = fallbackModel
+				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+			}
+		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
 			return
 		}
@@ -4116,7 +4371,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
+				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
 			return
 		}
@@ -4126,6 +4381,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	pr := &registry.PendingRequest{
 		RequestID:              requestID,
 		Model:                  model,
+		PublicModel:            publicModel,
 		ConsumerKey:            consumerKey,
 		KeyID:                  keyIDFromContext(r.Context()),
 		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
@@ -4216,7 +4472,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
 			return
 		}
@@ -4236,7 +4492,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					"your machine is at capacity — retry shortly", withCode("machine_busy")))
 			} else {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
+					fmt.Sprintf("all providers for model %q are at capacity and queue is full", publicModel),
 					withCode("rate_limit_exceeded")))
 			}
 			return
@@ -4256,7 +4512,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
 			} else {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
+					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", publicModel),
 					withCode("rate_limit_exceeded")))
 			}
 			return

@@ -22,6 +22,16 @@ public enum CoordinatorEvent: Sendable {
     /// (off-thread) and reply with a `loadModelStatus` outbound message
     /// when the load completes or fails.
     case loadModel(modelId: String)
+    /// Coordinator-driven background prefetch. Provider should download +
+    /// verify the build on disk (off-thread, no GPU load) and reply with
+    /// `prefetchModelStatus` outbound messages. `priority` orders concurrent
+    /// prefetches (higher = sooner). Handler wired in Layer 3.
+    case prefetchModel(modelId: String, priority: Int)
+    /// Coordinator's declarative desired-build map. The provider reconciles each
+    /// entry: prefetch the desired build if missing, then hard-swap (advertise
+    /// new, drop the previous build) once verified. Sent after register and on
+    /// every change. Replaces the old push-driven migration ramp.
+    case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
 }
@@ -301,6 +311,17 @@ public enum OutboundMessage: Sendable {
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case prefetchModelStatus(
+        modelId: String,
+        status: ProviderMessage.PrefetchModelStatus.Status,
+        bytesDone: Int64,
+        bytesTotal: Int64,
+        error: String?
+    )
+    /// Authoritative out-of-band advertisement of newly-available builds
+    /// (e.g. a verified prefetch), carrying full `ModelInfo` including the
+    /// computed weight hash so the coordinator can cross-check before routing.
+    case modelsUpdate(models: [ModelInfo])
 }
 
 public struct AttestationResponsePayload: Sendable {
@@ -409,7 +430,22 @@ public actor CoordinatorClient {
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
     private var apnsTokenOverride: String?
 
+    /// Live per-model weight hashes pushed by the provider loop when a model
+    /// (re)load discovers the on-disk weights changed (model re-published while
+    /// the daemon runs). Once set, every (re)registration patches
+    /// models[].weight_hash so the coordinator's per-model catalog filter sees
+    /// current values instead of the daemon-start snapshot. Unlike
+    /// refreshAPNsToken this does NOT force a reconnect — challenge responses
+    /// already carry the fresh hashes live; this only keeps future
+    /// registrations consistent.
+    private var modelWeightHashOverrides: [String: String] = [:]
+
     private var shutdownRequested = false
+
+    /// Mutable advertised-model list. Seeded from `config.models`; background
+    /// prefetch (Layer 3) appends newly-verified builds so re-registration and
+    /// reconnects pick them up without dropping the currently-served model.
+    private let advertisedModelStore: AdvertisedModelStore
 
     public init(
         config: CoordinatorClientConfig,
@@ -419,6 +455,48 @@ public actor CoordinatorClient {
         self.config = config
         self.stats = stats
         self.state = state
+        self.advertisedModelStore = AdvertisedModelStore(config.models)
+    }
+
+    /// Add a runtime-verified build to the advertised set so the coordinator
+    /// sees it on the NEXT registration (reconnect). Returns true if the model
+    /// was newly advertised. The store always holds the FULL union (startup ∪
+    /// prefetched), so the currently-served model is never dropped during the
+    /// transition — registration carries old + new.
+    ///
+    /// Why not force a mid-connection re-register here: re-sending a `register`
+    /// on the live socket makes the coordinator construct a brand-new provider
+    /// record — resetting reputation, re-running attestation, and starting a
+    /// SECOND challenge loop alongside the first. That is too disruptive to the
+    /// model this provider is actively serving. The clean instant-pickup path is
+    /// a dedicated, non-resetting coordinator `models_update` message (Layer 4);
+    /// until then the new build is loadable locally immediately (it is in the
+    /// advertised set + appears warm in heartbeats once loaded) and is added to
+    /// the coordinator's advertised inventory on the next reconnect.
+    @discardableResult
+    public func advertiseModel(_ model: ModelInfo) -> Bool {
+        let isNew = advertisedModelStore.add(model)
+        if isNew {
+            logger.info("advertiseModel(\(model.id)): added to advertised set (\(self.advertisedModelStore.models.count) total); coordinator picks it up on next registration")
+        }
+        return isNew
+    }
+
+    /// Retire a build from the advertised set (hard swap). After this, a register
+    /// or reconnect no longer announces the superseded build to the coordinator.
+    @discardableResult
+    public func unadvertiseModel(_ modelID: String) -> Bool {
+        let removed = advertisedModelStore.remove(id: modelID)
+        if removed {
+            logger.info("unadvertiseModel(\(modelID)): dropped from advertised set (\(self.advertisedModelStore.models.count) total)")
+        }
+        return removed
+    }
+
+    /// Snapshot of the current advertised model list (startup ∪ runtime
+    /// prefetched builds).
+    public func currentAdvertisedModels() -> [ModelInfo] {
+        advertisedModelStore.models
     }
 
     /// Start the connection loop. Returns an AsyncStream of events for the caller
@@ -460,6 +538,13 @@ public actor CoordinatorClient {
         guard apnsTokenOverride != token else { return }
         apnsTokenOverride = token
         webSocketTask?.cancel(with: .goingAway, reason: nil)
+    }
+
+    /// Record refreshed per-model weight hashes for use in future
+    /// (re)registrations. Called by the provider loop after a model (re)load
+    /// recomputes the on-disk weight hash. See `modelWeightHashOverrides`.
+    public func updateModelWeightHashes(_ hashes: [String: String]) {
+        modelWeightHashOverrides = hashes
     }
 
     // MARK: - Connection Loop
@@ -715,6 +800,19 @@ public actor CoordinatorClient {
             logger.info("Received coordinator-driven preload for: \(load.modelId)")
             eventContinuation?.yield(.loadModel(modelId: load.modelId))
 
+        case .prefetchModel(let pf):
+            // Background download-only request. Forwarded to ProviderLoop, which
+            // downloads + verifies the build on disk (no GPU load) and replies
+            // with prefetch_model_status messages.
+            logger.info("Received coordinator-driven prefetch for: \(pf.modelId) (priority=\(pf.priority))")
+            eventContinuation?.yield(.prefetchModel(modelId: pf.modelId, priority: pf.priority))
+
+        case .desiredModels(let dm):
+            // Declarative desired-state. ProviderLoop reconciles each entry:
+            // prefetch the desired build if missing, then hard-swap once verified.
+            logger.info("Received desired_models from coordinator: \(dm.models.count) entr(ies)")
+            eventContinuation?.yield(.desiredModels(entries: dm.models))
+
         case .trustStatus(let ts):
             logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")
             eventContinuation?.yield(.trustStatus(
@@ -739,10 +837,15 @@ public actor CoordinatorClient {
             envScrubbed: true,
             hypervisorActive: SecurityChecks.isHypervisorActive()
         )
+        // Read the live advertised list (startup ∪ prefetched builds) rather
+        // than the immutable `config.models`, so a re-registration after a
+        // verified prefetch carries the updated set.
         let jsonData = try CoordinatorClientCodec.encodeRegistration(
             from: config,
+            models: advertisedModelStore.models,
             privacyCapabilities: privacyCapabilities,
-            apnsDeviceTokenOverride: apnsTokenOverride
+            apnsDeviceTokenOverride: apnsTokenOverride,
+            modelWeightHashOverrides: modelWeightHashOverrides
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed

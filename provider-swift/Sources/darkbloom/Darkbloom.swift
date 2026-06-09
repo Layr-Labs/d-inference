@@ -278,17 +278,31 @@ func advertisedModels(
     return models.filter { enabled.contains($0.id) }
 }
 
-func attachWeightHashes(to models: [ModelInfo]) -> ([ModelInfo], [String: String]) {
+func attachWeightHashes(to models: [ModelInfo]) -> (
+    [ModelInfo], hashes: [String: String], fingerprints: [String: String]
+) {
     var hashes: [String: String] = [:]
+    var fingerprints: [String: String] = [:]
     let withHashes = models.map { model -> ModelInfo in
         var updated = model
-        if let hash = WeightHasher.computeHash(for: model.id) {
+        guard let snapshotDir = ModelScanner.resolveLocalPath(modelID: model.id) else {
+            return updated
+        }
+        // Fingerprint BEFORE hashing: if files change in between, the stale
+        // fingerprint forces a re-hash at first model load (safe direction).
+        // The reverse order could pair a fingerprint of newer bytes with a
+        // hash of older ones and silently skip that re-hash.
+        let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: snapshotDir)
+        if let hash = WeightHasher.computeHash(snapshotDir: snapshotDir, modelID: model.id) {
             updated.weightHash = hash
             hashes[model.id] = hash
+            if let fingerprint {
+                fingerprints[model.id] = fingerprint
+            }
         }
         return updated
     }
-    return (withHashes, hashes)
+    return (withHashes, hashes, fingerprints)
 }
 
 // MARK: - Output Helpers

@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -338,6 +339,104 @@ func TestProviderMessageUnmarshalLoadModelStatus(t *testing.T) {
 	}
 	if status.ModelID != "qwen" || status.Status != LoadModelStatusFailed || status.Error != "GPU OOM" {
 		t.Fatalf("decoded status = %+v", status)
+	}
+}
+
+func TestPrefetchModelMessageMarshal(t *testing.T) {
+	msg := PrefetchModelMessage{
+		Type:     TypePrefetchModel,
+		ModelID:  "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+		Priority: 5,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var out PrefetchModelMessage
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Type != TypePrefetchModel || out.ModelID != msg.ModelID || out.Priority != 5 {
+		t.Fatalf("round-trip mismatch: %+v", out)
+	}
+
+	// Priority is omitempty: a zero priority must not appear on the wire so
+	// the Swift `if p.priority != 0` mirror stays byte-compatible.
+	zero, _ := json.Marshal(PrefetchModelMessage{Type: TypePrefetchModel, ModelID: "m"})
+	if bytes.Contains(zero, []byte("priority")) {
+		t.Fatalf("zero priority should be omitted: %s", zero)
+	}
+}
+
+func TestProviderMessageUnmarshalPrefetchModelStatus(t *testing.T) {
+	data := []byte(`{"type":"prefetch_model_status","model_id":"gemma","status":"downloading","bytes_done":1048576,"bytes_total":15600000000}`)
+
+	var msg ProviderMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != TypePrefetchModelStatus {
+		t.Fatalf("Type=%q, want %q", msg.Type, TypePrefetchModelStatus)
+	}
+	status, ok := msg.Payload.(*PrefetchModelStatusMessage)
+	if !ok {
+		t.Fatalf("Payload=%T, want *PrefetchModelStatusMessage", msg.Payload)
+	}
+	if status.ModelID != "gemma" || status.Status != PrefetchModelStatusDownloading {
+		t.Fatalf("decoded status = %+v", status)
+	}
+	if status.BytesDone != 1048576 || status.BytesTotal != 15600000000 {
+		t.Fatalf("byte counts = %d/%d", status.BytesDone, status.BytesTotal)
+	}
+}
+
+func TestProviderMessageUnmarshalModelsUpdate(t *testing.T) {
+	// The wire form a provider sends after a verified prefetch (mirrors the
+	// Swift ModelInfo encoding used by `register`).
+	data := []byte(`{"type":"models_update","models":[{"id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","size_bytes":15600000000,"model_type":"chat","quantization":"4bit","weight_hash":"abc123"}]}`)
+
+	var msg ProviderMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != TypeModelsUpdate {
+		t.Fatalf("Type=%q, want %q", msg.Type, TypeModelsUpdate)
+	}
+	upd, ok := msg.Payload.(*ModelsUpdateMessage)
+	if !ok {
+		t.Fatalf("Payload=%T, want *ModelsUpdateMessage", msg.Payload)
+	}
+	if len(upd.Models) != 1 {
+		t.Fatalf("models len = %d, want 1", len(upd.Models))
+	}
+	m := upd.Models[0]
+	if m.ID != "mlx-community/gemma-4-26B-A4B-it-qat-4bit" || m.ModelType != "chat" || m.WeightHash != "abc123" {
+		t.Fatalf("decoded model = %+v", m)
+	}
+}
+
+func TestPrefetchModelStatusVerifiedRoundTrip(t *testing.T) {
+	msg := PrefetchModelStatusMessage{
+		Type:    TypePrefetchModelStatus,
+		ModelID: "gemma",
+		Status:  PrefetchModelStatusVerified,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Zero byte counts are omitempty (terminal "verified" carries no progress).
+	if bytes.Contains(data, []byte("bytes_done")) || bytes.Contains(data, []byte("bytes_total")) {
+		t.Fatalf("zero byte counts should be omitted: %s", data)
+	}
+	var pm ProviderMessage
+	if err := json.Unmarshal(data, &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	status := pm.Payload.(*PrefetchModelStatusMessage)
+	if status.Status != PrefetchModelStatusVerified || status.BytesDone != 0 {
+		t.Fatalf("decoded = %+v", status)
 	}
 }
 
@@ -1024,5 +1123,53 @@ func TestBackendSlotCapacityBackwardCompatDecode(t *testing.T) {
 	}
 	if slot.NumRunning != 2 {
 		t.Errorf("num_running = %d, want 2", slot.NumRunning)
+	}
+}
+
+// TestDesiredModelsMessageMarshal verifies the desired_models wire shape the
+// coordinator emits round-trips, including the snake_case keys the Swift decoder
+// expects and the omitempty behavior of previous_build (so Go's omission ↔ the
+// Swift optional). This is the protocol-symmetry guard for desired_models.
+func TestDesiredModelsMessageMarshal(t *testing.T) {
+	msg := DesiredModelsMessage{
+		Type: TypeDesiredModels,
+		Models: []DesiredModelEntry{
+			{ModelName: "gemma-4-26b", DesiredBuild: "mlx-community/gemma-4-26B-A4B-it-qat-4bit", PreviousBuild: "mlx-community/gemma-4-26b-a4b-it-fp8"},
+			{ModelName: "qwen3.5-9b", DesiredBuild: "mlx-community/Qwen3.5-9B-MLX-4bit"}, // no previous
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Exact wire-key expectations.
+	s := string(data)
+	for _, want := range []string{`"type":"desired_models"`, `"model_name":"gemma-4-26b"`, `"desired_build":"mlx-community/gemma-4-26B-A4B-it-qat-4bit"`, `"previous_build":"mlx-community/gemma-4-26b-a4b-it-fp8"`} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Errorf("marshaled JSON missing %q: %s", want, s)
+		}
+	}
+	// previous_build is omitempty: the second entry (no previous) must not emit it.
+	if c := bytes.Count(data, []byte(`"previous_build"`)); c != 1 {
+		t.Errorf("previous_build should appear exactly once (omitempty), got %d in %s", c, s)
+	}
+
+	var decoded DesiredModelsMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Type != TypeDesiredModels {
+		t.Errorf("type = %q, want %q", decoded.Type, TypeDesiredModels)
+	}
+	if len(decoded.Models) != 2 {
+		t.Fatalf("models len = %d, want 2", len(decoded.Models))
+	}
+	if decoded.Models[0].ModelName != "gemma-4-26b" || decoded.Models[0].PreviousBuild != "mlx-community/gemma-4-26b-a4b-it-fp8" {
+		t.Errorf("entry 0 round-trip mismatch: %+v", decoded.Models[0])
+	}
+	if decoded.Models[1].PreviousBuild != "" {
+		t.Errorf("entry 1 previous_build should be empty, got %q", decoded.Models[1].PreviousBuild)
 	}
 }

@@ -9,6 +9,7 @@
 // references.
 
 import Foundation
+import MLXLMCommon
 
 public extension MultiModelBatchSchedulerEngine {
 
@@ -24,11 +25,23 @@ public extension MultiModelBatchSchedulerEngine {
         /// The `model_type` from config.json (e.g. `"gpt_oss"`, `"gemma2"`,
         /// `"qwen3"`). Used to auto-select reasoning and tool call parsers.
         public let modelType: String?
+        /// The loaded model container. Present for VLM models so multimodal
+        /// requests can run the non-batched `prepare`/`generate` vision path.
+        public let container: ModelContainer?
+        /// Whether this model is a vision-language model (config has a
+        /// `vision_config`). When true, requests that carry image/video
+        /// content are routed to the container's vision path.
+        public let isVLM: Bool
 
-        public init(scheduler: BatchScheduler, tokenizer: TokenizerHandle, modelType: String? = nil) {
+        public init(
+            scheduler: BatchScheduler, tokenizer: TokenizerHandle, modelType: String? = nil,
+            container: ModelContainer? = nil, isVLM: Bool = false
+        ) {
             self.scheduler = scheduler
             self.tokenizer = tokenizer
             self.modelType = modelType
+            self.container = container
+            self.isVLM = isVLM
         }
     }
 
@@ -48,17 +61,26 @@ public extension MultiModelBatchSchedulerEngine {
         public let releaseToken: OneShotRelease
         /// The `model_type` from config.json.
         public let modelType: String?
+        /// The loaded model container (present for VLM models — see
+        /// ``ModelRegistryEntry/container``).
+        public let container: ModelContainer?
+        /// Whether this model is a vision-language model.
+        public let isVLM: Bool
 
         public init(
             scheduler: BatchScheduler,
             tokenizer: TokenizerHandle,
             releaseToken: OneShotRelease,
-            modelType: String? = nil
+            modelType: String? = nil,
+            container: ModelContainer? = nil,
+            isVLM: Bool = false
         ) {
             self.scheduler = scheduler
             self.tokenizer = tokenizer
             self.releaseToken = releaseToken
             self.modelType = modelType
+            self.container = container
+            self.isVLM = isVLM
         }
     }
 }

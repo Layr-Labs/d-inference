@@ -6,9 +6,11 @@ import Foundation
 public enum CoordinatorClientCodec {
     public static func registrationMessage(
         from config: CoordinatorClientConfig,
+        models: [ModelInfo]? = nil,
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
-        apnsDeviceTokenOverride: String? = nil
+        apnsDeviceTokenOverride: String? = nil,
+        modelWeightHashOverrides: [String: String] = [:]
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -16,9 +18,28 @@ public enum CoordinatorClientCodec {
         let effectiveEnv = apnsDeviceTokenOverride != nil
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
+        // Weight hashes refreshed after a model (re)load override the
+        // daemon-start values so a reconnect registers with the hashes of the
+        // weights actually on disk (the coordinator's per-model catalog filter
+        // keys off models[].weight_hash).
+        // The advertised set may be overridden on a reconnect (prefetch re-advertise);
+        // weight-hash overrides are then patched on top of whichever set we send.
+        let baseModels = models ?? config.models
+        let effectiveModels: [ModelInfo]
+        if modelWeightHashOverrides.isEmpty {
+            effectiveModels = baseModels
+        } else {
+            effectiveModels = baseModels.map { model in
+                var patched = model
+                if let fresh = modelWeightHashOverrides[model.id] {
+                    patched.weightHash = fresh
+                }
+                return patched
+            }
+        }
         return .register(ProviderMessage.Register(
             hardware: config.hardware,
-            models: config.models,
+            models: effectiveModels,
             backend: config.backendName,
             version: version,
             publicKey: config.publicKey,
@@ -38,16 +59,20 @@ public enum CoordinatorClientCodec {
 
     public static func encodeRegistration(
         from config: CoordinatorClientConfig,
+        models: [ModelInfo]? = nil,
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
-        apnsDeviceTokenOverride: String? = nil
+        apnsDeviceTokenOverride: String? = nil,
+        modelWeightHashOverrides: [String: String] = [:]
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
                 from: config,
+                models: models,
                 version: version,
                 privacyCapabilities: privacyCapabilities,
-                apnsDeviceTokenOverride: apnsDeviceTokenOverride
+                apnsDeviceTokenOverride: apnsDeviceTokenOverride,
+                modelWeightHashOverrides: modelWeightHashOverrides
             )
         )
     }
@@ -127,6 +152,18 @@ public enum CoordinatorClientCodec {
                 status: status,
                 error: error
             ))
+
+        case .prefetchModelStatus(let modelId, let status, let bytesDone, let bytesTotal, let error):
+            return .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
+                modelId: modelId,
+                status: status,
+                bytesDone: bytesDone,
+                bytesTotal: bytesTotal,
+                error: error
+            ))
+
+        case .modelsUpdate(let models):
+            return .modelsUpdate(ProviderMessage.ModelsUpdate(models: models))
         }
     }
 

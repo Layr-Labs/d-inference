@@ -120,11 +120,16 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			status = "online"
 		}
 
-		// Collect available model IDs for this provider
+		// Collect available model IDs for this provider. p.Models is replaced
+		// copy-on-write by UpdateModelWeightHashes on the challenge goroutine, so
+		// its slice header must be read under p.mu; copy the IDs out and reuse the
+		// local slice for both the per-provider list and the model histogram below.
+		p.Mu().Lock()
 		provModels := make([]string, 0, len(p.Models))
 		for _, m := range p.Models {
 			provModels = append(provModels, m.ID)
 		}
+		p.Mu().Unlock()
 
 		lastChallengeVerified := ""
 		if last := p.GetLastChallengeVerified(); !last.IsZero() {
@@ -158,8 +163,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 		providers = append(providers, prov)
 
-		for _, m := range p.Models {
-			modelMap[m.ID]++
+		for _, id := range provModels {
+			modelMap[id]++
 		}
 	})
 

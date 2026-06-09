@@ -70,6 +70,7 @@ type MemoryStore struct {
 	activeModelVersion map[string]int64 // modelID → modelVersionID
 	modelVersionSeq    int64
 	publishingAPIKeys  map[string]*PublishingAPIKey
+	modelAliases       map[string]*ModelAlias // aliasID → alias
 
 	// Users (Privy)
 	usersByPrivyID         map[string]*User // privyUserID → user
@@ -138,6 +139,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		billingSessions:               make(map[string]*BillingSession),
 		modelPrices:                   make(map[string]ModelPrice),
 		modelRegistry:                 make(map[string]*ModelRegistryEntry),
+		modelAliases:                  make(map[string]*ModelAlias),
 		modelVersions:                 make(map[string]*ModelVersion),
 		modelVersionByID:              make(map[int64]*ModelVersion),
 		modelVersionFiles:             make(map[int64][]ModelVersionFile),
@@ -751,6 +753,12 @@ func (s *MemoryStore) RecordUsageWithCostAndLocation(providerID, consumerKey, mo
 // RecordUsageFull logs a usage event with full attribution (incl. API key ID)
 // and updates the per-key spend accumulator used for cap enforcement.
 func (s *MemoryStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
+	s.RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, "", requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
+}
+
+// RecordUsageFullWithPublicModel logs usage with concrete billing model and an
+// optional consumer-facing model name for usage history.
+func (s *MemoryStore) RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -764,6 +772,7 @@ func (s *MemoryStore) RecordUsageFull(providerID, consumerKey, keyID, model, req
 		ConsumerKey:      consumerKey,
 		KeyID:            keyID,
 		Model:            model,
+		PublicModel:      publicModel,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		RequestLocation:  locCopy,
@@ -1552,6 +1561,67 @@ func (s *MemoryStore) MarkPublishingAPIKeyUsed(id string) error {
 	}
 	now := time.Now()
 	key.LastUsedAt = &now
+	return nil
+}
+
+func cloneModelAlias(a *ModelAlias) ModelAlias {
+	cp := *a
+	// RetiredBuilds is the only reference-typed field; copy it so callers can't
+	// mutate stored state through the returned value.
+	if a.RetiredBuilds != nil {
+		cp.RetiredBuilds = append([]string(nil), a.RetiredBuilds...)
+	}
+	return cp
+}
+
+func (s *MemoryStore) UpsertModelAlias(alias *ModelAlias) error {
+	if alias == nil || alias.AliasID == "" {
+		return fmt.Errorf("model alias requires a non-empty alias_id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	cp := cloneModelAlias(alias)
+	if existing, ok := s.modelAliases[alias.AliasID]; ok && !existing.CreatedAt.IsZero() {
+		cp.CreatedAt = existing.CreatedAt
+	} else if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	s.modelAliases[alias.AliasID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) GetModelAlias(aliasID string) (*ModelAlias, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	a, ok := s.modelAliases[aliasID]
+	if !ok {
+		return nil, false, nil
+	}
+	cp := cloneModelAlias(a)
+	return &cp, true, nil
+}
+
+func (s *MemoryStore) ListModelAliases() ([]ModelAlias, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ModelAlias, 0, len(s.modelAliases))
+	for _, a := range s.modelAliases {
+		out = append(out, cloneModelAlias(a))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AliasID < out[j].AliasID })
+	return out, nil
+}
+
+func (s *MemoryStore) DeleteModelAlias(aliasID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.modelAliases, aliasID)
 	return nil
 }
 

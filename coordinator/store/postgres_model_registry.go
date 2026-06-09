@@ -397,3 +397,103 @@ func unmarshalMetadata(data []byte) map[string]any {
 	}
 	return out
 }
+
+// --- Model aliases ---
+
+func (s *PostgresStore) UpsertModelAlias(alias *ModelAlias) error {
+	if alias == nil || alias.AliasID == "" {
+		return fmt.Errorf("store: model alias requires a non-empty alias_id")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	retired := alias.RetiredBuilds
+	if retired == nil {
+		retired = []string{}
+	}
+	retiredJSON, err := json.Marshal(retired)
+	if err != nil {
+		return fmt.Errorf("store: marshal retired builds: %w", err)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO model_aliases (alias_id, display_name, desired_build, previous_build, retired_builds, active, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, COALESCE(NULLIF($7::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), NOW())
+		ON CONFLICT (alias_id) DO UPDATE SET
+		  display_name = $2, desired_build = $3, previous_build = $4, retired_builds = $5, active = $6, updated_at = NOW()`,
+		alias.AliasID, alias.DisplayName, alias.DesiredBuild, alias.PreviousBuild, retiredJSON, alias.Active, alias.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("store: upsert model alias: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetModelAlias(aliasID string) (*ModelAlias, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var a ModelAlias
+	var retiredJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT alias_id, display_name, desired_build, previous_build, retired_builds, active, created_at, updated_at
+		FROM model_aliases WHERE alias_id = $1`, aliasID).
+		Scan(&a.AliasID, &a.DisplayName, &a.DesiredBuild, &a.PreviousBuild, &retiredJSON, &a.Active, &a.CreatedAt, &a.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("store: get model alias: %w", err)
+	}
+	a.RetiredBuilds = unmarshalRetiredBuilds(retiredJSON)
+	return &a, true, nil
+}
+
+// unmarshalRetiredBuilds decodes the retired_builds JSONB column, treating
+// NULL/invalid payloads as empty (the column predates some rows).
+func unmarshalRetiredBuilds(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (s *PostgresStore) ListModelAliases() ([]ModelAlias, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT alias_id, display_name, desired_build, previous_build, retired_builds, active, created_at, updated_at
+		FROM model_aliases ORDER BY alias_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list model aliases: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ModelAlias
+	for rows.Next() {
+		var a ModelAlias
+		var retiredJSON []byte
+		if err := rows.Scan(&a.AliasID, &a.DisplayName, &a.DesiredBuild, &a.PreviousBuild, &retiredJSON, &a.Active, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan model alias: %w", err)
+		}
+		a.RetiredBuilds = unmarshalRetiredBuilds(retiredJSON)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) DeleteModelAlias(aliasID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `DELETE FROM model_aliases WHERE alias_id = $1`, aliasID); err != nil {
+		return fmt.Errorf("store: delete model alias: %w", err)
+	}
+	return nil
+}

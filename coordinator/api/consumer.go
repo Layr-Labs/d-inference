@@ -199,6 +199,31 @@ func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, re
 	return buildID, requested, rb, true
 }
 
+// maybeFallbackAliasCapacity keeps public aliases available during a desired-build
+// saturation event. Alias resolution intentionally prefers Desired when it is
+// routable, but if every desired provider is transiently full and Previous has
+// immediate capacity, route this request to Previous instead of returning a fast
+// 429. Hard constraints and permanent model-too-large failures are handled by the
+// caller and do not use this fallback.
+func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, allowedProviderSerials []string) (string, bool) {
+	if publicModel == "" || publicModel == currentModel {
+		return currentModel, false
+	}
+	target, ok := s.registry.AliasTarget(publicModel)
+	if !ok || target.Desired != currentModel || target.Previous == "" {
+		return currentModel, false
+	}
+	if !s.registry.IsModelInCatalog(target.Previous) {
+		return currentModel, false
+	}
+	candidates, _, _ := s.registry.QuickCapacityCheck(target.Previous, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	if candidates <= 0 {
+		return currentModel, false
+	}
+	parsed["model"] = target.Previous
+	return target.Previous, true
+}
+
 // dispatchOneProvider encrypts and sends an inference request to a single
 // provider. It returns the pending request and provider on success, or an
 // error string on failure. The excludeProviders set is updated on failure.
@@ -1184,7 +1209,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !s.registry.IsModelInCatalog(model) {
 		refundReservation()
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model), withParam("model")))
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
 	}
 
@@ -1210,13 +1235,30 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// metrics. Self-route skips this fleet-wide gate — it queues on the
 		// owner's machine instead (handled below).
 		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+		if candidateCount == 0 && capacityRejections > 0 {
+			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials); switched {
+				model = fallbackModel
+				if isResponsesAPI {
+					providerParsed, err := responsesRequestToChatCompletions(parsed)
+					if err != nil {
+						refundReservation()
+						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+						return
+					}
+					rawBody, _ = json.Marshal(providerParsed)
+				} else {
+					rawBody, _ = json.Marshal(parsed)
+				}
+				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+			}
+		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			// Providers serve this model but none can ever fit it — non-retryable.
 			// Surface a clear 503 instead of a 429 the client would retry forever.
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
 			return
 		}
@@ -1227,7 +1269,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
+				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
 			return
 		}
@@ -1350,7 +1392,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						"your machine is at capacity — retry shortly", withCode("machine_busy")))
 				} else {
 					writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-						fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
+						fmt.Sprintf("all providers for model %q are at capacity and queue is full", publicModel),
 						withCode("rate_limit_exceeded")))
 				}
 				return
@@ -1378,7 +1420,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
 				} else {
 					writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-						fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
+						fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", publicModel),
 						withCode("rate_limit_exceeded")))
 				}
 				return
@@ -4070,22 +4112,19 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 			if jobID == "" {
 				jobID = u.ProviderID
 			}
+			model := u.Model
+			if u.PublicModel != "" {
+				model = u.PublicModel
+			}
 			entries = append(entries, payments.UsageEntry{
 				JobID:            jobID,
-				Model:            u.Model,
+				Model:            model,
 				PromptTokens:     u.PromptTokens,
 				CompletionTokens: u.CompletionTokens,
 				CostMicroUSD:     u.CostMicroUSD,
 				Timestamp:        u.CreatedAt,
 			})
 		}
-	}
-
-	// Usage is recorded against the concrete build (correct for billing/stats/
-	// earnings), but the consumer must only ever see the public model name —
-	// map each build back to its alias for display.
-	for i := range entries {
-		entries[i].Model = s.registry.PublicNameForBuild(entries[i].Model)
 	}
 
 	writeJSON(w, http.StatusOK, types.UsageResponse{
@@ -4236,7 +4275,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	if !s.registry.IsModelInCatalog(model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model), withParam("model")))
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
 	}
 
@@ -4312,11 +4351,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
 		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+		if candidateCount == 0 && capacityRejections > 0 {
+			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials); switched {
+				model = fallbackModel
+				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+			}
+		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
 			return
 		}
@@ -4326,7 +4371,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
+				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
 			return
 		}
@@ -4427,7 +4472,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", model),
+				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
 			return
 		}
@@ -4447,7 +4492,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					"your machine is at capacity — retry shortly", withCode("machine_busy")))
 			} else {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
+					fmt.Sprintf("all providers for model %q are at capacity and queue is full", publicModel),
 					withCode("rate_limit_exceeded")))
 			}
 			return
@@ -4467,7 +4512,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
 			} else {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
+					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", publicModel),
 					withCode("rate_limit_exceeded")))
 			}
 			return

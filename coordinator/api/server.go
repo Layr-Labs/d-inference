@@ -140,10 +140,10 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // release has been registered in the store (e.g. in-memory dev setups).
 // Production reads the latest version from the releases table.
 //
-// 0.5.0 is the Swift cutover release: pure Swift CLI, no Python runtime,
-// no vllm-mlx subprocess. Providers reporting backend == "mlx-swift" skip
-// the python/runtime hash checks via registry.BackendUsesSwiftRuntime.
-var LatestProviderVersion = "0.5.0"
+// 0.5.17 is the desired_models cutover release for declarative prefetch/hotswap.
+// Keep this fallback in sync with ProviderCore.version so dev/in-memory
+// coordinators advertise the same floor as the Swift binary they expect.
+var LatestProviderVersion = "0.5.17"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send

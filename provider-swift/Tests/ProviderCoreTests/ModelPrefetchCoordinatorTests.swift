@@ -967,6 +967,61 @@ struct ProviderLoopPrefetchTests {
         await coord.shutdown(timeout: .seconds(3))
     }
 
+    @Test("late verify for stale desired build is ignored after alias retarget")
+    func staleDesiredPrefetchVerifyIsIgnoredAfterRetarget() async throws {
+        let staleDesired = "org/stale-\(UUID().uuidString)"
+        let currentBuild = "org/current-\(UUID().uuidString)"
+        let newDesired = "org/new-\(UUID().uuidString)"
+        let staleDir = try seedSnapshot(modelID: staleDesired)
+        defer { try? FileManager.default.removeItem(at: staleDir) }
+
+        let currentInfo = ModelInfo(id: currentBuild, sizeBytes: 1, estimatedMemoryGb: 1)
+        let loop = try makeLoop(models: [currentInfo], maxModelSlots: 3)
+        let client = makeClient()
+        _ = await client.advertiseModel(currentInfo)
+
+        let prefetcher = RecordingBlockingPrefetcher()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: prefetcher,
+            preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
+            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(
+                modelName: "alias-a",
+                desiredBuild: staleDesired,
+                previousBuild: currentBuild
+            )],
+            send: capturingSend
+        )
+        let staleStarted = await waitUntil(timeout: .seconds(5)) {
+            prefetcher.startedIDs.contains(staleDesired)
+        }
+        #expect(staleStarted)
+
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(
+                modelName: "alias-a",
+                desiredBuild: newDesired,
+                previousBuild: currentBuild
+            )],
+            send: capturingSend
+        )
+
+        await loop.applyVerifiedPrefetch(modelId: staleDesired)
+
+        #expect(!(await loop.isModelAdvertised(staleDesired)))
+        #expect(await loop.isModelAdvertised(currentBuild))
+        #expect(await client.currentAdvertisedModels().map(\.id).contains(currentBuild))
+        #expect(!outbound.modelsUpdates().flatMap { $0 }.contains { $0.id == staleDesired })
+
+        await coord.shutdown(timeout: .seconds(3))
+    }
+
     /// Seed a snapshot with config.json but NO weight files. scanVerifiedModelInfo
     /// returns nil (parseModelInfo requires sizeBytes > 0) — the same guard the
     /// nil-weight-hash case falls into: a verify that can't produce a hashed,

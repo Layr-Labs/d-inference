@@ -443,45 +443,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	}
 }
 
-// handlePrefetchModelStatus records a provider's background-prefetch progress.
-// Prefetch downloads + verifies a build on disk without loading it into GPU. The
-// authoritative "this build is now servable" signal is the separate
-// models_update message (handleModelsUpdate), which carries the weight hash —
-// the terminal "verified" status here is just observability/progress.
-func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry.Provider, msg *protocol.PrefetchModelStatusMessage) {
-	s.logger.Info("provider prefetch_model_status",
-		"provider_id", providerID,
-		"model_id", msg.ModelID,
-		"status", msg.Status,
-		"bytes_done", msg.BytesDone,
-		"bytes_total", msg.BytesTotal,
-		"error", msg.Error,
-	)
-	s.ddIncr("provider.prefetch_status", []string{"model:" + msg.ModelID, "status:" + msg.Status})
-	if msg.BytesTotal > 0 {
-		s.ddGauge("provider.prefetch_progress_pct",
-			float64(msg.BytesDone)/float64(msg.BytesTotal)*100,
-			[]string{"provider_id:" + providerID, "model:" + msg.ModelID})
-	}
-}
-
-// handleModelsUpdate applies a provider's authoritative model inventory update
-// (sent after it converges on a desired build and hard-swaps off the old one)
-// into its advertised models in place. Each build's weight hash is cross-checked
-// against the catalog before it becomes routable, so a bad/buggy swap never takes
-// traffic, and the alias-sibling hard-swap drop retires the old quant — all
-// without waiting for the provider to reconnect or resetting its trust/reputation.
-func (s *Server) handleModelsUpdate(providerID string, provider *registry.Provider, msg *protocol.ModelsUpdateMessage) {
-	merged := s.registry.MergeProviderModels(providerID, msg.Models)
-	for _, id := range merged {
-		s.logger.Info("provider now advertises build (models_update)",
-			"provider_id", providerID, "model_id", id)
-		// Release any requests queued for this build now that a provider can
-		// (cold-)serve it.
-		s.registry.DrainQueuedRequestsForModel(id)
-	}
-}
-
 // CodeAttestResponseTimeout bounds how long the coordinator waits for the
 // provider's WebSocket reply to an APNs code-identity challenge. Generous because
 // a background push may be briefly delayed; the provider's local decrypt+sign is
@@ -565,10 +526,8 @@ func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID strin
 
 // handlePrefetchModelStatus records a provider's background-prefetch progress.
 // Prefetch downloads + verifies a build on disk without loading it into GPU.
-// Any status acknowledges that the provider's binary speaks the prefetch
-// protocol (so the migration controller won't stall waiting on it). The
-// authoritative "this build is now servable" signal is the separate
-// models_update message (handleModelsUpdate), which carries the weight hash —
+// The authoritative "this build is now servable" signal is the separate
+// models_update message (handleModelsUpdate), which carries the weight hash;
 // the terminal "verified" status here is just observability/progress.
 func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry.Provider, msg *protocol.PrefetchModelStatusMessage) {
 	s.logger.Info("provider prefetch_model_status",
@@ -579,10 +538,6 @@ func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry
 		"bytes_total", msg.BytesTotal,
 		"error", msg.Error,
 	)
-	s.registry.RecordPrefetchAck(providerID)
-	if msg.Status == protocol.PrefetchModelStatusFailed {
-		s.registry.RecordPrefetchFailure(providerID, msg.ModelID)
-	}
 	s.ddIncr("provider.prefetch_status", []string{"model:" + msg.ModelID, "status:" + msg.Status})
 	if msg.BytesTotal > 0 {
 		s.ddGauge("provider.prefetch_progress_pct",
@@ -594,18 +549,25 @@ func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry
 // handleModelsUpdate merges a provider's authoritative model inventory update
 // (sent after a verified prefetch) into its advertised models in place. Each
 // build's weight hash is cross-checked against the catalog before it becomes
-// routable, so a bad/buggy prefetch never takes traffic. This is the signal the
-// migration controller's ramp depends on, and it closes the loop without
-// waiting for the provider to reconnect or resetting its trust/reputation.
+// routable, so a bad/buggy prefetch never takes traffic. This closes the loop
+// without waiting for the provider to reconnect or resetting trust/reputation.
 func (s *Server) handleModelsUpdate(providerID string, provider *registry.Provider, msg *protocol.ModelsUpdateMessage) {
-	s.registry.RecordPrefetchAck(providerID)
-	merged := s.registry.MergeProviderModels(providerID, msg.Models)
+	merged, dropped := s.registry.MergeProviderModels(providerID, msg.Models)
 	for _, id := range merged {
 		s.logger.Info("provider now advertises build (models_update)",
 			"provider_id", providerID, "model_id", id)
 		// Release any requests queued for this build now that a provider can
 		// (cold-)serve it.
 		s.registry.DrainQueuedRequestsForModel(id)
+	}
+	for _, id := range dropped {
+		s.logger.Info("provider stopped advertising build (models_update)",
+			"provider_id", providerID, "model_id", id)
+		// Requests may have queued against the concrete previous build while it
+		// was still acceptable. Recheck immediately: drain to another provider if
+		// one exists, otherwise fail fast instead of waiting for queue timeout.
+		s.registry.DrainQueuedRequestsForModel(id)
+		s.registry.RejectUnservableQueuedRequests(id)
 	}
 }
 
@@ -1737,7 +1699,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// Record in-memory usage (for current session queries).
 		s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
 			JobID:            msg.RequestID,
-			Model:            pr.Model,
+			Model:            consumerModel(pr),
 			PromptTokens:     msg.Usage.PromptTokens,
 			CompletionTokens: msg.Usage.CompletionTokens,
 			CostMicroUSD:     totalCost,
@@ -1756,7 +1718,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// RecordUsage above (their session/transparency view).
 		if !freeSelfRoute {
 			saferun.Go(s.logger, "recordUsage", func() {
-				s.store.RecordUsageFull(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
+				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 			})
 		}
 

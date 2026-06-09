@@ -44,6 +44,15 @@ func TestRoutableProviderIDsExcludeUnroutable(t *testing.T) {
 	stale.LastChallengeVerified = time.Time{} // never challenged → unroutable
 	stale.mu.Unlock()
 
+	crashed := registerProviderWithModel(reg, "crashed", build)
+	makeProviderRoutable(crashed)
+	crashed.mu.Lock()
+	crashed.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots:         []protocol.BackendSlotCapacity{{Model: build, State: "crashed"}},
+	}
+	crashed.mu.Unlock()
+
 	routable := reg.RoutableProviderIDsForBuild(build)
 	if len(routable) != 1 || routable[0] != "good" {
 		t.Fatalf("only the routable provider should count, got %v", routable)
@@ -164,6 +173,26 @@ func TestResolveModelConstrainedSelfRoutePrefersOwnerBuild(t *testing.T) {
 	}
 }
 
+func TestResolveModelConstrainedPreferOwnerUsesOwnedBuildBeforePublicDesired(t *testing.T) {
+	reg := New(testLogger())
+	makeProviderRoutable(registerProviderWithModel(reg, "public-qat", aliasQAT))
+
+	ownedPrev := registerProviderWithModel(reg, "owned-fp8", aliasFP8)
+	ownedPrev.mu.Lock()
+	ownedPrev.AccountID = "acct-1"
+	ownedPrev.mu.Unlock()
+	makeProviderRoutable(ownedPrev)
+
+	reg.SetModelAliases(map[string]AliasTarget{
+		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
+	})
+
+	b, isAlias, ok := reg.ResolveModelConstrained("gemma-4-26b", nil, "acct-1", false, true)
+	if !ok || !isAlias || b != aliasFP8 {
+		t.Fatalf("prefer-owner should choose owned previous before public desired, got %q isAlias=%v ok=%v", b, isAlias, ok)
+	}
+}
+
 // A HARD-constrained request (serial pin or self-route-only) whose constraint no
 // provider can satisfy must return model_unavailable — NOT fall back to a build
 // that only a disallowed/non-owned provider serves.
@@ -225,9 +254,12 @@ func TestMergeProviderModelsMakesProviderServeBuild(t *testing.T) {
 	}
 
 	// Simulate the authoritative models_update a provider sends after converging.
-	merged := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, ModelType: "gemma", WeightHash: "abc"}})
+	merged, dropped := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, ModelType: "gemma", WeightHash: "abc"}})
 	if len(merged) != 1 || merged[0] != aliasQAT {
 		t.Fatalf("merge should report qat, got %v", merged)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("merge without alias drop should not report dropped builds, got %v", dropped)
 	}
 	got := reg.RoutableProviderIDsForBuild(aliasQAT)
 	if len(got) != 1 || got[0] != "p1" {
@@ -243,8 +275,8 @@ func TestMergeProviderModelsMakesProviderServeBuild(t *testing.T) {
 		t.Fatalf("re-merge should not duplicate, got %v", got)
 	}
 	// Unknown provider is a safe no-op.
-	if m := reg.MergeProviderModels("nope", []protocol.ModelInfo{{ID: aliasQAT}}); m != nil {
-		t.Fatalf("unknown provider should be a no-op, got %v", m)
+	if m, d := reg.MergeProviderModels("nope", []protocol.ModelInfo{{ID: aliasQAT}}); m != nil || d != nil {
+		t.Fatalf("unknown provider should be a no-op, got merged=%v dropped=%v", m, d)
 	}
 }
 
@@ -263,7 +295,10 @@ func TestMergeProviderModelsHardSwapDropsPreviousBuild(t *testing.T) {
 	}
 
 	// p1 converges: it now advertises ONLY the desired build qat.
-	reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, ModelType: "gemma"}})
+	_, dropped := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, ModelType: "gemma"}})
+	if len(dropped) != 1 || dropped[0] != aliasFP8 {
+		t.Fatalf("hard-swap drop should report fp8, got %v", dropped)
+	}
 
 	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 1 || got[0] != "p1" {
 		t.Fatalf("p1 should serve qat after swap, got %v", got)
@@ -280,17 +315,17 @@ func TestMergeProviderModelsRejectsHashMismatch(t *testing.T) {
 	makeProviderRoutable(registerProviderWithModel(reg, "p1", "mlx-community/base"))
 	reg.SetModelCatalog([]CatalogEntry{{ID: aliasQAT, WeightHash: "EXPECTED"}})
 
-	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, WeightHash: "WRONG"}}); len(m) != 0 {
+	if m, _ := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, WeightHash: "WRONG"}}); len(m) != 0 {
 		t.Fatalf("hash mismatch must be rejected, got %v", m)
 	}
 	// A MISSING hash is rejected too when the catalog pins one (not merged as valid).
-	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT}}); len(m) != 0 {
+	if m, _ := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT}}); len(m) != 0 {
 		t.Fatalf("missing hash must be rejected when catalog pins one, got %v", m)
 	}
 	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
 		t.Fatalf("rejected build must not be advertised, got %v", got)
 	}
-	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, WeightHash: "EXPECTED"}}); len(m) != 1 {
+	if m, _ := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, WeightHash: "EXPECTED"}}); len(m) != 1 {
 		t.Fatalf("matching hash must merge, got %v", m)
 	}
 }
@@ -316,11 +351,14 @@ func TestMergeProviderModelsRejectedDesiredDoesNotDropPrevious(t *testing.T) {
 
 	// p1 sends an authoritative update advertising ONLY the desired build, but
 	// with a BAD weight hash → the desired build is rejected (not merged).
-	merged := reg.MergeProviderModels("p1", []protocol.ModelInfo{
+	merged, dropped := reg.MergeProviderModels("p1", []protocol.ModelInfo{
 		{ID: aliasQAT, ModelType: "gemma", WeightHash: "WRONG"},
 	})
 	if len(merged) != 0 {
 		t.Fatalf("hash-mismatched desired must be rejected, got merged %v", merged)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("hash-mismatched desired must not drop previous, got dropped %v", dropped)
 	}
 	// Desired must NOT be routable (rejected)...
 	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
@@ -352,11 +390,14 @@ func TestMergeProviderModelsRejectsMissingHashAndKeepsPrevious(t *testing.T) {
 	}
 
 	// Desired build update with NO weight hash (empty), catalog expects one.
-	merged := reg.MergeProviderModels("p1", []protocol.ModelInfo{
+	merged, dropped := reg.MergeProviderModels("p1", []protocol.ModelInfo{
 		{ID: aliasQAT, ModelType: "gemma"}, // WeightHash == ""
 	})
 	if len(merged) != 0 {
 		t.Fatalf("missing-hash desired must be rejected, got merged %v", merged)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("missing-hash desired must not drop previous, got dropped %v", dropped)
 	}
 	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
 		t.Fatalf("hashless desired must not be routable, got %v", got)
@@ -368,8 +409,38 @@ func TestMergeProviderModelsRejectsMissingHashAndKeepsPrevious(t *testing.T) {
 	// A build with NO catalog-pinned hash is still accepted hashless (the gate
 	// only bites when the catalog pins an expected hash).
 	reg.SetModelCatalog([]CatalogEntry{{ID: aliasFP8}, {ID: aliasQAT}}) // no expected hashes
-	if m := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, ModelType: "gemma"}}); len(m) != 1 {
+	if m, _ := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, ModelType: "gemma"}}); len(m) != 1 {
 		t.Fatalf("hashless build with no pinned catalog hash must merge, got %v", m)
+	}
+}
+
+func TestMergeProviderModelsDoesNotDropSiblingForUnrelatedSharedAlias(t *testing.T) {
+	reg := New(testLogger())
+	const (
+		oldA   = "alias-a-old"
+		shared = "shared-build"
+		other  = "alias-b-other"
+	)
+	p := registerProviderWithModel(reg, "p1", oldA)
+	p.mu.Lock()
+	p.Models = append(p.Models,
+		protocol.ModelInfo{ID: shared, ModelType: "gemma"},
+		protocol.ModelInfo{ID: other, ModelType: "gemma"},
+	)
+	p.mu.Unlock()
+	makeProviderRoutable(p)
+	reg.SetModelCatalog([]CatalogEntry{{ID: oldA}, {ID: shared}, {ID: other}})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"alias-a": {Desired: shared, Previous: oldA},
+		"alias-b": {Desired: other, Previous: shared},
+	})
+
+	_, dropped := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: shared, ModelType: "gemma"}})
+	if len(dropped) != 1 || dropped[0] != oldA {
+		t.Fatalf("shared desired update should drop only alias-a previous, got %v", dropped)
+	}
+	if got := reg.RoutableProviderIDsForBuild(other); len(got) != 1 || got[0] != "p1" {
+		t.Fatalf("unrelated alias-b desired build must remain routable, got %v", got)
 	}
 }
 

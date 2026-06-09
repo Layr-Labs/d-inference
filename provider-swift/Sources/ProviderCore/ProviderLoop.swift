@@ -227,6 +227,12 @@ public actor ProviderLoop {
     /// reconcile, consumed (once) in `applyVerifiedPrefetch`.
     private var desiredSwapDrop: [String: String] = [:]
 
+    /// Desired builds from the latest declarative reconcile. If a build was once
+    /// desired but disappears from a later desired set while its prefetch is still
+    /// in flight, a late verified callback for that old build is ignored.
+    private var desiredPrefetchTargets = Set<String>()
+    private var staleDesiredPrefetches = Set<String>()
+
     /// Background model-build prefetcher. Owns coalescing, throttled progress,
     /// cancellation, and the verified→advertise hook (which also performs the
     /// hard-swap drop of the superseded build). Built lazily in `run()` so it can
@@ -614,6 +620,7 @@ public actor ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
+                    staleDesiredPrefetches.remove(modelId)
                     await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
 
                 case .desiredModels(let entries):
@@ -1428,6 +1435,12 @@ public actor ProviderLoop {
     /// utility priority) so hashing a multi-GB build never blocks inference or
     /// the event loop; only the small dictionary writes happen on the actor.
     func applyVerifiedPrefetch(modelId: String) async {
+        if staleDesiredPrefetches.remove(modelId) != nil {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            logger.info("Ignoring verified prefetch for stale desired build \(modelId); alias target changed before verification completed")
+            return
+        }
+
         // Compute ModelInfo + weight hash off-actor (CPU/IO heavy for big
         // builds). The prefetcher already aggregate-verified the snapshot, so
         // this hash is over a known-good build. Returns nil if the on-disk
@@ -1509,12 +1522,22 @@ public actor ProviderLoop {
     /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
     /// advertises it + drops the previous build once verified).
     private func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        let currentDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
+        for stale in desiredPrefetchTargets.subtracting(currentDesired) {
+            desiredSwapDrop.removeValue(forKey: stale)
+            staleDesiredPrefetches.insert(stale)
+        }
+        desiredPrefetchTargets = currentDesired
+
         for entry in entries {
             let desired = entry.desiredBuild
             guard !desired.isEmpty else { continue }
+            staleDesiredPrefetches.remove(desired)
             let previous = (entry.previousBuild?.isEmpty == false) ? entry.previousBuild : nil
             if let previous, previous != desired {
                 desiredSwapDrop[desired] = previous
+            } else {
+                desiredSwapDrop.removeValue(forKey: desired)
             }
             // Already converged (advertised + verified) → ensure the old build is
             // no longer advertised locally AND re-emit the authoritative

@@ -753,6 +753,12 @@ func (s *MemoryStore) RecordUsageWithCostAndLocation(providerID, consumerKey, mo
 // RecordUsageFull logs a usage event with full attribution (incl. API key ID)
 // and updates the per-key spend accumulator used for cap enforcement.
 func (s *MemoryStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
+	s.RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, "", requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
+}
+
+// RecordUsageFullWithPublicModel logs usage with concrete billing model and an
+// optional consumer-facing model name for usage history.
+func (s *MemoryStore) RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -766,6 +772,7 @@ func (s *MemoryStore) RecordUsageFull(providerID, consumerKey, keyID, model, req
 		ConsumerKey:      consumerKey,
 		KeyID:            keyID,
 		Model:            model,
+		PublicModel:      publicModel,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		RequestLocation:  locCopy,

@@ -234,6 +234,50 @@ func TestAliasRoutingDesiredAndPrevious(t *testing.T) {
 	}
 }
 
+func TestAliasCapacityFallbackUsesPreviousWhenDesiredFull(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	seedActiveModel(t, st, aliasFP8, "fp8")
+	seedActiveModel(t, st, aliasQAT, "qat")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	registerBuildsProvider(srv, "p-prev", aliasFP8)
+	registerBuildsProvider(srv, "p-desired", aliasQAT)
+	p := reg.GetProvider("p-desired")
+	p.Mu().Lock()
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = 1_000
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 1_000
+	p.Mu().Unlock()
+
+	if candidates, rejections, _ := reg.QuickCapacityCheck(aliasQAT, 10, 128); candidates != 0 || rejections != 1 {
+		t.Fatalf("desired capacity = candidates %d rejections %d, want 0/1", candidates, rejections)
+	}
+	if candidates, rejections, _ := reg.QuickCapacityCheck(aliasFP8, 10, 128); candidates != 1 || rejections != 0 {
+		t.Fatalf("previous capacity = candidates %d rejections %d, want 1/0", candidates, rejections)
+	}
+
+	parsed := map[string]any{
+		"model":    aliasQAT,
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}
+	fallback, switched := srv.maybeFallbackAliasCapacity(parsed, "gemma-4-26b", aliasQAT, 10, 128, nil)
+	if !switched || fallback != aliasFP8 {
+		t.Fatalf("fallback = %q switched=%v, want previous %q", fallback, switched, aliasFP8)
+	}
+	if parsed["model"] != aliasFP8 {
+		t.Fatalf("parsed model = %q, want fallback build", parsed["model"])
+	}
+}
+
 // Alias upsert rejects unregistered builds, self-references, and a missing
 // desired build; a revert is just re-PUT with desired set back.
 func TestModelAliasValidationAndRevert(t *testing.T) {
@@ -590,5 +634,46 @@ func TestConsumerModelAndChunkRewriteNeverLeakBuild(t *testing.T) {
 	none := &registry.PendingRequest{Model: build}
 	if got := consumerModel(none); got != build {
 		t.Fatalf("empty PublicModel should fall back to build, got %q", got)
+	}
+}
+
+func TestHandleUsageUsesRecordedPublicModelOnly(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	reg.SetModelAliases(map[string]registry.AliasTarget{
+		"gemma-4-26b": {Desired: aliasQAT},
+	})
+	st.RecordUsageFullWithPublicModel("p1", "acct-1", "", aliasFP8, "gemma-4-26b", "req-alias", 10, 5, 100, nil)
+	st.RecordUsageFull("p2", "acct-1", "", aliasQAT, "req-raw", 3, 2, 50, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/payments/usage", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, "acct-1"))
+	rec := httptest.NewRecorder()
+	srv.handleUsage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Usage []struct {
+			JobID string `json:"job_id"`
+			Model string `json:"model"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode usage: %v", err)
+	}
+	got := map[string]string{}
+	for _, u := range resp.Usage {
+		got[u.JobID] = u.Model
+	}
+	if got["req-alias"] != "gemma-4-26b" {
+		t.Fatalf("alias usage model = %q, want public alias", got["req-alias"])
+	}
+	if got["req-raw"] != aliasQAT {
+		t.Fatalf("raw usage model = %q, want concrete build", got["req-raw"])
 	}
 }

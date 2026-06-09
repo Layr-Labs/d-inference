@@ -1022,6 +1022,14 @@ func (r *Registry) IsAlias(requested string) bool {
 	return ok
 }
 
+// AliasTarget returns the configured desired/previous build pointers for alias.
+func (r *Registry) AliasTarget(alias string) (AliasTarget, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.modelAliases[alias]
+	return t, ok
+}
+
 // ResolveModel maps a requested model id to a concrete build id for routing.
 //
 //   - If requested is NOT an alias, it is returned unchanged (isAlias=false,
@@ -1060,7 +1068,7 @@ func (r *Registry) ResolveModel(requested string) (buildID string, isAlias bool,
 // but absent from the request's allowed provider set (which would then fail at
 // dispatch). With no constraints it is identical to ResolveModel.
 func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []string, ownerAccountID string, selfRouteOnly, preferOwner bool) (buildID string, isAlias bool, ok bool) {
-	if len(allowedSerials) == 0 && !selfRouteOnly {
+	if len(allowedSerials) == 0 && !selfRouteOnly && !preferOwner {
 		return r.ResolveModel(requested)
 	}
 	r.mu.RLock()
@@ -1070,6 +1078,9 @@ func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []st
 	if !found {
 		return requested, false, true
 	}
+	if t.Desired == "" {
+		return "", true, false
+	}
 	allowed := make(map[string]struct{}, len(allowedSerials))
 	for _, s := range allowedSerials {
 		if s != "" {
@@ -1077,6 +1088,24 @@ func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []st
 		}
 	}
 	now := time.Now()
+	hardConstrained := len(allowed) > 0 || selfRouteOnly
+	if preferOwner && ownerAccountID != "" {
+		if r.anyEligibleProviderCanRouteLocked(t.Desired, nil, ownerAccountID, true, true, now) {
+			return t.Desired, true, true
+		}
+		if t.Previous != "" && r.anyEligibleProviderCanRouteLocked(t.Previous, nil, ownerAccountID, true, true, now) {
+			return t.Previous, true, true
+		}
+	}
+	if !hardConstrained {
+		if r.anyProviderCanRouteBuildLocked(t.Desired) {
+			return t.Desired, true, true
+		}
+		if t.Previous != "" && r.anyProviderCanRouteBuildLocked(t.Previous) {
+			return t.Previous, true, true
+		}
+		return t.Desired, true, true
+	}
 	if t.Desired != "" && r.anyEligibleProviderCanRouteLocked(t.Desired, allowed, ownerAccountID, selfRouteOnly, preferOwner, now) {
 		return t.Desired, true, true
 	}
@@ -1157,6 +1186,17 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
 		return false
 	}
+	if p.BackendCapacity != nil {
+		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model != buildID {
+				continue
+			}
+			if _, eligible := slotStatePenalty(slot.State); !eligible {
+				return false
+			}
+			break
+		}
+	}
 	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.
 	// migrating to a larger build than the source). totalMemory prefers the
 	// backend-reported figure, matching snapshotProviderLocked.
@@ -1187,20 +1227,19 @@ func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
 // advertised Models in place — used for the message a provider sends after it
 // converges on a desired build (background prefetch verified, then hard-swap),
 // so a new build becomes routable WITHOUT a reconnect and WITHOUT resetting
-// trust/reputation/challenge state. It is authoritative-per-alias: the message
-// is the complete, current advertised set for every public alias it references,
-// so any OTHER build of those aliases that the provider previously advertised
-// but did NOT include this time is DROPPED. That is the hard-swap drop path —
-// it stops the retired (previous) quant from keeping routability on a provider
-// that has already swapped to the desired build. Builds unrelated to any
-// referenced alias are never touched.
+// trust/reputation/challenge state. It is authoritative for each alias whose
+// desired build appears in the validated update: that alias's previous build is
+// dropped if omitted. Seeing a build only as another alias's previous build is
+// not enough to drop that other alias's desired build, which keeps aliases that
+// share a concrete build independent.
 //
 // Each model's WeightHash is cross-checked against the catalog's expected hash;
 // a mismatch is REJECTED (the build is not made routable) so a bad or buggy
-// prefetch/swap can never take traffic. Returns the build ids that were merged.
-func (r *Registry) MergeProviderModels(providerID string, models []protocol.ModelInfo) []string {
+// prefetch/swap can never take traffic. Returns build ids that were merged and
+// build ids that were dropped from this provider.
+func (r *Registry) MergeProviderModels(providerID string, models []protocol.ModelInfo) (merged, dropped []string) {
 	if len(models) == 0 {
-		return nil
+		return nil, nil
 	}
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
@@ -1213,18 +1252,17 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 	// Snapshot the alias targets under the read lock so the drop set can be
 	// computed later (under p.mu) without nesting r.mu — and, crucially, from
 	// the builds that actually PASS validation below, not from the raw message.
-	aliasMembers := make([][2]string, 0, len(r.modelAliases))
+	aliasTargets := make([]AliasTarget, 0, len(r.modelAliases))
 	for _, t := range r.modelAliases {
-		aliasMembers = append(aliasMembers, [2]string{t.Desired, t.Previous})
+		aliasTargets = append(aliasTargets, t)
 	}
 	r.mu.RUnlock()
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var merged []string
 	// present tracks only builds that passed validation and were merged — the
 	// hard-swap drop is derived from THIS set, never from the raw message. A
 	// desired build rejected for a bad weight hash therefore does NOT cause its
@@ -1260,31 +1298,21 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 		merged = append(merged, m.ID)
 		present[m.ID] = struct{}{}
 	}
-	// Compute the hard-swap drop set: for every alias that has a VALIDATED build
-	// as its desired OR previous member, the OTHER member of that alias is no
-	// longer advertised by this provider (it swapped), so drop it.
+	// Compute the hard-swap drop set: a VALIDATED desired build authorizes
+	// dropping only that alias's previous build. This is intentionally
+	// directional; if two aliases share a build, updating one alias to that shared
+	// desired build must not drop the desired build of another alias where the
+	// shared build is merely "previous".
 	drop := make(map[string]struct{})
-	for _, members := range aliasMembers {
-		referenced := false
-		for _, b := range members {
-			if b == "" {
-				continue
-			}
-			if _, in := present[b]; in {
-				referenced = true
-				break
-			}
-		}
-		if !referenced {
+	for _, t := range aliasTargets {
+		if t.Desired == "" || t.Previous == "" || t.Desired == t.Previous {
 			continue
 		}
-		for _, b := range members {
-			if b == "" {
-				continue
-			}
-			if _, in := present[b]; !in {
-				drop[b] = struct{}{}
-			}
+		if _, desiredPresent := present[t.Desired]; !desiredPresent {
+			continue
+		}
+		if _, previousStillPresent := present[t.Previous]; !previousStillPresent {
+			drop[t.Previous] = struct{}{}
 		}
 	}
 	// Apply the hard-swap drop: remove any alias-sibling build the provider no
@@ -1295,13 +1323,14 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 			if _, gone := drop[m.ID]; gone {
 				r.logger.Info("models_update hard-swap: dropping retired build",
 					"provider_id", providerID, "model_id", m.ID)
+				dropped = append(dropped, m.ID)
 				continue
 			}
 			kept = append(kept, m)
 		}
 		p.Models = kept
 	}
-	return merged
+	return merged, dropped
 }
 
 // RoutableProviderIDsForBuild returns the ids of providers that would actually

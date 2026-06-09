@@ -106,6 +106,10 @@ type Store interface {
 	// tracking). keyID may be empty for legacy/account-scoped attribution.
 	RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
 
+	// RecordUsageFullWithPublicModel logs the concrete billing/statistics model
+	// plus the optional consumer-facing model name returned by usage history.
+	RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
+
 	// RecordPayment records a settled payment between consumer and provider.
 	RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error
 
@@ -528,6 +532,7 @@ type UsageRecord struct {
 	ConsumerKey      string            `json:"consumer_key"`
 	KeyID            string            `json:"key_id,omitempty"`
 	Model            string            `json:"model"`
+	PublicModel      string            `json:"public_model,omitempty"`
 	PromptTokens     int               `json:"prompt_tokens"`
 	CompletionTokens int               `json:"completion_tokens"`
 	RequestLocation  *ProviderLocation `json:"request_location,omitempty"`

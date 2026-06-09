@@ -279,7 +279,9 @@ public actor ProviderLoop {
     private var prefetchCoordinator: ModelPrefetchCoordinator?
 
     /// The live coordinator client, retained so the verified-prefetch hook can
-    /// re-register the updated advertised set. Set in `run()`.
+    /// re-register the updated advertised set, and so weight-hash refreshes can be
+    /// pushed into reconnect registrations (models[].weight_hash drives the
+    /// coordinator's per-model catalog routing filter). Set in `run()`.
     private var coordinatorClient: CoordinatorClient?
 
     /// The live outbound send handle (same one prefetch status flows through).
@@ -322,11 +324,6 @@ public actor ProviderLoop {
     /// time would tax cold-start TTFT for nothing. Seeded from the config so
     /// the FIRST load doesn't re-read weights already hashed at startup.
     private var modelHashFingerprints: [String: String]
-
-    /// The running coordinator client, kept so weight-hash refreshes can be
-    /// pushed into reconnect registrations (models[].weight_hash drives the
-    /// coordinator's per-model catalog routing filter).
-    private var coordinatorClient: CoordinatorClient?
 
     /// Whether we've already submitted an auto-report for this session.
     /// Set to true after the first trust-triggered report to avoid spamming.
@@ -603,12 +600,10 @@ public actor ProviderLoop {
         }
         #endif
 
-        // Retain the coordinator client so the verified-prefetch hook can
-        // re-register the updated advertised model set, and build the
-        // background prefetch coordinator (Layer 3). Retain the send handle too
-        // so applyVerifiedPrefetch can emit a `models_update` over the live
-        // connection without threading a handle through the prefetch callbacks.
-        self.coordinatorClient = coordinator
+        // Retain the send handle and build the background prefetch coordinator
+        // (Layer 3) so applyVerifiedPrefetch can emit a `models_update` over the
+        // live connection without threading a handle through the prefetch
+        // callbacks. (coordinatorClient was already retained above, at creation.)
         self.outboundSend = send
         self.prefetchCoordinator = makePrefetchCoordinator()
 

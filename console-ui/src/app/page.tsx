@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useStore } from "@/lib/store";
 import { streamChat, fetchModels } from "@/lib/api";
-import { buildApiContent } from "@/lib/image-upload";
+import { toApiMessages } from "@/lib/chat-messages";
 import { useToastStore } from "@/hooks/useToast";
 import { useAuth } from "@/hooks/useAuth";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -142,17 +142,9 @@ export default function ChatPage() {
       const abort = new AbortController();
       abortRef.current = abort;
 
-      // NOTE: m.images is undefined for turns restored from persistence (images
-      // are stripped from localStorage to protect the quota — see store.ts),
-      // so earlier-turn image context isn't re-sent after a page reload.
-      // Follow-up: durable image storage (IndexedDB) to close this gap.
-      const userMessages = [...priorMessages, userMsg].map((m) => ({
-        role: m.role,
-        content: buildApiContent(m.content, m.images),
-      }));
       const allMessages = [
         { role: "system" as const, content: SYSTEM_PROMPT },
-        ...userMessages,
+        ...toApiMessages([...priorMessages, userMsg]),
       ];
 
       try {
@@ -274,11 +266,7 @@ export default function ChatPage() {
       // Rebuild message history up to (but not including) the error message
       const allMessages = [
         { role: "system" as const, content: SYSTEM_PROMPT },
-        ...messages
-          .slice(0, errorIdx)
-          // m.images is undefined after a reload (stripped from persistence),
-          // so retrying an image turn post-reload re-sends text only.
-          .map((m) => ({ role: m.role, content: buildApiContent(m.content, m.images) })),
+        ...toApiMessages(messages.slice(0, errorIdx)),
       ];
 
       streamChat(

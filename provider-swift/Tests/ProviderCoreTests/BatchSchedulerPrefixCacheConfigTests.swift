@@ -111,4 +111,19 @@ struct BatchSchedulerPrefixCacheConfigTests {
         #expect(BatchScheduler.resolveStatsInterval(env: "30") == 30)         // override
         #expect(BatchScheduler.resolveStatsInterval(env: "120") == 120)
     }
+
+    // The sliding SSD TTL: unset/malformed/negative ⇒ default (300s), `0` ⇒
+    // disabled (infinite), positive ⇒ that window. Pure resolver (no process env).
+    @Test("resolveTTLSeconds: default / disable / override semantics")
+    func ttlSeconds() {
+        let dflt = BatchScheduler.defaultPrefixCacheTTLSeconds
+        #expect(dflt == 300)                                          // 5 min
+        #expect(BatchScheduler.resolveTTLSeconds(env: nil) == dflt)   // unset
+        #expect(BatchScheduler.resolveTTLSeconds(env: "") == dflt)    // empty
+        #expect(BatchScheduler.resolveTTLSeconds(env: "abc") == dflt) // garbage
+        #expect(BatchScheduler.resolveTTLSeconds(env: "-1") == dflt)  // negative
+        #expect(BatchScheduler.resolveTTLSeconds(env: "0") == 0)      // explicit disable (infinite)
+        #expect(BatchScheduler.resolveTTLSeconds(env: "300") == 300)
+        #expect(BatchScheduler.resolveTTLSeconds(env: "3600") == 3600)
+    }
 }

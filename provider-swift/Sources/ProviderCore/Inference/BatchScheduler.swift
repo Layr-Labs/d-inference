@@ -596,6 +596,9 @@ public actor BatchScheduler {
                         // TB-016 sub-feature B: min persist threshold (16384
                         // for Gemma, 0 otherwise). Env override available.
                         minPersistTokens: Self.prefixCacheMinPersistTokens(arch: modelId),
+                        // Sliding SSD TTL (default 5min; 0 = infinite). Bounds
+                        // how long prompt-derived KV lingers on disk.
+                        ttlSeconds: Self.prefixCacheTTLSeconds(),
                         now: nowFn,
                         accountant: diskAccountant,
                         modelKey: backing.modelKey)
@@ -940,6 +943,23 @@ public actor BatchScheduler {
         }
         // Default: 16384 for Gemma, 0 otherwise.
         return PrefixCachePastWindow.isProven(arch: arch) ? 16384 : 0
+    }
+
+    /// Sliding TTL (seconds) for persisted SSD prefix checkpoints. Default 300
+    /// (5 min, matching Anthropic/OpenAI prompt-cache defaults); `0` disables
+    /// (infinite — capacity-driven eviction only). Operator override:
+    /// `DARKBLOOM_PREFIX_CACHE_TTL_SECONDS`.
+    static let defaultPrefixCacheTTLSeconds: Int64 = 300
+    static func prefixCacheTTLSeconds() -> Int64 {
+        resolveTTLSeconds(env: ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_TTL_SECONDS"])
+    }
+
+    /// Pure TTL policy (testable). Unset / malformed / negative ⇒ default;
+    /// `0` ⇒ disabled (infinite); a positive value sets the sliding window.
+    static func resolveTTLSeconds(env: String?) -> Int64 {
+        guard let v = env else { return defaultPrefixCacheTTLSeconds }
+        guard let n = Int64(v), n >= 0 else { return defaultPrefixCacheTTLSeconds }
+        return n  // 0 ⇒ disabled
     }
 
     /// Set the post-load budgets driven by architecture + physical

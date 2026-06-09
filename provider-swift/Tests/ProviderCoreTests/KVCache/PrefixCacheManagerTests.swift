@@ -572,3 +572,121 @@ func managerScopedSSDRoundtripAndIsolation() async throws {
     let stats = await mgr.snapshotStats()
     #expect(stats.ssdReadErrors == 0)
 }
+
+// MARK: - Sliding SSD TTL
+
+// SSD manager with a controllable clock + TTL. RAM is wiped between writes and
+// reads so every read must consult SSD (where TTL is enforced).
+private func makeTTLManager(ttl: Int64, clock: MonotonicClock, dir: URL? = nil)
+    -> (PrefixCacheManager, URL) {
+    let cacheDir = dir ?? tmpDir()
+    let mgr = PrefixCacheManager(
+        binding: binding(model: "m"),
+        ram: PrefixCacheRAM(),
+        index: PrefixCacheIndex(fileURL: cacheDir.appendingPathComponent("index.json")),
+        kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(),
+                        storage: InMemoryWrappedKEKStorage(identifier: UUID().uuidString)),
+        cacheDir: cacheDir, ssdEnabled: true,
+        boundaries: [4, 8],
+        ttlSeconds: ttl,
+        now: { clock.value },
+        modelKey: "test-model"
+    )
+    return (mgr, cacheDir)
+}
+
+@Test
+func ttlExpiredSSDEntryIsMissAndDropped() async {
+    let clock = MonotonicClock(start: 1000)
+    let (mgr, _) = makeTTLManager(ttl: 300, clock: clock)
+    let tokens = prompt(10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()
+    await mgr.clearRAM()
+    // Within TTL ⇒ SSD hit.
+    clock.advance(299)
+    #expect(await mgr.lookup(tokens: tokens)?.tier == .ssd, "within TTL should hit SSD")
+    // The hit slid lastHitAt to now (=1299). Wipe RAM, advance past TTL ⇒ expired.
+    await mgr.clearRAM()
+    clock.advance(301)  // now 1600; lastHitAt 1299; 301 > 300
+    #expect(await mgr.lookup(tokens: tokens) == nil, "past TTL should miss")
+    let s = await mgr.snapshotStats()
+    #expect(s.ttlExpirations >= 1, "expired entry should be counted + dropped")
+    // Dropped: a subsequent lookup is still a miss (file gone), no read error churn.
+    #expect(await mgr.lookup(tokens: tokens) == nil)
+}
+
+@Test
+func ttlSlidingRefreshKeepsHotEntryAlive() async {
+    let clock = MonotonicClock(start: 1000)
+    let (mgr, _) = makeTTLManager(ttl: 300, clock: clock)
+    let tokens = prompt(10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()
+    // Hit every 200s for 5 windows (total 1000s >> ttl); each hit slides lastHitAt.
+    for _ in 0..<5 {
+        await mgr.clearRAM()
+        clock.advance(200)
+        #expect(await mgr.lookup(tokens: tokens)?.tier == .ssd, "sliding refresh should keep it alive")
+    }
+    let s = await mgr.snapshotStats()
+    #expect(s.ttlExpirations == 0, "a continuously-hit entry must never expire")
+}
+
+@Test
+func ttlDisabledNeverExpires() async {
+    let clock = MonotonicClock(start: 1000)
+    let (mgr, _) = makeTTLManager(ttl: 0, clock: clock)   // 0 = infinite
+    let tokens = prompt(10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()
+    await mgr.clearRAM()
+    clock.advance(10_000_000)  // way past any TTL
+    #expect(await mgr.lookup(tokens: tokens)?.tier == .ssd, "ttl=0 ⇒ never expires")
+    #expect(await mgr.snapshotStats().ttlExpirations == 0)
+}
+
+@Test
+func ttlReconcileReapsExpiredOrphan() async throws {
+    let clock = MonotonicClock(start: 1000)
+    let dir = tmpDir()
+    // Manager 1 writes an entry.
+    let (m1, _) = makeTTLManager(ttl: 300, clock: clock, dir: dir)
+    let tokens = prompt(10)
+    await m1.store(tokens: tokens, checkpointLength: 8,
+                   caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await m1.flushToSSD()
+
+    // Time passes well beyond TTL, then a NEW manager reconciles the dir.
+    clock.advance(1000)  // 1000s > 300 ttl since createdAt=1000
+    let (m2, _) = makeTTLManager(ttl: 300, clock: clock, dir: dir)
+    await m2.reconcileWithDisk()
+    // The expired entry must be reaped, so a lookup misses (no resurrected file).
+    await m2.clearRAM()
+    #expect(await m2.lookup(tokens: tokens) == nil, "reconcile must reap the expired orphan")
+    #expect(await m2.snapshotStats().ttlExpirations >= 1)
+}
+
+@Test
+func ttlReconcileReapsExpiredIndexedEntry() async throws {
+    // INDEX-path reap (vs the orphan-path above): persist the index so the new
+    // manager loads the entry IN its index, then reconcile's reapExpired drops it.
+    let clock = MonotonicClock(start: 1000)
+    let dir = tmpDir()
+    let (m1, _) = makeTTLManager(ttl: 300, clock: clock, dir: dir)
+    let tokens = prompt(10)
+    await m1.store(tokens: tokens, checkpointLength: 8,
+                   caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await m1.flushToSSD()
+    await m1.flushIndexNow()   // persist index.json so m2 loads the entry (not an orphan)
+
+    clock.advance(1000)        // 1000s > 300 ttl
+    let (m2, _) = makeTTLManager(ttl: 300, clock: clock, dir: dir)
+    await m2.reconcileWithDisk()   // reapExpired drops the indexed-but-expired entry
+    await m2.clearRAM()
+    #expect(await m2.lookup(tokens: tokens) == nil, "reconcile must reap the expired indexed entry")
+    #expect(await m2.snapshotStats().ttlExpirations >= 1)
+}

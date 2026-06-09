@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"io"
 	"net/http"
@@ -69,7 +70,14 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 	// not wrapped in Privy auth middleware, so auth.UserFromContext is nil here
 	// regardless.)
 	token := extractBearerToken(r)
-	if !(s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1) {
+	// Hash both sides to a fixed 32 bytes before the constant-time compare so the
+	// check leaks neither the admin key's contents nor its length. (A bare
+	// ConstantTimeCompare returns early when the two byte slices differ in
+	// length — a minor timing side-channel on key length. This is the CA-key
+	// exfil endpoint, so close it.)
+	providedDigest := sha256.Sum256([]byte(token))
+	expectedDigest := sha256.Sum256([]byte(s.adminKey))
+	if s.adminKey == "" || subtle.ConstantTimeCompare(providedDigest[:], expectedDigest[:]) != 1 {
 		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
 		s.logger.Warn("state-export: unauthorized access attempt",
 			"remote_addr", r.RemoteAddr, "authorized", false)

@@ -248,7 +248,9 @@ func (mc *MigrationController) runMigration(m store.ModelMigration) {
 	// window, applying the stale `m` below would clobber the replacement's alias
 	// weights or mark it complete using the old pair. Compare identity, not just
 	// status.
-	if cur, ok, err := mc.s.store.GetModelMigration(m.AliasID); err != nil || !ok || cur.Status != store.MigrationActive {
+	if cur, ok, err := mc.s.store.GetModelMigration(m.AliasID); err != nil || !ok ||
+		cur.Status != store.MigrationActive ||
+		cur.FromBuild != m.FromBuild || cur.ToBuild != m.ToBuild {
 		return
 	}
 

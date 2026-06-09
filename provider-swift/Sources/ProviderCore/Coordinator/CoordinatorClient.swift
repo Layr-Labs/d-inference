@@ -24,6 +24,8 @@ public enum CoordinatorEvent: Sendable {
     case loadModel(modelId: String)
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
+    /// Coordinator instructs the provider to begin draining for an update.
+    case drainCommand(reason: DrainReason, deadline: String, version: String?)
 }
 
 // MARK: - Shared State
@@ -74,6 +76,9 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
+    private var _draining: Bool = false
+    private var _drainReason: DrainReason?
+    private var _drainDeadline: String?
 
     public init() {}
 
@@ -100,6 +105,21 @@ public final class ProviderState: @unchecked Sendable {
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    public var draining: Bool {
+        get { lock.withLock { _draining } }
+        set { lock.withLock { _draining = newValue } }
+    }
+
+    public var drainReason: DrainReason? {
+        get { lock.withLock { _drainReason } }
+        set { lock.withLock { _drainReason = newValue } }
+    }
+
+    public var drainDeadline: String? {
+        get { lock.withLock { _drainDeadline } }
+        set { lock.withLock { _drainDeadline = newValue } }
     }
 }
 
@@ -301,6 +321,7 @@ public enum OutboundMessage: Sendable {
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case providerDraining(ProviderMessage.ProviderDraining)
 }
 
 public struct AttestationResponsePayload: Sendable {
@@ -722,6 +743,14 @@ public actor CoordinatorClient {
                 status: ts.status,
                 reason: ts.reason
             ))
+
+        case .drainCommand(let drain):
+            logger.info("Received drain command: reason=\(drain.reason.rawValue), deadline=\(drain.deadline), version=\(drain.version ?? "none")")
+            eventContinuation?.yield(.drainCommand(
+                reason: drain.reason,
+                deadline: drain.deadline,
+                version: drain.version
+            ))
         }
     }
 
@@ -758,6 +787,9 @@ public actor CoordinatorClient {
         let warmModels = state.warmModels
         let capacity = state.backendCapacity
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
+        let draining = state.draining
+        let drainReason = state.drainReason
+        let drainDeadline = state.drainDeadline
 
         let message = CoordinatorClientCodec.heartbeatMessage(
             status: isActive ? .serving : .idle,
@@ -768,7 +800,10 @@ public actor CoordinatorClient {
                 tokensGenerated: stats.tokensGenerated
             ),
             systemMetrics: metrics,
-            backendCapacity: capacity
+            backendCapacity: capacity,
+            draining: draining,
+            drainReason: drainReason,
+            drainDeadline: drainDeadline
         )
 
         guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),

@@ -412,6 +412,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			// "started" status: no action — load is in progress.
 
+		case protocol.TypeProviderDraining:
+			drainMsg := msg.Payload.(*protocol.ProviderDrainingMessage)
+			s.logger.Info("provider draining update",
+				"provider_id", providerID,
+				"reason", drainMsg.Reason,
+				"in_flight", drainMsg.InFlight,
+				"completed", drainMsg.Completed,
+			)
+			s.registry.UpdateProviderDraining(providerID, drainMsg)
+
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}

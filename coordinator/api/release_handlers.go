@@ -17,10 +17,14 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
 )
 
 const (
@@ -136,6 +140,9 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	s.readCache.Invalidate("api_version:v1")
 	s.readCache.Invalidate("runtime_manifest:v1")
 	s.readCache.Invalidate("latest_release:v1")
+
+	// Trigger coordinated drain for all online providers to pick up the new release.
+	s.triggerProviderDrainForRelease(release.Version)
 
 	s.logger.Info("release registered",
 		"version", release.Version,
@@ -620,4 +627,79 @@ func (s *Server) handleAdminAuthVerify(w http.ResponseWriter, r *http.Request) {
 		"token": token,
 		"email": req.Email,
 	})
+}
+
+// triggerProviderDrainForRelease sends a drain command to all online providers
+// when a new release is registered. This initiates the coordinated update flow:
+// providers stop accepting new requests, finish in-flight, then restart.
+func (s *Server) triggerProviderDrainForRelease(version string) {
+	// Check feature flag (enabled by default)
+	if os.Getenv("ENABLE_DRAIN_UPDATE") == "false" {
+		s.logger.Debug("drain update disabled via ENABLE_DRAIN_UPDATE=false, skipping provider drain", "version", version)
+		return
+	}
+
+	s.logger.Info("triggering coordinated drain for new release", "version", version)
+
+	// Get all online providers from registry
+	providers := s.registry.GetOnlineProviders()
+
+	if len(providers) == 0 {
+		s.logger.Info("no online providers to drain")
+		return
+	}
+
+	// Calculate deadline (now + drain timeout + buffer)
+	drainTimeout := 30 * time.Second // default, could be configurable
+	deadline := time.Now().Add(drainTimeout + 10*time.Second)
+	deadlineStr := deadline.Format(time.RFC3339)
+
+	// Fan out drain commands concurrently
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 50) // limit concurrency
+
+	for _, p := range providers {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(provider *registry.Provider) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			provider.Mu().Lock()
+			conn := provider.Conn
+			providerID := provider.ID
+			provider.Mu().Unlock()
+
+			if conn == nil {
+				s.logger.Debug("provider has no connection, skipping drain", "provider_id", providerID)
+				return
+			}
+
+			// Send drain command via WebSocket
+			drainMsg := protocol.DrainCommandMessage{
+				Type:     protocol.TypeDrainCommand,
+				Reason:   protocol.DrainReasonUpdate,
+				Deadline: deadlineStr,
+				Version:  version,
+			}
+			data, err := json.Marshal(drainMsg)
+			if err != nil {
+				s.logger.Warn("failed to marshal drain command", "provider_id", providerID, "error", err)
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+				s.logger.Warn("failed to send drain command", "provider_id", providerID, "error", err)
+				return
+			}
+
+			s.logger.Info("sent drain command to provider", "provider_id", providerID, "version", version)
+		}(p)
+	}
+
+	wg.Wait()
+	s.logger.Info("drain fan-out complete", "providers", len(providers), "version", version)
 }

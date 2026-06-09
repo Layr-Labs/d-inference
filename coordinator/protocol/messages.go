@@ -41,6 +41,7 @@ const (
 	// attestation_response: this is the WebSocket return leg of the push round-trip.
 	TypeCodeAttestationResponse = "code_attestation_response"
 	TypeLoadModelStatus         = "load_model_status"
+	TypeProviderDraining        = "provider_draining"
 
 	// Coordinator → Provider.
 	TypeInferenceRequest     = "inference_request"
@@ -49,6 +50,7 @@ const (
 	TypeRuntimeStatus        = "runtime_status"
 	TypeLoadModel            = "load_model"
 	TypeTrustStatus          = "trust_status"
+	TypeDrainCommand         = "drain_command"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -137,6 +139,15 @@ type PrivacyCapabilities struct {
 	HypervisorActive        bool `json:"hypervisor_active"`
 }
 
+// DrainReason describes why a provider is being drained.
+type DrainReason string
+
+const (
+	DrainReasonUpdate     DrainReason = "update"      // provider binary update available
+	DrainReasonMaintenance DrainReason = "maintenance" // coordinator-initiated maintenance
+	DrainReasonDecommission DrainReason = "decommission" // provider being removed from fleet
+)
+
 // HeartbeatMessage is sent periodically by connected providers.
 type HeartbeatMessage struct {
 	Type            string           `json:"type"`
@@ -146,6 +157,9 @@ type HeartbeatMessage struct {
 	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
 	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
 	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+	Draining        bool             `json:"draining,omitempty"`         // true when provider is draining
+	DrainReason     *DrainReason     `json:"drain_reason,omitempty"`     // reason for draining
+	DrainDeadline   *string          `json:"drain_deadline,omitempty"`   // RFC3339 deadline when drain must complete
 }
 
 // BackendSlotCapacity describes the capacity state of a single backend slot
@@ -309,6 +323,32 @@ type LoadModelStatusMessage struct {
 	ModelID string `json:"model_id"`
 	Status  string `json:"status"`
 	Error   string `json:"error,omitempty"`
+}
+
+// ProviderDrainingMessage is sent by a provider to inform the coordinator
+// that it has entered draining state and will not accept new requests.
+type ProviderDrainingMessage struct {
+	Type        string     `json:"type"`
+	Reason      DrainReason `json:"reason"`
+	Deadline    string     `json:"deadline"`    // RFC3339 deadline when drain must complete
+	InFlight    int        `json:"in_flight"`   // number of in-flight requests at drain start
+	Completed   int        `json:"completed"`   // number of requests completed since drain started
+}
+
+// DrainCommandMessage is sent by the coordinator to instruct a provider
+// to begin draining (stop accepting new requests, finish in-flight, then restart).
+type DrainCommandMessage struct {
+	Type     string     `json:"type"`
+	Reason   DrainReason `json:"reason"`
+	Deadline string     `json:"deadline"` // RFC3339 deadline when drain must complete
+	Version  string     `json:"version,omitempty"` // target version for update drains
+}
+
+// ProviderDrainError is the error response sent to clients when a provider
+// is draining and cannot accept new requests.
+type ProviderDrainError struct {
+	Error      string `json:"error"`
+	RetryAfter int    `json:"retry_after"` // seconds until client should retry
 }
 
 // AttestationChallengeMessage is sent by the coordinator to challenge a provider
@@ -484,6 +524,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg LoadModelStatusMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal load_model_status: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeProviderDraining:
+		var msg ProviderDrainingMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal provider_draining: %w", err)
 		}
 		pm.Payload = &msg
 

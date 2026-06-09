@@ -516,6 +516,11 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, selfRouteOw
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return routingSnapshot{}, false
 	}
+	// Draining providers are not routable — they are finishing in-flight work
+	// before restarting.
+	if p.Draining {
+		return routingSnapshot{}, false
+	}
 	// A private-only machine never serves the public fleet — only its owner's
 	// self-route requests.
 	if p.PrivateOnly && !selfRouteOwner {
@@ -885,6 +890,11 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, selfRouteOw
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}
+	// Draining providers are not routable — they are finishing in-flight work
+	// before restarting.
+	if p.Draining {
+		return false
+	}
 	if p.PrivateOnly && !selfRouteOwner {
 		return false
 	}
@@ -990,6 +1000,12 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 		if p.PrivateOnly {
+			p.mu.Unlock()
+			continue
+		}
+		// Draining providers are not routable — they are finishing in-flight work
+		// before restarting.
+		if p.Draining {
 			p.mu.Unlock()
 			continue
 		}

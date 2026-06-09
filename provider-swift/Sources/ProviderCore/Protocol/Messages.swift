@@ -2,6 +2,13 @@ import Foundation
 
 // MARK: - Provider -> Coordinator
 
+/// Reason for draining.
+public enum DrainReason: String, Sendable, Equatable, Codable {
+    case update = "update"
+    case maintenance = "maintenance"
+    case decommission = "decommission"
+}
+
 public enum ProviderMessage: Sendable, Equatable {
     case register(Register)
     case heartbeat(Heartbeat)
@@ -12,6 +19,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case attestationResponse(AttestationResponse)
     case codeAttestationResponse(CodeAttestationResponse)
     case loadModelStatus(LoadModelStatus)
+    case providerDraining(ProviderDraining)
 
     public struct Register: Sendable, Equatable {
         public var hardware: HardwareInfo
@@ -86,6 +94,9 @@ public enum ProviderMessage: Sendable, Equatable {
         public var stats: ProviderStats
         public var systemMetrics: SystemMetrics
         public var backendCapacity: BackendCapacity?
+        public var draining: Bool
+        public var drainReason: DrainReason?
+        public var drainDeadline: String?
 
         public init(
             status: ProviderStatus,
@@ -93,7 +104,10 @@ public enum ProviderMessage: Sendable, Equatable {
             warmModels: [String] = [],
             stats: ProviderStats,
             systemMetrics: SystemMetrics,
-            backendCapacity: BackendCapacity? = nil
+            backendCapacity: BackendCapacity? = nil,
+            draining: Bool = false,
+            drainReason: DrainReason? = nil,
+            drainDeadline: String? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -101,6 +115,9 @@ public enum ProviderMessage: Sendable, Equatable {
             self.stats = stats
             self.systemMetrics = systemMetrics
             self.backendCapacity = backendCapacity
+            self.draining = draining
+            self.drainReason = drainReason
+            self.drainDeadline = drainDeadline
         }
     }
 
@@ -165,6 +182,21 @@ public enum ProviderMessage: Sendable, Equatable {
             self.modelId = modelId
             self.status = status
             self.error = error
+        }
+    }
+
+    /// Sent by the provider to inform the coordinator it has entered draining state.
+    public struct ProviderDraining: Sendable, Equatable {
+        public var reason: DrainReason
+        public var deadline: String // RFC3339
+        public var inFlight: Int
+        public var completed: Int
+
+        public init(reason: DrainReason, deadline: String, inFlight: Int, completed: Int) {
+            self.reason = reason
+            self.deadline = deadline
+            self.inFlight = inFlight
+            self.completed = completed
         }
     }
 
@@ -246,6 +278,7 @@ extension ProviderMessage: Codable {
         case attestationResponse = "attestation_response"
         case codeAttestationResponse = "code_attestation_response"
         case loadModelStatus = "load_model_status"
+        case providerDraining = "provider_draining"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -273,6 +306,9 @@ extension ProviderMessage: Codable {
         case stats
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
+        case draining
+        case drainReason = "drain_reason"
+        case drainDeadline = "drain_deadline"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -297,6 +333,11 @@ extension ProviderMessage: Codable {
         case modelHashes = "model_hashes"
         // LoadModelStatus
         case modelId = "model_id"
+        // ProviderDraining
+        case reason
+        case deadline
+        case inFlight = "in_flight"
+        case completed
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -340,6 +381,11 @@ extension ProviderMessage: Codable {
             try container.encode(h.stats, forKey: .stats)
             try container.encode(h.systemMetrics, forKey: .systemMetrics)
             try container.encodeIfPresent(h.backendCapacity, forKey: .backendCapacity)
+            if h.draining {
+                try container.encode(true, forKey: .draining)
+            }
+            try container.encodeIfPresent(h.drainReason, forKey: .drainReason)
+            try container.encodeIfPresent(h.drainDeadline, forKey: .drainDeadline)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -397,6 +443,13 @@ extension ProviderMessage: Codable {
             try container.encode(l.modelId, forKey: .modelId)
             try container.encode(l.status.rawValue, forKey: .status)
             try container.encodeIfPresent(l.error, forKey: .error)
+
+        case .providerDraining(let d):
+            try container.encode(TypeValue.providerDraining, forKey: .type)
+            try container.encode(d.reason.rawValue, forKey: .reason)
+            try container.encode(d.deadline, forKey: .deadline)
+            try container.encode(d.inFlight, forKey: .inFlight)
+            try container.encode(d.completed, forKey: .completed)
         }
     }
 
@@ -434,7 +487,10 @@ extension ProviderMessage: Codable {
                 warmModels: try container.decodeIfPresent([String].self, forKey: .warmModels) ?? [],
                 stats: try container.decode(ProviderStats.self, forKey: .stats),
                 systemMetrics: try container.decode(SystemMetrics.self, forKey: .systemMetrics),
-                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity)
+                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity),
+                draining: try container.decodeIfPresent(Bool.self, forKey: .draining) ?? false,
+                drainReason: try container.decodeIfPresent(DrainReason.self, forKey: .drainReason),
+                drainDeadline: try container.decodeIfPresent(String.self, forKey: .drainDeadline)
             ))
 
         case .inferenceAccepted:
@@ -502,19 +558,36 @@ extension ProviderMessage: Codable {
                 status: status,
                 error: try container.decodeIfPresent(String.self, forKey: .error)
             ))
+
+        case .providerDraining:
+            let rawReason = try container.decode(String.self, forKey: .reason)
+            guard let reason = DrainReason(rawValue: rawReason) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .reason,
+                    in: container,
+                    debugDescription: "unknown drain_reason value: \(rawReason)"
+                )
+            }
+            self = .providerDraining(ProviderDraining(
+                reason: reason,
+                deadline: try container.decode(String.self, forKey: .deadline),
+                inFlight: try container.decode(Int.self, forKey: .inFlight),
+                completed: try container.decode(Int.self, forKey: .completed)
+            ))
         }
     }
 }
 
 // MARK: - Coordinator -> Provider
 
-public enum CoordinatorMessage: Sendable, Equatable {
+    public enum CoordinatorMessage: Sendable, Equatable {
     case inferenceRequest(InferenceRequest)
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
     case trustStatus(TrustStatus)
+    case drainCommand(DrainCommand)
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
@@ -573,6 +646,21 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.reason = reason
         }
     }
+
+    /// Coordinator instructs the provider to begin draining (stop accepting new
+    /// requests, finish in-flight, then restart). The provider should reply with
+    /// a `ProviderDraining` message to acknowledge.
+    public struct DrainCommand: Sendable, Equatable {
+        public var reason: DrainReason
+        public var deadline: String // RFC3339
+        public var version: String? // target version for update drains
+
+        public init(reason: DrainReason, deadline: String, version: String? = nil) {
+            self.reason = reason
+            self.deadline = deadline
+            self.version = version
+        }
+    }
 }
 
 // MARK: - CoordinatorMessage Codable
@@ -585,6 +673,7 @@ extension CoordinatorMessage: Codable {
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
         case trustStatus = "trust_status"
+        case drainCommand = "drain_command"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -597,6 +686,8 @@ extension CoordinatorMessage: Codable {
         case modelId = "model_id"
         case trustLevel = "trust_level"
         case status, reason
+        case deadline
+        case version
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -636,6 +727,12 @@ extension CoordinatorMessage: Codable {
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
+
+        case .drainCommand(let d):
+            try container.encode(TypeValue.drainCommand, forKey: .type)
+            try container.encode(d.reason.rawValue, forKey: .reason)
+            try container.encode(d.deadline, forKey: .deadline)
+            try container.encodeIfPresent(d.version, forKey: .version)
         }
     }
 
@@ -678,6 +775,21 @@ extension CoordinatorMessage: Codable {
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
+            ))
+
+        case .drainCommand:
+            let rawReason = try container.decode(String.self, forKey: .reason)
+            guard let reason = DrainReason(rawValue: rawReason) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .reason,
+                    in: container,
+                    debugDescription: "unknown drain_reason value: \(rawReason)"
+                )
+            }
+            self = .drainCommand(DrainCommand(
+                reason: reason,
+                deadline: try container.decode(String.self, forKey: .deadline),
+                version: try container.decodeIfPresent(String.self, forKey: .version)
             ))
         }
     }

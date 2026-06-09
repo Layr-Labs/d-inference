@@ -58,7 +58,10 @@ public enum CoordinatorClientCodec {
         warmModels: [String],
         stats: ProviderStats,
         systemMetrics: SystemMetrics,
-        backendCapacity: BackendCapacity?
+        backendCapacity: BackendCapacity?,
+        draining: Bool = false,
+        drainReason: DrainReason? = nil,
+        drainDeadline: String? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -66,7 +69,10 @@ public enum CoordinatorClientCodec {
             warmModels: warmModels,
             stats: stats,
             systemMetrics: systemMetrics,
-            backendCapacity: backendCapacity
+            backendCapacity: backendCapacity,
+            draining: draining,
+            drainReason: drainReason,
+            drainDeadline: drainDeadline
         ))
     }
 
@@ -127,6 +133,9 @@ public enum CoordinatorClientCodec {
                 status: status,
                 error: error
             ))
+
+        case .providerDraining(let draining):
+            return .providerDraining(draining)
         }
     }
 

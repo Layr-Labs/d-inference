@@ -286,6 +286,10 @@ type Provider struct {
 	// fleet routes as before. Fail-closed once true (no self-route exemption).
 	codeAttestationRequired bool
 
+	// Draining indicates the provider is in coordinated drain mode (stop accepting
+	// new requests, finish in-flight, then restart). Set via UpdateProviderDraining.
+	Draining bool
+
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
 }
@@ -1057,6 +1061,23 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 	r.queue = q
 }
 
+// GetOnlineProviders returns all providers that are online or serving.
+// Used for coordinated drain fan-out.
+func (r *Registry) GetOnlineProviders() []*Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	providers := make([]*Provider, 0, len(r.providers))
+	for _, p := range r.providers {
+		p.mu.Lock()
+		if p.Status == StatusOnline || p.Status == StatusServing {
+			providers = append(providers, p)
+		}
+		p.mu.Unlock()
+	}
+	return providers
+}
+
 // Sanity caps on provider-reported stats. A malicious (or broken) provider
 // could otherwise report absurd values to monopolize routing. These caps are
 // ~3-4x current hardware ceilings (M2 Ultra is ~800 GB/s, MLX decode is ~120
@@ -1368,6 +1389,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			}
 		}
 	}
+	// Sync drain state from heartbeat (authoritative — heartbeat is the
+	// only live signal; provider_draining messages are advisory).
+	p.Draining = msg.Draining
 	// Update warm models from heartbeat. Always overwrite -- an empty list
 	// means the provider has no models loaded, and stale entries must be
 	// cleared to prevent TriggerModelSwaps from suppressing needed swaps.
@@ -1836,6 +1860,8 @@ func (r *Registry) Disconnect(id string) {
 				r.modelProviderDec(m.ID)
 			}
 		}
+		// Clear drain state on disconnect — a reconnecting provider starts fresh.
+		p.Draining = false
 		p.mu.Unlock()
 	}
 	r.mu.Unlock()
@@ -2093,6 +2119,45 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 	return count
 }
 
+// UpdateProviderDraining updates a provider's draining state from a
+// provider_draining WebSocket message.
+func (r *Registry) UpdateProviderDraining(providerID string, msg *protocol.ProviderDrainingMessage) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		r.logger.Warn("draining update from unknown provider", "provider_id", providerID)
+		return
+	}
+
+	p.mu.Lock()
+	p.Draining = true
+	p.WarmModels = []string{} // Clear warm models during drain
+	p.CurrentModel = ""
+	p.mu.Unlock()
+
+	r.logger.Info("provider draining state updated",
+		"provider_id", providerID,
+		"reason", msg.Reason,
+		"in_flight", msg.InFlight,
+		"completed", msg.Completed,
+	)
+}
+
+// IsProviderDraining reports whether a provider is currently draining.
+func (r *Registry) IsProviderDraining(providerID string) bool {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	p.mu.Lock()
+	draining := p.Draining
+	p.mu.Unlock()
+	return draining
+}
+
 // TrustMultiplier returns the trust multiplier for routing score calculation.
 func TrustMultiplier(t TrustLevel) float64 {
 	switch t {
@@ -2314,6 +2379,13 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 			continue
 		}
 		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
+			continue
+		}
+		// Skip draining providers
+		p.mu.Lock()
+		draining := p.Draining
+		p.mu.Unlock()
+		if draining {
 			continue
 		}
 		p.mu.Lock()
@@ -2761,8 +2833,13 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 		// Apply the same gates as snapshotProviderLocked. Private-only machines
 		// never serve the public fleet, so they do not count toward public
-		// model capacity.
+		// model capacity. Draining providers are not routable — they are
+		// finishing in-flight work before restarting.
 		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		if p.Draining {
 			p.mu.Unlock()
 			continue
 		}

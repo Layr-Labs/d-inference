@@ -102,6 +102,7 @@ DARKBLOOM_PREFIX_CACHE=0                     # opt OUT (default = ON); also fals
 DARKBLOOM_PREFIX_CACHE_MAX_GB=8              # optional: in-GPU block-cache budget (default = 1/8 physical RAM)
 DARKBLOOM_PREFIX_CACHE_DISK_GB=50            # optional: GLOBAL on-disk budget across ALL models. Unset / 0 / non-numeric = DERIVE min(10 GiB, 50% of free), re-evaluated each tick (NOT unlimited). For effectively-unbounded, set a very large explicit value.
 DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS=0  # optional: 2nd-use admission threshold (default = 16384 for Gemma, 0 otherwise)
+DARKBLOOM_PREFIX_CACHE_TTL_SECONDS=300       # optional: SLIDING TTL for SSD checkpoints (default 300 = 5 min; 0 = infinite)
 ```
 
 `MAX_GB` bounds the in-memory block cache (the number of GPU blocks is
@@ -110,7 +111,13 @@ silently retain hundreds of GB outside admission control). `DISK_GB`
 bounds the encrypted SSD files **globally across all loaded models**
 (value-based eviction — see [§11](#11-on-disk-layout)). `MIN_PERSIST_TOKENS`
 gates SSD writes (checkpoints below this stay RAM-only until a 2nd use promotes
-them — see [§4.2](#42-evict--encrypt-to-ssd)).
+them — see [§4.2](#42-evict--encrypt-to-ssd)). `TTL_SECONDS` bounds how long a
+persisted SSD checkpoint survives: it's a **sliding** window off `lastHitAt`
+(every hit refreshes it, matching Anthropic/OpenAI prompt-cache semantics), so
+a hot prefix stays warm while a cold one is reclaimed — enforced on read
+(expired ⇒ miss + drop) and proactively at load-time reconcile. Default 5 min;
+`0` disables (capacity-driven eviction only). Bounds the window in which
+prompt-derived KV lingers on disk (shrinks the TB-007 cross-tenant TTFT oracle).
 
 Wiring happens in `BatchScheduler.makeBatchedEngine` /
 `makeEncryptedPrefixPersistenceIfEnabled`

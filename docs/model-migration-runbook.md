@@ -2,7 +2,7 @@
 
 How to move a public model name from one build (quant) to another with **no
 downtime** and **without consumers ever seeing the quant** — using the model
-alias + background prefetch + migration controller built in this feature.
+alias **desired-build pointer** and the provider's declarative self-reconcile.
 
 First user: migrate **`gemma-4-26b`** from `…-fp8` (~27 GB) to
 `…-qat-4bit` (~15.6 GB). The new QAT build is higher quality at lower memory,
@@ -10,24 +10,28 @@ and at `min_ram_gb≈22` it also opens the entire 32 GB Mac tier (fp8 was gated 
 64 GB+).
 
 > **AI agents: do not run any of these against prod.** Publishing to R2,
-> registering on the prod coordinator, and starting a prod migration are
-> human-only actions. Validate on a throwaway/dev coordinator first. This
-> runbook is the hand-off.
+> registering on the prod coordinator, and flipping a prod alias are human-only
+> actions. Validate on a throwaway/dev coordinator first. This runbook is the
+> hand-off.
 
 ---
 
 ## How it works (one paragraph)
 
-A **public alias** (`gemma-4-26b`) resolves to one or more concrete **builds**
-(the raw HuggingFace ids) each with a routing **weight**. Consumers only ever
-send/receive the alias. The **migration controller** tells old-build providers
-to **prefetch** the new build in the background (download + verify on disk, no
-GPU load, no disruption to what they're serving); as providers finish and
-re-advertise the new build, the controller **ramps** the alias weight toward it
-(canary → 100%, clamped per tick, health-gated) and **drains** the old build to
-weight 0. Resolution always prefers a build that has a live provider, so traffic
-never black-holes mid-ramp. Draining to 0 stops new traffic; the old build
-unloads from GPU via the normal idle timeout.
+A **public alias** (`gemma-4-26b`) resolves to a single **desired build** (the
+raw HuggingFace id the fleet should converge to), plus an optional
+**previous build** that stays acceptable while providers catch up. Consumers only
+ever send/receive the alias. The coordinator pushes a **`desired_models`** message
+to each provider — right after it registers, and again whenever the desired build
+changes. A provider that's missing the desired build **prefetches** it in the
+background (download + verify on disk, no GPU load, no disruption to what it's
+serving), then **hard-swaps**: it advertises the new build and drops the old one
+via an authoritative `models_update`, and the coordinator retires the old build's
+routability on that provider. Routing always prefers the desired build, accepts
+the previous build until the desired one is routable, and otherwise queues against
+the desired build — so traffic never black-holes. There are **no weights, no ramp,
+no pause/resume, and no migration controller**: a rollout is setting
+`desired_build`; a revert is setting it back.
 
 ---
 
@@ -37,11 +41,13 @@ unloads from GPU via the normal idle timeout.
    same unguarded `{{ value['type'] | upper }}` template as the 8-bit build,
    which crashes swift-jinja on tool definitions that omit a `type`. Until the
    provider-side normalization (or a re-vended template) lands, tool/agent
-   traffic on the new build will 500. The alias migration is **blocked-by
-   DAR-130** for exactly this reason.
-2. Providers on a build version that supports the prefetch protocol
-   (`prefetch_model` / `prefetch_model_status`) and the background downloader
-   (this feature's provider release).
+   traffic on the new build will 500. The live cutover is **blocked-by DAR-130**
+   for exactly this reason.
+2. Providers on a release that understands `desired_models` and the background
+   downloader (this feature's provider release, version ≥
+   `minProviderVersionForDesiredModels` — see `coordinator/api/server.go`). Older
+   providers are never sent `desired_models` (the coordinator gates on backend +
+   version); they simply keep serving whatever they already advertise.
 
 ---
 
@@ -80,10 +86,10 @@ curl -fsS -X POST "$COORD/v1/admin/models/register" \
 The old build (`…-fp8`) should already be registered. Confirm both:
 `curl -s "$COORD/v1/models?include_builds=1" -H "Authorization: Bearer $KEY"`.
 
-## Step 3 — Create the public alias (human)
+## Step 3 — Create the public alias, pointing at the OLD build (human)
 
-Start with all traffic on the old build (`to` drained at 0 — the controller
-ramps it):
+Create the alias with `desired_build` = the **current** (old) build. This makes
+`gemma-4-26b` a stable public name with no behavior change yet:
 
 ```bash
 curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
@@ -92,10 +98,7 @@ curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
   -d '{
     "alias_id": "gemma-4-26b",
     "display_name": "Gemma 4 26B",
-    "builds": [
-      {"build_id": "mlx-community/gemma-4-26b-a4b-it-fp8",      "weight": 100},
-      {"build_id": "mlx-community/gemma-4-26B-A4B-it-qat-4bit", "weight": 0}
-    ]
+    "desired_build": "mlx-community/gemma-4-26b-a4b-it-fp8"
   }'
 ```
 
@@ -103,62 +106,87 @@ curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
 (consumers, the console UI, and the landing page pick this up automatically).
 Existing requests that still send the raw fp8 id keep working (passthrough).
 
-## Step 4 — Start the migration (human)
+## Step 4 — Roll out: flip `desired_build` to the new build (human)
+
+This is the whole migration. Set `desired_build` to the new build and keep the
+old build as `previous_build` so not-yet-swapped providers keep serving:
 
 ```bash
-curl -fsS -X POST "$COORD/v1/admin/migrations" \
+curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
   -H "Authorization: Bearer $PUBLISHING_KEY" \
   -H 'Content-Type: application/json' \
   -d '{
     "alias_id": "gemma-4-26b",
-    "from_build": "mlx-community/gemma-4-26b-a4b-it-fp8",
-    "to_build":   "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
-    "batch_size": 2,
-    "max_step_percent": 20
+    "display_name": "Gemma 4 26B",
+    "desired_build":  "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+    "previous_build": "mlx-community/gemma-4-26b-a4b-it-fp8"
   }'
 ```
 
-- `batch_size` — how many providers are told to prefetch per ~20s tick (keeps
-  download bandwidth/capacity impact bounded).
-- `max_step_percent` — max points the new build's weight rises per tick (smooth
-  ramp). The controller only ramps as fast as providers actually finish
-  prefetching, so the real pace is capacity-bound.
+On upsert the coordinator re-syncs the alias and pushes `desired_models` to every
+connected provider already serving the alias. Each provider prefetches the new
+build in the background, then hard-swaps. New/reconnecting providers learn the
+desired build via the `desired_models` push that follows their `register`. The
+download stagger across the fleet provides natural rate-limiting — there is no
+batch/step knob to tune.
 
 ## Step 5 — Monitor
 
 ```bash
-watch -n 10 'curl -s "$COORD/v1/admin/migrations" -H "Authorization: Bearer $KEY" | jq'
-# Shows per-migration: status, to_weight (0→100), providers_from, providers_to.
+# Live capacity per public name (routable/warm = desired + previous combined):
+watch -n 10 'curl -s "$COORD/v1/models" -H "Authorization: Bearer $KEY" | jq ".data[] | select(.id==\"gemma-4-26b\")"'
+
+# Raw per-build view (how many providers serve desired vs previous):
+curl -s "$COORD/v1/models?include_builds=1" -H "Authorization: Bearer $KEY" | jq
 ```
 
 Provider-side prefetch progress is logged as `provider prefetch_model_status`
-(started → downloading → verified) on the coordinator.
+(started → downloading → verified) and the swap as
+`provider now advertises build (models_update)` /
+`models_update hard-swap: dropping retired build` on the coordinator.
 
-## Step 6 — Pause / resume / rollback (human)
+## Step 6 — Revert (human)
 
-```bash
-curl -X POST "$COORD/v1/admin/migrations/gemma-4-26b/pause"   -H "Authorization: Bearer $KEY"
-curl -X POST "$COORD/v1/admin/migrations/gemma-4-26b/resume"  -H "Authorization: Bearer $KEY"
-# Rollback instantly reverts the alias to 100% old build and stops the migration:
-curl -X POST "$COORD/v1/admin/migrations/gemma-4-26b/rollback" -H "Authorization: Bearer $KEY"
-```
-
-## Step 7 — Completion & cleanup
-
-When `to_weight` reaches 100 and every old-build provider also serves the new
-build, the controller marks the migration `complete`. The fp8 build is drained
-(weight 0) — no new traffic — and unloads from GPU via the idle timeout.
-
-Optional, once you're confident: remove fp8 from the alias and/or deprecate the
-fp8 model registry entry.
+There is no separate rollback endpoint — a revert is the same operation as a
+rollout, pointed the other way. Set `desired_build` back to the old build:
 
 ```bash
-# Drop fp8 from the alias (qat-only going forward):
-curl -X POST "$COORD/v1/admin/models/aliases" -H "Authorization: Bearer $KEY" \
+curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
+  -H "Authorization: Bearer $PUBLISHING_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"alias_id":"gemma-4-26b","display_name":"Gemma 4 26B",
-       "builds":[{"build_id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","weight":100}]}'
+  -d '{
+    "alias_id": "gemma-4-26b",
+    "display_name": "Gemma 4 26B",
+    "desired_build":  "mlx-community/gemma-4-26b-a4b-it-fp8",
+    "previous_build": "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+  }'
 ```
+
+Providers that still have the old build serve it immediately; the new build stays
+acceptable until they re-converge.
+
+## Step 7 — Retire the old build (human, manual)
+
+Once enough providers serve the desired build, retire the previous build by
+re-PUTting the alias **without** `previous_build`:
+
+```bash
+curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
+  -H "Authorization: Bearer $PUBLISHING_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "alias_id": "gemma-4-26b",
+    "display_name": "Gemma 4 26B",
+    "desired_build": "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+  }'
+```
+
+With no acceptable previous build, the alias resolves only to the desired build
+(queuing against it if a straggler hasn't swapped yet). The old build unloads
+from GPU via the normal idle timeout. There is no auto-clear of `previous_build`
+in this release — retiring it is this explicit operator step.
+
+Optional, once you're confident: deprecate the fp8 model registry entry.
 
 ---
 
@@ -166,6 +194,7 @@ curl -X POST "$COORD/v1/admin/models/aliases" -H "Authorization: Bearer $KEY" \
 
 Run the whole flow against the **dev** coordinator (`api.dev.darkbloom.xyz`)
 with a couple of throwaway provider machines before touching prod. The
-coordinator-level invariant (no black-hole during ramp, public name stable, full
-drain at the end) is covered by `TestZeroDowntimeAliasMigration` in
-`coordinator/api/migration_e2e_test.go`.
+coordinator-level invariants (prefer-desired routing, accept-previous fallback,
+no black-hole, the hard-swap drop of the retired build, and the post-register
+`desired_models` push) are covered by `coordinator/registry/alias_test.go` and
+`coordinator/api/model_alias_handlers_test.go`.

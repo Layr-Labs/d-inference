@@ -44,17 +44,21 @@ struct VLMSmoke {
             )
             err(String(format: "[vlm-smoke] loaded in %.1fs", Date().timeIntervalSince(t0)))
 
+            // NOTE: do not read `userInput.images/videos` after building it.
+            // `main()` is `@MainActor`, so any post-construction read binds
+            // `userInput` to the main actor and `container.prepare(input:)`
+            // then fails to compile with "sending 'userInput' risks causing
+            // data races". `mediaPaths` is logged here instead, before the
+            // value is built, so it flows straight into `prepare`.
             let userInput: UserInput
             if isVideo {
                 err("[vlm-smoke] preparing input (video: \(mediaPaths[0])) ...")
                 let videoURL = URL(fileURLWithPath: mediaPaths[0])
                 userInput = UserInput(chat: [.user(prompt, videos: [.url(videoURL)])])
-                err("[vlm-smoke] userInput.videos count = \(userInput.videos.count)")
             } else {
                 err("[vlm-smoke] preparing input (\(mediaPaths.count) image(s)) ...")
                 let images = mediaPaths.map { UserInput.Image.url(URL(fileURLWithPath: $0)) }
                 userInput = UserInput(chat: [.user(prompt, images: images)])
-                err("[vlm-smoke] userInput.images count = \(userInput.images.count)")
             }
             let lmInput = try await container.prepare(input: userInput)
 

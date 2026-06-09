@@ -22,6 +22,31 @@ private let tinyPNGBase64 =
 
 private let tinyPNGDataURI = "data:image/png;base64,\(tinyPNGBase64)"
 
+// MARK: - Test helpers
+
+/// Run a throwing media-decode body and assert it threw
+/// `MediaError.invalidURL(expectedURI)`. `MediaError` is not `Equatable`, so
+/// we pattern-match the case and compare its associated URI rather than using
+/// the value form of `#expect(throws:)`.
+private func expectInvalidURL(
+    _ expectedURI: String,
+    _ body: () throws -> Void
+) {
+    do {
+        try body()
+        Issue.record(
+            "expected MediaError.invalidURL(\(expectedURI)) but no error was thrown")
+    } catch let error as VLMRequestInference.MediaError {
+        guard case .invalidURL(let uri) = error else {
+            Issue.record("expected .invalidURL, got \(error)")
+            return
+        }
+        #expect(uri == expectedURI)
+    } catch {
+        Issue.record("expected MediaError.invalidURL, got \(error)")
+    }
+}
+
 // MARK: - dataFromDataURI
 
 @Test("dataFromDataURI decodes a base64 image payload")
@@ -75,14 +100,24 @@ func vlmDecodeImageDataURI() throws {
     #expect(ci.extent.height == 1)
 }
 
-@Test("decodeImage treats a non-data URI as a URL")
-func vlmDecodeImageRemoteURL() throws {
-    let image = try VLMRequestInference.decodeImage("https://example.com/cat.png")
-    guard case .url(let url) = image else {
-        Issue.record("expected .url, got \(image)")
-        return
+// SECURITY (SSRF / local-file-read): the provider is the only thing that can
+// enforce media policy on an E2E-encrypted request, so inline media MUST be a
+// `data:` URI. A non-`data:` URL (http(s):// or file://) must be rejected with
+// `invalidURL` and NEVER turned into a `.url(...)` that `CIImage(contentsOf:)`
+// / `AVAsset(url:)` would later fetch. These tests lock that guarantee so it
+// can't silently regress.
+@Test("decodeImage rejects an http:// URI with invalidURL (no SSRF)")
+func vlmDecodeImageHTTPRejected() {
+    expectInvalidURL("https://example.com/cat.png") {
+        _ = try VLMRequestInference.decodeImage("https://example.com/cat.png")
     }
-    #expect(url.absoluteString == "https://example.com/cat.png")
+}
+
+@Test("decodeImage rejects a file:// URI with invalidURL (no local-file read)")
+func vlmDecodeImageFileRejected() {
+    expectInvalidURL("file:///etc/passwd") {
+        _ = try VLMRequestInference.decodeImage("file:///etc/passwd")
+    }
 }
 
 @Test("decodeImage throws when a data: URI holds non-image bytes")
@@ -115,16 +150,24 @@ func vlmDecodeVideoDataURIWritesTempFile() throws {
     try? FileManager.default.removeItem(at: url)
 }
 
-@Test("decodeVideo treats a non-data URI as a URL without writing a temp file")
-func vlmDecodeVideoRemoteURL() throws {
+@Test("decodeVideo rejects an http:// URI with invalidURL (no SSRF)")
+func vlmDecodeVideoHTTPRejected() {
     var tempFiles: [URL] = []
-    let video = try VLMRequestInference.decodeVideo(
-        "https://example.com/clip.mp4", tempFiles: &tempFiles)
-    guard case .url(let url) = video else {
-        Issue.record("expected .url, got \(video)")
-        return
+    expectInvalidURL("https://example.com/clip.mp4") {
+        _ = try VLMRequestInference.decodeVideo(
+            "https://example.com/clip.mp4", tempFiles: &tempFiles)
     }
-    #expect(url.absoluteString == "https://example.com/clip.mp4")
+    // A rejected URI must not have spawned a temp file.
+    #expect(tempFiles.isEmpty)
+}
+
+@Test("decodeVideo rejects a file:// URI with invalidURL (no local-file read)")
+func vlmDecodeVideoFileRejected() {
+    var tempFiles: [URL] = []
+    expectInvalidURL("file:///etc/passwd") {
+        _ = try VLMRequestInference.decodeVideo(
+            "file:///etc/passwd", tempFiles: &tempFiles)
+    }
     #expect(tempFiles.isEmpty)
 }
 
@@ -228,4 +271,53 @@ func vlmBuildUserInputTextOnly() throws {
     }
     #expect(messages.count == 1)
     #expect(messages[0].content == "just text")
+}
+
+// MARK: - error → HTTP status mapping
+
+// These lock the status contract for the VLM-side errors:
+//   - client-fault MediaError cases (bad/oversized/non-`data:` payloads the
+//     caller controls) → 400
+//   - the provider-side temp-file write failure → 500
+//   - media sent to a non-VLM model → 400
+// They also guard the propagation premise behind FIX F: these exact error
+// values are what `VLMRequestInference.stream` / the engine throw upward, and
+// `mapInferenceErrorToStatus` is what ProviderLoop calls on them.
+
+@Test("client-fault MediaError cases map to HTTP 400")
+func vlmMediaErrorMapsTo400() {
+    let clientFaults: [VLMRequestInference.MediaError] = [
+        .invalidURL("file:///etc/passwd"),
+        .malformedDataURI("missing ','"),
+        .base64DecodeFailed,
+        .percentDecodeFailed,
+        .imageDecodeFailed,
+    ]
+    for err in clientFaults {
+        #expect(
+            ProviderLoop.mapInferenceErrorToStatus(err) == 400,
+            "expected 400 for \(err)")
+    }
+}
+
+@Test("videoWriteFailed (provider IO fault) maps to HTTP 500")
+func vlmVideoWriteFailedMapsTo500() {
+    let err = VLMRequestInference.MediaError.videoWriteFailed("disk full")
+    #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 500)
+}
+
+@Test("media-to-non-VLM-model error maps to HTTP 400")
+func vlmMediaUnsupportedByModelMapsTo400() {
+    let err = MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel("text-only")
+    #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 400)
+}
+
+@Test("MediaError surfaces a useful localizedDescription (LocalizedError)")
+func vlmMediaErrorLocalizedDescription() {
+    // FIX B: conforming to LocalizedError means the human-readable message
+    // (not the generic Cocoa "operation couldn't be completed") reaches the
+    // client via error.localizedDescription.
+    let err = VLMRequestInference.MediaError.invalidURL("file:///etc/passwd")
+    #expect(err.localizedDescription == "not a valid media URL: file:///etc/passwd")
+    #expect(!err.localizedDescription.contains("couldn’t be completed"))
 }

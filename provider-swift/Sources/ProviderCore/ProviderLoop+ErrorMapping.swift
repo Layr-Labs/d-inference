@@ -52,7 +52,28 @@ extension ProviderLoop {
                 return 503
             case .requestRejected:
                 return 503
+            case .mediaUnsupportedByModel:
+                // Client fault: media sent to a non-VLM model. Fails
+                // identically on retry, so 400 (not a 5xx/retry signal).
+                return 400
             case .generationFailed:
+                return 500
+            }
+        }
+        // VLM inline-media decode errors. All but the temp-file write are
+        // client faults (a malformed/oversized/non-`data:` payload the caller
+        // controls) → 400. `videoWriteFailed` is a provider-side IO failure
+        // → 500. These propagate up from `VLMRequestInference.stream`'s
+        // `continuation.finish(throwing:)` through the engine wrapper.
+        if let mediaErr = error as? VLMRequestInference.MediaError {
+            switch mediaErr {
+            case .malformedDataURI,
+                .base64DecodeFailed,
+                .percentDecodeFailed,
+                .imageDecodeFailed,
+                .invalidURL:
+                return 400
+            case .videoWriteFailed:
                 return 500
             }
         }

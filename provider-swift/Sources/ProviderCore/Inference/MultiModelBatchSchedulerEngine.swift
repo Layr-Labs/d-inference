@@ -211,6 +211,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             }
         }
 
+        // If we reach here with media still present, the resolved model is NOT
+        // a usable VLM (either `!isVLM`, or it is flagged VLM but no container
+        // was handed to us, so the vision prepare/generate path is unavailable).
+        // The batched text path below silently discards image/video parts, so
+        // letting media fall through would answer a vision question from text
+        // alone — a wrong, confusing result. Fail closed with a 4xx instead.
+        if VLMRequestInference.hasMedia(request) {
+            await releaseBox.fire()
+            throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
+        }
+
         // Tokenize the full OpenAI request (including tools, tool_call_id,
         // reasoning_content, etc.) ourselves rather than going through the
         // lossy `translate()` → `ChatMessage` path that drops tool fields.

@@ -44,6 +44,18 @@ describe("useImageUpload", () => {
     expect(result.current.imgError).toMatch(/up to/i);
   });
 
+  it("never exceeds the cap even with two overlapping intakes (race)", async () => {
+    const { result } = renderHook(() => useImageUpload(true));
+    const batch = () =>
+      Array.from({ length: MAX_IMAGES_PER_MESSAGE }, (_, i) => pngFile(`r${i}.png`));
+    // Both calls read the same stale images.length (0) before either commits;
+    // without the in-updater cap this would stage 2 * MAX.
+    await act(async () => {
+      await Promise.all([result.current.addFiles(batch()), result.current.addFiles(batch())]);
+    });
+    expect(result.current.images).toHaveLength(MAX_IMAGES_PER_MESSAGE);
+  });
+
   it("removes and clears staged images", async () => {
     const { result } = renderHook(() => useImageUpload(true));
     await act(async () => {

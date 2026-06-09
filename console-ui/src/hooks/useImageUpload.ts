@@ -66,7 +66,10 @@ export function useImageUpload(enabled: boolean): ImageUpload {
         }
       }
       if (accepted.length > 0) {
-        setImages((prev) => [...prev, ...accepted]);
+        // Cap inside the updater: two overlapping intakes (e.g. a paste landing
+        // while a prior file read is still awaiting) both read the same stale
+        // `images.length` above, so enforce the limit against the latest state.
+        setImages((prev) => [...prev, ...accepted].slice(0, MAX_IMAGES_PER_MESSAGE));
         trackEvent("chat_image_attached", { count: accepted.length });
       }
     },

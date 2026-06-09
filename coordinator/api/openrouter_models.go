@@ -66,8 +66,9 @@ func mapQuantizationToOpenRouter(q string) string {
 }
 
 // deriveModalities returns the input and output modalities for a model. Text is
-// always present; a vision/multimodal capability adds image input. Embedding
-// models report a text->embedding shape.
+// always present; a vision/multimodal capability adds image input, an audio
+// capability adds audio, and a video capability adds video. Embedding models
+// report a text->embedding shape.
 func deriveModalities(modelType string, capabilities []string) (input, output []string) {
 	mt := strings.ToLower(strings.TrimSpace(modelType))
 	switch mt {
@@ -86,6 +87,10 @@ func deriveModalities(modelType string, capabilities []string) (input, output []
 		case "audio", "audio_input":
 			if !contains(input, "audio") {
 				input = append(input, "audio")
+			}
+		case "video", "video_input":
+			if !contains(input, "video") {
+				input = append(input, "video")
 			}
 		case "file", "pdf":
 			if !contains(input, "file") {

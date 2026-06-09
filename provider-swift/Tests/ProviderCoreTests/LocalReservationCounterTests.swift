@@ -45,3 +45,24 @@ import Testing
     #expect(!c.isReserved("a"))
     #expect(c.isReserved("b")) // releasing a must not affect b
 }
+
+@Test func totalInFlightAndHasAnyAcrossModels() {
+    var c = LocalReservationCounter()
+    #expect(c.totalInFlight == 0)
+    #expect(!c.hasAny)
+
+    c.reserve("a")
+    c.reserve("b")
+    c.reserve("b") // a:1, b:2
+    #expect(c.totalInFlight == 3)
+    #expect(c.hasAny)
+
+    c.release("b")
+    #expect(c.totalInFlight == 2) // a:1, b:1
+    #expect(c.hasAny)
+
+    c.release("a")
+    c.release("b")
+    #expect(c.totalInFlight == 0) // all done → drained
+    #expect(!c.hasAny)
+}

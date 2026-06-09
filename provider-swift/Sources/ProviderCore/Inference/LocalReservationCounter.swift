@@ -37,4 +37,15 @@ struct LocalReservationCounter: Sendable, Equatable {
     func count(_ modelId: String) -> Int {
         counts[modelId] ?? 0
     }
+
+    /// Total in-flight local requests across all models.
+    var totalInFlight: Int {
+        counts.values.reduce(0, +)
+    }
+
+    /// Whether any local request is currently in flight. Used by drain logic
+    /// (shutdown and update hot-swap) so a local stream is never cut off.
+    var hasAny: Bool {
+        !counts.isEmpty
+    }
 }

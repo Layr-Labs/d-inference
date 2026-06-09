@@ -137,38 +137,21 @@ public enum ProcessLifecycle {
 
     /// Restart the provider process after a background auto-update.
     ///
-    /// If the process is managed by launchd, performs a stop + bootstrap +
-    /// kickstart cycle so launchd picks up the new binary. Otherwise,
-    /// falls back to `execCurrentProcess()` (execv) which replaces the
-    /// process image in-place.
+    /// If the process is managed by launchd, delegates to
+    /// `LaunchAgent.restart()` (`launchctl kickstart -k`), which is a single
+    /// atomic launchd operation: it kills this instance and relaunches the
+    /// service from the same plist (picking up the freshly-installed binary).
+    /// launchd — not this process — performs the kill+relaunch, so it
+    /// completes even after we exit. Otherwise, falls back to
+    /// `execCurrentProcess()` (execv) which replaces the process image
+    /// in-place.
     public static func restartAfterUpdate() throws -> Never {
         if LaunchAgent.isLoaded() {
-            // Launchd-managed: stop the current service, then re-bootstrap
-            // and kickstart so launchd launches the new binary.
-            let domain = "gui/\(getuid())"
-            let target = "\(domain)/\(LaunchAgent.label)"
-            let plistPath = LaunchAgent.plistPath().path
-
-            // 1. Stop the current process via launchctl bootout.
-            //    This will terminate us, but we schedule the bootstrap
-            //    + kickstart first via a short-lived helper process.
-            let script = """
-            /bin/launchctl bootout \(target) 2>/dev/null; \
-            sleep 1; \
-            /bin/launchctl bootstrap \(domain) \(plistPath) 2>/dev/null; \
-            /bin/launchctl kickstart \(target) 2>/dev/null
-            """
-
-            let helper = Process()
-            helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-            helper.arguments = ["-c", script]
-            helper.standardOutput = FileHandle.nullDevice
-            helper.standardError = FileHandle.nullDevice
-            try helper.run()
-
-            // Give the helper a moment to issue bootout, then exit.
-            // The bootout will terminate us; if it doesn't within 2s,
-            // exit cleanly and let the helper finish the restart.
+            // Launchd-managed: kickstart -k kills us and relaunches the
+            // service in place. Issue it, then exit so launchd is free to
+            // bring the new binary up cleanly (it may already have signalled
+            // us; the exit is the belt-and-suspenders path).
+            try LaunchAgent.restart()
             Thread.sleep(forTimeInterval: 2.0)
             exit(0)
         } else {

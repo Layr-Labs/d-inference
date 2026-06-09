@@ -72,15 +72,16 @@ func (s *StagedExport) Cleanup() {
 	s.stagingDir = ""
 }
 
-// isLog reports whether the file should be excluded as a log file.
-func isLog(name string) bool {
-	return strings.EqualFold(filepath.Ext(name), ".log")
+// hasExtension reports whether name has the given extension (case-insensitive).
+func hasExtension(name, ext string) bool {
+	return strings.EqualFold(filepath.Ext(name), ext)
 }
 
+// isLog reports whether the file should be excluded as a log file.
+func isLog(name string) bool { return hasExtension(name, ".log") }
+
 // isBoltDB reports whether the file is a BoltDB database (by extension).
-func isBoltDB(name string) bool {
-	return strings.EqualFold(filepath.Ext(name), ".db")
-}
+func isBoltDB(name string) bool { return hasExtension(name, ".db") }
 
 // Stage performs Phase A: it resolves the (possibly symlinked) root, snapshots
 // and validates every *.db under it into a freshly-created 0700 staging dir, and
@@ -140,7 +141,8 @@ func (a *Archiver) Stage(ctx context.Context, root string) (*StagedExport, error
 	// entry that Phase B would WRITE — regular files AND *.db (dirs, symlinks, and
 	// *.log are not written and not counted).
 	fileCount := 0
-	micromdmDirSeen := false
+	micromdmDir := ""    // resolved path of the micromdm dir, if present
+	micromdmDBCount := 0 // *.db snapshots taken INSIDE micromdm/
 
 	walkErr := filepath.WalkDir(resolved, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -156,7 +158,7 @@ func (a *Archiver) Stage(ctx context.Context, root string) (*StagedExport, error
 		}
 		if d.IsDir() {
 			if d.Name() == "micromdm" {
-				micromdmDirSeen = true
+				micromdmDir = path
 			}
 			// step-ca's default standalone DB is a Badger DIRECTORY at
 			// step-ca/db/, NOT a *.db file. We deliberately do NOT snapshot it:
@@ -186,6 +188,13 @@ func (a *Archiver) Stage(ctx context.Context, root string) (*StagedExport, error
 		}
 		staged.dbSnapshots[path] = tmpPath
 		fileCount++ // *.db is written in Phase B from its staging snapshot
+		// Count *.db snapshots taken INSIDE the micromdm dir specifically. The
+		// fail-loud guard below must require MicroMDM's OWN database — a stray db
+		// elsewhere under the root must not mask a missing MicroMDM db and let us
+		// ship an archive without it.
+		if micromdmDir != "" && strings.HasPrefix(path, micromdmDir+string(filepath.Separator)) {
+			micromdmDBCount++
+		}
 		return nil
 	})
 	if walkErr != nil {
@@ -204,13 +213,13 @@ func (a *Archiver) Stage(ctx context.Context, root string) (*StagedExport, error
 		staged.Cleanup()
 		return nil, fmt.Errorf("export captured 0 files under %q (empty or unreadable root)", resolved)
 	}
-	if micromdmDirSeen && len(staged.dbSnapshots) == 0 {
+	if micromdmDir != "" && micromdmDBCount == 0 {
 		if staged.logger != nil {
-			staged.logger.Warn("state-export: micromdm dir present but ZERO db snapshots captured — refusing to stage",
-				"root", resolved)
+			staged.logger.Warn("state-export: micromdm dir present but its BoltDB was not snapshotted — refusing to stage",
+				"root", resolved, "micromdm_dir", micromdmDir)
 		}
 		staged.Cleanup()
-		return nil, fmt.Errorf("micromdm dir present under %q but 0 db snapshots captured", resolved)
+		return nil, fmt.Errorf("micromdm dir present under %q but its BoltDB (*.db inside micromdm/) was not snapshotted", resolved)
 	}
 
 	return staged, nil

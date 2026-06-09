@@ -172,7 +172,13 @@ func copyFileToTemp(srcPath, tmpDir string) (string, error) {
 func validateBolt(path string, openTimeout time.Duration) (retErr error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			retErr = fmt.Errorf("bolt validation panicked (torn/corrupt copy): %v", rec)
+			// Preserve the underlying error type (and chain) when the recovered
+			// value is itself an error; otherwise stringify it.
+			if e, ok := rec.(error); ok {
+				retErr = fmt.Errorf("bolt validation panicked (torn/corrupt copy): %w", e)
+			} else {
+				retErr = fmt.Errorf("bolt validation panicked (torn/corrupt copy): %v", rec)
+			}
 		}
 	}()
 

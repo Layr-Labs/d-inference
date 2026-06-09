@@ -40,7 +40,8 @@ func resolveStateExportRoot() string {
 // envTrue reports whether the named env var is set to "true" (case-insensitive,
 // trimmed). Used for the boolean state-export gates.
 func envTrue(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(name)), "true")
+	b, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv(name)))
+	return b
 }
 
 // handleAdminStateExport handles GET /v1/admin/state-export — it streams a

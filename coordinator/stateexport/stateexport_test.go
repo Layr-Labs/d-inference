@@ -221,6 +221,26 @@ func TestArchiveEmptyRootErrors(t *testing.T) {
 	}
 }
 
+// TestArchiveMicromdmDirWithoutItsDB_DAR70 is the regression for the Codex PR
+// finding: the fail-loud "micromdm present but no DB" guard must scope to a *.db
+// INSIDE the micromdm dir, not the global snapshot count. A stray db elsewhere
+// under the root (e.g. step-ca/) must not mask a missing MicroMDM database and
+// let Stage succeed — that would ship a 200 archive without the MDM device DB.
+func TestArchiveMicromdmDirWithoutItsDB_DAR70(t *testing.T) {
+	root := t.TempDir()
+	// micromdm dir exists but has NO *.db (only a regular file).
+	mustWrite(t, filepath.Join(root, "micromdm", "config"), "CONFIG")
+	// A stray bolt db elsewhere that WILL be snapshotted (global db count > 0).
+	// mustWrite first so step-ca/ exists before bolt.Open (makeBolt doesn't mkdir).
+	mustWrite(t, filepath.Join(root, "step-ca", "ca.json"), "{}")
+	makeBolt(t, filepath.Join(root, "step-ca", "stray.db"))
+
+	_, err := archiveRoot(t, NewArchiver(), root, io.Discard)
+	if err == nil {
+		t.Fatal("expected error: micromdm dir present but its BoltDB missing, masked by a stray db elsewhere")
+	}
+}
+
 // TestArchiveSymlinkedRoot: prod start.sh symlinks /data -> persistent storage.
 // WalkDir on a symlinked root would walk zero children; the archiver must
 // EvalSymlinks first so the archive still captures children.

@@ -457,6 +457,12 @@ public actor ProviderLoop {
         /// Vision-language model (config has `vision_config`). Multimodal
         /// requests are served from `container` via the non-batched path.
         let isVLM: Bool
+        /// Model type (e.g. "gemma"), captured at load. Authoritative for the
+        /// reasoning-parser choice for as long as the model can serve — read
+        /// this, NOT `advertisedModels[id]`, which goes nil in the hard-swap
+        /// drop window while the slot is still resident (a Gemma build would
+        /// otherwise fall back to the qwen3 parser and leak <think> tokens).
+        let modelType: String?
         var lastInferenceAt: ContinuousClock.Instant
     }
 
@@ -984,9 +990,12 @@ public actor ProviderLoop {
         let signingIdentity = self.signer
         let log = self.logger
         let tokenizer = slot.tokenizer
-        // Prefetched builds aren't in the frozen startup list (loopConfig.models),
-        // so resolve modelType from the live advertised set (startup ∪ prefetched).
-        let modelType = advertisedModels[modelId]?.modelType
+        // Read modelType from the loaded SLOT, not advertisedModels: the latter
+        // goes nil in the hard-swap drop window while the slot is still resident,
+        // which would silently fall the reasoning parser back to qwen3 and leak
+        // <think> tokens for a Gemma build. The slot carries the type captured at
+        // load, so it is correct for startup, prefetched, AND dropped-resident.
+        let modelType = slot.modelType
         let slotContainer = slot.container
         let slotIsVLM = slot.isVLM
 
@@ -2354,6 +2363,7 @@ public actor ProviderLoop {
                 container: container,
                 tokenizer: tokenizer,
                 isVLM: Self.modelIsVLM(at: modelPath),
+                modelType: modelInfo.modelType,
                 lastInferenceAt: .now
             )
 
@@ -3017,7 +3027,9 @@ extension ProviderLoop {
             scheduler: slot.scheduler,
             tokenizer: slot.tokenizer,
             releaseToken: OneShotRelease(release: release, modelId: modelId),
-            modelType: advertisedModels[modelId]?.modelType,
+            // From the loaded slot, not advertisedModels — correct during the
+            // hard-swap drop window (see ModelSlot.modelType).
+            modelType: slot.modelType,
             container: slot.container,
             isVLM: slot.isVLM
         )

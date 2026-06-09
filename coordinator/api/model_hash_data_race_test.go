@@ -63,6 +63,15 @@ func TestHandlersDoNotRaceModelHashRefresh(t *testing.T) {
 	}()
 
 	hit := func(path string) {
+		// /v1/stats caches its serialized body for 60s, so without this the
+		// handler would range p.Models only on the first (cache-miss) call and
+		// the stats-side race would be exercised exactly once. Invalidate the
+		// key each iteration so every call misses the cache and actually reads
+		// p.Models — otherwise reverting ONLY the stats fix would not reliably
+		// trip -race.
+		if path == "/v1/stats" {
+			srv.readCache.Invalidate("stats:v1")
+		}
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)

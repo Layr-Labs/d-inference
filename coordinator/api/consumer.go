@@ -310,12 +310,12 @@ func (s *Server) dispatchOneProvider(
 		pr.Timing.EncryptedAt = time.Now()
 	}
 
-	wireMsg := map[string]any{
-		"type":       protocol.TypeInferenceRequest,
-		"request_id": requestID,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
+	wireMsg := protocol.InferenceRequestMessage{
+		Type:      protocol.TypeInferenceRequest,
+		RequestID: requestID,
+		EncryptedBody: &protocol.EncryptedPayload{
+			EphemeralPublicKey: encrypted.EphemeralPublicKey,
+			Ciphertext:         encrypted.Ciphertext,
 		},
 	}
 
@@ -1406,12 +1406,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			timing.EncryptedAt = time.Now()
-			wireMsg := map[string]any{
-				"type":       protocol.TypeInferenceRequest,
-				"request_id": requestID,
-				"encrypted_body": map[string]string{
-					"ephemeral_public_key": encrypted.EphemeralPublicKey,
-					"ciphertext":           encrypted.Ciphertext,
+			wireMsg := protocol.InferenceRequestMessage{
+				Type:      protocol.TypeInferenceRequest,
+				RequestID: requestID,
+				EncryptedBody: &protocol.EncryptedPayload{
+					EphemeralPublicKey: encrypted.EphemeralPublicKey,
+					Ciphertext:         encrypted.Ciphertext,
 				},
 			}
 			pr.SessionPrivKey = &sessionKeys.PrivateKey
@@ -4347,12 +4347,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	wireMsg := map[string]any{
-		"type":       protocol.TypeInferenceRequest,
-		"request_id": requestID,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
+	wireMsg := protocol.InferenceRequestMessage{
+		Type:      protocol.TypeInferenceRequest,
+		RequestID: requestID,
+		EncryptedBody: &protocol.EncryptedPayload{
+			EphemeralPublicKey: encrypted.EphemeralPublicKey,
+			Ciphertext:         encrypted.Ciphertext,
 		},
 	}
 

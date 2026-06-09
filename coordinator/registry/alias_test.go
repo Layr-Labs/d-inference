@@ -291,6 +291,43 @@ func TestMergeProviderModelsRejectsHashMismatch(t *testing.T) {
 	}
 }
 
+// Regression: a models_update whose DESIRED build fails the catalog weight-hash
+// check must NOT drop the still-valid PREVIOUS build. Deriving the hard-swap
+// drop from the raw message (before validation) would strand the provider on
+// neither build — the exact rollout failure the hash check exists to prevent.
+func TestMergeProviderModelsRejectedDesiredDoesNotDropPrevious(t *testing.T) {
+	reg := New(testLogger())
+	// p1 serves the previous build (fp8); the catalog pins qat's expected hash.
+	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
+	reg.SetModelCatalog([]CatalogEntry{
+		{ID: aliasFP8},
+		{ID: aliasQAT, WeightHash: "EXPECTED"},
+	})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
+	})
+	if got := reg.RoutableProviderIDsForBuild(aliasFP8); len(got) != 1 {
+		t.Fatalf("p1 should serve fp8 initially, got %v", got)
+	}
+
+	// p1 sends an authoritative update advertising ONLY the desired build, but
+	// with a BAD weight hash → the desired build is rejected (not merged).
+	merged := reg.MergeProviderModels("p1", []protocol.ModelInfo{
+		{ID: aliasQAT, ModelType: "gemma", WeightHash: "WRONG"},
+	})
+	if len(merged) != 0 {
+		t.Fatalf("hash-mismatched desired must be rejected, got merged %v", merged)
+	}
+	// Desired must NOT be routable (rejected)...
+	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
+		t.Fatalf("rejected desired must not be routable, got %v", got)
+	}
+	// ...and the previous build must STILL be routable (not collateral-dropped).
+	if got := reg.RoutableProviderIDsForBuild(aliasFP8); len(got) != 1 || got[0] != "p1" {
+		t.Fatalf("previous build must survive a rejected desired update, got %v", got)
+	}
+}
+
 func TestSetModelAliasesClearAndIsAlias(t *testing.T) {
 	reg := New(testLogger())
 	reg.SetModelAliases(map[string]AliasTarget{"a": {Desired: "b1"}})

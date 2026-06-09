@@ -892,6 +892,81 @@ struct ProviderLoopPrefetchTests {
         await coord.shutdown(timeout: .seconds(3))
     }
 
+    @Test("desired already converged but previous learned LATE drops previous AND re-emits models_update")
+    func reconcileAlreadyConvergedLatePreviousEmitsUpdate() async throws {
+        // Models a real sequence: the provider verified the desired build BEFORE
+        // any previous build was set on the alias (so the original verify carried
+        // no drop). Later the operator sets previous_build; desired_models now
+        // names desired (already advertised+hashed) + previous (still advertised).
+        // The reconcile must drop previous locally AND re-emit an authoritative
+        // models_update for desired — otherwise the coordinator keeps routing the
+        // previous build to a provider that has locally stopped serving it.
+        let desiredBuild = "org/desired-\(UUID().uuidString)"
+        let previousBuild = "org/previous-\(UUID().uuidString)"
+        let modelDir = try seedSnapshot(modelID: desiredBuild)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        let previousInfo = ModelInfo(id: previousBuild, sizeBytes: 1, estimatedMemoryGb: 1)
+        let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
+        let client = makeClient()
+        _ = await client.advertiseModel(previousInfo)
+
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: NoopSuccessPrefetcher(),
+            preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
+            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+
+        // Step 1: converge desired with NO previous on the alias yet — verify it.
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(modelName: "alias-a", desiredBuild: desiredBuild)],
+            send: capturingSend
+        )
+        let converged = await waitUntil(timeout: .seconds(10)) {
+            let hasDesired = await loop.isModelAdvertised(desiredBuild)
+            let hashed = await loop.modelHashForTesting(desiredBuild) != nil
+            return hasDesired && hashed
+        }
+        #expect(converged)
+        // Previous is still advertised (no drop happened — it wasn't in the alias).
+        #expect(await loop.isModelAdvertised(previousBuild))
+        let updatesAfterConverge = outbound.modelsUpdates().count
+
+        // Step 2: the operator sets previous_build; desired_models now carries it.
+        // Desired is already advertised+hashed, so we hit the already-converged path.
+        await loop.reconcileDesiredModelsForTesting(
+            [CoordinatorMessage.DesiredModelEntry(
+                modelName: "alias-a",
+                desiredBuild: desiredBuild,
+                previousBuild: previousBuild
+            )],
+            send: capturingSend
+        )
+
+        // Previous is dropped locally AND from the client store.
+        let dropped = await waitUntil(timeout: .seconds(5)) {
+            !(await loop.isModelAdvertised(previousBuild))
+        }
+        #expect(dropped)
+        #expect(!(await client.currentAdvertisedModels().map(\.id).contains(previousBuild)))
+        #expect(await loop.isModelAdvertised(desiredBuild))
+
+        // A FRESH models_update for the desired build was emitted on the
+        // already-converged path (so the coordinator derives the previous drop).
+        let emittedFresh = await waitUntil(timeout: .seconds(5)) {
+            outbound.modelsUpdates().count > updatesAfterConverge
+        }
+        #expect(emittedFresh)
+        let latest = outbound.modelsUpdates().suffix(from: updatesAfterConverge).flatMap { $0 }
+        #expect(latest.contains { $0.id == desiredBuild })
+        #expect(!latest.contains { $0.id == previousBuild })
+
+        await coord.shutdown(timeout: .seconds(3))
+    }
+
     private func makeLoopWithHashes(models: [ModelInfo], hashes: [String: String]) throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",

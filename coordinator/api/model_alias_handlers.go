@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -145,25 +144,28 @@ func (s *Server) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) 
 // IDs+entries are collected under the registry's read lock and the sends happen
 // afterward (SendDesiredModels takes the lock again).
 func (s *Server) fanOutDesiredModels() {
-	type target struct {
-		id      string
-		entries []protocol.DesiredModelEntry
-	}
-	var targets []target
+	// Collect eligible provider IDs under the registry read lock, then compute
+	// entries and send AFTER releasing it. DesiredModelsForProvider and
+	// SendDesiredModels each take r.mu themselves, so calling them inside the
+	// ForEachProvider callback (which already holds r.mu.RLock) would nest the
+	// read lock — a deadlock once a writer queues between the outer and inner
+	// RLock (Go's RWMutex blocks new readers while a writer waits).
+	var eligibleIDs []string
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		p.Mu().Lock()
 		id, backend, version := p.ID, p.Backend, p.Version
 		p.Mu().Unlock()
-		if !s.providerSupportsDesiredModels(backend, version) {
-			return
-		}
-		if entries := s.registry.DesiredModelsForProvider(id); len(entries) > 0 {
-			targets = append(targets, target{id: id, entries: entries})
+		if s.providerSupportsDesiredModels(backend, version) {
+			eligibleIDs = append(eligibleIDs, id)
 		}
 	})
-	for _, t := range targets {
-		if err := s.registry.SendDesiredModels(t.id, t.entries); err != nil {
-			s.logger.Warn("failed to push desired_models", "provider_id", t.id, "error", err)
+	for _, id := range eligibleIDs {
+		entries := s.registry.DesiredModelsForProvider(id)
+		if len(entries) == 0 {
+			continue
+		}
+		if err := s.registry.SendDesiredModels(id, entries); err != nil {
+			s.logger.Warn("failed to push desired_models", "provider_id", id, "error", err)
 		}
 	}
 }

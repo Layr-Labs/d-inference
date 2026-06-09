@@ -167,7 +167,18 @@ acceptable until they re-converge.
 
 ## Step 7 — Retire the old build (human, manual)
 
-Once enough providers serve the desired build, retire the previous build by
+> **Do NOT clear `previous_build` until EVERY provider has swapped to the desired
+> build.** `desired_models` is fanned out only to providers that already advertise
+> the desired *or* previous build (the conservative membership policy). Once
+> `previous_build` is cleared, a provider that still advertises *only* the old
+> build matches neither condition, so it stops receiving `desired_models`
+> entirely and can never be told to converge — its capacity is stranded on the
+> retired raw build until it reconnects/re-advertises. There is no
+> migration-controller safety net to catch this anymore. Confirm the rollout is
+> complete first: check `/v1/models` capacity for the alias, or that the previous
+> build has zero routable providers, before retiring it.
+
+Once **all** providers serve the desired build, retire the previous build by
 re-PUTting the alias **without** `previous_build`:
 
 ```bash

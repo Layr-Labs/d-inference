@@ -1210,39 +1210,12 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 			expected[m.ID] = e.WeightHash
 		}
 	}
-	// Compute the hard-swap drop set: for every alias that has one of the
-	// updated builds as its desired OR previous build, the OTHER build of that
-	// alias is no longer advertised by this provider (it swapped), so drop it.
-	present := make(map[string]struct{}, len(models))
-	for _, m := range models {
-		if m.ID != "" {
-			present[m.ID] = struct{}{}
-		}
-	}
-	drop := make(map[string]struct{})
+	// Snapshot the alias targets under the read lock so the drop set can be
+	// computed later (under p.mu) without nesting r.mu — and, crucially, from
+	// the builds that actually PASS validation below, not from the raw message.
+	aliasMembers := make([][2]string, 0, len(r.modelAliases))
 	for _, t := range r.modelAliases {
-		members := [2]string{t.Desired, t.Previous}
-		referenced := false
-		for _, b := range members {
-			if b == "" {
-				continue
-			}
-			if _, in := present[b]; in {
-				referenced = true
-				break
-			}
-		}
-		if !referenced {
-			continue
-		}
-		for _, b := range members {
-			if b == "" {
-				continue
-			}
-			if _, in := present[b]; !in {
-				drop[b] = struct{}{}
-			}
-		}
+		aliasMembers = append(aliasMembers, [2]string{t.Desired, t.Previous})
 	}
 	r.mu.RUnlock()
 	if !ok {
@@ -1252,6 +1225,12 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var merged []string
+	// present tracks only builds that passed validation and were merged — the
+	// hard-swap drop is derived from THIS set, never from the raw message. A
+	// desired build rejected for a bad weight hash therefore does NOT cause its
+	// previous sibling to be dropped (which would strand the provider on neither
+	// build — the exact failure the hash check exists to prevent).
+	present := make(map[string]struct{}, len(models))
 	for _, m := range models {
 		if m.ID == "" {
 			continue
@@ -1273,6 +1252,34 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 			p.Models = append(p.Models, m)
 		}
 		merged = append(merged, m.ID)
+		present[m.ID] = struct{}{}
+	}
+	// Compute the hard-swap drop set: for every alias that has a VALIDATED build
+	// as its desired OR previous member, the OTHER member of that alias is no
+	// longer advertised by this provider (it swapped), so drop it.
+	drop := make(map[string]struct{})
+	for _, members := range aliasMembers {
+		referenced := false
+		for _, b := range members {
+			if b == "" {
+				continue
+			}
+			if _, in := present[b]; in {
+				referenced = true
+				break
+			}
+		}
+		if !referenced {
+			continue
+		}
+		for _, b := range members {
+			if b == "" {
+				continue
+			}
+			if _, in := present[b]; !in {
+				drop[b] = struct{}{}
+			}
+		}
 	}
 	// Apply the hard-swap drop: remove any alias-sibling build the provider no
 	// longer advertises.

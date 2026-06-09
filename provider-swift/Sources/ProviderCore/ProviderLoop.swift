@@ -1504,10 +1504,21 @@ public actor ProviderLoop {
             if let previous, previous != desired {
                 desiredSwapDrop[desired] = previous
             }
-            // Already converged (advertised + verified) → just ensure the old build
-            // is no longer advertised locally.
-            if advertisedModels[desired] != nil, modelHashes[desired] != nil {
-                if let previous { await dropAdvertisedBuild(previous) }
+            // Already converged (advertised + verified) → ensure the old build is
+            // no longer advertised locally AND re-emit the authoritative
+            // models_update for the desired build. The coordinator derives the
+            // previous-build drop from this update (against the alias's
+            // desired/previous pair), so without it the coordinator would keep
+            // routing the previous build to a provider that has locally stopped
+            // advertising it — a state divergence. This matters when the desired
+            // build was verified BEFORE a previous build was set on the alias (the
+            // original verify carried no drop), and the swap is learned later.
+            if let desiredInfo = advertisedModels[desired], modelHashes[desired] != nil {
+                if let previous, advertisedModels[previous] != nil {
+                    await dropAdvertisedBuild(previous)
+                    // Authoritative re-announce so the coordinator drops previous too.
+                    outboundSend?.send(.modelsUpdate(models: [desiredInfo]))
+                }
                 desiredSwapDrop.removeValue(forKey: desired)
                 continue
             }

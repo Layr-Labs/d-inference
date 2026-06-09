@@ -1421,20 +1421,26 @@ public actor ProviderLoop {
     func applyVerifiedPrefetch(modelId: String) async {
         // Compute ModelInfo + weight hash off-actor (CPU/IO heavy for big
         // builds). The prefetcher already aggregate-verified the snapshot, so
-        // this hash is over a known-good build.
-        let computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?) in
-            // Cheap bail if shutdown raced us here before the (uninterruptible)
-            // hash starts — the result would be discarded anyway.
-            if Task.isCancelled { return (ModelInfo(id: modelId, sizeBytes: 0, estimatedMemoryGb: 0), nil) }
-            let info = Self.scanVerifiedModelInfo(modelId: modelId)
-                ?? ModelInfo(id: modelId, sizeBytes: 0, estimatedMemoryGb: 0)
+        // this hash is over a known-good build. Returns nil if the on-disk
+        // snapshot cannot be resolved/scanned.
+        let computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?)? in
+            guard let info = Self.scanVerifiedModelInfo(modelId: modelId) else { return nil }
             let hash = WeightHasher.computeHash(for: modelId)
             var withHash = info
             withHash.weightHash = hash
             return (withHash, hash)
         }.value
 
-        let (info, hash) = computed
+        // A verified prefetch whose snapshot we can't scan must NOT be
+        // advertised: a synthetic zero-size ModelInfo would be routed with
+        // estimatedMemoryGb == 0, bypassing memory sizing/admission until the
+        // real load overcommits. Drop it instead — the migration controller then
+        // simply doesn't count this provider as serving the build (no
+        // models_update is sent), which is the safe outcome.
+        guard let (info, hash) = computed else {
+            logger.error("Prefetch verified \(modelId) but its on-disk snapshot could not be scanned; not advertising (would bypass memory sizing)")
+            return
+        }
         // Adding to `advertisedModels` also raises the effective slot cap
         // (`maxModelSlots` is computed from this set), so the newly-verified
         // build can be held resident alongside the model currently being served

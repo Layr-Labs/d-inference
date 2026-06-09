@@ -289,6 +289,75 @@ func TestMigrationStartRejectsActiveMigration(t *testing.T) {
 	}
 }
 
+// pause/resume/rollback are only valid for the appropriate in-progress state.
+// In particular, resuming a TERMINAL (complete/rolledback) migration must be
+// rejected — otherwise it would reactivate a stale from/to pair and re-apply
+// weights.
+func TestMigrationActionStateGuards(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const fp8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	const qat = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	seedActiveModel(t, st, fp8, "fp8")
+	seedActiveModel(t, st, qat, "qat")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		Builds: []store.ModelAliasBuild{{BuildID: fp8, Weight: 100, Active: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"alias_id": "gemma-4-26b", "from_build": fp8, "to_build": qat,
+		"batch_size": 2, "max_step_percent": 20,
+	})
+	startReq := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations", bytes.NewReader(body))
+	startReq.Header.Set("Authorization", "Bearer publish-secret")
+	startRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("start = %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	action := func(a string) int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations/gemma-4-26b/"+a, nil)
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// active: resume is invalid, pause is valid.
+	if c := action("resume"); c != http.StatusConflict {
+		t.Fatalf("resume while active = %d (want 409)", c)
+	}
+	if c := action("pause"); c != http.StatusOK {
+		t.Fatalf("pause while active = %d (want 200)", c)
+	}
+	// paused: pause again invalid, resume valid.
+	if c := action("pause"); c != http.StatusConflict {
+		t.Fatalf("pause while paused = %d (want 409)", c)
+	}
+	if c := action("resume"); c != http.StatusOK {
+		t.Fatalf("resume while paused = %d (want 200)", c)
+	}
+	// active again: rollback is valid → terminal.
+	if c := action("rollback"); c != http.StatusOK {
+		t.Fatalf("rollback while active = %d (want 200)", c)
+	}
+	// terminal (rolledback): every action is rejected (the core fix).
+	for _, a := range []string{"resume", "pause", "rollback"} {
+		if c := action(a); c != http.StatusConflict {
+			t.Fatalf("%s on a rolledback migration = %d (want 409)", a, c)
+		}
+	}
+	if m, _, _ := st.GetModelMigration("gemma-4-26b"); m.Status != store.MigrationRolledBack {
+		t.Fatalf("status mutated by rejected actions: %q", m.Status)
+	}
+}
+
 // Deleting an alias must also remove its migration — otherwise the controller
 // would keep ramping and applyWeights would recreate the deleted alias.
 func TestDeletingAliasStopsMigration(t *testing.T) {

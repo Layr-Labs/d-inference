@@ -204,6 +204,42 @@ private func makeCoordinator(
 @Suite("ModelPrefetchCoordinator", .serialized)
 struct ModelPrefetchCoordinatorTests {
 
+    @Test("a long silent download emits periodic .downloading heartbeats so the coordinator ack stays fresh")
+    func emitsDownloadHeartbeatsDuringLongDownload() async throws {
+        // A single large shard reports no intra-file byte progress, so without a
+        // heartbeat the provider would be silent between `.started` and the
+        // terminal status — past the coordinator's prefetch-ack TTL — and get
+        // dropped from an in-flight migration. The GatedPrefetcher blocks the
+        // download body (and never calls onByteProgress), so EVERY `.downloading`
+        // observed here is a heartbeat.
+        let prefetcher = GatedPrefetcher()
+        let sink = RecordingSink()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: prefetcher,
+            preCheck: { _ in .needsFetch },
+            onVerified: { _ in },
+            heartbeatInterval: .milliseconds(30)
+        )
+        await coord.handlePrefetch(modelId: "m", priority: 0, sink: sink)
+
+        // Wait until the (blocking) download body is actually running.
+        await prefetcher.bodyStarted.wait()
+        // Several heartbeat intervals should elapse while the download is silent.
+        let beat = await waitUntil(timeout: .seconds(2)) {
+            sink.events.filter { $0.status == .downloading }.count >= 2
+        }
+        #expect(beat)
+
+        // Release → terminal verified; the heartbeat stops.
+        prefetcher.release("m")
+        let done = await waitUntil { sink.terminal()?.status == .verified }
+        #expect(done)
+        // No heartbeat is emitted after the terminal status.
+        if let v = sink.events.firstIndex(where: { $0.status == .verified }) {
+            #expect(!sink.events[(v + 1)...].contains { $0.status == .downloading })
+        }
+    }
+
     @Test("success emits started → downloading → verified and fires re-advertise")
     func successLifecycle() async throws {
         let prefetcher = FakePrefetcher(.success(total: 1000, steps: 4))
@@ -626,6 +662,48 @@ struct ProviderLoopPrefetchTests {
         #expect(updatedInfo != nil)
         #expect(updatedInfo?.weightHash == recordedHash)
         #expect(!(updatedInfo?.weightHash?.isEmpty ?? true))
+    }
+
+    @Test("verified prefetch whose snapshot can't be scanned is NOT advertised")
+    func verifiedPrefetchUnscannableSnapshotNotAdvertised() async throws {
+        // The prefetch reports verified (download succeeded) but NO snapshot is on
+        // disk, so `scanVerifiedModelInfo` returns nil. The provider must NOT
+        // advertise a synthetic zero-size ModelInfo (which would be routed with
+        // estimatedMemoryGb == 0, bypassing memory sizing) — it advertises nothing
+        // and emits no models_update, so the coordinator never routes the build.
+        let startupModel = ModelInfo(id: "org/startup", sizeBytes: 1, estimatedMemoryGb: 1)
+        let newModelID = "org/unscannable-\(UUID().uuidString)"
+        // Deliberately do NOT seed a snapshot; make sure no stray dir exists.
+        let modelDir = ModelDownloader.cacheModelDirectory(for: newModelID)
+        try? FileManager.default.removeItem(at: modelDir)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        let loop = try makeLoop(models: [startupModel])
+        let client = makeClient()
+        let verifiedCalls = AdvertisedRecorder()
+        let coord = ModelPrefetchCoordinator(
+            prefetcher: NoopSuccessPrefetcher(), // "downloads" without touching disk
+            preCheck: { _ in .needsFetch },
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(modelId: id)
+                verifiedCalls.record(id) // record AFTER applyVerifiedPrefetch completes
+            }
+        )
+        let outbound = OutboundRecorder()
+        let capturingSend = SendHandle { outbound.record($0) }
+        await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: capturingSend)
+
+        await loop.handlePrefetchModelRequest(modelId: newModelID, priority: 1, send: capturingSend)
+
+        // Wait until the verify→applyVerifiedPrefetch hook has fully run.
+        let ran = await waitUntil(timeout: .seconds(10)) { verifiedCalls.ids.contains(newModelID) }
+        #expect(ran)
+
+        // It must NOT have advertised the unscannable build, anywhere.
+        #expect(!(await loop.isModelAdvertised(newModelID)))
+        #expect(await loop.advertisedModelCount() == 1) // only the startup model
+        #expect(!(await client.currentAdvertisedModels().map(\.id).contains(newModelID)))
+        #expect(!outbound.modelsUpdates().flatMap { $0 }.contains { $0.id == newModelID })
     }
 
     @Test("verified prefetch raises the effective slot cap so old+new can be resident together")

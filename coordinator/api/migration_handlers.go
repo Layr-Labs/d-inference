@@ -190,10 +190,28 @@ func (s *Server) handleMigrationAction(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case "pause":
+		if m.Status != store.MigrationActive {
+			writeJSON(w, http.StatusConflict, errorResponse("conflict", "cannot pause a migration in status "+m.Status+" (only an active migration can be paused)"))
+			return
+		}
 		m.Status = store.MigrationPaused
 	case "resume":
+		// Only a paused migration may resume. Resuming a terminal (complete /
+		// rolledback) record would reactivate a stale from/to pair and let the
+		// controller re-apply weights (e.g. ramp traffic back toward the drained
+		// source).
+		if m.Status != store.MigrationPaused {
+			writeJSON(w, http.StatusConflict, errorResponse("conflict", "cannot resume a migration in status "+m.Status+" (only a paused migration can be resumed)"))
+			return
+		}
 		m.Status = store.MigrationActive
 	case "rollback":
+		// Roll back only an in-progress migration; a terminal one is immutable
+		// (start a fresh migration to change direction).
+		if m.Status != store.MigrationActive && m.Status != store.MigrationPaused {
+			writeJSON(w, http.StatusConflict, errorResponse("conflict", "cannot roll back a migration in status "+m.Status+" (already terminal)"))
+			return
+		}
 		m.Status = store.MigrationRolledBack
 	default:
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "unknown action: "+action))

@@ -136,6 +136,13 @@ func (s *Server) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "alias id is required"))
 		return
 	}
+	// Serialize the delete with the migration controller tick. The tick re-reads
+	// the active migration under migrationMu and then calls applyWeights (which
+	// re-upserts the alias); without this lock, a delete landing between that
+	// re-read and applyWeights would be silently resurrected by the tick
+	// recreating the alias. Same lock the pause/resume/rollback handlers hold.
+	s.migrationMu.Lock()
+	defer s.migrationMu.Unlock()
 	if err := s.store.DeleteModelAlias(aliasID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to delete alias"))
 		return

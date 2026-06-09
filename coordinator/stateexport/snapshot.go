@@ -18,6 +18,7 @@
 package stateexport
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
@@ -56,55 +57,41 @@ type Snapshotter interface {
 	// Snapshot writes a consistent copy of the bbolt database at srcPath into a
 	// freshly-created temp file and returns that file's path. The caller owns the
 	// returned file and must remove it when done. tmpDir, when non-empty, is the
-	// directory the temp file is created in (defaults to os.TempDir()).
-	Snapshot(srcPath, tmpDir string) (string, error)
+	// directory the temp file is created in (defaults to os.TempDir()). ctx
+	// cancellation aborts the retry loop between attempts.
+	Snapshot(ctx context.Context, srcPath, tmpDir string) (string, error)
 }
 
-// SnapshotConfig tunes the hot-copy + validate + retry loop.
-type SnapshotConfig struct {
-	// MaxAttempts is how many times to retry the copy+validate cycle. MicroMDM
-	// write txns are sub-millisecond, so a clean snapshot is obtained quickly.
-	MaxAttempts int
-	// Backoff is the pause between attempts.
-	Backoff time.Duration
-	// OpenTimeout bounds bbolt.Open on the copy (it should never block — the copy
-	// is unlocked — but a short timeout fails fast on a genuinely bad file).
-	OpenTimeout time.Duration
-}
-
-// DefaultSnapshotConfig is the production tuning.
-func DefaultSnapshotConfig() SnapshotConfig {
-	return SnapshotConfig{
-		MaxAttempts: 5,
-		Backoff:     25 * time.Millisecond,
-		OpenTimeout: 2 * time.Second,
-	}
-}
+// Hot-copy + validate + retry tuning. MicroMDM write txns are sub-millisecond,
+// so a clean snapshot is obtained within a few attempts.
+const (
+	// maxSnapshotAttempts is how many times to retry the copy+validate cycle.
+	maxSnapshotAttempts = 5
+	// snapshotBackoff is the pause between attempts.
+	snapshotBackoff = 25 * time.Millisecond
+	// snapshotOpenTimeout bounds bbolt.Open on the copy (it should never block —
+	// the copy is unlocked — but a short timeout fails fast on a bad file).
+	snapshotOpenTimeout = 2 * time.Second
+)
 
 // BoltSnapshotter is the production Snapshotter: hot-copy the live db bytes to a
 // temp file, open the COPY read-only (no lock contention), validate integrity,
 // and retry on failure. It never opens or modifies the live db read-write.
-type BoltSnapshotter struct {
-	Config SnapshotConfig
-}
+type BoltSnapshotter struct{}
 
-// NewBoltSnapshotter returns a BoltSnapshotter with default tuning.
+// NewBoltSnapshotter returns a BoltSnapshotter.
 func NewBoltSnapshotter() *BoltSnapshotter {
-	return &BoltSnapshotter{Config: DefaultSnapshotConfig()}
+	return &BoltSnapshotter{}
 }
 
 // Snapshot implements Snapshotter.
-func (b *BoltSnapshotter) Snapshot(srcPath, tmpDir string) (string, error) {
-	cfg := b.Config
-	if cfg.MaxAttempts <= 0 {
-		cfg.MaxAttempts = 1
-	}
-	if cfg.OpenTimeout <= 0 {
-		cfg.OpenTimeout = 2 * time.Second
-	}
-
+func (b *BoltSnapshotter) Snapshot(ctx context.Context, srcPath, tmpDir string) (string, error) {
 	var lastErr error
-	for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxSnapshotAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		tmpPath, err := copyFileToTemp(srcPath, tmpDir)
 		if err != nil {
 			// A copy error is unlikely to self-heal across retries (bad path,
@@ -112,11 +99,17 @@ func (b *BoltSnapshotter) Snapshot(srcPath, tmpDir string) (string, error) {
 			return "", fmt.Errorf("hot-copy bolt db %q: %w", srcPath, err)
 		}
 
-		if err := validateBolt(tmpPath, cfg.OpenTimeout); err != nil {
+		if err := validateBolt(tmpPath, snapshotOpenTimeout); err != nil {
 			lastErr = err
 			_ = os.Remove(tmpPath)
-			if attempt < cfg.MaxAttempts && cfg.Backoff > 0 {
-				time.Sleep(cfg.Backoff)
+			if attempt < maxSnapshotAttempts {
+				// Cancellable wait so a client disconnect aborts the retry loop
+				// instead of sleeping out the full backoff.
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(snapshotBackoff):
+				}
 			}
 			continue
 		}
@@ -126,7 +119,7 @@ func (b *BoltSnapshotter) Snapshot(srcPath, tmpDir string) (string, error) {
 	}
 
 	return "", fmt.Errorf("bolt db %q did not yield a consistent snapshot after %d attempts: %w",
-		srcPath, cfg.MaxAttempts, lastErr)
+		srcPath, maxSnapshotAttempts, lastErr)
 }
 
 // copyFileToTemp copies the bytes of srcPath into a new temp file (preserving the

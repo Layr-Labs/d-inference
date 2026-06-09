@@ -1,7 +1,7 @@
 package api
 
 import (
-	"fmt"
+	"crypto/subtle"
 	"io"
 	"net/http"
 	"os"
@@ -37,26 +37,39 @@ func resolveStateExportRoot() string {
 	)
 }
 
+// envTrue reports whether the named env var is set to "true" (case-insensitive,
+// trimmed). Used for the boolean state-export gates.
+func envTrue(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(name)), "true")
+}
+
 // handleAdminStateExport handles GET /v1/admin/state-export — it streams a
 // consistent (and, by default, encrypted) archive of the coordinator's sealed
 // on-disk state under /data for migration off EigenCloud (DAR-70).
 //
 // Triple gate, fail-closed, in order:
 //  1. master switch (404 when off — route stays invisible/inert),
-//  2. admin auth (s.isAdminAuthorized writes its own 403),
+//  2. admin auth (admin-key only; Privy admin is intentionally NOT accepted),
 //  3. output protection (encrypt to recipient, else 412 unless plaintext allowed).
 func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	// (a) Master switch — 404 when disabled so the route is indistinguishable
 	// from an unregistered path.
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv(envStateExportEnabled)), "true") {
+	if !envTrue(envStateExportEnabled) {
 		http.NotFound(w, r)
 		return
 	}
 
-	// (b) Admin auth — writes 403 itself on failure.
-	if !s.isAdminAuthorized(w, r) {
+	// (b) Admin auth — ADMIN KEY ONLY (constant-time), modeled on
+	// requireAdminKey's bearer-token check. This endpoint exfils the CA private
+	// key, so we deliberately do NOT accept the Privy-admin path: a compromised
+	// Privy admin email must not be able to pull the CA key. (The route is also
+	// not wrapped in Privy auth middleware, so auth.UserFromContext is nil here
+	// regardless.)
+	token := extractBearerToken(r)
+	if !(s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1) {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
 		s.logger.Warn("state-export: unauthorized access attempt",
 			"remote_addr", r.RemoteAddr, "authorized", false)
 		return
@@ -64,7 +77,7 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 
 	// (c) Output protection. Encrypted by default.
 	recipientStr := strings.TrimSpace(os.Getenv(envStateExportRecipient))
-	allowPlaintext := strings.EqualFold(strings.TrimSpace(os.Getenv(envStateExportAllowPlaintext)), "true")
+	allowPlaintext := envTrue(envStateExportAllowPlaintext)
 	encrypted := recipientStr != ""
 
 	if !encrypted && !allowPlaintext {
@@ -76,15 +89,9 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Stage (below) resolves (EvalSymlinks) + stats the root and returns a clean
+	// error mapped to a pre-stream 500, so no separate os.Stat pre-check here.
 	root := resolveStateExportRoot()
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("export_error",
-			"state export root is unavailable"))
-		s.logger.Error("state-export: root unavailable",
-			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", encrypted,
-			"root", root, "error", fmt.Sprint(err))
-		return
-	}
 
 	// Compute the download filename / content-type BEFORE writing headers.
 	epoch := strconv.FormatInt(time.Now().Unix(), 10)
@@ -118,7 +125,10 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 	// the whole export up front.
 	arch := stateexport.NewArchiver()
 	arch.Logger = s.logger
-	staged, stageErr := arch.Stage(root)
+	// Propagate the request context (no artificial deadline — a legit large
+	// export must not be truncated by a timer) so a client disconnect cancels the
+	// snapshot/walk cleanly.
+	staged, stageErr := arch.Stage(r.Context(), root)
 	if stageErr != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("export_error",
 			"state export could not produce a consistent snapshot"))
@@ -156,7 +166,7 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 		sink = aw
 	}
 
-	res, archErr := arch.Write(staged, sink)
+	res, archErr := arch.Write(r.Context(), staged, sink)
 
 	// For encrypted streams, MUST close the age writer to flush the final chunk.
 	if ageWriter != nil {

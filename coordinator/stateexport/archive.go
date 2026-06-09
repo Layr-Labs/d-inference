@@ -2,9 +2,11 @@ package stateexport
 
 import (
 	"archive/zip"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,13 +20,6 @@ type ArchiveResult struct {
 	// SnapshottedDBs is the number of *.db files that went through the
 	// hot-copy+validate bolt snapshotter.
 	SnapshottedDBs int
-}
-
-// Logger is the minimal logging surface the archiver needs. It matches the
-// shape of *slog.Logger's WARN method so the handler can pass its logger
-// directly without coupling this package to a concrete logger.
-type Logger interface {
-	Warn(msg string, args ...any)
 }
 
 // Archiver builds a zip of the export root in two phases:
@@ -45,7 +40,7 @@ type Archiver struct {
 	TmpDir string
 	// Logger receives WARN logs (empty archive, step-ca Badger db present). May
 	// be nil.
-	Logger Logger
+	Logger *slog.Logger
 }
 
 // NewArchiver returns an Archiver using the production bolt snapshotter.
@@ -64,7 +59,7 @@ type StagedExport struct {
 	// dbSnapshots maps the resolved absolute path of each live *.db to the path
 	// of its validated staging copy.
 	dbSnapshots map[string]string
-	logger      Logger
+	logger      *slog.Logger
 }
 
 // Cleanup removes the staging directory and all validated db copies. Safe to
@@ -91,10 +86,13 @@ func isBoltDB(name string) bool {
 // and validates every *.db under it into a freshly-created 0700 staging dir, and
 // returns a StagedExport. The caller MUST call Cleanup() on the returned value.
 //
-// Any failure here — bad root, or a db that won't yield a consistent snapshot
-// after retries — returns an error with nothing else mutated, so the HTTP
-// handler can still emit a clean 500.
-func (a *Archiver) Stage(root string) (*StagedExport, error) {
+// Any failure here — bad root, a db that won't yield a consistent snapshot after
+// retries, OR an empty/degenerate export (0 files, or a micromdm dir with 0 db
+// snapshots) — returns an error with nothing else mutated, so the HTTP handler
+// can still emit a clean 500 BEFORE any response byte is written. Catching the
+// empty/0-db case here (rather than in Write) is what prevents a truncated but
+// successful-looking 200 download. ctx cancellation aborts the walk.
+func (a *Archiver) Stage(ctx context.Context, root string) (*StagedExport, error) {
 	// Prod start.sh does `ln -sfn $PERSIST /data`, so the export root is itself a
 	// symlink. filepath.WalkDir does NOT follow a symlinked root — it would walk
 	// zero children and silently produce an EMPTY archive. Resolve the link first.
@@ -137,8 +135,18 @@ func (a *Archiver) Stage(root string) (*StagedExport, error) {
 		logger:      a.Logger,
 	}
 
+	// Precondition tracking, computed during the same walk so the empty/0-db
+	// guard fires in Phase A (before any response byte). fileCount counts every
+	// entry that Phase B would WRITE — regular files AND *.db (dirs, symlinks, and
+	// *.log are not written and not counted).
+	fileCount := 0
+	micromdmDirSeen := false
+
 	walkErr := filepath.WalkDir(resolved, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		// Skip symlinks under the root — only the root itself is intentionally a
@@ -147,6 +155,9 @@ func (a *Archiver) Stage(root string) (*StagedExport, error) {
 			return nil
 		}
 		if d.IsDir() {
+			if d.Name() == "micromdm" {
+				micromdmDirSeen = true
+			}
 			// step-ca's default standalone DB is a Badger DIRECTORY at
 			// step-ca/db/, NOT a *.db file. We deliberately do NOT snapshot it:
 			// step-ca writes are rare (cert issuance) and the CA private keys live
@@ -161,20 +172,45 @@ func (a *Archiver) Stage(root string) (*StagedExport, error) {
 			}
 			return nil
 		}
-		if isLog(d.Name()) || !isBoltDB(d.Name()) {
-			return nil // *.db handled below; everything else is streamed in Phase B
+		if isLog(d.Name()) {
+			return nil // excluded from the archive; not a written file
+		}
+		if !isBoltDB(d.Name()) {
+			fileCount++ // regular file streamed in Phase B
+			return nil
 		}
 
-		tmpPath, serr := snap.Snapshot(path, stagingDir)
+		tmpPath, serr := snap.Snapshot(ctx, path, stagingDir)
 		if serr != nil {
 			return fmt.Errorf("snapshot bolt db %q: %w", path, serr)
 		}
 		staged.dbSnapshots[path] = tmpPath
+		fileCount++ // *.db is written in Phase B from its staging snapshot
 		return nil
 	})
 	if walkErr != nil {
 		staged.Cleanup()
 		return nil, walkErr
+	}
+
+	// Fail loud on an empty/degenerate export BEFORE returning — this is a
+	// one-way migration tool, so a 0-file or 0-db export is a disaster, and the
+	// handler maps a Stage error to a clean pre-stream 500 (zero bytes sent).
+	if fileCount == 0 {
+		if staged.logger != nil {
+			staged.logger.Warn("state-export: archive would capture ZERO files — refusing to stage empty export",
+				"root", resolved)
+		}
+		staged.Cleanup()
+		return nil, fmt.Errorf("export captured 0 files under %q (empty or unreadable root)", resolved)
+	}
+	if micromdmDirSeen && len(staged.dbSnapshots) == 0 {
+		if staged.logger != nil {
+			staged.logger.Warn("state-export: micromdm dir present but ZERO db snapshots captured — refusing to stage",
+				"root", resolved)
+		}
+		staged.Cleanup()
+		return nil, fmt.Errorf("micromdm dir present under %q but 0 db snapshots captured", resolved)
 	}
 
 	return staged, nil
@@ -185,25 +221,25 @@ func (a *Archiver) Stage(root string) (*StagedExport, error) {
 // files are excluded. *.db files are replaced with their validated staging
 // snapshot (taken in Phase A).
 //
-// Fail-loud: this is a one-way migration tool, so an empty export is a disaster.
-// If the archive captures 0 files, or 0 db snapshots while a micromdm dir
-// exists, Write returns an error (and WARN-logs) rather than finalizing a clean
-// but empty zip.
+// The empty/0-db fail-loud guard lives in Stage (Phase A), so by the time Write
+// runs the export is known non-degenerate; Write is a pure streamer that returns
+// the counts. ctx cancellation aborts the walk.
 //
 // On a mid-stream error the zip writer is NOT Close()d, so the client receives a
 // truncated, clearly-broken download instead of a structurally valid partial
 // archive.
-func (a *Archiver) Write(staged *StagedExport, w io.Writer) (ArchiveResult, error) {
+func (a *Archiver) Write(ctx context.Context, staged *StagedExport, w io.Writer) (ArchiveResult, error) {
 	var res ArchiveResult
 	if staged == nil {
 		return res, fmt.Errorf("nil staged export")
 	}
 
-	micromdmDirSeen := false
-
 	zw := zip.NewWriter(w)
 	walkErr := filepath.WalkDir(staged.root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 
@@ -222,9 +258,6 @@ func (a *Archiver) Write(staged *StagedExport, w io.Writer) (ArchiveResult, erro
 		}
 
 		if d.IsDir() {
-			if d.Name() == "micromdm" {
-				micromdmDirSeen = true
-			}
 			return addDirEntry(zw, rel, d)
 		}
 
@@ -256,22 +289,6 @@ func (a *Archiver) Write(staged *StagedExport, w io.Writer) (ArchiveResult, erro
 		// yields a truncated (clearly-broken) download rather than a
 		// structurally-valid partial zip.
 		return res, walkErr
-	}
-
-	// Fail loud on an empty/degenerate export BEFORE finalizing the zip.
-	if res.Files == 0 {
-		if a.Logger != nil {
-			a.Logger.Warn("state-export: archive captured ZERO files — refusing to finalize empty export",
-				"root", staged.root)
-		}
-		return res, fmt.Errorf("export captured 0 files under %q (empty or unreadable root)", staged.root)
-	}
-	if micromdmDirSeen && res.SnapshottedDBs == 0 {
-		if a.Logger != nil {
-			a.Logger.Warn("state-export: micromdm dir present but ZERO db snapshots captured — refusing to finalize",
-				"root", staged.root)
-		}
-		return res, fmt.Errorf("micromdm dir present under %q but 0 db snapshots captured", staged.root)
 	}
 
 	if err := zw.Close(); err != nil {

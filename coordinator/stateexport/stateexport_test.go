@@ -50,12 +50,12 @@ func makeBolt(t *testing.T, path string) {
 // root and returns the zip bytes + result. It always cleans up staging.
 func archiveRoot(t *testing.T, a *Archiver, root string, w io.Writer) (ArchiveResult, error) {
 	t.Helper()
-	staged, err := a.Stage(root)
+	staged, err := a.Stage(context.Background(), root)
 	if err != nil {
 		return ArchiveResult{}, err
 	}
 	defer staged.Cleanup()
-	return a.Write(staged, w)
+	return a.Write(context.Background(), staged, w)
 }
 
 // unzipToMap reads a zip from r and returns name -> contents (files only).
@@ -356,7 +356,7 @@ func TestSnapshotConsistencyUnderConcurrentWrites_DAR70(t *testing.T) {
 	snap := NewBoltSnapshotter()
 	// Take several snapshots while writes are in-flight; each must be consistent.
 	for n := 0; n < 8; n++ {
-		tmp, err := snap.Snapshot(dbPath, root)
+		tmp, err := snap.Snapshot(context.Background(), dbPath, root)
 		if err != nil {
 			cancel()
 			wg.Wait()
@@ -513,8 +513,8 @@ func TestSnapshotRetriesThenErrorsOnPersistentTear(t *testing.T) {
 		t.Fatalf("write torn: %v", err)
 	}
 
-	snap := &BoltSnapshotter{Config: SnapshotConfig{MaxAttempts: 3, Backoff: time.Millisecond, OpenTimeout: time.Second}}
-	out, err := snap.Snapshot(torn, root)
+	snap := NewBoltSnapshotter()
+	out, err := snap.Snapshot(context.Background(), torn, root)
 	if err == nil {
 		t.Fatalf("expected Snapshot to error on a persistently torn source; got path %q", out)
 	}
@@ -544,7 +544,7 @@ func zeroInterior(raw []byte) []byte {
 // errors during Phase A (Stage).
 type failingSnapshotter struct{}
 
-func (failingSnapshotter) Snapshot(string, string) (string, error) {
+func (failingSnapshotter) Snapshot(context.Context, string, string) (string, error) {
 	return "", io.ErrUnexpectedEOF
 }
 
@@ -553,7 +553,7 @@ func TestArchivePropagatesSnapshotError(t *testing.T) {
 	makeBolt(t, filepath.Join(root, "x.db"))
 	a := &Archiver{Snapshotter: failingSnapshotter{}}
 	// Stage (Phase A) must fail; nothing is written.
-	_, err := a.Stage(root)
+	_, err := a.Stage(context.Background(), root)
 	if err == nil {
 		t.Fatal("expected Stage to fail when snapshotter errors")
 	}

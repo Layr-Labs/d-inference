@@ -21,6 +21,11 @@ func parseRecipient(recipient string) (age.Recipient, error) {
 	if recipient == "" {
 		return nil, fmt.Errorf("empty age recipient")
 	}
+	// A bech32 age X25519 recipient is ~62 chars; cap well above that to reject
+	// absurd input before handing it to the parser.
+	if len(recipient) > 512 {
+		return nil, fmt.Errorf("age recipient too long")
+	}
 	r, err := age.ParseX25519Recipient(recipient)
 	if err != nil {
 		return nil, fmt.Errorf("invalid age recipient (expected an age1... X25519 recipient): %w", err)

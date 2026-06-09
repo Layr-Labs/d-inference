@@ -1854,9 +1854,10 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 // in the background without loading it into GPU memory. It mirrors
 // SendLoadModel but carries no expectation that the model becomes warm; the
 // provider replies asynchronously with prefetch_model_status messages and
-// re-advertises the build once it is verified on disk. Used by the migration
-// controller (Layer 4) to pre-stage a new build across the fleet before
-// flipping routing to it.
+// re-advertises the build once it is verified on disk. It is the download-only
+// primitive a provider's declarative reconciler uses internally to pre-stage a
+// desired build before the hard-swap; the coordinator no longer drives a
+// weighted migration with it.
 func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) error {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]

@@ -21,12 +21,16 @@ private final class BundleAnchor {}
         return productsDir.appendingPathComponent("darkbloom")
     }
 
-    private func run(_ args: [String]) throws -> String {
+    /// Runs the built binary hermetically: HOME points at a throwaway directory so
+    /// the subprocess can never read — or migrate/rewrite — a real provider config
+    /// on the host, and the update banner is disabled to keep the run offline.
+    private func run(_ args: [String], home: URL) throws -> String {
         let proc = Process()
         proc.executableURL = binary
         proc.arguments = args
         var env = ProcessInfo.processInfo.environment
-        env["DARKBLOOM_NO_UPDATE_CHECK"] = "1" // keep it offline + deterministic
+        env["HOME"] = home.path
+        env["DARKBLOOM_NO_UPDATE_CHECK"] = "1"
         proc.environment = env
         let pipe = Pipe()
         proc.standardOutput = pipe
@@ -37,9 +41,20 @@ private final class BundleAnchor {}
         return String(decoding: data, as: UTF8.self)
     }
 
+    private func makeTempHome() throws -> URL {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cli-dispatch-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        return home
+    }
+
     /// `darkbloom status` must produce a status report, not degenerate to its help.
     @Test func statusSubcommandRunsInsteadOfPrintingHelp() throws {
-        let out = try run(["status"])
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        // Explicit --config under the temp home as a second isolation layer.
+        let config = home.appendingPathComponent("provider.toml").path
+        let out = try run(["status", "--config", config], home: home)
         #expect(
             !out.contains("USAGE: darkbloom status"),
             "`status` printed its help instead of running — async-dispatch regression (main.swift). Got:\n\(out)"
@@ -52,7 +67,9 @@ private final class BundleAnchor {}
 
     /// A bare invocation should still show the root help with the subcommand list.
     @Test func bareInvocationShowsRootHelp() throws {
-        let out = try run([])
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let out = try run([], home: home)
         #expect(out.contains("SUBCOMMANDS"))
         #expect(out.contains("status"))
     }

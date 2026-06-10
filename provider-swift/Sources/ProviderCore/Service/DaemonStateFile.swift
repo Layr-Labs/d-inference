@@ -151,8 +151,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
 }
 
 /// Reports whether a process with the given PID is currently alive.
+/// EPERM means the process exists but we can't signal it — still alive.
 public func daemonProcessAlive(pid: Int32) -> Bool {
-    pid > 0 && kill(pid, 0) == 0
+    guard pid > 0 else { return false }
+    if kill(pid, 0) == 0 { return true }
+    return errno == EPERM
 }
 
 /// Reads/writes the daemon state file at `~/.darkbloom/daemon-state.json`

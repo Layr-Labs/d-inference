@@ -56,6 +56,39 @@ public enum LaunchAgent: Sendable {
         }
     }
 
+    /// The PID of the running launchd-managed provider process, or nil if the
+    /// service isn't loaded or has no running process. launchd is the source of
+    /// truth for the daemon it manages — unlike the diagnostics state file,
+    /// which can be stale (or unwritable by the daemon) without the daemon
+    /// being down.
+    public static func runningPID() -> Int32? {
+        let target = "gui/\(getuid())/\(label)"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", target]
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let output = String(data: data, encoding: .utf8) else { return nil }
+
+        // launchctl print emits a line shaped `pid = 12345` for a running service.
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("pid = ") else { continue }
+            return Int32(trimmed.dropFirst("pid = ".count).trimmingCharacters(in: .whitespaces))
+        }
+        return nil
+    }
+
     // MARK: - Install & Start
 
     /// Write the plist, load the service, and kickstart the process.

@@ -224,21 +224,27 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// --- Request flow aggregation ---
 	requestFlows := s.aggregateRequestFlows(cutoff)
 
+	// --- APNs code-identity coverage (for watching the grace→enforce rollout) ---
+	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
+	codeAttestationEnforced := s.registry.CodeAttestationEnforced()
+
 	resp := map[string]any{
-		"total_requests":          totalRequests,
-		"total_prompt_tokens":     totalPromptTokens,
-		"total_completion_tokens": totalCompletionTokens,
-		"total_tokens":            totalTokens,
-		"avg_tokens_per_request":  avgTokens,
-		"active_providers":        len(providers),
-		"total_gpu_cores":         totalGPUCores,
-		"total_cpu_cores":         totalCPUCores,
-		"total_memory_gb":         totalMemoryGB,
-		"total_bandwidth_gbs":     totalBandwidthGB,
-		"network_capacity_tps":    0, // would need benchmark data
-		"providers":               providers,
-		"models":                  models,
-		"time_series":             timeSeries,
+		"total_requests":            totalRequests,
+		"total_prompt_tokens":       totalPromptTokens,
+		"total_completion_tokens":   totalCompletionTokens,
+		"total_tokens":              totalTokens,
+		"avg_tokens_per_request":    avgTokens,
+		"active_providers":          len(providers),
+		"code_attested_providers":   codeAttestedProviders,
+		"code_attestation_enforced": codeAttestationEnforced,
+		"total_gpu_cores":           totalGPUCores,
+		"total_cpu_cores":           totalCPUCores,
+		"total_memory_gb":           totalMemoryGB,
+		"total_bandwidth_gbs":       totalBandwidthGB,
+		"network_capacity_tps":      0, // would need benchmark data
+		"providers":                 providers,
+		"models":                    models,
+		"time_series":               timeSeries,
 
 		// Location analytics (privacy-floored).
 		"provider_locations":                 providerLocations,

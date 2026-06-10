@@ -1599,6 +1599,15 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
+			// APNs code-identity coverage — watch this climb during the grace
+			// window before letting APNS_ENFORCE_AFTER pass.
+			codeAttested, _ := s.registry.CodeAttestationCoverage()
+			s.ddGauge("attestation.code_attested", float64(codeAttested), nil)
+			enforced := 0.0
+			if s.registry.CodeAttestationEnforced() {
+				enforced = 1.0
+			}
+			s.ddGauge("attestation.code_enforced", enforced, nil)
 			for model, count := range s.registry.ModelProviderSnapshot() {
 				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
 			}

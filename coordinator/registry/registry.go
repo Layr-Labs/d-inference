@@ -3430,6 +3430,28 @@ func (r *Registry) OnlineCount() int64 {
 	return r.onlineCount.Load()
 }
 
+// CodeAttestationCoverage reports how many currently online (non-offline,
+// non-untrusted) providers have passed APNs code-identity attestation, plus the
+// online total. Operators watch this during the grace window to judge when it is
+// safe to let the APNS_ENFORCE_AFTER deadline pass — after which every
+// un-attested provider (incl. all headless / pre-0.6.0 boxes) is derouted.
+// Thread-safe.
+func (r *Registry) CodeAttestationCoverage() (codeAttested, online int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+		if p.Status != StatusOffline && p.Status != StatusUntrusted {
+			online++
+			if p.CodeAttested {
+				codeAttested++
+			}
+		}
+		p.mu.Unlock()
+	}
+	return codeAttested, online
+}
+
 // ModelProviderSnapshot returns a snapshot of model_id -> provider count.
 func (r *Registry) ModelProviderSnapshot() map[string]int64 {
 	r.modelProvidersMu.Lock()

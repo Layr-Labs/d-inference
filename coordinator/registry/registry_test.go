@@ -3025,3 +3025,21 @@ func TestDesiredModelsForLegacyAdvertiserAfterTakeover(t *testing.T) {
 		t.Fatalf("expected previous build = legacy id, got %q", entries[0].PreviousBuild)
 	}
 }
+
+// TestCodeAttestationCoverage verifies the operator-facing coverage counter used
+// to judge when it is safe to let APNS_ENFORCE_AFTER pass.
+func TestCodeAttestationCoverage(t *testing.T) {
+	r := New(testLogger())
+	r.providers["a"] = &Provider{ID: "a", Status: StatusOnline, CodeAttested: true}
+	r.providers["b"] = &Provider{ID: "b", Status: StatusOnline, CodeAttested: false}
+	r.providers["c"] = &Provider{ID: "c", Status: StatusUntrusted, CodeAttested: true} // excluded
+	r.providers["d"] = &Provider{ID: "d", Status: StatusOffline, CodeAttested: true}   // excluded
+
+	attested, online := r.CodeAttestationCoverage()
+	if online != 2 {
+		t.Fatalf("expected 2 online (non-offline/untrusted), got %d", online)
+	}
+	if attested != 1 {
+		t.Fatalf("expected 1 code-attested online provider, got %d", attested)
+	}
+}

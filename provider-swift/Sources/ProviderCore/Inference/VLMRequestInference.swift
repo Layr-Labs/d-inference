@@ -17,8 +17,10 @@
 
 import CoreImage
 import Foundation
+import MLXLLM
 import MLXLMCommon
 import MLXLMServer
+import MLXVLM
 
 /// Namespace for the non-batched VLM (image/video) inference path.
 ///
@@ -98,7 +100,9 @@ public enum VLMRequestInference {
     public static func stream(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
-        defaultMaxTokens: Int
+        defaultMaxTokens: Int,
+        mtpDrafter: Gemma4AssistantDraftModel? = nil,
+        mtpBlockSize: Int = 3
     ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -135,6 +139,35 @@ public enum VLMRequestInference {
                         topK: request.topK ?? 0,
                         repetitionPenalty: request.repetitionPenalty
                     )
+
+                    // MTP speculative-decode gate. MTP only matches the plain
+                    // decode byte-for-byte under GREEDY sampling (temperature 0)
+                    // with no repetition penalty, so it is gated to exactly that
+                    // case. Any other sampling config (temperature > 0, top-k/p
+                    // tweaks paired with sampling, repetition penalty) falls back
+                    // to the existing prepare/generate path below, unchanged.
+                    let repPenaltyNeutral =
+                        params.repetitionPenalty == nil || params.repetitionPenalty == 1.0
+                    if let drafter = mtpDrafter,
+                        params.temperature == 0,
+                        repPenaltyNeutral
+                    {
+                        let handled = try await streamMTP(
+                            container: container,
+                            lmInput: lmInput,
+                            params: params,
+                            drafter: drafter,
+                            blockSize: mtpBlockSize,
+                            startedAt: startedAt,
+                            continuation: continuation)
+                        // `streamMTP` returns true when it served the request
+                        // (it finished the stream itself). false ⇒ the model was
+                        // not an MTP-capable VLM tower; fall through to plain
+                        // generate so we never drop the request.
+                        if handled { return }
+                        mtpLogger.warning(
+                            "VLM MTP requested but model is not an MLXVLM.Gemma4 tower; using plain generate.")
+                    }
 
                     let genStream = try await container.generate(
                         input: lmInput, parameters: params)
@@ -193,6 +226,132 @@ public enum VLMRequestInference {
             continuation.onTermination = { @Sendable _ in
                 task.cancel()
             }
+        }
+    }
+
+    // MARK: - MTP speculative vision decode
+
+    /// Run the multimodal decode through Gemma 4 MTP speculative decoding.
+    ///
+    /// The whole decode runs inside `container.perform` so model access stays
+    /// single-threaded (the container's contract). We seed the drafter from a
+    /// multimodal prefill (`forwardForMTPMultimodal`, which merges the image /
+    /// video features), then drive `Gemma4MTPTokenIterator` round-by-round.
+    /// Each yielded token id is decoded to text exactly like the library's
+    /// `generateGemma4MTP` (`tokenizer.decode(tokenIds:[tok])`) and streamed.
+    ///
+    /// Returns `true` when it served the request (and finished the stream
+    /// itself); `false` when the loaded model is not an `MLXVLM.Gemma4` tower,
+    /// in which case the caller falls back to the plain generate path.
+    /// Throws on prefill / iterator-init failure so the caller's `catch`
+    /// finishes the stream with the error.
+    private static func streamMTP(
+        container: ModelContainer,
+        lmInput: LMInput,
+        params: GenerateParameters,
+        drafter: Gemma4AssistantDraftModel,
+        blockSize: Int,
+        startedAt: Date,
+        continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation
+    ) async throws -> Bool {
+        // `LMInput` is non-Sendable; hand it across the container's isolation
+        // boundary via the `nonSendable` perform overload rather than capturing
+        // it in the @Sendable closure.
+        try await container.perform(nonSendable: lmInput) { ctx, lmInput in
+            guard let vlm = ctx.model as? MLXVLM.Gemma4 else {
+                return false
+            }
+
+            let promptTokens = lmInput.text.tokens.size
+            // Full stop-token set, mirroring the baseline generate loop
+            // (`buildStopTokenIds`): model EOS ids ∪ the tokenizer's EOS ∪ the
+            // resolved `extraEOSTokens`; the unknown-token id is also treated as
+            // a stop. Using only `configuration.eosTokenIds` could fail to
+            // terminate on a tokenizer/extra EOS not present in that set.
+            var stopTokenIds = ctx.configuration.eosTokenIds
+            if let tokenizerEOS = ctx.tokenizer.eosTokenId {
+                stopTokenIds.insert(tokenizerEOS)
+            }
+            for token in ctx.configuration.extraEOSTokens {
+                if let id = ctx.tokenizer.convertTokenToId(token) {
+                    stopTokenIds.insert(id)
+                }
+            }
+            let unknownId = ctx.tokenizer.unknownTokenId
+            // Cap output length the same way the library default does when the
+            // caller leaves it open-ended.
+            var p = params
+            if p.maxTokens == nil { p.maxTokens = 1024 }
+            let maxTokens = p.maxTokens
+
+            // Seed: multimodal prefill (vision merge + capturing forward),
+            // then a prefilled-state MTP iterator over text-only decode rounds.
+            let cache = vlm.mtpNewCache(parameters: p)
+            let prefill = try vlm.forwardForMTPMultimodal(lmInput, cache: cache)
+            var iter = try Gemma4MTPTokenIterator(
+                prefill: prefill,
+                cache: cache,
+                target: vlm,
+                drafter: drafter,
+                parameters: p,
+                blockSize: blockSize)
+
+            // Streaming detokenizer: buffers a token whose decoded segment ends
+            // mid-codepoint (U+FFFD) and emits only complete text — so CJK /
+            // emoji / accented output is never split into mojibake. Per-token
+            // `decode([id])` (what this replaces) breaks multi-token glyphs.
+            var detokenizer = NaiveStreamingDetokenizer(tokenizer: ctx.tokenizer)
+
+            var completionTokens = 0
+            var firstTokenAt: Date?
+            var lastTokenAt: Date?
+            // Default "length"; flipped to "stop" on an EOS token. Mirrors the
+            // batched + library paths (maxTokens hit ⇒ "length", EOS ⇒ "stop").
+            var stopReason = "length"
+
+            while let tokenId = iter.next() {
+                if Task.isCancelled {
+                    continuation.finish()
+                    return true
+                }
+                // Stop tokens terminate WITHOUT being emitted or counted —
+                // parity with the baseline generate loop (which counts only
+                // non-stop tokens and never emits the EOS text).
+                if tokenId == unknownId || stopTokenIds.contains(tokenId) {
+                    stopReason = "stop"
+                    break
+                }
+                if firstTokenAt == nil { firstTokenAt = Date() }
+                lastTokenAt = Date()
+                completionTokens += 1
+
+                detokenizer.append(token: tokenId)
+                if let chunkText = detokenizer.next(), !chunkText.isEmpty {
+                    continuation.yield(.content(chunkText))
+                }
+
+                if let maxTokens, completionTokens >= maxTokens {
+                    stopReason = "length"
+                    break
+                }
+            }
+
+            let promptTime = (firstTokenAt ?? startedAt).timeIntervalSince(startedAt)
+            let generationTime = (lastTokenAt ?? firstTokenAt ?? startedAt)
+                .timeIntervalSince(firstTokenAt ?? startedAt)
+            continuation.yield(
+                .info(
+                    ServerGenerationInfo(
+                        promptTokens: promptTokens,
+                        completionTokens: completionTokens,
+                        promptTime: max(0, promptTime),
+                        generationTime: max(0, generationTime),
+                        stopReason: stopReason
+                    )
+                )
+            )
+            continuation.finish()
+            return true
         }
     }
 

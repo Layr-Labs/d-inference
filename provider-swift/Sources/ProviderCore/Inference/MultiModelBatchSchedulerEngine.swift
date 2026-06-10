@@ -193,8 +193,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // batched engine. For VLM models, serve them via the container's
         // non-batched prepare/generate vision path.
         if isVLM, let container, VLMRequestInference.hasMedia(request) {
+            // Route greedy multimodal decode through MTP speculative decoding
+            // when the model is an MTP-capable VLM with a bound drafter
+            // (non-nil only with DARKBLOOM_ENABLE_MTP + a drafter path). nil ⇒
+            // the vision path uses the plain prepare/generate path unchanged.
+            let vlmMtpDrafter = await scheduler.vlmMtpDrafter
+            let vlmMtpBlockSize = await scheduler.vlmMtpBlockSize
             let vlmStream = VLMRequestInference.stream(
-                container: container, request: request, defaultMaxTokens: defaultMaxTokens)
+                container: container, request: request, defaultMaxTokens: defaultMaxTokens,
+                mtpDrafter: vlmMtpDrafter, mtpBlockSize: vlmMtpBlockSize)
             return AsyncThrowingStream { continuation in
                 let task = Task {
                     do {

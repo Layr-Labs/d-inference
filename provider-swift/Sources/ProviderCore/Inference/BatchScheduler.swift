@@ -31,6 +31,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import os
 
 // `internal` (not `private`) so the BatchScheduler extension files
@@ -89,6 +90,19 @@ public actor BatchScheduler {
     /// deregistered at stopCurrentEngine.
     var engineTierOwner: EncryptedPrefixCachePersistence?
     var engineTierAccountantToken: AccountantToken?
+
+    /// MTP drafter bound to a VLM (image/video) tower. Non-nil only when the
+    /// loaded model is an `MLXVLM.Gemma4` AND MTP is enabled
+    /// (`DARKBLOOM_ENABLE_MTP=1` + `DARKBLOOM_MTP_DRAFTER_PATH`). The
+    /// non-batched vision path (`VLMRequestInference.stream`) reads this to
+    /// route greedy multimodal decode through MTP speculative decoding. nil ⇒
+    /// vision decode uses the plain `container.generate` path. Set by
+    /// `loadModel` from the `EngineBuild` (built by the static
+    /// `makeBatchedEngine`, which can't touch `self`).
+    var vlmMtpDrafter: Gemma4AssistantDraftModel?
+    /// Single-stream MTP speculative block size for the VLM vision path.
+    /// Default 3 (the B=1 default proven for Gemma 4).
+    var vlmMtpBlockSize: Int = 3
 
     /// Admission control + token budget tracking. `nil` until `loadModel()`.
     var planner: BatchQueuePlanner?
@@ -230,6 +244,11 @@ public actor BatchScheduler {
         self.checkpointManager = build.checkpointManager
         self.checkpointBoundaries = build.checkpointBoundaries
         self.engineTierOwner = build.engineTierOwner
+        // MTP drafter for the non-batched VLM vision path. nil for text
+        // models / when MTP is off — the vision stream then uses plain
+        // `container.generate`. (Text models bind the drafter into the
+        // engine runtime inside `makeBatchedEngine` instead.)
+        self.vlmMtpDrafter = build.vlmMtpDrafter
         await engine.start()
         // Final epoch check after start() — start can suspend too.
         // Identity-checked cleanup — only nil self.engine if it's
@@ -240,6 +259,7 @@ public actor BatchScheduler {
             if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
             if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+            if self.vlmMtpDrafter === build.vlmMtpDrafter { self.vlmMtpDrafter = nil }
             await engine.stop()
             return
         }
@@ -282,6 +302,7 @@ public actor BatchScheduler {
             if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
             if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+            if self.vlmMtpDrafter === build.vlmMtpDrafter { self.vlmMtpDrafter = nil }
             await engine.stop()
             return
         }
@@ -320,6 +341,7 @@ public actor BatchScheduler {
                     if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
                     if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
                     if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+                    if self.vlmMtpDrafter === build.vlmMtpDrafter { self.vlmMtpDrafter = nil }
                     await engine.stop()
                     return
                 }
@@ -489,6 +511,13 @@ public actor BatchScheduler {
         let checkpointManager: PrefixCacheManager?
         let checkpointBoundaries: [Int]
         let engineTierOwner: EncryptedPrefixCachePersistence?
+        /// The MTP drafter bound to a VLM (image/video) tower, when the
+        /// loaded model is an `MLXVLM.Gemma4` and MTP is enabled. nil for
+        /// text models (those bind the drafter into the engine's
+        /// `Gemma4MTPEngineRuntime` instead) and whenever MTP is off. The
+        /// caller stores this on the `BatchScheduler` so the non-batched VLM
+        /// vision path can route its decode through MTP speculative decoding.
+        let vlmMtpDrafter: Gemma4AssistantDraftModel?
     }
 
     // MARK: - MTP (Gemma 4 drafter speculative decoding) config
@@ -692,6 +721,15 @@ public actor BatchScheduler {
             // GenerationBatch it builds; eligibility (size ≤ maxBatch, greedy)
             // is decided per decode step. Non-Gemma-4 or bind failure → plain
             // decode (runtime stays nil).
+            //
+            // VLM (image/video) models never flow through the batched engine
+            // for multimodal requests — those are served by the non-batched
+            // `VLMRequestInference.stream` vision path. So the text-target cast
+            // below is nil for an `MLXVLM.Gemma4`. In that case we bind the SAME
+            // drafter to the VLM tower and hand it out via `EngineBuild` so the
+            // vision path can route greedy decode through MTP. Carried out of
+            // this static closure on `vlmMtpDrafter`.
+            var vlmMtpDrafter: Gemma4AssistantDraftModel? = nil
             if let drafter = mtpDrafter {
                 let target: Gemma4TextModel? =
                     (ctx.model as? Gemma4TextModel)
@@ -704,6 +742,18 @@ public actor BatchScheduler {
                             "MTP runtime attached for \(modelId) (maxBatch=\(mtpMaxBatchCap)).")
                     } catch {
                         mtpLogger.error("MTP bind failed (\(error)); using plain decode.")
+                    }
+                } else if let vlm = ctx.model as? MLXVLM.Gemma4 {
+                    // VLM tower: bind the drafter to it for the non-batched
+                    // vision path. `bind` is idempotent on the same target.
+                    do {
+                        try drafter.bind(target: vlm)
+                        vlmMtpDrafter = drafter
+                        mtpLogger.info(
+                            "MTP drafter bound to VLM tower for \(modelId); vision decode will speculate.")
+                    } catch {
+                        mtpLogger.error(
+                            "MTP VLM bind failed for \(modelId) (\(error)); vision decode uses plain generate.")
                     }
                 } else {
                     mtpLogger.warning(
@@ -743,7 +793,8 @@ public actor BatchScheduler {
                 ),
                 checkpointManager: checkpointManager,
                 checkpointBoundaries: boundaries,
-                engineTierOwner: engineTierOwner
+                engineTierOwner: engineTierOwner,
+                vlmMtpDrafter: vlmMtpDrafter
             )
         }
     }
@@ -1469,6 +1520,10 @@ public actor BatchScheduler {
         self.engine = nil
         modelContainer = nil
         tokenizer = nil
+        // Drop the VLM MTP drafter so its weights are freed on unload (the next
+        // model's loadModel reinstalls its own, or nil). Without this the
+        // drafter's GPU weights are retained until the field is overwritten.
+        vlmMtpDrafter = nil
         // Persist any coalesced index writes before dropping the manager, so
         // checkpoints written since the last coalesced save survive restart.
         if let mgr = checkpointManager {

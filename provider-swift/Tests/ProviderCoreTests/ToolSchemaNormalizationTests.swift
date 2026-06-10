@@ -93,3 +93,13 @@ extension ToolSchemaNormalizationTests {
         #expect(n["type"] as? String == "number")
     }
 }
+
+extension ToolSchemaNormalizationTests {
+    @Test func skipsNormalizationForOversizedBodies() {
+        // A body above the cap is returned unchanged BEFORE any parse, even though
+        // it contains "tools" — bounding the JSON round-trip cost (DoS amplification).
+        var body = Data(#"{"tools":["#.utf8)
+        body.append(Data(count: ToolSchemaNormalization.maxNormalizationBytes))
+        #expect(ToolSchemaNormalization.ensureParameterTypes(in: body) == body)
+    }
+}

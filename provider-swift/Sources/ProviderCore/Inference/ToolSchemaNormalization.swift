@@ -17,7 +17,16 @@ enum ToolSchemaNormalization {
     /// Return `data` with default `type`s injected into tool parameter schemas.
     /// Fast-paths out (returns the input unchanged) when the body carries no
     /// `tools`, or when it isn't a JSON object we can repair.
+    /// Upper bound on the body we'll JSON round-trip for tool-schema normalization.
+    /// Tool definitions are tiny (KB), so a multi-MB body — e.g. a long prompt that
+    /// merely contains the word "tools" — should not trigger a full parse + recursive
+    /// traversal. Above this we skip normalization, bounding the cost on the
+    /// (already size-capped) inference path.
+    static let maxNormalizationBytes = 4 * 1024 * 1024
+
     static func ensureParameterTypes(in data: Data) -> Data {
+        // Bound the work: skip the round-trip for oversized bodies (see the constant).
+        guard data.count <= maxNormalizationBytes else { return data }
         // Cheap gate: only pay the JSON round-trip for requests that carry tools.
         guard data.range(of: Data("\"tools\"".utf8)) != nil else { return data }
         guard var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],

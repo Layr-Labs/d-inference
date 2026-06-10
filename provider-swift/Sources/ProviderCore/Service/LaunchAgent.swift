@@ -61,7 +61,7 @@ public enum LaunchAgent: Sendable {
     /// truth for the daemon it manages — unlike the diagnostics state file,
     /// which can be stale (or unwritable by the daemon) without the daemon
     /// being down.
-    public static func runningPID() -> Int32? {
+    public static func runningPID(timeout: TimeInterval = 2.0) -> Int32? {
         let target = "gui/\(getuid())/\(label)"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -70,13 +70,18 @@ public enum LaunchAgent: Sendable {
         process.standardOutput = outPipe
         process.standardError = FileHandle.nullDevice
 
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         do {
             try process.run()
         } catch {
             return nil
         }
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            return nil
+        }
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
         guard process.terminationStatus == 0,
               let output = String(data: data, encoding: .utf8) else { return nil }
 

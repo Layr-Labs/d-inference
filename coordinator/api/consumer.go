@@ -561,7 +561,9 @@ const (
 // image or video input.
 func isMediaPartType(t string) bool {
 	switch t {
-	case "image_url", "input_image", "video_url", "input_video":
+	// OpenAI chat (image_url/video_url), OpenAI Responses (input_image/input_video),
+	// and Anthropic /v1/messages content blocks ({"type":"image"|"video","source":…}).
+	case "image_url", "input_image", "image", "video_url", "input_video", "video":
 		return true
 	}
 	return false
@@ -598,9 +600,9 @@ func messageContentTokens(content any) int {
 				if s, ok := pm["text"].(string); ok {
 					total += textTokens(s)
 				}
-			case typ == "image_url" || typ == "input_image":
+			case typ == "image_url" || typ == "input_image" || typ == "image":
 				total += imagePromptTokenCost
-			case typ == "video_url" || typ == "input_video":
+			case typ == "video_url" || typ == "input_video" || typ == "video":
 				total += videoPromptTokenCost
 			default:
 				if b, err := json.Marshal(pm); err == nil {
@@ -1251,11 +1253,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// when the fleet has no such provider (e.g. before the gemma fleet finishes
 	// updating to 0.6.0); the routing layer enforces the same gate per dispatch.
 	requiresVision := detectMediaRequirement(parsed)
-	if requiresVision && !s.registry.HasVisionProviderForModel(model) {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-			fmt.Sprintf("model %q has no vision-capable provider available for image/video input right now", publicModel),
-			withParam("model")))
-		return
+	if requiresVision {
+		// The Responses API path lowers `input` to chat messages via
+		// responsesRequestToChatCompletions, which does NOT carry image/video parts
+		// through — so a media request there would be routed and then silently
+		// stripped (image-blind). Reject it cleanly until that conversion preserves
+		// media (tracked follow-up); the console uses /v1/chat/completions for images.
+		if input != nil && len(messages) == 0 {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+				"image/video input via the Responses API is not supported yet; use /v1/chat/completions",
+				withParam("input")))
+			return
+		}
+		if !s.registry.HasVisionProviderForModel(model) {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+				fmt.Sprintf("model %q has no vision-capable provider available for image/video input right now", publicModel),
+				withParam("model")))
+			return
+		}
 	}
 
 	isResponsesAPI := input != nil && len(messages) == 0

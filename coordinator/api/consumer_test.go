@@ -1645,3 +1645,22 @@ func TestDetectMediaRequirementResponsesInput(t *testing.T) {
 		t.Fatal("a string Responses input must not be flagged as media")
 	}
 }
+
+// TestDetectMediaRequirementAnthropicImageBlock verifies Anthropic /v1/messages
+// image content blocks ({"type":"image","source":...}) are detected for the
+// vision routing gate, not just OpenAI-style image_url parts.
+func TestDetectMediaRequirementAnthropicImageBlock(t *testing.T) {
+	parsed := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "what is this?"},
+				map[string]any{"type": "image", "source": map[string]any{
+					"type": "base64", "media_type": "image/png", "data": "AAAA",
+				}},
+			}},
+		},
+	}
+	if !detectMediaRequirement(parsed) {
+		t.Fatal("expected Anthropic image content block to be detected as media")
+	}
+}

@@ -2508,7 +2508,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	var pendingUsage map[string]any
 
 	// Write the first chunk that was already consumed during dispatch.
-	if firstChunk != "" {
+	if firstChunk != "" && !isSSEDoneChunk(firstChunk) {
 		if strings.Contains(firstChunk, `"response.created"`) || strings.Contains(firstChunk, `"response.output_text.delta"`) {
 			sawResponsesAPI = true
 		}
@@ -2579,14 +2579,27 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 						case <-time.After(2 * time.Second):
 						case <-r.Context().Done():
 						}
+						// Ride the SE signature on the held usage chunk (a complete,
+						// well-formed chat.completion.chunk) instead of emitting a
+						// separate bare event that strict SDK parsers reject.
+						if pr.SESignature != "" {
+							pendingUsage["se_signature"] = pr.SESignature
+							pendingUsage["response_hash"] = pr.ResponseHash
+						}
 						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
 							fmt.Fprintf(w, "%s\n\n", out)
 							flusher.Flush()
 						}
-					}
-					// Chat completions format: append SE signature + [DONE].
-					if pr.SESignature != "" {
+					} else if pr.SESignature != "" {
+						// No held usage chunk to ride on: emit the signature as a
+						// fully-shaped chat.completion.chunk (id/object/created/model/
+						// choices) so strict decoders parse it; the extra fields are
+						// additive. It precedes the single [DONE] below.
 						sigEvent, _ := json.Marshal(map[string]any{
+							"id":            "chatcmpl-" + pr.RequestID,
+							"object":        "chat.completion.chunk",
+							"created":       time.Now().Unix(),
+							"model":         consumerModel(pr),
 							"choices":       []any{},
 							"se_signature":  pr.SESignature,
 							"response_hash": pr.ResponseHash,
@@ -2594,6 +2607,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
 						flusher.Flush()
 					}
+					// Exactly one terminator, after every coordinator-appended event.
 					fmt.Fprint(w, "data: [DONE]\n\n")
 					flusher.Flush()
 				}
@@ -2616,6 +2630,16 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.output_text.delta"`) {
 					sawResponsesAPI = true
 				}
+			}
+			// Swallow the provider's own "data: [DONE]" terminator. The
+			// coordinator appends terminal events of its own (held usage with
+			// the reasoning breakdown, SE signature) and then emits exactly ONE
+			// [DONE] — forwarding the provider's produced a stream shaped
+			// `...usage, [DONE], signature, [DONE]`, and third-party SDKs treat
+			// the first [DONE] as final (MacPaw/OpenAI then chokes parsing the
+			// signature event).
+			if !sawResponsesAPI && isSSEDoneChunk(chunk) {
+				continue
 			}
 			// Hold the terminal usage chunk (chat completions only) so we can splice
 			// in the reasoning breakdown at stream end; forwarding it inline would
@@ -3398,6 +3422,16 @@ func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 // + a non-null usage object, carrying the final usage and no content delta) and
 // returns the parsed object. ok is false for any other chunk. Parsing here once
 // lets the caller hold the object and finalize it at stream end without re-parsing.
+// isSSEDoneChunk reports whether a provider stream chunk is the SSE
+// "data: [DONE]" terminator (with or without the data: prefix). The
+// coordinator owns stream termination — provider terminators are swallowed
+// so coordinator-appended events (held usage, SE signature) never trail a
+// [DONE] that SDKs treat as final.
+func isSSEDoneChunk(chunk string) bool {
+	line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(chunk), "data:"))
+	return line == "[DONE]"
+}
+
 func parseUsageOnlyStreamChunk(chunk string) (obj map[string]any, ok bool) {
 	line := strings.TrimPrefix(chunk, "data: ")
 	// Cheap gate: skip the parse for content deltas and usage:null chunks.

@@ -25,5 +25,5 @@ public enum ProviderCore {
     // routing, graceful download-first auto-update, and the model-alias hot-swap
     // layer. Semver compares numerically per-component, so 0.6.0 > 0.5.17 keeps
     // the desired_models gate satisfied.
-    public static let version = "0.6.1"
+    public static let version = "0.6.2"
 }

@@ -1782,3 +1782,115 @@ func TestStreamingChatUsageOnlyFirstChunk(t *testing.T) {
 		t.Fatalf("expected [DONE] terminator; body=\n%s", body)
 	}
 }
+
+// TestStreamingChatSingleDoneSignatureBeforeIt covers the SplittyDev report:
+// the provider's own "data: [DONE]" was forwarded, then the coordinator
+// appended a bare {"choices":[],se_signature,...} event and a SECOND [DONE].
+// SDKs treat the first [DONE] as final and choke on the malformed trailer.
+// Now: provider [DONE] swallowed, the signature rides a fully-shaped chunk,
+// and exactly one [DONE] terminates the stream.
+func TestStreamingChatSingleDoneSignatureBeforeIt(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+
+	pr := &registry.PendingRequest{
+		RequestID:    "job-1",
+		Model:        "gpt-oss-20b",
+		SESignature:  "sig-abc",
+		ResponseHash: "hash-def",
+		ChunkCh:      make(chan string, 8),
+		ErrorCh:      make(chan protocol.InferenceErrorMessage, 1),
+		CompleteCh:   make(chan protocol.UsageInfo, 1),
+	}
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
+	pr.ChunkCh <- "data: [DONE]" // the provider's own terminator — must be swallowed
+	close(pr.ChunkCh)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, "")
+
+	body := rec.Body.String()
+	if got := strings.Count(body, "data: [DONE]"); got != 1 {
+		t.Fatalf("expected exactly ONE [DONE]; got %d\nbody:\n%s", got, body)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(body), "data: [DONE]") {
+		t.Fatalf("[DONE] must be the FINAL event — nothing may trail it; body:\n%s", body)
+	}
+	sigIdx := strings.Index(body, `"se_signature":"sig-abc"`)
+	doneIdx := strings.Index(body, "data: [DONE]")
+	if sigIdx == -1 || sigIdx > doneIdx {
+		t.Fatalf("signature event must precede the single [DONE]; body:\n%s", body)
+	}
+	// The signature event must be a fully-shaped chunk for strict decoders.
+	var sigLine string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "se_signature") {
+			sigLine = strings.TrimPrefix(line, "data: ")
+			break
+		}
+	}
+	var sigObj map[string]any
+	if err := json.Unmarshal([]byte(sigLine), &sigObj); err != nil {
+		t.Fatalf("signature event is not valid JSON: %v", err)
+	}
+	for _, k := range []string{"id", "object", "created", "model", "choices", "response_hash"} {
+		if _, present := sigObj[k]; !present {
+			t.Fatalf("signature event missing required field %q (breaks strict SDKs); got: %s", k, sigLine)
+		}
+	}
+	if sigObj["object"] != "chat.completion.chunk" {
+		t.Fatalf("signature event object must be chat.completion.chunk; got %v", sigObj["object"])
+	}
+}
+
+// TestStreamingChatSignatureRidesUsageChunk: with stream_options.include_usage
+// (a held usage-only chunk), the SE signature is spliced into that final
+// well-formed chunk — no separate signature event, single [DONE].
+func TestStreamingChatSignatureRidesUsageChunk(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+
+	pr := &registry.PendingRequest{
+		RequestID:    "job-1",
+		Model:        "gpt-oss-20b",
+		SESignature:  "sig-abc",
+		ResponseHash: "hash-def",
+		ChunkCh:      make(chan string, 8),
+		ErrorCh:      make(chan protocol.InferenceErrorMessage, 1),
+		CompleteCh:   make(chan protocol.UsageInfo, 1),
+	}
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`
+	pr.ChunkCh <- "data: [DONE]"
+	close(pr.ChunkCh)
+	pr.CompleteCh <- protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 50, ReasoningTokens: 8}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, "")
+
+	body := rec.Body.String()
+	if got := strings.Count(body, "data: [DONE]"); got != 1 {
+		t.Fatalf("expected exactly ONE [DONE]; got %d\nbody:\n%s", got, body)
+	}
+	if got := strings.Count(body, "se_signature"); got != 1 {
+		t.Fatalf("signature must appear exactly once (on the usage chunk); got %d\nbody:\n%s", got, body)
+	}
+	// One line carries usage + reasoning + signature together.
+	var found bool
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "se_signature") {
+			found = strings.Contains(line, `"reasoning_tokens":8`) &&
+				strings.Contains(line, `"usage"`) &&
+				strings.Contains(line, `"response_hash":"hash-def"`)
+		}
+	}
+	if !found {
+		t.Fatalf("signature must ride the final usage chunk (with reasoning spliced); body:\n%s", body)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(body), "data: [DONE]") {
+		t.Fatalf("[DONE] must be the final event; body:\n%s", body)
+	}
+}

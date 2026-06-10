@@ -189,26 +189,12 @@ func TestCodeIdentityRejectsWrongSEKey(t *testing.T) {
 	}
 }
 
-// TestCodeAttestLoopReChallengesUntilAttested proves the re-challenge healing:
-// a first push that fails to send leaves the provider un-attested, and the loop
-// re-issues the challenge on the next tick, which succeeds — so a single dropped
-// background push does not strand a capable provider past the grace deadline.
-func TestCodeAttestLoopReChallengesUntilAttested(t *testing.T) {
-	logger := quietLogger()
-	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	srv.challengeInterval = 15 * time.Millisecond // fast re-challenge for the test
-
-	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
-	ct := newCodeAttestTracker()
-
-	var attempts int32
-	fake := &fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
-		if atomic.AddInt32(&attempts, 1) == 1 {
-			// First attempt: the push fails to send (transient). The challenge
-			// returns immediately without attesting; the loop must retry.
-			return errors.New("transient push send failure")
-		}
-		// Second attempt: full valid round-trip → attests.
+// fullCodeAttestRoundTrip returns an onSend that completes a valid challenge
+// round-trip (decrypt the nonce, SE-sign it, deliver the response), counting the
+// pushes it actually sends into `pushes`.
+func fullCodeAttestRoundTrip(t *testing.T, kPriv [32]byte, seKey *ecdsa.PrivateKey, ct *codeAttestTracker, pushes *int32) func(_, _, _, _ string) error {
+	return func(_, _, pubKeyB64, nonceB64 string) error {
+		atomic.AddInt32(pushes, 1)
 		payload, err := apns.BuildCodeChallengePayload(nonceB64, pubKeyB64, apns.ModeBackground)
 		if err != nil {
 			return err
@@ -230,6 +216,29 @@ func TestCodeAttestLoopReChallengesUntilAttested(t *testing.T) {
 			Signature: sig,
 		})
 		return nil
+	}
+}
+
+// TestCodeAttestLoopHealsDroppedPushWithBoundedRetry proves a single dropped
+// background push doesn't strand a capable provider: the first push fails and the
+// loop retries (spaced by the per-device cooldown — NOT a fixed 5-min ticker) and
+// attests. It must stay within the push budget (bounded by maxAttempts).
+func TestCodeAttestLoopHealsDroppedPushWithBoundedRetry(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv.codeAttestThrottle.pushCooldown = time.Millisecond // fast retry spacing for the test
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	ct := newCodeAttestTracker()
+
+	var attempts int32
+	roundTrip := fullCodeAttestRoundTrip(t, kPriv, seKey, ct, &attempts)
+	fake := &fakeCodeAttestor{onSend: func(a, b, pubKeyB64, nonceB64 string) error {
+		if atomic.LoadInt32(&attempts) == 0 {
+			atomic.AddInt32(&attempts, 1)
+			return errors.New("transient push send failure") // first push fails
+		}
+		return roundTrip(a, b, pubKeyB64, nonceB64)
 	}}
 	srv.SetCodeAttestor(fake)
 
@@ -240,12 +249,89 @@ func TestCodeAttestLoopReChallengesUntilAttested(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) && !provider.GetCodeAttested() {
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	if !provider.GetCodeAttested() {
-		t.Fatal("expected CodeAttested=true after the re-challenge healed the dropped first push")
+		t.Fatal("expected CodeAttested=true after a bounded retry healed the dropped first push")
 	}
-	if got := atomic.LoadInt32(&attempts); got < 2 {
-		t.Fatalf("expected >=2 challenge attempts (re-challenge), got %d", got)
+	if got := atomic.LoadInt32(&attempts); got < 2 || got > int32(srv.codeAttestThrottle.maxAttempts) {
+		t.Fatalf("expected 2..%d attempts, got %d", srv.codeAttestThrottle.maxAttempts, got)
+	}
+}
+
+// TestCodeAttestLoopReusesRecentAttestation proves a reconnect from the same
+// device (same SE key + binary version) within the reuse window inherits the
+// proof with NO additional push — respecting Apple's ~3/hour background-push
+// budget instead of re-challenging on every connection.
+func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	ct := newCodeAttestTracker()
+
+	var pushes int32
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: fullCodeAttestRoundTrip(t, kPriv, seKey, ct, &pushes)})
+
+	// Connection 1: a real round-trip → exactly one push, attested.
+	p1 := newCodeAttestProvider(kPubB64, sePubB64)
+	p1.Version = "0.6.0"
+	srv.codeAttestLoop(context.Background(), "p1", p1, ct)
+	if !p1.GetCodeAttested() {
+		t.Fatal("connection 1 should attest")
+	}
+	if got := atomic.LoadInt32(&pushes); got != 1 {
+		t.Fatalf("connection 1 should send exactly 1 push, got %d", got)
+	}
+
+	// Connection 2: same device + version, fresh Provider (CodeAttested=false). It
+	// must REUSE the recent attestation — attested without another push.
+	p2 := newCodeAttestProvider(kPubB64, sePubB64)
+	p2.Version = "0.6.0"
+	srv.codeAttestLoop(context.Background(), "p1", p2, ct)
+	if !p2.GetCodeAttested() {
+		t.Fatal("connection 2 should inherit the recent attestation (reuse)")
+	}
+	if got := atomic.LoadInt32(&pushes); got != 1 {
+		t.Fatalf("connection 2 must NOT send another push (reuse); total pushes=%d", got)
+	}
+}
+
+// TestCodeAttestThrottleBudgetAndReuse covers the rate-limit + reuse logic with a
+// fake clock: pushes are blocked within the cooldown, and a recent attestation is
+// reused only within the window and only for the same binary version.
+func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newCodeAttestThrottle()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	if !th.allowPush(se) {
+		t.Fatal("first push should be allowed")
+	}
+	if th.reuseAttestation(se, "0.6.0") {
+		t.Fatal("no attestation yet → no reuse")
+	}
+	th.recordPush(se)
+
+	cur = cur.Add(th.pushCooldown - time.Minute) // still inside the cooldown
+	if th.allowPush(se) {
+		t.Fatal("a push within the cooldown must be blocked (background-push budget)")
+	}
+	cur = cur.Add(2 * time.Minute) // now just past the cooldown
+	if !th.allowPush(se) {
+		t.Fatal("a push after the cooldown should be allowed")
+	}
+
+	th.recordAttested(se, "0.6.0")
+	if !th.reuseAttestation(se, "0.6.0") {
+		t.Fatal("should reuse a fresh, same-version attestation")
+	}
+	if th.reuseAttestation(se, "0.6.1") {
+		t.Fatal("must NOT reuse across a binary version change")
+	}
+	cur = cur.Add(th.reuseWindow) // window elapsed
+	if th.reuseAttestation(se, "0.6.0") {
+		t.Fatal("reuse must expire after the window")
 	}
 }

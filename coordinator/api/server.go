@@ -183,6 +183,7 @@ type Server struct {
 	stepCAIntermediateCert *x509.Certificate         // step-ca intermediate CA
 	profileSigner          *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	codeAttestor           apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
+	codeAttestThrottle     *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -535,6 +536,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		geoResolver:          newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:          make(map[string]apiKeyCacheEntry),
 		pendingACME:          make(map[string]*ACMEVerificationResult),
+		codeAttestThrottle:   newCodeAttestThrottle(),
 	}
 	s.registerDefaultGauges()
 	s.routes()

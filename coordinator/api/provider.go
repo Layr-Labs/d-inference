@@ -464,15 +464,26 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 // sub-second.
 const CodeAttestResponseTimeout = 90 * time.Second
 
-// codeAttestLoop drives the APNs code-identity round-trip for one connection. It
-// challenges immediately, then re-challenges on the attestation ticker until the
-// provider is CodeAttested (success), is hard-untrusted, or the connection ends.
-// Re-challenging heals transient APNs delivery failures — the design's top open
-// risk is that a background push is APNs-accepted but never delivered — so a
-// capable provider becomes routable before the grace deadline rather than being
-// stranded by a single dropped push. Providers with no APNs device token (legacy
-// <0.6.0 builds) can never attest, so the loop exits immediately and they are
-// derouted once enforcement begins — the intended "everyone must update" outcome.
+// codeAttestLoop drives the APNs code-identity round-trip for one connection.
+//
+// Attestation is PER-CONNECTION: while a WebSocket is alive the provider's binary
+// cannot change (a binary swap restarts the process and drops the connection), so
+// one successful challenge proves the connection's code identity for its whole
+// lifetime — there is NO periodic re-challenge. That also respects Apple's
+// background-push budget (~2-3/hour/device); a 5-minute ticker (12/hour) would be
+// throttled and dropped.
+//
+// Reliability without spamming pushes:
+//   - Reuse: if this device (Secure Enclave key) attested recently with the same
+//     binary version, the new connection inherits the proof with NO push — so a
+//     brief reconnect/network blip doesn't burn a push or strand the provider.
+//   - Bounded retry: otherwise challenge once, retrying only on delivery failure,
+//     spaced by the per-device push cooldown and capped, so a dropped push heals
+//     without exceeding the budget.
+//
+// Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
+// GUI session) can never attest, so the loop exits immediately — they are derouted
+// once enforcement begins, the intended "everyone must update" outcome.
 func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider *registry.Provider, ct *codeAttestTracker) {
 	if s.codeAttestor == nil || provider == nil {
 		return
@@ -480,6 +491,11 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 
 	provider.Mu().Lock()
 	hasToken := provider.APNsDeviceToken != ""
+	version := provider.Version
+	var seKey string
+	if provider.AttestationResult != nil {
+		seKey = provider.AttestationResult.PublicKey
+	}
 	provider.Mu().Unlock()
 	if !hasToken {
 		s.logger.Info("code-attest: provider has no APNs device token; cannot attest (will be derouted once enforcement begins)",
@@ -487,29 +503,42 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		return
 	}
 
-	s.sendCodeIdentityChallenge(ctx, providerID, provider, ct)
-
-	interval := s.challengeInterval
-	if interval == 0 {
-		interval = DefaultChallengeInterval
+	// Reuse a recent, same-version attestation for this device instead of spending
+	// a push — the binary can't have changed (same version) and the proof is fresh.
+	if s.codeAttestThrottle.reuseAttestation(seKey, version) {
+		provider.SetCodeAttested(true)
+		s.registry.DrainQueuedRequestsForProvider(provider)
+		s.logger.Info("code-attest: reused a recent attestation for this device (no push)",
+			"provider_id", providerID)
+		return
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
-	for {
+	for attempt := 0; attempt < s.codeAttestThrottle.maxAttempts; attempt++ {
+		if provider.GetCodeAttested() {
+			return // attested for this connection; nothing more to do
+		}
+		if provider.ChallengeShouldStop() {
+			return // hard (non-recoverable) untrust — stop challenging
+		}
+		// Only push if the per-device cooldown allows it (background-push budget).
+		if s.codeAttestThrottle.allowPush(seKey) {
+			s.codeAttestThrottle.recordPush(seKey)
+			s.sendCodeIdentityChallenge(ctx, providerID, provider, ct)
+			if provider.GetCodeAttested() {
+				s.codeAttestThrottle.recordAttested(seKey, version)
+				return
+			}
+		}
+		// Space retries by the cooldown so we never exceed the background-push
+		// budget; bail if the connection ends first.
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if provider.GetCodeAttested() {
-				return // attested for this connection; nothing more to do
-			}
-			if provider.ChallengeShouldStop() {
-				return // hard (non-recoverable) untrust — stop challenging
-			}
-			s.sendCodeIdentityChallenge(ctx, providerID, provider, ct)
+		case <-time.After(s.codeAttestThrottle.pushCooldown):
 		}
 	}
+	s.logger.Warn("code-attest: not attested after max attempts; will retry on a later reconnect (within the push budget)",
+		"provider_id", providerID)
 }
 
 // sendCodeIdentityChallenge runs the per-connection APNs code-identity round-trip

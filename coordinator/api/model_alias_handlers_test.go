@@ -973,3 +973,59 @@ func TestListModelsHidesRetiredAliasBuild(t *testing.T) {
 		t.Fatalf("retired build should be in the hidden set: %v", hidden)
 	}
 }
+
+// TestModelAliasTakeoverOfConcreteID covers the 8-bit→4-bit public-name cutover:
+// an alias adopts the live concrete id "gemma-4-26b", absorbing it as the
+// previous/fallback build while pointing desired at the new 4-bit build. The
+// critical safety property is that the absorbed model's catalog weight hash is
+// untouched, so the providers already serving it are not untrusted.
+func TestModelAliasTakeoverOfConcreteID(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const legacyID = "gemma-4-26b"       // live concrete build = today's public name
+	const qatID = "gemma-4-26b-qat-4bit" // the new 4-bit build
+	seedActiveModel(t, st, legacyID, "Gemma 4 26B (8-bit)")
+	seedActiveModel(t, st, qatID, "Gemma 4 26B (qat-4bit)")
+	srv.SyncModelCatalog()
+	hashBefore := reg.CatalogWeightHash(legacyID)
+
+	post := func(bodyMap map[string]any) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(bodyMap)
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Without takeover, adopting an existing concrete id is a 409.
+	if rec := post(map[string]any{"alias_id": legacyID, "desired_build": qatID, "previous_build": legacyID}); rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 without takeover, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Takeover requires previous_build == alias_id (fail-closed on the exact shape).
+	if rec := post(map[string]any{"alias_id": legacyID, "desired_build": qatID, "takeover": true}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when takeover lacks previous_build==alias_id, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// desired_build may never equal the alias name even under takeover.
+	if rec := post(map[string]any{"alias_id": legacyID, "desired_build": legacyID, "previous_build": legacyID, "takeover": true}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when desired_build == alias_id, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Valid takeover.
+	if rec := post(map[string]any{"alias_id": legacyID, "display_name": "Gemma 4 26B", "desired_build": qatID, "previous_build": legacyID, "takeover": true}); rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid takeover, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The public name now resolves through the alias to the 4-bit desired build.
+	if b, isAlias, ok := reg.ResolveModel(legacyID); !isAlias || !ok || b != qatID {
+		t.Fatalf("resolve after takeover = %q isAlias=%v ok=%v, want desired %q", b, isAlias, ok, qatID)
+	}
+	// CRITICAL: the absorbed model's catalog weight hash is unchanged, so the
+	// fleet already serving the legacy build is NOT untrusted by the takeover.
+	if after := reg.CatalogWeightHash(legacyID); after != hashBefore {
+		t.Fatalf("takeover changed catalog hash for %s (%q -> %q) — would untrust the live fleet", legacyID, hashBefore, after)
+	}
+}

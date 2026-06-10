@@ -2997,3 +2997,31 @@ func TestFindProviderCrashedOnlyStillRoutes(t *testing.T) {
 		t.Error("FindProvider should still route to a crashed-only provider (it can attempt reload)")
 	}
 }
+
+// TestDesiredModelsForLegacyAdvertiserAfterTakeover proves the 4-bit cutover
+// bootstrap: after an alias adopts the live public name (desired = new build,
+// previous = the legacy same-named build), a provider advertising ONLY the legacy
+// build is recognised as a member and told to converge to the new build via
+// desired_models — without which the legacy fleet could never migrate.
+func TestDesiredModelsForLegacyAdvertiserAfterTakeover(t *testing.T) {
+	r := New(testLogger())
+	r.providers["p1"] = &Provider{
+		ID:     "p1",
+		Status: StatusOnline,
+		Models: []protocol.ModelInfo{{ID: "gemma-4-26b"}}, // advertises the public name
+	}
+	r.SetModelAliases(map[string]AliasTarget{
+		"gemma-4-26b": {Desired: "gemma-4-26b-qat-4bit", Previous: "gemma-4-26b"},
+	})
+
+	entries := r.DesiredModelsForProvider("p1")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 desired_models entry for the legacy advertiser, got %d", len(entries))
+	}
+	if entries[0].ModelName != "gemma-4-26b" || entries[0].DesiredBuild != "gemma-4-26b-qat-4bit" {
+		t.Fatalf("unexpected desired entry: %+v", entries[0])
+	}
+	if entries[0].PreviousBuild != "gemma-4-26b" {
+		t.Fatalf("expected previous build = legacy id, got %q", entries[0].PreviousBuild)
+	}
+}

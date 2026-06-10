@@ -19,6 +19,16 @@ type aliasUpsertRequest struct {
 	DesiredBuild  string `json:"desired_build"`
 	PreviousBuild string `json:"previous_build"`
 	Active        *bool  `json:"active"` // pointer so omission defaults to true
+	// Takeover lets a public alias adopt the name of an EXISTING concrete model,
+	// absorbing that same-named build as its previous_build (fallback). This is the
+	// only way to migrate a live public name (e.g. "gemma-4-26b") onto a new
+	// desired build without renaming what providers already advertise — used for
+	// the 8-bit→4-bit gemma cutover. Fail-closed: only the exact shape
+	// alias_id == previous_build == an existing concrete model id is permitted, and
+	// desired_build must still be a distinct registered build. It does NOT touch
+	// the absorbed model's catalog weight hash, so it never untrusts the providers
+	// already serving it; they converge to the desired build via desired_models.
+	Takeover bool `json:"takeover"`
 }
 
 // handleModelAliasUpsert creates or replaces a public model alias (idempotent on
@@ -58,15 +68,37 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "desired_build is required", withParam("desired_build")))
 		return
 	}
-	// Namespace guard: an alias id must not collide with a concrete model id,
-	// otherwise resolution and routing become ambiguous.
-	if rec, err := s.store.GetModelRegistryRecord(req.AliasID); err == nil && rec != nil {
-		writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error",
-			"alias_id collides with an existing model id", withParam("alias_id")))
+	// Namespace + takeover rules. Normally an alias id must not collide with a
+	// concrete model id (resolution would be ambiguous), and an alias may never
+	// name itself as a member. `takeover` is the deliberate exception for the
+	// public-name migration: an alias adopts the name of an existing concrete
+	// model and absorbs that same-named build as its previous_build (fallback).
+	collidingRec, _ := s.store.GetModelRegistryRecord(req.AliasID)
+	idCollision := collidingRec != nil
+
+	// desired_build can NEVER equal the alias name (that would alias to itself).
+	if req.DesiredBuild == req.AliasID {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"desired_build cannot equal alias_id", withParam("desired_build")))
 		return
 	}
-	if req.DesiredBuild == req.AliasID || req.PreviousBuild == req.AliasID {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "an alias cannot reference itself", withParam("desired_build")))
+	if idCollision {
+		if !req.Takeover {
+			writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error",
+				"alias_id collides with an existing model id (set takeover=true to adopt it as the alias's previous build)", withParam("alias_id")))
+			return
+		}
+		// Fail-closed: takeover only permits absorbing the SAME-named concrete
+		// build as the alias fallback. previous_build must be exactly alias_id.
+		if req.PreviousBuild != req.AliasID {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+				"takeover requires previous_build to equal alias_id (the concrete build absorbed as the alias fallback)", withParam("previous_build")))
+			return
+		}
+	} else if req.PreviousBuild == req.AliasID {
+		// No concrete model of this name exists, so there is nothing to absorb.
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"an alias cannot reference itself", withParam("previous_build")))
 		return
 	}
 	if req.PreviousBuild != "" && req.PreviousBuild == req.DesiredBuild {

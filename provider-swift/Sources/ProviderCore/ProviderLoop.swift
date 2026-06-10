@@ -2945,6 +2945,12 @@ extension ProviderLoop {
                 guard let self else { return [] }
                 return await self.advertisedLocalModelIds()
             },
+            // Same per-server scope semantics as the standalone --local path
+            // (PR #290 review): the local HTTP endpoint can't carry a
+            // per-request prompt_cache_key, so honor the fixed
+            // DARKBLOOM_PREFIX_CACHE_SCOPE here too. "" => unscoped. The
+            // coordinator WS path is unaffected (it carries per-request scope).
+            cacheScope: ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_SCOPE"] ?? "",
             // Fires only once OUR server has actually bound the socket — the
             // authoritative bind signal. We publish discovery here (never from a
             // best-effort HTTP probe that a foreign process on the same port

@@ -103,6 +103,12 @@ public actor BatchScheduler {
     /// only — the engine tier (`EncryptedPrefixCachePersistence`) keeps no
     /// hit/miss counters, so pure-attention `.engine` models log nothing here.
     var prefixCacheStatsTask: Task<Void, Never>?
+    /// Steady-state TTL reaper (PR #290 review): reapExpired otherwise runs
+    /// only at load-time reconcile, so entries going cold while the model
+    /// stays loaded would sit on disk until restart (the lazy read-path check
+    /// fires only when the same prefix is looked up again). Started with the
+    /// engine, cancelled in `stopCurrentEngine`.
+    var ttlReapTask: Task<Void, Never>?
     /// Interval (seconds) for the stats logger. Default 120s when a checkpoint
     /// manager is active (one info line every two minutes is negligible even
     /// across a fleet, and gives hit-rate observability out of the box). A
@@ -330,6 +336,9 @@ public actor BatchScheduler {
         // Periodic checkpoint-tier hit/miss logger (no-op if disabled or
         // engine-tier model). Cancelled in stopCurrentEngine.
         startPrefixCacheStatsLogger()
+        // Steady-state TTL sweep for the checkpoint SSD tier (no-op when TTL
+        // disabled or engine-tier model). Cancelled in stopCurrentEngine.
+        startTTLReaper()
     }
 
     /// Snapshot model bytes + tokenizer + architecture out of the
@@ -1371,6 +1380,8 @@ public actor BatchScheduler {
         await logPrefixCacheStats()
         prefixCacheStatsTask?.cancel()
         prefixCacheStatsTask = nil
+        ttlReapTask?.cancel()
+        ttlReapTask = nil
 
         if let engine = self.engine {
             _ = engine.core.abortAllRequests()

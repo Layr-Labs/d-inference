@@ -216,6 +216,16 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     private var unsavedWrites = 0
     /// Save the index after this many new writes (or on shutdown/idle flush).
     private static let saveCoalesceThreshold = 8
+    /// Last wall-clock second a touch-driven index save ran (PR #290 review):
+    /// hit-recency (`lastHitAt`) is bumped in memory on every RAM/SSD hit, but
+    /// without periodic persistence a crash loses those bumps and the next
+    /// restart's reconcile reaps recently-hot entries off stale timestamps.
+    /// Saves are time-coalesced (at most one per `touchSaveIntervalSeconds`),
+    /// bounding both the hot-path fsync cost and the crash-loss window.
+    private var lastTouchSaveAt: Int64 = 0
+    /// Max recency staleness a crash can cause (seconds). 60s against the 300s
+    /// default TTL means a crash under-credits an entry's recency by ≤ 20%.
+    static let touchSaveIntervalSeconds: Int64 = 60
     /// TB-016 sub-feature B: pinned digests are always eligible for
     /// persistence regardless of minPersistTokens. Internal-only (no
     /// public pin() API this phase).
@@ -296,6 +306,40 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     private func saturatingExpiry(from base: Int64) -> Int64 {
         let (sum, overflow) = base.addingReportingOverflow(ttlSeconds)
         return overflow ? Int64.max : sum
+    }
+
+    /// Time-coalesced index save after a hit-recency touch (PR #290 review).
+    /// `index.touch` only mutates in memory; if the process dies before a
+    /// graceful flush, restart reconcile would reap recently-hot entries off
+    /// stale persisted timestamps. At most one save per
+    /// `touchSaveIntervalSeconds` bounds the crash-loss window without putting
+    /// an fsync on every warm request. TTL-gated: with TTL off nothing reaps
+    /// on recency, so the persistence urgency disappears.
+    private func persistRecencyIfDue(_ index: PrefixCacheIndex) {
+        guard ttlSeconds > 0, !closed, index.isDirty else { return }
+        let t = now()
+        guard t - lastTouchSaveAt >= Self.touchSaveIntervalSeconds else { return }
+        if (try? index.save()) != nil {
+            lastTouchSaveAt = t
+            unsavedWrites = 0
+        }
+    }
+
+    /// Steady-state TTL sweep (PR #290 review): reconcile-time reaping only
+    /// covers model (re)load, and the lazy read-path check only fires when the
+    /// SAME prefix is looked up again — so entries that go cold while the
+    /// model stays loaded would otherwise sit on disk until restart. Called
+    /// periodically by BatchScheduler while the engine is alive. Persists the
+    /// shrunken index and pushes the corrected footprint to the accountant
+    /// (mirroring dropUnusableSSDFile). No-op when TTL disabled / SSD off /
+    /// closed.
+    public func reapExpiredTick() async {
+        guard ssdEnabled, let index, let cacheDir else { return }
+        let before = stats.ttlExpirations
+        reapExpired(index: index, cacheDir: cacheDir)
+        guard stats.ttlExpirations > before else { return }
+        if index.isDirty { _ = try? index.save() }
+        await notifyAccountant()
     }
 
     public init(
@@ -409,6 +453,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                         // enabled so ttl=0 behavior stays byte-identical.
                         if ttlSeconds > 0 {
                             index.touch(modelHash: binding.modelHash, digestHex: digestHex, now: now())
+                            persistRecencyIfDue(index)
                         }
                     } else if hit.tokenCount >= minPersistTokens {
                         // TB-016 sub-feature B: 2nd-use promotion. RAM hit above
@@ -618,6 +663,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             )
         }
         index.touch(modelHash: binding.modelHash, digestHex: entry.digestHex, now: now())
+        persistRecencyIfDue(index)
 
         return PrefixLookupResult(caches: caches, tokenCount: entry.tokenCount, tier: .ssd)
     }

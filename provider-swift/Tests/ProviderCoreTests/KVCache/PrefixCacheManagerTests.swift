@@ -827,3 +827,60 @@ func ttlEffectivelyInfiniteTTLNeverTrapsOrReaps() async {
     #expect(hit?.tier == .ssd, "huge TTL = effectively infinite retention")
     #expect(await mgr.snapshotStats().ttlExpirations == 0, "nothing may be reaped")
 }
+
+@Test
+func ttlTouchRecencyPersistsAcrossCrash() async {
+    // PR #290 review (Codex r3384557425): hit-recency bumps were in-memory
+    // only — a crash after hot hits left stale persisted lastHitAt, and the
+    // restart's reconcile reaped recently-hot entries. Touches now trigger a
+    // time-coalesced index save, bounding the crash-loss window.
+    let clock = MonotonicClock(start: 1000)
+    let dir = tmpDir()
+    let sharedKEK = KVCacheKEK(
+        wrapper: InMemoryKeyWrappingService(key: .init(data: Data(repeating: 7, count: 32)), identifier: "shared"),
+        storage: InMemoryWrappedKEKStorage(identifier: "touch-persist"))
+    let (m1, _) = makeTTLManager(ttl: 300, clock: clock, dir: dir, kek: sharedKEK)
+    let tokens = prompt(10)
+    await m1.store(tokens: tokens, checkpointLength: 8,
+                   caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await m1.flushToSSD()
+    await m1.flushIndexNow()   // persisted lastHitAt = 1000
+
+    // A warm hit at t=1200 slides recency AND (coalesced) persists it.
+    clock.advance(200)
+    await m1.clearRAM()
+    #expect(await m1.lookup(tokens: tokens)?.tier == .ssd)
+
+    // CRASH: m1 abandoned without graceful teardown. Restart at t=1400 —
+    // cutoff is 1100; the persisted lastHitAt must be 1200 (the touch), not
+    // the stale 1000, or reconcile reaps a 200s-hot entry.
+    clock.advance(200)
+    let (m2, _) = makeTTLManager(ttl: 300, clock: clock, dir: dir, kek: sharedKEK)
+    await m2.reconcileWithDisk()
+    let hit = await m2.lookup(tokens: tokens)
+    #expect(hit?.tier == .ssd, "recently-hot entry must survive a crash-restart reconcile")
+    #expect(await m2.snapshotStats().ttlExpirations == 0)
+}
+
+@Test
+func ttlReapExpiredTickReapsWhileModelStaysLoaded() async {
+    // PR #290 review (Codex r3384557423): reconcile-only reaping leaves
+    // cold entries on disk for the whole model-loaded lifetime. The periodic
+    // reapExpiredTick must reclaim them with NO reconcile/restart.
+    let clock = MonotonicClock(start: 1000)
+    let (mgr, dir) = makeTTLManager(ttl: 300, clock: clock)
+    let tokens = prompt(10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()
+
+    clock.advance(1000)  // entry is now 1000s cold (> 300s TTL)
+    await mgr.reapExpiredTick()
+
+    // Assert on the physical file + stats (RAM may still hold the entry; the
+    // tick's contract is the DISK tier).
+    let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("m").path))?
+        .filter { $0.hasSuffix(".\(EncryptedKVStore.fileExtension)") } ?? []
+    #expect(files.isEmpty, "steady-state tick must reap the cold entry without a reconcile")
+    #expect(await mgr.snapshotStats().ttlExpirations >= 1)
+}

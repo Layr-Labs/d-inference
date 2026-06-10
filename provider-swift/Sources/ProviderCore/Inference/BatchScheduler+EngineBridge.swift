@@ -282,6 +282,27 @@ extension BatchScheduler {
     /// the interval is 0 (disabled) or there is no checkpoint manager (engine
     /// tier / cache off). Snapshots are cheap (a struct copy across the manager
     /// actor), so a 2-minute cadence is free.
+    /// Periodic steady-state TTL sweep (PR #290 review). Cadence: half the
+    /// TTL, clamped to [60, 300]s — frequent enough that an expired entry
+    /// outlives its TTL by at most ~cadence, rare enough to be free (the sweep
+    /// is an in-memory index scan; file deletes only when something expired).
+    /// Independent of the stats logger so disabling observability never
+    /// disables the privacy reaper.
+    func startTTLReaper() {
+        ttlReapTask?.cancel()
+        ttlReapTask = nil
+        let ttl = Self.prefixCacheTTLSeconds()
+        guard ttl > 0, let mgr = checkpointManager else { return }
+        let cadence = Swift.max(60, Swift.min(ttl / 2, 300))
+        ttlReapTask = Task.detached { [weak mgr] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Double(cadence)))
+                if Task.isCancelled { return }
+                await mgr?.reapExpiredTick()
+            }
+        }
+    }
+
     func startPrefixCacheStatsLogger() {
         prefixCacheStatsTask?.cancel()
         prefixCacheStatsTask = nil

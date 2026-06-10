@@ -3378,13 +3378,31 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 // including attestation metadata (trust level, Secure Enclave status,
 // provider count) for each model. Capacity fields (routable_providers,
 // warm_providers, can_accept) are included from the live capacity snapshot.
+// hideAliasBuild marks a concrete build id as hidden from the standalone model
+// listing — a build behind a public alias is only ever exposed through that
+// alias. Only builds that are actually in the catalog are hidden: a build absent
+// from the catalog can't appear in the listing anyway, and adding it would
+// pollute the hidden set (e.g. an alias pointing at a not-yet-registered build).
+// Empty ids are ignored.
+func hideAliasBuild(hidden map[string]struct{}, catalogByID map[string]store.SupportedModel, buildID string) {
+	if buildID == "" {
+		return
+	}
+	if _, inCatalog := catalogByID[buildID]; inCatalog {
+		hidden[buildID] = struct{}{}
+	}
+}
+
 // aliasModelEntries builds the consumer-facing /v1/models entries for active
 // public aliases and returns the set of underlying build ids those aliases
-// cover (so the caller can hide them from the default listing). Each alias entry
-// derives its metadata from its primary build — the desired build, or the
-// previous build if the desired one isn't in the catalog yet — and aggregates
-// live capacity across both the desired and previous builds so the alias's
-// routable/warm counts reflect every quant currently serving it.
+// cover (so the caller can hide them from the default listing). The hidden set
+// covers EVERY build an alias references — desired, previous, and the retired
+// lineage — so a concrete quant build never appears as its own entry once it is
+// behind an alias. Each alias entry derives its metadata from its primary build
+// — the desired build, or the previous build if the desired one isn't in the
+// catalog yet — and aggregates live capacity across the desired and previous
+// builds so the alias's routable/warm counts reflect every quant currently
+// serving it (retired builds are hide-only and never contribute capacity).
 func (s *Server) aliasModelEntries(
 	capByModel map[string]*registry.ModelCapacity,
 	catalogByID map[string]store.SupportedModel,
@@ -3401,6 +3419,16 @@ func (s *Server) aliasModelEntries(
 	for _, a := range aliases {
 		if !a.Active || a.DesiredBuild == "" {
 			continue
+		}
+		// A consumer must only ever see the alias, never a concrete build behind
+		// it. Hide EVERY build this alias references — desired, previous, AND the
+		// retired lineage — from the standalone listing, even if the alias itself
+		// isn't advertisable right now. (Capacity below aggregates only the
+		// routable desired/previous members; retired builds are hide-only.)
+		hideAliasBuild(hidden, catalogByID, a.DesiredBuild)
+		hideAliasBuild(hidden, catalogByID, a.PreviousBuild)
+		for _, b := range a.RetiredBuilds {
+			hideAliasBuild(hidden, catalogByID, b)
 		}
 		// Primary build = the desired build when it's in the catalog, else the
 		// previous build (so the alias keeps a real entry while the desired build
@@ -3433,7 +3461,6 @@ func (s *Server) aliasModelEntries(
 		routable, warm := 0, 0
 		canAccept := false
 		for _, b := range members {
-			hidden[b] = struct{}{}
 			if cap, ok := capByModel[b]; ok {
 				routable += cap.RoutableProviders
 				warm += cap.WarmProviders

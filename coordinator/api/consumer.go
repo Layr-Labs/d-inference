@@ -2517,10 +2517,11 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
 
-	// The terminal include_usage chunk lacks the reasoning breakdown; we hold it
-	// and re-emit it at stream end augmented with the provider's authoritative
-	// reasoning-token count (CompleteCh) — matching the non-streaming/Responses paths.
-	var pendingUsageChunk string
+	// The terminal include_usage chunk lacks the reasoning breakdown; we hold its
+	// parsed object and re-emit it at stream end with the provider's authoritative
+	// reasoning count (CompleteCh) spliced in — matching the non-streaming/Responses
+	// paths. Held as a parsed map so it is decoded exactly once.
+	var pendingUsage map[string]any
 
 	for {
 		select {
@@ -2555,7 +2556,11 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 					// Emit the held usage chunk (stream_options.include_usage) with the
 					// reasoning breakdown spliced in from the provider's authoritative
 					// UsageInfo, so streaming reports reasoning_tokens like the rest.
-					if pendingUsageChunk != "" {
+					// This select runs once, at stream end: the provider's
+					// inferenceComplete (which populates CompleteCh) is what ends the
+					// stream, so it is effectively already buffered — the timeout is a
+					// fallback, not a hot-path wait.
+					if pendingUsage != nil {
 						var usage protocol.UsageInfo
 						select {
 						case u, uok := <-pr.CompleteCh:
@@ -2565,11 +2570,10 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 						case <-time.After(2 * time.Second):
 						case <-r.Context().Done():
 						}
-						out := normalizeSSEChunk(pendingUsageChunk)
-						out = injectReasoningIntoStreamUsageChunk(out, usage)
-						out = rewriteChunkModel(out, pr)
-						fmt.Fprintf(w, "%s\n\n", out)
-						flusher.Flush()
+						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
+							fmt.Fprintf(w, "%s\n\n", out)
+							flusher.Flush()
+						}
 					}
 					// Chat completions format: append SE signature + [DONE].
 					if pr.SESignature != "" {
@@ -2593,17 +2597,13 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			}
 			// Hold the terminal usage chunk (chat completions only) so we can splice
 			// in the reasoning breakdown at stream end; forwarding it inline would
-			// emit it without reasoning_tokens.
-			if !sawResponsesAPI && isUsageOnlyStreamChunk(chunk) {
-				pendingUsageChunk = chunk
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
+			// emit it without reasoning_tokens. The stream closes right after, so the
+			// running timer still guards a post-usage hang.
+			if !sawResponsesAPI {
+				if obj, isUsage := parseUsageOnlyStreamChunk(chunk); isUsage {
+					pendingUsage = obj
+					continue
 				}
-				timer.Reset(inferenceTimeout)
-				continue
 			}
 			if !sawResponsesAPI {
 				chunk = normalizeSSEChunk(chunk)
@@ -3381,43 +3381,44 @@ func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 	obj["usage"] = usageObj
 }
 
-// isUsageOnlyStreamChunk reports whether an SSE data chunk is the terminal usage
-// chunk emitted for stream_options.include_usage: empty choices + a non-null usage
-// object, carrying the final usage and no content delta.
-func isUsageOnlyStreamChunk(chunk string) bool {
+// parseUsageOnlyStreamChunk decodes a terminal include_usage chunk (empty choices
+// + a non-null usage object, carrying the final usage and no content delta) and
+// returns the parsed object. ok is false for any other chunk. Parsing here once
+// lets the caller hold the object and finalize it at stream end without re-parsing.
+func parseUsageOnlyStreamChunk(chunk string) (obj map[string]any, ok bool) {
 	line := strings.TrimPrefix(chunk, "data: ")
+	// Cheap gate: skip the parse for content deltas and usage:null chunks.
 	if !strings.Contains(line, `"usage"`) || strings.Contains(line, `"usage":null`) {
-		return false
+		return nil, false
 	}
-	var obj map[string]any
 	if err := json.Unmarshal([]byte(line), &obj); err != nil {
-		return false
+		return nil, false
 	}
-	if u, ok := obj["usage"].(map[string]any); !ok || u == nil {
-		return false
+	if u, uok := obj["usage"].(map[string]any); !uok || u == nil {
+		return nil, false
 	}
-	choices, _ := obj["choices"].([]any)
-	return len(choices) == 0
+	if choices, _ := obj["choices"].([]any); len(choices) != 0 {
+		return nil, false
+	}
+	return obj, true
 }
 
-// injectReasoningIntoStreamUsageChunk adds completion_tokens_details.reasoning_tokens
-// (from the provider's authoritative UsageInfo) to a streaming chat-completions
-// usage chunk, so streaming reports the reasoning breakdown like the non-streaming
-// and Responses paths. No-op when there is no reasoning count or the chunk isn't
-// parseable.
-func injectReasoningIntoStreamUsageChunk(chunk string, usage protocol.UsageInfo) string {
-	if usage.ReasoningTokens <= 0 {
-		return chunk
-	}
-	line := strings.TrimPrefix(chunk, "data: ")
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(line), &obj); err != nil {
-		return chunk
-	}
+// finalizeUsageChunk renders the held terminal usage chunk for chat-completions
+// streaming: it splices the provider's authoritative reasoning count into
+// completion_tokens_details (no-op when there is none), strips a null
+// system_fingerprint, and rewrites the build id to the public alias — marshalling
+// ONCE (obj is already parsed). Returns "" if it can't be marshalled.
+func finalizeUsageChunk(obj map[string]any, usage protocol.UsageInfo, pr *registry.PendingRequest) string {
 	injectReasoningDetailIntoRawUsage(obj, usage)
+	if v, present := obj["system_fingerprint"]; present && v == nil {
+		delete(obj, "system_fingerprint")
+	}
+	if pr.PublicModel != "" && pr.PublicModel != pr.Model {
+		obj["model"] = pr.PublicModel
+	}
 	b, err := json.Marshal(obj)
 	if err != nil {
-		return chunk
+		return ""
 	}
 	return "data: " + string(b)
 }

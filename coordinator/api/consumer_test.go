@@ -1665,22 +1665,40 @@ func TestDetectMediaRequirementAnthropicImageBlock(t *testing.T) {
 	}
 }
 
-// TestInjectReasoningIntoStreamUsageChunk covers the helper logic directly.
-func TestInjectReasoningIntoStreamUsageChunk(t *testing.T) {
-	usageChunk := `data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`
-	if !isUsageOnlyStreamChunk(usageChunk) {
-		t.Fatal("expected the usage-only chunk to be detected")
+// TestUsageChunkParseAndFinalize covers the parse-once + finalize helpers.
+func TestUsageChunkParseAndFinalize(t *testing.T) {
+	usageChunk := `data: {"object":"chat.completion.chunk","model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`
+	pr := &registry.PendingRequest{Model: "gpt-oss-20b"}
+
+	obj, ok := parseUsageOnlyStreamChunk(usageChunk)
+	if !ok {
+		t.Fatal("expected the usage-only chunk to be detected + parsed")
 	}
-	out := injectReasoningIntoStreamUsageChunk(usageChunk, protocol.UsageInfo{CompletionTokens: 50, ReasoningTokens: 8})
+	out := finalizeUsageChunk(obj, protocol.UsageInfo{CompletionTokens: 50, ReasoningTokens: 8}, pr)
 	if !strings.Contains(out, `"reasoning_tokens":8`) {
-		t.Fatalf("expected reasoning_tokens injected; got %s", out)
+		t.Fatalf("expected reasoning_tokens spliced into usage; got %s", out)
 	}
-	delta := `data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"x"}}]}`
-	if isUsageOnlyStreamChunk(delta) {
+
+	// A content delta and a usage:null chunk are NOT usage-only chunks.
+	if _, ok := parseUsageOnlyStreamChunk(`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"x"}}]}`); ok {
 		t.Fatal("a content delta must NOT be treated as a usage-only chunk")
 	}
-	if got := injectReasoningIntoStreamUsageChunk(usageChunk, protocol.UsageInfo{CompletionTokens: 50}); got != usageChunk {
-		t.Fatalf("expected no-op when there is no reasoning; got %s", got)
+	if _, ok := parseUsageOnlyStreamChunk(`data: {"object":"chat.completion.chunk","choices":[],"usage":null}`); ok {
+		t.Fatal("a usage:null chunk must NOT be treated as a usage-only chunk")
+	}
+
+	// No reasoning → no completion_tokens_details added.
+	obj2, _ := parseUsageOnlyStreamChunk(usageChunk)
+	if plain := finalizeUsageChunk(obj2, protocol.UsageInfo{CompletionTokens: 50}, pr); strings.Contains(plain, "completion_tokens_details") {
+		t.Fatalf("expected no reasoning detail when ReasoningTokens=0; got %s", plain)
+	}
+
+	// Build id rewritten to the public alias.
+	obj3, _ := parseUsageOnlyStreamChunk(usageChunk)
+	prAlias := &registry.PendingRequest{Model: "gpt-oss-20b", PublicModel: "gpt-oss"}
+	aliased := finalizeUsageChunk(obj3, protocol.UsageInfo{CompletionTokens: 50, ReasoningTokens: 8}, prAlias)
+	if !strings.Contains(aliased, `"model":"gpt-oss"`) || strings.Contains(aliased, `"model":"gpt-oss-20b"`) {
+		t.Fatalf("expected build id rewritten to the public alias; got %s", aliased)
 	}
 }
 

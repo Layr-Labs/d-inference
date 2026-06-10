@@ -2516,6 +2516,37 @@ func (r *Registry) GetProvider(id string) *Provider {
 	return r.providers[id]
 }
 
+// CountProvidersByBinaryHash returns the number of currently connected
+// providers whose registration attested the given provider binary hash. Used by
+// release administration to avoid removing a hash from the forced allowlist
+// while old-but-still-connected providers are draining/restarting into a newer
+// release.
+func (r *Registry) CountProvidersByBinaryHash(hash string) int {
+	normalized := strings.ToLower(strings.TrimSpace(hash))
+	if normalized == "" {
+		return 0
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		status := p.Status
+		attestedHash := ""
+		if p.AttestationResult != nil {
+			attestedHash = p.AttestationResult.BinaryHash
+		}
+		p.mu.Unlock()
+
+		if status != StatusOffline && strings.EqualFold(attestedHash, normalized) {
+			count++
+		}
+	}
+	return count
+}
+
 // MarkUntrusted sets a provider's status to untrusted for a hard/security
 // reason (bad encrypted chunk, MDM/MDA failure, SIP disabled, binary or model
 // hash mismatch, serial impersonation, attestation failure). The deroute is

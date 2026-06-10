@@ -39,6 +39,14 @@ public enum LaunchAgent: Sendable {
         isLoaded(label: label)
     }
 
+    /// Whether any supported launchd label is currently loaded. Prefer this for
+    /// process-lifecycle decisions where legacy installations should still be
+    /// treated as launchd-managed.
+    public static func isAnySupportedLabelLoaded() -> Bool {
+        if isLoaded() { return true }
+        return legacyLabels.contains { isLoaded(label: $0) }
+    }
+
     private static func isLoaded(label: String) -> Bool {
         let target = "gui/\(getuid())/\(label)"
         let process = Process()

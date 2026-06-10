@@ -673,11 +673,19 @@ public actor ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
-                    staleDesiredPrefetches.remove(modelId)
-                    await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+                    if isDrainingForUpdate {
+                        sendDrainingPrefetchFailure(modelId: modelId, send: send)
+                    } else {
+                        staleDesiredPrefetches.remove(modelId)
+                        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+                    }
 
                 case .desiredModels(let entries):
-                    await reconcileDesiredModels(entries, send: send)
+                    if isDrainingForUpdate {
+                        logger.info("Ignoring desired_models during update drain (\(entries.count) entr(ies)); fresh desired state will be pushed after restart")
+                    } else {
+                        await reconcileDesiredModels(entries, send: send)
+                    }
 
                 case .trustStatus(let trustLevel, let status, let reason):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
@@ -875,6 +883,29 @@ public actor ProviderLoop {
         if isDrainingForUpdate {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider draining for update")
         }
+    }
+
+    /// Coordinator prefetch/load control messages are not user requests, but
+    /// starting new model work during the final update drain is pointless and
+    /// can briefly make the coordinator believe a soon-to-restart provider has
+    /// warmed a model. Reject them explicitly; the post-restart registration
+    /// receives fresh `desired_models` and demand-driven `load_model` can retry.
+    private func sendDrainingLoadModelFailure(modelId: String, send: SendHandle) {
+        send.send(.loadModelStatus(
+            modelId: modelId,
+            status: .failed,
+            error: "provider draining for update"
+        ))
+    }
+
+    private func sendDrainingPrefetchFailure(modelId: String, send: SendHandle) {
+        send.send(.prefetchModelStatus(
+            modelId: modelId,
+            status: .failed,
+            bytesDone: 0,
+            bytesTotal: 0,
+            error: "provider draining for update"
+        ))
     }
 
     private func handleInferenceRequest(
@@ -1393,6 +1424,10 @@ public actor ProviderLoop {
             ))
             return
         }
+        if isDrainingForUpdate {
+            sendDrainingLoadModelFailure(modelId: modelId, send: send)
+            return
+        }
 
         if modelSlots[modelId] != nil, !modelsUnloading.contains(modelId) {
             logger.info("Preload for \(modelId): already loaded, replying succeeded")
@@ -1498,6 +1533,10 @@ public actor ProviderLoop {
             send.send(.prefetchModelStatus(
                 modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0,
                 error: "provider is shutting down"))
+            return
+        }
+        if isDrainingForUpdate {
+            sendDrainingPrefetchFailure(modelId: modelId, send: send)
             return
         }
         logger.info("Prefetch request for \(modelId) (priority=\(priority))")

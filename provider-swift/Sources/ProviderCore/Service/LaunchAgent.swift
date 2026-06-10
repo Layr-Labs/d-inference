@@ -70,8 +70,10 @@ public enum LaunchAgent: Sendable {
     ///
     /// If the service is already loaded it is unloaded first to pick up
     /// any plist changes. The plist is written with:
-    ///   - KeepAlive = false (no auto-restart on crash)
-    ///   - RunAtLoad = false (no auto-start on login)
+    ///   - KeepAlive = false (no auto-restart on crash; avoids racing the updater)
+    ///   - RunAtLoad = true (auto-start when the GUI session loads, i.e. at login —
+    ///     at boot on an auto-login box — so a rebooted provider re-attests via APNs
+    ///     without a manual `darkbloom start`)
     ///   - ProcessType = Interactive (high priority for real-time inference)
     ///   - Nice = -5 (slight scheduling boost)
     ///
@@ -273,13 +275,46 @@ public enum LaunchAgent: Sendable {
             }
         }
 
+        let plistDict = makeServicePlist(
+            label: label,
+            programArguments: programArguments,
+            logPath: log,
+            environment: ProcessInfo.processInfo.environment
+        )
+
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plistDict,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: plist, options: .atomic)
+    }
+
+    /// Build the launchd plist dictionary for the provider service. Pure (no I/O)
+    /// so the auto-start and environment-passthrough behavior is unit-testable.
+    ///
+    /// `RunAtLoad = true`: launchd starts the provider as soon as the GUI session
+    /// loads the agent — i.e. at login, which on an auto-login box is at boot. This
+    /// is what lets a rebooted/power-cycled provider come back and re-attest via
+    /// APNs with no human running `darkbloom start`. (APNs registration needs the
+    /// GUI/Aqua session, which a gui-domain LaunchAgent already runs in.)
+    ///
+    /// `KeepAlive = false` is deliberate: unconditional KeepAlive would have launchd
+    /// relaunch the process the instant the graceful self-updater stops it to swap
+    /// the binary, racing the stage-then-swap. Crash-recovery is handled separately.
+    static func makeServicePlist(
+        label: String,
+        programArguments: [String],
+        logPath: String,
+        environment: [String: String]
+    ) -> [String: Any] {
         var plistDict: [String: Any] = [
             "Label": label,
             "ProgramArguments": programArguments,
             "KeepAlive": false,
-            "RunAtLoad": false,
-            "StandardOutPath": log,
-            "StandardErrorPath": log,
+            "RunAtLoad": true,
+            "StandardOutPath": logPath,
+            "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
         ]
@@ -289,17 +324,12 @@ public enum LaunchAgent: Sendable {
         // on-by-default encrypted SSD KV cache) would be silently ignored by the
         // daemon. Persist the allowlisted passthrough vars into the plist so the
         // operator actually has a per-machine off switch.
-        let environmentVariables = passthroughEnvironment(from: ProcessInfo.processInfo.environment)
+        let environmentVariables = passthroughEnvironment(from: environment)
         if !environmentVariables.isEmpty {
             plistDict["EnvironmentVariables"] = environmentVariables
         }
 
-        let data = try PropertyListSerialization.data(
-            fromPropertyList: plistDict,
-            format: .xml,
-            options: 0
-        )
-        try data.write(to: plist, options: .atomic)
+        return plistDict
     }
 
     private static func loadService() throws {

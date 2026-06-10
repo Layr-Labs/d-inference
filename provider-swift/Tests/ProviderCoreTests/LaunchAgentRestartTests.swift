@@ -37,3 +37,31 @@ struct LaunchAgentEnvironmentTests {
         #expect(LaunchAgent.passthroughEnvironment(from: ["DARKBLOOM_PREFIX_CACHE": ""]).isEmpty)
     }
 }
+
+@Suite("LaunchAgent service plist")
+struct LaunchAgentServicePlistTests {
+    @Test func autoStartsAtLoadAndForwardsAllowlistedEnv() {
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/usr/bin"]
+        )
+        // RunAtLoad=true so a rebooted / auto-login box restarts (and re-attests via
+        // APNs) with no human; KeepAlive stays false to avoid racing the self-updater.
+        #expect(plist["RunAtLoad"] as? Bool == true)
+        #expect(plist["KeepAlive"] as? Bool == false)
+        #expect((plist["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
+    }
+
+    @Test func omitsEnvironmentWhenNoAllowlistedVarsSet() {
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: ["PATH": "/usr/bin"]
+        )
+        #expect(plist["EnvironmentVariables"] == nil)
+        #expect(plist["RunAtLoad"] as? Bool == true)
+    }
+}

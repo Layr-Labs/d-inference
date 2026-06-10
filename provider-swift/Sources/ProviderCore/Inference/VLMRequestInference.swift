@@ -148,9 +148,16 @@ public enum VLMRequestInference {
                     // to the existing prepare/generate path below, unchanged.
                     let repPenaltyNeutral =
                         params.repetitionPenalty == nil || params.repetitionPenalty == 1.0
+                    // Tool-call requests must stay on the library generate path:
+                    // `streamMTP` only emits `.content`/`.info`, so taking the MTP
+                    // branch would drop the structured `.toolCall` events the plain
+                    // path surfaces — changing the wire response. Gate MTP off when
+                    // the request carries tools.
+                    let noTools = request.tools?.isEmpty ?? true
                     if let drafter = mtpDrafter,
                         params.temperature == 0,
-                        repPenaltyNeutral
+                        repPenaltyNeutral,
+                        noTools
                     {
                         let handled = try await streamMTP(
                             container: container,

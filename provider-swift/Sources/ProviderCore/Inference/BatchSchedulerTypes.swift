@@ -76,6 +76,11 @@ struct LoadSnapshot: @unchecked Sendable {
     let tokenizer: TokenizerHandle
     let eosTokenIds: Set<Int>
     let architecture: ModelArchitecture
+    /// Whether the resident model is an MTP-capable Gemma 4 tower (text or
+    /// VLM). Gates the (potentially large) drafter weight load: with MTP
+    /// globally enabled on a multi-model provider, a non-Gemma model load
+    /// must not allocate the unusable drafter.
+    let mtpCapable: Bool
 }
 
 /// Model-architecture fields read from `config.json`, used by

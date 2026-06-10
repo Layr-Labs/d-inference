@@ -230,6 +230,7 @@ public actor BatchScheduler {
             maxConcurrentRequests: maxConcurrentRequests,
             eosTokenIds: snapshot.eosTokenIds,
             architecture: snapshot.architecture,
+            mtpCapable: snapshot.mtpCapable,
             diskAccountant: diskAccountant
         )
         let engine = build.engine
@@ -380,11 +381,18 @@ public actor BatchScheduler {
             } else {
                 architecture = .empty
             }
+            // MTP-capability by the actual loaded type (not model_type strings
+            // or aliases): the Gemma 4 text towers and the MLXVLM Gemma 4 tower.
+            let mtpCapable =
+                ctx.model is Gemma4TextModel
+                || ctx.model is Gemma4Model
+                || ctx.model is MLXVLM.Gemma4
             return LoadSnapshot(
                 bytes: bytes,
                 tokenizer: TokenizerHandle(ctx.tokenizer),
                 eosTokenIds: ctx.configuration.eosTokenIds,
-                architecture: architecture
+                architecture: architecture,
+                mtpCapable: mtpCapable
             )
         }
     }
@@ -558,6 +566,7 @@ public actor BatchScheduler {
         maxConcurrentRequests: Int,
         eosTokenIds: Set<Int>,
         architecture: ModelArchitecture,
+        mtpCapable: Bool,
         diskAccountant: GlobalDiskAccountant? = nil
     ) async -> EngineBuild {
         // MTP drafter (Gemma 4): load before `container.perform` (which is a
@@ -567,6 +576,15 @@ public actor BatchScheduler {
         // drafter path is provided.
         let mtpDrafter: Gemma4AssistantDraftModel? = await {
             guard mtpEnabledFlag() else { return nil }
+            // Skip the (large) drafter load for non-Gemma models — on a
+            // multi-model provider with MTP globally enabled, the drafter is
+            // unusable for Qwen/Llama/etc. and would only waste load time + GPU
+            // memory before falling back to plain decode.
+            guard mtpCapable else {
+                mtpLogger.info(
+                    "DARKBLOOM_ENABLE_MTP set but \(modelId) is not an MTP-capable Gemma 4 model; skipping drafter load.")
+                return nil
+            }
             guard let drafterDir = mtpDrafterPath() else {
                 mtpLogger.warning(
                     "DARKBLOOM_ENABLE_MTP set but DARKBLOOM_MTP_DRAFTER_PATH missing/invalid; using plain decode.")

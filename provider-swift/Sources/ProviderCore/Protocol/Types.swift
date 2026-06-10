@@ -92,6 +92,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     public var sizeBytes: UInt64
     public var estimatedMemoryGb: Double
     public var weightHash: String?
+    /// True when this build can serve image/video (VLM) input. Encoded only when
+    /// true (matches the coordinator's `is_vision,omitempty`), so pre-0.6.0
+    /// providers and text-only builds omit it and are never routed media requests.
+    public var isVision: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -101,6 +105,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case sizeBytes = "size_bytes"
         case estimatedMemoryGb = "estimated_memory_gb"
         case weightHash = "weight_hash"
+        case isVision = "is_vision"
     }
 
     public init(
@@ -110,7 +115,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         quantization: String? = nil,
         sizeBytes: UInt64,
         estimatedMemoryGb: Double,
-        weightHash: String? = nil
+        weightHash: String? = nil,
+        isVision: Bool? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -119,6 +125,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.sizeBytes = sizeBytes
         self.estimatedMemoryGb = estimatedMemoryGb
         self.weightHash = weightHash
+        self.isVision = isVision
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -130,6 +137,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encode(sizeBytes, forKey: .sizeBytes)
         try container.encode(estimatedMemoryGb, forKey: .estimatedMemoryGb)
         try container.encodeIfPresent(weightHash, forKey: .weightHash)
+        // Encode only when true so text-only builds stay byte-compatible on the wire.
+        if isVision == true {
+            try container.encode(true, forKey: .isVision)
+        }
     }
 }
 

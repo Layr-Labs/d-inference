@@ -22,3 +22,18 @@ struct LaunchAgentRestartTests {
         #expect(message.contains("boom"))
     }
 }
+
+@Suite("LaunchAgent environment passthrough")
+struct LaunchAgentEnvironmentTests {
+    @Test func forwardsAllowlistedNonEmptyVars() {
+        let env = ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/usr/bin", "HOME": "/Users/x"]
+        let out = LaunchAgent.passthroughEnvironment(from: env)
+        // Only the allowlisted opt-out is forwarded to the daemon; PATH/HOME are not.
+        #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
+    }
+
+    @Test func dropsEmptyAndMissingVars() {
+        #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
+        #expect(LaunchAgent.passthroughEnvironment(from: ["DARKBLOOM_PREFIX_CACHE": ""]).isEmpty)
+    }
+}

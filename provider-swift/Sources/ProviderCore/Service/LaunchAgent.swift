@@ -214,6 +214,24 @@ public enum LaunchAgent: Sendable {
 
     // MARK: - Private
 
+    /// Env vars passed through from the installing shell into the launchd plist's
+    /// `EnvironmentVariables`. Kept to a small allowlist so the daemon's
+    /// environment stays predictable; only non-empty values are forwarded.
+    static let passthroughEnvKeys = ["DARKBLOOM_PREFIX_CACHE"]
+
+    /// Build the daemon `EnvironmentVariables` map from a source environment,
+    /// keeping only the allowlisted, non-empty keys. Pure (environment injected)
+    /// so it is unit-testable without touching the real process environment.
+    static func passthroughEnvironment(from environment: [String: String]) -> [String: String] {
+        var out: [String: String] = [:]
+        for key in passthroughEnvKeys {
+            if let value = environment[key], !value.isEmpty {
+                out[key] = value
+            }
+        }
+        return out
+    }
+
     private static func writePlist(
         binaryPath: String,
         coordinatorURL: String,
@@ -255,7 +273,7 @@ public enum LaunchAgent: Sendable {
             }
         }
 
-        let plistDict: [String: Any] = [
+        var plistDict: [String: Any] = [
             "Label": label,
             "ProgramArguments": programArguments,
             "KeepAlive": false,
@@ -265,6 +283,16 @@ public enum LaunchAgent: Sendable {
             "ProcessType": "Interactive",
             "Nice": -5,
         ]
+
+        // launchd does NOT inherit the installing shell's environment, so any
+        // opt-out the operator set (e.g. DARKBLOOM_PREFIX_CACHE=0 to disable the
+        // on-by-default encrypted SSD KV cache) would be silently ignored by the
+        // daemon. Persist the allowlisted passthrough vars into the plist so the
+        // operator actually has a per-machine off switch.
+        let environmentVariables = passthroughEnvironment(from: ProcessInfo.processInfo.environment)
+        if !environmentVariables.isEmpty {
+            plistDict["EnvironmentVariables"] = environmentVariables
+        }
 
         let data = try PropertyListSerialization.data(
             fromPropertyList: plistDict,

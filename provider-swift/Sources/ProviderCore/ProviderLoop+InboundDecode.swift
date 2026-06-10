@@ -30,6 +30,10 @@ extension ProviderLoop {
     internal static func decodeOpenAIRequest(
         _ data: Data
     ) throws -> OpenAIChatCompletionRequest {
+        // Inject default `type`s into tool parameter schemas so a Gemma-style
+        // chat template's `{{ value['type'] | upper }}` can't crash on a typeless
+        // property (DAR-130). No-op for requests without tools.
+        let data = ToolSchemaNormalization.ensureParameterTypes(in: data)
         let decoder = JSONDecoder()
         do {
             return try decoder.decode(OpenAIChatCompletionRequest.self, from: data)

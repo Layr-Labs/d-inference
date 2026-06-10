@@ -408,6 +408,23 @@ final class ReachabilityMonitor: @unchecked Sendable {
 // MARK: - Coordinator Client Actor
 
 public actor CoordinatorClient {
+    /// Upper bound on a single inbound WebSocket message. The coordinator sends each
+    /// inference request as ONE text frame carrying the base64 NaCl-box of the full
+    /// body; for a vision request that frame includes base64-encoded image bytes and
+    /// can be several MiB. `URLSessionWebSocketTask` defaults to a 1 MiB cap and
+    /// THROWS on any larger frame, which tears down the entire session and cancels
+    /// every unrelated in-flight request on this provider (then reconnects with
+    /// backoff). Size this comfortably above the coordinator's 16 MiB sealed-body cap
+    /// after base64 expansion (×4/3 ≈ 21.3 MiB).
+    static let maxInboundMessageBytes = 32 * 1024 * 1024
+
+    /// Raise a task's inbound message limit to ``maxInboundMessageBytes``. Factored
+    /// out so a unit test can assert the limit is applied without opening a live
+    /// socket.
+    static func applyInboundMessageLimit(to task: URLSessionWebSocketTask) {
+        task.maximumMessageSize = maxInboundMessageBytes
+    }
+
     private let config: CoordinatorClientConfig
     private let stats: AtomicProviderStats
     private let state: ProviderState
@@ -597,6 +614,9 @@ public actor CoordinatorClient {
         let session = URLSession(configuration: .default)
         self.urlSession = session
         let ws = session.webSocketTask(with: url)
+        // Raise the inbound cap so an image/video request frame can't tear down the
+        // session and collaterally cancel other in-flight requests (see the constant).
+        Self.applyInboundMessageLimit(to: ws)
         self.webSocketTask = ws
         ws.resume()
 

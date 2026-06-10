@@ -120,14 +120,33 @@ extension ModelScanner {
 
         let estimatedMemoryGb = (Double(sizeBytes) / (1024.0 * 1024.0 * 1024.0)) * memoryOverheadFactor
 
+        // Advertise whether this build can serve image/video input so the
+        // coordinator only routes media requests to a vision-capable provider.
+        // nil (not false) for text-only builds, so a freshly-scanned text model is
+        // wire-identical to one decoded from an older provider's registration.
+        let isVision = FileManager.default.fileExists(atPath: configPath.path)
+            && configDeclaresVision(at: configPath)
+
         return ModelInfo(
             id: modelName,
             modelType: modelType,
             parameters: parameters,
             quantization: quantization,
             sizeBytes: sizeBytes,
-            estimatedMemoryGb: estimatedMemoryGb
+            estimatedMemoryGb: estimatedMemoryGb,
+            isVision: isVision ? true : nil
         )
+    }
+
+    /// Whether config.json declares a vision tower (`vision_config`) — i.e. the
+    /// build can serve image/video input. Mirrors ProviderLoop.modelIsVLM but lives
+    /// in the dependency-free scanner so the advertised ModelInfo carries the flag.
+    static func configDeclaresVision(at path: URL) -> Bool {
+        guard let data = try? Data(contentsOf: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return json["vision_config"] != nil
     }
 
     // MARK: - Config Parsing

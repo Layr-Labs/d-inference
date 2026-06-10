@@ -344,10 +344,16 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		// vision-capable build of this model. Providers reach here only if they
 		// already serve the model (snapshot ok), so a miss here means "serves it,
 		// but text-only" — counted separately so the caller can return a precise
-		// "no vision-capable provider" error rather than a busy/429.
-		if pr.RequiresVision && !r.providerServesVisionModelLocked(p, model) {
-			visionRejections++
-			continue
+		// "no vision-capable provider" error rather than a busy/429. snapshot
+		// released p.mu, so re-take it for the p.Models read.
+		if pr.RequiresVision {
+			p.mu.Lock()
+			servesVision := r.providerServesVisionModelLocked(p, model)
+			p.mu.Unlock()
+			if !servesVision {
+				visionRejections++
+				continue
+			}
 		}
 		candidate, reason, ok := r.buildCandidateWithReason(snap, pr)
 		if !ok {

@@ -1556,8 +1556,9 @@ func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) b
 // providerServesVisionModelLocked reports whether the provider advertises the
 // model as a vision-capable (VLM) build — required to route image/video requests
 // so the media is actually perceived rather than silently dropped. Caller must
-// hold r.mu (mirrors providerServesCatalogModelLocked). Pre-0.6.0 providers never
-// set IsVision, so they are correctly excluded.
+// hold r.mu AND p.mu (mirrors providerServesCatalogModelLocked): p.Models is
+// guarded by p.mu and mutated by MergeProviderModels/UpdateModelWeightHashes.
+// Pre-0.6.0 providers never set IsVision, so they are correctly excluded.
 func (r *Registry) providerServesVisionModelLocked(p *Provider, model string) bool {
 	for _, m := range p.Models {
 		if m.ID == model && m.IsVision && r.modelAllowedByCatalogLocked(m) {
@@ -1576,10 +1577,13 @@ func (r *Registry) HasVisionProviderForModel(model string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
-			continue
-		}
-		if r.providerServesVisionModelLocked(p, model) {
+		// p.Status and p.Models are guarded by p.mu (writers hold it), so the
+		// whole eligibility read must happen under the provider lock.
+		p.mu.Lock()
+		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			r.providerServesVisionModelLocked(p, model)
+		p.mu.Unlock()
+		if eligible {
 			return true
 		}
 	}

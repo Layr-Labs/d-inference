@@ -505,7 +505,7 @@ func approximateTokenCountUpperBound(v any) int {
 func estimatePromptTokens(parsed map[string]any) int {
 	total := 0
 	if v, ok := parsed["messages"]; ok {
-		total += messagesPromptTokens(v, false)
+		total += messagesPromptTokens(v)
 	}
 	if v, ok := parsed["input"]; ok {
 		total += approximateTokenCount(v)
@@ -526,7 +526,14 @@ func estimatePromptTokens(parsed map[string]any) int {
 func estimateBillingPromptTokens(parsed map[string]any) int {
 	total := 0
 	if v, ok := parsed["messages"]; ok {
-		total += messagesPromptTokens(v, true)
+		// Billing MUST stay a guaranteed upper bound (len(bytes) >= tokens for any
+		// BPE tokenizer), so it keeps counting full message bytes — including a
+		// base64 image's bytes and every non-content field (role, tool_calls,
+		// name). Switching to the media-aware flat count here would DROP those
+		// fields and under-reserve for tool-calling requests. Over-reservation on a
+		// large image is safe (it is refunded after inference); the routing/ITPM
+		// estimate (estimatePromptTokens) is the media-aware one.
+		total += approximateTokenCountUpperBound(v)
 	}
 	if v, ok := parsed["input"]; ok {
 		total += approximateTokenCountUpperBound(v)
@@ -560,17 +567,15 @@ func isMediaPartType(t string) bool {
 	return false
 }
 
-// messageContentTokens estimates prompt tokens for one message's `content`,
-// counting text parts as text and each image/video part as a flat media cost
-// (never the base64 length). byteBound selects the billing upper bound (len) vs
-// the routing heuristic (len/4) for text.
-func messageContentTokens(content any, byteBound bool) int {
+// messageContentTokens estimates ROUTING prompt tokens for one message's
+// `content`, counting text parts as text (len/4) and each image/video part as a
+// flat media cost (never the base64 length). Used only for the routing/ITPM
+// estimate; billing uses approximateTokenCountUpperBound (a guaranteed upper
+// bound that intentionally still counts the base64 bytes).
+func messageContentTokens(content any) int {
 	textTokens := func(s string) int {
 		if s == "" {
 			return 0
-		}
-		if byteBound {
-			return len(s)
 		}
 		if t := len(s) / 4; t > 0 {
 			return t
@@ -599,74 +604,75 @@ func messageContentTokens(content any, byteBound bool) int {
 				total += videoPromptTokenCost
 			default:
 				if b, err := json.Marshal(pm); err == nil {
-					if byteBound {
-						total += len(b)
-					} else {
-						total += len(b) / 4
-					}
+					total += len(b) / 4
 				}
 			}
 		}
 		return total
 	default:
-		if byteBound {
-			return approximateTokenCountUpperBound(content)
-		}
 		return approximateTokenCount(content)
 	}
 }
 
-// messagesPromptTokens sums media-aware content tokens across a messages array.
-// Falls back to the byte heuristic when messages isn't the standard array shape.
-func messagesPromptTokens(messages any, byteBound bool) int {
+// messagesPromptTokens sums media-aware routing content tokens across a messages
+// array. Falls back to the len/4 heuristic when messages isn't the standard
+// array shape.
+func messagesPromptTokens(messages any) int {
 	arr, ok := messages.([]any)
 	if !ok {
-		if byteBound {
-			return approximateTokenCountUpperBound(messages)
-		}
 		return approximateTokenCount(messages)
 	}
 	total := 0
 	for _, m := range arr {
 		mm, ok := m.(map[string]any)
 		if !ok {
-			if byteBound {
-				total += approximateTokenCountUpperBound(m)
-			} else {
-				total += approximateTokenCount(m)
-			}
+			total += approximateTokenCount(m)
 			continue
 		}
 		total += 4 // small per-message framing (role + delimiters)
-		total += messageContentTokens(mm["content"], byteBound)
+		total += messageContentTokens(mm["content"])
 	}
 	return total
 }
 
-// detectMediaRequirement reports whether the request carries image/video input in
-// any message's content parts. The coordinator sees plaintext at this point
-// (sealedTransport decrypts before the handler), so this drives the vision
-// routing gate and the fail-fast "no vision-capable provider" response.
-func detectMediaRequirement(parsed map[string]any) bool {
-	messages, ok := parsed["messages"].([]any)
+// contentPartsHaveMedia reports whether a `content` value (a content-part array)
+// carries any image/video part.
+func contentPartsHaveMedia(content any) bool {
+	parts, ok := content.([]any)
 	if !ok {
 		return false
 	}
-	for _, m := range messages {
-		mm, ok := m.(map[string]any)
+	for _, part := range parts {
+		pm, ok := part.(map[string]any)
 		if !ok {
 			continue
 		}
-		parts, ok := mm["content"].([]any)
-		if !ok {
-			continue
+		if typ, _ := pm["type"].(string); isMediaPartType(typ) {
+			return true
 		}
-		for _, part := range parts {
-			pm, ok := part.(map[string]any)
-			if !ok {
-				continue
+	}
+	return false
+}
+
+// detectMediaRequirement reports whether the request carries image/video input.
+// The coordinator sees plaintext at this point (sealedTransport decrypts before
+// the handler), so this drives the vision routing gate and the fail-fast "no
+// vision-capable provider" response. It scans both the Chat Completions
+// `messages[].content` parts and the Responses API `input[].content` parts so a
+// media request on either surface is gated (never silently routed text-blind).
+func detectMediaRequirement(parsed map[string]any) bool {
+	if messages, ok := parsed["messages"].([]any); ok {
+		for _, m := range messages {
+			if mm, ok := m.(map[string]any); ok && contentPartsHaveMedia(mm["content"]) {
+				return true
 			}
-			if typ, _ := pm["type"].(string); isMediaPartType(typ) {
+		}
+	}
+	// Responses API: `input` may be a string (no media) or an array of items,
+	// each carrying `content` parts in the same image_url/input_image shape.
+	if input, ok := parsed["input"].([]any); ok {
+		for _, item := range input {
+			if im, ok := item.(map[string]any); ok && contentPartsHaveMedia(im["content"]) {
 				return true
 			}
 		}

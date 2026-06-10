@@ -1603,14 +1603,16 @@ func TestDetectMediaRequirementAndTokenEstimate(t *testing.T) {
 	}
 	got := estimatePromptTokens(parsed)
 	if got > 1000 {
-		t.Fatalf("media-aware estimate must ignore base64 length; got %d tokens for a 200KB image", got)
+		t.Fatalf("media-aware ROUTING estimate must ignore base64 length; got %d tokens for a 200KB image", got)
 	}
 	if got < imagePromptTokenCost {
-		t.Fatalf("estimate should include the flat per-image cost (%d); got %d", imagePromptTokenCost, got)
+		t.Fatalf("routing estimate should include the flat per-image cost (%d); got %d", imagePromptTokenCost, got)
 	}
-	// Billing upper bound is also media-aware (no 200k-byte inflation).
-	if b := estimateBillingPromptTokens(parsed); b > 5000 {
-		t.Fatalf("billing estimate must not count the base64 blob; got %d", b)
+	// Billing intentionally stays a guaranteed UPPER bound (still counts the
+	// base64 bytes) so it can never under-reserve; over-reservation is refunded
+	// after inference. It must therefore exceed the small routing estimate here.
+	if b := estimateBillingPromptTokens(parsed); b <= got {
+		t.Fatalf("billing upper bound (%d) should exceed the routing estimate (%d) for a base64 image", b, got)
 	}
 
 	textParsed := map[string]any{
@@ -1620,5 +1622,26 @@ func TestDetectMediaRequirementAndTokenEstimate(t *testing.T) {
 	}
 	if detectMediaRequirement(textParsed) {
 		t.Fatal("a text-only request must not be flagged as requiring vision")
+	}
+}
+
+// TestDetectMediaRequirementResponsesInput verifies the Responses API surface
+// (input[].content parts) is gated too, so a media request there fails fast
+// rather than being silently routed text-blind.
+func TestDetectMediaRequirementResponsesInput(t *testing.T) {
+	withImage := map[string]any{
+		"input": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "input_text", "text": "describe"},
+				map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+			}},
+		},
+	}
+	if !detectMediaRequirement(withImage) {
+		t.Fatal("expected media detected in Responses API input parts")
+	}
+	textOnly := map[string]any{"input": "just a string prompt"}
+	if detectMediaRequirement(textOnly) {
+		t.Fatal("a string Responses input must not be flagged as media")
 	}
 }

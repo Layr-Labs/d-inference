@@ -1047,7 +1047,10 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// manager is closed (a closed manager must not mutate a handed-off dir).
     private func reapExpired(index: PrefixCacheIndex, cacheDir: URL) {
         guard !closed, ttlSeconds > 0 else { return }
-        let cutoff = now() - ttlSeconds
+        // Saturating: an operator-set "effectively infinite" TTL (e.g.
+        // Int64.max) must mean "reap nothing", not trap on underflow.
+        let (diff, underflow) = now().subtractingReportingOverflow(ttlSeconds)
+        let cutoff = underflow ? Int64.min : diff
         for entry in index.entries(modelHash: binding.modelHash) where entry.lastHitAt < cutoff {
             let url = cacheDir.appendingPathComponent(
                 "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)")

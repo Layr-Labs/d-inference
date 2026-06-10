@@ -807,3 +807,23 @@ func ttlExpiredLongestFallsBackToShorterCheckpoint() async {
     let s = await mgr.snapshotStats()
     #expect(s.ttlExpirations == 1, "exactly the stale cp8 should be reaped")
 }
+
+@Test
+func ttlEffectivelyInfiniteTTLNeverTrapsOrReaps() async {
+    // PR #290 review (Codex r3377288882/85): operators approximate "infinite
+    // retention" with huge TTL values (e.g. Int64.max). Every TTL arithmetic
+    // site must saturate, not trap: expiresAtForWrite (now + ttl), the lookup
+    // age check (now - lastHitAt vs ttl), and reapExpired's cutoff (now - ttl).
+    let clock = MonotonicClock(start: 1_700_000_000)
+    let (mgr, _) = makeTTLManager(ttl: Int64.max, clock: clock)
+    let tokens = prompt(10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()          // expiresAtForWrite: saturates, no trap
+    await mgr.reconcileWithDisk()       // reapExpired cutoff: saturates, no trap
+    await mgr.clearRAM()
+    clock.advance(1_000_000_000)        // ~32 years pass
+    let hit = await mgr.lookup(tokens: tokens)   // age check: no trap
+    #expect(hit?.tier == .ssd, "huge TTL = effectively infinite retention")
+    #expect(await mgr.snapshotStats().ttlExpirations == 0, "nothing may be reaped")
+}

@@ -690,3 +690,32 @@ func ttlReconcileReapsExpiredIndexedEntry() async throws {
     #expect(await m2.lookup(tokens: tokens) == nil, "reconcile must reap the expired indexed entry")
     #expect(await m2.snapshotStats().ttlExpirations >= 1)
 }
+
+@Test
+func ttlRamHitSlidesSSDRecency() async {
+    // PR #290 review (Codex r3377288873): a RAM-resident prefix served past the
+    // TTL must NOT be reaped from SSD when RAM pressure later evicts it — every
+    // RAM hit slides the SSD entry's lastHitAt (use = RAM serves too).
+    let clock = MonotonicClock(start: 1000)
+    let (mgr, _) = makeTTLManager(ttl: 300, clock: clock)
+    let tokens = prompt(10)
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()   // SSD entry exists, lastHitAt = 1000
+
+    // Serve from RAM 5 times, 200s apart — each gap < TTL, but cumulatively
+    // 1000s past the SSD entry's original lastHitAt.
+    for _ in 0..<5 {
+        clock.advance(200)
+        #expect(await mgr.lookup(tokens: tokens)?.tier == .ram, "stays RAM-hot")
+    }
+
+    // RAM pressure evicts; next lookup falls through to SSD 100s after the
+    // last RAM serve. Without the RAM-hit touch, lastHitAt is still 1000
+    // (1100s stale > 300s TTL) and the hot entry is wrongly reaped.
+    await mgr.clearRAM()
+    clock.advance(100)
+    let hit = await mgr.lookup(tokens: tokens)
+    #expect(hit?.tier == .ssd, "RAM-hot entry must survive RAM eviction (TTL slid by RAM hits)")
+    #expect(await mgr.snapshotStats().ttlExpirations == 0, "nothing should have expired")
+}

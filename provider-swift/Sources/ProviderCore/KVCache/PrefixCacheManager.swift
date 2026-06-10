@@ -390,16 +390,27 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         for cp in checkpoints.reversed() {
             if let hit = ram.get(modelHash: binding.modelHash, digest: cp.digest) {
                 stats.ramHits += 1
-                // TB-016 sub-feature B: 2nd-use promotion. If this RAM hit is
-                // above the persist threshold and NOT already on SSD, schedule
-                // a detached promotion (no blocking the lookup actor).
                 let digestHex = cp.digest.dbkvHexString
-                if ssdEnabled,
-                   hit.tokenCount >= minPersistTokens,
-                   index?.entry(modelHash: binding.modelHash, digestHex: digestHex) == nil {
-                    let cpScope = scope
-                    Task.detached { [weak self] in
-                        await self?.persistDigest(cp.digest, scope: cpScope)
+                if ssdEnabled, let index {
+                    if index.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil {
+                        // The prefix is ALSO on SSD. A RAM hit must slide the
+                        // SSD entry's lastHitAt: the sliding TTL is "time since
+                        // last use", and use includes RAM serves. Without this,
+                        // a RAM-hot prefix older than the TTL gets reaped as
+                        // "expired" the moment RAM pressure evicts it and the
+                        // next lookup falls through to SSD. Gated on TTL being
+                        // enabled so ttl=0 behavior stays byte-identical.
+                        if ttlSeconds > 0 {
+                            index.touch(modelHash: binding.modelHash, digestHex: digestHex, now: now())
+                        }
+                    } else if hit.tokenCount >= minPersistTokens {
+                        // TB-016 sub-feature B: 2nd-use promotion. RAM hit above
+                        // the persist threshold and NOT already on SSD — schedule
+                        // a detached promotion (no blocking the lookup actor).
+                        let cpScope = scope
+                        Task.detached { [weak self] in
+                            await self?.persistDigest(cp.digest, scope: cpScope)
+                        }
                     }
                 }
                 return PrefixLookupResult(caches: hit.caches, tokenCount: hit.tokenCount, tier: .ram)

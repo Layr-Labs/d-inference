@@ -36,6 +36,7 @@ import os
 // `internal` (not `private`) so the BatchScheduler extension files
 // (e.g. +EngineBridge) can log under the same category.
 let prefixCacheLogger = Logger(subsystem: "dev.darkbloom.provider", category: "prefix-cache-wiring")
+let mtpLogger = Logger(subsystem: "dev.darkbloom.provider", category: "mtp-wiring")
 
 /// Continuous-batching scheduler. Wraps a single `MLXLMCommon.BatchedEngine`
 /// per loaded model. The engine owns the GPU step loop; this actor owns
@@ -490,6 +491,36 @@ public actor BatchScheduler {
         let engineTierOwner: EncryptedPrefixCachePersistence?
     }
 
+    // MARK: - MTP (Gemma 4 drafter speculative decoding) config
+
+    /// Whether drafter-based MTP is enabled. Off by default; opt in with
+    /// `DARKBLOOM_ENABLE_MTP=1` (also true/yes/on). Mirrors the
+    /// `DARKBLOOM_PREFIX_CACHE` parsing style but defaults OFF.
+    static func mtpEnabledFlag() -> Bool {
+        let v = ProcessInfo.processInfo.environment["DARKBLOOM_ENABLE_MTP"]?
+            .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        return v == "1" || v == "true" || v == "yes" || v == "on"
+    }
+
+    /// Explicit drafter directory for MTP, from `DARKBLOOM_MTP_DRAFTER_PATH`.
+    /// v1 requires an explicit path (operator-controlled); manifest-driven
+    /// auto-discovery is a follow-up. Returns nil if unset/missing.
+    static func mtpDrafterPath() -> URL? {
+        guard let p = ProcessInfo.processInfo.environment["DARKBLOOM_MTP_DRAFTER_PATH"],
+              !p.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: p)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Max active batch size that still speculates (`DARKBLOOM_MTP_MAX_BATCH`,
+    /// default 2). Above it the engine falls back to plain batched decode —
+    /// the MoE verify tax makes speculation ≈ break-even by B≈4.
+    static func mtpMaxBatch() -> Int {
+        guard let v = ProcessInfo.processInfo.environment["DARKBLOOM_MTP_MAX_BATCH"],
+              let n = Int(v), n >= 1 else { return 2 }
+        return n
+    }
+
     private static func makeBatchedEngine(
         container: ModelContainer,
         modelId: String,
@@ -500,6 +531,30 @@ public actor BatchScheduler {
         architecture: ModelArchitecture,
         diskAccountant: GlobalDiskAccountant? = nil
     ) async -> EngineBuild {
+        // MTP drafter (Gemma 4): load before `container.perform` (which is a
+        // sync, @Sendable closure) so the async weight load can be awaited and
+        // captured immutably. Bound to the target and attached to the scheduler
+        // inside the perform block. Off unless DARKBLOOM_ENABLE_MTP=1 and a
+        // drafter path is provided.
+        let mtpDrafter: Gemma4AssistantDraftModel? = await {
+            guard mtpEnabledFlag() else { return nil }
+            guard let drafterDir = mtpDrafterPath() else {
+                mtpLogger.warning(
+                    "DARKBLOOM_ENABLE_MTP set but DARKBLOOM_MTP_DRAFTER_PATH missing/invalid; using plain decode.")
+                return nil
+            }
+            do {
+                let d = try await Gemma4AssistantDraftModel.load(from: drafterDir)
+                eval(d)
+                mtpLogger.info("MTP enabled — drafter loaded from \(drafterDir.path)")
+                return d
+            } catch {
+                mtpLogger.error(
+                    "MTP enabled but drafter load failed (\(error)); using plain decode.")
+                return nil
+            }
+        }()
+        let mtpMaxBatchCap = mtpMaxBatch()
         // TB-007: the prefix cache is ON by default (operator decision) with an
         // ENCRYPTED-at-rest backend; opt out with DARKBLOOM_PREFIX_CACHE=0.
         // Encryption does NOT close the in-process cross-tenant sharing / TTFT
@@ -632,6 +687,30 @@ public actor BatchScheduler {
                 eosTokenIds: eosTokenIds,
                 prefixCache: enginePrefixCache  // nil unless .engine + flag (TB-007)
             )
+            // Attach the Gemma 4 MTP runtime if a drafter was loaded and the
+            // target is a Gemma 4 model. The scheduler threads it into every
+            // GenerationBatch it builds; eligibility (size ≤ maxBatch, greedy)
+            // is decided per decode step. Non-Gemma-4 or bind failure → plain
+            // decode (runtime stays nil).
+            if let drafter = mtpDrafter {
+                let target: Gemma4TextModel? =
+                    (ctx.model as? Gemma4TextModel)
+                    ?? (ctx.model as? Gemma4Model)?.textModel
+                if let target {
+                    do {
+                        scheduler.mtpRuntime = try Gemma4MTPEngineRuntime(
+                            target: target, drafter: drafter, maxBatch: mtpMaxBatchCap)
+                        mtpLogger.info(
+                            "MTP runtime attached for \(modelId) (maxBatch=\(mtpMaxBatchCap)).")
+                    } catch {
+                        mtpLogger.error("MTP bind failed (\(error)); using plain decode.")
+                    }
+                } else {
+                    mtpLogger.warning(
+                        "MTP enabled but \(modelId) is not a Gemma 4 model; using plain decode.")
+                }
+            }
+
             // Wire the checkpoint capture hook: store snapshots to the manager
             // out-of-band (the hook is sync on the engine queue; storing hops
             // to the manager actor via a detached Task). nil-safe: only set

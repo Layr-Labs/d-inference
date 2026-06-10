@@ -2517,6 +2517,11 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
 
+	// The terminal include_usage chunk lacks the reasoning breakdown; we hold it
+	// and re-emit it at stream end augmented with the provider's authoritative
+	// reasoning-token count (CompleteCh) — matching the non-streaming/Responses paths.
+	var pendingUsageChunk string
+
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -2547,6 +2552,25 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				// "response.completed" as the terminal event. Adding
 				// extra chunks would break SDK parsers.
 				if !sawResponsesAPI {
+					// Emit the held usage chunk (stream_options.include_usage) with the
+					// reasoning breakdown spliced in from the provider's authoritative
+					// UsageInfo, so streaming reports reasoning_tokens like the rest.
+					if pendingUsageChunk != "" {
+						var usage protocol.UsageInfo
+						select {
+						case u, uok := <-pr.CompleteCh:
+							if uok {
+								usage = u
+							}
+						case <-time.After(2 * time.Second):
+						case <-r.Context().Done():
+						}
+						out := normalizeSSEChunk(pendingUsageChunk)
+						out = injectReasoningIntoStreamUsageChunk(out, usage)
+						out = rewriteChunkModel(out, pr)
+						fmt.Fprintf(w, "%s\n\n", out)
+						flusher.Flush()
+					}
 					// Chat completions format: append SE signature + [DONE].
 					if pr.SESignature != "" {
 						sigEvent, _ := json.Marshal(map[string]any{
@@ -2566,6 +2590,20 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.output_text.delta"`) {
 					sawResponsesAPI = true
 				}
+			}
+			// Hold the terminal usage chunk (chat completions only) so we can splice
+			// in the reasoning breakdown at stream end; forwarding it inline would
+			// emit it without reasoning_tokens.
+			if !sawResponsesAPI && isUsageOnlyStreamChunk(chunk) {
+				pendingUsageChunk = chunk
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(inferenceTimeout)
+				continue
 			}
 			if !sawResponsesAPI {
 				chunk = normalizeSSEChunk(chunk)
@@ -3341,6 +3379,47 @@ func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 	details["reasoning_tokens"] = usage.ReasoningTokens
 	usageObj["completion_tokens_details"] = details
 	obj["usage"] = usageObj
+}
+
+// isUsageOnlyStreamChunk reports whether an SSE data chunk is the terminal usage
+// chunk emitted for stream_options.include_usage: empty choices + a non-null usage
+// object, carrying the final usage and no content delta.
+func isUsageOnlyStreamChunk(chunk string) bool {
+	line := strings.TrimPrefix(chunk, "data: ")
+	if !strings.Contains(line, `"usage"`) || strings.Contains(line, `"usage":null`) {
+		return false
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(line), &obj); err != nil {
+		return false
+	}
+	if u, ok := obj["usage"].(map[string]any); !ok || u == nil {
+		return false
+	}
+	choices, _ := obj["choices"].([]any)
+	return len(choices) == 0
+}
+
+// injectReasoningIntoStreamUsageChunk adds completion_tokens_details.reasoning_tokens
+// (from the provider's authoritative UsageInfo) to a streaming chat-completions
+// usage chunk, so streaming reports the reasoning breakdown like the non-streaming
+// and Responses paths. No-op when there is no reasoning count or the chunk isn't
+// parseable.
+func injectReasoningIntoStreamUsageChunk(chunk string, usage protocol.UsageInfo) string {
+	if usage.ReasoningTokens <= 0 {
+		return chunk
+	}
+	line := strings.TrimPrefix(chunk, "data: ")
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(line), &obj); err != nil {
+		return chunk
+	}
+	injectReasoningDetailIntoRawUsage(obj, usage)
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return chunk
+	}
+	return "data: " + string(b)
 }
 
 func resolveReasoningTokens(usage protocol.UsageInfo, reasoning string) uint64 {

@@ -1664,3 +1664,62 @@ func TestDetectMediaRequirementAnthropicImageBlock(t *testing.T) {
 		t.Fatal("expected Anthropic image content block to be detected as media")
 	}
 }
+
+// TestInjectReasoningIntoStreamUsageChunk covers the helper logic directly.
+func TestInjectReasoningIntoStreamUsageChunk(t *testing.T) {
+	usageChunk := `data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`
+	if !isUsageOnlyStreamChunk(usageChunk) {
+		t.Fatal("expected the usage-only chunk to be detected")
+	}
+	out := injectReasoningIntoStreamUsageChunk(usageChunk, protocol.UsageInfo{CompletionTokens: 50, ReasoningTokens: 8})
+	if !strings.Contains(out, `"reasoning_tokens":8`) {
+		t.Fatalf("expected reasoning_tokens injected; got %s", out)
+	}
+	delta := `data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"x"}}]}`
+	if isUsageOnlyStreamChunk(delta) {
+		t.Fatal("a content delta must NOT be treated as a usage-only chunk")
+	}
+	if got := injectReasoningIntoStreamUsageChunk(usageChunk, protocol.UsageInfo{CompletionTokens: 50}); got != usageChunk {
+		t.Fatalf("expected no-op when there is no reasoning; got %s", got)
+	}
+}
+
+// TestStreamingChatReasoningTokensInUsage proves chat-completions STREAMING now
+// reports the reasoning breakdown in the terminal usage chunk (the bug: reasoning
+// was lumped into completion with no completion_tokens_details).
+func TestStreamingChatReasoningTokensInUsage(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+
+	pr := &registry.PendingRequest{
+		RequestID:  "job-1",
+		Model:      "gpt-oss-20b",
+		ChunkCh:    make(chan string, 8),
+		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
+		CompleteCh: make(chan protocol.UsageInfo, 1),
+	}
+	// Provider streams a content delta, then the include_usage chunk WITHOUT a
+	// reasoning detail, then closes and reports the authoritative split via CompleteCh.
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`
+	close(pr.ChunkCh)
+	pr.CompleteCh <- protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 50, ReasoningTokens: 8}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, "")
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"reasoning_tokens":8`) {
+		t.Fatalf("streaming usage missing reasoning_tokens; body=\n%s", body)
+	}
+	if !strings.Contains(body, `"completion_tokens":50`) {
+		t.Fatalf("completion_tokens should stay 50 (reasoning is a subset detail); body=\n%s", body)
+	}
+	if !strings.Contains(body, `"content":"hi"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected the content delta and [DONE]; body=\n%s", body)
+	}
+	if strings.Count(body, `"usage":{`) != 1 {
+		t.Fatalf("expected exactly one usage chunk (held + augmented, not doubled); body=\n%s", body)
+	}
+}

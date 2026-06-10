@@ -57,3 +57,39 @@ struct ToolSchemaNormalizationTests {
         #expect(ToolSchemaNormalization.ensureParameterTypes(in: noTools) == noTools)
     }
 }
+
+extension ToolSchemaNormalizationTests {
+    private func toolParams(_ data: Data) -> [String: Any] {
+        let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let tools = root["tools"] as? [[String: Any]] ?? []
+        let fn = tools.first?["function"] as? [String: Any] ?? [:]
+        return fn["parameters"] as? [String: Any] ?? [:]
+    }
+
+    @Test func recursesIntoAdditionalProperties() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "meta":{"additionalProperties":{"description":"a value"}}}}}}]}
+        """#.data(using: .utf8)!
+        let props = try #require(toolParams(ToolSchemaNormalization.ensureParameterTypes(in: body))["properties"] as? [String: Any])
+        let meta = try #require(props["meta"] as? [String: Any])
+        // The map-shaped param node is typed "object"...
+        #expect(meta["type"] as? String == "object")
+        // ...and its inner additionalProperties schema gets a default type too.
+        let addl = try #require(meta["additionalProperties"] as? [String: Any])
+        #expect(addl["type"] as? String == "string")
+    }
+
+    @Test func derivesUnionTypeInsteadOfBlanketString() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "n":{"anyOf":[{"type":"number"},{"type":"null"}]}}}}}]}
+        """#.data(using: .utf8)!
+        let props = try #require(toolParams(ToolSchemaNormalization.ensureParameterTypes(in: body))["properties"] as? [String: Any])
+        let n = try #require(props["n"] as? [String: Any])
+        // A nullable-number union borrows "number", not a mislabelling "string".
+        #expect(n["type"] as? String == "number")
+    }
+}

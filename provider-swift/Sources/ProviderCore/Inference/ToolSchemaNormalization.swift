@@ -56,6 +56,12 @@ enum ToolSchemaNormalization {
         if let items = dict["items"] {
             dict["items"] = injectDefaultTypes(items)
         }
+        // additionalProperties may itself be a schema (map-shaped params, e.g.
+        // {"additionalProperties":{"type":"string"}}) — recurse so its inner schema
+        // gets a default type too. A bare `true`/`false` is left untouched.
+        if let addl = dict["additionalProperties"], addl is [String: Any] {
+            dict["additionalProperties"] = injectDefaultTypes(addl)
+        }
         for key in ["anyOf", "oneOf", "allOf"] {
             if let variants = dict[key] as? [Any] {
                 dict[key] = variants.map(injectDefaultTypes)
@@ -64,17 +70,38 @@ enum ToolSchemaNormalization {
 
         let looksLikeSchemaNode =
             dict["properties"] != nil || dict["items"] != nil ||
+            dict["additionalProperties"] != nil ||
             dict["enum"] != nil || dict["description"] != nil ||
             dict["anyOf"] != nil || dict["oneOf"] != nil || dict["allOf"] != nil
         if dict["type"] == nil, looksLikeSchemaNode {
-            if dict["properties"] != nil {
+            if dict["properties"] != nil || dict["additionalProperties"] != nil {
                 dict["type"] = "object"
             } else if dict["items"] != nil {
                 dict["type"] = "array"
+            } else if let unionType = unionMemberType(dict) {
+                // anyOf/oneOf/allOf without a parent type: borrow the first concrete
+                // member type (skipping "null") rather than mislabelling a union as a
+                // string. The template still gets a usable type and can't crash.
+                dict["type"] = unionType
             } else {
                 dict["type"] = "string"
             }
         }
         return dict
+    }
+
+    /// Derive a representative `type` for a union node from the first member that
+    /// declares a concrete, non-"null" type. Returns nil when none is found.
+    private static func unionMemberType(_ dict: [String: Any]) -> String? {
+        for key in ["anyOf", "oneOf", "allOf"] {
+            guard let variants = dict[key] as? [Any] else { continue }
+            for variant in variants {
+                if let v = variant as? [String: Any],
+                    let t = v["type"] as? String, t != "null" {
+                    return t
+                }
+            }
+        }
+        return nil
     }
 }

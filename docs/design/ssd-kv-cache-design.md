@@ -4,16 +4,16 @@
 > **[ssd-kv-cache.md](ssd-kv-cache.md)**. This doc is the design rationale,
 > threat model, and phased plan.
 
-> Status: **P0 landed (crypto primitives) + cacheability VERIFIED.**
-> Open questions are marked `[Q1]`, `[Q2]`, … and collected at the end.
->
-> Branch: `feat/ssd-kv-cache` off `master`.
-> Done: P0 `EncryptedKVStore` + KEK/DEK envelope encryption (committed);
-> cross-model cacheability + rotating-cache restore correctness verified
-> empirically (§4.4, §4.5; tests `RotatingKVCacheRestoreTests`,
-> `BatchRotatingExtractRoundtripTests`).
-> Pending: P1–P6 (RAM tier, index, BatchScheduler integration + MB-1
-> model-binding guard, flush triggers, perf, telemetry).
+> Status: **IMPLEMENTED.** The full cache (crypto primitives, RAM tier, index,
+> BatchScheduler integration with the MB-1 model-binding guard, flush triggers,
+> and telemetry) has landed and is **on by default** (opt out with
+> `DARKBLOOM_PREFIX_CACHE=0`). This doc is kept as the design rationale; the
+> phase markers and open questions (`[Q1]`, `[Q2]`, …) reflect the state of
+> the original review and are preserved for historical context. Hybrid
+> sliding-window model support landed later — see
+> [ssd-kv-cache-hybrid-models.md](ssd-kv-cache-hybrid-models.md) — and one
+> known lookup-ordering inefficiency is tracked in
+> [kv-cache-lookup-shadowing-finding.md](kv-cache-lookup-shadowing-finding.md).
 
 ## 1. Goal
 

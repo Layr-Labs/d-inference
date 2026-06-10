@@ -470,7 +470,7 @@ const CodeAttestResponseTimeout = 90 * time.Second
 // rollout flag is on the provider is not routed private traffic. The nonce is a
 // base64 string; it is encrypted to the provider's X25519 key K via the same E2E
 // path used for inference bodies, and the signature is the SE P-256 key (K is
-// decrypt-only — there is no Sign_K). See docs/apns-code-attestation-design.md.
+// decrypt-only — there is no Sign_K). See docs/design/apns-code-attestation-design.md.
 func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID string, provider *registry.Provider, ct *codeAttestTracker) {
 	if s.codeAttestor == nil || provider == nil {
 		return

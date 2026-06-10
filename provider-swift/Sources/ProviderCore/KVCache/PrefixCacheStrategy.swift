@@ -2,7 +2,7 @@
 /// can use, from the cache types its `newCache()` produces.
 ///
 /// There are two correct strategies and they are mutually exclusive per
-/// model (see docs/ssd-kv-cache-hybrid-models.md):
+/// model (see docs/design/ssd-kv-cache-hybrid-models.md):
 ///
 ///   .engine     — ALL layers are `KVCacheSimple` (pure-attention models).
 ///                 Served by the engine's in-GPU block `PrefixCache`

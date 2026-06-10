@@ -9,7 +9,7 @@
 // X25519 key K, which lives only in protected process memory). The provider
 // returns the decrypted nonce + an SE-key signature over the WebSocket, which
 // binds the Apple-gated proof onto that connection. See
-// docs/apns-code-attestation-design.md.
+// docs/design/apns-code-attestation-design.md.
 //
 // This package builds the challenge payload (reusing the existing inference E2E
 // encrypt path so the provider's existing decrypt works unchanged) and sends it

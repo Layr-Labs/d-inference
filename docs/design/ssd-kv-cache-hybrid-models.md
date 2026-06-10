@@ -5,8 +5,8 @@
 behavior for any model the cache currently serves or for models it can't
 serve. Carefully verified, with a numeric-equivalence gate.
 
-Status: **IMPLEMENTED** (Steps 1–5 complete; see §7.4) behind the default-off
-`DARKBLOOM_PREFIX_CACHE` flag. Supersedes the "engine block tier only"
+Status: **IMPLEMENTED** (Steps 1–5 complete; see §7.4). The cache is now **on
+by default** (opt out with `DARKBLOOM_PREFIX_CACHE=0`). Supersedes the "engine block tier only"
 limitation documented in [ssd-kv-cache.md](ssd-kv-cache.md) §2. Remaining
 items are process gates, not code: the submodule PR merge, the TB-007
 sign-off, and a run of the live logit-equivalence gate on real weights.

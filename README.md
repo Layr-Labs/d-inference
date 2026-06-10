@@ -30,12 +30,14 @@ Models are selected from a curated catalog. The coordinator only routes requests
 
 ### Text
 
-| Model | Architecture | Size | Min RAM | Notes |
-|-------|-------------|------|---------|-------|
-| Gemma 4 26B 8-bit | 26B MoE, 4B active | 28 GB | 36 GB | Google's latest MoE, multimodal |
-| GPT-OSS 20B | 21B MoE, 3.6B active | 12 GB | 24 GB | OpenAI open-weight reasoning model |
+| Model ID | Name | Architecture | Quant | Context | Max Output | Download | Min RAM | Notes |
+|----------|------|--------------|-------|---------|-----------|----------|---------|-------|
+| `gpt-oss-20b` | GPT-OSS 20B | 20.9B MoE, 3.6B active | fp8 | 131K | 32K | 12 GB | 24 GB | OpenAI open-weight reasoning model: configurable reasoning effort, full chain-of-thought, function calling, structured outputs. Apache 2.0. |
+| `gemma-4-26b` | Gemma 4 26B | 25.2B MoE, 3.8B active | 8-bit | 131K | 32K | 28 GB | 36 GB | Google DeepMind MoE: multimodal input (text + image), configurable thinking modes, function calling. Apache 2.0. |
 
-The list above reflects the current lineup; the live catalog is always available at `GET /v1/models` (or `GET /v1/models/catalog`).
+Supported sampling parameters: `temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`, `repetition_penalty`, `stop`, `seed`, `max_tokens`.
+
+The table above reflects the current lineup; the live catalog is always available at `GET /v1/models/catalog` (public) or `GET /v1/models` (authed).
 
 ## Use the API
 
@@ -57,7 +59,7 @@ response = client.chat.completions.create(
 )
 ```
 
-The Anthropic Messages API is also supported at `/v1/messages`.
+Also supported: the OpenAI Responses API at `/v1/responses`, legacy completions at `/v1/completions`, and the Anthropic Messages API at `/v1/messages`. Full endpoint reference: [docs/api.md](docs/api.md).
 
 ## Become a Provider
 
@@ -134,10 +136,10 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 
 ## Pricing
 
-| Type | Rate |
-|------|------|
-| Text (Gemma 4 26B) | $0.03 / 1M input, $0.165 / 1M output |
-| Text (GPT-OSS 20B) | $0.015 / 1M input, $0.07 / 1M output |
+| Model | Input (per 1M tokens) | Output (per 1M tokens) |
+|-------|----------------------|------------------------|
+| `gpt-oss-20b` | $0.0145 | $0.07 |
+| `gemma-4-26b` | $0.03 | $0.165 |
 
 Per-token prices are set to roughly 50% of typical hosted-API list rates for comparable models. Live per-model pricing is always available at `GET /v1/pricing`. During the public alpha there is a 0% platform fee — providers keep 100% of revenue.
 
@@ -148,21 +150,24 @@ Per-token prices are set to roughly 50% of typical hosted-API list rates for com
 | Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
 | Provider (`provider-swift/`) | Swift | CLI inference agent for Apple Silicon Macs |
 | Console (`console-ui/`) | Next.js 16 | Web dashboard: chat, billing, provider verification |
+| Admin (`admin-ui/`) | Next.js | Admin dashboard: releases, model registry, invites |
 | Landing (`landing/`) | HTML | Static landing page |
+
+Full technical documentation lives in [docs/](docs/README.md) — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the system architecture, [docs/api.md](docs/api.md) for the API reference, `docs/design/` for design/spec documents, and `docs/runbooks/` for operational runbooks.
 
 ## Development
 
+Toolchain versions are pinned in [`mise.toml`](mise.toml); build/test commands are wrapped in the root [`Makefile`](Makefile) (`make` with no args lists all targets).
+
 ```bash
-# Coordinator
-cd coordinator && go test ./...
-
-# Swift provider (CLI)
-cd provider-swift && swift test
-cd provider-swift && swift build -c release
-
-# Console UI
-cd console-ui && npm install && npm run dev
+mise install            # one-time: install pinned toolchains
+make coordinator        # Go: test + build
+make provider           # Swift: build + test
+make ui                 # console-ui: install + lint + test + build
+make test               # all unit tests
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ## License
 

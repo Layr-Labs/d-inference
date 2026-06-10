@@ -40,7 +40,7 @@ public enum PrefixDigest {
     /// `slidingWindow <= 0` (no sliding layers / unknown) ⇒ the defaults
     /// unchanged. Example: Gemma-4 (512) → [256, 512]; GPT-OSS (128) →
     /// [64, 128] (so it gets *some* usable checkpoint despite the tiny
-    /// window — see docs/ssd-kv-cache-hybrid-models.md §3).
+    /// window — see docs/design/ssd-kv-cache-hybrid-models.md §3).
     public static func checkpoints(forSlidingWindow slidingWindow: Int) -> [Int] {
         guard slidingWindow > 0 else { return defaultCheckpoints }
         var usable = defaultCheckpoints.filter { $0 <= slidingWindow }

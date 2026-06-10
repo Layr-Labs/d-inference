@@ -109,7 +109,7 @@ let package = Package(
         // hardware (the one path `swift test` can't reach — it needs a
         // code-signed binary with a keychain-access-groups entitlement).
         // Built + ad-hoc-signed by hand on a dev Mac; NOT a product, NOT
-        // shipped. See docs/ssd-kv-cache-design.md.
+        // shipped. See docs/design/ssd-kv-cache-design.md.
         // ----------------------------------------------------------------
         .executableTarget(
             name: "kv-se-harness",

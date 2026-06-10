@@ -148,7 +148,7 @@ Canonical runbook: `docs/coordinator-deploy-runbook.md`
 
 Current release-sensitive pieces:
 
-- Prod coordinator runs on EigenCloud (TEE) as app `d-inference` at `api.darkbloom.dev`. Build target: `coordinator/Dockerfile`. Dev coordinator runs on Google Cloud (see `docs/dev-environment.md`).
+- Prod coordinator runs on EigenCloud (TEE) as app `d-inference` at `api.darkbloom.dev`. Build target: `coordinator/Dockerfile`. Dev coordinator runs on Google Cloud (see `docs/runbooks/dev-environment.md`).
 - Provider bundle creation lives in `scripts/build-bundle.sh`.
 - App bundle + DMG creation lives in `scripts/bundle-app.sh`.
 - Installer flow lives in `scripts/install.sh`.
@@ -165,7 +165,7 @@ curl https://api.darkbloom.dev/health
 ecloud compute app logs d-inference
 ```
 
-Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
+Dev coordinator deploy (Google Cloud): see `docs/runbooks/dev-environment.md`.
 
 ## Important Sync Points
 

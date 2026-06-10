@@ -57,7 +57,7 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
         // presented and PERSISTED to the root-readable Notification Center DB,
         // reintroducing a payload-harvest surface that is otherwise closed
         // (apsd redacts the payload as <private> and keeps no cleartext copy —
-        // verified on macOS 26.4, see docs/apns-code-attestation-design.md).
+        // verified on macOS 26.4, see docs/design/apns-code-attestation-design.md).
         NSApplication.shared.registerForRemoteNotifications()
         let args = self.args
         Task {

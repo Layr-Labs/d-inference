@@ -118,7 +118,7 @@ say "smoke: disk=$(du -sh "$KV" 2>/dev/null|awk '{print $1}') files=$(/usr/bin/f
 stop_server
 # CORRECTNESS soak: require the SSD WRITE path (flush) + eviction. SSD RELOAD
 # (ssd= hits) is a known non-goal for gpt-oss — short 64/128-tok checkpoints stay
-# RAM-resident and shadow the SSD tier (see docs/kv-cache-lookup-shadowing-
+# RAM-resident and shadow the SSD tier (see docs/design/kv-cache-lookup-shadowing-
 # finding.md), so ssd= stays 0 by design for this model. The soak still validates
 # no-crash / no-decrypt-fail / bounded-disk / no-leak under continuous flush+evict.
 if [ "$SMK_FLUSH" -lt 1 ] || [ "$SMK_EVICT" -lt 1 ]; then

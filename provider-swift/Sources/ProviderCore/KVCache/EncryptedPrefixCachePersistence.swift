@@ -11,7 +11,7 @@
 /// provider. This backend adds encryption-AT-REST (disk theft defense)
 /// but does NOT close the in-process cross-tenant sharing/timing
 /// channel. Gated behind a default-off flag; ships only with an explicit
-/// threat-model sign-off. See docs/ssd-kv-cache-design.md.
+/// threat-model sign-off. See docs/design/ssd-kv-cache-design.md.
 ///
 /// Synchronous by contract (`PrefixCachePersistence` runs in the engine
 /// step loop): the KEK is unwrapped ONCE at setup (async) and held as a

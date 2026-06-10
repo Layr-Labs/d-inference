@@ -13,7 +13,7 @@
 //
 // This module is fetch-based and dependency-free so it runs in the browser, in
 // Node, and in tests. Discovering the local endpoint from `~/.darkbloom/local.json`
-// is a Node-only `fs` read (see docs/direct-mode.md); callers pass the resolved
+// is a Node-only `fs` read (see docs/design/direct-mode.md); callers pass the resolved
 // endpoint in (or null).
 
 export interface LocalEndpoint {

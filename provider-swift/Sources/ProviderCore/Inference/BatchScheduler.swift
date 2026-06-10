@@ -504,7 +504,7 @@ public actor BatchScheduler {
         // ENCRYPTED-at-rest backend; opt out with DARKBLOOM_PREFIX_CACHE=0.
         // Encryption does NOT close the in-process cross-tenant sharing / TTFT
         // side-channel — untrusted multi-tenant deployments must opt out. See
-        // docs/ssd-kv-cache-design.md.
+        // docs/design/ssd-kv-cache-design.md.
         //
         // Two mutually-exclusive tiers, selected by the model's cache types
         // (PrefixCacheStrategy): pure-attention (.engine) models use the
@@ -924,7 +924,7 @@ public actor BatchScheduler {
     // unlimited GLOBAL cache would defeat the accountant's purpose (fill the
     // volume), so there is intentionally no unbounded mode here; an operator who
     // wants effectively-unbounded sets a very large explicit value. Documented
-    // in docs/ssd-kv-cache.md §11.
+    // in docs/design/ssd-kv-cache.md §11.
 
     /// Best-effort free capacity (bytes) of the volume containing `url`.
     /// Prefers the "important usage" figure Apple recommends for storage

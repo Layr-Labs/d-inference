@@ -1937,7 +1937,7 @@ threats:
           code_challenge is redacted (<private>) in the unified log and absent from
           every on-disk store (apsd store, Notification Center DB) for background AND
           alert pushes; CLI un-redaction (log config private_data:on / profiles
-          install) is removed. See docs/apns-code-attestation-design.md §1.6.1.
+          install) is removed. See docs/design/apns-code-attestation-design.md §1.6.1.
         status: implemented
       - description: >
           INVARIANT — the provider requests no UNUserNotificationCenter authorization,

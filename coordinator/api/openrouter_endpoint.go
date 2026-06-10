@@ -126,6 +126,16 @@ func (s *Server) openRouterAliasEntries(
 		if !a.Active || a.DesiredBuild == "" {
 			continue
 		}
+		// Never sell a raw build behind a public alias: hide EVERY build the
+		// alias references — desired, previous, AND the retired lineage — from
+		// the marketplace feed, even if the alias itself isn't listable right now
+		// (a retired build left registered would otherwise reappear as a sellable
+		// entry with no providers — a marketplace black-hole).
+		hideAliasBuild(hidden, catalogByID, a.DesiredBuild)
+		hideAliasBuild(hidden, catalogByID, a.PreviousBuild)
+		for _, b := range a.RetiredBuilds {
+			hideAliasBuild(hidden, catalogByID, b)
+		}
 		members := make([]string, 0, 2)
 		if _, ok := catalogByID[a.DesiredBuild]; ok {
 			members = append(members, a.DesiredBuild)
@@ -140,9 +150,6 @@ func (s *Server) openRouterAliasEntries(
 			continue
 		}
 		primary := members[0]
-		for _, b := range members {
-			hidden[b] = struct{}{}
-		}
 
 		cm := catalogByID[primary]
 		modelType := cm.ModelType

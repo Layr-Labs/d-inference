@@ -297,3 +297,47 @@ func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 		t.Fatal("unaliased model missing from feed")
 	}
 }
+
+// The OpenRouter marketplace feed must also hide a retired build: once fp8 is
+// retired (moved to the lineage) it must not reappear as a sellable entry —
+// otherwise OpenRouter lists it is_ready:true with zero providers, a black-hole.
+func TestOpenRouterModelsHidesRetiredAliasBuild(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B fp8")
+	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B qat")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
+		DesiredBuild: aliasQAT, RetiredBuilds: []string{aliasFP8},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	rec := httptest.NewRecorder()
+	srv.handleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp types.OpenRouterModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	sawAlias := false
+	for _, m := range resp.Data {
+		if m.ID == aliasFP8 {
+			t.Fatalf("retired build %q leaked into the OpenRouter feed", aliasFP8)
+		}
+		if m.ID == aliasQAT {
+			t.Fatalf("desired build %q leaked into the OpenRouter feed", aliasQAT)
+		}
+		if m.ID == "gemma-4-26b" {
+			sawAlias = true
+		}
+	}
+	if !sawAlias {
+		t.Fatalf("alias gemma-4-26b missing from OpenRouter feed: %+v", resp.Data)
+	}
+}

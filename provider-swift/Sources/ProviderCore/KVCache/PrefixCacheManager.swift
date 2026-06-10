@@ -308,6 +308,19 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         return overflow ? Int64.max : sum
     }
 
+    /// THE sliding-TTL expiry predicate — single source of truth for the read
+    /// path (loadFromSSD) and the sweeps (reapExpired). Expired when the entry
+    /// hasn't been hit within `ttlSeconds`; `lastHitAt` is bumped on every hit
+    /// (SSD loads AND RAM serves), so hot prefixes stay warm. Overflow-safe:
+    /// index.json is plaintext and can be crash-corrupted — an extreme
+    /// `lastHitAt` (e.g. Int64.min) counts as expired/reapable, never a trap.
+    /// `ttlSeconds == 0` ⇒ never expires (infinite retention).
+    private func isExpired(lastHitAt: Int64) -> Bool {
+        guard ttlSeconds > 0 else { return false }
+        let (age, overflow) = now().subtractingReportingOverflow(lastHitAt)
+        return overflow || age > ttlSeconds
+    }
+
     /// Time-coalesced index save after a hit-recency touch (PR #290 review).
     /// `index.touch` only mutates in memory; if the process dies before a
     /// graceful flush, restart reconcile would reap recently-hot entries off
@@ -535,21 +548,14 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             modelHash: binding.modelHash, tokens: tokens, boundaries: boundaries, scope: scope
         ) {
             attempts -= 1
-            if ttlSeconds > 0 {
-                // Overflow-safe age: index.json is plaintext and can be left
-                // corrupt by a crash — an extreme lastHitAt (e.g. Int64.min)
-                // must be treated as expired/dropped, not trap the provider.
-                let (age, overflow) = now().subtractingReportingOverflow(candidate.lastHitAt)
-                if overflow || age > ttlSeconds {
-                    stats.ttlExpirations += 1
-                    let rel = "\(modelDirComponent)/\(candidate.digestHex).\(EncryptedKVStore.fileExtension)"
-                    await dropUnusableSSDFile(
-                        cacheDir.appendingPathComponent(rel), digestHex: candidate.digestHex, index: index)
-                    continue
-                }
+            guard isExpired(lastHitAt: candidate.lastHitAt) else {
+                selected = candidate
+                break
             }
-            selected = candidate
-            break
+            stats.ttlExpirations += 1
+            let rel = "\(modelDirComponent)/\(candidate.digestHex).\(EncryptedKVStore.fileExtension)"
+            await dropUnusableSSDFile(
+                cacheDir.appendingPathComponent(rel), digestHex: candidate.digestHex, index: index)
         }
         guard let entry = selected else { return nil }
 
@@ -1093,11 +1099,7 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// manager is closed (a closed manager must not mutate a handed-off dir).
     private func reapExpired(index: PrefixCacheIndex, cacheDir: URL) {
         guard !closed, ttlSeconds > 0 else { return }
-        // Saturating: an operator-set "effectively infinite" TTL (e.g.
-        // Int64.max) must mean "reap nothing", not trap on underflow.
-        let (diff, underflow) = now().subtractingReportingOverflow(ttlSeconds)
-        let cutoff = underflow ? Int64.min : diff
-        for entry in index.entries(modelHash: binding.modelHash) where entry.lastHitAt < cutoff {
+        for entry in index.entries(modelHash: binding.modelHash) where isExpired(lastHitAt: entry.lastHitAt) {
             let url = cacheDir.appendingPathComponent(
                 "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)")
             try? FileManager.default.removeItem(at: url)

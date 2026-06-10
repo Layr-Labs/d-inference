@@ -62,7 +62,9 @@ struct Status: AsyncParsableCommand {
         }
         let alive = daemonProcessAlive(pid: state.pid)
         if !alive {
-            print("Daemon: not running (stale state file)")
+            // Leftover state file from a previous daemon session (stop, crash,
+            // or reboot). Point at the fix, not the artifact.
+            print("Daemon: not running (last session ended ~\(formatUptime(state.ageSeconds(now: now))) ago — run `darkbloom start`)")
             return
         }
         if state.isStale(now: now) {

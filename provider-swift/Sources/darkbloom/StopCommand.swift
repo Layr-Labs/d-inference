@@ -23,5 +23,9 @@ struct Stop: AsyncParsableCommand {
                 print("Provider service is not running.")
             }
         }
+
+        // launchd stops the daemon with SIGTERM, which skips its own cleanup,
+        // so the CLI removes the diagnostics state file on its behalf.
+        DaemonStateFile.remove()
     }
 }

@@ -194,6 +194,13 @@ public enum DaemonStateFile {
         }
     }
 
+    /// Removes the state file. Best-effort: a leftover file from a previous
+    /// daemon session would otherwise make `status` report a confusing
+    /// "stale state file" forever after a stop/crash/reboot.
+    public static func remove(at url: URL = DaemonStateFile.path()) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
     /// Reads the snapshot, or nil if absent / unreadable / wrong schema.
     public static func read(from url: URL = DaemonStateFile.path()) -> DaemonState? {
         guard let data = try? Data(contentsOf: url) else { return nil }

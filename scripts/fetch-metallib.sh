@@ -15,7 +15,10 @@
 #   ./scripts/fetch-metallib.sh /custom/path   # places it at /custom/path/mlx.metallib
 set -euo pipefail
 
-MLX_VERSION="${MLX_VERSION:-0.31.2}"
+# Must match MLX_PYTHON_PIN in .github/workflows/release-swift.yml and the
+# MLX C++ version pinned in libs/mlx-swift/Source/Cmlx/mlx/mlx/version.h —
+# patch-level skew can break Metal kernel loading at runtime.
+MLX_VERSION="${MLX_VERSION:-0.31.1}"
 SWIFT_PROVIDER_DIR="${SWIFT_PROVIDER_DIR:-$(cd "$(dirname "$0")/.." && pwd)/provider-swift}"
 TARGET_ARG="${1:-debug}"
 

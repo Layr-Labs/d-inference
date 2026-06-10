@@ -288,7 +288,14 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// a hard floor for any future offline reaper; the authoritative runtime
     /// check is the lastHitAt comparison in loadFromSSD/sweep.
     private func expiresAtForWrite() -> Int64? {
-        ttlSeconds > 0 ? now() + ttlSeconds : nil
+        ttlSeconds > 0 ? saturatingExpiry(from: now()) : nil
+    }
+
+    /// Saturating `base + ttlSeconds`. An operator-set "effectively infinite"
+    /// TTL (e.g. Int64.max) must clamp to never-expires, not trap on overflow.
+    private func saturatingExpiry(from base: Int64) -> Int64 {
+        let (sum, overflow) = base.addingReportingOverflow(ttlSeconds)
+        return overflow ? Int64.max : sum
     }
 
     public init(
@@ -887,12 +894,19 @@ public actor PrefixCacheManager: PrefixCacheOwner {
                 try? fm.removeItem(at: url)  // foreign / corrupt / mislabeled
                 continue
             }
-            // TTL: don't resurrect an orphan whose own metadata says it's
-            // already expired (expiresAt = createdAt + ttl at write). Delete it.
-            if ttlSeconds > 0, let exp = meta.expiresAt, now() > exp {
-                try? fm.removeItem(at: url)
-                stats.ttlExpirations += 1
-                continue
+            // TTL: don't resurrect an orphan that's already expired. New files
+            // carry expiresAt = createdAt + ttl; LEGACY files (written before
+            // the TTL existed, or while it was disabled) have expiresAt == nil
+            // — treat those as createdAt + ttl too, so old and new files get
+            // identical semantics and a stale legacy orphan can't outlive the
+            // privacy window by being re-indexed (PR #290 review).
+            if ttlSeconds > 0 {
+                let exp = meta.expiresAt ?? saturatingExpiry(from: meta.createdAt)
+                if now() > exp {
+                    try? fm.removeItem(at: url)
+                    stats.ttlExpirations += 1
+                    continue
+                }
             }
             let bytes = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
             // Seed lastHitAt from the file's own createdAt (NOT now()), so a

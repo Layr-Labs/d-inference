@@ -577,15 +577,16 @@ func managerScopedSSDRoundtripAndIsolation() async throws {
 
 // SSD manager with a controllable clock + TTL. RAM is wiped between writes and
 // reads so every read must consult SSD (where TTL is enforced).
-private func makeTTLManager(ttl: Int64, clock: MonotonicClock, dir: URL? = nil)
+private func makeTTLManager(ttl: Int64, clock: MonotonicClock, dir: URL? = nil,
+                            kek: KVCacheKEK? = nil)
     -> (PrefixCacheManager, URL) {
     let cacheDir = dir ?? tmpDir()
     let mgr = PrefixCacheManager(
         binding: binding(model: "m"),
         ram: PrefixCacheRAM(),
         index: PrefixCacheIndex(fileURL: cacheDir.appendingPathComponent("index.json")),
-        kek: KVCacheKEK(wrapper: InMemoryKeyWrappingService(),
-                        storage: InMemoryWrappedKEKStorage(identifier: UUID().uuidString)),
+        kek: kek ?? KVCacheKEK(wrapper: InMemoryKeyWrappingService(),
+                               storage: InMemoryWrappedKEKStorage(identifier: UUID().uuidString)),
         cacheDir: cacheDir, ssdEnabled: true,
         boundaries: [4, 8],
         ttlSeconds: ttl,
@@ -718,4 +719,61 @@ func ttlRamHitSlidesSSDRecency() async {
     let hit = await mgr.lookup(tokens: tokens)
     #expect(hit?.tier == .ssd, "RAM-hot entry must survive RAM eviction (TTL slid by RAM hits)")
     #expect(await mgr.snapshotStats().ttlExpirations == 0, "nothing should have expired")
+}
+
+@Test
+func ttlReconcileReapsLegacyOrphanWithoutExpiresAt() async throws {
+    // PR #290 review (Codex r3377288876): files written BEFORE the TTL existed
+    // (or while it was disabled) carry expiresAt == nil. Reconcile must treat
+    // them as createdAt + ttl — identical to what expiresAtForWrite stamps on
+    // new files — not resurrect stale prompt-derived KV past the privacy window.
+    let clock = MonotonicClock(start: 1000)
+    let dir = tmpDir()
+    // Writer with TTL DISABLED ⇒ file metadata has expiresAt == nil (the exact
+    // legacy shape). A single flush stays under the index save-coalesce
+    // threshold, so the index is never persisted → the file is an ORPHAN for
+    // the next manager.
+    let (m1, _) = makeTTLManager(ttl: 0, clock: clock, dir: dir)
+    let tokens = prompt(10)
+    await m1.store(tokens: tokens, checkpointLength: 8,
+                   caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await m1.flushToSSD()
+
+    clock.advance(1000)  // 1000s > 300s TTL since createdAt
+    let (m2, _) = makeTTLManager(ttl: 300, clock: clock, dir: dir)
+    await m2.reconcileWithDisk()
+
+    // Assert on the FILE, not a lookup — the lazy read-path check would also
+    // miss on a re-indexed stale entry, masking the resurrect bug.
+    let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("m").path))?
+        .filter { $0.hasSuffix(".\(EncryptedKVStore.fileExtension)") } ?? []
+    #expect(files.isEmpty, "stale legacy nil-expiresAt orphan must be deleted at reconcile, not re-indexed")
+    #expect(await m2.snapshotStats().ttlExpirations >= 1)
+}
+
+@Test
+func ttlReconcileKeepsFreshLegacyOrphan() async throws {
+    // Companion guard: a legacy (nil-expiresAt) orphan that is YOUNGER than
+    // the TTL must still be re-indexed normally — the nil-handling must not
+    // over-delete fresh files.
+    let clock = MonotonicClock(start: 1000)
+    let dir = tmpDir()
+    // Share one KEK across both managers (a restart keeps the persisted KEK;
+    // per-manager random KEKs would make the decrypt fail for harness reasons).
+    let sharedKEK = KVCacheKEK(
+        wrapper: InMemoryKeyWrappingService(key: .init(data: Data(repeating: 7, count: 32)), identifier: "shared"),
+        storage: InMemoryWrappedKEKStorage(identifier: "legacy-orphan-fresh"))
+    let (m1, _) = makeTTLManager(ttl: 0, clock: clock, dir: dir, kek: sharedKEK)
+    let tokens = prompt(10)
+    await m1.store(tokens: tokens, checkpointLength: 8,
+                   caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await m1.flushToSSD()
+
+    clock.advance(100)  // 100s < 300s TTL
+    let (m2, _) = makeTTLManager(ttl: 300, clock: clock, dir: dir, kek: sharedKEK)
+    await m2.reconcileWithDisk()
+    await m2.clearRAM()
+    #expect(await m2.lookup(tokens: tokens)?.tier == .ssd,
+            "fresh legacy orphan must be re-indexed and servable")
+    #expect(await m2.snapshotStats().ttlExpirations == 0)
 }

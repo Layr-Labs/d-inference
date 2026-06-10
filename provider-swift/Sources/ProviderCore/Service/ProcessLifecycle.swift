@@ -146,7 +146,7 @@ public enum ProcessLifecycle {
     /// `execCurrentProcess()` (execv) which replaces the process image
     /// in-place.
     public static func restartAfterUpdate() throws -> Never {
-        if LaunchAgent.isLoaded() {
+        if LaunchAgent.isAnySupportedLabelLoaded() {
             // Launchd-managed: kickstart -k kills us and relaunches the
             // service in place. Issue it, then exit so launchd is free to
             // bring the new binary up cleanly (it may already have signalled

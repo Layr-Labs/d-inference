@@ -639,12 +639,25 @@ type Registry struct {
 	modelProvidersMu sync.Mutex
 
 	// pendingModelLoads tracks provider-model pairs that have been sent a
-	// load_model command and are awaiting completion. Prevents duplicate
-	// sends across heartbeat cycles.
-	pendingModelLoads map[string]time.Time // key: "providerID:modelID"
+	// load_model command and are awaiting completion, or are cooling down
+	// after a failed one. The value is the entry's expiry time. While an
+	// entry lives, the provider is skipped for new load_model sends
+	// (bestModelLoadProviderLocked / reservePendingModelLoads).
+	pendingModelLoads map[string]time.Time // key: "providerID:modelID", value: expiry
 }
 
+// pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
+// suppresses re-sends to the same provider.
 const pendingModelLoadTTL = 2 * time.Minute
+
+// pendingModelLoadDrainBackoff is the short cooldown used when a provider
+// rejects load_model because it is draining for an auto-update restart. The
+// entry keeps the planner away from a provider that is about to bounce, but
+// must not outlive a failed restart: if the provider aborts the restart and
+// resumes serving, it is fully loadable again, and the full 2-minute cooldown
+// would strand queued requests that this provider (or its post-restart
+// re-registration) could serve.
+const pendingModelLoadDrainBackoff = 30 * time.Second
 
 type modelLoadAction struct {
 	providerID string
@@ -2102,8 +2115,8 @@ func (r *Registry) TriggerModelSwaps() {
 func (r *Registry) expirePendingModelLoads(now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for key, sentAt := range r.pendingModelLoads {
-		if now.Sub(sentAt) > pendingModelLoadTTL {
+	for key, expiresAt := range r.pendingModelLoads {
+		if now.After(expiresAt) {
 			delete(r.pendingModelLoads, key)
 		}
 	}
@@ -2290,7 +2303,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		if r.providerHasPendingLoad(action.providerID) {
 			continue
 		}
-		r.pendingModelLoads[modelLoadKey(action.providerID, action.modelID)] = now
+		r.pendingModelLoads[modelLoadKey(action.providerID, action.modelID)] = now.Add(pendingModelLoadTTL)
 		reserved = append(reserved, action)
 	}
 	return reserved
@@ -2379,6 +2392,19 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 func (r *Registry) ClearPendingModelLoad(providerID, modelID string) {
 	r.mu.Lock()
 	delete(r.pendingModelLoads, modelLoadKey(providerID, modelID))
+	r.mu.Unlock()
+}
+
+// BackoffPendingModelLoadForDrain re-stamps a pending load entry with the
+// short drain backoff. Called when a provider rejects load_model because it
+// is draining ahead of an auto-update restart: clearing the entry outright
+// would re-send load_model to the same draining provider on the very next
+// TriggerModelSwaps pass, while the full failure cooldown would suppress the
+// provider long after a failed restart resumed serving. A successful restart
+// clears the entry anyway via Disconnect.
+func (r *Registry) BackoffPendingModelLoadForDrain(providerID, modelID string) {
+	r.mu.Lock()
+	r.pendingModelLoads[modelLoadKey(providerID, modelID)] = time.Now().Add(pendingModelLoadDrainBackoff)
 	r.mu.Unlock()
 }
 
@@ -2514,6 +2540,37 @@ func (r *Registry) GetProvider(id string) *Provider {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.providers[id]
+}
+
+// CountProvidersByBinaryHash returns the number of currently connected
+// providers whose registration attested the given provider binary hash. Used by
+// release administration to avoid removing a hash from the forced allowlist
+// while old-but-still-connected providers are draining/restarting into a newer
+// release.
+func (r *Registry) CountProvidersByBinaryHash(hash string) int {
+	normalized := strings.ToLower(strings.TrimSpace(hash))
+	if normalized == "" {
+		return 0
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		status := p.Status
+		attestedHash := ""
+		if p.AttestationResult != nil {
+			attestedHash = p.AttestationResult.BinaryHash
+		}
+		p.mu.Unlock()
+
+		if status != StatusOffline && strings.EqualFold(attestedHash, normalized) {
+			count++
+		}
+	}
+	return count
 }
 
 // MarkUntrusted sets a provider's status to untrusted for a hard/security

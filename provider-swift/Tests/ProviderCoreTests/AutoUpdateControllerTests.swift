@@ -28,7 +28,8 @@ struct AutoUpdateControllerTests {
     private struct Fakes {
         var claimReturns = true
         var checkResult: UpdateCheckResult
-        var installResult: AutoUpdateController.InstallOutcome = .installed
+        var stageResult: AutoUpdateController.StepOutcome = .completed
+        var commitResult: AutoUpdateController.StepOutcome = .completed
         var drainReturns = true
         var restartThrows = false
     }
@@ -49,10 +50,11 @@ struct AutoUpdateControllerTests {
             claimStart: { recorder.record("claim"); return fakes.claimReturns },
             resumeServing: { recorder.record("resume") },
             check: { recorder.record("check"); return fakes.checkResult },
-            downloadVerifyInstall: { _ in recorder.record("install"); return fakes.installResult },
+            downloadVerifyStage: { _ in recorder.record("stage"); return fakes.stageResult },
             beginDraining: { recorder.record("beginDraining") },
             waitForDrain: { _ in recorder.record("waitForDrain"); return fakes.drainReturns },
             forceCancelInflight: { recorder.record("forceCancel") },
+            commitInstall: { recorder.record("commit"); return fakes.commitResult },
             restart: {
                 recorder.record("restart")
                 if fakes.restartThrows { throw FakeError.restart }
@@ -107,29 +109,30 @@ struct AutoUpdateControllerTests {
         #expect(recorder.events == ["claim", "check", "resume"])
     }
 
-    // MARK: - The critical invariant: a failed download/install never drains
+    // MARK: - The critical invariant: a failed download/stage never drains
 
-    @Test("download/install failure: stays serving, NEVER drains or restarts")
-    func installFailureNeverDrains() async {
+    @Test("download/stage failure: stays serving, NEVER drains, commits, or restarts")
+    func stageFailureNeverDrains() async {
         let recorder = Recorder()
         var fakes = Fakes(checkResult: .updateAvailable(current: "1.0.0", latest: Self.release))
-        fakes.installResult = .failed("disk full")
+        fakes.stageResult = .failed("disk full")
         let controller = makeController(fakes, recorder: recorder)
 
         let outcome = await controller.run()
 
-        #expect(outcome == .downloadOrInstallFailed("disk full"))
-        // No beginDraining, no waitForDrain, no restart — a botched update must
-        // not cost serving capacity.
-        #expect(recorder.events == ["claim", "check", "install", "resume"])
+        #expect(outcome == .stageFailed("disk full"))
+        // No beginDraining, no waitForDrain, no commit, no restart — a botched
+        // update must not cost serving capacity.
+        #expect(recorder.events == ["claim", "check", "stage", "resume"])
         #expect(!recorder.events.contains("beginDraining"))
+        #expect(!recorder.events.contains("commit"))
         #expect(!recorder.events.contains("restart"))
     }
 
-    // MARK: - Happy path: install → drain → restart
+    // MARK: - Happy path: stage → drain → commit → restart
 
-    @Test("success with clean drain: install, drain, then restart (no force-cancel)")
-    func successDrainsThenRestarts() async {
+    @Test("success with clean drain: stage while serving, drain, commit AFTER drain, then restart")
+    func successDrainsThenCommitsThenRestarts() async {
         let recorder = Recorder()
         let controller = makeController(
             Fakes(checkResult: .updateAvailable(current: "1.0.0", latest: Self.release)),
@@ -139,13 +142,15 @@ struct AutoUpdateControllerTests {
         let outcome = await controller.run()
 
         #expect(outcome == .restarted(from: "1.0.0", to: "2.0.0", drained: true))
-        // Strict order: download/install happens BEFORE we stop accepting work.
-        #expect(recorder.events == ["claim", "check", "install", "beginDraining", "waitForDrain", "restart"])
+        // Strict order: download/stage happens BEFORE we stop accepting work,
+        // and the live-layout commit happens strictly AFTER the drain so no
+        // request can observe a half-replaced bundle.
+        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "restart"])
         #expect(!recorder.events.contains("forceCancel"))
         #expect(!recorder.events.contains("resume")) // restart succeeded → no resume
     }
 
-    @Test("drain timeout: force-cancels stragglers, then restarts anyway")
+    @Test("drain timeout: force-cancels stragglers, then commits and restarts anyway")
     func drainTimeoutForceCancels() async {
         let recorder = Recorder()
         var fakes = Fakes(checkResult: .updateAvailable(current: "1.0.0", latest: Self.release))
@@ -155,7 +160,21 @@ struct AutoUpdateControllerTests {
         let outcome = await controller.run()
 
         #expect(outcome == .restarted(from: "1.0.0", to: "2.0.0", drained: false))
-        #expect(recorder.events == ["claim", "check", "install", "beginDraining", "waitForDrain", "forceCancel", "restart"])
+        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "forceCancel", "commit", "restart"])
+    }
+
+    @Test("commit failure: resumes serving on the old binary, never restarts")
+    func commitFailureResumes() async {
+        let recorder = Recorder()
+        var fakes = Fakes(checkResult: .updateAvailable(current: "1.0.0", latest: Self.release))
+        fakes.commitResult = .failed("rename failed")
+        let controller = makeController(fakes, recorder: recorder)
+
+        let outcome = await controller.run()
+
+        #expect(outcome == .commitFailed("rename failed"))
+        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "resume"])
+        #expect(!recorder.events.contains("restart"))
     }
 
     @Test("restart failure: resumes serving on the old binary")
@@ -171,6 +190,6 @@ struct AutoUpdateControllerTests {
             Issue.record("expected .restartFailed, got \(outcome)")
             return
         }
-        #expect(recorder.events == ["claim", "check", "install", "beginDraining", "waitForDrain", "restart", "resume"])
+        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "restart", "resume"])
     }
 }

@@ -1,5 +1,13 @@
 import Foundation
 
+/// Well-known error reason attached to inference / load_model / prefetch_model
+/// rejections while the provider is draining ahead of an auto-update restart.
+/// The coordinator matches this exact string to treat a load_model failure as
+/// transient (short retry backoff, provider is about to restart) rather than a
+/// genuine load failure. Mirrored in coordinator/protocol/messages.go
+/// (ProviderDrainingForUpdate) — keep the two in sync.
+public let providerDrainingForUpdateReason = "provider draining for update"
+
 public struct HardwareInfo: Codable, Sendable, Equatable {
     public var machineModel: String
     public var chipName: String

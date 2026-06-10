@@ -690,6 +690,58 @@ func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
 	}
 }
 
+func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{AdminKey: "admin-key"}, logger)
+	srv.SetBinaryHashEnforcement(true)
+
+	releaseHash := strings.Repeat("c", 64)
+	if err := st.SetRelease(&store.Release{
+		Version:    "1.0.0",
+		Platform:   "macos-arm64",
+		BinaryHash: releaseHash,
+		BundleHash: strings.Repeat("d", 64),
+		URL:        "https://r2.example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz",
+	}); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+	p := reg.Register("provider-old", nil, &protocol.RegisterMessage{
+		Type:    protocol.TypeRegister,
+		Backend: "mlx-swift",
+		Hardware: protocol.Hardware{
+			MachineModel: "Mac15,8",
+			ChipName:     "Apple M3 Max",
+			MemoryGB:     64,
+		},
+		Models: []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
+	})
+	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, BinaryHash: releaseHash})
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/admin/releases", strings.NewReader(`{"version":"1.0.0","platform":"macos-arm64"}`))
+	req.Header.Set("Authorization", "Bearer admin-key")
+	w := httptest.NewRecorder()
+	srv.handleAdminDeleteRelease(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete without force status = %d, want %d; body=%s", w.Code, http.StatusConflict, w.Body.String())
+	}
+	if latest := st.GetLatestRelease("macos-arm64"); latest == nil || !latest.Active {
+		t.Fatal("release should remain active after protected delete")
+	}
+
+	forceReq := httptest.NewRequest(http.MethodDelete, "/v1/admin/releases", strings.NewReader(`{"version":"1.0.0","platform":"macos-arm64","force":true}`))
+	forceReq.Header.Set("Authorization", "Bearer admin-key")
+	forceW := httptest.NewRecorder()
+	srv.handleAdminDeleteRelease(forceW, forceReq)
+	if forceW.Code != http.StatusOK {
+		t.Fatalf("force delete status = %d, want %d; body=%s", forceW.Code, http.StatusOK, forceW.Body.String())
+	}
+	if latest := st.GetLatestRelease("macos-arm64"); latest != nil {
+		t.Fatal("release should be inactive after forced delete")
+	}
+}
+
 func TestBinaryHashPolicySnapshotConcurrentSync(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})

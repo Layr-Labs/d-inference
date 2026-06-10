@@ -505,6 +505,7 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Version  string `json:"version"`
 		Platform string `json:"platform"`
+		Force    bool   `json:"force,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
@@ -516,6 +517,17 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	}
 	if req.Platform == "" {
 		req.Platform = "macos-arm64"
+	}
+	if s.binaryHashEnforce && !req.Force {
+		if release, ok := findReleaseForDeactivation(s.store.ListReleases(), req.Version, req.Platform); ok {
+			if activeProviders := s.registry.CountProvidersByBinaryHash(release.BinaryHash); activeProviders > 0 {
+				writeJSON(w, http.StatusConflict, errorResponse(
+					"release_in_use",
+					fmt.Sprintf("release %s/%s binary hash is still used by %d connected provider(s); wait for rollout or set force=true", req.Version, req.Platform, activeProviders),
+				))
+				return
+			}
+		}
 	}
 
 	if err := s.store.DeleteRelease(req.Version, req.Platform); err != nil {
@@ -533,6 +545,15 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		"version":  req.Version,
 		"platform": req.Platform,
 	})
+}
+
+func findReleaseForDeactivation(releases []store.Release, version, platform string) (store.Release, bool) {
+	for _, release := range releases {
+		if release.Version == version && release.Platform == platform && release.Active {
+			return release, true
+		}
+	}
+	return store.Release{}, false
 }
 
 // isAdminAuthorized checks if the request is from an admin.

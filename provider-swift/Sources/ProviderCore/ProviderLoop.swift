@@ -219,14 +219,28 @@ public actor ProviderLoop {
     /// we refuse new requests (503 reroute) so in-flight work can finish before
     /// the hot-swap restart. See `AutoUpdateController`.
     ///   - `.idle`:       normal serving (no update in progress)
-    ///   - `.installing`: a newer release is downloading/installing; STILL serving
-    ///   - `.draining`:   new binary installed; refusing new requests, draining
+    ///   - `.installing`: a newer release is downloading/staging; STILL serving
+    ///   - `.draining`:   bundle staged; refusing new requests while in-flight
+    ///                    work finishes, then commit + restart
     private enum UpdatePhase: Sendable, Equatable {
         case idle
         case installing
         case draining
     }
     private var updatePhase: UpdatePhase = .idle
+
+    /// Verified update bundle staged on disk during `.installing`, awaiting the
+    /// post-drain commit. The live layout is untouched until the commit, so a
+    /// request can never observe a half-replaced bundle. Consumed by
+    /// `commitStagedUpdateBundle`; discarded by `resumeServingAfterUpdate`.
+    private var stagedUpdateBundle: SelfUpdater.StagedBundle?
+
+    /// Latest `desired_models` push received while update-draining. Normally
+    /// the restart makes it moot (registration gets fresh desired state), but
+    /// if the restart is aborted (commit/restart failure) the deferred state
+    /// is replayed by `resumeServingAfterUpdate` so the provider does not keep
+    /// serving from a desired set the coordinator has since changed.
+    private var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
 
     /// Models remain tracked while their scheduler is tearing down so
     /// reentrant loads cannot start against memory that has not been freed yet.
@@ -673,11 +687,24 @@ public actor ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
-                    staleDesiredPrefetches.remove(modelId)
-                    await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+                    if isDrainingForUpdate {
+                        sendDrainingPrefetchFailure(modelId: modelId, send: send)
+                    } else {
+                        staleDesiredPrefetches.remove(modelId)
+                        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+                    }
 
                 case .desiredModels(let entries):
-                    await reconcileDesiredModels(entries, send: send)
+                    if isDrainingForUpdate {
+                        // Keep only the latest push (desired state is
+                        // declarative). A successful restart makes it moot —
+                        // registration receives fresh desired state — but an
+                        // aborted restart replays it via resumeServingAfterUpdate.
+                        deferredDesiredModels = entries
+                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
+                    } else {
+                        await reconcileDesiredModels(entries, send: send)
+                    }
 
                 case .trustStatus(let trustLevel, let status, let reason):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
@@ -848,8 +875,9 @@ public actor ProviderLoop {
     /// Whether the provider is draining for a hot-swap update and must refuse
     /// new work. 503 is the documented no-fault reroute signal (the coordinator
     /// routes elsewhere); local requests get a 503-equivalent queue-full. We
-    /// only drain AFTER the new binary is installed (`.installing` still serves),
-    /// so this never costs capacity for a failed update.
+    /// only drain AFTER the new bundle is staged and verified (`.installing`
+    /// still serves, and staging never touches the live layout), so this never
+    /// costs capacity for a failed update.
     ///
     /// Both admission paths call this twice: a fast-path reject up front, and an
     /// authoritative re-check right before the request is registered/reserved —
@@ -864,17 +892,51 @@ public actor ProviderLoop {
         guard isDrainingForUpdate else { return false }
         send.send(.inferenceError(
             requestId: requestId,
-            error: "provider draining for update",
+            error: providerDrainingForUpdateReason,
             statusCode: 503
         ))
         return true
     }
 
-    /// Local-endpoint admission: throws a 503-equivalent if we're draining.
-    private func throwIfDrainingForUpdate() throws {
-        if isDrainingForUpdate {
-            throw MultiModelBatchSchedulerEngineError.queueFull("provider draining for update")
+    /// Local-endpoint admission: throws a 503-equivalent when new local work
+    /// must be refused — during the update drain (hot-swap restart imminent)
+    /// or once the provider is shutting down. The shutdown drain waits on
+    /// `localReservations`; without the shutdown gate a steady local client
+    /// could keep reservations non-empty and hold `run()` open for the full
+    /// shutdown drain timeout, then have its models unloaded mid-stream.
+    private func throwIfRefusingNewLocalWork() throws {
+        if isShuttingDown {
+            throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
+        if isDrainingForUpdate {
+            throw MultiModelBatchSchedulerEngineError.queueFull(providerDrainingForUpdateReason)
+        }
+    }
+
+    /// Coordinator prefetch/load control messages are not user requests, but
+    /// starting new model work during the final update drain is pointless and
+    /// can briefly make the coordinator believe a soon-to-restart provider has
+    /// warmed a model. Reject them explicitly with the well-known draining
+    /// reason — the coordinator treats that load failure as transient (short
+    /// backoff) instead of a real load-failure cooldown. The post-restart
+    /// registration receives fresh `desired_models` and demand-driven
+    /// `load_model` can retry.
+    private func sendDrainingLoadModelFailure(modelId: String, send: SendHandle) {
+        send.send(.loadModelStatus(
+            modelId: modelId,
+            status: .failed,
+            error: providerDrainingForUpdateReason
+        ))
+    }
+
+    private func sendDrainingPrefetchFailure(modelId: String, send: SendHandle) {
+        send.send(.prefetchModelStatus(
+            modelId: modelId,
+            status: .failed,
+            bytesDone: 0,
+            bytesTotal: 0,
+            error: providerDrainingForUpdateReason
+        ))
     }
 
     private func handleInferenceRequest(
@@ -1393,6 +1455,10 @@ public actor ProviderLoop {
             ))
             return
         }
+        if isDrainingForUpdate {
+            sendDrainingLoadModelFailure(modelId: modelId, send: send)
+            return
+        }
 
         if modelSlots[modelId] != nil, !modelsUnloading.contains(modelId) {
             logger.info("Preload for \(modelId): already loaded, replying succeeded")
@@ -1498,6 +1564,10 @@ public actor ProviderLoop {
             send.send(.prefetchModelStatus(
                 modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0,
                 error: "provider is shutting down"))
+            return
+        }
+        if isDrainingForUpdate {
+            sendDrainingPrefetchFailure(modelId: modelId, send: send)
             return
         }
         logger.info("Prefetch request for \(modelId) (priority=\(priority))")
@@ -2153,9 +2223,10 @@ public actor ProviderLoop {
     }
 
     /// Perform a single background update cycle via `AutoUpdateController`.
-    /// The controller sequences: check → download/install (while serving) →
-    /// drain → restart. All side effects below are actor-isolated so the phase
-    /// transitions and drain bookkeeping stay race-free.
+    /// The controller sequences: check → download/stage (while serving) →
+    /// drain → commit → restart. All side effects below are actor-isolated so
+    /// the phase transitions, staged-bundle handoff, and drain bookkeeping
+    /// stay race-free.
     private func performAutoUpdateCheck(coordinatorURL: String) async {
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
         let me = self
@@ -2165,21 +2236,8 @@ public actor ProviderLoop {
             claimStart: { await me.claimUpdateStart() },
             resumeServing: { await me.resumeServingAfterUpdate() },
             check: { await updater.checkForUpdate() },
-            downloadVerifyInstall: { release in
-                let download = await updater.downloadAndVerify(release: release)
-                switch download {
-                case .failure(let error):
-                    return .failed("\(error)")
-                case .success(let tempFile):
-                    let install = updater.installBundle(from: tempFile, release: release)
-                    try? FileManager.default.removeItem(at: tempFile)
-                    switch install {
-                    case .success:
-                        return .installed
-                    case .failure(let error):
-                        return .failed("\(error)")
-                    }
-                }
+            downloadVerifyStage: { release in
+                await me.stageUpdateBundle(release: release, updater: updater)
             },
             beginDraining: { await me.beginUpdateDraining() },
             waitForDrain: { timeout in await me.waitForInflightDrain(timeout: timeout) },
@@ -2188,6 +2246,7 @@ public actor ProviderLoop {
             // following restart to tear down (local reservations are released by
             // the engine, which we no longer wait on past the timeout).
             forceCancelInflight: { await me.cancelAllInflight() },
+            commitInstall: { await me.commitStagedUpdateBundle(updater: updater) },
             restart: { try ProcessLifecycle.restartAfterUpdate() },
             log: { logger.info("\($0)") }
         )
@@ -2201,8 +2260,10 @@ public actor ProviderLoop {
             logger.info("Auto-update: already running latest version")
         case .checkFailed(let reason):
             logger.warning("Auto-update: check failed: \(reason)")
-        case .downloadOrInstallFailed(let reason):
-            logger.warning("Auto-update: download/install failed: \(reason)")
+        case .stageFailed(let reason):
+            logger.warning("Auto-update: download/stage failed: \(reason)")
+        case .commitFailed(let reason):
+            logger.warning("Auto-update: staged install failed: \(reason)")
         case .restarted(let from, let to, let drained):
             logger.info("Auto-update: restarting v\(from) -> v\(to) (drained=\(drained))")
         case .restartFailed(let reason):
@@ -2214,8 +2275,8 @@ public actor ProviderLoop {
 
     /// Atomically claim the update cycle. Returns `false` if a cycle is already
     /// underway (re-entrancy guard for overlapping monitor ticks). On `true`,
-    /// enter the `.installing` phase — still serving while the new binary
-    /// downloads.
+    /// enter the `.installing` phase — still serving while the new bundle
+    /// downloads and stages.
     private func claimUpdateStart() -> Bool {
         guard updatePhase == .idle, !isShuttingDown else { return false }
         updatePhase = .installing
@@ -2223,15 +2284,70 @@ public actor ProviderLoop {
     }
 
     /// Return to normal serving after an update cycle that did not restart
-    /// (up-to-date, check/download/install failure, or restart failure).
-    private func resumeServingAfterUpdate() {
+    /// (up-to-date, check/stage/commit failure, or restart failure): reopen
+    /// admission, drop any staged-but-uncommitted bundle, and replay the
+    /// desired-models state that was deferred during the drain so the
+    /// provider converges back onto the coordinator's current desired set.
+    private func resumeServingAfterUpdate() async {
         updatePhase = .idle
+
+        if let staged = stagedUpdateBundle {
+            stagedUpdateBundle = nil
+            staged.discard()
+        }
+
+        if let entries = deferredDesiredModels {
+            deferredDesiredModels = nil
+            if let send = outboundSend {
+                logger.info("Replaying desired_models deferred during update drain (\(entries.count) entr(ies))")
+                await reconcileDesiredModels(entries, send: send)
+            }
+        }
     }
 
     /// Enter the `.draining` phase: new requests are refused (503 reroute /
-    /// local queue-full) while in-flight work finishes ahead of the hot-swap.
+    /// local queue-full) while in-flight work finishes ahead of the commit +
+    /// hot-swap.
     private func beginUpdateDraining() {
         updatePhase = .draining
+    }
+
+    /// Download, verify, and stage the release bundle while still serving.
+    /// Nothing under the live layout is touched; the staged bundle waits for
+    /// the post-drain commit.
+    private func stageUpdateBundle(
+        release: ReleaseInfo,
+        updater: SelfUpdater
+    ) async -> AutoUpdateController.StepOutcome {
+        switch await updater.downloadAndVerify(release: release) {
+        case .failure(let error):
+            return .failed("\(error)")
+        case .success(let tempFile):
+            defer { try? FileManager.default.removeItem(at: tempFile) }
+            switch updater.stageBundle(from: tempFile, release: release) {
+            case .success(let staged):
+                stagedUpdateBundle = staged
+                return .completed
+            case .failure(let error):
+                return .failed("\(error)")
+            }
+        }
+    }
+
+    /// Swap the staged bundle into the live layout. Runs strictly after the
+    /// drain: admission is closed and in-flight work has finished (or been
+    /// force-cancelled), so no request can observe the swap window.
+    private func commitStagedUpdateBundle(updater: SelfUpdater) -> AutoUpdateController.StepOutcome {
+        guard let staged = stagedUpdateBundle else {
+            return .failed("no staged update bundle to install")
+        }
+        stagedUpdateBundle = nil
+        switch updater.commitStagedBundle(staged) {
+        case .success:
+            return .completed
+        case .failure(let error):
+            return .failed("\(error)")
+        }
     }
 
     // MARK: - Model Loading
@@ -3128,9 +3244,9 @@ extension ProviderLoop {
     /// goes through the same `ensureModelLoaded` gate as coordinator requests, so
     /// the shared `GlobalKVCacheBudget` and memory admission apply uniformly.
     func acquireModelForLocal(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
-        // Fast-path drain reject; an authoritative re-check follows the `await`
-        // below, right before the reservation is taken (see comment there).
-        try throwIfDrainingForUpdate()
+        // Fast-path drain/shutdown reject; an authoritative re-check follows the
+        // `await` below, right before the reservation is taken (see comment there).
+        try throwIfRefusingNewLocalWork()
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch let err as InferenceError {
@@ -3145,12 +3261,12 @@ extension ProviderLoop {
         guard let slot = modelSlots[modelId] else {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
-        // Authoritative drain re-check: `ensureModelLoaded` above is a suspension
-        // point, so draining may have begun while we were parked. No `await`
-        // sits between this check and `reserve`, so on the actor it is atomic —
-        // the reservation is either refused or counted in `hasInflightWork`
-        // before any drain snapshot can miss it.
-        try throwIfDrainingForUpdate()
+        // Authoritative re-check: `ensureModelLoaded` above is a suspension
+        // point, so draining or shutdown may have begun while we were parked.
+        // No `await` sits between this check and `reserve`, so on the actor it
+        // is atomic — the reservation is either refused or counted in
+        // `hasInflightWork` before any drain snapshot can miss it.
+        try throwIfRefusingNewLocalWork()
         localReservations.reserve(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in

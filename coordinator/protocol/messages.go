@@ -63,6 +63,15 @@ const (
 	LoadModelStatusFailed    = "failed"
 )
 
+// ProviderDrainingForUpdate is the well-known error reason a provider attaches
+// to inference / load_model / prefetch_model rejections while it is draining
+// ahead of an auto-update restart. The coordinator matches this exact string
+// to treat such a load_model failure as transient (short retry backoff,
+// provider is about to restart) rather than a genuine load failure that earns
+// the full cooldown. Mirrored in
+// provider-swift/Sources/ProviderCore/Protocol/Types.swift.
+const ProviderDrainingForUpdate = "provider draining for update"
+
 // PrefetchModelStatus is the lifecycle state reported by a provider in
 // response to a PrefetchModelMessage. Unlike a load, a prefetch only
 // downloads + verifies the model on disk; it does NOT load weights into

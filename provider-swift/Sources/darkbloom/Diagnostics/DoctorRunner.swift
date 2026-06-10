@@ -58,7 +58,9 @@ enum DoctorRunner {
         let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
         if !alreadyHardwareTrusted {
             switch checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url) {
-            case .enrolledDarkbloom:
+            case .enrolledDarkbloom, .checkFailed:
+                // checkFailed: unknown state — asserting "not enrolled" here
+                // would send an enrolled operator down the wrong flow.
                 break
             case .enrolledOtherMDM(let serverURL):
                 out.append(Diagnostic(section: .trust, name: "mdm enrollment", level: .warn,

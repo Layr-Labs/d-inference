@@ -124,7 +124,10 @@ public struct EnrollmentService: Sendable {
             )
         case .enrolledOtherMDM(let serverURL):
             throw EnrollmentError.managedByOtherMDM(serverURL: serverURL)
-        case .notEnrolled:
+        case .notEnrolled, .checkFailed:
+            // checkFailed proceeds too: a redundant profile download is
+            // idempotent/harmless, while refusing here would block enrollment
+            // on machines where the profiles tool is transiently unavailable.
             break
         }
 

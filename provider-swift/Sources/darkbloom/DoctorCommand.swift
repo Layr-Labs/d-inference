@@ -274,6 +274,10 @@ func buildCoordinatorDoctorChecks(
         checks.append(.init(
             name: "mdm enrollment", status: .warn,
             detail: "not enrolled; hardware trust may remain pending"))
+    case .checkFailed:
+        checks.append(.init(
+            name: "mdm enrollment", status: .warn,
+            detail: "could not determine (profiles tool failed) — check System Settings → Device Management"))
     }
 
     do {
@@ -371,5 +375,6 @@ func describeMDMEnrollment(_ state: MDMEnrollmentState) -> String {
     case .enrolledDarkbloom: return "yes (darkbloom)"
     case .enrolledOtherMDM(let serverURL): return "other MDM (\(serverURL))"
     case .notEnrolled: return "no"
+    case .checkFailed: return "unknown (profiles tool failed)"
     }
 }

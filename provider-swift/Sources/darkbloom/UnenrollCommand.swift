@@ -38,6 +38,13 @@ struct Unenroll: AsyncParsableCommand {
             print("Nothing to remove on the macOS side.")
         case .notEnrolled:
             print("No Darkbloom MDM profile found. Nothing to remove on the macOS side.")
+        case .checkFailed:
+            print("Couldn't determine MDM state (the profiles tool failed).")
+            print("Check System Settings → General → Device Management yourself.")
+            if !noOpen {
+                print("Opening System Settings...")
+                service.openProfilesPaneForRemoval()
+            }
         }
 
         print()

@@ -13,6 +13,11 @@ public enum MDMEnrollmentState: Equatable, Sendable {
     case notEnrolled
     case enrolledDarkbloom(serverURL: String)
     case enrolledOtherMDM(serverURL: String)
+    /// `profiles status` could not be run (or produced no output) — the state
+    /// is UNKNOWN, which is distinct from "not enrolled": unenroll must not
+    /// tell an enrolled user there is nothing to remove, and doctor must not
+    /// assert non-enrollment, just because the tool transiently failed.
+    case checkFailed
 
     public var isDarkbloom: Bool {
         if case .enrolledDarkbloom = self { return true }
@@ -84,9 +89,10 @@ public func parseMDMEnrollmentStatus(
 /// (works unprivileged). `coordinatorURL` (http(s):// or ws(s)://) contributes
 /// its host to the set of accepted Darkbloom MDM hosts.
 ///
-/// Fails toward `.notEnrolled`: letting `enroll` proceed to a profile download
-/// is harmless (installing is idempotent), whereas a false "already enrolled"
-/// permanently blocks re-enrollment.
+/// When the tool itself fails (spawn error, non-zero exit with no output)
+/// the result is `.checkFailed`, NOT `.notEnrolled` — callers choose: enroll
+/// proceeds to a download (idempotent, can't brick), unenroll/doctor say the
+/// state is unknown instead of asserting non-enrollment.
 public func checkMDMEnrollment(coordinatorURL: String? = nil) -> MDMEnrollmentState {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/profiles")
@@ -100,7 +106,7 @@ public func checkMDMEnrollment(coordinatorURL: String? = nil) -> MDMEnrollmentSt
         try process.run()
     } catch {
         logger.debug("profiles status failed to launch: \(error)")
-        return .notEnrolled
+        return .checkFailed
     }
     process.waitUntilExit()
 
@@ -108,6 +114,12 @@ public func checkMDMEnrollment(coordinatorURL: String? = nil) -> MDMEnrollmentSt
         data: outPipe.fileHandleForReading.readDataToEndOfFile(),
         encoding: .utf8
     ) ?? ""
+
+    if process.terminationStatus != 0
+        && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        logger.debug("profiles status exited \(process.terminationStatus) with no output")
+        return .checkFailed
+    }
 
     var expectedHosts: [String] = []
     if let coordinatorURL, let host = URL(string: coordinatorURL)?.host {

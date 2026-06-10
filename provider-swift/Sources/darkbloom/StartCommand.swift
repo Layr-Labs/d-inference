@@ -549,8 +549,9 @@ struct Start: AsyncParsableCommand {
         }
         print("  Logs:    \(logPath)")
         print()
-        print("  darkbloom stop    Stop the provider")
-        print("  darkbloom status  Check status")
+        print("  darkbloom stop     Stop the provider")
+        print("  darkbloom restart  Restart with the current selection")
+        print("  darkbloom status   Check status")
     }
 
     // MARK: - Interactive Catalog Picker

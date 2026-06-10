@@ -129,6 +129,70 @@ public enum LaunchAgent: Sendable {
         }
     }
 
+    // MARK: - Restart
+
+    /// Restart the provider in place, preserving the current model selection.
+    ///
+    /// This re-runs the EXISTING launchd plist (same coordinator URL and
+    /// `--model` flags) — it never rewrites the plist or shows the model
+    /// picker. Behaviour by state:
+    ///   - loaded:    `launchctl kickstart -k` kills the running instance and
+    ///                immediately relaunches it from the plist's ProgramArguments.
+    ///   - installed: (plist on disk but not loaded) bootstrap + kickstart.
+    ///   - neither:   throws — there is nothing to restart.
+    public static func restart() throws {
+        // Canonical label first.
+        if isLoaded() {
+            try kickstartInPlace(label: label)
+            return
+        }
+        // An upgraded machine may still be running under a legacy label; bounce
+        // whichever is actually loaded. Mirrors `stop()`/`installAndStart()`,
+        // which both iterate `legacyLabels`, so `restart` can preserve a running
+        // provider that hasn't been migrated to the current label yet.
+        for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
+            try kickstartInPlace(label: legacyLabel)
+            return
+        }
+        if isInstalled() {
+            // Plist exists but the service isn't loaded — load + kickstart it.
+            try loadService()
+            return
+        }
+        throw LaunchAgentError.notInstalled
+    }
+
+    /// `launchctl kickstart -k gui/<uid>/<label>` — restart the already-loaded
+    /// service in place. The `-k` flag kills the current instance before
+    /// relaunching it from the existing plist.
+    private static func kickstartInPlace(label serviceLabel: String) throws {
+        let target = "gui/\(getuid())/\(serviceLabel)"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["kickstart", "-k", target]
+
+        let errPipe = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        if process.terminationStatus != 0 {
+            let stderr = String(
+                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            // Error 3 = "could not find service": the service vanished between
+            // the isLoaded() check and here. Fall back to a fresh load.
+            if stderr.contains("3:") || stderr.contains("could not find service") {
+                try loadService()
+                return
+            }
+            throw LaunchAgentError.kickstartFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
     // MARK: - Uninstall
 
     /// Completely remove the service: unload + delete plist.
@@ -230,15 +294,32 @@ public enum LaunchAgent: Sendable {
         }
 
         // With RunAtLoad=false, bootstrap registers the service but doesn't
-        // start it. Kickstart actually launches the process.
+        // start it. Kickstart actually launches the process. After a successful
+        // bootstrap the service exists, so kickstart should return 0 — surface a
+        // non-zero exit (or a spawn failure) rather than silently reporting
+        // success when launchd never launched the process.
         let target = "gui/\(getuid())/\(label)"
         let kickstart = Process()
         kickstart.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         kickstart.arguments = ["kickstart", target]
+        let kickstartErr = Pipe()
         kickstart.standardOutput = FileHandle.nullDevice
-        kickstart.standardError = FileHandle.nullDevice
-        _ = try? kickstart.run()
+        kickstart.standardError = kickstartErr
+
+        do {
+            try kickstart.run()
+        } catch {
+            throw LaunchAgentError.kickstartFailed("could not run launchctl kickstart: \(error.localizedDescription)")
+        }
         kickstart.waitUntilExit()
+
+        if kickstart.terminationStatus != 0 {
+            let stderr = String(
+                data: kickstartErr.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            throw LaunchAgentError.kickstartFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     private static func unloadService(label serviceLabel: String = LaunchAgent.label) throws {
@@ -290,6 +371,8 @@ public enum LaunchAgent: Sendable {
 public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
     case bootstrapFailed(String)
     case bootoutFailed(String)
+    case kickstartFailed(String)
+    case notInstalled
 
     public var description: String {
         switch self {
@@ -297,6 +380,10 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
             return "launchctl bootstrap failed: \(detail)"
         case .bootoutFailed(let detail):
             return "launchctl bootout failed: \(detail)"
+        case .kickstartFailed(let detail):
+            return "launchctl kickstart failed: \(detail)"
+        case .notInstalled:
+            return "provider service is not installed; run `darkbloom start` first"
         }
     }
 }

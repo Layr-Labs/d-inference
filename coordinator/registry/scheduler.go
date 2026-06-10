@@ -459,7 +459,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 		online++
 		serves := r.providerServesCatalogModelLocked(p, model) &&
 			p.RuntimeVerified &&
-			providerSupportsPrivateTextLocked(p) &&
+			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&
 			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
 		p.mu.Unlock()
@@ -531,7 +531,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, selfRouteOw
 	if !p.RuntimeVerified {
 		return routingSnapshot{}, false
 	}
-	if !providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextLocked(p) {
 		return routingSnapshot{}, false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -902,7 +902,7 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, selfRouteOw
 	if trustRank(p.TrustLevel) < trustRank(minTrust) || !p.RuntimeVerified {
 		return false
 	}
-	if !providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextLocked(p) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || time.Since(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -1008,7 +1008,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 			p.mu.Unlock()
 			continue
 		}
-		if !providerSupportsPrivateTextLocked(p) {
+		if !r.providerSupportsPrivateTextLocked(p) {
 			p.mu.Unlock()
 			continue
 		}

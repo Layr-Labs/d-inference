@@ -286,17 +286,18 @@ type Provider struct {
 	// so a SIP downgrade — which needs a reboot that drops the WS — forces
 	// re-attestation. Never persisted.
 	CodeAttested bool
-	// codeAttestationRequired gates whether CodeAttested is ENFORCED for routing.
-	// Set at registration from the registry rollout flag, so the requirement is
-	// switched on only once APNs infra + provider support ship; until then the
-	// fleet routes as before. Fail-closed once true (no self-route exemption).
-	codeAttestationRequired bool
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
 }
 
-func providerSupportsPrivateTextLocked(p *Provider) bool {
+// providerSupportsPrivateTextLocked is the SINGLE routing chokepoint for
+// private/text traffic. It is a method on *Registry (not a free function) so the
+// APNs code-identity gate can consult the live rollout policy
+// (codeAttestationEnforcedLocked) rather than a value stamped at registration —
+// that is what lets the grace→enforce deadline flip without a reconnect. Callers
+// hold r.mu (every call site is inside an r-locked Registry method).
+func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -309,9 +310,9 @@ func providerSupportsPrivateTextLocked(p *Provider) bool {
 		return false
 	}
 	// v0.6.0 APNs code-identity gate — the SINGLE chokepoint, no self-route
-	// exemption (gate everyone). Enforced only when the rollout flag is on, so the
-	// fleet keeps routing until APNs attestation is deployed; fail-closed after.
-	if p.codeAttestationRequired && !p.CodeAttested {
+	// exemption (gate everyone). Enforced only once configured AND past the grace
+	// deadline, so the fleet keeps routing through the rollout; fail-closed after.
+	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -422,22 +423,60 @@ func (p *Provider) GetCodeAttested() bool {
 	return p.CodeAttested
 }
 
-// CodeAttestationRequired reports whether code-identity attestation is enforced
-// for this provider's connection (the rollout flag stamped at registration).
-func (p *Provider) CodeAttestationRequired() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.codeAttestationRequired
-}
-
-// SetCodeAttestationRequired toggles the v0.6.0 APNs code-identity rollout flag.
-// When true, providers registered afterward must pass code-identity attestation
-// (CodeAttested) to be routed private/text traffic. Call once at startup after
-// the APNs attestor is configured.
-func (r *Registry) SetCodeAttestationRequired(v bool) {
+// SetCodeAttestationConfigured records whether an APNs code-identity attestor is
+// wired. When configured the coordinator issues code-identity challenges; whether
+// a passing challenge is REQUIRED for routing is governed separately by the
+// enforcement deadline (SetCodeAttestationDeadline). Call during server setup.
+func (r *Registry) SetCodeAttestationConfigured(v bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.codeAttestationRequired = v
+	r.codeAttestationConfigured = v
+}
+
+// SetCodeAttestationDeadline sets the instant at which code-identity attestation
+// becomes MANDATORY for routing. A zero time means "grace/observe indefinitely"
+// (challenge + measure, but keep routing un-attested providers). Safe to call at
+// runtime; the gate re-reads it on every routing decision.
+func (r *Registry) SetCodeAttestationDeadline(t time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.codeAttestationDeadline = t
+}
+
+// SetCodeAttestationPolicy sets both knobs atomically (used by tests).
+func (r *Registry) SetCodeAttestationPolicy(configured bool, deadline time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.codeAttestationConfigured = configured
+	r.codeAttestationDeadline = deadline
+}
+
+// CodeAttestationConfigured reports whether an APNs attestor is wired (so the
+// connection handler should issue code-identity challenges). Thread-safe.
+func (r *Registry) CodeAttestationConfigured() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.codeAttestationConfigured
+}
+
+// CodeAttestationEnforced reports whether code-identity attestation is currently
+// mandatory for routing (configured AND past the deadline). Thread-safe.
+func (r *Registry) CodeAttestationEnforced() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.codeAttestationEnforcedLocked()
+}
+
+// codeAttestationEnforcedLocked reports whether code-identity attestation is
+// currently MANDATORY for routing. Caller must hold r.mu. Enforcement begins only
+// when an attestor is configured AND a non-zero deadline has been reached; before
+// then the fleet routes un-attested providers (grace window) while still being
+// challenged.
+func (r *Registry) codeAttestationEnforcedLocked() bool {
+	if !r.codeAttestationConfigured || r.codeAttestationDeadline.IsZero() {
+		return false
+	}
+	return !time.Now().Before(r.codeAttestationDeadline)
 }
 
 // Mu returns the provider's mutex for external callers that need to read
@@ -613,13 +652,25 @@ type Registry struct {
 
 	MinTrustLevel TrustLevel
 
-	// codeAttestationRequired is the v0.6.0 APNs code-identity rollout flag. When
-	// true, providers must pass the APNs code-identity round-trip (CodeAttested)
-	// to be routed private/text traffic. Default false so the fleet keeps routing
-	// until APNs infra + provider support are deployed; set true (via
-	// SetCodeAttestationRequired) once the attestor is configured. Stamped onto
-	// each Provider at registration.
-	codeAttestationRequired bool
+	// APNs code-identity rollout policy (v0.6.0), guarded by r.mu and evaluated
+	// LIVE at every routing decision so a deadline can flip enforcement on/off
+	// without forcing providers to reconnect.
+	//
+	//   - codeAttestationConfigured: true once an APNs attestor is wired
+	//     (SetCodeAttestationConfigured). The coordinator only issues code-identity
+	//     challenges when configured.
+	//   - codeAttestationDeadline: the instant enforcement begins. Before it (or
+	//     when zero) the coordinator is in GRACE/observe mode — it challenges and
+	//     measures providers but still ROUTES un-attested ones, so configuring the
+	//     attestor never deroutes the fleet. At/after the deadline, enforcement is
+	//     fail-closed: un-attested providers (and any too-old to ever attest) stop
+	//     being routed.
+	//
+	// Operator flow: set APNS_* secrets (configured, grace) → fleet updates to
+	// 0.6.0 and attests → set APNS_ENFORCE_AFTER = release+24h → enforcement flips
+	// on automatically when that instant passes.
+	codeAttestationConfigured bool
+	codeAttestationDeadline   time.Time
 
 	modelCatalog map[string]CatalogEntry
 
@@ -1197,7 +1248,7 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	if trustRank(p.TrustLevel) < trustRank(minTrust) {
 		return false
 	}
-	if !p.RuntimeVerified || !providerSupportsPrivateTextLocked(p) {
+	if !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -1703,7 +1754,6 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PrivateOnly:             msg.PrivateOnly,
 		APNsDeviceToken:         msg.APNsDeviceToken,
 		APNsEnvironment:         msg.APNsEnvironment,
-		codeAttestationRequired: r.codeAttestationRequired,
 		PrefillTPS:              msg.PrefillTPS,
 		DecodeTPS:               msg.DecodeTPS,
 		TrustLevel:              TrustNone,
@@ -2179,7 +2229,7 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !p.RuntimeVerified {
 		return false
 	}
-	if !providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextLocked(p) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -2259,7 +2309,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	if !p.RuntimeVerified {
 		return 0, false
 	}
-	if !providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextLocked(p) {
 		return 0, false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -2992,7 +3042,7 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		trust := p.TrustLevel
 		lastChallenge := p.LastChallengeVerified
 		runtimeVerified := p.RuntimeVerified
-		privateReady := providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p)
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
@@ -3127,7 +3177,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		trust := p.TrustLevel
 		attested := p.Attested
 		attestResult := p.AttestationResult
-		privateReady := providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p)
 		privateOnly := p.PrivateOnly
 		// p.Models is replaced copy-on-write by UpdateModelWeightHashes (which
 		// holds only p.mu, not r.mu), so snapshot it here under p.mu rather than
@@ -3215,7 +3265,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
-		privateReady := providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p)
 		var cc string
 		if p.Location != nil {
 			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
@@ -3479,7 +3529,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			p.mu.Unlock()
 			continue
 		}
-		if !providerSupportsPrivateTextLocked(p) {
+		if !r.providerSupportsPrivateTextLocked(p) {
 			p.mu.Unlock()
 			continue
 		}

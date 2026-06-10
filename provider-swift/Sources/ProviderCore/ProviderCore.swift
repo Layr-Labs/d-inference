@@ -20,5 +20,10 @@ public enum ProviderCore {
     // message + provider self-reconcile/hard-swap). The coordinator gates
     // `desired_models` on provider version >= 0.5.17 (minProviderVersionForDesiredModels)
     // so pre-feature providers never receive a message their decoder would reject.
-    public static let version = "0.5.17"
+    // 0.6.0 ships APNs code-identity attestation (graced rollout), encrypted SSD
+    // KV cache (default-on), Gemma 4 image/video VLM serving with vision-aware
+    // routing, graceful download-first auto-update, and the model-alias hot-swap
+    // layer. Semver compares numerically per-component, so 0.6.0 > 0.5.17 keeps
+    // the desired_models gate satisfied.
+    public static let version = "0.6.0"
 }

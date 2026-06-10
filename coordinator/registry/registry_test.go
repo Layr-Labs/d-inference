@@ -68,8 +68,10 @@ func testMakeTextRoutable(p *Provider) {
 }
 
 // TestCodeAttestationGate verifies the v0.6.0 APNs code-identity gate at the
-// single routing chokepoint: off by default (rollout flag), fail-closed when
-// required-but-unattested, routable once attested.
+// single routing chokepoint across the rollout policy: not configured (no
+// regression), grace/observe (configured but un-enforced still routes), enforced
+// (fail-closed when un-attested, routable when attested), and a live grace→enforce
+// deadline flip that does NOT require the provider to reconnect.
 func TestCodeAttestationGate(t *testing.T) {
 	mk := func() *Provider {
 		p := &Provider{
@@ -88,24 +90,61 @@ func TestCodeAttestationGate(t *testing.T) {
 		return p
 	}
 
-	// Rollout flag OFF: routable regardless of CodeAttested (no fleet regression).
-	if p := mk(); !providerSupportsPrivateTextLocked(p) {
-		t.Fatal("expected routable when codeAttestationRequired is off")
+	// Evaluate the gate under r.mu exactly as real callers do.
+	supports := func(r *Registry, p *Provider) bool {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		return r.providerSupportsPrivateTextLocked(p)
 	}
 
-	// Rollout flag ON, not attested: blocked (fail-closed, no self-route exemption).
+	// Not configured: routable regardless of CodeAttested (no fleet regression).
+	r := New(testLogger())
+	if !supports(r, mk()) {
+		t.Fatal("expected routable when code-attestation is not configured")
+	}
+
+	// Configured, no deadline (grace/observe): un-attested still routes.
+	r = New(testLogger())
+	r.SetCodeAttestationPolicy(true, time.Time{})
+	if !supports(r, mk()) {
+		t.Fatal("expected routable in grace mode (configured, no deadline) even when !CodeAttested")
+	}
+
+	// Configured, deadline in the future (still grace): un-attested still routes.
+	r = New(testLogger())
+	r.SetCodeAttestationPolicy(true, time.Now().Add(time.Hour))
+	if !supports(r, mk()) {
+		t.Fatal("expected routable while still inside the grace window")
+	}
+
+	// Enforced (deadline passed), not attested: blocked (fail-closed).
+	r = New(testLogger())
+	r.SetCodeAttestationPolicy(true, time.Now().Add(-time.Minute))
+	if supports(r, mk()) {
+		t.Fatal("expected NOT routable once enforced and !CodeAttested")
+	}
+
+	// Enforced and attested: routable.
+	r = New(testLogger())
+	r.SetCodeAttestationPolicy(true, time.Now().Add(-time.Minute))
+	pAtt := mk()
+	pAtt.CodeAttested = true
+	if !supports(r, pAtt) {
+		t.Fatal("expected routable when enforced and CodeAttested")
+	}
+
+	// Live deadline flip without reconnect: the SAME un-attested provider routes
+	// during grace, then stops the instant the deadline moves into the past.
+	r = New(testLogger())
+	r.SetCodeAttestationConfigured(true)
+	r.SetCodeAttestationDeadline(time.Now().Add(time.Hour)) // grace
 	p := mk()
-	p.codeAttestationRequired = true
-	if providerSupportsPrivateTextLocked(p) {
-		t.Fatal("expected NOT routable when required and !CodeAttested")
+	if !supports(r, p) {
+		t.Fatal("expected routable during grace before the flip")
 	}
-
-	// Rollout flag ON, attested: routable.
-	p = mk()
-	p.codeAttestationRequired = true
-	p.CodeAttested = true
-	if !providerSupportsPrivateTextLocked(p) {
-		t.Fatal("expected routable when required and CodeAttested")
+	r.SetCodeAttestationDeadline(time.Now().Add(-time.Minute)) // enforce now
+	if supports(r, p) {
+		t.Fatal("expected NOT routable after the deadline flips to the past")
 	}
 }
 
@@ -223,7 +262,10 @@ func TestSwiftProviderPrivateTextWithoutPythonCaps(t *testing.T) {
 	p := reg.Register("p-swift-nopython", nil, msg)
 	testMakeTextRoutable(p)
 
-	if !providerSupportsPrivateTextLocked(p) {
+	reg.mu.RLock()
+	routable := reg.providerSupportsPrivateTextLocked(p)
+	reg.mu.RUnlock()
+	if !routable {
 		t.Fatal("Swift provider should support private text without PythonRuntimeLocked/DangerousModulesBlocked")
 	}
 
@@ -241,7 +283,10 @@ func TestPythonProviderDeprecatedNotRoutable(t *testing.T) {
 	p := reg.Register("p-python-deprecated", nil, msg)
 	testMakeTextRoutable(p)
 
-	if providerSupportsPrivateTextLocked(p) {
+	reg.mu.RLock()
+	routable := reg.providerSupportsPrivateTextLocked(p)
+	reg.mu.RUnlock()
+	if routable {
 		t.Fatal("Python (inprocess-mlx) provider should NOT support private text — backend is deprecated")
 	}
 
@@ -262,7 +307,10 @@ func TestSwiftProviderMissingBaseCapsExcluded(t *testing.T) {
 	p := reg.Register("p-swift-no-antidebug", nil, msg)
 	testMakeTextRoutable(p)
 
-	if providerSupportsPrivateTextLocked(p) {
+	reg.mu.RLock()
+	routable := reg.providerSupportsPrivateTextLocked(p)
+	reg.mu.RUnlock()
+	if routable {
 		t.Fatal("Swift provider without AntiDebugEnabled should NOT support private text")
 	}
 

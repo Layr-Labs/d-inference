@@ -9,10 +9,13 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
@@ -183,5 +186,66 @@ func TestCodeIdentityRejectsWrongSEKey(t *testing.T) {
 
 	if provider.GetCodeAttested() {
 		t.Fatal("CodeAttested must stay false when the SE signature is from the wrong key")
+	}
+}
+
+// TestCodeAttestLoopReChallengesUntilAttested proves the re-challenge healing:
+// a first push that fails to send leaves the provider un-attested, and the loop
+// re-issues the challenge on the next tick, which succeeds — so a single dropped
+// background push does not strand a capable provider past the grace deadline.
+func TestCodeAttestLoopReChallengesUntilAttested(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv.challengeInterval = 15 * time.Millisecond // fast re-challenge for the test
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	ct := newCodeAttestTracker()
+
+	var attempts int32
+	fake := &fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			// First attempt: the push fails to send (transient). The challenge
+			// returns immediately without attesting; the loop must retry.
+			return errors.New("transient push send failure")
+		}
+		// Second attempt: full valid round-trip → attests.
+		payload, err := apns.BuildCodeChallengePayload(nonceB64, pubKeyB64, apns.ModeBackground)
+		if err != nil {
+			return err
+		}
+		var body struct {
+			CodeChallenge e2e.EncryptedPayload `json:"code_challenge"`
+		}
+		if err := json.Unmarshal(payload, &body); err != nil {
+			return err
+		}
+		recovered, err := e2e.DecryptWithPrivateKey(&body.CodeChallenge, kPriv)
+		if err != nil {
+			return err
+		}
+		sig := signSEOverString(t, seKey, string(recovered))
+		go ct.deliver(&protocol.CodeAttestationResponseMessage{
+			Type:      protocol.TypeCodeAttestationResponse,
+			Nonce:     string(recovered),
+			Signature: sig,
+		})
+		return nil
+	}}
+	srv.SetCodeAttestor(fake)
+
+	provider := newCodeAttestProvider(kPubB64, sePubB64)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.codeAttestLoop(ctx, "p1", provider, ct)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !provider.GetCodeAttested() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !provider.GetCodeAttested() {
+		t.Fatal("expected CodeAttested=true after the re-challenge healed the dropped first push")
+	}
+	if got := atomic.LoadInt32(&attempts); got < 2 {
+		t.Fatalf("expected >=2 challenge attempts (re-challenge), got %d", got)
 	}
 }

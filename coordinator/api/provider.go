@@ -357,14 +357,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
 			})
 
-			// v0.6.0: APNs code-identity attestation, once per connection. Runs
-			// only when an attestor is configured; otherwise the provider simply
-			// never becomes CodeAttested (fail-closed at the routing chokepoint).
-			// The code-identity proof and the SIP/liveness pillar compose at the
-			// routing gate (providerSupportsPrivateTextLocked requires both).
+			// v0.6.0: APNs code-identity attestation. Runs only when an attestor is
+			// configured; otherwise the provider simply never becomes CodeAttested
+			// (fail-closed at the routing chokepoint once enforcement begins). The
+			// code-identity proof and the SIP/liveness pillar compose at the routing
+			// gate (providerSupportsPrivateTextLocked requires both). The loop
+			// re-challenges on the ticker until the provider attests, so a single
+			// dropped background push doesn't strand a capable provider past the
+			// grace deadline.
 			if s.codeAttestor != nil {
 				saferun.Go(s.logger, "codeAttest", func() {
-					s.sendCodeIdentityChallenge(loopCtx, providerID, provider, codeTracker)
+					s.codeAttestLoop(loopCtx, providerID, provider, codeTracker)
 				})
 			}
 
@@ -460,6 +463,54 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 // a background push may be briefly delayed; the provider's local decrypt+sign is
 // sub-second.
 const CodeAttestResponseTimeout = 90 * time.Second
+
+// codeAttestLoop drives the APNs code-identity round-trip for one connection. It
+// challenges immediately, then re-challenges on the attestation ticker until the
+// provider is CodeAttested (success), is hard-untrusted, or the connection ends.
+// Re-challenging heals transient APNs delivery failures — the design's top open
+// risk is that a background push is APNs-accepted but never delivered — so a
+// capable provider becomes routable before the grace deadline rather than being
+// stranded by a single dropped push. Providers with no APNs device token (legacy
+// <0.6.0 builds) can never attest, so the loop exits immediately and they are
+// derouted once enforcement begins — the intended "everyone must update" outcome.
+func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider *registry.Provider, ct *codeAttestTracker) {
+	if s.codeAttestor == nil || provider == nil {
+		return
+	}
+
+	provider.Mu().Lock()
+	hasToken := provider.APNsDeviceToken != ""
+	provider.Mu().Unlock()
+	if !hasToken {
+		s.logger.Info("code-attest: provider has no APNs device token; cannot attest (will be derouted once enforcement begins)",
+			"provider_id", providerID)
+		return
+	}
+
+	s.sendCodeIdentityChallenge(ctx, providerID, provider, ct)
+
+	interval := s.challengeInterval
+	if interval == 0 {
+		interval = DefaultChallengeInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if provider.GetCodeAttested() {
+				return // attested for this connection; nothing more to do
+			}
+			if provider.ChallengeShouldStop() {
+				return // hard (non-recoverable) untrust — stop challenging
+			}
+			s.sendCodeIdentityChallenge(ctx, providerID, provider, ct)
+		}
+	}
+}
 
 // sendCodeIdentityChallenge runs the per-connection APNs code-identity round-trip
 // (v0.6.0): it pushes E_K(nonce) to the provider's device, awaits the provider's

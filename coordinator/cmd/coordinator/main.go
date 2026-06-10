@@ -471,12 +471,24 @@ func main() {
 
 	// Optional APNs code-identity attestation (v0.6.0). When the APNs auth key
 	// (.p8) + key/team IDs are supplied, the coordinator pushes an encrypted
-	// code-identity challenge to each provider and requires the WebSocket reply
-	// before routing private traffic (fail-closed). Absent config leaves it
-	// disabled and the fleet routes as before.
+	// code-identity challenge to each provider over its WebSocket. Configuring the
+	// attestor is SAFE on its own: enforcement (derouting un-attested providers)
+	// only begins once APNS_ENFORCE_AFTER (RFC3339) has passed, so the fleet has a
+	// grace window to update to 0.6.0 and attest. Absent config leaves it disabled.
 	if attestor := loadAPNsAttestor(logger); attestor != nil {
 		srv.SetCodeAttestor(attestor)
-		logger.Info("APNs code-identity attestation enabled (providers must pass code-identity to route)")
+		deadline := parseAPNsEnforceAfter(logger)
+		srv.SetCodeAttestationDeadline(deadline)
+		switch {
+		case deadline.IsZero():
+			logger.Info("APNs code-identity attestation configured in GRACE mode — providers are challenged and measured, but un-attested providers still route (set APNS_ENFORCE_AFTER to begin enforcement)")
+		case time.Now().Before(deadline):
+			logger.Info("APNs code-identity attestation configured — GRACE until the enforcement deadline, then mandatory",
+				"enforce_after", deadline.Format(time.RFC3339))
+		default:
+			logger.Info("APNs code-identity attestation ENFORCED — un-attested providers are not routed",
+				"enforce_after", deadline.Format(time.RFC3339))
+		}
 	} else {
 		logger.Info("APNs code-identity attestation not configured — providers route without code-identity proof")
 	}
@@ -522,6 +534,25 @@ func main() {
 	}
 
 	logger.Info("coordinator stopped")
+}
+
+// parseAPNsEnforceAfter reads APNS_ENFORCE_AFTER (RFC3339) — the instant at which
+// code-identity attestation becomes mandatory for routing. Empty/unset returns the
+// zero time, which keeps the coordinator in grace/observe mode indefinitely (the
+// safe default: configuring APNs secrets never deroutes the fleet). A malformed
+// value also falls back to grace, with an error logged, rather than failing closed.
+func parseAPNsEnforceAfter(logger *slog.Logger) time.Time {
+	raw := strings.TrimSpace(os.Getenv("APNS_ENFORCE_AFTER"))
+	if raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		logger.Error("APNS_ENFORCE_AFTER is not valid RFC3339 — leaving APNs in grace mode (no enforcement)",
+			"value", raw, "error", err)
+		return time.Time{}
+	}
+	return t
 }
 
 // loadAPNsAttestor builds the production APNs code-identity attestor from the

@@ -140,10 +140,10 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // release has been registered in the store (e.g. in-memory dev setups).
 // Production reads the latest version from the releases table.
 //
-// 0.5.17 is the desired_models cutover release for declarative prefetch/hotswap.
+// 0.6.0 is the APNs code-identity / VLM-routing / graceful-update release.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.5.17"
+var LatestProviderVersion = "0.6.0"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -730,14 +730,24 @@ func (s *Server) SetMDMClient(client *mdm.Client) {
 	s.mdmClient = client
 }
 
-// SetCodeAttestor wires the APNs code-identity attestor (v0.6.0) and ENABLES
-// enforcement: providers that register afterward must pass the code-identity
-// round-trip (CodeAttested) to be routed private/text traffic. Passing nil
-// leaves the feature disabled (providers route as before). Call once during
-// server setup, before providers connect.
+// SetCodeAttestor wires the APNs code-identity attestor (v0.6.0). When set, the
+// coordinator issues code-identity challenges and measures which providers pass —
+// but enforcement (derouting un-attested providers) only begins once a deadline
+// is reached (SetCodeAttestationDeadline). So configuring the attestor alone is
+// SAFE: the fleet stays in grace/observe mode and keeps routing. Passing nil
+// leaves the feature disabled. Call once during server setup, before providers
+// connect.
 func (s *Server) SetCodeAttestor(a apns.CodeIdentityAttestor) {
 	s.codeAttestor = a
-	s.registry.SetCodeAttestationRequired(a != nil)
+	s.registry.SetCodeAttestationConfigured(a != nil)
+}
+
+// SetCodeAttestationDeadline sets the instant at which code-identity attestation
+// becomes mandatory for routing. Before it (or when zero) the coordinator runs in
+// grace mode: it challenges providers but still routes un-attested ones, giving
+// the fleet time to update to 0.6.0 and attest. Wire it from APNS_ENFORCE_AFTER.
+func (s *Server) SetCodeAttestationDeadline(t time.Time) {
+	s.registry.SetCodeAttestationDeadline(t)
 }
 
 // SetMDMWebhookSecret configures an optional shared secret that MicroMDM must

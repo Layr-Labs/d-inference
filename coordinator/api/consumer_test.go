@@ -1741,3 +1741,44 @@ func TestStreamingChatReasoningTokensInUsage(t *testing.T) {
 		t.Fatalf("expected exactly one usage chunk (held + augmented, not doubled); body=\n%s", body)
 	}
 }
+
+// TestStreamingChatUsageOnlyFirstChunk covers the zero-delta case: a completion
+// that streams no content/reasoning deltas, so the include_usage frame is the very
+// FIRST chunk handed to the handler. It must still be held and have the reasoning
+// breakdown spliced in (not emitted raw), and must not be doubled.
+func TestStreamingChatUsageOnlyFirstChunk(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+
+	pr := &registry.PendingRequest{
+		RequestID:  "job-1",
+		Model:      "gpt-oss-20b",
+		ChunkCh:    make(chan string, 1),
+		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
+		CompleteCh: make(chan protocol.UsageInfo, 1),
+	}
+	// No deltas at all — the stream closes immediately; the authoritative split
+	// arrives on CompleteCh.
+	close(pr.ChunkCh)
+	pr.CompleteCh <- protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 50, ReasoningTokens: 8}
+
+	firstChunk := `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, firstChunk)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"reasoning_tokens":8`) {
+		t.Fatalf("usage-only first chunk must still get reasoning_tokens spliced; body=\n%s", body)
+	}
+	if !strings.Contains(body, `"completion_tokens":50`) {
+		t.Fatalf("completion_tokens should stay 50; body=\n%s", body)
+	}
+	if strings.Count(body, `"usage":{`) != 1 {
+		t.Fatalf("expected exactly one usage chunk (held + augmented, not raw + doubled); body=\n%s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected [DONE] terminator; body=\n%s", body)
+	}
+}

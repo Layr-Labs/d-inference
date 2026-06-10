@@ -2499,29 +2499,38 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	// termination events (SE signature chunk + [DONE]).
 	sawResponsesAPI := false
 
+	// The terminal include_usage chunk lacks the reasoning breakdown; we hold its
+	// parsed object and re-emit it at stream end with the provider's authoritative
+	// reasoning count (CompleteCh) spliced in — matching the non-streaming/Responses
+	// paths. Held as a parsed map so it is decoded exactly once. Declared before the
+	// first-chunk write because a zero-delta completion (empty/filtered output) can
+	// make the include_usage frame the very first chunk.
+	var pendingUsage map[string]any
+
 	// Write the first chunk that was already consumed during dispatch.
 	if firstChunk != "" {
 		if strings.Contains(firstChunk, `"response.created"`) || strings.Contains(firstChunk, `"response.output_text.delta"`) {
 			sawResponsesAPI = true
 		}
-		if !sawResponsesAPI {
-			firstChunk = normalizeSSEChunk(firstChunk)
+		// A usage-only first chunk (no content/reasoning deltas streamed before it)
+		// is still terminal usage — hold it so the reasoning breakdown is spliced in
+		// at stream end instead of being emitted raw without reasoning_tokens.
+		if obj, isUsage := parseUsageOnlyStreamChunk(firstChunk); !sawResponsesAPI && isUsage {
+			pendingUsage = obj
+		} else {
+			if !sawResponsesAPI {
+				firstChunk = normalizeSSEChunk(firstChunk)
+			}
+			firstChunk = rewriteChunkModel(firstChunk, pr)
+			fmt.Fprintf(w, "%s\n\n", firstChunk)
+			flusher.Flush()
 		}
-		firstChunk = rewriteChunkModel(firstChunk, pr)
-		fmt.Fprintf(w, "%s\n\n", firstChunk)
-		flusher.Flush()
 	}
 
 	// Use a timer that resets on each chunk so long-running generations
 	// (e.g. chain-of-thought models) don't hit a global timeout.
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
-
-	// The terminal include_usage chunk lacks the reasoning breakdown; we hold its
-	// parsed object and re-emit it at stream end with the provider's authoritative
-	// reasoning count (CompleteCh) spliced in — matching the non-streaming/Responses
-	// paths. Held as a parsed map so it is decoded exactly once.
-	var pendingUsage map[string]any
 
 	for {
 		select {
@@ -2590,6 +2599,19 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				}
 				return
 			}
+			// Every chunk is a liveness signal — re-arm the idle timeout up front,
+			// before deciding whether to forward or hold it, so holding the terminal
+			// usage chunk still resets the window that bounds the wait for the
+			// provider's inference_complete (which closes ChunkCh after billing).
+			// One reset covers both the forward and hold paths.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(inferenceTimeout)
+
 			if !sawResponsesAPI {
 				if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.output_text.delta"`) {
 					sawResponsesAPI = true
@@ -2597,8 +2619,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			}
 			// Hold the terminal usage chunk (chat completions only) so we can splice
 			// in the reasoning breakdown at stream end; forwarding it inline would
-			// emit it without reasoning_tokens. The stream closes right after, so the
-			// running timer still guards a post-usage hang.
+			// emit it without reasoning_tokens.
 			if !sawResponsesAPI {
 				if obj, isUsage := parseUsageOnlyStreamChunk(chunk); isUsage {
 					pendingUsage = obj
@@ -2611,14 +2632,6 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			chunk = rewriteChunkModel(chunk, pr)
 			fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
-
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(inferenceTimeout)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {

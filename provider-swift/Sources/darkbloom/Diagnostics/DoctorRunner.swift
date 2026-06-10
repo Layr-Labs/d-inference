@@ -23,6 +23,16 @@ enum DoctorRunner {
         out.append(Diagnostic(section: .attestationKey, name: "se key sign test",
                               level: se.level, message: se.message, fix: se.fix))
 
+        // ---- APNs code-identity readiness (local) ----
+        // Will this box be able to obtain an APNs token and attest its code
+        // identity? Requires a logged-in console (Aqua) session; a missing
+        // session, no auto-login, or idle auto-logout each break attestation.
+        // Pure verdict logic lives in ProviderCore; here we only feed it the
+        // live machine signals.
+        out.append(contentsOf: AttestationReadiness.evaluate(
+            AttestationReadiness.gather(),
+            sleepPrevented: systemSleepPrevented()))
+
         // ---- Coordinator trust (from the daemon's last trust_status) ----
         if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
@@ -157,5 +167,32 @@ enum DoctorRunner {
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m" }
         return "\(s / 3600)h\((s % 3600) / 60)m"
+    }
+
+    /// Best-effort read of whether the system is currently being kept awake,
+    /// via `pmset -g assertions`. Informational only (the provider
+    /// self-caffeinates while serving), so nil/UNKNOWN on any failure is fine.
+    private static func systemSleepPrevented() -> Bool? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        p.arguments = ["-g", "assertions"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        guard (try? p.run()) != nil else { return nil }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        // `PreventUserIdleSystemSleep` / `PreventSystemSleep` report 1 when an
+        // assertion (e.g. caffeinate, an active inference) is holding the system
+        // awake. Any "1" on those lines ⇒ sleep currently prevented.
+        for line in text.split(separator: "\n") {
+            let l = line.lowercased()
+            if l.contains("preventuseridlesystemsleep") || l.contains("preventsystemsleep") {
+                if l.contains(" 1") || l.hasSuffix("1") { return true }
+            }
+        }
+        return false
     }
 }

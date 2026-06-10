@@ -22,6 +22,7 @@ public enum DiagnosticSection: Int, Sendable, Equatable, CaseIterable {
     case hardware
     case security
     case attestationKey
+    case attestationReadiness
     case trust
     case traffic
     case runtime
@@ -34,6 +35,7 @@ public enum DiagnosticSection: Int, Sendable, Equatable, CaseIterable {
         case .hardware: return "HARDWARE & GPU"
         case .security: return "SECURITY POSTURE"
         case .attestationKey: return "ATTESTATION KEY (Secure Enclave)"
+        case .attestationReadiness: return "APNs CODE-IDENTITY READINESS   (can this box attest?)"
         case .trust: return "COORDINATOR TRUST   (why you are / aren't earning)"
         case .traffic: return "TRAFFIC READINESS   (can this box actually serve?)"
         case .runtime: return "RUNTIME (live)"

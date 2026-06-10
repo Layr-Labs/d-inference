@@ -420,10 +420,20 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
 			case protocol.LoadModelStatusFailed:
-				// Keep the pending entry (TTL cooldown suppresses retry storms).
-				// If no other provider can serve this model, reject queued
-				// requests immediately rather than making them wait 120s.
-				s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)
+				if statusMsg.Error == protocol.ProviderDrainingForUpdate {
+					// Transient: the provider refused only because it is
+					// draining ahead of an auto-update restart. Shorten the
+					// cooldown so a failed restart (provider resumes serving)
+					// becomes loadable again quickly; queued requests are NOT
+					// rejected — the provider is back within the queue window
+					// and other providers remain plannable.
+					s.registry.BackoffPendingModelLoadForDrain(providerID, statusMsg.ModelID)
+				} else {
+					// Keep the pending entry (TTL cooldown suppresses retry storms).
+					// If no other provider can serve this model, reject queued
+					// requests immediately rather than making them wait 120s.
+					s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)
+				}
 			}
 			// "started" status: no action — load is in progress.
 

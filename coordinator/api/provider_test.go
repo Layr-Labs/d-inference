@@ -717,7 +717,7 @@ func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 		},
 		Models: []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
 	})
-	p.AttestationResult = &attestation.VerificationResult{Valid: true, BinaryHash: releaseHash}
+	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, BinaryHash: releaseHash})
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/admin/releases", strings.NewReader(`{"version":"1.0.0","platform":"macos-arm64"}`))
 	req.Header.Set("Authorization", "Bearer admin-key")

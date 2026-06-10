@@ -6,15 +6,19 @@ import Testing
 /// top-level `main.swift` bound `run()` to the synchronous witness (whose default
 /// throws a help request). The bug only manifests in top-level executable scope, so
 /// this exercises the REAL built binary rather than calling `run()` directly.
+/// Anchor for `Bundle(for:)` — under swift-testing the host process is SwiftPM's
+/// testing helper, so `Bundle.main`/`Bundle.allBundles` do not locate the test
+/// bundle; resolving via a class in this image does.
+private final class BundleAnchor {}
+
 @Suite struct CLIDispatchTests {
     /// Path to the `darkbloom` executable built alongside this test bundle.
     private var binary: URL {
-        #if os(macOS)
-        for bundle in Bundle.allBundles where bundle.bundlePath.hasSuffix(".xctest") {
-            return bundle.bundleURL.deletingLastPathComponent().appendingPathComponent("darkbloom")
-        }
-        #endif
-        return Bundle.main.bundleURL.appendingPathComponent("darkbloom")
+        let anchor = Bundle(for: BundleAnchor.self).bundleURL
+        let productsDir = anchor.pathExtension == "xctest"
+            ? anchor.deletingLastPathComponent()
+            : anchor
+        return productsDir.appendingPathComponent("darkbloom")
     }
 
     private func run(_ args: [String]) throws -> String {

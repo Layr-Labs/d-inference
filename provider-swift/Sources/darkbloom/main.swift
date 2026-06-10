@@ -19,16 +19,24 @@ if ProviderAppKitHost.shouldHost(rawArgs) {
 }
 #endif
 
-// Non-serve path: parse + run exactly as ArgumentParser's async main() would.
-// Done manually (not via Darkbloom.main()) because, without @main, the sync
-// main() overload fatals on an async root command.
+// Non-serve path: parse + dispatch as ArgumentParser's async main() would, done
+// manually because @main is removed (it would fight AppKit for the main thread).
 do {
     var command = try Darkbloom.parseAsRoot(rawArgs)
-    if var asyncCommand = command as? AsyncParsableCommand {
-        try await asyncCommand.run()
+    if var asyncCommand = command as? any AsyncParsableCommand {
+        try await runAsyncCommand(&asyncCommand)
     } else {
         try command.run()
     }
 } catch {
     Darkbloom.exit(withError: error)
+}
+
+// The helper boundary is load-bearing: at top-level scope a bare
+// `asyncCommand.run()` binds to the synchronous ParsableCommand witness, whose
+// AsyncParsableCommand default throws a help request — so every subcommand printed
+// help instead of running (#286). Routing through `inout any AsyncParsableCommand`
+// forces the async witness. Covered by CLIDispatchTests.
+func runAsyncCommand(_ command: inout any AsyncParsableCommand) async throws {
+    try await command.run()
 }

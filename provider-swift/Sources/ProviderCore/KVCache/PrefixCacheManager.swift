@@ -468,9 +468,45 @@ public actor PrefixCacheManager: PrefixCacheOwner {
 
     private func loadFromSSD(tokens: [Int], scope: String = "") async -> PrefixLookupResult? {
         guard let index, let kek, let cacheDir else { return nil }
-        guard let entry = index.findLongestCheckpoint(
+
+        // Sliding TTL: an entry is expired when it hasn't been hit within
+        // `ttlSeconds` (lastHitAt is bumped on every hit — SSD loads AND RAM
+        // serves — so hot prefixes stay warm). Checked BEFORE decrypt — an
+        // expired entry is reclaimed (same drop path as a corrupt file) and
+        // the search CONTINUES with the next-longest checkpoint: an expired 8k
+        // checkpoint must not mask a shorter, still-fresh one (e.g. a hot
+        // shared system-prefix). Each drop removes the entry from the index,
+        // so findLongestCheckpoint yields the next candidate; progress is
+        // guaranteed. ttlSeconds == 0 disables (infinite retention). Bounds
+        // how long prompt-derived KV survives on disk (TB-007 window shrink).
+        var selected: PrefixIndexEntry?
+        // Defensive cap: dropUnusableSSDFile no-ops when the manager closed
+        // mid-loop (it must not delete in a handed-off dir), which would
+        // otherwise refetch the same entry forever. The `closed` re-check
+        // breaks that cycle; the cap is belt-and-braces against any future
+        // drop path that leaves the entry behind.
+        var attempts = boundaries.count + 1
+        while attempts > 0, !closed, let candidate = index.findLongestCheckpoint(
             modelHash: binding.modelHash, tokens: tokens, boundaries: boundaries, scope: scope
-        ) else { return nil }
+        ) {
+            attempts -= 1
+            if ttlSeconds > 0 {
+                // Overflow-safe age: index.json is plaintext and can be left
+                // corrupt by a crash — an extreme lastHitAt (e.g. Int64.min)
+                // must be treated as expired/dropped, not trap the provider.
+                let (age, overflow) = now().subtractingReportingOverflow(candidate.lastHitAt)
+                if overflow || age > ttlSeconds {
+                    stats.ttlExpirations += 1
+                    let rel = "\(modelDirComponent)/\(candidate.digestHex).\(EncryptedKVStore.fileExtension)"
+                    await dropUnusableSSDFile(
+                        cacheDir.appendingPathComponent(rel), digestHex: candidate.digestHex, index: index)
+                    continue
+                }
+            }
+            selected = candidate
+            break
+        }
+        guard let entry = selected else { return nil }
 
         // Path safety: the on-disk index JSON is plaintext and NOT
         // authenticated, so a tampered entry.relativePath could contain
@@ -481,18 +517,6 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         // digest) instead of trusting the stored path.
         let relPath = "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)"
         let fileURL = cacheDir.appendingPathComponent(relPath)
-
-        // Sliding TTL: an entry is expired when it hasn't been hit within
-        // `ttlSeconds` (lastHitAt is bumped on every hit, so hot prefixes stay
-        // warm). Checked BEFORE decrypt — an expired entry is a miss, and its
-        // file + index entry are reclaimed (same drop path as a corrupt file).
-        // ttlSeconds == 0 disables (infinite retention). Bounds how long
-        // prompt-derived KV survives on disk (TB-007 oracle-window shrink).
-        if ttlSeconds > 0, now() - entry.lastHitAt > ttlSeconds {
-            stats.ttlExpirations += 1
-            await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
-            return nil
-        }
 
         // MB-1: validate metadata BEFORE unwrap/decrypt. A wrong-model
         // file decrypts cleanly (AAD is its own metadata), so the cipher

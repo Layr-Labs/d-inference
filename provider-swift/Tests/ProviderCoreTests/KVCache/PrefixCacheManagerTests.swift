@@ -777,3 +777,33 @@ func ttlReconcileKeepsFreshLegacyOrphan() async throws {
             "fresh legacy orphan must be re-indexed and servable")
     #expect(await m2.snapshotStats().ttlExpirations == 0)
 }
+
+@Test
+func ttlExpiredLongestFallsBackToShorterCheckpoint() async {
+    // PR #290 review (Codex r3377288879): an expired LONGEST checkpoint must
+    // not mask a shorter, still-fresh one. Boundaries [4,8]: let the 8-token
+    // checkpoint go stale while the 4-token (shared system-prefix analogue)
+    // stays hot; the SSD search must reap the 8 and serve the 4.
+    let clock = MonotonicClock(start: 1000)
+    let (mgr, _) = makeTTLManager(ttl: 300, clock: clock)
+    let tokens = prompt(10)
+    await mgr.store(tokens: tokens, checkpointLength: 4,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 4)))
+    await mgr.store(tokens: tokens, checkpointLength: 8,
+                    caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+    _ = await mgr.flushToSSD()   // both on SSD, lastHitAt = 1000
+
+    // Keep ONLY the 4-token checkpoint warm: a 6-token prompt matches just
+    // cp4 (RAM hit → slides cp4's SSD lastHitAt to 1200 via the RAM-touch).
+    clock.advance(200)
+    #expect(await mgr.lookup(tokens: prompt(6))?.tokenCount == 4)
+
+    // t=1400: cp8 age 400s (expired), cp4 age 200s (fresh).
+    clock.advance(200)
+    await mgr.clearRAM()
+    let hit = await mgr.lookup(tokens: tokens)
+    #expect(hit?.tier == .ssd, "search must continue past the expired longest")
+    #expect(hit?.tokenCount == 4, "the still-fresh shorter checkpoint must serve")
+    let s = await mgr.snapshotStats()
+    #expect(s.ttlExpirations == 1, "exactly the stale cp8 should be reaped")
+}

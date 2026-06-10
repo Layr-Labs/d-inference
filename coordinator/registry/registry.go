@@ -125,6 +125,12 @@ type PendingRequest struct {
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int
+	// RequiresVision is true when the request carries image/video input. Such a
+	// request must only be routed to a provider advertising a vision-capable
+	// (VLM) build for the resolved model; otherwise the provider would silently
+	// drop the media and answer image-blind. Set by the consumer handler from the
+	// parsed content parts; enforced in the candidate filter and final admit.
+	RequiresVision bool
 	// RequestedMaxTokens is the consumer's requested output budget (or a
 	// sensible default when omitted). It is used for backlog estimation.
 	RequestedMaxTokens int
@@ -1541,6 +1547,39 @@ func (r *Registry) modelAllowedByCatalogLocked(model protocol.ModelInfo) bool {
 func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) bool {
 	for _, m := range p.Models {
 		if m.ID == model && r.modelAllowedByCatalogLocked(m) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerServesVisionModelLocked reports whether the provider advertises the
+// model as a vision-capable (VLM) build — required to route image/video requests
+// so the media is actually perceived rather than silently dropped. Caller must
+// hold r.mu (mirrors providerServesCatalogModelLocked). Pre-0.6.0 providers never
+// set IsVision, so they are correctly excluded.
+func (r *Registry) providerServesVisionModelLocked(p *Provider, model string) bool {
+	for _, m := range p.Models {
+		if m.ID == model && m.IsVision && r.modelAllowedByCatalogLocked(m) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasVisionProviderForModel reports whether any online, non-untrusted provider
+// advertises a vision-capable build for the resolved model id. The consumer uses
+// it to fail a media request fast with a clear error when the fleet has no
+// VLM-capable provider for the model (e.g. before the gemma fleet finishes
+// updating to 0.6.0), instead of queueing the request to a timeout.
+func (r *Registry) HasVisionProviderForModel(model string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			continue
+		}
+		if r.providerServesVisionModelLocked(p, model) {
 			return true
 		}
 	}

@@ -77,21 +77,25 @@ describe("modelSupportsImages", () => {
     expect(modelSupportsImages({})).toBe(false);
   });
 
-  it("bridges known vision families by id/architecture/family", () => {
-    expect(modelSupportsImages({ id: "mlx-community/gemma-4-26b-a4b-it-4bit" })).toBe(true);
-    expect(modelSupportsImages({ architecture: "gemma4" })).toBe(true);
-    expect(modelSupportsImages({ family: "gemma-4" })).toBe(true);
+  it("does NOT light up from a vision family id/architecture alone (no bridge)", () => {
+    // The /gemma-?4/i family bridge was removed: a VLM model must report its
+    // vision capability via the catalog (input_modalities/capabilities) before
+    // the upload control turns on, so it tracks real fleet/operator readiness.
+    expect(modelSupportsImages({ id: "mlx-community/gemma-4-26b-a4b-it-4bit" })).toBe(false);
+    expect(modelSupportsImages({ architecture: "gemma4" })).toBe(false);
+    expect(modelSupportsImages({ family: "gemma-4" })).toBe(false);
   });
 
-  it("does not match non-vision models via the bridge", () => {
+  it("is false for non-vision models with no modality metadata", () => {
     expect(modelSupportsImages({ id: "qwen/qwen3-8b" })).toBe(false);
     expect(modelSupportsImages({ id: "openai/gpt-oss-20b", architecture: "gptoss" })).toBe(false);
   });
 
-  it("honors an explicit image modality regardless of family", () => {
+  it("turns on once the catalog reports image modality, regardless of family", () => {
     expect(
-      modelSupportsImages({ id: "some-future-vlm", input_modalities: ["text", "image"] })
+      modelSupportsImages({ id: "mlx-community/gemma-4-26b-a4b-it-4bit", input_modalities: ["text", "image"] })
     ).toBe(true);
+    expect(modelSupportsImages({ id: "some-future-vlm", input_modalities: ["text", "image"] })).toBe(true);
   });
 });
 

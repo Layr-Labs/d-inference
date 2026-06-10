@@ -116,6 +116,11 @@ const (
 	// (transient "full, retry later") this is permanent for this provider, so
 	// it must NOT inflate the busy/429 signal.
 	rejectModelTooLarge
+	// rejectVisionUnsupported means the request carries image/video input but
+	// this provider only advertises a text-only build of the model. Permanent for
+	// this provider (until it loads a VLM build), so like rejectModelTooLarge it
+	// must NOT inflate the transient busy/429 signal.
+	rejectVisionUnsupported
 )
 
 // modelMemoryHeadroomFactor is the FALLBACK multiple of the on-disk weight size
@@ -182,8 +187,13 @@ type RoutingDecision struct {
 	// CapacityRejections so callers don't emit a 429/"over capacity, retry"
 	// signal for a model that will never fit anywhere of this size.
 	ModelTooLargeRejections int
-	EffectiveTPS            float64 // load-scaled decode TPS used in cost (Phase 4)
-	StaticTPS               float64 // benchmarked decode TPS before load scaling
+	// VisionRejections counts providers that serve the model but only as a
+	// text-only build, when the request requires vision. Lets the caller return a
+	// precise "no vision-capable provider for this model" error instead of a
+	// generic capacity/queue signal.
+	VisionRejections int
+	EffectiveTPS     float64 // load-scaled decode TPS used in cost (Phase 4)
+	StaticTPS        float64 // benchmarked decode TPS before load scaling
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -214,13 +224,14 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	selected, candidateCount, capacityRejections, tooLargeRejections := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	selected, candidateCount, capacityRejections, tooLargeRejections, visionRejections := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if selected == nil {
 		return nil, RoutingDecision{
 			Model:                   model,
 			CandidateCount:          candidateCount,
 			CapacityRejections:      capacityRejections,
 			ModelTooLargeRejections: tooLargeRejections,
+			VisionRejections:        visionRejections,
 		}
 	}
 
@@ -235,12 +246,17 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// (always owned here) or for prefer when the winner happens to be owned.
 	owned := p.AccountID != "" && p.AccountID == pr.OwnerAccountID
 	relaxTrust := pr.SelfRouteOnly || (pr.PreferOwner && owned)
-	if !r.providerCanAdmitLocked(p, model, relaxTrust) {
+	// Re-check the vision gate under the provider lock too: the winner must still
+	// advertise a vision-capable build if the request carries media (guards the
+	// race where its model set changed between snapshot and reservation).
+	if !r.providerCanAdmitLocked(p, model, relaxTrust) ||
+		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model)) {
 		return nil, RoutingDecision{
 			Model:                   model,
 			CandidateCount:          candidateCount,
 			CapacityRejections:      capacityRejections,
 			ModelTooLargeRejections: tooLargeRejections,
+			VisionRejections:        visionRejections,
 		}
 	}
 
@@ -265,6 +281,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		CandidateCount:          candidateCount,
 		CapacityRejections:      capacityRejections,
 		ModelTooLargeRejections: tooLargeRejections,
+		VisionRejections:        visionRejections,
 		EffectiveTPS:            selected.effectiveTPS,
 		StaticTPS:               selected.snapshot.decodeTPS,
 	}
@@ -277,7 +294,9 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // distinguish "no provider serves this model" from "every fitting
 // provider is over-subscribed", which is the difference between the
 // no_provider and over_capacity outcome counters.
-func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int) {
+// Returns (winner, candidateCount, capacityRejections, modelTooLargeRejections,
+// visionRejections).
+func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int, int) {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -297,6 +316,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	candidateCount := 0
 	capacityRejections := 0
 	tooLargeRejections := 0
+	visionRejections := 0
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		// Exclusive self-route: restrict to the caller's own machines and never
@@ -320,6 +340,15 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		if !ok {
 			continue
 		}
+		// Vision gate: a media request must only go to a provider advertising a
+		// vision-capable build of this model. Providers reach here only if they
+		// already serve the model (snapshot ok), so a miss here means "serves it,
+		// but text-only" — counted separately so the caller can return a precise
+		// "no vision-capable provider" error rather than a busy/429.
+		if pr.RequiresVision && !r.providerServesVisionModelLocked(p, model) {
+			visionRejections++
+			continue
+		}
 		candidate, reason, ok := r.buildCandidateWithReason(snap, pr)
 		if !ok {
 			switch reason {
@@ -327,6 +356,8 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 				capacityRejections++
 			case rejectModelTooLarge:
 				tooLargeRejections++
+			case rejectVisionUnsupported:
+				visionRejections++
 			}
 			continue
 		}
@@ -335,7 +366,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	}
 
 	if len(candidates) == 0 {
-		return nil, candidateCount, capacityRejections, tooLargeRejections
+		return nil, candidateCount, capacityRejections, tooLargeRejections, visionRejections
 	}
 
 	// Prefer-with-fallback: if the caller asked to prefer their own machine and
@@ -395,7 +426,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount, capacityRejections, tooLargeRejections
+	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {

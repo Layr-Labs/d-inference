@@ -252,6 +252,50 @@ func TestProviderWithoutChallengeVerifiedSIPExcluded(t *testing.T) {
 	}
 }
 
+// TestVisionRoutingHelpers covers the per-provider vision capability check and
+// the fleet-level fail-fast query that gate image/video routing. With a nil
+// catalog the catalog filter allows all, so the gate reduces to "advertises this
+// model id with IsVision".
+func TestVisionRoutingHelpers(t *testing.T) {
+	r := New(testLogger())
+	visProv := &Provider{
+		ID:     "p-vis",
+		Status: StatusOnline,
+		Models: []protocol.ModelInfo{{ID: "gemma-4-26b", IsVision: true}},
+	}
+	textProv := &Provider{
+		ID:     "p-text",
+		Status: StatusOnline,
+		Models: []protocol.ModelInfo{{ID: "gemma-4-26b"}}, // text-only build of the same model
+	}
+	r.providers["p-vis"] = visProv
+	r.providers["p-text"] = textProv
+
+	r.mu.RLock()
+	visOK := r.providerServesVisionModelLocked(visProv, "gemma-4-26b")
+	textOK := r.providerServesVisionModelLocked(textProv, "gemma-4-26b")
+	r.mu.RUnlock()
+	if !visOK {
+		t.Fatal("vision provider should serve gemma-4-26b as vision-capable")
+	}
+	if textOK {
+		t.Fatal("text-only provider must NOT be vision-capable for gemma-4-26b")
+	}
+
+	if !r.HasVisionProviderForModel("gemma-4-26b") {
+		t.Fatal("fleet has a vision provider for gemma-4-26b")
+	}
+	if r.HasVisionProviderForModel("gpt-oss-20b") {
+		t.Fatal("no vision provider advertises gpt-oss-20b")
+	}
+
+	// An untrusted/offline vision provider must not satisfy the fleet check.
+	visProv.Status = StatusUntrusted
+	if r.HasVisionProviderForModel("gemma-4-26b") {
+		t.Fatal("an untrusted vision provider must not satisfy the fleet vision check")
+	}
+}
+
 func TestSwiftProviderPrivateTextWithoutPythonCaps(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

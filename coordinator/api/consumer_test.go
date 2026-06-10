@@ -1584,3 +1584,41 @@ func TestInjectReasoningDetailIntoRawUsage(t *testing.T) {
 		t.Errorf("did not expect a usage object to be created")
 	}
 }
+
+// TestDetectMediaRequirementAndTokenEstimate verifies media detection and that
+// the media-aware estimator counts an image as a flat cost rather than its
+// inflated base64 length (which would distort routing admission and billing).
+func TestDetectMediaRequirementAndTokenEstimate(t *testing.T) {
+	bigImage := "data:image/png;base64," + strings.Repeat("A", 200_000)
+	parsed := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "what is in this image?"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": bigImage}},
+			}},
+		},
+	}
+	if !detectMediaRequirement(parsed) {
+		t.Fatal("expected media requirement detected for an image_url content part")
+	}
+	got := estimatePromptTokens(parsed)
+	if got > 1000 {
+		t.Fatalf("media-aware estimate must ignore base64 length; got %d tokens for a 200KB image", got)
+	}
+	if got < imagePromptTokenCost {
+		t.Fatalf("estimate should include the flat per-image cost (%d); got %d", imagePromptTokenCost, got)
+	}
+	// Billing upper bound is also media-aware (no 200k-byte inflation).
+	if b := estimateBillingPromptTokens(parsed); b > 5000 {
+		t.Fatalf("billing estimate must not count the base64 blob; got %d", b)
+	}
+
+	textParsed := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello world"},
+		},
+	}
+	if detectMediaRequirement(textParsed) {
+		t.Fatal("a text-only request must not be flagged as requiring vision")
+	}
+}

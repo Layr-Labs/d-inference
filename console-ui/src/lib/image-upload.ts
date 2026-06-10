@@ -60,20 +60,17 @@ export function fileToDataURL(file: File): Promise<string> {
 }
 
 /**
- * Architectures/families known to accept image input. This is a BRIDGE: the
- * coordinator's model catalog currently hardcodes `input_modalities: ["text"]`
- * and carries no vision marker, so the metadata checks below can't yet light up
- * for our VLMs. Once the catalog/registry reports image modality (or a `vision`
- * capability) for VLM models, the metadata checks take precedence and this
- * becomes redundant. Keep it narrow — it is NOT a model catalog, just a
- * capability heuristic. Gemma 4 (26B-A4B) is image+audio+video.
- */
-const VISION_MODEL_PATTERN = /gemma-?4/i;
-
-/**
  * Whether a model accepts image input — used to gate the upload control so we
- * only offer it for vision models (e.g. Gemma 4). Prefers the OpenRouter-style
- * `input_modalities`, then `capabilities`, then a known-vision-family bridge.
+ * only offer it for vision models. Driven SOLELY by catalog metadata: the
+ * OpenRouter-style `input_modalities` (the coordinator's `deriveModalities` adds
+ * "image" once an operator sets the model's vision capability) or an explicit
+ * `vision`/`image`/`multimodal` capability.
+ *
+ * The old `/gemma-?4/i` family bridge was removed deliberately: it lit the upload
+ * button the moment the console deployed, regardless of whether the serving fleet
+ * could actually do vision. Gating on catalog modality makes the operator's
+ * capability flip — done last, after the fleet is on 0.6.0 — the single switch
+ * that turns image input on, matching the coordinator's vision routing gate.
  */
 export function modelSupportsImages(
   model?: Partial<
@@ -84,11 +81,7 @@ export function modelSupportsImages(
   const modalities = model.input_modalities?.map((m) => m.toLowerCase()) ?? [];
   if (modalities.includes("image")) return true;
   const caps = model.capabilities?.map((c) => c.toLowerCase()) ?? [];
-  if (caps.some((c) => c === "vision" || c === "image" || c === "multimodal")) {
-    return true;
-  }
-  const hay = `${model.id ?? ""} ${model.architecture ?? ""} ${model.family ?? ""}`;
-  return VISION_MODEL_PATTERN.test(hay);
+  return caps.some((c) => c === "vision" || c === "image" || c === "multimodal");
 }
 
 /**

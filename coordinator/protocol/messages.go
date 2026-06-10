@@ -115,6 +115,13 @@ type ModelInfo struct {
 	ModelType    string `json:"model_type"`
 	Quantization string `json:"quantization"`
 	WeightHash   string `json:"weight_hash,omitempty"` // SHA-256 fingerprint of weight files
+	// IsVision is true when the provider can serve this build with image/video
+	// input (a VLM, detected via vision_config). v0.6.0+ only; older providers omit
+	// it (decodes to false) so they are never selected for media requests. The
+	// coordinator uses this purely for routing — the public input-modalities a
+	// consumer sees are governed separately by the catalog capabilities, so this
+	// advertisement does not by itself light up vision in the API.
+	IsVision bool `json:"is_vision,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

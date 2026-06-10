@@ -158,6 +158,14 @@ public func daemonProcessAlive(pid: Int32) -> Bool {
     return errno == EPERM
 }
 
+/// Whether the provider daemon is up: the state file's writer process is
+/// alive, or launchd reports a running provider service. The launchd
+/// cross-check covers a daemon whose state file is stale or unwritable.
+public func daemonIsRunning(state: DaemonState?) -> Bool {
+    if state.map({ daemonProcessAlive(pid: $0.pid) }) ?? false { return true }
+    return LaunchAgent.runningPID() != nil
+}
+
 /// Reads/writes the daemon state file at `~/.darkbloom/daemon-state.json`
 /// (override with `DARKBLOOM_STATE_FILE`).
 public enum DaemonStateFile {

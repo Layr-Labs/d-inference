@@ -13,10 +13,8 @@ enum DoctorRunner {
         var out: [Diagnostic] = []
         let now = Date().timeIntervalSince1970
         let state = DaemonStateFile.read()
-        // Cross-check launchd: the state file can be stale (or unwritable by
-        // the daemon) while the launchd-managed daemon is actually up.
         let stateAlive = state.map { daemonProcessAlive(pid: $0.pid) } ?? false
-        let daemonUp = stateAlive || LaunchAgent.runningPID() != nil
+        let daemonUp = daemonIsRunning(state: state)
         // "Fresh" = the state file's own writer process is alive AND the
         // snapshot isn't stale, so its live fields (trust level, current model,
         // capacity) are trustworthy. A daemon that's up per launchd but isn't

@@ -1,7 +1,7 @@
 import { render, waitFor } from "@testing-library/react";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
-// SEC-002 regression: the Earnings page sends a bearer token with its
+// Regression: the Earnings page sends a bearer token with its
 // account-earnings fetch. That fetch must go to the build-time coordinator
 // URL — a localStorage-poisoned `darkbloom_coordinator_url` must never
 // receive the token.
@@ -65,7 +65,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("EarningsContent coordinator URL pinning (SEC-002)", () => {
+describe("EarningsContent coordinator URL pinning", () => {
   it("ignores a poisoned localStorage coordinator URL", async () => {
     localStorage.setItem(
       "darkbloom_coordinator_url",

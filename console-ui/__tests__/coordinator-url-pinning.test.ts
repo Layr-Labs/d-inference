@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
-// SEC-001 regression: server proxy routes must resolve the coordinator URL
+// Regression: server proxy routes must resolve the coordinator URL
 // from the build-time constant only. A client-supplied `x-coordinator-url`
 // header must never choose the upstream origin — it turns the Next server
 // into an SSRF proxy and forwards Privy session tokens to that origin.
@@ -106,7 +106,7 @@ const CASES: RouteCase[] = [
   },
 ];
 
-describe("coordinator URL pinning (SEC-001)", () => {
+describe("coordinator URL pinning", () => {
   for (const c of CASES) {
     it(`${c.name} ignores x-coordinator-url`, async () => {
       const mod = await c.importPath();

@@ -7,7 +7,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
-// TestCheckMockModeTripwire exercises the DAR-59 fail-closed guard in
+// TestCheckMockModeTripwire exercises the fail-closed mock-mode guard in
 // Config.Check via ReadConfig so that the real env-var→Config path is covered
 // (not a hand-built Config struct that could drift from ReadConfig).
 //
@@ -40,7 +40,7 @@ func TestCheckMockModeTripwire(t *testing.T) {
 				prefix + "_SOLANA_MNEMONIC": "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12",
 			},
 			wantErr: true,
-			errFrag: "DAR-59",
+			errFrag: "refusing to start",
 		},
 		{
 			name: "(b2) mock + bare MNEMONIC env — must error",
@@ -49,7 +49,7 @@ func TestCheckMockModeTripwire(t *testing.T) {
 				"MNEMONIC":               "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12",
 			},
 			wantErr: true,
-			errFrag: "DAR-59",
+			errFrag: "refusing to start",
 		},
 		{
 			name: "(c) mock + Stripe secret key — must error",
@@ -58,7 +58,7 @@ func TestCheckMockModeTripwire(t *testing.T) {
 				prefix + "_STRIPE_SECRET_KEY": "sk_live_fakekeyfortest",
 			},
 			wantErr: true,
-			errFrag: "DAR-59",
+			errFrag: "refusing to start",
 		},
 		{
 			name: "(d) no mock + real creds — production baseline — OK",

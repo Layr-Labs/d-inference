@@ -35,9 +35,8 @@ type Config struct {
 	// MockMode skips on-chain verification and auto-credits test balances.
 	// Set EIGENINFERENCE_BILLING_MOCK=true for testing without real payments.
 	//
-	// DAR-59: a boot-time tripwire (Config.Check) refuses to start when MockMode
-	// is enabled alongside real payment credentials (mnemonic or Stripe key).
-	// The full audit of remaining MockMode code paths is still tracked in DAR-59.
+	// A boot-time tripwire (Config.Check) refuses to start when MockMode is
+	// enabled alongside real payment credentials (mnemonic or Stripe key).
 	MockMode bool
 }
 
@@ -70,7 +69,7 @@ func ReadConfig() Config {
 
 // Check validates billing configuration invariants.
 //
-// Fail-closed tripwire (DAR-59): MockMode must never coexist with real payment
+// Fail-closed tripwire: MockMode must never coexist with real payment
 // credentials. A production deployment that accidentally sets
 // EIGENINFERENCE_BILLING_MOCK=true would silently skip on-chain Solana
 // verification and Stripe payment checks. By refusing to boot in that state we
@@ -81,14 +80,14 @@ func ReadConfig() Config {
 func (c Config) Check() error {
 	if c.MockMode && c.EncryptionMnemonic != "" {
 		return fmt.Errorf(
-			"billing mock mode is enabled but real payment credentials (Solana mnemonic) are configured — refusing to start (DAR-59); "+
+			"billing mock mode is enabled but real payment credentials (Solana mnemonic) are configured — refusing to start; "+
 				"unset MNEMONIC / %s_MNEMONIC / %s_SOLANA_MNEMONIC or disable %s_BILLING_MOCK",
 			env.EnvPrefix, env.EnvPrefix, env.EnvPrefix,
 		)
 	}
 	if c.MockMode && c.StripeSecretKey != "" {
 		return fmt.Errorf(
-			"billing mock mode is enabled but real payment credentials (Stripe secret key) are configured — refusing to start (DAR-59); "+
+			"billing mock mode is enabled but real payment credentials (Stripe secret key) are configured — refusing to start; "+
 				"unset %s_STRIPE_SECRET_KEY or disable %s_BILLING_MOCK",
 			env.EnvPrefix, env.EnvPrefix,
 		)

@@ -48,6 +48,29 @@ no pause/resume, and no migration controller**: a rollout is setting
    `minProviderVersionForDesiredModels` — see `coordinator/api/server.go`). Older
    providers are never sent `desired_models` (the coordinator gates on backend +
    version); they simply keep serving whatever they already advertise.
+3. **Coordinator must include the retired-resident-build challenge alibi** (the
+   `active_model_hash` membership check accepting a catalog-validated hash from
+   `model_hashes`). Without it, every hard-swapped provider reports its still-
+   resident retired build as active at the next 5-minute challenge and is
+   HARD-UNTRUSTED (all models, until process reconnect) — a fleet-wide
+   self-deroute. Regression: `TestChallengeRetiredResidentBuildHashDoesNotUntrust`.
+4. **Canary the published build on one production-version provider first**:
+   prefetch, hash-verify, GPU-load, and serve chat + tool-call (+ vision if
+   applicable) via the raw build id. Disk verification proves bytes, not
+   loadability — the swap advertises BEFORE the first load, and a build that
+   cannot load otherwise converts the fleet into repeated 500s with only a
+   manual revert as the exit (load failures do cool down routing per
+   provider-model pair, which lets alias resolution fall back to `previous`,
+   but do not rely on it as the primary safety).
+5. **For TAKEOVER migrations: pre-position the rollback build** (Step 6) before
+   the flip. `scripts/preposition-rollback-build.sh` server-side-copies the old
+   weights to a distinct id and registers it.
+6. Watch keys during rollout: `/v1/models?include_builds=1` per-build routable
+   counts (NOT `/v1/models/capacity` — it is keyed by concrete build ids and the
+   public name's row decays to absent at full convergence), coordinator logs
+   `prefetch_model_status`, `models_update hard-swap: dropping retired build`,
+   `load-failure cool-down started`, and — the killer signature —
+   `active model hash matches no advertised model`.
 
 ---
 
@@ -86,10 +109,21 @@ curl -fsS -X POST "$COORD/v1/admin/models/register" \
 The old build (`…-fp8`) should already be registered. Confirm both:
 `curl -s "$COORD/v1/models?include_builds=1" -H "Authorization: Bearer $KEY"`.
 
-## Step 3 — Create the public alias, pointing at the OLD build (human)
+## Step 3 — Create the public alias (human)
 
-Create the alias with `desired_build` = the **current** (old) build. This makes
-`gemma-4-26b` a stable public name with no behavior change yet:
+> **Two shapes, depending on the public name:**
+>
+> **(a) Fresh alias** — the public name differs from every concrete model id.
+> Create it pointing at the **current** (old) build first; no behavior change.
+>
+> **(b) TAKEOVER** — the public name IS the old concrete id (consumers already
+> request it directly, e.g. `gemma-4-26b`). A same-name pre-step is **rejected**
+> by validation (`desired_build` may never equal `alias_id`), so Steps 3 and 4
+> collapse into the **single atomic POST** shown in Step 4's takeover form.
+> **Before that flip, pre-position the rollback build** (Step 6): a takeover
+> alias cannot be flipped back to its own name.
+
+Fresh-alias form (skip for takeover):
 
 ```bash
 curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
@@ -109,7 +143,9 @@ Existing requests that still send the raw fp8 id keep working (passthrough).
 ## Step 4 — Roll out: flip `desired_build` to the new build (human)
 
 This is the whole migration. Set `desired_build` to the new build and keep the
-old build as `previous_build` so not-yet-swapped providers keep serving:
+old build as `previous_build` so not-yet-swapped providers keep serving.
+
+Fresh-alias form:
 
 ```bash
 curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
@@ -120,6 +156,23 @@ curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
     "display_name": "Gemma 4 26B",
     "desired_build":  "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
     "previous_build": "mlx-community/gemma-4-26b-a4b-it-fp8"
+  }'
+```
+
+Takeover form (Steps 3+4 in one call — `takeover` acknowledges that the alias
+absorbs the existing concrete id; `previous_build` MUST equal the alias id;
+every subsequent upsert of this alias must keep `takeover: true`):
+
+```bash
+curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
+  -H "Authorization: Bearer $PUBLISHING_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "alias_id": "gemma-4-26b",
+    "display_name": "Gemma 4 26B",
+    "takeover": true,
+    "previous_build": "gemma-4-26b",
+    "desired_build":  "gemma-4-26b-qat-4bit"
   }'
 ```
 
@@ -172,6 +225,32 @@ curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
 
 Providers that still have the old build serve it immediately; the new build stays
 acceptable until they re-converge.
+
+> **TAKEOVER aliases cannot use this revert** — `desired_build` back to the old
+> id would equal `alias_id`, which validation rejects. The only fast revert is
+> flipping to the old WEIGHTS under a **distinct id** that was pre-positioned
+> BEFORE the migration:
+>
+> ```bash
+> # Once, before the flip (server-side R2 copy + register + promote):
+> scripts/preposition-rollback-build.sh gemma-4-26b <old-version> gemma-4-26b-8bit "$COORD" "$PUBLISHING_KEY"
+>
+> # Emergency revert is then a normal alias flip:
+> curl -fsS -X POST "$COORD/v1/admin/models/aliases" … -d '{
+>   "alias_id": "gemma-4-26b", "takeover": true,
+>   "previous_build": "gemma-4-26b",
+>   "desired_build": "gemma-4-26b-8bit"
+> }'
+> ```
+>
+> During the revert, providers that never swapped serve the absorbed id
+> (`previous_build`) immediately — capacity never reaches zero. Already-swapped
+> providers must fetch the rollback id (prefetch staging is keyed by the new
+> build's R2 prefix, so plan for a re-download even though the bytes are
+> hash-identical) and re-converge. Without pre-positioning, the only emergency
+> exit is DELETE-ing the alias — which strands already-swapped providers on a
+> build the public name no longer reaches. Do not plan a takeover migration
+> without the rollback build registered first.
 
 ## Step 7 — Retire the old build (human, manual)
 

@@ -1245,6 +1245,27 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				matched = true
 			}
 		}
+		// Alias hot-swap (v0.6.x): a hard-swapped build can stay GPU-resident —
+		// and remain the provider's "active" model — AFTER it leaves the
+		// advertised set (the retired slot drains via the idle monitor, up to
+		// an hour). Its hash still arrives in model_hashes, where the per-model
+		// loop above already proved it matches its own catalog entry. Such a
+		// validated, registered build is a legitimate alibi for the bare active
+		// hash — NOT a swap. Without this, every provider hard-untrusts at its
+		// first post-swap challenge until a request lands on the new build.
+		// A genuinely tampered hash still matches neither the advertised set
+		// nor any catalog-validated reported hash, and still untrusts.
+		if !matched {
+			for modelID, hash := range resp.ModelHashes {
+				if hash == "" || hash != resp.ActiveModelHash {
+					continue
+				}
+				if expected := s.registry.CatalogWeightHash(modelID); expected != "" && hash == expected {
+					matched = true
+					break
+				}
+			}
+		}
 		if allEnforced && !matched {
 			s.logger.Error("provider active model hash matches no advertised model — possible model swap",
 				"provider_id", providerID,
@@ -1938,6 +1959,18 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	)
 }
 
+// isModelLoadFailure reports whether a (lowercased) provider error terminal
+// indicates the provider could not LOAD the requested model — either a
+// capacity reject ("insufficient memory to load model …", provider-side
+// fastAdmissionReject/evictUntilAvailable) or a generic load failure ("model
+// load failed: …", InferenceError.modelLoadFailed). Both mean the
+// provider-model pair will fail identically on immediate retry and should
+// cool down in routing.
+func isModelLoadFailure(loweredErr string) bool {
+	return strings.Contains(loweredErr, "insufficient memory") ||
+		strings.Contains(loweredErr, "model load failed")
+}
+
 func (s *Server) handleInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {
 	if provider == nil {
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
@@ -1974,8 +2007,16 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		s.registry.RecordJobFailure(providerID)
 	}
 
-	// Cool down a load-rejecting pair so retries skip it (see dispatchLoadCooldowns).
-	if strings.Contains(loweredErr, "insufficient memory") {
+	// Cool down a load-rejecting pair so retries skip it (see
+	// dispatchLoadCooldowns). Covers BOTH flavors: capacity rejects
+	// ("insufficient memory", not a fault) and generic load failures ("model
+	// load failed": bad weights/metallib/kernel — IS a fault, reputation hit
+	// above stands). The cool-down matters most during an alias migration: a
+	// build that verifies on disk but cannot GPU-load would otherwise keep
+	// attracting 100% of the alias traffic as repeated 500s — cooling the pair
+	// makes the desired build unroutable so alias resolution falls back to the
+	// previous build.
+	if isModelLoadFailure(loweredErr) {
 		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
 			s.logger.Warn("load-failure cool-down started",
 				"provider_id", providerID,

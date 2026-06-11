@@ -47,3 +47,21 @@ func TestZombieStreamCancellerSweepBounded(t *testing.T) {
 		t.Fatalf("map not bounded after sweep: %d entries", n)
 	}
 }
+
+func TestIsModelLoadFailure(t *testing.T) {
+	cases := []struct {
+		err  string
+		want bool
+	}{
+		{"insufficient memory to load model 'gemma-4-26b-qat-4bit'", true},
+		{"model load failed: the operation couldn’t be completed. (providercore.inferenceerror error 0.)", true},
+		{"request cancelled", false},
+		{"token_budget_exhausted: request queue full", false},
+		{"invalid request body", false},
+	}
+	for _, c := range cases {
+		if got := isModelLoadFailure(c.err); got != c.want {
+			t.Fatalf("isModelLoadFailure(%q) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}

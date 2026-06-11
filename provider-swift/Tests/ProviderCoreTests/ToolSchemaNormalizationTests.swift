@@ -118,7 +118,10 @@ extension ToolSchemaNormalizationTests {
         let out = ToolSchemaNormalization.ensureParameterTypes(in: body)
         let function = try #require((parse(out)["tools"] as? [[String: Any]])?[0]["function"] as? [String: Any])
         let props = try #require((function["parameters"] as? [String: Any])?["properties"] as? [String: Any])
-        #expect((props["city"] as? [String: Any])?["type"] as? String == "string")
+        let city = try #require(props["city"] as? [String: Any])
+        #expect(city["type"] as? String == "string")
+        // Nullability preserved losslessly via the template-supported key.
+        #expect(city["nullable"] as? Bool == true)
     }
 
     @Test func collapsesArrayTypeSkippingLeadingNull() throws {
@@ -182,5 +185,49 @@ extension ToolSchemaNormalizationTests {
         let props = try #require((function["parameters"] as? [String: Any])?["properties"] as? [String: Any])
         #expect((props["cfg"] as? [String: Any])?["type"] as? String == "object")
         #expect((props["v"] as? [String: Any])?["type"] as? String == "string")
+    }
+    @Test func unionMemberWithArrayTypeStillDrivesParentInference() throws {
+        // Ordering is load-bearing: members collapse BEFORE the parent's union
+        // inference, so a first member declaring ["string","null"] must yield a
+        // "string" parent type (not fall through to the default).
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "u":{"anyOf":[{"type":["string","null"]},{"type":"integer"}],"description":"u"}}}}}]}
+        """#.data(using: .utf8)!
+
+        let out = ToolSchemaNormalization.ensureParameterTypes(in: body)
+        let function = try #require((parse(out)["tools"] as? [[String: Any]])?[0]["function"] as? [String: Any])
+        let props = try #require((function["parameters"] as? [String: Any])?["properties"] as? [String: Any])
+        #expect((props["u"] as? [String: Any])?["type"] as? String == "string")
+    }
+
+    @Test func collapsesArrayTypeOnTopLevelParametersNode() throws {
+        // The template also renders params['type'] | upper at the top level.
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":["object","null"],"properties":{"q":{"type":"string"}}}}}]}
+        """#.data(using: .utf8)!
+
+        let out = ToolSchemaNormalization.ensureParameterTypes(in: body)
+        let function = try #require((parse(out)["tools"] as? [[String: Any]])?[0]["function"] as? [String: Any])
+        let params = try #require(function["parameters"] as? [String: Any])
+        #expect(params["type"] as? String == "object")
+        #expect(params["nullable"] as? Bool == true)
+    }
+
+    @Test func collapsesArrayTypeInsideAdditionalPropertiesSchema() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "kv":{"type":"object","additionalProperties":{"type":["number","null"]}}}}}}]}
+        """#.data(using: .utf8)!
+
+        let out = ToolSchemaNormalization.ensureParameterTypes(in: body)
+        let function = try #require((parse(out)["tools"] as? [[String: Any]])?[0]["function"] as? [String: Any])
+        let props = try #require((function["parameters"] as? [String: Any])?["properties"] as? [String: Any])
+        let addl = try #require((props["kv"] as? [String: Any])?["additionalProperties"] as? [String: Any])
+        #expect(addl["type"] as? String == "number")
+        #expect(addl["nullable"] as? Bool == true)
     }
 }

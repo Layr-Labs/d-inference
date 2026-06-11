@@ -83,7 +83,15 @@ enum ToolSchemaNormalization {
         // emits for every Optional[...] tool parameter. Collapse it to a single
         // representative string (never delete the key: a node whose only content
         // is its type would not be refilled below and would crash anyway).
+        // Nullability is preserved losslessly: the gemma template natively
+        // renders the standard `nullable` key, so collapsing away a "null"
+        // member sets it (without clobbering an explicit value).
         if let t = dict["type"], !(t is String) {
+            let members = (t as? [Any])?.compactMap { $0 as? String } ?? []
+            if members.contains("null"), members.contains(where: { $0 != "null" }),
+                dict["nullable"] == nil {
+                dict["nullable"] = true
+            }
             dict["type"] = collapsedType(t, in: dict)
         }
 

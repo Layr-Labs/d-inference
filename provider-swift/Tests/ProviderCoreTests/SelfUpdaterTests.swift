@@ -317,3 +317,51 @@ private func runTarCreate(sourceDir: URL, tarball: URL) throws {
     process.waitUntilExit()
     #expect(process.terminationStatus == 0)
 }
+
+// MARK: - installRoot derivation (symlink regression)
+
+@Suite("SelfUpdater.installRoot")
+struct SelfUpdaterInstallRootTests {
+
+    @Test("flat bin layout derives the darkbloom root")
+    func flatLayout() {
+        let root = SelfUpdater.installRoot(
+            forExecutablePath: "/Users/op/.darkbloom/bin/darkbloom")
+        #expect(root.path.hasSuffix("/.darkbloom"))
+    }
+
+    @Test("app bundle layout walks out of Contents/MacOS")
+    func appBundleLayout() {
+        let root = SelfUpdater.installRoot(
+            forExecutablePath:
+                "/Users/op/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom")
+        #expect(root.path.hasSuffix("/.darkbloom"))
+    }
+
+    /// Regression for the fleet-wide `darkbloom update` failure: install.sh
+    /// symlinks /usr/local/bin/darkbloom -> ~/.darkbloom/bin/darkbloom, and the
+    /// executable path reports the SYMLINK when invoked through PATH. Deriving
+    /// the root from the unresolved path staged updates into /usr/local
+    /// ("You don't have permission to save .update-staging-… in 'local'").
+    @Test("PATH symlink resolves to the real install root")
+    func symlinkedInvocationResolvesRealRoot() throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+            .appendingPathComponent("installroot-\(UUID().uuidString)")
+        let realBin = tmp.appendingPathComponent("home/.darkbloom/bin")
+        let fakeUsrLocalBin = tmp.appendingPathComponent("usr/local/bin")
+        try fm.createDirectory(at: realBin, withIntermediateDirectories: true)
+        try fm.createDirectory(at: fakeUsrLocalBin, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+
+        let realExec = realBin.appendingPathComponent("darkbloom")
+        #expect(fm.createFile(atPath: realExec.path, contents: Data("x".utf8)))
+        let link = fakeUsrLocalBin.appendingPathComponent("darkbloom")
+        try fm.createSymbolicLink(at: link, withDestinationURL: realExec)
+
+        let root = SelfUpdater.installRoot(forExecutablePath: link.path)
+
+        #expect(root.path.hasSuffix("/.darkbloom"))
+        #expect(!root.path.contains("usr/local"))
+    }
+}

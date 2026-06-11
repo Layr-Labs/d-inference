@@ -79,16 +79,28 @@ type ResponsesIncompleteDetail struct {
 }
 
 // ResponsesResponse is an OpenAI-compatible Responses API response.
+// Nullable spec fields (error, instructions, temperature, top_p, …) are
+// emitted explicitly as null — official SDKs require the keys to exist.
 type ResponsesResponse struct {
-	ID               string                     `json:"id"`
-	Object           string                     `json:"object"`
-	CreatedAt        int64                      `json:"created_at"`
-	Model            string                     `json:"model"`
-	Output           []any                      `json:"output"`
-	Usage            ResponsesUsage             `json:"usage"`
-	IncompleteDetail *ResponsesIncompleteDetail `json:"incomplete_details"`
-	SESignature      string                     `json:"se_signature,omitempty"`
-	ResponseHash     string                     `json:"response_hash,omitempty"`
+	ID                string                     `json:"id"`
+	Object            string                     `json:"object"`
+	CreatedAt         int64                      `json:"created_at"`
+	Status            string                     `json:"status"`
+	Error             any                        `json:"error"`
+	IncompleteDetail  *ResponsesIncompleteDetail `json:"incomplete_details"`
+	Instructions      any                        `json:"instructions"`
+	MaxOutputTokens   any                        `json:"max_output_tokens"`
+	Model             string                     `json:"model"`
+	Output            []any                      `json:"output"`
+	ParallelToolCalls bool                       `json:"parallel_tool_calls"`
+	Temperature       *float64                   `json:"temperature"`
+	ToolChoice        any                        `json:"tool_choice"`
+	Tools             []any                      `json:"tools"`
+	TopP              *float64                   `json:"top_p"`
+	Metadata          map[string]any             `json:"metadata"`
+	Usage             ResponsesUsage             `json:"usage"`
+	SESignature       string                     `json:"se_signature,omitempty"`
+	ResponseHash      string                     `json:"response_hash,omitempty"`
 }
 
 // ── GET /v1/models ───────────────────────────────────────────────────

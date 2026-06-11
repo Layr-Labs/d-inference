@@ -311,90 +311,6 @@ public func verifyBundleSignature() throws {
     }
 }
 
-// MARK: - MDM Enrollment Check
-
-/// Check if this Mac is enrolled in Darkbloom MDM.
-///
-/// Tries multiple detection methods since system-level profiles
-/// require sudo to see via `profiles list`. This is the single
-/// source of truth for MDM enrollment status.
-public func checkMDMEnrolled() -> Bool {
-    // Method 1: Check if the system profiles marker file exists.
-    // This file is created when any configuration profile is installed
-    // at the system level, even if `profiles list` can't show it without sudo.
-    let markerPath = "/var/db/ConfigurationProfiles/Settings/.profilesAreInstalled"
-    if FileManager.default.fileExists(atPath: markerPath) {
-        logger.debug("MDM check: profiles marker file exists")
-        return true
-    }
-
-    // Method 2: Try `profiles list` (works for user-level profiles)
-    if checkProfilesList(["list"]) {
-        logger.debug("MDM check: found via profiles list")
-        return true
-    }
-    if checkProfilesList(["list", "-type", "enrollment"]) {
-        logger.debug("MDM check: found via profiles list -type enrollment")
-        return true
-    }
-
-    // Method 3: Check if mdmclient shows enrollment
-    let mdmProcess = Process()
-    mdmProcess.executableURL = URL(fileURLWithPath: "/usr/libexec/mdmclient")
-    mdmProcess.arguments = ["QueryDeviceInformation"]
-    let mdmPipe = Pipe()
-    mdmProcess.standardOutput = mdmPipe
-    mdmProcess.standardError = Pipe()
-
-    if let _ = try? mdmProcess.run() {
-        mdmProcess.waitUntilExit()
-        let data = mdmPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = (String(data: data, encoding: .utf8) ?? "").lowercased()
-        if output.contains("enrolled") || output.contains("serverurl") {
-            logger.debug("MDM check: found via mdmclient")
-            return true
-        }
-    }
-
-    return false
-}
-
-private func checkProfilesList(_ args: [String]) -> Bool {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/profiles")
-    process.arguments = args
-
-    let outPipe = Pipe()
-    let errPipe = Pipe()
-    process.standardOutput = outPipe
-    process.standardError = errPipe
-
-    guard let _ = try? process.run() else { return false }
-    process.waitUntilExit()
-
-    let stdout = String(
-        data: outPipe.fileHandleForReading.readDataToEndOfFile(),
-        encoding: .utf8
-    ) ?? ""
-    let stderr = String(
-        data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-        encoding: .utf8
-    ) ?? ""
-    let combined = (stdout + stderr).lowercased()
-
-    // Positive signals
-    let hasProfile = combined.contains("micromdm")
-        || combined.contains("com.github.micromdm")
-        || combined.contains("darkbloom")
-        || combined.contains("eigeninference")  // legacy MDM profile name
-        || combined.contains("attribute: profileidentifier")
-
-    // Negative signal
-    let noProfiles = combined.contains("no configuration profiles")
-
-    return hasProfile || (!noProfiles && combined.contains("profileidentifier"))
-}
-
 // MARK: - Secure Memory Zeroing
 
 /// Zero out a byte buffer to prevent sensitive data from persisting in memory.
@@ -497,7 +413,7 @@ public func verifySecurityPosture(hypervisorActive _: Bool = false) throws -> Se
         antiDebugEnabled: antiDebugOk,
         coreDumpsDisabled: coreDumpsOk,
         envScrubbed: true,
-        mdmEnrolled: checkMDMEnrolled(),
+        mdmEnrolled: checkMDMEnrollment().isDarkbloom,
         bundleSignatureValid: bundleOk,
         binaryHash: selfBinaryHash()
     )

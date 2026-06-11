@@ -77,26 +77,64 @@ enum ToolSchemaNormalization {
             }
         }
 
+        // A type that is PRESENT but not a string crashes `| upper` just like a
+        // missing one. The common real-world shape is the JSON-Schema array form
+        // for nullable fields — `"type": ["string","null"]` — which Pydantic
+        // emits for every Optional[...] tool parameter. Collapse it to a single
+        // representative string (never delete the key: a node whose only content
+        // is its type would not be refilled below and would crash anyway).
+        // Nullability is preserved losslessly: the gemma template natively
+        // renders the standard `nullable` key, so collapsing away a "null"
+        // member sets it (without clobbering an explicit value).
+        if let t = dict["type"], !(t is String) {
+            let members = (t as? [Any])?.compactMap { $0 as? String } ?? []
+            if members.contains("null"), members.contains(where: { $0 != "null" }),
+                dict["nullable"] == nil {
+                dict["nullable"] = true
+            }
+            dict["type"] = collapsedType(members: members, in: dict)
+        }
+
         let looksLikeSchemaNode =
             dict["properties"] != nil || dict["items"] != nil ||
             dict["additionalProperties"] != nil ||
             dict["enum"] != nil || dict["description"] != nil ||
             dict["anyOf"] != nil || dict["oneOf"] != nil || dict["allOf"] != nil
         if dict["type"] == nil, looksLikeSchemaNode {
-            if dict["properties"] != nil || dict["additionalProperties"] != nil {
-                dict["type"] = "object"
-            } else if dict["items"] != nil {
-                dict["type"] = "array"
-            } else if let unionType = unionMemberType(dict) {
-                // anyOf/oneOf/allOf without a parent type: borrow the first concrete
-                // member type (skipping "null") rather than mislabelling a union as a
-                // string. The template still gets a usable type and can't crash.
-                dict["type"] = unionType
-            } else {
-                dict["type"] = "string"
-            }
+            dict["type"] = inferredType(for: dict)
         }
         return dict
+    }
+
+    /// Collapse a non-string `type` value (pre-extracted string members of the
+    /// array form) to one renderable string: the first concrete (non-"null")
+    /// member, the lone "null" when that is all the array declares, else fall
+    /// back to structural inference.
+    private static func collapsedType(members: [String], in dict: [String: Any]) -> String {
+        if let concrete = members.first(where: { $0 != "null" }) {
+            return concrete
+        }
+        if let nullOnly = members.first {
+            return nullOnly
+        }
+        return inferredType(for: dict)
+    }
+
+    /// Structural default for a schema node's `type`: object when it has
+    /// properties, array when it has items, a union member's type when it is an
+    /// anyOf/oneOf/allOf (skipping "null" — mislabelling a union as a string
+    /// would be wrong), otherwise string.
+    private static func inferredType(for dict: [String: Any]) -> String {
+        if dict["properties"] != nil || dict["additionalProperties"] != nil {
+            return "object"
+        }
+        if dict["items"] != nil {
+            return "array"
+        }
+        if let unionType = unionMemberType(dict) {
+            return unionType
+        }
+        return "string"
     }
 
     /// Derive a representative `type` for a union node from the first member that

@@ -1486,6 +1486,14 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	pr := provider.GetPending(msg.RequestID)
 	if pr == nil {
 		s.logger.Warn("chunk for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
+		// The provider is still generating into a stream we abandoned (consumer
+		// gone / already settled), burning its GPU and token-budget admission.
+		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
+		// the provider with cancels.
+		if s.zombieCanceller.shouldCancel(msg.RequestID, time.Now()) {
+			s.sendProviderCancel(provider, msg.RequestID)
+			s.ddIncr("inference.zombie_stream_cancel", []string{})
+		}
 		return
 	}
 	chunkData, err := decryptTextResponseChunk(provider, pr, msg)
@@ -1574,10 +1582,22 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		return
 	}
 	pr := provider.RemovePending(msg.RequestID)
+	// Clear any parked settlement record (consumer disconnected mid-stream):
+	// settles the disconnect case and stops the grace timer from no-op-refunding.
+	parked := s.claimSettlement(msg.RequestID)
+	if pr == nil {
+		pr = parked
+	}
 	if pr == nil {
 		s.logger.Warn("complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
 		return
 	}
+	// A parked record means the consumer handler already returned: there is no
+	// channel reader, and registry.Disconnect may have already CLOSED the
+	// channels (park-before-remove leaves a window where the record is in both
+	// the pending map and the holder) — sending would panic. Billing still
+	// settles below; only the consumer signaling is skipped.
+	consumerGone := parked != nil
 
 	// Store SE signature for the consumer response headers.
 	pr.SESignature = msg.SESignature
@@ -1602,6 +1622,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// check usage immediately after the HTTP response completes.
 	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
 	s.registry.RecordJobSuccess(providerID, responseTime)
+	// Serving this model proves the pair can load — lift any cool-down early.
+	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
 
 	// Resolve the consumer once: platform-fee override (nil = global default)
 	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
@@ -1895,9 +1917,13 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Signal completion to the consumer response handler. This must happen
 	// AFTER usage/billing is recorded because closing ChunkCh immediately
 	// unblocks the HTTP response, and callers may check usage right after.
-	pr.CompleteCh <- msg.Usage
-	close(pr.ChunkCh)
-	close(pr.CompleteCh)
+	// Skipped when the consumer is gone: no reader, and the channels may
+	// already be closed (send would panic).
+	if !consumerGone {
+		pr.CompleteCh <- msg.Usage
+		close(pr.ChunkCh)
+		close(pr.CompleteCh)
+	}
 
 	// Mark provider idle if no more pending requests.
 	s.registry.SetProviderIdle(providerID)
@@ -1918,8 +1944,68 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		return
 	}
 	pr := provider.RemovePending(msg.RequestID)
+	// Clear any parked settlement record (consumer disconnected mid-stream).
+	// Same object as a non-nil pr when the terminal raced the disconnect defer.
+	parked := s.claimSettlement(msg.RequestID)
+	if pr == nil {
+		pr = parked
+	}
 	if pr == nil {
 		s.logger.Warn("error for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
+		return
+	}
+	consumerGone := parked != nil
+
+	// Record a job failure, but not for capacity rejections or consumer
+	// cancellations — neither is a provider fault. Capacity = load shedding the
+	// coordinator reroutes. Cancel (499 / "request cancelled") = the CONSUMER
+	// disconnected; before the settlement holder these terminals died on
+	// pr==nil with zero reputation effect, and the old fleet emits one for
+	// every mid-stream disconnect — penalizing them would erode the whole
+	// fleet's reputation for consumer behavior.
+	loweredErr := strings.ToLower(msg.Error)
+	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
+		msg.StatusCode == http.StatusTooManyRequests ||
+		strings.Contains(loweredErr, "token_budget_exhausted") ||
+		strings.Contains(loweredErr, "insufficient memory")
+	cancelTerminal := msg.StatusCode == 499 ||
+		strings.Contains(loweredErr, "request cancelled")
+	if !capacityRejection && !cancelTerminal {
+		s.registry.RecordJobFailure(providerID)
+	}
+
+	// Cool down a load-rejecting pair so retries skip it (see dispatchLoadCooldowns).
+	if strings.Contains(loweredErr, "insufficient memory") {
+		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
+			s.logger.Warn("load-failure cool-down started",
+				"provider_id", providerID,
+				"model", pr.Model,
+			)
+			s.ddIncr("routing.load_failure_cooldowns", []string{"model:" + pr.Model})
+		}
+	}
+
+	s.registry.SetProviderIdle(providerID)
+
+	if consumerGone {
+		// Consumer disconnected — no reader for the channels; settle by
+		// refunding, OFF the read loop (a store Credit can block for seconds
+		// under DB pressure, and blocking this loop stalls heartbeats and
+		// challenge responses — the eviction-churn vector). Idempotent vs. the
+		// settlement grace timer via FinalizeReservation.
+		//
+		// Deliberately NOT unconditional: during the dispatch retry window the
+		// consumer handler keeps the base reservation alive for the next
+		// attempt — refunding/finalizing it here would let a later successful
+		// attempt settle against a dead reservation (served for free). Errors
+		// with a live consumer are refunded by their channel readers (relay /
+		// dispatch-exhaustion paths); the relay-return→park gap is swept by
+		// the post-commit defer's last-chance refund in consumer.go.
+		refundPr := pr
+		refundID := msg.RequestID
+		saferun.Go(s.logger, "api.refundAfterDisconnect", func() {
+			s.refundReservedBalance(refundPr, "provider_error_after_disconnect:"+refundID)
+		})
 		return
 	}
 
@@ -1927,24 +2013,6 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	close(pr.ChunkCh)
 	close(pr.CompleteCh)
 	close(pr.ErrorCh)
-
-	// Record job failure for reputation tracking, but carve out capacity
-	// rejections — those are not provider faults, just the provider declining
-	// work it cannot currently serve (the coordinator reroutes these). Counting
-	// them would unfairly penalise healthy providers shedding load. Capacity
-	// signals: HTTP 503 (service unavailable) / 429 (too many requests), an
-	// exhausted token budget, or an out-of-memory model-load reject.
-	loweredErr := strings.ToLower(msg.Error)
-	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
-		msg.StatusCode == http.StatusTooManyRequests ||
-		strings.Contains(loweredErr, "token_budget_exhausted") ||
-		strings.Contains(loweredErr, "insufficient memory")
-	if !capacityRejection {
-		s.registry.RecordJobFailure(providerID)
-	}
-
-	// Mark provider idle.
-	s.registry.SetProviderIdle(providerID)
 
 	s.logger.Error("inference error",
 		"request_id", msg.RequestID,

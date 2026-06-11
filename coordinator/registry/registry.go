@@ -701,6 +701,20 @@ type Registry struct {
 	// entry lives, the provider is skipped for new load_model sends
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
 	pendingModelLoads map[string]time.Time // key: "providerID:modelID", value: expiry
+
+	// dispatchLoadCooldowns: provider-model pairs that rejected a dispatch with a
+	// load failure ("insufficient memory"). Routing skips the pair until expiry —
+	// it would instant-503 again, and without this the scheduler re-picks it
+	// (looks idle), causing the dispatch→503→retry storms seen in prod. Cleared
+	// on re-registration and on a served request for the pair.
+	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
+
+	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
+	// A provider is only evicted after STALE on two sweeps in a row, so a single
+	// transient coordinator stall (which ages many LastHeartbeat values at once)
+	// or one missed heartbeat doesn't mass-reap a live fleet. Guarded by r.mu;
+	// rebuilt each sweep so disconnected providers drop out automatically.
+	evictStrikes map[string]int
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -716,6 +730,11 @@ const pendingModelLoadTTL = 2 * time.Minute
 // re-registration) could serve.
 const pendingModelLoadDrainBackoff = 30 * time.Second
 
+// dispatchLoadCooldownTTL is how long routing skips a pair after a dispatch
+// load failure — long enough to stop the retry loop, short enough that a
+// recovered provider returns on its own.
+const dispatchLoadCooldownTTL = 2 * time.Minute
+
 type modelLoadAction struct {
 	providerID string
 	modelID    string
@@ -724,14 +743,67 @@ type modelLoadAction struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:         make(map[string]*Provider),
-		queue:             NewRequestQueue(10, 120*time.Second),
-		MinTrustLevel:     TrustHardware,
-		tpsRegistry:       NewTPSRegistry(),
-		modelProviders:    make(map[string]*atomic.Int64),
-		pendingModelLoads: make(map[string]time.Time),
-		logger:            logger,
+		providers:             make(map[string]*Provider),
+		queue:                 NewRequestQueue(10, 120*time.Second),
+		MinTrustLevel:         TrustHardware,
+		tpsRegistry:           NewTPSRegistry(),
+		modelProviders:        make(map[string]*atomic.Int64),
+		pendingModelLoads:     make(map[string]time.Time),
+		dispatchLoadCooldowns: make(map[string]time.Time),
+		evictStrikes:          make(map[string]int),
+		logger:                logger,
 	}
+}
+
+// RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
+// after the provider rejected a dispatch with a load failure. Returns true
+// when this call started a new cool-down (false when one was already live),
+// so callers can emit metrics without double-counting the retry storm.
+func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	// Opportunistic sweep: provider ids are per-session UUIDs, so dead entries
+	// never get re-keyed — bound the map by dropping expired ones when it grows.
+	if len(r.dispatchLoadCooldowns) > 1024 {
+		for key, expiry := range r.dispatchLoadCooldowns {
+			if !now.Before(expiry) {
+				delete(r.dispatchLoadCooldowns, key)
+			}
+		}
+	}
+	key := providerID + ":" + modelID
+	_, active := r.dispatchLoadCooldowns[key]
+	active = active && now.Before(r.dispatchLoadCooldowns[key])
+	r.dispatchLoadCooldowns[key] = now.Add(dispatchLoadCooldownTTL)
+	return !active
+}
+
+// ClearDispatchLoadCooldown removes the cool-down for one provider-model pair
+// (called when the pair serves a request successfully — it can load after all).
+func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.dispatchLoadCooldowns, providerID+":"+modelID)
+}
+
+// clearDispatchLoadCooldownsLocked drops a provider's cool-downs on
+// (re-)registration — a fresh process has fresh memory. Caller holds r.mu.
+func (r *Registry) clearDispatchLoadCooldownsLocked(providerID string) {
+	prefix := providerID + ":"
+	for key := range r.dispatchLoadCooldowns {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.dispatchLoadCooldowns, key)
+		}
+	}
+}
+
+// dispatchLoadCooldownActiveLocked reports whether routing should skip the pair.
+// READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock. Caller holds
+// r.mu in either mode.
+func (r *Registry) dispatchLoadCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
+	expiry, ok := r.dispatchLoadCooldowns[providerID+":"+modelID]
+	return ok && now.Before(expiry)
 }
 
 // SetStore configures the persistence store for the registry.
@@ -1243,6 +1315,9 @@ func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSeri
 // slot required — they load on first demand). Caller holds r.mu (RLock) and p.mu.
 func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
 	if !r.providerServesCatalogModelLocked(p, buildID) {
+		return false
+	}
+	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
 		return false
 	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
@@ -1818,6 +1893,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	for _, m := range models {
 		r.modelProviderInc(m.ID)
 	}
+	// A (re-)registration means a fresh provider process: any dispatch-time
+	// load-failure cool-downs belonged to the previous process's memory state.
+	r.clearDispatchLoadCooldownsLocked(id)
 	r.mu.Unlock()
 
 	// Open a session row for this connection (async; durable uptime history).
@@ -3079,6 +3157,11 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
 		}
+		// Skip pairs cooling down after a dispatch-time load failure —
+		// re-picking them just burns a retry attempt on an instant 503.
+		if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
+			continue
+		}
 
 		p.mu.Lock()
 		status := p.Status
@@ -3808,18 +3891,75 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 }
 
 func (r *Registry) evictStale(timeout time.Duration) {
-	r.mu.RLock()
-	var stale []string
 	now := time.Now()
+
+	// Scan under the write lock: we both READ LastHeartbeat and REBUILD
+	// evictStrikes. Collect every provider's heartbeat age for the summary, and
+	// decide who to evict: a provider is reaped only after it is stale on TWO
+	// consecutive sweeps (strike >= 2), so a single transient stall that ages
+	// many timestamps at once gives the fleet a sweep to recover instead of a
+	// mass reap.
+	r.mu.Lock()
+	fleet := len(r.providers)
+	ages := make([]time.Duration, 0, fleet)
+	nextStrikes := make(map[string]int, len(r.evictStrikes))
+	var toEvict []string
+	var evictAges []time.Duration
 	for id, p := range r.providers {
-		if now.Sub(p.LastHeartbeat) > timeout {
-			stale = append(stale, id)
+		p.mu.Lock()
+		lastHeartbeat := p.LastHeartbeat
+		p.mu.Unlock()
+		age := now.Sub(lastHeartbeat)
+		ages = append(ages, age)
+		if age > timeout {
+			strikes := r.evictStrikes[id] + 1
+			if strikes >= evictStrikeThreshold {
+				toEvict = append(toEvict, id)
+				evictAges = append(evictAges, age)
+			} else {
+				nextStrikes[id] = strikes // carry the strike to next sweep
+			}
 		}
 	}
-	r.mu.RUnlock()
+	r.evictStrikes = nextStrikes
+	r.mu.Unlock()
 
-	for _, id := range stale {
+	if len(ages) > 0 {
+		amin, amed, ap90, amax := durationStats(ages)
+		// A tight evicted-age spread (emax-emin small) means many providers went
+		// stale at the same instant — a coordinator-side stall. A broad spread
+		// means independent provider sleeps. The summary makes that diagnosable.
+		emin, _, _, emax := durationStats(evictAges)
+		r.logger.Info("eviction sweep",
+			"fleet", fleet,
+			"evicting", len(toEvict),
+			"hb_age_min_s", int(amin.Seconds()),
+			"hb_age_p50_s", int(amed.Seconds()),
+			"hb_age_p90_s", int(ap90.Seconds()),
+			"hb_age_max_s", int(amax.Seconds()),
+			"evicted_age_min_s", int(emin.Seconds()),
+			"evicted_age_max_s", int(emax.Seconds()),
+		)
+	}
+
+	for _, id := range toEvict {
 		r.logger.Warn("evicting stale provider", "provider_id", id, "timeout", timeout)
 		r.Disconnect(id)
 	}
+}
+
+// evictStrikeThreshold is how many consecutive stale sweeps trigger eviction.
+// With a timeout/3 sweep cadence, 2 strikes ≈ one extra sweep interval of grace.
+const evictStrikeThreshold = 2
+
+// durationStats returns min, median, p90, max of ds (zeros for an empty slice).
+// Sorts a copy; ds is small (fleet-sized) so this is cheap.
+func durationStats(ds []time.Duration) (min, median, p90, max time.Duration) {
+	if len(ds) == 0 {
+		return 0, 0, 0, 0
+	}
+	s := make([]time.Duration, len(ds))
+	copy(s, ds)
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	return s[0], s[len(s)/2], s[(len(s)*9)/10], s[len(s)-1]
 }

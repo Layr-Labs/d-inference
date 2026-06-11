@@ -550,6 +550,14 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, selfRouteOw
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return routingSnapshot{}, false
 	}
+	// Skip a provider-model pair cooling down after a dispatch-time load
+	// failure ("insufficient memory") — it would instant-503 again, burning a
+	// dispatch attempt. This is the production dispatch hot path
+	// (ReserveProviderEx), so the cool-down MUST be enforced here, not only in
+	// the FindProviderWithTrust / RoutableProviderIDsForBuild paths.
+	if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
+		return routingSnapshot{}, false
+	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return routingSnapshot{}, false
 	}
@@ -946,6 +954,11 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, selfRouteOw
 		return false
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {
+		return false
+	}
+	// Under-lock re-check: don't admit a pair that entered the dispatch
+	// load-failure cool-down between selection and reservation.
+	if r.dispatchLoadCooldownActiveLocked(p.ID, model, time.Now()) {
 		return false
 	}
 	if !p.hasConcurrencyHeadroomForModelLocked(model) {

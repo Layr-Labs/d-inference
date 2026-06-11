@@ -1245,22 +1245,15 @@ public actor ProviderLoop {
             var reasoningText = ""
             var reasoningTokens = 0
 
-            // Set when the request is cancelled mid-stream (consumer
-            // disconnect / speculative-dispatch loser). Cancelled requests
-            // that already streamed output settle through the normal
-            // completion path below with real usage — the consumer received
-            // those tokens and the GPU did that work — instead of a bare 499
-            // that bills (and credits the provider) $0 for it.
+            // A cancelled request that already streamed output settles through
+            // the completion path below with real usage, not a bare 499 ($0).
             var cancelledMidStream = false
             do {
                 for try await frame in frames {
                     if token.isCancelled {
                         log.info("[\(requestId)] Cancelled during generation")
                         cancelledMidStream = true
-                        // Exiting the iteration is what propagates the abort:
-                        // the stream's onTermination cancels the engine-side
-                        // task and `scheduler.cancel` stops generation.
-                        break
+                        break  // exiting propagates the abort via onTermination
                     }
                     // Aggregate the assistant text + usage by parsing each
                     // chunk back from its JSON delta. This is the cost of
@@ -1340,13 +1333,8 @@ public actor ProviderLoop {
                     if !emitSSE(frameToEmit) { return }
                 }
             } catch {
-                // P1 #2: CancellationError raised by `try await
-                // frame in frames` when the inflight task is cancelled
-                // BEFORE the explicit `token.isCancelled` early-exit
-                // branch runs. (Depending on suspension timing a cancelled
-                // task can ALSO surface as a clean nil-end of the stream —
-                // that path falls out of the loop with `token.isCancelled`
-                // true and settles below like this one.)
+                // Cancellation can throw here or end the stream as a clean
+                // nil-end (caught after the loop); both settle as a cancel.
                 if error is CancellationError || token.isCancelled {
                     log.info("[\(requestId)] Cancelled while waiting on next frame")
                     cancelledMidStream = true
@@ -1361,14 +1349,9 @@ public actor ProviderLoop {
                     return
                 }
             }
-            // A cancelled task can also end the iteration as a clean nil-end
-            // (AsyncThrowingStream finishes instead of throwing). Catch that
-            // flavor too so it settles as a cancellation, not a normal finish.
             if token.isCancelled { cancelledMidStream = true }
 
-            // Cancelled before anything was delivered: nothing to bill — send
-            // 499 (Client Closed Request) so the coordinator refunds, exactly
-            // as before.
+            // Cancelled with nothing delivered: 499 so the coordinator refunds.
             if cancelledMidStream && contentFrameCount == 0 && fullResponseText.isEmpty {
                 send.send(.inferenceError(
                     requestId: requestId,
@@ -1378,19 +1361,12 @@ public actor ProviderLoop {
                 return
             }
 
-            // C1 defense-in-depth: if the usage chunk never landed — the
-            // NORMAL case for a cancelled stream (the engine's terminal usage
-            // rides the final chunk, which an aborted request never produces),
-            // or an upstream regression on a clean finish — the coordinator
-            // would bill $0 for this request. Recover both halves:
-            //   completion: floor at the observed content-frame count
-            //               (MLX streams ~1 token per frame).
-            //   prompt:     re-derive via the SAME applyChatTemplate path the
-            //               engine tokenized with (Translation helpers + the
-            //               slot tokenizer), so the count matches what was
-            //               actually prefilled. Media (VLM) requests
-            //               under-count (image tokens aren't in the text
-            //               template) — still a floor, never an overcharge.
+            // No usage chunk (the normal case for a cancelled stream, since the
+            // engine's usage rides the final chunk an abort never sends; also an
+            // upstream regression on clean finish). Recover a billing floor:
+            // completion = content-frame count (~1 token/frame); prompt =
+            // re-template via the engine's exact applyChatTemplate path. VLM
+            // prompts under-count (no image tokens) — a floor, never an overcharge.
             if promptTokens == 0 || completionTokens == 0 {
                 if completionTokens == 0 && contentFrameCount > 0 {
                     completionTokens = contentFrameCount
@@ -1414,9 +1390,8 @@ public actor ProviderLoop {
                         )
                     }
                 }
-                // Cancelled streams end before the final chunk, so the
-                // reasoning re-tokenize that normally rides the usage parse
-                // never ran — recover it here for the completion report.
+                // Re-tokenize reasoning here too — a cancel ends before the
+                // usage parse that normally does it.
                 if reasoningTokens == 0 && !reasoningText.isEmpty && completionTokens > 0 {
                     reasoningTokens = min(
                         tokenizer.inner.encode(
@@ -1435,9 +1410,8 @@ public actor ProviderLoop {
                         + "MLXOpenAIService.streamChatCompletionFrames behavior."
                     )
                 }
-                // Surface the usage-chunk anomaly to the operator via `doctor`
-                // — except for cancellation, where a missing final chunk is
-                // expected behavior, not an upstream anomaly.
+                // Surface to `doctor` — but not for a cancel, where a missing
+                // final chunk is expected, not an upstream anomaly.
                 if !cancelledMidStream {
                     providerStats.incrementUsageGaps()
                 }
@@ -2653,9 +2627,7 @@ public actor ProviderLoop {
         } catch {
             modelsLoading.remove(modelId)
             isLoadingAny = false
-            // A failed/aborted load can leave partially-allocated weight buffers
-            // in MLX's recycling pool; release them so the admission math doesn't
-            // count ghost bytes against the next attempt (same wedge as unload).
+            // Release pool buffers a failed load left behind (same wedge as unload).
             MLX.Memory.clearCache()
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
@@ -2685,11 +2657,9 @@ public actor ProviderLoop {
         await slot.scheduler.unloadModel()
         modelSlots.removeValue(forKey: modelId)
         modelsUnloading.remove(modelId)
-        // Return the freed weight/KV buffers from MLX's recycling pool to the
-        // OS. Without this, `MLX.GPU.cacheMemory` stays ~weights-sized after an
-        // unload, and the admission math (which counts pool bytes as used)
-        // rejects every subsequent load on mid-size machines — the provider
-        // stays registered but 503s all traffic until the process restarts.
+        // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
+        // load-admission counts as used — without this the box 503s every load
+        // until restart.
         MLX.Memory.clearCache()
         let waiters = unloadingWaiters.removeValue(forKey: modelId) ?? []
         for waiter in waiters { waiter.resume() }
@@ -2785,11 +2755,9 @@ public actor ProviderLoop {
                 .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
 
             guard let (modelId, _) = candidate else {
-                // Last resort before failing: MLX's recycling pool counts as
-                // used in the math above but is instantly reclaimable — drop it
-                // and resample so a pool-inflated box (KV churn, crashed unload)
-                // doesn't refuse a load that actually fits. Mirrors the same
-                // self-heal in `fastAdmissionReject`.
+                // Nothing idle to evict — drop the reclaimable pool and resample
+                // before failing, so a pool-inflated box isn't refused a load
+                // that fits. Same self-heal as fastAdmissionReject.
                 MLX.Memory.clearCache()
                 let retried = await availableMemoryGb()
                 if retried >= requiredGb { return }
@@ -2849,18 +2817,12 @@ public actor ProviderLoop {
             !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
         }
 
-        // Mirrors evictUntilAvailable's terminal failure: not enough free
-        // memory and nothing idle to free. Before rejecting, return MLX's
-        // recycling pool to the OS and resample once: pool bytes are counted
-        // as used by the admission math but are instantly reclaimable, so a
-        // box that merely churned KV (or missed a clear on a crashed unload)
-        // must not wedge into rejecting all traffic until process restart.
+        // Not enough free memory and nothing idle to evict. Drop the reclaimable
+        // pool and resample once before rejecting (the wedge self-heal).
         if available < requiredGb && !hasEvictable {
             MLX.Memory.clearCache()
             let retried = await availableMemoryGb()
-            // Residency may have changed across the await; a fresh slot for
-            // this model means a concurrent request just loaded it — admit.
-            if modelSlots[modelId] != nil {
+            if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
             if retried < requiredGb {

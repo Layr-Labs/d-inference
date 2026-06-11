@@ -7,26 +7,18 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-// defaultTerminalSettleGrace is how long a mid-stream-disconnected request's
-// billing record is held, waiting for the provider's terminal
-// inference_complete/_error to settle it, before the reservation is refunded.
-//
-// A connected provider aborts and emits its terminal within milliseconds of the
-// cancel; 30s covers WS latency with a wide margin. The record lives OUTSIDE the
-// provider's pending set (registry pendingReqs), so it never counts against the
-// provider's concurrency headroom or idle state during the wait — the slot frees
-// immediately on disconnect, only the billing tail lingers.
+// defaultTerminalSettleGrace bounds how long a disconnected request's billing
+// record waits for the provider's terminal before its reservation is refunded.
+// A connected provider aborts within ms; 30s is a wide WS-latency margin. The
+// record lives outside the provider's pending set, so it doesn't count against
+// concurrency/idle while waiting.
 const defaultTerminalSettleGrace = 30 * time.Second
 
-// settlementHolder parks the billing context of a request whose consumer
-// disconnected mid-stream so a late provider terminal can still settle it
-// (charge for delivered tokens) instead of hitting "complete for unknown
-// request" — which would leak the consumer's reservation and pay the provider
-// nothing for real work. If no terminal arrives within the grace, the reservation
-// is refunded. Claim is single-winner: whichever of the terminal handler or the
-// grace timer claims first gets the record; the other sees nil. Reservation
-// finalization is independently idempotent (FinalizeReservation), so a settle/
-// refund race cannot double-count.
+// settlementHolder parks the billing record of a consumer-disconnected request
+// so a late provider terminal can settle it (charge delivered tokens) instead of
+// hitting "unknown request" — which would leak the reservation and pay $0. No
+// terminal within the grace → refund. Claim is single-winner (terminal handler
+// vs. grace timer); FinalizeReservation independently guards double-counting.
 type settlementHolder struct {
 	mu      sync.Mutex
 	pending map[string]*registry.PendingRequest
@@ -66,8 +58,8 @@ func (h *settlementHolder) claim(requestID string) *registry.PendingRequest {
 	return pr
 }
 
-// terminalSettleGrace returns the configured grace, defaulting when unset (so
-// tests can shrink it via the Server field without every caller threading it).
+// terminalSettleGrace returns the configured grace, defaulting when unset
+// (tests shrink it via s.settleGrace).
 func (s *Server) terminalSettleGrace() time.Duration {
 	if s.settleGrace > 0 {
 		return s.settleGrace
@@ -88,10 +80,8 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 		return
 	}
 	s.settlements.hold(pr, s.terminalSettleGrace(), func(expired *registry.PendingRequest) {
-		// Only log a refund if this call actually finalized it. With
-		// park-before-remove, a request settled by handleComplete can leave a
-		// duplicate here; FinalizeReservation makes the refund a no-op in that
-		// case (returns false) — don't claim a refund that didn't happen.
+		// Log only if this actually refunded — a request already settled by
+		// handleComplete leaves a dup here whose refund no-ops (FinalizeReservation).
 		if s.refundReservedBalance(expired, "no_terminal_after_cancel:"+expired.RequestID) {
 			s.logger.Warn("no terminal from provider after cancel — refunded reservation",
 				"request_id", expired.RequestID,

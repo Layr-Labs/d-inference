@@ -94,11 +94,8 @@ extension BatchScheduler {
                             // so callers can report it / decide retry.
                             continuation.yield(.error(err))
                         } else {
-                            // An aborted request did real work (prefill +
-                            // partial decode). Emit the authoritative counts
-                            // BEFORE the terminal error so a listener that is
-                            // still attached can settle billing for the
-                            // tokens it already delivered instead of $0.
+                            // An abort did real work — emit its usage before the
+                            // error so a listener can still bill delivered tokens.
                             if usage.promptTokens > 0 || usage.completionTokens > 0 {
                                 continuation.yield(.info(
                                     promptTokens: usage.promptTokens,

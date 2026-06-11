@@ -1574,10 +1574,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		return
 	}
 	pr := provider.RemovePending(msg.RequestID)
-	// Always clear any parked settlement record for this request (consumer
-	// disconnected mid-stream). It's the SAME object as a non-nil pr when the
-	// terminal raced the disconnect defer; claiming it here both settles the
-	// disconnect case and stops the grace timer from later no-op-refunding.
+	// Clear any parked settlement record (consumer disconnected mid-stream):
+	// settles the disconnect case and stops the grace timer from no-op-refunding.
 	if parked := s.claimSettlement(msg.RequestID); parked != nil && pr == nil {
 		pr = parked
 	}
@@ -1939,14 +1937,9 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	}
 	consumerGone := parked != nil
 
-	// Record job failure for reputation tracking, but carve out capacity
-	// rejections — those are not provider faults, just the provider declining
-	// work it cannot currently serve (the coordinator reroutes these). Counting
-	// them would unfairly penalise healthy providers shedding load. Capacity
-	// signals: HTTP 503 (service unavailable) / 429 (too many requests), an
-	// exhausted token budget, or an out-of-memory model-load reject. Done before
-	// the consumer-gone return so a load reject still records its cool-down even
-	// when the consumer already disconnected.
+	// Record a job failure, but not for capacity rejections — those aren't
+	// provider faults, just load shedding the coordinator reroutes. Run before
+	// the consumer-gone return so a load reject still starts its cool-down.
 	loweredErr := strings.ToLower(msg.Error)
 	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
 		msg.StatusCode == http.StatusTooManyRequests ||
@@ -1956,11 +1949,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		s.registry.RecordJobFailure(providerID)
 	}
 
-	// A load reject means the provider cannot serve this model RIGHT NOW and
-	// will fail every dispatch for it identically (observed in prod as
-	// hundreds of dispatch→503 loops against memory-wedged boxes). Put the
-	// provider-model pair on a routing cool-down so retries land on real
-	// capacity; cleared on re-registration or a served request for the pair.
+	// Cool down a load-rejecting pair so retries skip it (see dispatchLoadCooldowns).
 	if strings.Contains(loweredErr, "insufficient memory") {
 		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
 			s.logger.Warn("load-failure cool-down started",

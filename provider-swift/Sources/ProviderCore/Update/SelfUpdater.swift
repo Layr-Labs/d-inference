@@ -449,16 +449,10 @@ public struct SelfUpdater: Sendable {
         return .success(())
     }
 
-    /// The darkbloom root directory (~/.darkbloom/) of the running install.
-    /// The executable could be at either:
-    ///   ~/.darkbloom/bin/darkbloom                           -> root = ../../
-    ///   ~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom  -> root = ../../../../
-    ///
-    /// `install.sh` also symlinks /usr/local/bin/darkbloom -> ~/.darkbloom/bin/
-    /// for PATH convenience, and `executablePath` reports the path the process
-    /// was invoked through — the SYMLINK when run as plain `darkbloom`. Resolve
-    /// it first, or the root derives to /usr/local and every stage/commit fails
-    /// with a permission error ("can't save .update-staging-… in 'local'").
+    /// The darkbloom root (~/.darkbloom/) of the running install. Must resolve
+    /// symlinks first: invoked as plain `darkbloom`, `executablePath` is the
+    /// /usr/local/bin/darkbloom PATH symlink, which would derive root=/usr/local
+    /// and fail staging with EPERM ("can't save .update-staging-… in 'local'").
     private func liveInstallDir() -> URL? {
         guard let executablePath = Bundle.main.executablePath else { return nil }
         return Self.installRoot(forExecutablePath: executablePath)

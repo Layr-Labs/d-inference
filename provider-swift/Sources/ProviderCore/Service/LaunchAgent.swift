@@ -299,24 +299,13 @@ public enum LaunchAgent: Sendable {
     /// APNs with no human running `darkbloom start`. (APNs registration needs the
     /// GUI/Aqua session, which a gui-domain LaunchAgent already runs in.)
     ///
-    /// `KeepAlive = { SuccessfulExit = false }` gives crash-recovery WITHOUT
-    /// racing the updater. launchd relaunches the daemon only when it exits
-    /// ABNORMALLY (crash, panic, OOM-kill — exactly the cases that were silently
-    /// removing providers from the fleet for good, since the old `KeepAlive=false`
-    /// never brought a crashed node back until the next login/reboot). The two
-    /// intentional teardown paths are unaffected:
-    ///   - `darkbloom stop` / `update` uninstall → `launchctl bootout` removes the
-    ///     job from launchd entirely, so KeepAlive cannot relaunch it.
-    ///   - graceful self-update → `launchctl kickstart -k` is an atomic
-    ///     kill+relaunch; the binary swap happens while the old process is still
-    ///     running (rename), so launchd never observes an exit mid-swap to race.
-    /// A genuinely broken binary that crashes on launch is bounded by launchd's
-    /// default 10s ThrottleInterval (no tight respawn loop).
-    ///
-    /// NOTE: a plist already on disk is only re-read by launchd on
-    /// bootout+bootstrap (login/reboot/`darkbloom start`), NOT by `kickstart -k`.
-    /// So existing installs pick this up on their next restart cycle, not on the
-    /// in-place auto-update that swaps the binary.
+    /// `KeepAlive = { SuccessfulExit = false }`: relaunch only on ABNORMAL exit
+    /// (crash/panic/OOM-kill) — crash-recovery the old `KeepAlive=false` lacked.
+    /// The intentional teardowns don't race it: `stop`/uninstall is a `bootout`
+    /// (removes the job) and self-update is `kickstart -k` (atomic restart;
+    /// binary is swapped while still running). NOTE: an on-disk plist is re-read
+    /// only on bootout+bootstrap (login/reboot/`darkbloom start`), not by
+    /// `kickstart -k`, so existing installs pick this up on their next restart.
     static func makeServicePlist(
         label: String,
         programArguments: [String],

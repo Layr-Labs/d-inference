@@ -702,15 +702,11 @@ type Registry struct {
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
 	pendingModelLoads map[string]time.Time // key: "providerID:modelID", value: expiry
 
-	// dispatchLoadCooldowns tracks provider-model pairs that rejected a
-	// DISPATCH with a load failure ("insufficient memory to load model").
-	// Routing skips the pair until expiry: a provider in that state fails
-	// every request for the model instantly, and without a cool-down the
-	// scheduler re-picks it (it looks idle and high-scoring) — observed in
-	// prod as hundreds of dispatch→503→retry loops per provider per hour
-	// while real capacity sat behind the retries. Cleared on provider
-	// (re-)registration (a restart frees the memory) and on a served
-	// request for the same pair.
+	// dispatchLoadCooldowns: provider-model pairs that rejected a dispatch with a
+	// load failure ("insufficient memory"). Routing skips the pair until expiry —
+	// it would instant-503 again, and without this the scheduler re-picks it
+	// (looks idle), causing the dispatch→503→retry storms seen in prod. Cleared
+	// on re-registration and on a served request for the pair.
 	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
 }
 
@@ -727,11 +723,9 @@ const pendingModelLoadTTL = 2 * time.Minute
 // re-registration) could serve.
 const pendingModelLoadDrainBackoff = 30 * time.Second
 
-// dispatchLoadCooldownTTL is how long routing skips a provider-model pair
-// after the provider rejected a dispatch with a load failure. Long enough to
-// stop instant-fail retry loops from soaking up dispatch attempts; short
-// enough that a provider that recovers (memory freed, model evicted
-// elsewhere) returns to rotation on its own.
+// dispatchLoadCooldownTTL is how long routing skips a pair after a dispatch
+// load failure — long enough to stop the retry loop, short enough that a
+// recovered provider returns on its own.
 const dispatchLoadCooldownTTL = 2 * time.Minute
 
 type modelLoadAction struct {
@@ -761,9 +755,8 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
-	// Opportunistic sweep: provider ids are per-session UUIDs, so entries for
-	// disconnected providers expire but are never re-keyed. Bound the map by
-	// dropping expired entries once it grows past any plausible live set.
+	// Opportunistic sweep: provider ids are per-session UUIDs, so dead entries
+	// never get re-keyed — bound the map by dropping expired ones when it grows.
 	if len(r.dispatchLoadCooldowns) > 1024 {
 		for key, expiry := range r.dispatchLoadCooldowns {
 			if !now.Before(expiry) {
@@ -786,10 +779,8 @@ func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
 	delete(r.dispatchLoadCooldowns, providerID+":"+modelID)
 }
 
-// clearDispatchLoadCooldownsLocked drops every cool-down for a provider. Run
-// on (re-)registration: a fresh process has fresh memory accounting, and the
-// provider-side admission self-heal means a restart genuinely clears the
-// wedge the cool-down was protecting against. Caller holds r.mu.
+// clearDispatchLoadCooldownsLocked drops a provider's cool-downs on
+// (re-)registration — a fresh process has fresh memory. Caller holds r.mu.
 func (r *Registry) clearDispatchLoadCooldownsLocked(providerID string) {
 	prefix := providerID + ":"
 	for key := range r.dispatchLoadCooldowns {
@@ -799,12 +790,9 @@ func (r *Registry) clearDispatchLoadCooldownsLocked(providerID string) {
 	}
 }
 
-// dispatchLoadCooldownActiveLocked reports whether routing should skip the
-// pair right now. READ-ONLY: some routing entry points hold only r.mu.RLock,
-// so expired entries are NOT deleted here — they are overwritten on the next
-// failure or dropped by ClearDispatchLoadCooldown / re-registration. The map
-// is bounded by live providers × catalog models. Caller holds r.mu (either
-// mode).
+// dispatchLoadCooldownActiveLocked reports whether routing should skip the pair.
+// READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock. Caller holds
+// r.mu in either mode.
 func (r *Registry) dispatchLoadCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
 	expiry, ok := r.dispatchLoadCooldowns[providerID+":"+modelID]
 	return ok && now.Before(expiry)

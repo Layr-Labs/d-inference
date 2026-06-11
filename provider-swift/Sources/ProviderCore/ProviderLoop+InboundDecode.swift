@@ -96,17 +96,10 @@ extension ProviderLoop {
         return ""
     }
 
-    /// Prompt-token recovery for requests whose usage chunk never arrived —
-    /// the NORMAL case for a stream cancelled mid-generation (the engine's
-    /// usage rides the final chunk an aborted request never produces), or an
-    /// upstream regression on a clean finish.
-    ///
-    /// Re-applies the SAME chat-template tokenization the engine prefilled
-    /// with (`templateMessageDict`/`toolSpec` + the slot tokenizer), so the
-    /// count matches the engine's own prompt accounting. Media (VLM) parts
-    /// aren't representable in the text template, so vision prompts
-    /// under-count — an acceptable floor, never an overcharge. Returns 0 when
-    /// templating fails; callers treat that as "no floor available".
+    /// Prompt-token floor for requests whose usage chunk never arrived (cancelled
+    /// stream / upstream regression). Re-runs the engine's exact applyChatTemplate
+    /// path so the count matches what was prefilled; VLM parts aren't in the text
+    /// template so vision under-counts (a floor, never an overcharge). 0 on failure.
     internal static func promptTokenFloor(
         request: OpenAIChatCompletionRequest,
         tokenizer: TokenizerHandle,

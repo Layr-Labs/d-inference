@@ -2,9 +2,13 @@
 
 ## Overview
 
-EigenInference is a platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners provide idle compute. Consumers get private inference on open-source models with hardware-backed trust guarantees from Apple's Secure Enclave and MDM-verified security posture.
+EigenInference is a platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners provide idle compute. The current privacy model is coordinator-mediated private routing: the coordinator processes request plaintext after TLS or optional sender-to-coordinator sealing, then encrypts the provider leg to the selected provider's X25519 key. The selected provider process decrypts prompts to run inference.
 
 ```
+
+Detailed Mermaid sequence diagrams for MDM provider registration, APNs
+code-identity, key binding, provider-leg encryption, media routing, and optional
+sender-to-coordinator sealing are in [system-workflows.md](system-workflows.md).
 Consumer (OpenAI SDK / Web UI / curl)
     |
     | HTTPS (OpenAI-compatible API)
@@ -26,7 +30,12 @@ Apple Silicon GPU (Metal)
 
 **Language:** Go
 
-The control plane. Runs in a GCP Confidential VM (AMD SEV-SNP) — hardware-encrypted memory that even the cloud provider cannot read. Consumers send plain text over HTTPS; the Confidential VM is the trust boundary. Prompt content is never logged.
+The control plane. Production runs on EigenCloud TEE infrastructure; development
+can run on a regular GCP VM. Consumers send requests over HTTPS. Optional
+sender-to-coordinator sealing lets clients encrypt request bodies to the
+coordinator's X25519 key, but the coordinator decrypts sealed requests before
+routing, compatibility handling, metering, and provider-leg encryption. Prompt
+content is intended not to be logged in ordinary request logs.
 
 - Accepts provider WebSocket connections and tracks availability
 - Exposes OpenAI-compatible HTTP API for consumers (`/v1/chat/completions`, `/v1/models`)
@@ -37,7 +46,7 @@ The control plane. Runs in a GCP Confidential VM (AMD SEV-SNP) — hardware-encr
 - Verifies provider attestations (Secure Enclave P-256 ECDSA signatures)
 - Periodically challenges providers to prove key possession + fresh SIP/SecureBoot status (every 5 minutes)
 - Immediately marks provider untrusted if SIP or Secure Boot found disabled in challenge response
-- Verifies binary hash in attestation against known blessed versions
+- Records signed binary hash for drift telemetry; derouting on mismatch is legacy opt-in
 - Manages API keys, usage tracking, payment ledger, and trust levels
 - Per-model request queues (max 10, 30s timeout) for when providers are busy
 - Reputation scoring: 40% job success + 30% uptime + 20% attestation + 10% response time

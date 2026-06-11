@@ -1672,34 +1672,40 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Either way: free iff the provider that actually served it is owned by the
 	// requesting account. Ownership is read from the serving provider object
 	// (stable across deregistration), not a fresh lookup.
+	// Free settlement when an OWNED machine served the request — evaluated for
+	// EVERY request, not only self-route / prefer-owner. Beyond those cases this
+	// closes a billing-integrity hole (C2): a normal paid request that lands on
+	// a provider owned by the requesting account would otherwise let that
+	// provider mint a *withdrawable* payout out of the consumer's own balance
+	// (self-dealing, and laundering of non-withdrawable invite credit into
+	// cashable balance). You never pay yourself. Ownership is read from the
+	// serving provider object (stable across deregistration), not a fresh lookup.
 	freeSelfRoute := false
-	if pr.FreeSelfRoute || pr.PreferOwner {
-		serving := s.registry.GetProvider(providerID)
-		if serving == nil {
-			serving = provider
-		}
-		serving.Mu().Lock()
-		servingOwner := serving.AccountID
-		serving.Mu().Unlock()
-		if servingOwner != "" && servingOwner == pr.ConsumerKey {
-			// Owned machine served it → free. For PreferOwner this also fully
-			// refunds the up-front reservation below (totalCost 0 < reserved).
-			freeSelfRoute = true
-			totalCost = 0
-			providerPayout = 0
-		} else if pr.FreeSelfRoute {
-			// Exclusive self-route should never be served by a non-owned
-			// provider — surface it and settle as paid (defense-in-depth).
-			s.logger.Error("self-route completion served by a non-owned provider — settling as paid (defense-in-depth)",
-				"provider_id", providerID,
-				"request_id", msg.RequestID,
-				"serving_owner", servingOwner,
-				"consumer_key", pr.ConsumerKey,
-			)
-		}
-		// PreferOwner served by a public provider is the normal fallback — no
-		// log, settle as paid against the reservation.
+	serving := s.registry.GetProvider(providerID)
+	if serving == nil {
+		serving = provider
 	}
+	serving.Mu().Lock()
+	servingOwner := serving.AccountID
+	serving.Mu().Unlock()
+	if servingOwner != "" && servingOwner == pr.ConsumerKey {
+		// Owned machine served it → free. For PreferOwner this also fully
+		// refunds the up-front reservation below (totalCost 0 < reserved).
+		freeSelfRoute = true
+		totalCost = 0
+		providerPayout = 0
+	} else if pr.FreeSelfRoute {
+		// Exclusive self-route should never be served by a non-owned
+		// provider — surface it and settle as paid (defense-in-depth).
+		s.logger.Error("self-route completion served by a non-owned provider — settling as paid (defense-in-depth)",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"serving_owner", servingOwner,
+			"consumer_key", pr.ConsumerKey,
+		)
+	}
+	// PreferOwner (or a normal request) served by a non-owned public provider is
+	// the normal paid path — settle against the reservation.
 
 	billingFinalized := true
 

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -143,17 +144,18 @@ func TestInstallScriptNoDrift(t *testing.T) {
 	embedded := string(installScript)
 	scriptsRef := string(scriptsSrcBytes)
 
-	// normalizeCoordURL replaces both the placeholder and the prod-URL default
-	// with a fixed token so the one intentional difference is invisible to the
-	// equality check.
-	normalizeCoordURL := func(s string) string {
-		s = strings.ReplaceAll(s, `COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"`, `COORD_URL="__NORMALIZED__"`)
-		s = strings.ReplaceAll(s, `COORD_URL="${COORD_URL:-https://api.darkbloom.dev}"`, `COORD_URL="__NORMALIZED__"`)
-		return s
+	// The one intentional difference between the two copies is the COORD_URL
+	// default — the placeholder (__DARKBLOOM_COORD_URL__) in the embedded copy
+	// vs. the prod URL in scripts/install.sh. Collapse whatever the default is to
+	// a single token so the equality check ignores it (and so this test won't
+	// silently stop normalizing if the prod default ever changes).
+	coordURLDefault := regexp.MustCompile(`COORD_URL="\$\{COORD_URL:-[^}]*\}"`)
+	normalize := func(s string) string {
+		return coordURLDefault.ReplaceAllString(s, `COORD_URL="__NORMALIZED__"`)
 	}
 
-	embeddedNorm := normalizeCoordURL(embedded)
-	scriptsNorm := normalizeCoordURL(scriptsRef)
+	embeddedNorm := normalize(embedded)
+	scriptsNorm := normalize(scriptsRef)
 
 	if embeddedNorm != scriptsNorm {
 		t.Errorf("coordinator/api/install.sh has drifted from scripts/install.sh\n" +

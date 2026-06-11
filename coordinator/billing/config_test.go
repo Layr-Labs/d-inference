@@ -72,20 +72,7 @@ func TestCheckMockModeTripwire(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Isolate env state: clear all billing-related vars, then set the
-			// ones for this case.  t.Setenv restores on cleanup automatically.
-			for _, key := range []string{
-				prefix + "_BILLING_MOCK",
-				prefix + "_SOLANA_MNEMONIC",
-				prefix + "_MNEMONIC",
-				"MNEMONIC",
-				prefix + "_STRIPE_SECRET_KEY",
-			} {
-				t.Setenv(key, "")
-			}
-			for k, v := range tc.envs {
-				t.Setenv(k, v)
-			}
+			setBillingEnv(t, prefix, tc.envs)
 
 			cfg := ReadConfig()
 			err := cfg.Check()
@@ -100,5 +87,24 @@ func TestCheckMockModeTripwire(t *testing.T) {
 				t.Fatalf("error message %q does not contain expected fragment %q", err.Error(), tc.errFrag)
 			}
 		})
+	}
+}
+
+// setBillingEnv isolates env state for one case: it clears every billing-related
+// var (so cases can't leak into each other) and then applies the case's vars.
+// t.Setenv restores all of them on test cleanup.
+func setBillingEnv(t *testing.T, prefix string, envs map[string]string) {
+	t.Helper()
+	for _, key := range []string{
+		prefix + "_BILLING_MOCK",
+		prefix + "_SOLANA_MNEMONIC",
+		prefix + "_MNEMONIC",
+		"MNEMONIC",
+		prefix + "_STRIPE_SECRET_KEY",
+	} {
+		t.Setenv(key, "")
+	}
+	for k, v := range envs {
+		t.Setenv(k, v)
 	}
 }

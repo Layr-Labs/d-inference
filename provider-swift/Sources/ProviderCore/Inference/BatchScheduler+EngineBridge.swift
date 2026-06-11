@@ -395,7 +395,8 @@ extension BatchScheduler {
         id: String,
         promptTokens: Int,
         maxTokens: Int,
-        admitted: Bool = false
+        admitted: Bool = false,
+        reservedTokens: Int? = nil
     ) {
         var bridge = BridgeState(
             requestId: id,
@@ -403,6 +404,7 @@ extension BatchScheduler {
             maxTokens: maxTokens,
             submittedAt: .now
         )
+        bridge.reservedTokens = reservedTokens
         if admitted { bridge.admittedAt = .now }
         activeBridges[id] = bridge
     }

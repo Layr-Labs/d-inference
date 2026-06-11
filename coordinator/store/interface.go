@@ -25,6 +25,11 @@ import (
 // errors.Is to distinguish this from transient DB errors.
 var ErrInsufficientBalance = errors.New("insufficient balance or account not found")
 
+// ErrNegativeAmount is returned by Debit and Credit when a negative amount
+// is passed. No legitimate billing path uses negative amounts; rejecting at
+// the store layer is a defense-in-depth guard against balance-minting bugs.
+var ErrNegativeAmount = errors.New("amount must be non-negative")
+
 // Store is the interface that all storage backends must implement.
 type Store interface {
 	// CreateKey generates a new API key, persists it, and returns it.
@@ -399,6 +404,13 @@ type Store interface {
 
 	// GetProviderEarningsSummary returns lifetime aggregates for a provider node.
 	GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error)
+
+	// GetProviderEarningsSummaryForAccount returns lifetime aggregates for a
+	// provider node SCOPED to a single account. A provider_key is the node's
+	// stable hardware key and can accumulate rows under multiple accounts if the
+	// device is re-linked; callers that must not leak cross-account totals use
+	// this account-scoped variant.
+	GetProviderEarningsSummaryForAccount(providerKey, accountID string) (ProviderEarningsSummary, error)
 
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)

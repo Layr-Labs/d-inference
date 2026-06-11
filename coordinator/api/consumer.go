@@ -68,6 +68,13 @@ const (
 	// block. Using context.Background() unbounded here risks hanging the HTTP
 	// handler goroutine when a WebSocket is half-dead.
 	cancelWriteTimeout = 2 * time.Second
+
+	// maxInferenceBodyBytes caps plaintext inference request bodies. Sized to
+	// admit the console's vision limit — up to 4 images x 10 MB, which inflate
+	// ~1.33x to ~53 MiB as base64 in the JSON body — with headroom. Sealed
+	// requests are capped separately at the envelope level in
+	// sender_encryption.go.
+	maxInferenceBodyBytes = 64 << 20 // 64 MiB
 )
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
@@ -356,12 +363,12 @@ func (s *Server) dispatchOneProvider(
 		}
 	}
 
-	// E2E encryption
+	// Provider-leg encryption
 	if provider.PublicKey == "" {
 		refundExtra()
 		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
-		return nil, nil, decision, "no provider with E2E encryption", http.StatusServiceUnavailable
+		return nil, nil, decision, "no provider with provider-leg encryption", http.StatusServiceUnavailable
 	}
 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
@@ -1182,8 +1189,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.
-	rawBody, err := io.ReadAll(r.Body)
+	rawBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxInferenceBodyBytes))
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error", "request body too large (max 64 MiB)"))
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read request body"))
 		return
 	}
@@ -1652,13 +1664,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			// Perform E2E encryption and send the request.
+			// Perform provider-leg encryption and send the request.
 			if provider.PublicKey == "" {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				s.refundProviderExtra(pr)
 				excludeProviders[provider.ID] = struct{}{}
-				lastErr = "no provider with E2E encryption"
+				lastErr = "no provider with provider-leg encryption"
 				continue
 			}
 			providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
@@ -4410,46 +4422,53 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleProviderEarnings handles GET /v1/provider/earnings?wallet=0x...
+// handleProviderEarnings handles GET /v1/provider/earnings.
 //
-// Returns the provider's balance and payout history.
-// No API key auth required — providers identify by provider address.
+// Returns the authenticated provider account's balance and payout history.
+// Requires auth (requireAuth middleware sets accountID in context).
+//
+// The legacy ?wallet= / X-Provider-Wallet param is intentionally ignored:
+// there is no account→wallet mapping in the store that would let us verify
+// ownership of an arbitrary wallet address, so honouring it would reintroduce
+// the IDOR. Account-linked providers have their earnings recorded under their
+// accountID in the ledger — which is exactly what resolveAccountID returns.
 func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) {
-	wallet := r.URL.Query().Get("wallet")
-	if wallet == "" {
-		wallet = r.Header.Get("X-Provider-Wallet")
-	}
-	if wallet == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet address required (query param ?wallet=0x... or X-Provider-Wallet header)"))
+	accountID := s.resolveAccountID(r)
+	if accountID == "" {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials"))
 		return
 	}
 
-	// Look up balance by provider address
-	balance := s.ledger.Balance(wallet)
-	history := s.ledger.LedgerHistory(wallet)
+	// Look up balance and ledger history by authenticated account ID.
+	balance := s.ledger.Balance(accountID)
+	history := s.ledger.LedgerHistory(accountID)
 	payouts := s.ledger.AllPayouts()
 
-	// Filter payouts to this wallet
+	// Filter payouts to those owned by this account.
+	// ProviderPayout rows (from CreditProviderWallet) use ProviderAddress as the
+	// ledger key, not AccountID. Since the authenticated accountID is used as the
+	// ledger key for account-linked providers (via CreditProviderAccount), we match
+	// on ProviderAddress == accountID for any legacy unlinked rows that were
+	// credited directly against the accountID string.
 	var walletPayouts []payments.Payout
 	var totalEarned int64
 	var totalJobs int
 	for _, p := range payouts {
-		if p.ProviderAddress == wallet {
+		if p.ProviderAddress == accountID {
 			walletPayouts = append(walletPayouts, p)
 			totalEarned += p.AmountMicroUSD
 			totalJobs++
 		}
 	}
 
-	// If no explicit payout records exist (for example, legacy rows created
-	// before provider_payouts was introduced), reconstruct from persisted
-	// ledger entries with payout type and the wallet as account ID.
+	// If no explicit payout records exist, reconstruct from persisted
+	// ledger entries with payout type for this account.
 	if len(walletPayouts) == 0 {
-		ledgerEntries := s.store.LedgerHistory(wallet)
+		ledgerEntries := s.store.LedgerHistory(accountID)
 		for _, le := range ledgerEntries {
 			if le.Type == store.LedgerPayout && le.Reference != "" {
 				walletPayouts = append(walletPayouts, payments.Payout{
-					ProviderAddress: wallet,
+					ProviderAddress: accountID,
 					AmountMicroUSD:  le.AmountMicroUSD,
 					JobID:           le.Reference,
 					Timestamp:       le.CreatedAt,
@@ -4500,10 +4519,15 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 
 // handleGenericInference is the shared dispatch for completions and Anthropic endpoints.
 // It reads the raw request body, extracts model/stream, sets the endpoint field,
-// and reuses the same E2E encryption + provider routing as chat completions.
+// and reuses the same provider-leg encryption + provider routing as chat completions.
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
-	rawBody, err := io.ReadAll(r.Body)
+	rawBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxInferenceBodyBytes))
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error", "request body too large (max 64 MiB)"))
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read request body"))
 		return
 	}
@@ -4861,7 +4885,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available"))
+			"no provider with provider-leg encryption available"))
 		return
 	}
 

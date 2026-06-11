@@ -154,6 +154,7 @@ func TestNodeEarningsUsesLifetimeTotalsInsteadOfLimitedSlice(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/provider/node-earnings?provider_key=provider-key-1&limit=1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, "acct-1"))
 	w := httptest.NewRecorder()
 
 	srv.handleNodeEarnings(w, req)

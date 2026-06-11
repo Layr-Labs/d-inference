@@ -93,6 +93,17 @@ func CalculateCostWithOverridesNoMinimum(model string, promptTokens, completionT
 }
 
 func calculateCost(model string, promptTokens, completionTokens int, customInput, customOutput int64, hasCustom, applyMinimum bool) int64 {
+	// Layer 2 (defense): clamp negative token counts at the pricing layer.
+	// The root-cause clamp lives in handleComplete (provider.go), but this
+	// layer-2 guard ensures calculateCost always returns a non-negative value
+	// even if called directly from other code paths.
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if completionTokens < 0 {
+		completionTokens = 0
+	}
+
 	var inputRate, outputRate int64
 	if hasCustom {
 		inputRate = customInput
@@ -115,6 +126,13 @@ func calculateCost(model string, promptTokens, completionTokens int, customInput
 		// nonzero usage away for free: integer micro-USD rounding can floor a
 		// tiny request to 0, so charge at least 1 micro-USD.
 		cost = 1
+	}
+
+	// Layer 2 final guard: the cost must never be negative regardless of
+	// input rates or arithmetic. This covers the NoMinimum path where no
+	// floor is applied.
+	if cost < 0 {
+		cost = 0
 	}
 	return cost
 }

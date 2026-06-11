@@ -546,10 +546,10 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 // code_attestation_response over the WebSocket, verifies it (the returned nonce
 // equals the one we pushed AND Sign_SE over that nonce verifies against the SE
 // public key bound at registration), and marks the connection CodeAttested on
-// success. Fail-closed: any failure leaves CodeAttested false, so once the
-// rollout flag is on the provider is not routed private traffic. The nonce is a
-// base64 string; it is encrypted to the provider's X25519 key K via the same E2E
-// path used for inference bodies, and the signature is the SE P-256 key (K is
+// success. Any failure leaves CodeAttested false, so once APNs enforcement is
+// configured and past APNS_ENFORCE_AFTER the provider is not routed private
+// traffic. The nonce is a base64 string; it is encrypted to the provider's
+// X25519 key K via the same provider-leg path used for inference bodies, and the signature is the SE P-256 key (K is
 // decrypt-only — there is no Sign_K). See docs/apns-code-attestation-design.md.
 func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID string, provider *registry.Provider, ct *codeAttestTracker) {
 	if s.codeAttestor == nil || provider == nil {
@@ -1130,10 +1130,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		)
 	}
 
-	// Verify fresh binary hash when a known-good policy is configured. A
-	// reported binary hash only counts when the response is signed by the
-	// provider key from a valid registration attestation.
-	//
 	// v0.6.0: binaryHash is self-reported and demoted to drift telemetry — APNs
 	// code-identity attestation is the real code-identity signal — so this gate
 	// deroutes a provider only when enforcement is explicitly enabled (rollback).
@@ -1583,6 +1579,30 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
 
+	// Layer 1 (root cause): clamp untrusted provider-supplied token counts to
+	// non-negative values at ingestion, before any billing calculation. A
+	// malicious or buggy provider could send negative values which, combined
+	// with integer arithmetic in calculateCost and the over-refund settlement
+	// path, would mint consumer balance. Clamping here is the root-cause fix.
+	if msg.Usage.PromptTokens < 0 {
+		s.logger.Warn("provider reported negative prompt_tokens — clamped to 0",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"reported_prompt_tokens", msg.Usage.PromptTokens,
+		)
+		s.ddIncr("billing.negative_usage_clamped", []string{"model:" + pr.Model, "field:prompt_tokens"})
+		msg.Usage.PromptTokens = 0
+	}
+	if msg.Usage.CompletionTokens < 0 {
+		s.logger.Warn("provider reported negative completion_tokens — clamped to 0",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"reported_completion_tokens", msg.Usage.CompletionTokens,
+		)
+		s.ddIncr("billing.negative_usage_clamped", []string{"model:" + pr.Model, "field:completion_tokens"})
+		msg.Usage.CompletionTokens = 0
+	}
+
 	// Billing-zero observability: a COMPLETED request that reports zero tokens
 	// is billed $0 (and fully refunded). The provider-side fix (EngineBridge
 	// max + content-frame floor) should prevent this, but emit a metric so any
@@ -1751,10 +1771,26 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
 		} else if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
-			start := time.Now()
-			_ = s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID)
-			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
+			// Layer 3 (invariant): cap refund so it can never exceed what was
+			// reserved. A negative totalCost (e.g. from a buggy billing path
+			// that escaped the layer-1/2 clamps) would otherwise produce a
+			// refund > reserved, minting balance. The clamp is defense-in-depth.
+			if refund > pr.ReservedMicroUSD {
+				s.logger.Error("settlement refund exceeds reservation — clamping (defense-in-depth)",
+					"provider_id", providerID,
+					"request_id", msg.RequestID,
+					"refund_micro_usd", refund,
+					"reserved_micro_usd", pr.ReservedMicroUSD,
+				)
+				s.ddIncr("billing.refund_clamped", []string{"model:" + pr.Model})
+				refund = pr.ReservedMicroUSD
+			}
+			if refund > 0 {
+				start := time.Now()
+				_ = s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID)
+				s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
+				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
+			}
 		}
 	} else if !freeSelfRoute {
 		start := time.Now()
@@ -1957,7 +1993,8 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 // verifyProviderAttestation verifies a provider's Secure Enclave attestation
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
-// accepted in Open Mode only when no binary hash policy is configured.
+// accepted without hardware trust. binaryHash policy only deroutes when legacy
+// binaryHashEnforce is explicitly enabled.
 func (s *Server) verifyProviderAttestation(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
 	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
 	if len(regMsg.Attestation) == 0 {
@@ -2007,7 +2044,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		return
 	}
 
-	// Bind the WebSocket X25519 key used for E2E text encryption to the
+	// Bind the WebSocket X25519 key used for provider-leg text encryption to the
 	// attested Secure Enclave identity. If a provider wants to serve private
 	// text, the attestation must carry the same encryption public key.
 	if regMsg.PublicKey != "" {
@@ -2039,9 +2076,6 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		}
 	}
 
-	// Verify binary hash against known-good hashes. Once a binary hash policy is
-	// configured, omission is a policy violation, not an Open Mode downgrade.
-	//
 	// v0.6.0: binaryHash is self-reported and demoted to drift telemetry (APNs
 	// code-identity attestation is the real signal); this gate deroutes only when
 	// enforcement is explicitly enabled (rollback). The attestation-validity and
@@ -2078,10 +2112,10 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	provider.SetAttested(true, registry.TrustSelfSigned)
 	s.sendTrustStatus(provider, registry.TrustSelfSigned, "online", "SE attestation verified, awaiting MDM/ACME upgrade")
 
-	// The SE attestation already proves SIP, Secure Boot, and binary hash —
-	// the same checks a challenge re-verifies. Set LastChallengeVerified so
-	// the provider is immediately routable. The 5-minute challenge cycle will
-	// re-verify and add MDM cross-check for defense-in-depth.
+	// The SE attestation binds the reported posture and binaryHash to the
+	// provider's SE key. Set LastChallengeVerified so the provider can become
+	// routable immediately; the challenge loop re-checks posture, and MDM/MDA
+	// separately cross-check hardware trust.
 	// Without this, a freshly connected provider waits up to 5 minutes before
 	// it can serve any requests (until first challenge passes).
 	provider.SetLastChallengeVerified(time.Now())

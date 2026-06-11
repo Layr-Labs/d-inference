@@ -1017,7 +1017,14 @@ func (s *MemoryStore) GetBalanceWithWithdrawable(accountID string) (int64, int64
 }
 
 // Credit adds micro-USD to an account and records a ledger entry.
+// Credit adds micro-USD to an account. Returns ErrNegativeAmount if
+// amountMicroUSD is negative (defense-in-depth guard against balance-minting
+// via negative credits that would subtract balance).
 func (s *MemoryStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if amountMicroUSD < 0 {
+		return ErrNegativeAmount
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1064,8 +1071,13 @@ func (s *MemoryStore) DebitWithdrawable(accountID string, amountMicroUSD int64, 
 }
 
 // Debit subtracts micro-USD from an account. Returns ErrInsufficientBalance
-// if the account has insufficient funds.
+// if the account has insufficient funds, or ErrNegativeAmount if amountMicroUSD
+// is negative (defense-in-depth guard against balance-minting via negative debits).
 func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if amountMicroUSD < 0 {
+		return ErrNegativeAmount
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -2263,6 +2275,26 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 	var summary ProviderEarningsSummary
 	for _, earning := range s.providerEarnings {
 		if earning.ProviderKey != providerKey {
+			continue
+		}
+		summary.Count++
+		summary.TotalMicroUSD += earning.AmountMicroUSD
+		summary.PromptTokens += int64(earning.PromptTokens)
+		summary.CompletionTokens += int64(earning.CompletionTokens)
+	}
+
+	return summary, nil
+}
+
+// GetProviderEarningsSummaryForAccount returns lifetime aggregates for a
+// provider node scoped to a single account (see Store interface).
+func (s *MemoryStore) GetProviderEarningsSummaryForAccount(providerKey, accountID string) (ProviderEarningsSummary, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var summary ProviderEarningsSummary
+	for _, earning := range s.providerEarnings {
+		if earning.ProviderKey != providerKey || earning.AccountID != accountID {
 			continue
 		}
 		summary.Count++

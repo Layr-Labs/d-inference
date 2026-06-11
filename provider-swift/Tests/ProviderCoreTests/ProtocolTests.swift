@@ -437,6 +437,41 @@ import Testing
     #expect(u.models[0].weightHash == "deadbeef")
 }
 
+@Test func modelInfoTemplateRenderOKTriState() throws {
+    // Wire contract (shared with coordinator/protocol/messages.go):
+    // `template_render_ok` is tri-state — absent (old provider / check
+    // didn't run), true (all fixtures render), false (some fixture threw).
+    // FALSE MUST GO ON THE WIRE: it is the routing signal. This differs
+    // from `is_vision`, which encodes only-true.
+    let encoder = JSONEncoder()
+
+    // true → encoded as true, round-trips.
+    var info = ModelInfo(id: "org/m", sizeBytes: 1024, estimatedMemoryGb: 1.5, templateRenderOK: true)
+    var obj = try #require(try JSONSerialization.jsonObject(with: encoder.encode(info)) as? [String: Any])
+    #expect(obj["template_render_ok"] as? Bool == true)
+    #expect(try JSONDecoder().decode(ModelInfo.self, from: encoder.encode(info)) == info)
+
+    // false → STILL encoded (the signal), round-trips as false.
+    info = ModelInfo(id: "org/m", sizeBytes: 1024, estimatedMemoryGb: 1.5, templateRenderOK: false)
+    obj = try #require(try JSONSerialization.jsonObject(with: encoder.encode(info)) as? [String: Any])
+    #expect(obj["template_render_ok"] as? Bool == false)
+    #expect(obj.keys.contains("template_render_ok"))
+    #expect(try JSONDecoder().decode(ModelInfo.self, from: encoder.encode(info)) == info)
+
+    // nil → key omitted entirely (wire-identical to an old provider).
+    info = ModelInfo(id: "org/m", sizeBytes: 1024, estimatedMemoryGb: 1.5)
+    obj = try #require(try JSONSerialization.jsonObject(with: encoder.encode(info)) as? [String: Any])
+    #expect(obj.keys.contains("template_render_ok") == false)
+    let decoded = try JSONDecoder().decode(ModelInfo.self, from: encoder.encode(info))
+    #expect(decoded.templateRenderOK == nil)
+    #expect(decoded == info)
+
+    // Decodes a Go-emitted wire form carrying the field (protocol symmetry).
+    let goWire = #"{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"template_render_ok":false}"#
+    let fromGo = try JSONDecoder().decode(ModelInfo.self, from: Data(goWire.utf8))
+    #expect(fromGo.templateRenderOK == false)
+}
+
 @Test func coordinatorMessagesDecodeAndEncodeWithSnakeCaseKeys() throws {
     let encryptedRequest = #"{"type":"inference_request","request_id":"go-enc-req-1","body":null,"encrypted_body":{"ephemeral_public_key":"ZXBoZW1lcmFs","ciphertext":"Y2lwaGVy"}}"#
     let request = try ProviderProtocolCodec.decodeCoordinatorMessage(from: encryptedRequest)

@@ -127,6 +127,14 @@ extension ModelScanner {
         let isVision = FileManager.default.fileExists(atPath: configPath.path)
             && configDeclaresVision(at: configPath)
 
+        // Template-render self-check (DAR-130 class): render the model's chat
+        // template(s) against canonical request fixtures so the coordinator can
+        // refuse to route tool-bearing requests to a (provider, model) whose
+        // template throws at request time. nil = no template found (key omitted
+        // on the wire); false = some fixture threw (the routing signal).
+        // `renderOK` never throws — the startup scan must stay crash-free.
+        let templateRenderOK = TemplateRenderCheck.renderOK(at: snapshotDir)
+
         return ModelInfo(
             id: modelName,
             modelType: modelType,
@@ -134,7 +142,8 @@ extension ModelScanner {
             quantization: quantization,
             sizeBytes: sizeBytes,
             estimatedMemoryGb: estimatedMemoryGb,
-            isVision: isVision ? true : nil
+            isVision: isVision ? true : nil,
+            templateRenderOK: templateRenderOK
         )
     }
 

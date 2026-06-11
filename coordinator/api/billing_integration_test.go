@@ -651,7 +651,7 @@ func TestNonStreamingCompleteObjectWithoutUsageDoesNotReturnSuccessAfterRefund(t
 	rr := httptest.NewRecorder()
 	firstChunk := `data: {"id":"chatcmpl-missing-usage","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"}}]}`
 
-	srv.handleNonStreamingResponseWithFirstChunk(rr, req, pr, firstChunk)
+	srv.handleNonStreamingResponseWithFirstChunk(rr, req, pr, []string{firstChunk})
 
 	if rr.Code == http.StatusOK {
 		t.Fatalf("status = 200 with refunded reservation and no completion usage; body = %s", rr.Body.String())

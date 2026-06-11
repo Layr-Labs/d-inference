@@ -26,6 +26,13 @@ let package = Package(
         // checkpoints (see PR #296). Sticking on 0.1.x makes Qwen 3.5
         // models fail to load with `.unsupportedTokenizer("TokenizersBackend")`.
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
+        // Direct pin of the Jinja engine that swift-transformers already vends
+        // transitively (same source URL; Package.resolved stays at 2.3.5).
+        // ProviderCoreFoundation's template-render self-check compiles model
+        // chat templates with the exact engine the runtime tokenizer uses, so
+        // "renders here" == "renders at request time". Pure Foundation +
+        // OrderedCollections — keeps ProviderCoreFoundation Linux-buildable.
+        .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.3.5"),
         // EventSource 1.4.x uses a Swift 6.1 traits manifest that enables an
         // AsyncHTTPClient/NIO dependency path in release builds. Xcode 26.4's
         // native SwiftPM builder then drops required transitive C module maps
@@ -55,6 +62,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Jinja", package: "swift-jinja"),
             ],
             path: "Sources/ProviderCoreFoundation"
         ),

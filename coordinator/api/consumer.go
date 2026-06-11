@@ -48,6 +48,16 @@ const (
 	// 10 minutes allows 32k tokens at ~55 tok/s on slower hardware.
 	inferenceTimeout = 600 * time.Second
 
+	// preambleContentTimeout is the budget from the first boilerplate chunk to
+	// the first CONTENT chunk when the TTFT deadline has already expired. A
+	// provider that produced only preamble (role delta / Responses lifecycle)
+	// has written ZERO bytes to the client, so a role-then-stall zombie must
+	// fail over instead of pinning the request for the full inferenceTimeout.
+	// 90s comfortably covers the measured pre-content tail (vision prefill is
+	// 6-30s); genuine cold model loads signal via AcceptedCh and keep the full
+	// inferenceTimeout.
+	preambleContentTimeout = 90 * time.Second
+
 	// chunkBufferSize is the channel buffer size for SSE chunks flowing from
 	// the provider to the consumer. A larger buffer prevents dropped chunks
 	// when the consumer reads slowly.
@@ -64,6 +74,14 @@ const (
 	// provider gets this fraction of the deadline before the backup is
 	// started, and then both race until one produces the first chunk.
 	speculativeTimerRatio = 0.5
+
+	// maxHeldBoilerplate bounds how many pre-content boilerplate chunks the
+	// dispatch loop holds per provider before committing anyway. Real
+	// preambles are one chunk (chat role delta) or two (Responses
+	// created/in_progress), so the cap exists only to stop a misbehaving
+	// provider from growing the held buffer for the whole inference window.
+	// Past the cap the chunk commits the dispatch — the pre-deferral behavior.
+	maxHeldBoilerplate = 8
 
 	// cancelWriteTimeout bounds how long a cancel write to the provider can
 	// block. Using context.Background() unbounded here risks hanging the HTTP
@@ -142,6 +160,74 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	_ = s.store.Credit(pr.ConsumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+pr.RequestID)
 	pr.ReservedMicroUSD = pr.BaseReservedMicroUSD
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
+}
+
+// noteInferenceError feeds the per-provider-model inference-error breaker for a
+// provider-side error received on a pending request's ErrorCh (any phase, pre-
+// or post-commit; the breaker itself only counts sickness-shaped 500/502/504)
+// and emits the cool-down metric on the transition into quarantine.
+func (s *Server) noteInferenceError(providerID string, pr *registry.PendingRequest, statusCode int) {
+	if providerID == "" || pr == nil {
+		return
+	}
+	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode) {
+		s.ddIncr("routing.cooldown_entered", []string{"model:" + pr.Model})
+	}
+}
+
+// noteInferenceSuccess clears the inference-error strike state for the serving
+// provider-model pair on a clean completion (streaming relay ended without a
+// provider error; non-streaming response assembled OK).
+func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
+	if pr == nil || pr.ProviderID == "" {
+		return
+	}
+	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model)
+}
+
+// noteDispatchProviderError records a provider error received while the
+// dispatch loop had NOT yet committed to that provider: it feeds the
+// inference-error breaker, refunds the failed attempt's provider-specific
+// reservation top-up, and, when boilerplate chunks from that provider were
+// being held (deferred commit), discards them and emits the pre-content
+// failover counter — the invisible-retry signal that replaces what used to be
+// an in-band SSE error after a premature commit. Returns true when held
+// chunks were discarded so callers skip their generic retry counter.
+//
+// The refund lives here because both ErrorCh senders (handleInferenceError and
+// registry.Disconnect's pending flush) remove the pending request BEFORE
+// pushing the error, so the arm's cancelDispatch sees RemovePending()==nil and
+// skips its own refund — without this the custom-price surcharge reserved by
+// reserveAdditionalForProvider would be stranded for the failed attempt.
+// refundProviderExtra is idempotent (it resets ReservedMicroUSD to the base),
+// so arms where cancelDispatch did refund are safe, and a failed pre-commit
+// attempt never reaches settlement (its channels are closed and it is neither
+// pending nor parked), so this can never double-credit against a settle.
+func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, held *[]string) (discardedHeld bool) {
+	if provider != nil {
+		s.noteInferenceError(provider.ID, pr, statusCode)
+	}
+	s.refundProviderExtra(pr)
+	if held == nil || len(*held) == 0 {
+		return false
+	}
+	*held = nil
+	s.ddIncr("inference.dispatches", []string{"status:retry_precontent"})
+	return true
+}
+
+// failedProviderVersion reads a provider's reported binary version under its
+// lock (mirroring the policy.prefer owner reads). Captured when an attempt
+// fails so the next attempt's Traits.AvoidVersion can steer the retry to a
+// different build — a deterministic per-version bug must not burn every retry
+// on identical binaries.
+func failedProviderVersion(p *registry.Provider) string {
+	if p == nil {
+		return ""
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	return p.Version
 }
 
 // errModelTooLarge is the dispatch error returned when providers serve the
@@ -241,6 +327,7 @@ func (s *Server) dispatchOneProvider(
 	estimatedPromptTokens int,
 	requestedMaxTokens int,
 	requiresVision bool,
+	traits registry.RequestTraits,
 	allowedProviderSerials []string,
 	isResponsesAPI bool,
 	policy selfRoutePolicy,
@@ -266,6 +353,7 @@ func (s *Server) dispatchOneProvider(
 		IsResponsesAPI:         isResponsesAPI,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequiresVision:         requiresVision,
+		Traits:                 traits,
 		RequestedMaxTokens:     requestedMaxTokens,
 		ReservedMicroUSD:       reservedMicroUSD,
 		BaseReservedMicroUSD:   reservedMicroUSD,
@@ -416,7 +504,9 @@ func (s *Server) dispatchOneProvider(
 		return nil, nil, decision, "failed to send request to provider", http.StatusBadGateway
 	}
 	pendingCleanup = false
-	pr.Timing.DispatchedAt = time.Now()
+	if pr.Timing != nil {
+		pr.Timing.DispatchedAt = time.Now()
+	}
 
 	return provider, pr, decision, "", 0
 }
@@ -681,6 +771,16 @@ func detectMediaRequirement(parsed map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// requestHasTools reports whether the request carries a non-empty top-level
+// "tools" array (Chat Completions and Responses API share the field name).
+// Drives Traits.HasTools so tool-bearing requests only route to providers whose
+// binaries survive tool-schema template rendering (version floor + per-model
+// template_render_ok gate in the scheduler).
+func requestHasTools(parsed map[string]any) bool {
+	tools, ok := parsed["tools"].([]any)
+	return ok && len(tools) > 0
 }
 
 func estimateRequestedMaxTokens(parsed map[string]any) int {
@@ -1207,6 +1307,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Normalize tool JSON-Schemas before parsing and dispatch so providers
+	// running binaries older than 0.6.3 (which normalize provider-side, #310)
+	// never see the schema shapes that crash Gemma-style chat templates
+	// ("upper filter requires string" — nullable array types, missing types).
+	// Centralizing this in the coordinator covers the whole fleet the moment
+	// the coordinator deploys, instead of waiting out provider update lag.
+	rawBody = NormalizeToolSchemas(rawBody)
+
 	var parsed map[string]any
 	if err := json.Unmarshal(rawBody, &parsed); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
@@ -1280,6 +1388,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// when the fleet has no such provider (e.g. before the gemma fleet finishes
 	// updating to 0.6.0); the routing layer enforces the same gate per dispatch.
 	requiresVision := detectMediaRequirement(parsed)
+	// Tool-bearing requests are routed only to providers that can render tool
+	// schemas without crashing (version floor + template_render_ok gate);
+	// detected here, alongside the media gate, while the parsed body is hot.
+	hasTools := requestHasTools(parsed)
 	if requiresVision {
 		// The Responses API path lowers `input` to chat messages via
 		// responsesRequestToChatCompletions, which does NOT carry image/video parts
@@ -1298,6 +1410,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				withParam("model")))
 			return
 		}
+	}
+	// Tools fail-fast (mirrors the vision gate): when every provider serving
+	// this model is trait-gated — below the tools version floor or advertising
+	// a broken chat-template render — the request can never route. Without
+	// this gate it passes the trait-blind QuickCapacityCheck preflight, queues
+	// for up to 120s, and dies with a misleading capacity 429.
+	if hasTools && !s.registry.HasToolCapableProviderForModel(model) {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
+			withParam("model")))
+		return
 	}
 
 	isResponsesAPI := input != nil && len(messages) == 0
@@ -1482,13 +1605,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// No HTTP response is written until a provider starts generating, so
 	// retries and speculative dispatch are invisible to the consumer.
 	var (
-		provider    *registry.Provider
-		pr          *registry.PendingRequest
-		requestID   string
-		firstChunk  string
+		provider   *registry.Provider
+		pr         *registry.PendingRequest
+		requestID  string
+		firstChunk string
+		// heldChunks buffers boilerplate preamble chunks (role delta /
+		// Responses lifecycle events) received from the current attempt's
+		// provider BEFORE commit. They are emitted ahead of firstChunk once a
+		// content-bearing chunk commits the attempt, and discarded when the
+		// provider fails pre-content (the failure becomes an invisible retry).
+		heldChunks  []string
 		lastErr     string
 		lastErrCode int
 		committed   bool
+		// lastFailedVersion is the binary version of the most recently failed
+		// provider; the next attempt's Traits.AvoidVersion steers routing away
+		// from that build so a deterministic per-version bug can't burn every
+		// retry on identical binaries.
+		lastFailedVersion string
 	)
 
 	consumerKey := consumerKeyFromContext(r.Context())
@@ -1500,14 +1634,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	deadline := ttftDeadline(estimatedPromptTokens)
 	speculativeAt := time.Duration(float64(deadline) * speculativeTimerRatio)
 
+dispatch:
 	for attempt := range maxDispatchAttempts {
+		// Each attempt holds preamble chunks from its own provider only.
+		heldChunks = nil
 		// Dispatch the primary provider.
 		var dispatchErr string
 		var dispatchErrCode int
 		provider, pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 			r, model, publicModel, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
-			estimatedPromptTokens, requestedMaxTokens, requiresVision, allowedProviderSerials,
-			isResponsesAPI, policy, timing, excludeProviders,
+			estimatedPromptTokens, requestedMaxTokens, requiresVision,
+			registry.RequestTraits{HasTools: hasTools, AvoidVersion: lastFailedVersion},
+			allowedProviderSerials, isResponsesAPI, policy, timing, excludeProviders,
 		)
 		if provider == nil {
 			// No online provider has enough memory to ever fit this model.
@@ -1558,6 +1696,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				IsResponsesAPI:         isResponsesAPI,
 				EstimatedPromptTokens:  estimatedPromptTokens,
 				RequiresVision:         requiresVision,
+				Traits:                 registry.RequestTraits{HasTools: hasTools, AvoidVersion: lastFailedVersion},
 				RequestedMaxTokens:     requestedMaxTokens,
 				ReservedMicroUSD:       reservedMicroUSD,
 				BaseReservedMicroUSD:   reservedMicroUSD,
@@ -1759,555 +1898,92 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		// ---- Speculative TTFT-aware first-chunk wait ----
 		//
-		// Phase 1: Wait for first chunk with speculative timer.
-		// - If primary sends first chunk → commit.
+		// Phase 1: Wait for first CONTENT chunk with speculative timer.
+		// - Boilerplate preamble chunks (role delta / Responses lifecycle) are
+		//   held, not committed: the provider hasn't survived its failure-prone
+		//   work (media decode, template render, prefill) yet. They count as a
+		//   liveness signal — the TTFT deadline stops failing the attempt — but
+		//   the speculative backup may still race for first content.
+		// - If primary sends a content chunk → commit (held chunks are emitted
+		//   ahead of it).
 		// - If primary sends accepted → extend to inferenceTimeout (model reload).
-		// - If primary errors → retry immediately (sequential fallback).
+		// - If primary errors → discard held chunks and retry invisibly.
 		// - If speculative timer fires → dispatch backup and race.
-		// - If full deadline expires → fail.
+		// - If full deadline expires with no liveness → fail.
 
 		speculativeTimer := time.NewTimer(speculativeAt)
 		deadlineTimer := time.NewTimer(deadline)
 		accepted := false
+		// preambleLiveness distinguishes WHY the extended first-content wait was
+		// entered: a genuine AcceptedCh (cold model load — keeps the full
+		// inferenceTimeout) vs a held-boilerplate liveness extension past an
+		// expired TTFT deadline (zero bytes written to the client — bounded by
+		// preambleContentTimeout so a role-then-stall zombie fails over).
+		preambleLiveness := false
 
-		select {
-		case chunk, ok := <-pr.ChunkCh:
-			speculativeTimer.Stop()
-			deadlineTimer.Stop()
-			if ok {
-				firstChunk = chunk
-				pr.Timing.FirstChunkAt = time.Now()
-				committed = true
-			} else {
-				select {
-				case errMsg := <-pr.ErrorCh:
-					excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatch(provider, pr)
-					lastErr = errMsg.Error
-					lastErrCode = errMsg.StatusCode
-					provider = nil
-					pr = nil
-					continue
-				default:
-					committed = true
-				}
-			}
-
-		case <-pr.AcceptedCh:
-			speculativeTimer.Stop()
-			deadlineTimer.Stop()
-			accepted = true
-
-		case errMsg := <-pr.ErrorCh:
-			speculativeTimer.Stop()
-			deadlineTimer.Stop()
-			excludeProviders[provider.ID] = struct{}{}
-			s.cancelDispatch(provider, pr)
-			lastErr = errMsg.Error
-			lastErrCode = errMsg.StatusCode
-			s.logger.Warn("provider failed, retrying",
-				"request_id", requestID,
-				"provider_id", provider.ID,
-				"attempt", attempt+1,
-				"error", errMsg.Error,
-			)
-			s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
-				"provider failed, retrying",
-				map[string]any{
-					"provider_id": provider.ID,
-					"attempt":     attempt + 1,
-					"reason":      "provider_error",
-					"status_code": errMsg.StatusCode,
-				})
-			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
-			}
-			s.ddIncr("inference.dispatches", []string{"status:retry"})
-			provider = nil
-			pr = nil
-			continue
-
-		case <-speculativeTimer.C:
-			deadlineTimer.Stop()
-			// Primary is slow. Attempt speculative backup dispatch.
-			s.ddIncr("inference.speculative_dispatch", []string{"model:" + model})
-
-			var backupProvider *registry.Provider
-			var backupPR *registry.PendingRequest
-
-			// Do NOT speculatively race a paid PUBLIC backup against a prefer
-			// request that is being served by the caller's OWN machine: the user
-			// opted into "prefer my machine (free)", so a slow owned machine must
-			// be waited on, not raced (and billed) by the public fleet. (Exclusive
-			// self-route is already safe — its backup selection is owned-only and
-			// returns nil when there's no other owned machine.) When the prefer
-			// primary is itself a public provider (the owner owns nothing / fell
-			// back), normal speculative behaviour applies.
-			skipBackup := false
-			if policy.prefer {
-				provider.Mu().Lock()
-				skipBackup = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
-				provider.Mu().Unlock()
-			}
-
-			if !skipBackup {
-				backupExclude := make(map[string]struct{}, len(excludeProviders)+1)
-				for id := range excludeProviders {
-					backupExclude[id] = struct{}{}
-				}
-				backupExclude[provider.ID] = struct{}{}
-
-				backupProvider, backupPR, _, _, _ = s.dispatchOneProvider(
-					r, model, publicModel, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
-					estimatedPromptTokens, requestedMaxTokens, requiresVision, allowedProviderSerials,
-					isResponsesAPI, policy, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
-					backupExclude,
-				)
-			}
-
-			if backupProvider == nil {
-				// No backup available. Keep waiting for primary with remaining deadline.
-				s.logger.Info("speculative_dispatch_no_backup",
-					"request_id", requestID,
-					"primary_provider", provider.ID,
-				)
-				remainingDeadline := time.NewTimer(deadline - speculativeAt)
-				select {
-				case chunk, ok := <-pr.ChunkCh:
-					remainingDeadline.Stop()
-					if ok {
-						firstChunk = chunk
-						pr.Timing.FirstChunkAt = time.Now()
-						committed = true
-					} else {
-						select {
-						case errMsg := <-pr.ErrorCh:
-							excludeProviders[provider.ID] = struct{}{}
-							s.cancelDispatch(provider, pr)
-							lastErr = errMsg.Error
-							lastErrCode = errMsg.StatusCode
-							provider = nil
-							pr = nil
-							continue
-						default:
-							committed = true
-						}
-					}
-				case <-pr.AcceptedCh:
-					remainingDeadline.Stop()
-					accepted = true
-				case errMsg := <-pr.ErrorCh:
-					remainingDeadline.Stop()
-					excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatch(provider, pr)
-					lastErr = errMsg.Error
-					lastErrCode = errMsg.StatusCode
-					if s.metrics != nil {
-						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
-					}
-					s.ddIncr("inference.dispatches", []string{"status:retry"})
-					provider = nil
-					pr = nil
-					continue
-				case <-remainingDeadline.C:
-					excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatch(provider, pr)
-					lastErr = "timeout waiting for first response"
-					lastErrCode = http.StatusGatewayTimeout
-					s.logger.Warn("provider timeout (no backup), retrying",
-						"request_id", requestID,
-						"provider_id", provider.ID,
-						"attempt", attempt+1,
-					)
-					s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
-						"provider first-chunk timeout",
-						map[string]any{
-							"provider_id": provider.ID,
-							"attempt":     attempt + 1,
-							"reason":      "first_chunk_timeout",
-						})
-					if s.metrics != nil {
-						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
-					}
-					s.ddIncr("inference.dispatches", []string{"status:timeout"})
-					provider = nil
-					pr = nil
-					continue
-				case <-r.Context().Done():
-					remainingDeadline.Stop()
-					s.cancelDispatch(provider, pr)
-					refundReservation()
-					return
-				}
-			} else {
-				// Backup dispatched — race primary vs backup.
-				s.logger.Info("speculative_dispatch",
-					"request_id", requestID,
-					"primary_provider", provider.ID,
-					"backup_provider", backupProvider.ID,
-					"ttft_deadline_ms", deadline.Milliseconds(),
-					"speculative_at_ms", speculativeAt.Milliseconds(),
-				)
-
-				raceDeadline := time.NewTimer(deadline - speculativeAt)
-
-				select {
-				case chunk, ok := <-pr.ChunkCh:
-					// Primary wins!
-					raceDeadline.Stop()
-					s.cancelDispatch(backupProvider, backupPR)
-					if ok {
-						firstChunk = chunk
-						pr.Timing.FirstChunkAt = time.Now()
-						committed = true
-					} else {
-						select {
-						case errMsg := <-pr.ErrorCh:
-							// Primary failed but we already cancelled backup.
-							excludeProviders[provider.ID] = struct{}{}
-							s.cancelDispatch(provider, pr)
-							lastErr = errMsg.Error
-							lastErrCode = errMsg.StatusCode
-							provider = nil
-							pr = nil
-							continue
-						default:
-							committed = true
-						}
-					}
-
-				case chunk, ok := <-backupPR.ChunkCh:
-					// Backup wins!
-					raceDeadline.Stop()
-					s.cancelDispatch(provider, pr)
-					s.ddIncr("inference.speculative_win", []string{"model:" + model})
-					if ok {
-						provider = backupProvider
-						pr = backupPR
-						requestID = pr.RequestID
-						firstChunk = chunk
-						pr.Timing.FirstChunkAt = time.Now()
-						committed = true
-					} else {
-						select {
-						case errMsg := <-backupPR.ErrorCh:
-							// Backup failed too. Keep primary context for retry.
-							excludeProviders[backupProvider.ID] = struct{}{}
-							// Wait remaining deadline for primary.
-							remainingPrimary := time.NewTimer(deadline - speculativeAt)
-							select {
-							case chunk, ok := <-pr.ChunkCh:
-								remainingPrimary.Stop()
-								if ok {
-									firstChunk = chunk
-									pr.Timing.FirstChunkAt = time.Now()
-									committed = true
-								} else {
-									select {
-									case errMsg2 := <-pr.ErrorCh:
-										excludeProviders[provider.ID] = struct{}{}
-										s.cancelDispatch(provider, pr)
-										lastErr = errMsg2.Error
-										lastErrCode = errMsg2.StatusCode
-										provider = nil
-										pr = nil
-										continue
-									default:
-										committed = true
-									}
-								}
-							case <-pr.AcceptedCh:
-								remainingPrimary.Stop()
-								accepted = true
-							case <-remainingPrimary.C:
-								excludeProviders[provider.ID] = struct{}{}
-								s.cancelDispatch(provider, pr)
-								lastErr = errMsg.Error
-								lastErrCode = errMsg.StatusCode
-								provider = nil
-								pr = nil
-								continue
-							case <-r.Context().Done():
-								remainingPrimary.Stop()
-								s.cancelDispatch(provider, pr)
-								refundReservation()
-								return
-							}
-						default:
-							// Backup channel closed with no error — treat as committed.
-							s.cancelDispatch(provider, pr)
-							provider = backupProvider
-							pr = backupPR
-							requestID = pr.RequestID
-							committed = true
-						}
-					}
-
-				case <-pr.AcceptedCh:
-					// Primary accepted (model reload). Cancel backup, extend deadline.
-					raceDeadline.Stop()
-					s.cancelDispatch(backupProvider, backupPR)
-					accepted = true
-
-				case <-backupPR.AcceptedCh:
-					// Backup accepted (model reload). Cancel primary, extend deadline.
-					raceDeadline.Stop()
-					s.cancelDispatch(provider, pr)
-					provider = backupProvider
-					pr = backupPR
-					requestID = pr.RequestID
-					accepted = true
-
-				case errMsg := <-pr.ErrorCh:
-					// Primary failed. Keep waiting for backup.
-					raceDeadline.Stop()
-					excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatch(provider, pr)
-					// Wait for backup with remaining deadline.
-					backupDeadline := time.NewTimer(deadline - speculativeAt)
-					select {
-					case chunk, ok := <-backupPR.ChunkCh:
-						backupDeadline.Stop()
-						_ = errMsg // used implicitly via excludeProviders
-						if ok {
-							provider = backupProvider
-							pr = backupPR
-							requestID = pr.RequestID
-							firstChunk = chunk
-							pr.Timing.FirstChunkAt = time.Now()
-							committed = true
-						} else {
-							select {
-							case errMsg2 := <-backupPR.ErrorCh:
-								excludeProviders[backupProvider.ID] = struct{}{}
-								s.cancelDispatch(backupProvider, backupPR)
-								lastErr = errMsg2.Error
-								lastErrCode = errMsg2.StatusCode
-								provider = nil
-								pr = nil
-								continue
-							default:
-								provider = backupProvider
-								pr = backupPR
-								requestID = pr.RequestID
-								committed = true
-							}
-						}
-					case <-backupPR.AcceptedCh:
-						backupDeadline.Stop()
-						provider = backupProvider
-						pr = backupPR
-						requestID = pr.RequestID
-						accepted = true
-					case errMsg2 := <-backupPR.ErrorCh:
-						backupDeadline.Stop()
-						excludeProviders[backupProvider.ID] = struct{}{}
-						s.cancelDispatch(backupProvider, backupPR)
-						lastErr = errMsg2.Error
-						lastErrCode = errMsg2.StatusCode
-						provider = nil
-						pr = nil
-						continue
-					case <-backupDeadline.C:
-						excludeProviders[backupProvider.ID] = struct{}{}
-						s.cancelDispatch(backupProvider, backupPR)
-						lastErr = "timeout waiting for first response (backup)"
-						lastErrCode = http.StatusGatewayTimeout
-						if s.metrics != nil {
-							s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
-						}
-						s.ddIncr("inference.dispatches", []string{"status:timeout"})
-						provider = nil
-						pr = nil
-						continue
-					case <-r.Context().Done():
-						backupDeadline.Stop()
-						s.cancelDispatch(backupProvider, backupPR)
-						refundReservation()
-						return
-					}
-
-				case errMsg := <-backupPR.ErrorCh:
-					// Backup failed. Keep waiting for primary.
-					raceDeadline.Stop()
-					excludeProviders[backupProvider.ID] = struct{}{}
-					s.cancelDispatch(backupProvider, backupPR)
-					_ = errMsg
-					primaryDeadline := time.NewTimer(deadline - speculativeAt)
-					select {
-					case chunk, ok := <-pr.ChunkCh:
-						primaryDeadline.Stop()
-						if ok {
-							firstChunk = chunk
-							pr.Timing.FirstChunkAt = time.Now()
-							committed = true
-						} else {
-							select {
-							case errMsg2 := <-pr.ErrorCh:
-								excludeProviders[provider.ID] = struct{}{}
-								s.cancelDispatch(provider, pr)
-								lastErr = errMsg2.Error
-								lastErrCode = errMsg2.StatusCode
-								provider = nil
-								pr = nil
-								continue
-							default:
-								committed = true
-							}
-						}
-					case <-pr.AcceptedCh:
-						primaryDeadline.Stop()
-						accepted = true
-					case errMsg2 := <-pr.ErrorCh:
-						primaryDeadline.Stop()
-						excludeProviders[provider.ID] = struct{}{}
-						s.cancelDispatch(provider, pr)
-						lastErr = errMsg2.Error
-						lastErrCode = errMsg2.StatusCode
-						provider = nil
-						pr = nil
-						continue
-					case <-primaryDeadline.C:
-						excludeProviders[provider.ID] = struct{}{}
-						s.cancelDispatch(provider, pr)
-						lastErr = "timeout waiting for first response"
-						lastErrCode = http.StatusGatewayTimeout
-						if s.metrics != nil {
-							s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
-						}
-						s.ddIncr("inference.dispatches", []string{"status:timeout"})
-						provider = nil
-						pr = nil
-						continue
-					case <-r.Context().Done():
-						primaryDeadline.Stop()
-						s.cancelDispatch(provider, pr)
-						refundReservation()
-						return
-					}
-
-				case <-raceDeadline.C:
-					// Both missed deadline.
-					s.cancelDispatch(provider, pr)
-					s.cancelDispatch(backupProvider, backupPR)
-					excludeProviders[provider.ID] = struct{}{}
-					excludeProviders[backupProvider.ID] = struct{}{}
-					lastErr = "timeout waiting for first response (both providers)"
-					lastErrCode = http.StatusGatewayTimeout
-					if s.metrics != nil {
-						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
-					}
-					s.ddIncr("inference.dispatches", []string{"status:timeout"})
-					provider = nil
-					pr = nil
-					continue
-
-				case <-r.Context().Done():
-					raceDeadline.Stop()
-					s.cancelDispatch(provider, pr)
-					s.cancelDispatch(backupProvider, backupPR)
-					refundReservation()
-					return
-				}
-			}
-
-		case <-deadlineTimer.C:
-			speculativeTimer.Stop()
-			excludeProviders[provider.ID] = struct{}{}
-			s.cancelDispatch(provider, pr)
-			lastErr = "timeout waiting for first response"
-			lastErrCode = http.StatusGatewayTimeout
-			s.logger.Warn("provider timeout (full deadline), retrying",
-				"request_id", requestID,
-				"provider_id", provider.ID,
-				"attempt", attempt+1,
-			)
-			s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
-				"provider first-chunk timeout",
-				map[string]any{
-					"provider_id": provider.ID,
-					"attempt":     attempt + 1,
-					"reason":      "first_chunk_timeout",
-				})
-			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
-			}
-			s.ddIncr("inference.dispatches", []string{"status:timeout"})
-			provider = nil
-			pr = nil
-			continue
-
-		case <-r.Context().Done():
-			speculativeTimer.Stop()
-			deadlineTimer.Stop()
-			s.cancelDispatch(provider, pr)
-			refundReservation()
-			return
-		}
-
-		// Provider accepted or sent first chunk — commit to this provider.
-		// If only accepted (no chunk yet), wait for the first chunk with
-		// the full inference timeout since the backend may be reloading.
-		if accepted && !committed {
-			chunkTimer := time.NewTimer(inferenceTimeout)
+	firstChunkWait:
+		for {
 			select {
 			case chunk, ok := <-pr.ChunkCh:
-				chunkTimer.Stop()
+				if ok && len(heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
+					heldChunks = append(heldChunks, chunk)
+					if pr.Timing.FirstChunkAt.IsZero() {
+						pr.Timing.FirstChunkAt = time.Now()
+					}
+					continue firstChunkWait
+				}
+				speculativeTimer.Stop()
+				deadlineTimer.Stop()
 				if ok {
 					firstChunk = chunk
-					pr.Timing.FirstChunkAt = time.Now()
+					if pr.Timing.FirstChunkAt.IsZero() {
+						pr.Timing.FirstChunkAt = time.Now()
+					}
 					committed = true
 				} else {
-					// Closed — check for error. Use a short grace
-					// period instead of a non-blocking default to
-					// close the race where Go's select picks the
-					// ChunkCh close before the ErrorCh value (sent
-					// by the provider handler before closing ChunkCh).
 					select {
 					case errMsg := <-pr.ErrorCh:
 						excludeProviders[provider.ID] = struct{}{}
 						s.cancelDispatch(provider, pr)
 						lastErr = errMsg.Error
 						lastErrCode = errMsg.StatusCode
-						s.logger.Warn("provider failed after accepting request, retrying",
-							"request_id", requestID,
-							"provider_id", provider.ID,
-							"attempt", attempt+1,
-							"error", errMsg.Error,
-						)
-						s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
-							"provider failed after accepting request, retrying",
-							map[string]any{
-								"provider_id": provider.ID,
-								"attempt":     attempt + 1,
-								"reason":      "provider_error",
-								"status_code": errMsg.StatusCode,
-							})
-						if s.metrics != nil {
-							s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+						lastFailedVersion = failedProviderVersion(provider)
+						if !s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &heldChunks) {
+							s.ddIncr("inference.dispatches", []string{"status:retry"})
 						}
-						s.ddIncr("inference.dispatches", []string{"status:retry"})
 						provider = nil
 						pr = nil
-						continue
-					case <-time.After(50 * time.Millisecond):
+						continue dispatch
+					default:
+						// Closed without error — commit (held chunks only is
+						// fine: a preamble-then-complete stream is empty output).
 						committed = true
 					}
 				}
+				break firstChunkWait
+
+			case <-pr.AcceptedCh:
+				speculativeTimer.Stop()
+				deadlineTimer.Stop()
+				accepted = true
+				break firstChunkWait
+
 			case errMsg := <-pr.ErrorCh:
-				chunkTimer.Stop()
+				speculativeTimer.Stop()
+				deadlineTimer.Stop()
 				excludeProviders[provider.ID] = struct{}{}
 				s.cancelDispatch(provider, pr)
 				lastErr = errMsg.Error
 				lastErrCode = errMsg.StatusCode
-				s.logger.Warn("provider failed after accepting request, retrying",
+				lastFailedVersion = failedProviderVersion(provider)
+				s.logger.Warn("provider failed, retrying",
 					"request_id", requestID,
 					"provider_id", provider.ID,
 					"attempt", attempt+1,
 					"error", errMsg.Error,
 				)
 				s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
-					"provider failed after accepting request, retrying",
+					"provider failed, retrying",
 					map[string]any{
 						"provider_id": provider.ID,
 						"attempt":     attempt + 1,
@@ -2317,26 +1993,625 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				if s.metrics != nil {
 					s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 				}
-				s.ddIncr("inference.dispatches", []string{"status:retry"})
+				if !s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &heldChunks) {
+					s.ddIncr("inference.dispatches", []string{"status:retry"})
+				}
 				provider = nil
 				pr = nil
-				continue
-			case <-chunkTimer.C:
+				continue dispatch
+
+			case <-speculativeTimer.C:
+				deadlineTimer.Stop()
+				// Primary is slow. Attempt speculative backup dispatch.
+				s.ddIncr("inference.speculative_dispatch", []string{"model:" + model})
+
+				var backupProvider *registry.Provider
+				var backupPR *registry.PendingRequest
+
+				// Do NOT speculatively race a paid PUBLIC backup against a prefer
+				// request that is being served by the caller's OWN machine: the user
+				// opted into "prefer my machine (free)", so a slow owned machine must
+				// be waited on, not raced (and billed) by the public fleet. (Exclusive
+				// self-route is already safe — its backup selection is owned-only and
+				// returns nil when there's no other owned machine.) When the prefer
+				// primary is itself a public provider (the owner owns nothing / fell
+				// back), normal speculative behaviour applies.
+				skipBackup := false
+				if policy.prefer {
+					provider.Mu().Lock()
+					skipBackup = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
+					provider.Mu().Unlock()
+				}
+
+				if !skipBackup {
+					backupExclude := make(map[string]struct{}, len(excludeProviders)+1)
+					for id := range excludeProviders {
+						backupExclude[id] = struct{}{}
+					}
+					backupExclude[provider.ID] = struct{}{}
+
+					backupProvider, backupPR, _, _, _ = s.dispatchOneProvider(
+						r, model, publicModel, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
+						estimatedPromptTokens, requestedMaxTokens, requiresVision,
+						registry.RequestTraits{HasTools: hasTools, AvoidVersion: lastFailedVersion},
+						allowedProviderSerials, isResponsesAPI, policy,
+						&registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
+						backupExclude,
+					)
+				}
+
+				if backupProvider == nil {
+					// No backup available. Keep waiting for primary with remaining deadline.
+					s.logger.Info("speculative_dispatch_no_backup",
+						"request_id", requestID,
+						"primary_provider", provider.ID,
+					)
+					remainingDeadline := time.NewTimer(deadline - speculativeAt)
+				noBackupWait:
+					for {
+						select {
+						case chunk, ok := <-pr.ChunkCh:
+							if ok && len(heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
+								heldChunks = append(heldChunks, chunk)
+								if pr.Timing.FirstChunkAt.IsZero() {
+									pr.Timing.FirstChunkAt = time.Now()
+								}
+								continue noBackupWait
+							}
+							remainingDeadline.Stop()
+							if ok {
+								firstChunk = chunk
+								if pr.Timing.FirstChunkAt.IsZero() {
+									pr.Timing.FirstChunkAt = time.Now()
+								}
+								committed = true
+							} else {
+								select {
+								case errMsg := <-pr.ErrorCh:
+									excludeProviders[provider.ID] = struct{}{}
+									s.cancelDispatch(provider, pr)
+									lastErr = errMsg.Error
+									lastErrCode = errMsg.StatusCode
+									lastFailedVersion = failedProviderVersion(provider)
+									if !s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &heldChunks) {
+										s.ddIncr("inference.dispatches", []string{"status:retry"})
+									}
+									provider = nil
+									pr = nil
+									continue dispatch
+								default:
+									committed = true
+								}
+							}
+							break noBackupWait
+						case <-pr.AcceptedCh:
+							remainingDeadline.Stop()
+							accepted = true
+							break noBackupWait
+						case errMsg := <-pr.ErrorCh:
+							remainingDeadline.Stop()
+							excludeProviders[provider.ID] = struct{}{}
+							s.cancelDispatch(provider, pr)
+							lastErr = errMsg.Error
+							lastErrCode = errMsg.StatusCode
+							lastFailedVersion = failedProviderVersion(provider)
+							if s.metrics != nil {
+								s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+							}
+							if !s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &heldChunks) {
+								s.ddIncr("inference.dispatches", []string{"status:retry"})
+							}
+							provider = nil
+							pr = nil
+							continue dispatch
+						case <-remainingDeadline.C:
+							if len(heldChunks) > 0 {
+								// Liveness: the provider already produced its preamble —
+								// vision prefill / template render may legitimately
+								// exceed the TTFT deadline. Fall through to the
+								// extended (preambleContentTimeout) wait for first
+								// content, with ErrorCh still armed for retry.
+								accepted = true
+								preambleLiveness = true
+								break noBackupWait
+							}
+							excludeProviders[provider.ID] = struct{}{}
+							s.cancelDispatch(provider, pr)
+							lastErr = "timeout waiting for first response"
+							lastErrCode = http.StatusGatewayTimeout
+							s.logger.Warn("provider timeout (no backup), retrying",
+								"request_id", requestID,
+								"provider_id", provider.ID,
+								"attempt", attempt+1,
+							)
+							s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
+								"provider first-chunk timeout",
+								map[string]any{
+									"provider_id": provider.ID,
+									"attempt":     attempt + 1,
+									"reason":      "first_chunk_timeout",
+								})
+							if s.metrics != nil {
+								s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+							}
+							s.ddIncr("inference.dispatches", []string{"status:timeout"})
+							provider = nil
+							pr = nil
+							continue dispatch
+						case <-r.Context().Done():
+							remainingDeadline.Stop()
+							s.cancelDispatch(provider, pr)
+							refundReservation()
+							return
+						}
+					}
+				} else {
+					// Backup dispatched — race primary vs backup.
+					s.logger.Info("speculative_dispatch",
+						"request_id", requestID,
+						"primary_provider", provider.ID,
+						"backup_provider", backupProvider.ID,
+						"ttft_deadline_ms", deadline.Milliseconds(),
+						"speculative_at_ms", speculativeAt.Milliseconds(),
+					)
+
+					raceDeadline := time.NewTimer(deadline - speculativeAt)
+					// One-shot extension: when the race deadline expires but a racer
+					// has shown liveness (preamble received), the race continues for
+					// the full inference window instead of failing the request.
+					raceExtended := false
+					// Preamble chunks from the backup are buffered separately —
+					// held chunks must never mix providers.
+					var backupHeld []string
+
+				race:
+					for {
+						select {
+						case chunk, ok := <-pr.ChunkCh:
+							if ok && len(heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
+								// Preamble only — the primary hasn't proven it can
+								// generate; keep the backup racing for first content.
+								heldChunks = append(heldChunks, chunk)
+								if pr.Timing.FirstChunkAt.IsZero() {
+									pr.Timing.FirstChunkAt = time.Now()
+								}
+								continue race
+							}
+							// Primary wins!
+							raceDeadline.Stop()
+							s.cancelDispatch(backupProvider, backupPR)
+							if ok {
+								firstChunk = chunk
+								if pr.Timing.FirstChunkAt.IsZero() {
+									pr.Timing.FirstChunkAt = time.Now()
+								}
+								committed = true
+							} else {
+								select {
+								case errMsg := <-pr.ErrorCh:
+									// Primary failed but we already cancelled backup.
+									excludeProviders[provider.ID] = struct{}{}
+									s.cancelDispatch(provider, pr)
+									lastErr = errMsg.Error
+									lastErrCode = errMsg.StatusCode
+									lastFailedVersion = failedProviderVersion(provider)
+									if !s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &heldChunks) {
+										s.ddIncr("inference.dispatches", []string{"status:retry"})
+									}
+									provider = nil
+									pr = nil
+									continue dispatch
+								default:
+									committed = true
+								}
+							}
+							break race
+
+						case chunk, ok := <-backupPR.ChunkCh:
+							if ok && len(backupHeld) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
+								// Backup preamble doesn't win the race — first CONTENT does.
+								backupHeld = append(backupHeld, chunk)
+								if backupPR.Timing.FirstChunkAt.IsZero() {
+									backupPR.Timing.FirstChunkAt = time.Now()
+								}
+								continue race
+							}
+							// Backup wins!
+							raceDeadline.Stop()
+							s.cancelDispatch(provider, pr)
+							s.ddIncr("inference.speculative_win", []string{"model:" + model})
+							if ok {
+								provider = backupProvider
+								pr = backupPR
+								requestID = pr.RequestID
+								heldChunks = backupHeld
+								firstChunk = chunk
+								if pr.Timing.FirstChunkAt.IsZero() {
+									pr.Timing.FirstChunkAt = time.Now()
+								}
+								committed = true
+							} else {
+								select {
+								case errMsg := <-backupPR.ErrorCh:
+									// Backup failed too. Keep primary context for retry.
+									excludeProviders[backupProvider.ID] = struct{}{}
+									lastFailedVersion = failedProviderVersion(backupProvider)
+									s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, &backupHeld)
+									// Wait remaining deadline for primary.
+									remainingPrimary := time.NewTimer(deadline - speculativeAt)
+								backupFailedPrimaryWait:
+									for {
+										select {
+										case chunk, ok := <-pr.ChunkCh:
+											if ok && len(heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
+												heldChunks = append(heldChunks, chunk)
+												if pr.Timing.FirstChunkAt.IsZero() {
+													pr.Timing.FirstChunkAt = time.Now()
+												}
+												continue backupFailedPrimaryWait
+											}
+											remainingPrimary.Stop()
+											if ok {
+												firstChunk = chunk
+												if pr.Timing.FirstChunkAt.IsZero() {
+													pr.Timing.FirstChunkAt = time.Now()
+												}
+												committed = true
+											} else {
+												select {
+												case errMsg2 := <-pr.ErrorCh:
+													excludeProviders[provider.ID] = struct{}{}
+													s.cancelDispatch(provider, pr)
+													lastErr = errMsg2.Error
+													lastErrCode = errMsg2.StatusCode
+													lastFailedVersion = failedProviderVersion(provider)
+													if !s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, &heldChunks) {
+														s.ddIncr("inference.dispatches", []string{"status:retry"})
+													}
+													provider = nil
+													pr = nil
+													continue dispatch
+												default:
+													committed = true
+												}
+											}
+											break backupFailedPrimaryWait
+										case <-pr.AcceptedCh:
+											remainingPrimary.Stop()
+											accepted = true
+											break backupFailedPrimaryWait
+										case errMsg2 := <-pr.ErrorCh:
+											// Defensive: both ErrorCh senders currently send before
+											// closing ChunkCh (the closed-ChunkCh check above catches
+											// them), but a direct arm keeps this loop correct if that
+											// ordering ever changes — mirroring its sibling wait loops.
+											remainingPrimary.Stop()
+											excludeProviders[provider.ID] = struct{}{}
+											s.cancelDispatch(provider, pr)
+											lastErr = errMsg2.Error
+											lastErrCode = errMsg2.StatusCode
+											lastFailedVersion = failedProviderVersion(provider)
+											if !s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, &heldChunks) {
+												s.ddIncr("inference.dispatches", []string{"status:retry"})
+											}
+											provider = nil
+											pr = nil
+											continue dispatch
+										case <-remainingPrimary.C:
+											if len(heldChunks) > 0 {
+												// Primary preamble liveness — extend to the
+												// preamble-to-content budget instead of failing.
+												accepted = true
+												preambleLiveness = true
+												break backupFailedPrimaryWait
+											}
+											// The PRIMARY timed out here (the backup's earlier error
+											// is already recorded); report the timeout, not the
+											// backup's stale error text.
+											excludeProviders[provider.ID] = struct{}{}
+											s.cancelDispatch(provider, pr)
+											lastErr = "timeout waiting for first response"
+											lastErrCode = http.StatusGatewayTimeout
+											if s.metrics != nil {
+												s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+											}
+											s.ddIncr("inference.dispatches", []string{"status:timeout"})
+											provider = nil
+											pr = nil
+											continue dispatch
+										case <-r.Context().Done():
+											remainingPrimary.Stop()
+											s.cancelDispatch(provider, pr)
+											refundReservation()
+											return
+										}
+									}
+								default:
+									// Backup channel closed with no error — treat as committed.
+									s.cancelDispatch(provider, pr)
+									provider = backupProvider
+									pr = backupPR
+									requestID = pr.RequestID
+									heldChunks = backupHeld
+									committed = true
+								}
+							}
+							break race
+
+						case <-pr.AcceptedCh:
+							// Primary accepted (model reload). Cancel backup, extend deadline.
+							raceDeadline.Stop()
+							s.cancelDispatch(backupProvider, backupPR)
+							accepted = true
+							break race
+
+						case <-backupPR.AcceptedCh:
+							// Backup accepted (model reload). Cancel primary, extend deadline.
+							raceDeadline.Stop()
+							s.cancelDispatch(provider, pr)
+							provider = backupProvider
+							pr = backupPR
+							requestID = pr.RequestID
+							heldChunks = backupHeld
+							accepted = true
+							break race
+
+						case errMsg := <-pr.ErrorCh:
+							// Primary failed. Keep waiting for backup.
+							raceDeadline.Stop()
+							excludeProviders[provider.ID] = struct{}{}
+							s.cancelDispatch(provider, pr)
+							lastFailedVersion = failedProviderVersion(provider)
+							s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &heldChunks)
+							// Wait for backup with remaining deadline.
+							backupDeadline := time.NewTimer(deadline - speculativeAt)
+						primaryFailedBackupWait:
+							for {
+								select {
+								case chunk, ok := <-backupPR.ChunkCh:
+									if ok && len(backupHeld) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
+										backupHeld = append(backupHeld, chunk)
+										if backupPR.Timing.FirstChunkAt.IsZero() {
+											backupPR.Timing.FirstChunkAt = time.Now()
+										}
+										continue primaryFailedBackupWait
+									}
+									backupDeadline.Stop()
+									if ok {
+										provider = backupProvider
+										pr = backupPR
+										requestID = pr.RequestID
+										heldChunks = backupHeld
+										firstChunk = chunk
+										if pr.Timing.FirstChunkAt.IsZero() {
+											pr.Timing.FirstChunkAt = time.Now()
+										}
+										committed = true
+									} else {
+										select {
+										case errMsg2 := <-backupPR.ErrorCh:
+											excludeProviders[backupProvider.ID] = struct{}{}
+											s.cancelDispatch(backupProvider, backupPR)
+											lastErr = errMsg2.Error
+											lastErrCode = errMsg2.StatusCode
+											lastFailedVersion = failedProviderVersion(backupProvider)
+											if !s.noteDispatchProviderError(backupProvider, backupPR, errMsg2.StatusCode, &backupHeld) {
+												s.ddIncr("inference.dispatches", []string{"status:retry"})
+											}
+											provider = nil
+											pr = nil
+											continue dispatch
+										default:
+											provider = backupProvider
+											pr = backupPR
+											requestID = pr.RequestID
+											heldChunks = backupHeld
+											committed = true
+										}
+									}
+									break primaryFailedBackupWait
+								case <-backupPR.AcceptedCh:
+									backupDeadline.Stop()
+									provider = backupProvider
+									pr = backupPR
+									requestID = pr.RequestID
+									heldChunks = backupHeld
+									accepted = true
+									break primaryFailedBackupWait
+								case errMsg2 := <-backupPR.ErrorCh:
+									backupDeadline.Stop()
+									excludeProviders[backupProvider.ID] = struct{}{}
+									s.cancelDispatch(backupProvider, backupPR)
+									lastErr = errMsg2.Error
+									lastErrCode = errMsg2.StatusCode
+									lastFailedVersion = failedProviderVersion(backupProvider)
+									s.noteDispatchProviderError(backupProvider, backupPR, errMsg2.StatusCode, &backupHeld)
+									provider = nil
+									pr = nil
+									continue dispatch
+								case <-backupDeadline.C:
+									if len(backupHeld) > 0 {
+										// Backup preamble liveness — promote it and extend
+										// by the preamble-to-content budget for first content.
+										provider = backupProvider
+										pr = backupPR
+										requestID = pr.RequestID
+										heldChunks = backupHeld
+										accepted = true
+										preambleLiveness = true
+										break primaryFailedBackupWait
+									}
+									excludeProviders[backupProvider.ID] = struct{}{}
+									s.cancelDispatch(backupProvider, backupPR)
+									lastErr = "timeout waiting for first response (backup)"
+									lastErrCode = http.StatusGatewayTimeout
+									if s.metrics != nil {
+										s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+									}
+									s.ddIncr("inference.dispatches", []string{"status:timeout"})
+									provider = nil
+									pr = nil
+									continue dispatch
+								case <-r.Context().Done():
+									backupDeadline.Stop()
+									s.cancelDispatch(backupProvider, backupPR)
+									refundReservation()
+									return
+								}
+							}
+							break race
+
+						case errMsg := <-backupPR.ErrorCh:
+							// Backup failed. Keep waiting for primary.
+							raceDeadline.Stop()
+							excludeProviders[backupProvider.ID] = struct{}{}
+							s.cancelDispatch(backupProvider, backupPR)
+							lastFailedVersion = failedProviderVersion(backupProvider)
+							s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, &backupHeld)
+							primaryDeadline := time.NewTimer(deadline - speculativeAt)
+						backupFailedWaitPrimary:
+							for {
+								select {
+								case chunk, ok := <-pr.ChunkCh:
+									if ok && len(heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
+										heldChunks = append(heldChunks, chunk)
+										if pr.Timing.FirstChunkAt.IsZero() {
+											pr.Timing.FirstChunkAt = time.Now()
+										}
+										continue backupFailedWaitPrimary
+									}
+									primaryDeadline.Stop()
+									if ok {
+										firstChunk = chunk
+										if pr.Timing.FirstChunkAt.IsZero() {
+											pr.Timing.FirstChunkAt = time.Now()
+										}
+										committed = true
+									} else {
+										select {
+										case errMsg2 := <-pr.ErrorCh:
+											excludeProviders[provider.ID] = struct{}{}
+											s.cancelDispatch(provider, pr)
+											lastErr = errMsg2.Error
+											lastErrCode = errMsg2.StatusCode
+											lastFailedVersion = failedProviderVersion(provider)
+											if !s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, &heldChunks) {
+												s.ddIncr("inference.dispatches", []string{"status:retry"})
+											}
+											provider = nil
+											pr = nil
+											continue dispatch
+										default:
+											committed = true
+										}
+									}
+									break backupFailedWaitPrimary
+								case <-pr.AcceptedCh:
+									primaryDeadline.Stop()
+									accepted = true
+									break backupFailedWaitPrimary
+								case errMsg2 := <-pr.ErrorCh:
+									primaryDeadline.Stop()
+									excludeProviders[provider.ID] = struct{}{}
+									s.cancelDispatch(provider, pr)
+									lastErr = errMsg2.Error
+									lastErrCode = errMsg2.StatusCode
+									lastFailedVersion = failedProviderVersion(provider)
+									s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, &heldChunks)
+									provider = nil
+									pr = nil
+									continue dispatch
+								case <-primaryDeadline.C:
+									if len(heldChunks) > 0 {
+										// Primary preamble liveness — extend by the
+										// preamble-to-content budget instead of failing.
+										accepted = true
+										preambleLiveness = true
+										break backupFailedWaitPrimary
+									}
+									excludeProviders[provider.ID] = struct{}{}
+									s.cancelDispatch(provider, pr)
+									lastErr = "timeout waiting for first response"
+									lastErrCode = http.StatusGatewayTimeout
+									if s.metrics != nil {
+										s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+									}
+									s.ddIncr("inference.dispatches", []string{"status:timeout"})
+									provider = nil
+									pr = nil
+									continue dispatch
+								case <-r.Context().Done():
+									primaryDeadline.Stop()
+									s.cancelDispatch(provider, pr)
+									refundReservation()
+									return
+								}
+							}
+							break race
+
+						case <-raceDeadline.C:
+							if !raceExtended && (len(heldChunks) > 0 || len(backupHeld) > 0) {
+								// Liveness from at least one racer: don't fail at the
+								// TTFT deadline — extend once by the preamble-to-content
+								// budget (zero bytes have reached the client; a genuine
+								// cold load would have signalled AcceptedCh) and keep both
+								// racing for first content, with both error channels still
+								// armed for retry.
+								raceExtended = true
+								raceDeadline = time.NewTimer(preambleContentTimeout)
+								continue race
+							}
+							// Both missed deadline.
+							s.cancelDispatch(provider, pr)
+							s.cancelDispatch(backupProvider, backupPR)
+							excludeProviders[provider.ID] = struct{}{}
+							excludeProviders[backupProvider.ID] = struct{}{}
+							lastErr = "timeout waiting for first response (both providers)"
+							lastErrCode = http.StatusGatewayTimeout
+							if s.metrics != nil {
+								s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+							}
+							s.ddIncr("inference.dispatches", []string{"status:timeout"})
+							provider = nil
+							pr = nil
+							continue dispatch
+
+						case <-r.Context().Done():
+							raceDeadline.Stop()
+							s.cancelDispatch(provider, pr)
+							s.cancelDispatch(backupProvider, backupPR)
+							refundReservation()
+							return
+						}
+					}
+				}
+				break firstChunkWait
+
+			case <-deadlineTimer.C:
+				speculativeTimer.Stop()
+				if len(heldChunks) > 0 {
+					// Preamble liveness — the provider is alive but still in its
+					// pre-content phase. Fall through to the extended
+					// (preambleContentTimeout) wait instead of failing the attempt.
+					accepted = true
+					preambleLiveness = true
+					break firstChunkWait
+				}
 				excludeProviders[provider.ID] = struct{}{}
 				s.cancelDispatch(provider, pr)
-				lastErr = "provider accepted but timed out before first chunk"
+				lastErr = "timeout waiting for first response"
 				lastErrCode = http.StatusGatewayTimeout
-				s.logger.Warn("provider timed out after accepting request, retrying",
+				s.logger.Warn("provider timeout (full deadline), retrying",
 					"request_id", requestID,
 					"provider_id", provider.ID,
 					"attempt", attempt+1,
 				)
 				s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
-					"provider accepted timeout",
+					"provider first-chunk timeout",
 					map[string]any{
 						"provider_id": provider.ID,
 						"attempt":     attempt + 1,
-						"reason":      "accepted_timeout",
+						"reason":      "first_chunk_timeout",
 					})
 				if s.metrics != nil {
 					s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
@@ -2344,11 +2619,159 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				s.ddIncr("inference.dispatches", []string{"status:timeout"})
 				provider = nil
 				pr = nil
-				continue
+				continue dispatch
+
 			case <-r.Context().Done():
+				speculativeTimer.Stop()
+				deadlineTimer.Stop()
 				s.cancelDispatch(provider, pr)
 				refundReservation()
 				return
+			}
+		}
+
+		// Provider accepted or sent first content chunk — commit to this
+		// provider. If not committed yet, wait for the first content chunk.
+		// The budget depends on WHY we're here: a genuine AcceptedCh (the
+		// backend is reloading the model — legitimately minutes) keeps the
+		// full inferenceTimeout; a boilerplate-liveness extension past an
+		// expired TTFT deadline gets only preambleContentTimeout — zero bytes
+		// have been written to the client, so a preamble-then-stall provider
+		// must fail over instead of pinning the request for 10 minutes.
+		if accepted && !committed {
+			firstContentBudget := inferenceTimeout
+			if preambleLiveness {
+				firstContentBudget = preambleContentTimeout
+			}
+			chunkTimer := time.NewTimer(firstContentBudget)
+		acceptedWait:
+			for {
+				select {
+				case chunk, ok := <-pr.ChunkCh:
+					if ok && len(heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
+						heldChunks = append(heldChunks, chunk)
+						if pr.Timing.FirstChunkAt.IsZero() {
+							pr.Timing.FirstChunkAt = time.Now()
+						}
+						continue acceptedWait
+					}
+					chunkTimer.Stop()
+					if ok {
+						firstChunk = chunk
+						if pr.Timing.FirstChunkAt.IsZero() {
+							pr.Timing.FirstChunkAt = time.Now()
+						}
+						committed = true
+					} else {
+						// Closed — check for error. Use a short grace
+						// period instead of a non-blocking default to
+						// close the race where Go's select picks the
+						// ChunkCh close before the ErrorCh value (sent
+						// by the provider handler before closing ChunkCh).
+						select {
+						case errMsg := <-pr.ErrorCh:
+							excludeProviders[provider.ID] = struct{}{}
+							s.cancelDispatch(provider, pr)
+							lastErr = errMsg.Error
+							lastErrCode = errMsg.StatusCode
+							lastFailedVersion = failedProviderVersion(provider)
+							s.logger.Warn("provider failed after accepting request, retrying",
+								"request_id", requestID,
+								"provider_id", provider.ID,
+								"attempt", attempt+1,
+								"error", errMsg.Error,
+							)
+							s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
+								"provider failed after accepting request, retrying",
+								map[string]any{
+									"provider_id": provider.ID,
+									"attempt":     attempt + 1,
+									"reason":      "provider_error",
+									"status_code": errMsg.StatusCode,
+								})
+							if s.metrics != nil {
+								s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+							}
+							if !s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &heldChunks) {
+								s.ddIncr("inference.dispatches", []string{"status:retry"})
+							}
+							provider = nil
+							pr = nil
+							continue dispatch
+						case <-time.After(50 * time.Millisecond):
+							committed = true
+						}
+					}
+					break acceptedWait
+				case errMsg := <-pr.ErrorCh:
+					chunkTimer.Stop()
+					excludeProviders[provider.ID] = struct{}{}
+					s.cancelDispatch(provider, pr)
+					lastErr = errMsg.Error
+					lastErrCode = errMsg.StatusCode
+					lastFailedVersion = failedProviderVersion(provider)
+					s.logger.Warn("provider failed after accepting request, retrying",
+						"request_id", requestID,
+						"provider_id", provider.ID,
+						"attempt", attempt+1,
+						"error", errMsg.Error,
+					)
+					s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
+						"provider failed after accepting request, retrying",
+						map[string]any{
+							"provider_id": provider.ID,
+							"attempt":     attempt + 1,
+							"reason":      "provider_error",
+							"status_code": errMsg.StatusCode,
+						})
+					if s.metrics != nil {
+						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+					}
+					if !s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &heldChunks) {
+						s.ddIncr("inference.dispatches", []string{"status:retry"})
+					}
+					provider = nil
+					pr = nil
+					continue dispatch
+				case <-chunkTimer.C:
+					excludeProviders[provider.ID] = struct{}{}
+					s.cancelDispatch(provider, pr)
+					// Accepted-then-silent (or preamble-then-stall) is a
+					// provider-at-fault 504 — feed the breaker so a provider
+					// that repeatedly acks and stalls enters cooldown instead
+					// of soaking retries forever. (504 is one of the breaker's
+					// counted codes; this arm is where those 504s originate.)
+					s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout)
+					lastErr = "provider accepted but timed out before first chunk"
+					if preambleLiveness {
+						lastErr = "provider sent preamble but stalled before first content"
+					}
+					lastErrCode = http.StatusGatewayTimeout
+					s.logger.Warn("provider timed out after accepting request, retrying",
+						"request_id", requestID,
+						"provider_id", provider.ID,
+						"attempt", attempt+1,
+						"preamble_liveness", preambleLiveness,
+					)
+					s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
+						"provider accepted timeout",
+						map[string]any{
+							"provider_id": provider.ID,
+							"attempt":     attempt + 1,
+							"reason":      "accepted_timeout",
+						})
+					if s.metrics != nil {
+						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+					}
+					s.ddIncr("inference.dispatches", []string{"status:timeout"})
+					provider = nil
+					pr = nil
+					continue dispatch
+				case <-r.Context().Done():
+					s.cancelDispatch(provider, pr)
+					refundReservation()
+					return
+				}
 			}
 		}
 
@@ -2508,20 +2931,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.sendProviderCancel(provider, requestID)
 	}()
 
+	// The committed provider's held preamble chunks stream out first, in
+	// arrival order, ahead of the content chunk that committed the dispatch.
+	firstChunks := heldChunks
+	if firstChunk != "" {
+		firstChunks = append(firstChunks, firstChunk)
+	}
 	if stream {
-		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 	} else {
-		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 	}
 }
 
 // handleStreamingResponseWithFirstChunk streams SSE chunks to the consumer.
-// If firstChunk is non-empty, it is written before reading further chunks
-// from the channel. This allows the dispatch loop to "peek" at the first
-// chunk for retry decisions without losing it.
-func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+// Any firstChunks (held preamble + first content chunk) are written in order
+// before reading further chunks from the channel. This allows the dispatch
+// loop to "peek" at chunks for retry decisions without losing them.
+func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
 	if pr.IsResponsesAPI {
-		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 		return
 	}
 
@@ -2561,8 +2990,13 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	// token counts (CompleteCh) before forwarding it.
 	var pendingFinish map[string]any
 
-	// Write the first chunk that was already consumed during dispatch.
-	if firstChunk != "" && !isSSEDoneChunk(firstChunk) {
+	// Write the chunks that were already consumed during dispatch (held
+	// preamble first, then the committing content chunk), each through the
+	// same per-chunk special-casing the relay loop below applies.
+	for _, firstChunk := range firstChunks {
+		if firstChunk == "" || isSSEDoneChunk(firstChunk) {
+			continue
+		}
 		if strings.Contains(firstChunk, `"response.created"`) || strings.Contains(firstChunk, `"response.output_text.delta"`) {
 			sawResponsesAPI = true
 		}
@@ -2596,6 +3030,8 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+						s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 						errData, _ := json.Marshal(map[string]any{
 							"error": map[string]any{
 								"message": errMsg.Error,
@@ -2609,11 +3045,13 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				default:
 				}
 				if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
 					fmt.Fprintf(w, "data: {\"error\":{\"message\":\"provider ended without completion\",\"type\":\"provider_error\"}}\n\n")
 					flusher.Flush()
 					return
 				}
 				// Channel closed — inference complete.
+				s.noteInferenceSuccess(pr)
 				// For Responses API streams, the provider already sent
 				// "response.completed" as the terminal event. Adding
 				// extra chunks would break SDK parsers.
@@ -2734,6 +3172,8 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			errData, _ := json.Marshal(map[string]any{
 				"error": map[string]any{
 					"message": errMsg.Error,
@@ -2746,6 +3186,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 
 		case <-timer.C:
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
 			fmt.Fprintf(w, "data: {\"error\":{\"message\":\"request timed out\",\"type\":\"timeout\"}}\n\n")
 			flusher.Flush()
 			return
@@ -2756,7 +3197,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	}
 }
 
-func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
@@ -2774,8 +3215,10 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 	emitter := newResponsesStreamEmitter(w, flusher, pr, responseID, createdAt)
 	emitter.start()
 
-	if firstChunk != "" {
-		emitter.handleChunk(firstChunk)
+	for _, firstChunk := range firstChunks {
+		if firstChunk != "" {
+			emitter.handleChunk(firstChunk)
+		}
 	}
 
 	timer := time.NewTimer(inferenceTimeout)
@@ -2796,9 +3239,11 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				case <-time.After(2 * time.Second):
 				}
 				if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
 					emitter.emitError("provider_error", "provider ended without completion")
 					return
 				}
+				s.noteInferenceSuccess(pr)
 				emitter.finish(usage)
 				return
 			}
@@ -2816,11 +3261,14 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			emitter.emitError("provider_error", errMsg.Error)
 			return
 
 		case <-timer.C:
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
 			emitter.emitError("timeout", "request timed out")
 			return
 
@@ -2832,14 +3280,17 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 
 // handleNonStreamingResponseWithFirstChunk collects all chunks from the
 // provider and assembles them into a single OpenAI-compatible JSON response.
-// If firstChunk is non-empty, it is prepended to the collected chunks.
-func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+// Any firstChunks (held preamble + first content chunk consumed during
+// dispatch) seed the collected chunks in order.
+func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
 	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
 	defer cancel()
 
 	var chunks []string
-	if firstChunk != "" {
-		chunks = append(chunks, firstChunk)
+	for _, firstChunk := range firstChunks {
+		if firstChunk != "" {
+			chunks = append(chunks, firstChunk)
+		}
 	}
 
 	for {
@@ -2850,6 +3301,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
 						statusCode := errMsg.StatusCode
 						if statusCode == 0 {
 							statusCode = http.StatusBadGateway
@@ -2911,6 +3363,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 										return
 									}
 									respObj := chatCompletionToResponses(chatResp, consumerModel(pr), pr.SESignature, pr.ResponseHash)
+									s.noteInferenceSuccess(pr)
 									writeJSON(w, http.StatusOK, respObj)
 									return
 								}
@@ -2926,6 +3379,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 								obj["se_signature"] = pr.SESignature
 								obj["response_hash"] = pr.ResponseHash
 							}
+							s.noteInferenceSuccess(pr)
 							writeJSON(w, http.StatusOK, obj)
 							return
 						}
@@ -2947,6 +3401,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					} else {
 						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
 					}
+					s.noteInferenceSuccess(pr)
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
 					s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
@@ -2961,6 +3416,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
 			statusCode := errMsg.StatusCode
 			if statusCode == 0 {
 				statusCode = http.StatusBadGateway
@@ -3357,6 +3813,81 @@ func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 func isSSEDoneChunk(chunk string) bool {
 	line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(chunk), "data:"))
 	return line == "[DONE]"
+}
+
+// isBoilerplateChunk reports whether a streamed provider chunk carries no
+// consumer-visible output yet: the preamble emitted BEFORE the failure-prone
+// work (media decode, template render, vision prefill) begins. The dispatch
+// loop holds such chunks instead of committing on them, so a provider that
+// dies after its preamble is retried invisibly instead of surfacing an
+// in-band SSE error with zero retries.
+//
+// Boilerplate is exactly:
+//   - a chat.completion.chunk whose choices[].delta carries ONLY the assistant
+//     role — content/reasoning/refusal absent, null, or "" (some backends ride
+//     an empty content along with the role), tool_calls absent/null/empty,
+//     finish_reason null, no usage object; or
+//   - a Responses API response.created / response.in_progress lifecycle event
+//     (detected with the same Contains idiom the relay uses for passthrough).
+//
+// Everything else — content or tool_call deltas, finish chunks, usage-only
+// chunks, [DONE], complete responses, unparseable data — commits the dispatch.
+func isBoilerplateChunk(chunk string) bool {
+	if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.in_progress"`) {
+		return true
+	}
+	line := strings.TrimPrefix(chunk, "data: ")
+	// Cheap gate: the role preamble always names the role; chunks that can't
+	// be it (content deltas, finish chunks, [DONE], garbage) skip the parse.
+	if !strings.Contains(line, `"role"`) {
+		return false
+	}
+	var parsed struct {
+		Object  string          `json:"object"`
+		Usage   json.RawMessage `json:"usage"`
+		Choices []struct {
+			Delta        map[string]json.RawMessage `json:"delta"`
+			FinishReason *string                    `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+		return false
+	}
+	if parsed.Object != "chat.completion.chunk" {
+		return false
+	}
+	if len(parsed.Usage) > 0 && string(parsed.Usage) != "null" {
+		return false
+	}
+	if len(parsed.Choices) == 0 {
+		return false
+	}
+	for _, choice := range parsed.Choices {
+		if choice.FinishReason != nil {
+			return false
+		}
+		if _, hasRole := choice.Delta["role"]; !hasRole {
+			return false
+		}
+		for field, v := range choice.Delta {
+			switch field {
+			case "role":
+				// The preamble itself.
+			case "content", "reasoning_content", "reasoning", "refusal":
+				if s := string(v); s != `""` && s != "null" {
+					return false
+				}
+			case "tool_calls":
+				if s := string(v); s != "null" && s != "[]" {
+					return false
+				}
+			default:
+				// Unknown delta payload — assume it's real output.
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func parseUsageOnlyStreamChunk(chunk string) (obj map[string]any, ok bool) {
@@ -4616,6 +5147,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// Normalize tool JSON-Schemas before parsing and dispatch so providers
+	// running binaries older than 0.6.3 (which normalize provider-side, #310)
+	// never see the schema shapes that crash Gemma-style chat templates
+	// ("upper filter requires string" — nullable array types, missing types).
+	// Same rationale as handleChatCompletions; Anthropic /v1/messages bodies
+	// carry a top-level "tools" array too. The provider body is rebuilt from
+	// `parsed` below, so normalizing before the unmarshal covers it.
+	rawBody = NormalizeToolSchemas(rawBody)
+
 	var parsed map[string]any
 	if err := json.Unmarshal(rawBody, &parsed); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
@@ -4671,6 +5211,19 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if requiresVision && !s.registry.HasVisionProviderForModel(model) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no vision-capable provider available for image/video input right now", publicModel),
+			withParam("model")))
+		return
+	}
+
+	// Tools gating (see handleChatCompletions): tool-bearing requests only
+	// route to providers past the tools version floor with a healthy
+	// chat-template render, so fail fast when the model's whole pool is
+	// trait-gated instead of queueing into a misleading capacity 429.
+	// Anthropic and completions bodies share the top-level "tools" field.
+	hasTools := requestHasTools(parsed)
+	if hasTools && !s.registry.HasToolCapableProviderForModel(model) {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
 			withParam("model")))
 		return
 	}
@@ -4789,13 +5342,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		FreeSelfRoute:          policy.enabled,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequiresVision:         requiresVision,
-		RequestedMaxTokens:     requestedMaxTokens,
-		ReservedMicroUSD:       reservedMicroUSD,
-		BaseReservedMicroUSD:   reservedMicroUSD,
-		AcceptedCh:             make(chan struct{}, 1),
-		ChunkCh:                make(chan string, chunkBufferSize),
-		CompleteCh:             make(chan protocol.UsageInfo, 1),
-		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
+		// Single-attempt path: no retry loop, so no AvoidVersion to thread.
+		Traits:               registry.RequestTraits{HasTools: hasTools},
+		RequestedMaxTokens:   requestedMaxTokens,
+		ReservedMicroUSD:     reservedMicroUSD,
+		BaseReservedMicroUSD: reservedMicroUSD,
+		AcceptedCh:           make(chan struct{}, 1),
+		ChunkCh:              make(chan string, chunkBufferSize),
+		CompleteCh:           make(chan protocol.UsageInfo, 1),
+		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
 	}
 
 	// refundExtra credits back the provider-specific surcharge that
@@ -5054,6 +5609,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				s.sendProviderCancel(provider, requestID)
 				refundExtra()
 				refundReservation()
+				s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
 				statusCode := errMsg.StatusCode
 				if statusCode == 0 {
 					statusCode = http.StatusBadGateway
@@ -5071,6 +5627,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
 		refundReservation()
+		s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
 		statusCode := errMsg.StatusCode
 		if statusCode == 0 {
 			statusCode = http.StatusBadGateway
@@ -5113,6 +5670,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					s.sendProviderCancel(provider, requestID)
 					refundExtra()
 					refundReservation()
+					s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
 					statusCode := errMsg.StatusCode
 					if statusCode == 0 {
 						statusCode = http.StatusBadGateway
@@ -5130,6 +5688,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
+			s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
 			statusCode := errMsg.StatusCode
 			if statusCode == 0 {
 				statusCode = http.StatusBadGateway
@@ -5142,6 +5701,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
+			// Accepted-then-silent is a provider-at-fault 504 — feed the
+			// breaker (single-attempt path: no retry here, but repeated
+			// stalls must still accumulate into the routing cooldown).
+			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout)
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))
 			return
@@ -5183,10 +5746,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.sendProviderCancel(provider, requestID)
 	}()
 
+	var firstChunks []string
+	if firstChunk != "" {
+		firstChunks = []string{firstChunk}
+	}
 	if stream {
-		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 	} else {
-		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 	}
 }
 

@@ -246,11 +246,14 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// (always owned here) or for prefer when the winner happens to be owned.
 	owned := p.AccountID != "" && p.AccountID == pr.OwnerAccountID
 	relaxTrust := pr.SelfRouteOnly || (pr.PreferOwner && owned)
-	// Re-check the vision gate under the provider lock too: the winner must still
-	// advertise a vision-capable build if the request carries media (guards the
-	// race where its model set changed between snapshot and reservation).
+	// Re-check the vision and trait gates under the provider lock too: the
+	// winner must still advertise a vision-capable build if the request carries
+	// media, and must still meet the capability version floors /
+	// template_render_ok gate if it carries tools (guards the race where its
+	// model set changed between snapshot and reservation).
 	if !r.providerCanAdmitLocked(p, model, relaxTrust) ||
-		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model)) {
+		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model)) ||
+		(pr.Traits.hasFloorGatedTrait() && !r.providerEligibleForTraitsLocked(p, model, pr.Traits)) {
 		return nil, RoutingDecision{
 			Model:                   model,
 			CandidateCount:          candidateCount,
@@ -355,6 +358,21 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 				continue
 			}
 		}
+		// Capability-trait gate: a tool-bearing request must only route to a
+		// provider whose binary meets the tools version floor AND whose
+		// advertised build does not declare a broken chat-template render
+		// (template_render_ok=false). Old binaries crash Gemma's template on
+		// un-normalized OpenAI tool schemas — a deterministic failure, so a
+		// dispatch there is a guaranteed error. Same p.mu discipline as the
+		// vision gate above.
+		if pr.Traits.hasFloorGatedTrait() {
+			p.mu.Lock()
+			traitsOK := r.providerEligibleForTraitsLocked(p, model, pr.Traits)
+			p.mu.Unlock()
+			if !traitsOK {
+				continue
+			}
+		}
 		candidate, reason, ok := r.buildCandidateWithReason(snap, pr)
 		if !ok {
 			switch reason {
@@ -389,6 +407,24 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 		if len(owned) > 0 {
 			pool = owned
+		}
+	}
+
+	// Version-diverse retry (SOFT): when a previous attempt failed on a given
+	// binary version, prefer candidates running any OTHER version so a
+	// deterministic per-version bug (e.g. a chat-template render crash) cannot
+	// consume every retry on identical binaries. Diversity never fails closed:
+	// when every candidate runs the avoided version, keep the full pool rather
+	// than failing the request.
+	if pr.Traits.AvoidVersion != "" {
+		diverse := make([]*routingCandidate, 0, len(pool))
+		for _, c := range pool {
+			if providerVersion(c.provider) != pr.Traits.AvoidVersion {
+				diverse = append(diverse, c)
+			}
+		}
+		if len(diverse) > 0 {
+			pool = diverse
 		}
 	}
 
@@ -465,6 +501,18 @@ func providerOwnedBy(p *Provider, accountID string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.AccountID != "" && p.AccountID == accountID
+}
+
+// providerVersion reads the provider's binary version under p.mu (set by the
+// API layer after registration; p.mu guards provider field access — mirrors
+// providerOwnedBy). Used by the version-diverse retry pool filter.
+func providerVersion(p *Provider) string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Version
 }
 
 // OwnedProviderSummary reports, for the given account, how many of its
@@ -556,6 +604,14 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, selfRouteOw
 	// (ReserveProviderEx), so the cool-down MUST be enforced here, not only in
 	// the FindProviderWithTrust / RoutableProviderIDsForBuild paths.
 	if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
+		return routingSnapshot{}, false
+	}
+	// Likewise skip a pair quarantined by the inference-error circuit breaker:
+	// repeated provider-side (5xx) failures for this pair — e.g. a
+	// deterministic chat-template render crash — mean a retry here fails
+	// identically, so routing must fall to a different provider. Cleared by
+	// RecordInferenceSuccess or by TTL expiry.
+	if r.inferenceErrorCooldownActiveLocked(p.ID, model, now) {
 		return routingSnapshot{}, false
 	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
@@ -957,8 +1013,11 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, selfRouteOw
 		return false
 	}
 	// Under-lock re-check: don't admit a pair that entered the dispatch
-	// load-failure cool-down between selection and reservation.
-	if r.dispatchLoadCooldownActiveLocked(p.ID, model, time.Now()) {
+	// load-failure or inference-error cool-down between selection and
+	// reservation.
+	now := time.Now()
+	if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) ||
+		r.inferenceErrorCooldownActiveLocked(p.ID, model, now) {
 		return false
 	}
 	if !p.hasConcurrencyHeadroomForModelLocked(model) {

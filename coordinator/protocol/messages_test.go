@@ -47,6 +47,68 @@ func TestModelInfoIsVisionSymmetry(t *testing.T) {
 	}
 }
 
+// TestModelInfoTemplateRenderOKSymmetry verifies the tri-state
+// template_render_ok field survives the wire: true encodes, FALSE ENCODES
+// (pointer false is the exclusion signal — omitempty must not drop it), nil is
+// omitted entirely, and an absent key decodes back to nil (pre-0.6.5 provider,
+// no opinion).
+func TestModelInfoTemplateRenderOKSymmetry(t *testing.T) {
+	// Self-check passed: template_render_ok present and true.
+	renderOK := true
+	pass := ModelInfo{ID: "gemma-4-26b-qat-4bit", SizeBytes: 1, TemplateRenderOK: &renderOK}
+	b, err := json.Marshal(pass)
+	if err != nil {
+		t.Fatalf("marshal render-ok: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"template_render_ok":true`)) {
+		t.Fatalf("expected template_render_ok:true in JSON, got %s", b)
+	}
+	var back ModelInfo
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal render-ok: %v", err)
+	}
+	if back.TemplateRenderOK == nil || !*back.TemplateRenderOK {
+		t.Fatalf("expected TemplateRenderOK=*true after round-trip, got %v", back.TemplateRenderOK)
+	}
+
+	// Self-check FAILED: pointer false must encode and round-trip — it is the
+	// signal that excludes the provider from tool-bearing requests.
+	renderBroken := false
+	fail := ModelInfo{ID: "gemma-4-26b-qat-4bit", SizeBytes: 1, TemplateRenderOK: &renderBroken}
+	b, err = json.Marshal(fail)
+	if err != nil {
+		t.Fatalf("marshal render-broken: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"template_render_ok":false`)) {
+		t.Fatalf("pointer false must survive omitempty and encode, got %s", b)
+	}
+	back = ModelInfo{}
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal render-broken: %v", err)
+	}
+	if back.TemplateRenderOK == nil || *back.TemplateRenderOK {
+		t.Fatalf("expected TemplateRenderOK=*false after round-trip, got %v", back.TemplateRenderOK)
+	}
+
+	// Pre-0.6.5 provider: nil omits the key, and a payload without the key
+	// decodes to nil (no opinion), never to false.
+	legacy := ModelInfo{ID: "gpt-oss-20b", SizeBytes: 1}
+	b, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy: %v", err)
+	}
+	if bytes.Contains(b, []byte("template_render_ok")) {
+		t.Fatalf("expected template_render_ok to be omitted when nil, got %s", b)
+	}
+	var decoded ModelInfo
+	if err := json.Unmarshal([]byte(`{"id":"gpt-oss-20b","size_bytes":1}`), &decoded); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if decoded.TemplateRenderOK != nil {
+		t.Fatalf("expected TemplateRenderOK=nil when the field is absent, got %v", *decoded.TemplateRenderOK)
+	}
+}
+
 func TestRegisterMessageMarshal(t *testing.T) {
 	msg := RegisterMessage{
 		Type: TypeRegister,

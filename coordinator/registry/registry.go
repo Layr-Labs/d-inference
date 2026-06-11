@@ -131,6 +131,11 @@ type PendingRequest struct {
 	// drop the media and answer image-blind. Set by the consumer handler from the
 	// parsed content parts; enforced in the candidate filter and final admit.
 	RequiresVision bool
+	// Traits carries request-shape attributes beyond the model id (tool
+	// schemas, retry version-diversity) that gate or bias provider selection.
+	// Set by the consumer handler; enforced in the candidate filter and final
+	// admit. See RequestTraits.
+	Traits RequestTraits
 	// RequestedMaxTokens is the consumer's requested output budget (or a
 	// sensible default when omitted). It is used for backlog estimation.
 	RequestedMaxTokens int
@@ -709,6 +714,17 @@ type Registry struct {
 	// on re-registration and on a served request for the pair.
 	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
 
+	// inferenceErrorStrikes / inferenceErrorCooldowns implement the error-class
+	// circuit breaker for provider-side inference failures: a pair that returns
+	// repeated 5xx errors (e.g. the deterministic Gemma chat-template render
+	// crash on tool schemas) enters a routing cool-down so retries fall to
+	// OTHER providers instead of burning every attempt on the same broken pair.
+	// 4xx (client-shape) errors never count. Strikes slide over
+	// inferenceErrorWindow; a served request clears both. Guarded by r.mu like
+	// dispatchLoadCooldowns. See error_cooldown.go.
+	inferenceErrorStrikes   map[string][]time.Time // key: "providerID:modelID", value: recent 5xx strike times
+	inferenceErrorCooldowns map[string]time.Time   // key: "providerID:modelID", value: expiry
+
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
 	// transient coordinator stall (which ages many LastHeartbeat values at once)
@@ -743,15 +759,17 @@ type modelLoadAction struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:             make(map[string]*Provider),
-		queue:                 NewRequestQueue(10, 120*time.Second),
-		MinTrustLevel:         TrustHardware,
-		tpsRegistry:           NewTPSRegistry(),
-		modelProviders:        make(map[string]*atomic.Int64),
-		pendingModelLoads:     make(map[string]time.Time),
-		dispatchLoadCooldowns: make(map[string]time.Time),
-		evictStrikes:          make(map[string]int),
-		logger:                logger,
+		providers:               make(map[string]*Provider),
+		queue:                   NewRequestQueue(10, 120*time.Second),
+		MinTrustLevel:           TrustHardware,
+		tpsRegistry:             NewTPSRegistry(),
+		modelProviders:          make(map[string]*atomic.Int64),
+		pendingModelLoads:       make(map[string]time.Time),
+		dispatchLoadCooldowns:   make(map[string]time.Time),
+		inferenceErrorStrikes:   make(map[string][]time.Time),
+		inferenceErrorCooldowns: make(map[string]time.Time),
+		evictStrikes:            make(map[string]int),
+		logger:                  logger,
 	}
 }
 

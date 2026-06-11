@@ -253,6 +253,16 @@ struct Start: AsyncParsableCommand {
         // setup is itself captured.
         PanicHook.install()
 
+        // Ensure crash recovery is armed for THIS running daemon, however it was
+        // launched — manual `start`, login RunAtLoad, or a background auto-update
+        // relaunch (which restarts the daemon without going through the
+        // interactive installer, so it would otherwise never arm the watchdog).
+        // Idempotent + best-effort: only install when not already loaded, so
+        // ordinary watchdog-driven restarts don't churn it.
+        if config.provider.autoRestart, !WatchdogAgent.isLoaded() {
+            try? WatchdogAgent.installAndStart()
+        }
+
         // ----- Telemetry: configure now so reconnect/inference/panic events flow. -----
         TelemetryClient.shared.configure(TelemetryClientConfig(
             coordinatorURL: coordinatorURL,
@@ -537,6 +547,19 @@ struct Start: AsyncParsableCommand {
             )
         )
 
+        // Arm crash recovery: a separate launchd watchdog (`io.darkbloom.watchdog`)
+        // relaunches the provider ~5 minutes after a crash. A plain `darkbloom
+        // stop` disarms it; `auto_restart = false` in the config opts out.
+        // Best-effort — a watchdog failure must never fail `start`.
+        let autoRestartOn = config.provider.autoRestart
+        if autoRestartOn {
+            do {
+                try WatchdogAgent.installAndStart()
+            } catch {
+                printError("note: could not install crash-recovery watchdog: \(error)")
+            }
+        }
+
         let logPath = LaunchAgent.logPath().path
         print("Provider started as background service.")
         print("  Models:  \(selectedModelIDs.count)")
@@ -548,6 +571,9 @@ struct Start: AsyncParsableCommand {
             print("  Local:   \(shownURL) (unified mode — run `darkbloom local` for the API key)")
         }
         print("  Logs:    \(logPath)")
+        if autoRestartOn {
+            print("  Recovery: auto-restart on (relaunches ~5 min after a crash)")
+        }
         print()
         print("  darkbloom stop     Stop the provider")
         print("  darkbloom restart  Restart with the current selection")

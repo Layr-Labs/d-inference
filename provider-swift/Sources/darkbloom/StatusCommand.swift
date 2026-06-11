@@ -26,6 +26,7 @@ struct Status: AsyncParsableCommand {
         print("Configured model: \(config.backend.model ?? "auto-select")")
         print("Continuous batching: \(config.backend.continuousBatching ? "enabled" : "disabled")")
         print("Idle timeout: \(config.backend.idleTimeoutMins == 0 ? "disabled" : "\(config.backend.idleTimeoutMins)m")")
+        print("Auto-restart: \(autoRestartStatus(config: config))")
 
         if let hardware = snapshot.hardware {
             print("Hardware: \(hardware.chipName), \(hardware.memoryGb) GB RAM, \(hardware.gpuCores) GPU cores")
@@ -50,6 +51,21 @@ struct Status: AsyncParsableCommand {
         // Live daemon state (from the state file the running daemon writes).
         print("")
         printDaemonStatus()
+    }
+
+    /// One-line summary of crash-recovery state: the config opt-out plus whether
+    /// the launchd watchdog agent is actually armed.
+    private func autoRestartStatus(config: ProviderConfig) -> String {
+        guard config.provider.autoRestart else {
+            return "off (auto_restart = false)"
+        }
+        if WatchdogAgent.isLoaded() {
+            return "on (watchdog active; relaunches ~5 min after a crash)"
+        }
+        if WatchdogAgent.isInstalled() {
+            return "on (watchdog installed but not loaded)"
+        }
+        return "on (watchdog not installed — run `darkbloom start` or `restart` to arm)"
     }
 
     /// Prints the running daemon's live state, including the coordinator's last

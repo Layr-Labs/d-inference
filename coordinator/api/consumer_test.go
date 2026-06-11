@@ -1909,11 +1909,16 @@ func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 	} else if n, err := strconv.Atoi(ra); err != nil || n < 1 {
 		t.Errorf("Retry-After = %q, want positive integer seconds", ra)
 	}
-	var body map[string]map[string]any
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if body["error"]["code"] != "service_unavailable" {
-		t.Errorf("code = %v, want service_unavailable", body["error"]["code"])
+	if body.Error.Code != "service_unavailable" {
+		t.Errorf("code = %q, want service_unavailable", body.Error.Code)
 	}
 }

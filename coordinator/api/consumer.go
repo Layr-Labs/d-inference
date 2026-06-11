@@ -2380,16 +2380,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
 		}
 		s.ddIncr("inference.dispatches", []string{"status:failure"})
+		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
+			w.Header().Set("Retry-After", strconv.Itoa(s.estimateRetryAfter(model)))
+		}
 		if statusCode == http.StatusTooManyRequests {
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			writeJSON(w, statusCode, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("all providers at capacity after %d attempt(s): %s", maxDispatchAttempts, lastErr),
 				withCode("rate_limit_exceeded")))
 		} else {
-			if statusCode == http.StatusServiceUnavailable {
-				w.Header().Set("Retry-After", strconv.Itoa(s.estimateRetryAfter(model)))
-			}
 			writeJSON(w, statusCode, errorResponse("provider_error",
 				fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
 		}

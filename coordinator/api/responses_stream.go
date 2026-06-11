@@ -117,14 +117,21 @@ type responsesStreamEmitter struct {
 	messageItemID string
 	contentBuf    strings.Builder
 
-	fnOpen    bool
-	fnIndex   int
-	fnItemID  string
-	fnCallID  string
-	fnName    string
-	fnArgsBuf strings.Builder
+	fnCalls     map[int]*streamFnState
+	fnOrder     []int
+	sawToolCall bool
 
 	finishReason string
+}
+
+// streamFnState tracks one in-progress function_call output item, keyed by
+// the provider chunk's tool_calls[].index.
+type streamFnState struct {
+	outputIndex int
+	itemID      string
+	callID      string
+	name        string
+	argsBuf     strings.Builder
 }
 
 func newResponsesStreamEmitter(w http.ResponseWriter, flusher http.Flusher, pr *registry.PendingRequest, responseID string, createdAt int64) *responsesStreamEmitter {
@@ -135,6 +142,7 @@ func newResponsesStreamEmitter(w http.ResponseWriter, flusher http.Flusher, pr *
 		responseID: responseID,
 		createdAt:  createdAt,
 		model:      consumerModel(pr),
+		fnCalls:    map[int]*streamFnState{},
 	}
 }
 
@@ -246,9 +254,21 @@ func (e *responsesStreamEmitter) closeReasoning() {
 }
 
 func (e *responsesStreamEmitter) appendContent(delta string) {
+	e.ensureMessageOpen()
+	e.contentBuf.WriteString(delta)
+	e.emit("response.output_text.delta", map[string]any{
+		"item_id":       e.messageItemID,
+		"output_index":  e.outputIndex,
+		"content_index": 0,
+		"delta":         delta,
+		"logprobs":      []any{},
+	})
+}
+
+func (e *responsesStreamEmitter) ensureMessageOpen() {
 	if !e.messageOpen {
 		e.closeReasoning()
-		e.closeFunctionCall()
+		e.closeFunctionCalls()
 		e.messageOpen = true
 		e.messageItemID = responseItemID("msg", e.pr.RequestID, e.outputIndex)
 		e.emit("response.output_item.added", map[string]any{
@@ -268,14 +288,6 @@ func (e *responsesStreamEmitter) appendContent(delta string) {
 			"part":          map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
 		})
 	}
-	e.contentBuf.WriteString(delta)
-	e.emit("response.output_text.delta", map[string]any{
-		"item_id":       e.messageItemID,
-		"output_index":  e.outputIndex,
-		"content_index": 0,
-		"delta":         delta,
-		"logprobs":      []any{},
-	})
 }
 
 func (e *responsesStreamEmitter) closeMessage() {
@@ -316,100 +328,104 @@ func (e *responsesStreamEmitter) closeMessage() {
 	e.messageOpen = false
 }
 
+// appendToolCall routes one tool_calls[] fragment to its function_call item.
+// Provider chunks key fragments by a stable tool_calls[].index, and fragments
+// for several calls may interleave, so each index gets its own item state and
+// reserved output_index.
 func (e *responsesStreamEmitter) appendToolCall(tc streamToolCallDelta) {
-	if e.fnOpen && tc.Index != e.fnIndex {
-		e.closeFunctionCall()
-	}
-	if !e.fnOpen {
+	st, ok := e.fnCalls[tc.Index]
+	if !ok {
 		e.closeReasoning()
 		e.closeMessage()
-		e.fnOpen = true
-		e.fnIndex = tc.Index
-		e.fnItemID = responseItemID("fc", e.pr.RequestID, e.outputIndex)
-		e.fnCallID = tc.ID
-		if e.fnCallID == "" {
-			e.fnCallID = responseItemID("call", e.pr.RequestID, e.outputIndex)
+		e.sawToolCall = true
+		st = &streamFnState{outputIndex: e.outputIndex}
+		e.outputIndex++
+		st.itemID = responseItemID("fc", e.pr.RequestID, st.outputIndex)
+		st.callID = tc.ID
+		if st.callID == "" {
+			st.callID = responseItemID("call", e.pr.RequestID, st.outputIndex)
 		}
-		e.fnName = tc.Function.Name
-		e.fnArgsBuf.Reset()
+		st.name = tc.Function.Name
+		e.fnCalls[tc.Index] = st
+		e.fnOrder = append(e.fnOrder, tc.Index)
 		e.emit("response.output_item.added", map[string]any{
-			"output_index": e.outputIndex,
+			"output_index": st.outputIndex,
 			"item": map[string]any{
 				"type":      "function_call",
-				"id":        e.fnItemID,
-				"call_id":   e.fnCallID,
-				"name":      e.fnName,
+				"id":        st.itemID,
+				"call_id":   st.callID,
+				"name":      st.name,
 				"arguments": "",
 				"status":    "in_progress",
 			},
 		})
 	}
 	if tc.ID != "" {
-		e.fnCallID = tc.ID
+		st.callID = tc.ID
 	}
 	if tc.Function.Name != "" {
-		e.fnName = tc.Function.Name
+		st.name = tc.Function.Name
 	}
 	if tc.Function.Arguments != "" {
-		e.fnArgsBuf.WriteString(tc.Function.Arguments)
+		st.argsBuf.WriteString(tc.Function.Arguments)
 		e.emit("response.function_call_arguments.delta", map[string]any{
-			"item_id":      e.fnItemID,
-			"output_index": e.outputIndex,
+			"item_id":      st.itemID,
+			"output_index": st.outputIndex,
 			"delta":        tc.Function.Arguments,
 		})
 	}
 }
 
-func (e *responsesStreamEmitter) closeFunctionCall() {
-	if !e.fnOpen {
-		return
+// closeFunctionCalls finalizes all open function_call items in the order they
+// were opened, which matches their reserved output indexes.
+func (e *responsesStreamEmitter) closeFunctionCalls() {
+	for _, idx := range e.fnOrder {
+		e.closeFunctionCall(e.fnCalls[idx])
+		delete(e.fnCalls, idx)
 	}
-	args := e.fnArgsBuf.String()
+	e.fnOrder = nil
+}
+
+func (e *responsesStreamEmitter) closeFunctionCall(st *streamFnState) {
+	args := st.argsBuf.String()
 	e.emit("response.function_call_arguments.done", map[string]any{
-		"item_id":      e.fnItemID,
-		"output_index": e.outputIndex,
+		"item_id":      st.itemID,
+		"output_index": st.outputIndex,
 		"arguments":    args,
 	})
 	item := map[string]any{
 		"type":      "function_call",
-		"id":        e.fnItemID,
-		"call_id":   e.fnCallID,
-		"name":      e.fnName,
+		"id":        st.itemID,
+		"call_id":   st.callID,
+		"name":      st.name,
 		"arguments": args,
 		"status":    "completed",
 	}
 	e.emit("response.output_item.done", map[string]any{
-		"output_index": e.outputIndex,
+		"output_index": st.outputIndex,
 		"item":         item,
 	})
 	e.output = append(e.output, item)
-	e.outputIndex++
-	e.fnOpen = false
 }
 
 func (e *responsesStreamEmitter) closeOpenItems() {
 	e.closeReasoning()
 	e.closeMessage()
-	e.closeFunctionCall()
+	e.closeFunctionCalls()
 }
 
 // hasToolCalls reports whether at least one function_call item was emitted.
 func (e *responsesStreamEmitter) hasToolCalls() bool {
-	if e.fnOpen {
-		return true
-	}
-	for _, item := range e.output {
-		if m, ok := item.(map[string]any); ok && m["type"] == "function_call" {
-			return true
-		}
-	}
-	return false
+	return e.sawToolCall
 }
 
 // finish closes all open items and emits the terminal lifecycle event
 // (response.completed, or response.incomplete when generation was truncated).
 func (e *responsesStreamEmitter) finish(usage protocol.UsageInfo) {
 	finishReason := effectiveFinishReason(e.finishReason, e.hasToolCalls(), usage, e.pr.RequestedMaxTokens)
+	if len(e.output) == 0 && !e.messageOpen && !e.reasoningOpen && len(e.fnCalls) == 0 {
+		e.ensureMessageOpen()
+	}
 	e.closeOpenItems()
 
 	reasoningTokens := resolveReasoningTokens(usage, e.reasoningBuf.String())

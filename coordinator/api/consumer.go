@@ -3433,11 +3433,11 @@ func effectiveFinishReason(extracted string, hasToolCalls bool, usage protocol.U
 	if extracted != "" && extracted != "stop" {
 		return extracted
 	}
-	if hasToolCalls {
-		return "tool_calls"
-	}
 	if truncatedByMaxTokens(usage, requestedMax) {
 		return "length"
+	}
+	if hasToolCalls {
+		return "tool_calls"
 	}
 	return "stop"
 }

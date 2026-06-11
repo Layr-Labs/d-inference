@@ -46,12 +46,20 @@ type codeAttestRecord struct {
 	version string
 }
 
+// codeAttestPushCooldown bounds APNs pushes to one device (<= 3/hour, within
+// Apple's background-push budget) and is reused verbatim as the reuse-window
+// length. Pinning the two equal is the safe floor: a shorter reuse window would
+// open a deroute gap (reuse expires before a fresh push is allowed), while a
+// longer one only adds attestation staleness. Deriving both from this single
+// const keeps them from drifting apart.
+const codeAttestPushCooldown = 20 * time.Minute
+
 func newCodeAttestThrottle() *codeAttestThrottle {
 	return &codeAttestThrottle{
 		attested:     make(map[string]codeAttestRecord),
 		lastPush:     make(map[string]time.Time),
-		reuseWindow:  20 * time.Minute, // pinned to pushCooldown — bound reuse staleness, no deroute gap
-		pushCooldown: 20 * time.Minute, // <= 3 pushes/hour/device (APNs background budget)
+		reuseWindow:  codeAttestPushCooldown, // pinned to pushCooldown — no deroute gap, bounded staleness
+		pushCooldown: codeAttestPushCooldown,
 		maxAttempts:  3,
 		now:          time.Now,
 	}

@@ -528,6 +528,19 @@ public actor ProviderLoop {
         networkAssertion.acquire()
         defer { networkAssertion.release() }
 
+        // Suppress App Nap for the lifetime of the serve loop. macOS throttles
+        // "napping" background processes — Task.sleep-driven timers (heartbeat,
+        // ping/pong) stop firing on schedule, the coordinator stops receiving
+        // heartbeats and evicts us within 90s, and our own throttled ping takes
+        // minutes to notice the dead socket: the connect→evict→reconnect churn.
+        // .userInitiated suppresses App Nap; .idleSystemSleepDisabled keeps an
+        // idle box awake while serving, on battery too (caffeinate -s is AC-only).
+        let napAssertion = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled,
+                      .suddenTerminationDisabled, .automaticTerminationDisabled],
+            reason: "Darkbloom provider serving inference / keeping the coordinator link alive")
+        defer { ProcessInfo.processInfo.endActivity(napAssertion) }
+
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. Started before the coordinator connection so local clients can
         // serve immediately; torn down on shutdown.

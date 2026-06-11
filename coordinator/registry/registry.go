@@ -708,6 +708,13 @@ type Registry struct {
 	// (looks idle), causing the dispatch→503→retry storms seen in prod. Cleared
 	// on re-registration and on a served request for the pair.
 	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
+
+	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
+	// A provider is only evicted after STALE on two sweeps in a row, so a single
+	// transient coordinator stall (which ages many LastHeartbeat values at once)
+	// or one missed heartbeat doesn't mass-reap a live fleet. Guarded by r.mu;
+	// rebuilt each sweep so disconnected providers drop out automatically.
+	evictStrikes map[string]int
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -743,6 +750,7 @@ func New(logger *slog.Logger) *Registry {
 		modelProviders:        make(map[string]*atomic.Int64),
 		pendingModelLoads:     make(map[string]time.Time),
 		dispatchLoadCooldowns: make(map[string]time.Time),
+		evictStrikes:          make(map[string]int),
 		logger:                logger,
 	}
 }
@@ -3883,18 +3891,72 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 }
 
 func (r *Registry) evictStale(timeout time.Duration) {
-	r.mu.RLock()
-	var stale []string
 	now := time.Now()
+
+	// Scan under the write lock: we both READ LastHeartbeat and REBUILD
+	// evictStrikes. Collect every provider's heartbeat age for the summary, and
+	// decide who to evict: a provider is reaped only after it is stale on TWO
+	// consecutive sweeps (strike >= 2), so a single transient stall that ages
+	// many timestamps at once gives the fleet a sweep to recover instead of a
+	// mass reap.
+	r.mu.Lock()
+	fleet := len(r.providers)
+	ages := make([]time.Duration, 0, fleet)
+	nextStrikes := make(map[string]int, len(r.evictStrikes))
+	var toEvict []string
+	var evictAges []time.Duration
 	for id, p := range r.providers {
-		if now.Sub(p.LastHeartbeat) > timeout {
-			stale = append(stale, id)
+		age := now.Sub(p.LastHeartbeat)
+		ages = append(ages, age)
+		if age > timeout {
+			strikes := r.evictStrikes[id] + 1
+			if strikes >= evictStrikeThreshold {
+				toEvict = append(toEvict, id)
+				evictAges = append(evictAges, age)
+			} else {
+				nextStrikes[id] = strikes // carry the strike to next sweep
+			}
 		}
 	}
-	r.mu.RUnlock()
+	r.evictStrikes = nextStrikes
+	r.mu.Unlock()
 
-	for _, id := range stale {
+	if len(ages) > 0 {
+		amin, amed, ap90, amax := durationStats(ages)
+		// A tight evicted-age spread (emax-emin small) means many providers went
+		// stale at the same instant — a coordinator-side stall. A broad spread
+		// means independent provider sleeps. The summary makes that diagnosable.
+		emin, _, _, emax := durationStats(evictAges)
+		r.logger.Info("eviction sweep",
+			"fleet", fleet,
+			"evicting", len(toEvict),
+			"hb_age_min_s", int(amin.Seconds()),
+			"hb_age_p50_s", int(amed.Seconds()),
+			"hb_age_p90_s", int(ap90.Seconds()),
+			"hb_age_max_s", int(amax.Seconds()),
+			"evicted_age_min_s", int(emin.Seconds()),
+			"evicted_age_max_s", int(emax.Seconds()),
+		)
+	}
+
+	for _, id := range toEvict {
 		r.logger.Warn("evicting stale provider", "provider_id", id, "timeout", timeout)
 		r.Disconnect(id)
 	}
+}
+
+// evictStrikeThreshold is how many consecutive stale sweeps trigger eviction.
+// With a timeout/3 sweep cadence, 2 strikes ≈ one extra sweep interval of grace.
+const evictStrikeThreshold = 2
+
+// durationStats returns min, median, p90, max of ds (zeros for an empty slice).
+// Sorts a copy; ds is small (fleet-sized) so this is cheap.
+func durationStats(ds []time.Duration) (min, median, p90, max time.Duration) {
+	if len(ds) == 0 {
+		return 0, 0, 0, 0
+	}
+	s := make([]time.Duration, len(ds))
+	copy(s, ds)
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	return s[0], s[len(s)/2], s[(len(s)*9)/10], s[len(s)-1]
 }

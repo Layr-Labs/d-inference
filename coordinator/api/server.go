@@ -216,6 +216,8 @@ type Server struct {
 	settlements *settlementHolder
 	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
 	settleGrace time.Duration
+	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
+	zombieCanceller *zombieStreamCanceller
 
 	// minProviderVersion is the minimum provider version accepted for routing.
 	// Providers below this version are excluded and told to update.
@@ -545,6 +547,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		pendingACME:          make(map[string]*ACMEVerificationResult),
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		settlements:          newSettlementHolder(),
+		zombieCanceller:      newZombieStreamCanceller(),
 	}
 	s.registerDefaultGauges()
 	s.routes()

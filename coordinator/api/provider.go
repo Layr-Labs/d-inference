@@ -1486,6 +1486,14 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	pr := provider.GetPending(msg.RequestID)
 	if pr == nil {
 		s.logger.Warn("chunk for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
+		// The provider is still generating into a stream we abandoned (consumer
+		// gone / already settled), burning its GPU and token-budget admission.
+		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
+		// the provider with cancels.
+		if s.zombieCanceller.shouldCancel(msg.RequestID, time.Now()) {
+			s.sendProviderCancel(provider, msg.RequestID)
+			s.ddIncr("inference.zombie_stream_cancel", []string{})
+		}
 		return
 	}
 	chunkData, err := decryptTextResponseChunk(provider, pr, msg)

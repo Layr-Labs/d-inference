@@ -1987,22 +1987,25 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 
 	s.registry.SetProviderIdle(providerID)
 
-	// Settle the reservation server-side for EVERY error terminal, off the read
-	// loop (a store Credit can block for seconds under DB pressure, and this
-	// handler runs on the provider WS read loop — blocking it stalls heartbeats
-	// and challenge responses, feeding the eviction churn). Unconditional so a
-	// spontaneous provider error landing in the gap between the consumer
-	// goroutine abandoning its channels and its defer parking the record can't
-	// leak the reservation. FinalizeReservation is single-winner, so the racing
-	// refunds (relay ErrorCh reader, settlement grace timer) stay idempotent.
-	refundPr := pr
-	refundID := msg.RequestID
-	saferun.Go(s.logger, "api.refundOnInferenceError", func() {
-		s.refundReservedBalance(refundPr, "provider_error:"+refundID)
-	})
-
 	if consumerGone {
-		// Consumer disconnected — no reader for the channels; nothing to push.
+		// Consumer disconnected — no reader for the channels; settle by
+		// refunding, OFF the read loop (a store Credit can block for seconds
+		// under DB pressure, and blocking this loop stalls heartbeats and
+		// challenge responses — the eviction-churn vector). Idempotent vs. the
+		// settlement grace timer via FinalizeReservation.
+		//
+		// Deliberately NOT unconditional: during the dispatch retry window the
+		// consumer handler keeps the base reservation alive for the next
+		// attempt — refunding/finalizing it here would let a later successful
+		// attempt settle against a dead reservation (served for free). Errors
+		// with a live consumer are refunded by their channel readers (relay /
+		// dispatch-exhaustion paths); the relay-return→park gap is swept by
+		// the post-commit defer's last-chance refund in consumer.go.
+		refundPr := pr
+		refundID := msg.RequestID
+		saferun.Go(s.logger, "api.refundAfterDisconnect", func() {
+			s.refundReservedBalance(refundPr, "provider_error_after_disconnect:"+refundID)
+		})
 		return
 	}
 

@@ -41,11 +41,25 @@ public enum LaunchAgent: Sendable {
     /// re-bootstrap — that would kill the running provider; the file change is
     /// inert until launchd next loads it.
     ///
-    /// Returns true if the file was updated, false if absent/already current.
+    /// Returns true if any file was updated, false if absent/already current.
     /// Best-effort: failures are logged by the caller, never fatal.
+    ///
+    /// Also refreshes plists installed under the supported LEGACY labels:
+    /// `restart()`/`stop()` keep legacy-label installs running, so a machine
+    /// that never re-ran `darkbloom start` since the rename still boots from
+    /// the legacy plist — without this it would never gain crash recovery.
     @discardableResult
     public static func syncKeepAlivePolicyOnDisk() throws -> Bool {
-        try syncKeepAlivePolicy(at: plistPath())
+        var updated = try syncKeepAlivePolicy(at: plistPath())
+        let agentsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents")
+        for legacyLabel in legacyLabels {
+            let legacyPath = agentsDir.appendingPathComponent("\(legacyLabel).plist")
+            if try syncKeepAlivePolicy(at: legacyPath) {
+                updated = true
+            }
+        }
+        return updated
     }
 
     /// Path-injectable core of `syncKeepAlivePolicyOnDisk` (separated for tests).

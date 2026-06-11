@@ -33,6 +33,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
@@ -2460,7 +2461,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// completion), so nothing is parked then. Both settle paths are
 	// FinalizeReservation-guarded, so the park-then-remove overlap can't double-bill.
 	defer func() {
-		s.holdForSettlement(provider.GetPending(requestID))
+		if stale := provider.GetPending(requestID); stale != nil {
+			s.holdForSettlement(stale)
+		} else {
+			// A terminal already claimed the pending. In every normal path the
+			// reservation is finalized by now (completion billed it, the relay
+			// error/timeout branches refunded it) and this is a no-op. The one
+			// exception is a provider error landing in the gap between this
+			// handler abandoning its channels and this defer running: that
+			// terminal pushed into an unread ErrorCh and nobody settled — sweep
+			// it here. Post-commit only, so it can never finalize a reservation
+			// the dispatch loop still needs for a retry attempt.
+			refundPr := pr
+			saferun.Go(s.logger, "api.postTerminalSweep", func() {
+				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
+			})
+		}
 		provider.RemovePending(requestID) // then remove so SetProviderIdle frees the slot
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
@@ -5114,9 +5130,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Free the slot, stop the provider, and preserve billing on a mid-stream
-	// disconnect (park-before-remove; see the chat-completions path for why).
+	// disconnect (park-before-remove + post-terminal sweep; see the
+	// chat-completions path for the full rationale).
 	defer func() {
-		s.holdForSettlement(provider.GetPending(requestID))
+		if stale := provider.GetPending(requestID); stale != nil {
+			s.holdForSettlement(stale)
+		} else {
+			refundPr := pr
+			saferun.Go(s.logger, "api.postTerminalSweep", func() {
+				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
+			})
+		}
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)

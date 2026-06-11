@@ -76,7 +76,7 @@ struct Watchdog: AsyncParsableCommand {
         return config.provider.autoRestart
     }
 
-    /// launchd routes stdout to ~/.darkbloom/watchdog.log; we log only transitions.
+    /// launchd routes stdout to ~/.darkbloom/watchdog.log; healthy ticks log nothing.
     private func log(_ message: String) {
         print("[\(ISO8601DateFormatter().string(from: Date()))] watchdog: \(message)")
     }

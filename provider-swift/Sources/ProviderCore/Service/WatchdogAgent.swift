@@ -85,6 +85,7 @@ public enum WatchdogAgent: Sendable {
 
     private static func loadService() throws {
         let bootstrap = LaunchctlControl.run(["bootstrap", LaunchctlControl.guiDomain(), plistPath().path], captureStderr: true)
+        // Error 37 = "already loaded" — benign.
         if !bootstrap.succeeded, !bootstrap.stderr.contains("37:"), !bootstrap.stderr.contains("already loaded") {
             throw WatchdogAgentError.bootstrapFailed(bootstrap.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }

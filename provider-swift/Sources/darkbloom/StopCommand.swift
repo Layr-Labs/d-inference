@@ -14,13 +14,14 @@ struct Stop: AsyncParsableCommand {
         let wasLoaded = LaunchAgent.isLoaded()
 
         // Disarm crash recovery FIRST so the watchdog can't relaunch what we're
-        // stopping (uninstall deletes its plist + state). Best-effort.
+        // stopping, and drop its timer so the next start gets a fresh grace
+        // window (uninstall additionally deletes its plist). Best-effort.
         if uninstall {
             try? WatchdogAgent.uninstall()
-            try? FileManager.default.removeItem(at: WatchdogStateStore.path())
         } else {
             try? WatchdogAgent.stop()
         }
+        try? FileManager.default.removeItem(at: WatchdogStateStore.path())
 
         if uninstall {
             try LaunchAgent.uninstall()

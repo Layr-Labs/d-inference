@@ -228,6 +228,15 @@ struct WatchdogStateTests {
         #expect(read.downSince == nil)
         #expect(read.lastRestartAt == nil)
     }
+
+    @Test("write reports success, and failure on an unwritable path")
+    func writeReportsOutcome() {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(WatchdogStateStore.write(WatchdogState(downSince: 1), to: url))
+        // /dev/null is a file, so it can never become a parent directory.
+        #expect(!WatchdogStateStore.write(WatchdogState(), to: URL(fileURLWithPath: "/dev/null/watchdog/state.json")))
+    }
 }
 
 /// The `auto_restart` config flag.

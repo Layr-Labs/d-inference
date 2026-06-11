@@ -19,10 +19,11 @@ enum LaunchctlControl {
         var succeeded: Bool { status == 0 }
     }
 
-    /// Run launchctl, capturing at most one stream. Capturing only one keeps the
-    /// single drained pipe from deadlocking against an unread one on large output.
+    /// Run launchctl, capturing at most one stream (enforced): draining two
+    /// pipes sequentially can deadlock once the unread one fills.
     @discardableResult
     static func run(_ arguments: [String], captureStdout: Bool = false, captureStderr: Bool = false) -> Output {
+        precondition(!(captureStdout && captureStderr), "capture at most one stream")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = arguments

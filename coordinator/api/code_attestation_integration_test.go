@@ -334,4 +334,17 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 	if th.reuseAttestation(se, "0.6.0") {
 		t.Fatal("reuse must expire after the window")
 	}
+
+	// Reuse is keyed to the device's SE key — a different device never inherits it.
+	if th.reuseAttestation("se-key-2", "0.6.0") {
+		t.Fatal("reuse must not leak across SE keys")
+	}
+
+	// Invariant: reuse staleness must never exceed one push cooldown, so a
+	// reconnect whose reuse just expired can always push a fresh challenge (no
+	// deroute gap). Guards against widening reuseWindow past pushCooldown again.
+	if th.reuseWindow > th.pushCooldown {
+		t.Fatalf("reuseWindow (%v) must be <= pushCooldown (%v) to bound staleness without a deroute gap",
+			th.reuseWindow, th.pushCooldown)
+	}
 }

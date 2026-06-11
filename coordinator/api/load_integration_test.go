@@ -152,7 +152,9 @@ func setupLoadTestServer(t *testing.T) (*httptest.Server, *registry.Registry, *s
 // and returns the WebSocket connection. The caller must defer conn.Close(...).
 func connectAndPrepareProvider(t *testing.T, ctx context.Context, tsURL string, reg *registry.Registry, model, pubKey string, decodeTPS float64) *websocket.Conn {
 	t.Helper()
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	// Report the canonical test weight hash — an honest serving provider always
+	// reports the on-disk hash of a model it can serve, matching a pinned catalog.
+	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit", WeightHash: testHash}}
 	wsURL := "ws" + strings.TrimPrefix(tsURL, "http") + "/ws/provider"
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {

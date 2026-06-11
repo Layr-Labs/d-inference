@@ -114,10 +114,18 @@ func TestNegativePromptTokensNoMint(t *testing.T) {
 	const model = "neg-prompt-test-model"
 	consumerID := testConsumerID
 
-	// Regular (non-service) consumer — uses the minimum-floor billing path.
-	// Negative prompt tokens alone can also produce a negative total if output
-	// cost is small, or push cost below the minimum in unexpected ways.
-	_ = st // suppress unused import; st used for seeding via billingTestServer
+	// Service-role consumer → NoMinimum billing path, where a negative cost is
+	// NOT floored to the minimum charge. This is the path that actually exercises
+	// the clamp: on the regular (minimum-floor) path the floor masks a negative
+	// cost, so the test would pass even with the fix reverted. Mirrors
+	// TestNegativeCompletionTokensNoMint.
+	if err := st.CreateUser(&store.User{
+		AccountID:   consumerID,
+		PrivyUserID: "did:privy:neg-prompt-test",
+		Role:        store.RoleService,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	provider := srv.registry.Register("neg-prompt-prov", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},

@@ -1,9 +1,9 @@
 /// LaunchAgent -- launchd user agent management for the Darkbloom provider.
 ///
-/// The provider only runs when the user explicitly starts it via
-/// `darkbloom start` or the macOS app's "Go Online" toggle.
-/// It does NOT auto-start on login or auto-restart after crashes.
-/// The user is always in control of when their GPU is being used.
+/// The provider runs only after the user explicitly starts it (`darkbloom start`
+/// or the app's "Go Online"). It auto-starts at login (RunAtLoad) so a rebooted
+/// box re-attests without a manual start; crash recovery is delegated to the
+/// separate `WatchdogAgent`. `darkbloom stop` unloads it and keeps it stopped.
 
 import Foundation
 
@@ -11,6 +11,10 @@ public enum LaunchAgent: Sendable {
 
     public static let label = "io.darkbloom.provider"
     private static let legacyLabels = ["dev.darkbloom.provider"]
+
+    /// Canonical + legacy labels the provider may be registered under (the
+    /// watchdog probes all of them).
+    public static var supportedLabels: [String] { [label] + legacyLabels }
 
     // MARK: - Paths
 
@@ -172,10 +176,27 @@ public enum LaunchAgent: Sendable {
         throw LaunchAgentError.notInstalled
     }
 
-    /// `launchctl kickstart -k gui/<uid>/<label>` — restart the already-loaded
-    /// service in place. The `-k` flag kills the current instance before
-    /// relaunching it from the existing plist.
-    private static func kickstartInPlace(label serviceLabel: String) throws {
+    /// Restart in place ONLY if currently loaded (`reloadIfMissing: false`), so
+    /// the watchdog recovers a crashed (loaded-but-dead) provider but never
+    /// revives one the user stopped (`bootout` unloads it). Returns false if not
+    /// loaded under any supported label.
+    @discardableResult
+    public static func kickstartIfLoaded() throws -> Bool {
+        if isLoaded() {
+            try kickstartInPlace(label: label, reloadIfMissing: false)
+            return true
+        }
+        for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
+            try kickstartInPlace(label: legacyLabel, reloadIfMissing: false)
+            return true
+        }
+        return false
+    }
+
+    /// `launchctl kickstart -k` — kill + relaunch the loaded service in place.
+    /// `reloadIfMissing`: `restart()` wants it (bring up an unloaded-but-installed
+    /// job); the watchdog passes false so it never loads a job the user stopped.
+    private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws {
         let target = "gui/\(getuid())/\(serviceLabel)"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -194,9 +215,13 @@ public enum LaunchAgent: Sendable {
                 encoding: .utf8
             ) ?? ""
             // Error 3 = "could not find service": the service vanished between
-            // the isLoaded() check and here. Fall back to a fresh load.
+            // the isLoaded() check and here.
             if stderr.contains("3:") || stderr.contains("could not find service") {
-                try loadService()
+                // Fall back to a fresh load only when allowed; the watchdog opts
+                // out so it can't resurrect an intentionally-stopped provider.
+                if reloadIfMissing {
+                    try loadService()
+                }
                 return
             }
             throw LaunchAgentError.kickstartFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -301,7 +326,9 @@ public enum LaunchAgent: Sendable {
     ///
     /// `KeepAlive = false` is deliberate: unconditional KeepAlive would have launchd
     /// relaunch the process the instant the graceful self-updater stops it to swap
-    /// the binary, racing the stage-then-swap. Crash-recovery is handled separately.
+    /// the binary, racing the stage-then-swap. Crash-recovery is instead owned by
+    /// the separate `WatchdogAgent`, which waits out a grace period before
+    /// relaunching (so it never races the updater) and honours `darkbloom stop`.
     static func makeServicePlist(
         label: String,
         programArguments: [String],
@@ -359,11 +386,11 @@ public enum LaunchAgent: Sendable {
             }
         }
 
-        // With RunAtLoad=false, bootstrap registers the service but doesn't
-        // start it. Kickstart actually launches the process. After a successful
-        // bootstrap the service exists, so kickstart should return 0 — surface a
-        // non-zero exit (or a spawn failure) rather than silently reporting
-        // success when launchd never launched the process.
+        // RunAtLoad=true already starts the service on bootstrap; this kickstart
+        // is belt-and-suspenders (a no-op if it's already running). After a
+        // successful bootstrap the service exists, so kickstart should return 0 —
+        // surface a non-zero exit (or a spawn failure) rather than silently
+        // reporting success when launchd never launched the process.
         let target = "gui/\(getuid())/\(label)"
         let kickstart = Process()
         kickstart.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -414,20 +441,9 @@ public enum LaunchAgent: Sendable {
     }
 
     /// Resolve the current executable path. Falls back to ~/.darkbloom/bin/darkbloom.
+    /// Shared with `WatchdogAgent` via `LaunchctlControl`.
     private static func currentExecutablePath() -> String {
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        var size = UInt32(MAXPATHLEN)
-        if _NSGetExecutablePath(&buffer, &size) == 0 {
-            if let resolved = realpath(buffer, nil) {
-                defer { free(resolved) }
-                return String(cString: resolved)
-            }
-            return String(cString: buffer)
-        }
-        // Fallback
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/bin/darkbloom")
-            .path
+        LaunchctlControl.currentExecutablePath()
     }
 
 }

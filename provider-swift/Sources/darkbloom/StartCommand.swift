@@ -253,6 +253,13 @@ struct Start: AsyncParsableCommand {
         // setup is itself captured.
         PanicHook.install()
 
+        // Arm crash recovery for the running daemon however it was launched
+        // (manual start, login, or auto-update relaunch). Idempotent (skip when
+        // already loaded → no churn on restarts) + best-effort.
+        if config.provider.autoRestart, !WatchdogAgent.isLoaded() {
+            try? WatchdogAgent.installAndStart()
+        }
+
         // ----- Telemetry: configure now so reconnect/inference/panic events flow. -----
         TelemetryClient.shared.configure(TelemetryClientConfig(
             coordinatorURL: coordinatorURL,
@@ -537,6 +544,17 @@ struct Start: AsyncParsableCommand {
             )
         )
 
+        // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;
+        // `stop` disarms, `auto_restart = false` opts out). Best-effort.
+        let autoRestartOn = config.provider.autoRestart
+        if autoRestartOn {
+            do {
+                try WatchdogAgent.installAndStart()
+            } catch {
+                printError("note: could not install crash-recovery watchdog: \(error)")
+            }
+        }
+
         let logPath = LaunchAgent.logPath().path
         print("Provider started as background service.")
         print("  Models:  \(selectedModelIDs.count)")
@@ -548,6 +566,9 @@ struct Start: AsyncParsableCommand {
             print("  Local:   \(shownURL) (unified mode — run `darkbloom local` for the API key)")
         }
         print("  Logs:    \(logPath)")
+        if autoRestartOn {
+            print("  Recovery: auto-restart on (relaunches ~5 min after a crash)")
+        }
         print()
         print("  darkbloom stop     Stop the provider")
         print("  darkbloom restart  Restart with the current selection")

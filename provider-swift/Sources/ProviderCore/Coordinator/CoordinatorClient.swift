@@ -684,10 +684,24 @@ public actor CoordinatorClient {
                 }
             }
 
-            // Task 4: Ping timer with pong timeout detection
+            // Task 4: Ping timer with pong timeout + suspension detection
             group.addTask {
+                var lastTick = CFAbsoluteTimeGetCurrent()
                 while true {
                     try await Task.sleep(for: .seconds(pingInterval))
+
+                    // If far more wall-clock elapsed than we slept for, the
+                    // process was suspended/throttled (App Nap or sleep). The
+                    // socket is almost certainly dead and the coordinator has
+                    // likely already evicted us, so reconnect NOW instead of
+                    // waiting out the (also-throttled) pong timeout — this is
+                    // what removes the multi-minute post-wake detection lag.
+                    let now = CFAbsoluteTimeGetCurrent()
+                    let gap = now - lastTick
+                    lastTick = now
+                    if gap > pingInterval * 3 {
+                        throw CoordinatorError.suspensionDetected
+                    }
 
                     if pongTracker.elapsed() > pongTimeout {
                         throw CoordinatorError.pongTimeout
@@ -953,6 +967,7 @@ public enum CoordinatorError: Error, CustomStringConvertible {
     case encodingFailed
     case pongTimeout
     case connectionClosed(Error)
+    case suspensionDetected
 
     public var description: String {
         switch self {
@@ -960,6 +975,7 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         case .encodingFailed: return "Failed to encode message"
         case .pongTimeout: return "WebSocket pong timeout (no response in 30s)"
         case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
+        case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
         }
     }
 }

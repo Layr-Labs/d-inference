@@ -143,7 +143,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // 0.6.0 is the APNs code-identity / VLM-routing / graceful-update release.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.6.3"
+var LatestProviderVersion = "0.6.4"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -209,6 +209,15 @@ type Server struct {
 	// When set, providers whose runtime hashes don't match are marked as
 	// unverified and excluded from routing (but not disconnected).
 	knownRuntimeManifest *RuntimeManifest
+
+	// settlements parks billing records for requests whose consumer disconnected
+	// mid-stream, so a late provider terminal can settle them (or the reservation
+	// is refunded on grace expiry). See settlement.go.
+	settlements *settlementHolder
+	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
+	settleGrace time.Duration
+	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
+	zombieCanceller *zombieStreamCanceller
 
 	// minProviderVersion is the minimum provider version accepted for routing.
 	// Providers below this version are excluded and told to update.
@@ -537,6 +546,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		apiKeyCache:          make(map[string]apiKeyCacheEntry),
 		pendingACME:          make(map[string]*ACMEVerificationResult),
 		codeAttestThrottle:   newCodeAttestThrottle(),
+		settlements:          newSettlementHolder(),
+		zombieCanceller:      newZombieStreamCanceller(),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -1406,6 +1417,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
 	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
+	// OpenAI "retrieve model" — {id...} matches slashed HuggingFace-style ids;
+	// the literal /v1/models/openrouter and /v1/models/capacity routes win.
+	s.mux.HandleFunc("GET /v1/models/{id...}", s.requireAuth(s.handleGetModel))
 
 	// Sender encryption — public key publication for sender→coordinator E2E.
 	// Optional: senders may use this to encrypt request bodies; plaintext path

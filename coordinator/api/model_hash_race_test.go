@@ -65,10 +65,45 @@ func challengeExchangeWithCatalog(
 	activeModelHash string,
 ) registry.ProviderStatus {
 	t.Helper()
+	return challengeExchangeAdvertising(t, catalog, []protocol.ModelInfo{
+		{ID: "model-gemma", SizeBytes: 1000, ModelType: "chat", Quantization: "8bit", WeightHash: gemmaHash},
+		{ID: "model-gptoss", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit", WeightHash: gptOSSHash},
+	}, modelHashes, activeModelHash)
+}
+
+// challengeExchangeAdvertising additionally takes the ADVERTISED model set, so
+// tests can shape the post-hot-swap state where a still-resident build reports
+// a hash without being advertised any more.
+func challengeExchangeAdvertising(
+	t *testing.T,
+	catalog []registry.CatalogEntry,
+	advertised []protocol.ModelInfo,
+	modelHashes map[string]string,
+	activeModelHash string,
+) registry.ProviderStatus {
+	t.Helper()
+	return challengeExchangeFull(t, catalog, advertised, nil, modelHashes, activeModelHash)
+}
+
+// challengeExchangeFull additionally takes alias lineage, so tests can mark a
+// build as a retired/previous alias member (the legitimate hot-swap residency
+// case the active-hash alibi is scoped to).
+func challengeExchangeFull(
+	t *testing.T,
+	catalog []registry.CatalogEntry,
+	advertised []protocol.ModelInfo,
+	aliases map[string]registry.AliasTarget,
+	modelHashes map[string]string,
+	activeModelHash string,
+) registry.ProviderStatus {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	reg.SetModelCatalog(catalog)
+	if aliases != nil {
+		reg.SetModelAliases(aliases)
+	}
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
@@ -87,12 +122,9 @@ func challengeExchangeWithCatalog(
 
 	pubKey := testPublicKeyB64()
 	regMsg := protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "Apple M2 Ultra", MemoryGB: 128},
-		Models: []protocol.ModelInfo{
-			{ID: "model-gemma", SizeBytes: 1000, ModelType: "chat", Quantization: "8bit", WeightHash: gemmaHash},
-			{ID: "model-gptoss", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit", WeightHash: gptOSSHash},
-		},
+		Type:      protocol.TypeRegister,
+		Hardware:  protocol.Hardware{ChipName: "Apple M2 Ultra", MemoryGB: 128},
+		Models:    advertised,
 		Backend:   "mlx-swift",
 		PublicKey: pubKey,
 	}
@@ -246,5 +278,79 @@ func TestChallengeBareHashSkippedWhenAnyModelUnenforced(t *testing.T) {
 	)
 	if status == registry.StatusUntrusted {
 		t.Fatal("bare hash untrusted despite an unenforced advertised model (inconclusive check)")
+	}
+}
+
+// TestChallengeRetiredResidentBuildHashDoesNotUntrust: the alias hot-swap
+// shape. After a hard-swap the provider advertises ONLY the new build, but the
+// retired build stays GPU-resident (idle monitor drains it later) and remains
+// the provider's "active" model until the first inference on the new build.
+// Its hash arrives in model_hashes and matches its own catalog entry — a
+// known-good registered build, not a swap. The provider must NOT be untrusted,
+// or every fleet migration mass-deroutes itself at the next challenge tick.
+func TestChallengeRetiredResidentBuildHashDoesNotUntrust(t *testing.T) {
+	status := challengeExchangeFull(t,
+		[]registry.CatalogEntry{
+			{ID: "model-gemma", WeightHash: gemmaHash},   // retired build, still in catalog
+			{ID: "model-gptoss", WeightHash: gptOSSHash}, // the new (desired) build
+		},
+		// Advertised set post-swap: ONLY the new build.
+		[]protocol.ModelInfo{
+			{ID: "model-gptoss", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit", WeightHash: gptOSSHash},
+		},
+		// Alias lineage: model-gemma is the PREVIOUS member (the hot-swap source).
+		map[string]registry.AliasTarget{
+			"gemma-4-26b": {Desired: "model-gptoss", Previous: "model-gemma"},
+		},
+		// Reported hashes: both loaded slots (retired build still resident).
+		map[string]string{"model-gemma": gemmaHash, "model-gptoss": gptOSSHash},
+		gemmaHash, // active model = the retired-but-resident build
+	)
+	if status == registry.StatusUntrusted {
+		t.Fatal("post-swap provider untrusted for its retired-but-resident alias build's valid hash")
+	}
+}
+
+// TestChallengeAlibiRejectsNonAliasModel: the alibi must NOT let a provider
+// claim an arbitrary catalog model (not part of any alias lineage) as active to
+// dodge the membership check. model-gemma here is a real catalog build but is
+// NOT a previous/retired alias member, so reporting it as active while
+// advertising only model-gptoss must still untrust.
+func TestChallengeAlibiRejectsNonAliasModel(t *testing.T) {
+	status := challengeExchangeFull(t,
+		[]registry.CatalogEntry{
+			{ID: "model-gemma", WeightHash: gemmaHash},
+			{ID: "model-gptoss", WeightHash: gptOSSHash},
+		},
+		[]protocol.ModelInfo{
+			{ID: "model-gptoss", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit", WeightHash: gptOSSHash},
+		},
+		nil, // no alias lineage — model-gemma is just another catalog model
+		map[string]string{"model-gemma": gemmaHash, "model-gptoss": gptOSSHash},
+		gemmaHash,
+	)
+	if status != registry.StatusUntrusted {
+		t.Fatalf("alibi accepted a non-alias-member model as active (status=%s)", status)
+	}
+}
+
+// TestChallengeRetiredAlibiDoesNotWeakenTamperCheck: the retired-build alibi
+// must not soften the membership check — an active hash matching neither the
+// advertised set nor any catalog-validated reported hash still untrusts, even
+// when valid reported hashes are present.
+func TestChallengeRetiredAlibiDoesNotWeakenTamperCheck(t *testing.T) {
+	status := challengeExchangeAdvertising(t,
+		[]registry.CatalogEntry{
+			{ID: "model-gemma", WeightHash: gemmaHash},
+			{ID: "model-gptoss", WeightHash: gptOSSHash},
+		},
+		[]protocol.ModelInfo{
+			{ID: "model-gptoss", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit", WeightHash: gptOSSHash},
+		},
+		map[string]string{"model-gemma": gemmaHash, "model-gptoss": gptOSSHash},
+		"deadbeef"+gemmaHash[8:], // tampered active hash
+	)
+	if status != registry.StatusUntrusted {
+		t.Fatalf("tampered active hash slipped past the retired-build alibi (status=%s)", status)
 	}
 }

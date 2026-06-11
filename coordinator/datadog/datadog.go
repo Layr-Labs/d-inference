@@ -43,6 +43,13 @@ type Client struct {
 	logTicker  *time.Ticker
 	logDone    chan struct{}
 	logFlushWg sync.WaitGroup
+
+	// HTTP metric submission (no agent needed). See metrics_http.go.
+	series            *seriesBuffer
+	seriesURL         string
+	metricsHost       string
+	metricsTags       []string
+	flushIntervalSecs int64
 }
 
 // Config holds Datadog configuration. Populated from env vars in NewClient.
@@ -98,6 +105,11 @@ func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	}
 	c.logsURL = fmt.Sprintf("https://http-intake.logs.%s/api/v2/logs", site)
 	c.eventsURL = fmt.Sprintf("https://api.%s/api/v1/events", site)
+	c.seriesURL = fmt.Sprintf("https://api.%s/api/v1/series", site)
+	c.series = newSeriesBuffer()
+	c.metricsTags = []string{"env:" + cfg.Env, "service:" + cfg.Service}
+	c.metricsHost = envOr("DD_HOSTNAME", cfg.Service)
+	c.flushIntervalSecs = int64(cfg.FlushSecs)
 
 	// DogStatsD client — best effort. If the agent isn't running, metrics
 	// calls become no-ops (the library handles reconnection).
@@ -130,6 +142,7 @@ func (c *Client) Close() {
 	close(c.logDone)
 	c.logFlushWg.Wait()
 	c.flushLogs()
+	c.flushSeries()
 	if c.Statsd != nil {
 		_ = c.Statsd.Close()
 	}
@@ -139,23 +152,35 @@ func (c *Client) Close() {
 // DogStatsD convenience methods
 // ---------------------------------------------------------------------------
 
+// httpMetrics reports whether metrics go via the HTTPS series API. When true,
+// the DogStatsD leg is skipped for gauges/counters — teeing both would
+// double-count if an agent ever appears, with divergent host tags. See
+// metrics_http.go.
+func (c *Client) httpMetrics() bool {
+	return c.apiKey != "" && c.series != nil
+}
+
 // Incr increments a counter.
 func (c *Client) Incr(name string, tags []string) {
-	if c == nil || c.Statsd == nil {
-		return
-	}
-	_ = c.Statsd.Incr(name, tags, 1)
+	c.Count(name, 1, tags)
 }
 
-// Count increments a DogStatsD counter by the given value.
+// Count increments a counter by the given value.
 func (c *Client) Count(name string, value int64, tags []string) {
-	if c == nil || c.Statsd == nil {
+	if c == nil {
 		return
 	}
-	_ = c.Statsd.Count(name, value, tags, 1)
+	if c.httpMetrics() {
+		c.series.addCount(name, float64(value), tags, time.Now().Unix())
+		return
+	}
+	if c.Statsd != nil {
+		_ = c.Statsd.Count(name, value, tags, 1)
+	}
 }
 
-// Histogram records a histogram value.
+// Histogram records a histogram value. DogStatsD-only: percentile aggregation
+// happens agent-side and isn't replicated by the HTTP path.
 func (c *Client) Histogram(name string, value float64, tags []string) {
 	if c == nil || c.Statsd == nil {
 		return
@@ -165,10 +190,16 @@ func (c *Client) Histogram(name string, value float64, tags []string) {
 
 // Gauge sets a gauge value.
 func (c *Client) Gauge(name string, value float64, tags []string) {
-	if c == nil || c.Statsd == nil {
+	if c == nil {
 		return
 	}
-	_ = c.Statsd.Gauge(name, value, tags, 1)
+	if c.httpMetrics() {
+		c.series.setGauge(name, value, tags, time.Now().Unix())
+		return
+	}
+	if c.Statsd != nil {
+		_ = c.Statsd.Gauge(name, value, tags, 1)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +308,7 @@ func (c *Client) logFlushLoop() {
 		select {
 		case <-c.logTicker.C:
 			c.flushLogs()
+			c.flushSeries()
 		case <-c.logDone:
 			return
 		}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1497,7 +1498,7 @@ func TestBuildNonStreamingResponseReasoningDetails(t *testing.T) {
 	msg := extractedMessage{Content: "4", Reasoning: "2+2"}
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20, ReasoningTokens: 8}
 
-	resp := buildNonStreamingResponse("req-1", "gpt-oss-20b", msg, usage, "", "")
+	resp := buildNonStreamingResponse("req-1", "gpt-oss-20b", msg, usage, 0, "", "")
 	if resp.Usage.CompletionTokensDetails == nil {
 		t.Fatalf("expected completion_tokens_details, got nil")
 	}
@@ -1517,7 +1518,7 @@ func TestBuildNonStreamingResponseReasoningDetails(t *testing.T) {
 	// No reasoning content => no details object (omitempty).
 	plain := buildNonStreamingResponse("req-2", "gpt-oss-20b",
 		extractedMessage{Content: "hi"},
-		protocol.UsageInfo{PromptTokens: 3, CompletionTokens: 1}, "", "")
+		protocol.UsageInfo{PromptTokens: 3, CompletionTokens: 1}, 0, "", "")
 	if plain.Usage.CompletionTokensDetails != nil {
 		t.Errorf("expected no details for non-reasoning response, got %#v", plain.Usage.CompletionTokensDetails)
 	}
@@ -1533,7 +1534,7 @@ func TestBuildResponsesResponseReasoningTokens(t *testing.T) {
 	msg := extractedMessage{Content: "4", Reasoning: "2+2"}
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20, ReasoningTokens: 8}
 
-	resp := buildResponsesResponse("req-1", "gpt-oss-20b", msg, usage, "", "")
+	resp := buildResponsesResponse("req-1", "gpt-oss-20b", msg, usage, 0, "", "")
 	if resp.Usage.OutputTokensDetail.ReasoningTokens != 8 {
 		t.Errorf("reasoning_tokens = %d, want 8 (accurate count, not %d completion)",
 			resp.Usage.OutputTokensDetail.ReasoningTokens, usage.CompletionTokens)
@@ -1892,5 +1893,32 @@ func TestStreamingChatSignatureRidesUsageChunk(t *testing.T) {
 	}
 	if !strings.HasSuffix(strings.TrimSpace(body), "data: [DONE]") {
 		t.Fatalf("[DONE] must be the final event; body:\n%s", body)
+	}
+}
+
+func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
+	srv, _ := testServer(t)
+	w := httptest.NewRecorder()
+	srv.writeServiceUnavailable(w, "gpt-oss-20b")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header missing")
+	} else if n, err := strconv.Atoi(ra); err != nil || n < 1 {
+		t.Errorf("Retry-After = %q, want positive integer seconds", ra)
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Error.Code != "service_unavailable" {
+		t.Errorf("code = %q, want service_unavailable", body.Error.Code)
 	}
 }

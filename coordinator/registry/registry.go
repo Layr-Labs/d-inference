@@ -1602,6 +1602,31 @@ func (r *Registry) CatalogWeightHash(model string) string {
 	return ""
 }
 
+// IsAliasLineageBuild reports whether buildID is a PREVIOUS or RETIRED member of
+// any active alias — i.e. an old build that a hot-swap migration legitimately
+// leaves GPU-resident on providers after it drops from the advertised set. Used
+// to scope the attestation active-hash alibi to exactly that migration case, so
+// a provider can't use the alibi to claim an arbitrary unrelated catalog model
+// as active. (Desired members are still advertised, so they never need it.)
+func (r *Registry) IsAliasLineageBuild(buildID string) bool {
+	if buildID == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, t := range r.modelAliases {
+		if t.Previous == buildID {
+			return true
+		}
+		for _, retired := range t.Retired {
+			if retired == buildID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // modelAllowedByCatalogLocked returns whether a provider-reported model is
 // allowed by the current catalog. Caller must hold r.mu (read or write). A nil
 // catalog disables filtering; an empty non-nil catalog denies all models.

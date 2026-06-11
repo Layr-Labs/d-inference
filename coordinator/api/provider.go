@@ -1260,6 +1260,14 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				if hash == "" || hash != resp.ActiveModelHash {
 					continue
 				}
+				// Scope the alibi to the actual migration case: modelID must be a
+				// PREVIOUS/RETIRED member of some alias (a build a hot-swap leaves
+				// resident after de-advertising it), not just any catalog model.
+				// This keeps the membership check tight — a provider can't name an
+				// arbitrary unrelated catalog model as "active" to dodge it.
+				if !s.registry.IsAliasLineageBuild(modelID) {
+					continue
+				}
 				if expected := s.registry.CatalogWeightHash(modelID); expected != "" && hash == expected {
 					matched = true
 					break

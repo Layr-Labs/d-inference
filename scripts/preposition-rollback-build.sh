@@ -16,12 +16,12 @@
 # does not carry min_ram_gb/prices in registerable form):
 #   R2_ACCOUNT_ID=… GCP_PROJECT=… ./scripts/preposition-rollback-build.sh \
 #     <src-model-id> <src-version> <new-model-id> <coordinator-url> <publishing-key> \
-#     <quantization> <min-ram-gb> <max-context> <max-output> <input-price-µ$/Mtok> <output-price-µ$/Mtok>
+#     <quantization> <min-ram-gb> <max-context> <max-output> <input-price-µ$/Mtok> <output-price-µ$/Mtok> [capabilities-csv]
 #
 # Example (gemma 4bit cutover; values = the absorbed 8bit registry row):
 #   ./scripts/preposition-rollback-build.sh \
 #     gemma-4-26b 2026-05-30-r1 gemma-4-26b-8bit https://api.darkbloom.dev "$ADMIN_KEY" \
-#     8bit 36 131072 16384 30000 165000
+#     8bit 36 131072 16384 30000 165000 chat
 set -euo pipefail
 
 SRC_MODEL_ID="${1:?src model id}"
@@ -35,6 +35,11 @@ MAX_CONTEXT="${8:?max context length}"
 MAX_OUTPUT="${9:?max output length}"
 INPUT_PRICE="${10:?input price micro-usd per Mtok}"
 OUTPUT_PRICE="${11:?output price micro-usd per Mtok}"
+# Capabilities (comma-separated, e.g. "chat" or "chat,vision,tools"). MUST match
+# the absorbed build's caps — if a rollback makes this id the alias primary,
+# /v1/models + the OpenRouter feed derive features/modalities from it; an empty
+# set would silently drop tool/vision support for clients.
+CAPABILITIES="${12:-chat}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-auto}"
 
 R2_BUCKET="${R2_BUCKET:-darkbloom-models}"
@@ -80,9 +85,9 @@ PY
 aws s3 cp "$TMP/manifest.json" "s3://$R2_BUCKET/$NEW_PREFIX/manifest.json" --endpoint-url "$ENDPOINT"
 
 echo "Registering $NEW_MODEL_ID with the coordinator…"
-python3 - "$NEW_MODEL_ID" "$SRC_VERSION" "$QUANT" "$MIN_RAM_GB" "$MAX_CONTEXT" "$MAX_OUTPUT" "$INPUT_PRICE" "$OUTPUT_PRICE" <<'PY' > "$TMP/register.json"
+python3 - "$NEW_MODEL_ID" "$SRC_VERSION" "$QUANT" "$MIN_RAM_GB" "$MAX_CONTEXT" "$MAX_OUTPUT" "$INPUT_PRICE" "$OUTPUT_PRICE" "$CAPABILITIES" <<'PY' > "$TMP/register.json"
 import json, sys
-new_id, version, quant, min_ram, max_ctx, max_out, in_p, out_p = sys.argv[1:9]
+new_id, version, quant, min_ram, max_ctx, max_out, in_p, out_p, caps = sys.argv[1:10]
 print(json.dumps({
   "model_id": new_id,
   "version": version,
@@ -93,6 +98,7 @@ print(json.dumps({
   "max_output_length": int(max_out),
   "input_price": int(in_p),
   "output_price": int(out_p),
+  "capabilities": [c for c in caps.split(",") if c],
 }))
 PY
 curl -fsS -X POST "$COORD/v1/admin/models/register" \

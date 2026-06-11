@@ -233,7 +233,11 @@ acceptable until they re-converge.
 >
 > ```bash
 > # Once, before the flip (server-side R2 copy + register + promote):
-> scripts/preposition-rollback-build.sh gemma-4-26b <old-version> gemma-4-26b-8bit "$COORD" "$PUBLISHING_KEY"
+# Registry fields are explicit (the /v1/models listing doesn't expose them in
+> # registerable form) — copy them from the absorbed build's registry row:
+> #   …<new-id> <coord> <key> <quant> <min-ram> <max-ctx> <max-out> <in-price-µ$/Mtok> <out-price-µ$/Mtok> <caps-csv>
+> scripts/preposition-rollback-build.sh gemma-4-26b <old-version> gemma-4-26b-8bit "$COORD" "$PUBLISHING_KEY" \
+>   8bit 36 131072 16384 30000 165000 chat
 >
 > # Emergency revert is then a normal alias flip:
 > curl -fsS -X POST "$COORD/v1/admin/models/aliases" … -d '{

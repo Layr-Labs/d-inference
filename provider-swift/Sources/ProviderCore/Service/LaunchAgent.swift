@@ -27,6 +27,52 @@ public enum LaunchAgent: Sendable {
             .appendingPathComponent(".darkbloom/provider.log")
     }
 
+    // MARK: - In-place policy refresh
+
+    /// Surgically refresh the KeepAlive policy in the EXISTING on-disk plist.
+    ///
+    /// The crash-recovery KeepAlive={SuccessfulExit:false} only ships in plists
+    /// written by `darkbloom start` — auto-update restarts via `kickstart -k`
+    /// (which never re-reads the file) and login/reboot re-bootstrap whatever
+    /// file is on disk. Without this, the existing fleet would NEVER gain crash
+    /// recovery. Called at serve startup: rewrites ONLY the KeepAlive key in
+    /// place (preserving ProgramArguments/env customizations) so the policy
+    /// takes effect at the next bootstrap. Deliberately does NOT bootout/
+    /// re-bootstrap — that would kill the running provider; the file change is
+    /// inert until launchd next loads it.
+    ///
+    /// Returns true if the file was updated, false if absent/already current.
+    /// Best-effort: failures are logged by the caller, never fatal.
+    @discardableResult
+    public static func syncKeepAlivePolicyOnDisk() throws -> Bool {
+        try syncKeepAlivePolicy(at: plistPath())
+    }
+
+    /// Path-injectable core of `syncKeepAlivePolicyOnDisk` (separated for tests).
+    @discardableResult
+    static func syncKeepAlivePolicy(at path: URL) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: path.path) else {
+            return false // not a launchd install (foreground/terminal serve)
+        }
+        let data = try Data(contentsOf: path)
+        var format = PropertyListSerialization.PropertyListFormat.xml
+        guard var plist = try PropertyListSerialization.propertyList(
+            from: data, options: [], format: &format
+        ) as? [String: Any] else {
+            return false
+        }
+        if let keepAlive = plist["KeepAlive"] as? [String: Bool],
+           keepAlive["SuccessfulExit"] == false {
+            return false // already current
+        }
+        plist["KeepAlive"] = ["SuccessfulExit": false]
+        let updated = try PropertyListSerialization.data(
+            fromPropertyList: plist, format: format, options: 0
+        )
+        try updated.write(to: path, options: .atomic)
+        return true
+    }
+
     // MARK: - Queries
 
     /// Whether the plist file exists on disk.
@@ -303,9 +349,14 @@ public enum LaunchAgent: Sendable {
     /// (crash/panic/OOM-kill) — crash-recovery the old `KeepAlive=false` lacked.
     /// The intentional teardowns don't race it: `stop`/uninstall is a `bootout`
     /// (removes the job) and self-update is `kickstart -k` (atomic restart;
-    /// binary is swapped while still running). NOTE: an on-disk plist is re-read
-    /// only on bootout+bootstrap (login/reboot/`darkbloom start`), not by
-    /// `kickstart -k`, so existing installs pick this up on their next restart.
+    /// binary is swapped while still running).
+    ///
+    /// PROPAGATION: nothing rewrites an existing install's plist by itself —
+    /// self-update is `kickstart -k` (doesn't re-read the file) and login/reboot
+    /// re-bootstrap the OLD on-disk file. `syncKeepAlivePolicyOnDisk` (called at
+    /// serve startup) refreshes the FILE in place so the policy takes effect at
+    /// the next bootstrap; only a fresh `darkbloom start` regenerates the whole
+    /// plist.
     static func makeServicePlist(
         label: String,
         programArguments: [String],

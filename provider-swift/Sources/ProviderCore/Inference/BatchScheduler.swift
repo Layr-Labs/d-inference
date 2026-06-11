@@ -717,7 +717,9 @@ public actor BatchScheduler {
             return nil
         }
 
-        prefixCacheLogger.warning(
+        // `.notice` not `.warning`: os.Logger maps warning()->OSLogType.error,
+        // so this routine banner showed as type=Error in log reports.
+        prefixCacheLogger.notice(
             "Prefix cache is ON (default; opt out with DARKBLOOM_PREFIX_CACHE=0) — TB-007: cross-tenant sharing / TTFT side-channel; encrypted-at-rest only."
         )
 

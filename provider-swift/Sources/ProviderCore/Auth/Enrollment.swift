@@ -9,11 +9,12 @@
 ///      then `open x-apple.systempreferences:com.apple.Profiles-Settings.extension`
 ///      so the user can click Install.
 ///
-/// The whole flow is idempotent: if `checkMDMEnrolled()` already returns
-/// true we short-circuit. Unenrollment cannot be done programmatically
-/// (Apple requires the user to remove the profile via System Settings),
-/// so unenroll just opens the profiles pane and optionally cleans up local
-/// state.
+/// The whole flow is idempotent: if `checkMDMEnrollment()` reports this Mac
+/// is already enrolled in DARKBLOOM's MDM we short-circuit; enrollment in a
+/// foreign MDM is an error (macOS allows one MDM per device). Unenrollment
+/// cannot be done programmatically (Apple requires the user to remove the
+/// profile via System Settings), so unenroll just opens the profiles pane
+/// and optionally cleans up local state.
 
 import Foundation
 
@@ -61,6 +62,7 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
     case coordinatorRequestFailed(String)
     case coordinatorReturnedHTTP(Int, body: String)
     case profileWriteFailed(String)
+    case managedByOtherMDM(serverURL: String)
 
     public var description: String {
         switch self {
@@ -72,6 +74,12 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
             return "Coordinator returned HTTP \(status): \(body)"
         case .profileWriteFailed(let detail):
             return "Failed to write enrollment profile: \(detail)"
+        case .managedByOtherMDM(let serverURL):
+            return "This Mac is already managed by another MDM (server: \(serverURL)). "
+                + "macOS allows only one MDM enrollment per device, so Darkbloom "
+                + "enrollment is unavailable here. If that profile is yours to "
+                + "remove: System Settings → General → Device Management, then "
+                + "re-run `darkbloom enroll`."
         }
     }
 }
@@ -107,12 +115,20 @@ public struct EnrollmentService: Sendable {
         coordinatorURL: String,
         openSystemSettings: Bool = true
     ) async throws -> EnrollmentResult {
-        if checkMDMEnrolled() {
+        switch checkMDMEnrollment(coordinatorURL: coordinatorURL) {
+        case .enrolledDarkbloom:
             return EnrollmentResult(
                 serialNumber: macHardwareSerialNumber() ?? "<unknown>",
                 profilePath: URL(fileURLWithPath: "/dev/null"),
                 alreadyEnrolled: true
             )
+        case .enrolledOtherMDM(let serverURL):
+            throw EnrollmentError.managedByOtherMDM(serverURL: serverURL)
+        case .notEnrolled, .checkFailed:
+            // checkFailed proceeds too: a redundant profile download is
+            // idempotent/harmless, while refusing here would block enrollment
+            // on machines where the profiles tool is transiently unavailable.
+            break
         }
 
         guard let serial = macHardwareSerialNumber(), !serial.isEmpty else {

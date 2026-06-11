@@ -28,6 +28,13 @@ struct Restart: AsyncParsableCommand {
         } else {
             print("Provider started.")
         }
+
+        // Re-arm the watchdog (re-enables it after a prior `stop`, or installs it
+        // on a provider upgraded from a pre-watchdog build).
+        if Watchdog.autoRestartEnabled(configPath: nil) {
+            try? WatchdogAgent.installAndStart()
+        }
+
         print("  darkbloom status  Check status")
     }
 }

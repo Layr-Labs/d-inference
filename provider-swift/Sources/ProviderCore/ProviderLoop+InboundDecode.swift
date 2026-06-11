@@ -95,4 +95,23 @@ extension ProviderLoop {
         }
         return ""
     }
+
+    /// Prompt-token floor for requests whose usage chunk never arrived (cancelled
+    /// stream / upstream regression). Re-runs the engine's exact applyChatTemplate
+    /// path so the count matches what was prefilled; VLM parts aren't in the text
+    /// template so vision under-counts (a floor, never an overcharge). 0 on failure.
+    internal static func promptTokenFloor(
+        request: OpenAIChatCompletionRequest,
+        tokenizer: TokenizerHandle,
+        reasoningEffort: String?
+    ) -> Int {
+        let messages = request.messages.map { $0.templateMessageDict() }
+        let toolSpecs = request.tools?.map { $0.toolSpec() }
+        let additionalContext: [String: any Sendable]? =
+            reasoningEffort.map { ["reasoning_effort": $0] }
+        guard let ids = try? tokenizer.inner.applyChatTemplate(
+            messages: messages, tools: toolSpecs, additionalContext: additionalContext
+        ) else { return 0 }
+        return ids.count
+    }
 }

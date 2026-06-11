@@ -684,11 +684,17 @@ func TestEviction(t *testing.T) {
 	// Backdate the heartbeat.
 	p.LastHeartbeat = time.Now().Add(-2 * time.Minute)
 
-	// Manually call eviction with a 90-second timeout.
+	// Eviction now requires two consecutive stale sweeps (grace against a
+	// transient coordinator stall mass-reaping a live fleet). First sweep =
+	// strike, second = evict.
+	reg.evictStale(90 * time.Second)
+	if reg.GetProvider("p1") == nil {
+		t.Error("provider should survive the first stale sweep (grace)")
+	}
 	reg.evictStale(90 * time.Second)
 
 	if reg.GetProvider("p1") != nil {
-		t.Error("provider should have been evicted")
+		t.Error("provider should have been evicted after two stale sweeps")
 	}
 	if reg.ProviderCount() != 0 {
 		t.Errorf("count = %d, want 0", reg.ProviderCount())
@@ -1849,8 +1855,10 @@ func TestProviderEviction(t *testing.T) {
 	}
 	reg.SetProviderIdle(found.ID)
 
-	// Backdate heartbeat to 2 minutes ago and evict with 90s timeout.
+	// Backdate heartbeat to 2 minutes ago and evict with 90s timeout. Eviction
+	// takes two consecutive stale sweeps (grace); the second one reaps.
 	p.LastHeartbeat = time.Now().Add(-2 * time.Minute)
+	reg.evictStale(90 * time.Second)
 	reg.evictStale(90 * time.Second)
 
 	// Verify complete removal.

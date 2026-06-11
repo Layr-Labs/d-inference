@@ -381,6 +381,13 @@ struct CoordinatorIntegrationTests {
             // can't run on this host, but the mock is still validated by
             // every other test that hits /v1/enroll-adjacent endpoints.
             return
+        } catch EnrollmentError.managedByOtherMDM {
+            // Host machine is managed by a corporate MDM (e.g. Kandji on dev
+            // workstations): macOS allows one MDM per device, so enroll now
+            // correctly refuses before touching the network. The mock's wire
+            // shape is still covered by the alreadyEnrolled branch on other
+            // hosts; nothing more to verify here.
+            return
         }
 
         if result.alreadyEnrolled {

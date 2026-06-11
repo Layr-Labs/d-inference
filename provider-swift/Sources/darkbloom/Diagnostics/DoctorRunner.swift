@@ -56,10 +56,21 @@ enum DoctorRunner {
         // enroll in MDM is a false warning that sends the operator down the wrong
         // flow and contradicts the trust line printed just above.
         let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
-        if !alreadyHardwareTrusted && !checkMDMEnrolled() {
-            out.append(Diagnostic(section: .trust, name: "mdm enrollment", level: .warn,
-                                  message: "this Mac is not enrolled in MDM — hardware trust can't be granted, so you won't receive traffic on a hardware-trust network.",
-                                  fix: "run `darkbloom enroll` and approve the profile in System Settings → Profiles, then wait ~5 min."))
+        if !alreadyHardwareTrusted {
+            switch checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url) {
+            case .enrolledDarkbloom, .checkFailed:
+                // checkFailed: unknown state — asserting "not enrolled" here
+                // would send an enrolled operator down the wrong flow.
+                break
+            case .enrolledOtherMDM(let serverURL):
+                out.append(Diagnostic(section: .trust, name: "mdm enrollment", level: .warn,
+                                      message: "this Mac is managed by another MDM (\(serverURL)) — macOS allows one MDM per device, so Darkbloom hardware trust can't be granted here.",
+                                      fix: "remove that profile in System Settings → Device Management (if it's yours to remove), then run `darkbloom enroll`."))
+            case .notEnrolled:
+                out.append(Diagnostic(section: .trust, name: "mdm enrollment", level: .warn,
+                                      message: "this Mac is not enrolled in MDM — hardware trust can't be granted, so you won't receive traffic on a hardware-trust network.",
+                                      fix: "run `darkbloom enroll` and approve the profile in System Settings → Profiles, then wait ~5 min."))
+            }
         }
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----

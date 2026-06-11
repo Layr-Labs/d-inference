@@ -33,6 +33,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
@@ -927,7 +928,17 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 // when an injection occurred, so the caller can re-marshal the outgoing body
 // if needed.
 func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int) bool {
-	if explicitMaxTokens(parsed) > 0 {
+	if n := explicitMaxTokens(parsed); n > 0 {
+		// Normalize alias fields the provider engine doesn't read: a chat
+		// request bounded only via max_completion_tokens (the OpenAI-preferred
+		// spelling) must still reach the provider as max_tokens, or the bound
+		// is silently ignored.
+		if !isResponsesAPI {
+			if cur, ok := intFromRequestValue(parsed["max_tokens"]); !ok || cur <= 0 {
+				parsed["max_tokens"] = n
+				return true
+			}
+		}
 		return false
 	}
 	if isResponsesAPI {
@@ -1226,6 +1237,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	input := parsed["input"]
 	if len(messages) == 0 && input == nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "messages or input is required"))
+		return
+	}
+
+	// Multiple choices per request are not supported — fail loudly instead of
+	// silently returning a single choice the consumer didn't ask for.
+	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"n > 1 is not supported", withParam("n")))
 		return
 	}
 
@@ -2464,10 +2483,31 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// When this function returns (consumer disconnect, timeout, or completion),
-	// send a cancel to the provider so it stops generating tokens.
+	// On return (disconnect/timeout/completion): free the slot, tell the
+	// provider to stop, and preserve billing for a mid-stream disconnect.
+	// Park BEFORE RemovePending so a racing provider terminal always finds the
+	// record in pending or the holder — never neither (which would drop it and
+	// mis-refund). GetPending is nil if a terminal already settled it (normal
+	// completion), so nothing is parked then. Both settle paths are
+	// FinalizeReservation-guarded, so the park-then-remove overlap can't double-bill.
 	defer func() {
-		provider.RemovePending(requestID)
+		if stale := provider.GetPending(requestID); stale != nil {
+			s.holdForSettlement(stale)
+		} else {
+			// A terminal already claimed the pending. In every normal path the
+			// reservation is finalized by now (completion billed it, the relay
+			// error/timeout branches refunded it) and this is a no-op. The one
+			// exception is a provider error landing in the gap between this
+			// handler abandoning its channels and this defer running: that
+			// terminal pushed into an unread ErrorCh and nobody settled — sweep
+			// it here. Post-commit only, so it can never finalize a reservation
+			// the dispatch loop still needs for a retry attempt.
+			refundPr := pr
+			saferun.Go(s.logger, "api.postTerminalSweep", func() {
+				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
+			})
+		}
+		provider.RemovePending(requestID) // then remove so SetProviderIdle frees the slot
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
 	}()
@@ -2511,29 +2551,46 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	// termination events (SE signature chunk + [DONE]).
 	sawResponsesAPI := false
 
+	// The terminal include_usage chunk lacks the reasoning breakdown; we hold its
+	// parsed object and re-emit it at stream end with the provider's authoritative
+	// reasoning count (CompleteCh) spliced in — matching the non-streaming/Responses
+	// paths. Held as a parsed map so it is decoded exactly once. Declared before the
+	// first-chunk write because a zero-delta completion (empty/filtered output) can
+	// make the include_usage frame the very first chunk.
+	var pendingUsage map[string]any
+
+	// The chunk carrying the terminal finish_reason is held the same way: the
+	// provider engine reports "stop" even when generation hit the max-tokens
+	// bound, so the coordinator re-derives "length" from the authoritative
+	// token counts (CompleteCh) before forwarding it.
+	var pendingFinish map[string]any
+
 	// Write the first chunk that was already consumed during dispatch.
-	if firstChunk != "" {
+	if firstChunk != "" && !isSSEDoneChunk(firstChunk) {
 		if strings.Contains(firstChunk, `"response.created"`) || strings.Contains(firstChunk, `"response.output_text.delta"`) {
 			sawResponsesAPI = true
 		}
-		if !sawResponsesAPI {
-			firstChunk = normalizeSSEChunk(firstChunk)
+		// A usage-only first chunk (no content/reasoning deltas streamed before it)
+		// is still terminal usage — hold it so the reasoning breakdown is spliced in
+		// at stream end instead of being emitted raw without reasoning_tokens.
+		if obj, isUsage := parseUsageOnlyStreamChunk(firstChunk); !sawResponsesAPI && isUsage {
+			pendingUsage = obj
+		} else if obj, isFinish := parseFinishStreamChunk(normalizeSSEChunk(firstChunk)); !sawResponsesAPI && isFinish {
+			pendingFinish = obj
+		} else {
+			if !sawResponsesAPI {
+				firstChunk = normalizeSSEChunk(firstChunk)
+			}
+			firstChunk = rewriteChunkModel(firstChunk, pr)
+			fmt.Fprintf(w, "%s\n\n", firstChunk)
+			flusher.Flush()
 		}
-		firstChunk = rewriteChunkModel(firstChunk, pr)
-		fmt.Fprintf(w, "%s\n\n", firstChunk)
-		flusher.Flush()
 	}
 
 	// Use a timer that resets on each chunk so long-running generations
 	// (e.g. chain-of-thought models) don't hit a global timeout.
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
-
-	// The terminal include_usage chunk lacks the reasoning breakdown; we hold its
-	// parsed object and re-emit it at stream end with the provider's authoritative
-	// reasoning count (CompleteCh) spliced in — matching the non-streaming/Responses
-	// paths. Held as a parsed map so it is decoded exactly once.
-	var pendingUsage map[string]any
 
 	for {
 		select {
@@ -2565,15 +2622,16 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				// "response.completed" as the terminal event. Adding
 				// extra chunks would break SDK parsers.
 				if !sawResponsesAPI {
-					// Emit the held usage chunk (stream_options.include_usage) with the
-					// reasoning breakdown spliced in from the provider's authoritative
-					// UsageInfo, so streaming reports reasoning_tokens like the rest.
-					// This select runs once, at stream end: the provider's
+					// Emit the held finish/usage chunks with the authoritative token
+					// counts (CompleteCh) spliced in: the finish chunk gets its
+					// finish_reason corrected to "length" when generation hit the
+					// max-tokens bound, and the usage chunk gets the reasoning
+					// breakdown. This select runs once, at stream end: the provider's
 					// inferenceComplete (which populates CompleteCh) is what ends the
 					// stream, so it is effectively already buffered — the timeout is a
 					// fallback, not a hot-path wait.
-					if pendingUsage != nil {
-						var usage protocol.UsageInfo
+					var usage protocol.UsageInfo
+					if pendingUsage != nil || pendingFinish != nil {
 						select {
 						case u, uok := <-pr.CompleteCh:
 							if uok {
@@ -2582,14 +2640,35 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 						case <-time.After(2 * time.Second):
 						case <-r.Context().Done():
 						}
-						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
+					}
+					if pendingFinish != nil {
+						if out := finalizeFinishChunk(pendingFinish, usage, pr); out != "" {
 							fmt.Fprintf(w, "%s\n\n", out)
 							flusher.Flush()
 						}
 					}
-					// Chat completions format: append SE signature + [DONE].
-					if pr.SESignature != "" {
+					if pendingUsage != nil {
+						// Ride the SE signature on the held usage chunk (a complete,
+						// well-formed chat.completion.chunk) instead of emitting a
+						// separate bare event that strict SDK parsers reject.
+						if pr.SESignature != "" {
+							pendingUsage["se_signature"] = pr.SESignature
+							pendingUsage["response_hash"] = pr.ResponseHash
+						}
+						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
+							fmt.Fprintf(w, "%s\n\n", out)
+							flusher.Flush()
+						}
+					} else if pr.SESignature != "" {
+						// No held usage chunk to ride on: emit the signature as a
+						// fully-shaped chat.completion.chunk (id/object/created/model/
+						// choices) so strict decoders parse it; the extra fields are
+						// additive. It precedes the single [DONE] below.
 						sigEvent, _ := json.Marshal(map[string]any{
+							"id":            "chatcmpl-" + pr.RequestID,
+							"object":        "chat.completion.chunk",
+							"created":       time.Now().Unix(),
+							"model":         consumerModel(pr),
 							"choices":       []any{},
 							"se_signature":  pr.SESignature,
 							"response_hash": pr.ResponseHash,
@@ -2597,20 +2676,43 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
 						flusher.Flush()
 					}
+					// Exactly one terminator, after every coordinator-appended event.
 					fmt.Fprint(w, "data: [DONE]\n\n")
 					flusher.Flush()
 				}
 				return
 			}
+			// Every chunk is a liveness signal — re-arm the idle timeout up front,
+			// before deciding whether to forward or hold it, so holding the terminal
+			// usage chunk still resets the window that bounds the wait for the
+			// provider's inference_complete (which closes ChunkCh after billing).
+			// One reset covers both the forward and hold paths.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(inferenceTimeout)
+
 			if !sawResponsesAPI {
 				if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.output_text.delta"`) {
 					sawResponsesAPI = true
 				}
 			}
+			// Swallow the provider's own "data: [DONE]" terminator. The
+			// coordinator appends terminal events of its own (held usage with
+			// the reasoning breakdown, SE signature) and then emits exactly ONE
+			// [DONE] — forwarding the provider's produced a stream shaped
+			// `...usage, [DONE], signature, [DONE]`, and third-party SDKs treat
+			// the first [DONE] as final (MacPaw/OpenAI then chokes parsing the
+			// signature event).
+			if !sawResponsesAPI && isSSEDoneChunk(chunk) {
+				continue
+			}
 			// Hold the terminal usage chunk (chat completions only) so we can splice
 			// in the reasoning breakdown at stream end; forwarding it inline would
-			// emit it without reasoning_tokens. The stream closes right after, so the
-			// running timer still guards a post-usage hang.
+			// emit it without reasoning_tokens.
 			if !sawResponsesAPI {
 				if obj, isUsage := parseUsageOnlyStreamChunk(chunk); isUsage {
 					pendingUsage = obj
@@ -2619,18 +2721,17 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			}
 			if !sawResponsesAPI {
 				chunk = normalizeSSEChunk(chunk)
+				// Hold the chunk carrying the terminal finish_reason so it can be
+				// corrected to "length" against the authoritative token counts at
+				// stream end (the provider engine always reports "stop").
+				if obj, isFinish := parseFinishStreamChunk(chunk); isFinish {
+					pendingFinish = obj
+					continue
+				}
 			}
 			chunk = rewriteChunkModel(chunk, pr)
 			fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
-
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(inferenceTimeout)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {
@@ -2659,15 +2760,6 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	}
 }
 
-func writeResponsesSSE(w http.ResponseWriter, flusher http.Flusher, event map[string]any) {
-	data, err := json.Marshal(event)
-	if err != nil {
-		return
-	}
-	fmt.Fprintf(w, "data: %s\n\n", data)
-	flusher.Flush()
-}
-
 func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -2683,19 +2775,11 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 
 	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
 	createdAt := time.Now().Unix()
-	writeResponsesSSE(w, flusher, map[string]any{
-		"type": "response.created",
-		"response": map[string]any{
-			"id":           responseID,
-			"created_at":   createdAt,
-			"model":        consumerModel(pr),
-			"service_tier": nil,
-		},
-	})
+	emitter := newResponsesStreamEmitter(w, flusher, pr, responseID, createdAt)
+	emitter.start()
 
-	chunks := make([]string, 0, 16)
 	if firstChunk != "" {
-		chunks = append(chunks, firstChunk)
+		emitter.handleChunk(firstChunk)
 	}
 
 	timer := time.NewTimer(inferenceTimeout)
@@ -2713,26 +2797,16 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 						usage = u
 						completed = true
 					}
-				default:
+				case <-time.After(2 * time.Second):
 				}
 				if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
-					writeResponsesSSE(w, flusher, map[string]any{
-						"type":            "error",
-						"sequence_number": 0,
-						"error": map[string]any{
-							"type":    "provider_error",
-							"code":    "provider_error",
-							"message": "provider ended without completion",
-							"param":   nil,
-						},
-					})
+					emitter.emitError("provider_error", "provider ended without completion")
 					return
 				}
-				msg := extractMessage(chunks)
-				writeResponsesStreamOutput(w, flusher, pr, responseID, createdAt, msg, usage)
+				emitter.finish(usage)
 				return
 			}
-			chunks = append(chunks, chunk)
+			emitter.handleChunk(chunk)
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -2746,165 +2820,18 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			writeResponsesSSE(w, flusher, map[string]any{
-				"type":            "error",
-				"sequence_number": 0,
-				"error": map[string]any{
-					"type":    "provider_error",
-					"code":    "provider_error",
-					"message": errMsg.Error,
-					"param":   nil,
-				},
-			})
+			emitter.emitError("provider_error", errMsg.Error)
 			return
 
 		case <-timer.C:
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-			writeResponsesSSE(w, flusher, map[string]any{
-				"type":            "error",
-				"sequence_number": 0,
-				"error": map[string]any{
-					"type":    "timeout",
-					"code":    "timeout",
-					"message": "request timed out",
-					"param":   nil,
-				},
-			})
+			emitter.emitError("timeout", "request timed out")
 			return
 
 		case <-r.Context().Done():
 			return
 		}
 	}
-}
-
-func writeResponsesStreamOutput(w http.ResponseWriter, flusher http.Flusher, pr *registry.PendingRequest, responseID string, createdAt int64, msg extractedMessage, usage protocol.UsageInfo) {
-	outputIndex := 0
-	if msg.Reasoning != "" {
-		itemID := responseItemID("rs", pr.RequestID, outputIndex)
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":         "response.output_item.added",
-			"output_index": outputIndex,
-			"item": map[string]any{
-				"type":              "reasoning",
-				"id":                itemID,
-				"encrypted_content": nil,
-			},
-		})
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":          "response.reasoning_summary_part.added",
-			"item_id":       itemID,
-			"summary_index": 0,
-		})
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":          "response.reasoning_summary_text.delta",
-			"item_id":       itemID,
-			"summary_index": 0,
-			"delta":         msg.Reasoning,
-		})
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":          "response.reasoning_summary_part.done",
-			"item_id":       itemID,
-			"summary_index": 0,
-		})
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":         "response.output_item.done",
-			"output_index": outputIndex,
-			"item": map[string]any{
-				"type":              "reasoning",
-				"id":                itemID,
-				"encrypted_content": nil,
-			},
-		})
-		outputIndex++
-	}
-
-	if msg.Content != "" || len(msg.ToolCalls) == 0 {
-		itemID := responseItemID("msg", pr.RequestID, outputIndex)
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":         "response.output_item.added",
-			"output_index": outputIndex,
-			"item": map[string]any{
-				"type":  "message",
-				"id":    itemID,
-				"phase": nil,
-			},
-		})
-		if msg.Content != "" {
-			writeResponsesSSE(w, flusher, map[string]any{
-				"type":         "response.output_text.delta",
-				"item_id":      itemID,
-				"output_index": outputIndex,
-				"delta":        msg.Content,
-			})
-		}
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":         "response.output_item.done",
-			"output_index": outputIndex,
-			"item": map[string]any{
-				"type":  "message",
-				"id":    itemID,
-				"phase": nil,
-			},
-		})
-		outputIndex++
-	}
-
-	for _, tc := range msg.ToolCalls {
-		fn, _ := tc["function"].(map[string]any)
-		callID, _ := tc["id"].(string)
-		if callID == "" {
-			callID = responseItemID("call", pr.RequestID, outputIndex)
-		}
-		name, _ := fn["name"].(string)
-		args, _ := fn["arguments"].(string)
-		itemID := responseItemID("fc", pr.RequestID, outputIndex)
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":         "response.output_item.added",
-			"output_index": outputIndex,
-			"item": map[string]any{
-				"type":      "function_call",
-				"id":        itemID,
-				"call_id":   callID,
-				"name":      name,
-				"arguments": "",
-			},
-		})
-		if args != "" {
-			writeResponsesSSE(w, flusher, map[string]any{
-				"type":         "response.function_call_arguments.delta",
-				"item_id":      itemID,
-				"output_index": outputIndex,
-				"delta":        args,
-			})
-		}
-		writeResponsesSSE(w, flusher, map[string]any{
-			"type":         "response.output_item.done",
-			"output_index": outputIndex,
-			"item": map[string]any{
-				"type":      "function_call",
-				"id":        itemID,
-				"call_id":   callID,
-				"name":      name,
-				"arguments": args,
-				"status":    "completed",
-			},
-		})
-		outputIndex++
-	}
-
-	reasoningTokens := resolveReasoningTokens(usage, msg.Reasoning)
-	writeResponsesSSE(w, flusher, map[string]any{
-		"type": "response.completed",
-		"response": map[string]any{
-			"id":                 responseID,
-			"created_at":         createdAt,
-			"model":              consumerModel(pr),
-			"incomplete_details": nil,
-			"usage":              buildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
-			"service_tier":       nil,
-		},
-	})
 }
 
 // handleNonStreamingResponseWithFirstChunk collects all chunks from the
@@ -2965,6 +2892,10 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 							}
 							if objType == "chat.completion" {
 								normalizeCompleteChatResponse(obj, consumerModel(pr))
+								// The provider engine reports "stop" even when generation
+								// hit the max-tokens bound — correct it from the
+								// authoritative token counts.
+								rewriteRawFinishReason(obj, completeUsage, pr.RequestedMaxTokens)
 								// Keep the passthrough path consistent with the
 								// SSE-reconstruction path: surface the provider's
 								// accurate reasoning-token count if its raw usage
@@ -3016,9 +2947,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					}
 					var resp any
 					if pr.IsResponsesAPI {
-						resp = buildResponsesResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.SESignature, pr.ResponseHash)
+						resp = buildResponsesResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
 					} else {
-						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.SESignature, pr.ResponseHash)
+						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
 					}
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
@@ -3045,6 +2976,26 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "request timed out"))
 			return
+		}
+	}
+}
+
+// rewriteRawFinishReason corrects a provider-reported "stop" finish_reason to
+// "length" on a raw chat.completion object when the authoritative token counts
+// show generation consumed the entire max-tokens budget.
+func rewriteRawFinishReason(obj map[string]any, usage protocol.UsageInfo, requestedMax int) {
+	if !truncatedByMaxTokens(usage, requestedMax) {
+		return
+	}
+	choices, ok := obj["choices"].([]any)
+	if !ok {
+		return
+	}
+	for _, rawChoice := range choices {
+		if choice, ok := rawChoice.(map[string]any); ok {
+			if fr, _ := choice["finish_reason"].(string); fr == "stop" {
+				choice["finish_reason"] = "length"
+			}
 		}
 	}
 }
@@ -3240,9 +3191,10 @@ func normalizeSSEChunk(chunk string) string {
 // extractedMessage holds the reconstructed assistant message from SSE chunks,
 // including text content, reasoning, and any tool calls.
 type extractedMessage struct {
-	Content   string           `json:"content"`
-	Reasoning string           `json:"reasoning,omitempty"`
-	ToolCalls []map[string]any `json:"tool_calls,omitempty"`
+	Content      string           `json:"content"`
+	Reasoning    string           `json:"reasoning,omitempty"`
+	ToolCalls    []map[string]any `json:"tool_calls,omitempty"`
+	FinishReason string           `json:"-"`
 }
 
 // extractMessage parses SSE data lines and reconstructs the full assistant
@@ -3250,6 +3202,7 @@ type extractedMessage struct {
 func extractMessage(chunks []string) extractedMessage {
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
+	finishReason := ""
 	// Tool calls are indexed — accumulate argument fragments by index.
 	toolCallMap := map[int]map[string]any{}
 
@@ -3296,6 +3249,9 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 
 		for _, c := range choices {
+			if c.FinishReason != nil && *c.FinishReason != "" {
+				finishReason = *c.FinishReason
+			}
 			if c.Delta.Content != "" {
 				contentBuilder.WriteString(c.Delta.Content)
 			} else if c.Message.Content != "" {
@@ -3346,7 +3302,7 @@ func extractMessage(chunks []string) extractedMessage {
 			reasoning = extractedReasoning
 		}
 	}
-	msg := extractedMessage{Content: content, Reasoning: reasoning}
+	msg := extractedMessage{Content: content, Reasoning: reasoning, FinishReason: finishReason}
 	if len(toolCallMap) > 0 {
 		msg.ToolCalls = make([]map[string]any, 0, len(toolCallMap))
 		for i := range len(toolCallMap) {
@@ -3397,6 +3353,16 @@ func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 // + a non-null usage object, carrying the final usage and no content delta) and
 // returns the parsed object. ok is false for any other chunk. Parsing here once
 // lets the caller hold the object and finalize it at stream end without re-parsing.
+// isSSEDoneChunk reports whether a provider stream chunk is the SSE
+// "data: [DONE]" terminator (with or without the data: prefix). The
+// coordinator owns stream termination — provider terminators are swallowed
+// so coordinator-appended events (held usage, SE signature) never trail a
+// [DONE] that SDKs treat as final.
+func isSSEDoneChunk(chunk string) bool {
+	line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(chunk), "data:"))
+	return line == "[DONE]"
+}
+
 func parseUsageOnlyStreamChunk(chunk string) (obj map[string]any, ok bool) {
 	line := strings.TrimPrefix(chunk, "data: ")
 	// Cheap gate: skip the parse for content deltas and usage:null chunks.
@@ -3433,6 +3399,81 @@ func finalizeUsageChunk(obj map[string]any, usage protocol.UsageInfo, pr *regist
 		return ""
 	}
 	return "data: " + string(b)
+}
+
+// parseFinishStreamChunk decodes a chunk whose choices carry a non-null
+// finish_reason (the terminal content chunk). ok is false for any other
+// chunk. The parsed object is held by the caller and finalized at stream end
+// once the authoritative token counts are known.
+func parseFinishStreamChunk(chunk string) (map[string]any, bool) {
+	line := strings.TrimPrefix(chunk, "data: ")
+	if !strings.Contains(line, `"finish_reason":"`) {
+		return nil, false
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(line), &obj); err != nil {
+		return nil, false
+	}
+	choices, _ := obj["choices"].([]any)
+	for _, c := range choices {
+		if m, ok := c.(map[string]any); ok {
+			if fr, _ := m["finish_reason"].(string); fr != "" {
+				return obj, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// finalizeFinishChunk renders the held terminal finish chunk: when the
+// authoritative completion-token count shows generation hit the max-tokens
+// bound, a provider-reported "stop" is corrected to "length" (the engine
+// doesn't distinguish natural stop from truncation). Also rewrites the build
+// id to the public alias. Returns "" if it can't be marshalled.
+func finalizeFinishChunk(obj map[string]any, usage protocol.UsageInfo, pr *registry.PendingRequest) string {
+	if truncatedByMaxTokens(usage, pr.RequestedMaxTokens) {
+		if choices, ok := obj["choices"].([]any); ok {
+			for _, c := range choices {
+				if m, ok := c.(map[string]any); ok {
+					if fr, _ := m["finish_reason"].(string); fr == "stop" {
+						m["finish_reason"] = "length"
+					}
+				}
+			}
+		}
+	}
+	if pr.PublicModel != "" && pr.PublicModel != pr.Model {
+		obj["model"] = pr.PublicModel
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return ""
+	}
+	return "data: " + string(b)
+}
+
+// truncatedByMaxTokens reports whether generation consumed the entire
+// max-tokens budget. requestedMax is the effective bound — the consumer's
+// explicit max_tokens or the coordinator-injected default — so hitting it
+// means the engine cut generation short.
+func truncatedByMaxTokens(usage protocol.UsageInfo, requestedMax int) bool {
+	return requestedMax > 0 && usage.CompletionTokens >= requestedMax
+}
+
+// effectiveFinishReason resolves the finish_reason for a reconstructed
+// response. The provider engine reports "stop" unconditionally, so a
+// truncation-aware reason is re-derived from the authoritative token counts.
+func effectiveFinishReason(extracted string, hasToolCalls bool, usage protocol.UsageInfo, requestedMax int) string {
+	if extracted != "" && extracted != "stop" {
+		return extracted
+	}
+	if truncatedByMaxTokens(usage, requestedMax) {
+		return "length"
+	}
+	if hasToolCalls {
+		return "tool_calls"
+	}
+	return "stop"
 }
 
 func resolveReasoningTokens(usage protocol.UsageInfo, reasoning string) uint64 {
@@ -3484,9 +3525,10 @@ func appendResponsesOutputItems(output []any, requestID string, msg extractedMes
 	}
 	if msg.Content != "" || len(msg.ToolCalls) == 0 {
 		output = append(output, map[string]any{
-			"type": "message",
-			"role": "assistant",
-			"id":   responseItemID("msg", requestID, index),
+			"type":   "message",
+			"role":   "assistant",
+			"status": "completed",
+			"id":     responseItemID("msg", requestID, index),
 			"content": []map[string]any{{
 				"type":        "output_text",
 				"text":        msg.Content,
@@ -3509,22 +3551,47 @@ func appendResponsesOutputItems(output []any, requestID string, msg extractedMes
 			"call_id":   callID,
 			"name":      name,
 			"arguments": args,
+			"status":    "completed",
 		})
 		index++
 	}
 	return output
 }
 
-func buildResponsesResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, seSignature, responseHash string) types.ResponsesResponse {
-	reasoningTokens := resolveReasoningTokens(usage, msg.Reasoning)
-	resp := types.ResponsesResponse{
-		ID:        "resp_" + strings.ReplaceAll(requestID, "-", ""),
-		Object:    "response",
-		CreatedAt: time.Now().Unix(),
-		Model:     model,
-		Output:    appendResponsesOutputItems(nil, requestID, msg),
-		Usage:     buildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
+// finalizeResponsesEnvelope fills the spec-required envelope fields of a
+// Responses object: status derived from incomplete_details, and the
+// always-present defaults (tool_choice, tools, metadata, parallel_tool_calls).
+func finalizeResponsesEnvelope(r *types.ResponsesResponse) {
+	if r.IncompleteDetail != nil {
+		r.Status = "incomplete"
+	} else {
+		r.Status = "completed"
 	}
+	r.ParallelToolCalls = true
+	if r.ToolChoice == nil {
+		r.ToolChoice = "auto"
+	}
+	if r.Tools == nil {
+		r.Tools = []any{}
+	}
+	if r.Metadata == nil {
+		r.Metadata = map[string]any{}
+	}
+}
+
+func buildResponsesResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, requestedMax int, seSignature, responseHash string) types.ResponsesResponse {
+	reasoningTokens := resolveReasoningTokens(usage, msg.Reasoning)
+	finishReason := effectiveFinishReason(msg.FinishReason, len(msg.ToolCalls) > 0, usage, requestedMax)
+	resp := types.ResponsesResponse{
+		ID:               "resp_" + strings.ReplaceAll(requestID, "-", ""),
+		Object:           "response",
+		CreatedAt:        time.Now().Unix(),
+		Model:            model,
+		Output:           appendResponsesOutputItems(nil, requestID, msg),
+		Usage:            buildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
+		IncompleteDetail: buildResponsesIncompleteDetails(finishReason),
+	}
+	finalizeResponsesEnvelope(&resp)
 	if seSignature != "" {
 		resp.SESignature = seSignature
 		resp.ResponseHash = responseHash
@@ -3579,6 +3646,7 @@ func chatCompletionToResponses(resp types.ChatCompletionResponse, requestedModel
 	if finishReason != "" && finishReason != "stop" {
 		r.IncompleteDetail = buildResponsesIncompleteDetails(finishReason)
 	}
+	finalizeResponsesEnvelope(&r)
 	if seSignature != "" {
 		r.SESignature = seSignature
 		r.ResponseHash = responseHash
@@ -3586,7 +3654,7 @@ func chatCompletionToResponses(resp types.ChatCompletionResponse, requestedModel
 	return r
 }
 
-func buildNonStreamingResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, seSignature, responseHash string) types.ChatCompletionResponse {
+func buildNonStreamingResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, requestedMax int, seSignature, responseHash string) types.ChatCompletionResponse {
 	message := types.ChatCompletionMessage{
 		Role:    "assistant",
 		Content: msg.Content,
@@ -3595,11 +3663,10 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 		message.Reasoning = msg.Reasoning
 	}
 
-	finishReason := "stop"
 	if len(msg.ToolCalls) > 0 {
 		message.ToolCalls = msg.ToolCalls
-		finishReason = "tool_calls"
 	}
+	finishReason := effectiveFinishReason(msg.FinishReason, len(msg.ToolCalls) > 0, usage, requestedMax)
 
 	resp := types.ChatCompletionResponse{
 		ID:      "chatcmpl-" + requestID,
@@ -3770,7 +3837,10 @@ func (s *Server) aliasModelEntries(
 	return entries, hidden
 }
 
-func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+// listModelEntries assembles the consumer-facing model entries shared by
+// GET /v1/models and GET /v1/models/{id}. includeBuilds also lists the raw
+// quant builds hidden behind public aliases (ops/debug).
+func (s *Server) listModelEntries(includeBuilds bool) ([]types.ModelEntry, error) {
 	models := s.registry.ListModels()
 
 	// Build a lookup of capacity data keyed by model ID.
@@ -3785,15 +3855,11 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	// lookups are shared with the dedicated /v1/models/openrouter feed.
 	catalogByID, registryByID, err := s.activeCatalogLookups()
 	if err != nil {
-		s.logger.Error("model registry: failed to list active models", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
-		return
+		return nil, err
 	}
 
 	// Public aliases are the consumer-facing model names; their underlying
 	// quant builds are hidden by default so consumers never see the quant.
-	// Pass ?include_builds=1 (ops/debug) to also list the raw builds.
-	includeBuilds := r.URL.Query().Get("include_builds") == "1"
 	aliasEntries, hiddenBuilds := s.aliasModelEntries(capByModel, catalogByID, registryByID)
 
 	data := make([]types.ModelEntry, 0, len(models)+len(aliasEntries))
@@ -3860,10 +3926,44 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		data = append(data, entry)
 	}
 
+	return data, nil
+}
+
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	// Pass ?include_builds=1 (ops/debug) to also list the raw quant builds.
+	data, err := s.listModelEntries(r.URL.Query().Get("include_builds") == "1")
+	if err != nil {
+		s.logger.Error("model registry: failed to list active models", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
+		return
+	}
+
 	writeJSON(w, http.StatusOK, types.ModelListResponse{
 		Object: "list",
 		Data:   data,
 	})
+}
+
+// handleGetModel handles GET /v1/models/{id...} — the OpenAI "retrieve model"
+// endpoint. Model IDs may contain slashes (HuggingFace paths), hence the
+// wildcard path segment. Hidden quant builds are retrievable by their exact
+// id, matching the behavior of requesting one for inference.
+func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	data, err := s.listModelEntries(true)
+	if err != nil {
+		s.logger.Error("model registry: failed to list active models", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
+		return
+	}
+	for _, entry := range data {
+		if entry.ID == id {
+			writeJSON(w, http.StatusOK, entry)
+			return
+		}
+	}
+	writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+		fmt.Sprintf("model %q not found", id), withParam("model")))
 }
 
 // handleCreateKey handles POST /v1/auth/keys — creates a new consumer API key.
@@ -5084,11 +5184,18 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// When this function returns (consumer disconnect, timeout, or
-	// completion), tell the provider to stop generating. Without this the
-	// provider keeps producing tokens into a buffered channel until the
-	// buffer fills, wasting GPU cycles.
+	// Free the slot, stop the provider, and preserve billing on a mid-stream
+	// disconnect (park-before-remove + post-terminal sweep; see the
+	// chat-completions path for the full rationale).
 	defer func() {
+		if stale := provider.GetPending(requestID); stale != nil {
+			s.holdForSettlement(stale)
+		} else {
+			refundPr := pr
+			saferun.Go(s.logger, "api.postTerminalSweep", func() {
+				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
+			})
+		}
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)

@@ -20,10 +20,13 @@ import (
 // Keyed by the Secure Enclave public key — the stable per-device identity that
 // survives reconnects. Two knobs:
 //   - reuseWindow: how long a successful attestation is honored for a NEW
-//     connection from the same device+version without re-pushing. Bounds the
-//     staleness of the proof (a malicious binary swap within the window could ride
-//     a prior attestation), so it is kept short and version-gated. Within a single
-//     live connection the proof is exact regardless of this window.
+//     connection from the same device without re-pushing. The `version` gate is
+//     SELF-REPORTED (an attacker controls it), so it does NOT prove the binary is
+//     unchanged — it only bounds the STALENESS of the proof. Pinned to
+//     pushCooldown so a reconnect that can no longer reuse can always push a fresh
+//     challenge (no deroute gap). The routing chokepoint still independently
+//     requires this connection's own live SE challenge (ChallengeVerifiedSIP), so
+//     a stale reuse cannot by itself route a connection.
 //   - pushCooldown: minimum spacing between pushes to the same device — the hard
 //     rate-limit backstop. At 20m that is <= 3 pushes/hour/device even under
 //     reconnect churn and retries.
@@ -47,7 +50,7 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 	return &codeAttestThrottle{
 		attested:     make(map[string]codeAttestRecord),
 		lastPush:     make(map[string]time.Time),
-		reuseWindow:  30 * time.Minute,
+		reuseWindow:  20 * time.Minute, // pinned to pushCooldown — bound reuse staleness, no deroute gap
 		pushCooldown: 20 * time.Minute, // <= 3 pushes/hour/device (APNs background budget)
 		maxAttempts:  3,
 		now:          time.Now,

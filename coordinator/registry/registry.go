@@ -1538,7 +1538,21 @@ func (r *Registry) modelAllowedByCatalogLocked(model protocol.ModelInfo) bool {
 	if !ok {
 		return false
 	}
-	return entry.WeightHash == "" || model.WeightHash == "" || model.WeightHash == entry.WeightHash
+	// A nil/empty catalog hash (unpinned model) allows anything. Otherwise the
+	// provider MUST report a matching, NON-EMPTY weight hash — an empty reported
+	// hash no longer bypasses a pinned entry (SEC-007 model substitution). The
+	// honest provider eagerly computes a per-model weight hash from disk at startup
+	// for every model it can serve, so an empty hash means the model isn't on disk
+	// (so it can't be served anyway) or the provider is dodging swap detection.
+	//
+	// NOTE: this is a self-reported, defense-in-depth layer — a determined attacker
+	// can report the publicly-known expected hash while serving different weights.
+	// The cryptographic proof of the loaded model is the Secure-Enclave-signed
+	// attestation (activeModelHash), not this plaintext field.
+	if entry.WeightHash == "" {
+		return true
+	}
+	return model.WeightHash == entry.WeightHash
 }
 
 // providerServesCatalogModelLocked returns true if the provider advertises the

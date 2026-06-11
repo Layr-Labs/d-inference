@@ -503,8 +503,11 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		return
 	}
 
-	// Reuse a recent, same-version attestation for this device instead of spending
-	// a push — the binary can't have changed (same version) and the proof is fresh.
+	// Reuse a recent attestation for this device instead of spending a push.
+	// NOTE: `version` is self-reported and does NOT prove the binary is unchanged;
+	// this only avoids re-pushing within reuseWindow (bounded staleness). Routing
+	// still requires this connection's own live SE challenge, so reuse alone never
+	// routes a connection.
 	if s.codeAttestThrottle.reuseAttestation(seKey, version) {
 		provider.SetCodeAttested(true)
 		s.registry.DrainQueuedRequestsForProvider(provider)

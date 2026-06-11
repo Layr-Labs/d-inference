@@ -1,4 +1,3 @@
-import Foundation
 import Testing
 @testable import ProviderCore
 
@@ -49,15 +48,9 @@ struct LaunchAgentServicePlistTests {
             environment: ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/usr/bin"]
         )
         // RunAtLoad=true so a rebooted / auto-login box restarts (and re-attests via
-        // APNs) with no human.
+        // APNs) with no human; KeepAlive stays false to avoid racing the self-updater.
         #expect(plist["RunAtLoad"] as? Bool == true)
-        // KeepAlive restarts ONLY on abnormal exit (crash/OOM-kill) — crash
-        // recovery without racing the self-updater. Clean bootout (stop) and
-        // kickstart (update) are unaffected. Must be the dict form
-        // {SuccessfulExit: false}, NOT the old unconditional `false`.
-        let keepAlive = plist["KeepAlive"] as? [String: Bool]
-        #expect(keepAlive == ["SuccessfulExit": false])
-        #expect(plist["KeepAlive"] as? Bool == nil)
+        #expect(plist["KeepAlive"] as? Bool == false)
         #expect((plist["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 
@@ -70,56 +63,5 @@ struct LaunchAgentServicePlistTests {
         )
         #expect(plist["EnvironmentVariables"] == nil)
         #expect(plist["RunAtLoad"] as? Bool == true)
-    }
-}
-
-@Suite("LaunchAgent KeepAlive policy refresh")
-struct LaunchAgentKeepAliveSyncTests {
-    private func writePlist(_ dict: [String: Any]) throws -> URL {
-        let path = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ka-sync-\(UUID().uuidString).plist")
-        let data = try PropertyListSerialization.data(
-            fromPropertyList: dict, format: .xml, options: 0)
-        try data.write(to: path)
-        return path
-    }
-
-    /// An old-fleet plist (KeepAlive=false bool) is upgraded in place to the
-    /// crash-recovery dict, preserving every other key — this is the only
-    /// channel by which existing installs ever gain crash recovery (auto-update
-    /// restarts never re-read the plist).
-    @Test func upgradesLegacyBoolKeepAlivePreservingOtherKeys() throws {
-        let path = try writePlist([
-            "Label": "io.darkbloom.provider",
-            "ProgramArguments": ["/Users/op/.darkbloom/bin/darkbloom", "start", "--foreground"],
-            "KeepAlive": false,
-            "RunAtLoad": true,
-            "EnvironmentVariables": ["DARKBLOOM_PREFIX_CACHE": "0"],
-        ])
-        defer { try? FileManager.default.removeItem(at: path) }
-
-        #expect(try LaunchAgent.syncKeepAlivePolicy(at: path) == true)
-
-        let data = try Data(contentsOf: path)
-        let plist = try PropertyListSerialization.propertyList(
-            from: data, options: [], format: nil) as? [String: Any]
-        #expect((plist?["KeepAlive"] as? [String: Bool]) == ["SuccessfulExit": false])
-        // Operator customizations survive the surgical rewrite.
-        #expect((plist?["ProgramArguments"] as? [String])?.count == 3)
-        #expect((plist?["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
-        #expect(plist?["RunAtLoad"] as? Bool == true)
-    }
-
-    @Test func alreadyCurrentAndMissingAreNoOps() throws {
-        let current = try writePlist([
-            "Label": "io.darkbloom.provider",
-            "KeepAlive": ["SuccessfulExit": false],
-        ])
-        defer { try? FileManager.default.removeItem(at: current) }
-        #expect(try LaunchAgent.syncKeepAlivePolicy(at: current) == false)
-
-        let missing = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ka-sync-missing-\(UUID().uuidString).plist")
-        #expect(try LaunchAgent.syncKeepAlivePolicy(at: missing) == false)
     }
 }

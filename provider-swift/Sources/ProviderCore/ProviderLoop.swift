@@ -541,17 +541,9 @@ public actor ProviderLoop {
             reason: "Darkbloom provider serving inference / keeping the coordinator link alive")
         defer { ProcessInfo.processInfo.endActivity(napAssertion) }
 
-        // Refresh the launchd KeepAlive policy in the on-disk plist (file-only;
-        // takes effect at the next bootstrap). Auto-update restarts never
-        // re-read the plist, so without this the existing fleet would never
-        // gain crash recovery. Best-effort — a failure must not block serving.
-        do {
-            if try LaunchAgent.syncKeepAlivePolicyOnDisk() {
-                logger.info("launchd plist KeepAlive policy refreshed (applies at next bootstrap)")
-            }
-        } catch {
-            logger.warning("launchd plist KeepAlive refresh failed: \(error)")
-        }
+        // Crash recovery is owned by the WatchdogAgent (separate launchd job,
+        // #315) — installed from the serve path, so it reaches auto-updated
+        // installs too. KeepAlive stays false to avoid racing the updater.
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. Started before the coordinator connection so local clients can

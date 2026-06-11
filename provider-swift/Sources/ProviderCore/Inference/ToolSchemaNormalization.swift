@@ -92,7 +92,7 @@ enum ToolSchemaNormalization {
                 dict["nullable"] == nil {
                 dict["nullable"] = true
             }
-            dict["type"] = collapsedType(t, in: dict)
+            dict["type"] = collapsedType(members: members, in: dict)
         }
 
         let looksLikeSchemaNode =
@@ -106,17 +106,16 @@ enum ToolSchemaNormalization {
         return dict
     }
 
-    /// Collapse a non-string `type` value to one renderable string: the first
-    /// concrete (non-"null") member of an array type, the lone "null" when that
-    /// is all the array declares, else fall back to structural inference.
-    private static func collapsedType(_ value: Any, in dict: [String: Any]) -> String {
-        if let members = (value as? [Any])?.compactMap({ $0 as? String }) {
-            if let concrete = members.first(where: { $0 != "null" }) {
-                return concrete
-            }
-            if let nullOnly = members.first {
-                return nullOnly
-            }
+    /// Collapse a non-string `type` value (pre-extracted string members of the
+    /// array form) to one renderable string: the first concrete (non-"null")
+    /// member, the lone "null" when that is all the array declares, else fall
+    /// back to structural inference.
+    private static func collapsedType(members: [String], in dict: [String: Any]) -> String {
+        if let concrete = members.first(where: { $0 != "null" }) {
+            return concrete
+        }
+        if let nullOnly = members.first {
+            return nullOnly
         }
         return inferredType(for: dict)
     }

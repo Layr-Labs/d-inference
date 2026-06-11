@@ -1193,7 +1193,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error", "request body too large (max 64 MiB)"))
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error", "request body too large"))
 			return
 		}
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read request body"))
@@ -4525,7 +4525,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error", "request body too large (max 64 MiB)"))
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error", "request body too large"))
 			return
 		}
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read request body"))

@@ -1047,7 +1047,12 @@ public actor BatchScheduler {
         layerShapes: [[Int]]?
     ) -> [CheckpointLayerSignature] {
         caches.enumerated().map { idx, cache in
-            let shape = layerShapes.flatMap { idx < $0.count ? $0[idx] : nil }
+            let shape: [Int]? =
+                if let layerShapes, idx < layerShapes.count {
+                    layerShapes[idx]
+                } else {
+                    nil
+                }
             return CheckpointLayerSignature.from(cache, layerShape: shape)
         }
     }

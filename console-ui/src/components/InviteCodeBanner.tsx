@@ -5,7 +5,10 @@ import { Ticket, X, Check, Loader2 } from "lucide-react";
 import { redeemInviteCode } from "@/lib/api";
 import { trackEvent } from "@/lib/google-analytics";
 
-const DISMISSED_KEY = "darkbloom_invite_dismissed";
+export const INVITE_DISMISSED_KEY = "darkbloom_invite_dismissed";
+/** Fired on window when the banner is dismissed, so other corner UI can take the slot. */
+export const INVITE_DISMISSED_EVENT = "darkbloom-invite-dismissed";
+const DISMISSED_KEY = INVITE_DISMISSED_KEY;
 
 export function InviteCodeBanner() {
   const [dismissed, setDismissed] = useState(() => {
@@ -21,6 +24,7 @@ export function InviteCodeBanner() {
   const dismissBanner = useCallback(() => {
     setDismissed(true);
     localStorage.setItem(DISMISSED_KEY, "1");
+    window.dispatchEvent(new Event(INVITE_DISMISSED_EVENT));
   }, []);
 
   const handleDismiss = useCallback(() => {

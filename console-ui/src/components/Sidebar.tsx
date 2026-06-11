@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { CommunityLinks } from "@/components/community/CommunityLinks";
 
 export function Sidebar() {
   const {
@@ -172,6 +173,9 @@ export function Sidebar() {
           Public alpha. Provided as-is for evaluation. Not for production use.
         </p>
       </div>
+
+      {/* Community links */}
+      <CommunityLinks />
 
       {/* User footer */}
       <div className="px-3 py-3 border-t border-border-dim">

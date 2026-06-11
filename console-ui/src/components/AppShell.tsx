@@ -4,6 +4,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "./Sidebar";
 import { Toasts } from "./Toasts";
+import { ProviderSlackPopup } from "./community/ProviderSlackPopup";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { ready } = useAuth();
@@ -32,6 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-screen overflow-hidden bg-bg-primary">
       <Sidebar />
       <main className="flex-1 flex flex-col overflow-y-auto">{children}</main>
+      <ProviderSlackPopup />
       <Toasts />
     </div>
   );

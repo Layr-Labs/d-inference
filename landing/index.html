@@ -256,6 +256,27 @@
     }
     .rv.vis { opacity: 1; transform: none; }
 
+    /* When anime.js drives animations, CSS transitions/keyframes step aside */
+    html.anime-on .rv { transition: none; }
+    html.anime-on .hero h1,
+    html.anime-on .hero .lead,
+    html.anime-on .hero .ctas { animation: none; opacity: 1; }
+    html.anime-on .hero .ctas .btn,
+    html.anime-on .hero-illustration { animation: none; opacity: 0; }
+    html.anime-on .card-grid > .card,
+    html.anime-on .stat-grid > .stat-cell,
+    html.anime-on .feat-grid > .feat-item { opacity: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      html.anime-on .rv,
+      html.anime-on .hero h1,
+      html.anime-on .hero .lead,
+      html.anime-on .hero .ctas .btn,
+      html.anime-on .hero-illustration,
+      html.anime-on .card-grid > .card,
+      html.anime-on .stat-grid > .stat-cell,
+      html.anime-on .feat-grid > .feat-item { opacity: 1; transform: none; }
+    }
+
     /* ==================== HEADER ==================== */
     header {
       position: fixed;
@@ -410,8 +431,16 @@
       cursor: pointer;
       border: none;
       text-decoration: none;
-      transition: background 0.2s, color 0.2s;
+      transition: background 0.2s, color 0.2s, transform 0.2s ease, box-shadow 0.2s ease;
+      will-change: transform;
     }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(26, 12, 109, 0.14);
+    }
+
+    .btn:active { transform: translateY(0); }
 
     .btn-primary {
       background: var(--black);
@@ -501,7 +530,10 @@
     .card {
       background: var(--white);
       padding: 32px;
+      transition: background 0.25s ease;
     }
+
+    .card:hover { background: #FAFBFD; }
 
     .card-label {
       font-family: var(--font-mono);
@@ -1051,8 +1083,10 @@
         <circle cx="204" cy="164" r="94" fill="#fff" opacity="0.75"/>
 
         <!-- Main route -->
-        <path d="M98 132 C130 132 136 170 166 170" stroke="#1A0C6D" stroke-width="1.8" stroke-linecap="round"/>
-        <path d="M234 170 C268 170 272 132 306 132" stroke="#1A0C6D" stroke-width="1.8" stroke-linecap="round"/>
+        <path id="hero-route-1" d="M98 132 C130 132 136 170 166 170" stroke="#1A0C6D" stroke-width="1.8" stroke-linecap="round"/>
+        <path id="hero-route-2" d="M234 170 C268 170 272 132 306 132" stroke="#1A0C6D" stroke-width="1.8" stroke-linecap="round"/>
+        <circle id="hero-pulse-1" r="4" fill="#1A0C6D" opacity="0"/>
+        <circle id="hero-pulse-2" r="4" fill="#95BFFF" opacity="0"/>
         <polygon points="160,166 168,170 160,174" fill="#1A0C6D"/>
         <polygon points="300,128 308,132 300,136" fill="#1A0C6D"/>
 
@@ -1442,6 +1476,8 @@ response = client.chat.completions.create(
 </footer>
 
 <script src="earn-calculator.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js" integrity="sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=" crossorigin="anonymous"></script>
+<script src="animations.js"></script>
 
 <!-- ============ LIVE MODEL LINEUP + PRICING ============ -->
 <!-- Sources the pricing table from the coordinator's public, registry-backed

@@ -773,7 +773,17 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 
 // handleNodeEarnings handles GET /v1/provider/node-earnings?provider_key=<key>&limit=50.
 // Returns recent per-node earnings history plus lifetime aggregates for the node.
+// Requires auth (requireAuth middleware). Only returns data if the requested
+// provider_key is owned by the authenticated account — the AccountID field on
+// ProviderEarning rows is the ownership source. Returns 403 if the key is owned
+// by a different account, 404 if no earnings rows exist for the key.
 func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
+	accountID := s.resolveAccountID(r)
+	if accountID == "" {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials"))
+		return
+	}
+
 	providerKey := r.URL.Query().Get("provider_key")
 	if providerKey == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "provider_key query parameter is required"))
@@ -790,6 +800,10 @@ func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
 		limit = 1000
 	}
 
+	// Fetch all earnings for this provider key (up to a generous cap) so we
+	// can verify ownership via the AccountID field before returning any data.
+	// ProviderEarning.AccountID is set by CreditProviderAccount and is the
+	// authoritative ownership signal.
 	earnings, err := s.store.GetProviderEarnings(providerKey, limit)
 	if err != nil {
 		s.logger.Error("get provider earnings failed", "error", err)
@@ -797,7 +811,27 @@ func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, err := s.store.GetProviderEarningsSummary(providerKey)
+	// Scope strictly to the caller's account. A provider_key is the node's
+	// STABLE hardware key and can accumulate earning rows under MULTIPLE
+	// accounts if the device was re-linked, so we must not (a) return another
+	// account's detail rows, nor (b) return a cross-account aggregate summary.
+	// Filter the detail rows to the caller's own; if the key has rows but NONE
+	// belong to the caller, it is wholly another account's node -> 403.
+	owned := earnings[:0]
+	for _, e := range earnings {
+		if e.AccountID == accountID {
+			owned = append(owned, e)
+		}
+	}
+	if len(earnings) > 0 && len(owned) == 0 {
+		writeJSON(w, http.StatusForbidden, errorResponse("permission_denied", "provider_key does not belong to this account"))
+		return
+	}
+
+	// Lifetime totals scoped to the caller's account — never aggregated across
+	// the other accounts a re-linked key may have served, and never the
+	// cross-account materialized summary.
+	summary, err := s.store.GetProviderEarningsSummaryForAccount(providerKey, accountID)
 	if err != nil {
 		s.logger.Error("get provider earnings summary failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings summary"))
@@ -806,11 +840,11 @@ func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"provider_key":    providerKey,
-		"earnings":        earnings,
+		"earnings":        owned,
 		"total_micro_usd": summary.TotalMicroUSD,
 		"total_usd":       fmt.Sprintf("%.6f", float64(summary.TotalMicroUSD)/1_000_000),
 		"count":           summary.Count,
-		"recent_count":    len(earnings),
+		"recent_count":    len(owned),
 		"history_limit":   limit,
 	})
 }

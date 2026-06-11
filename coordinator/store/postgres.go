@@ -1711,7 +1711,14 @@ func creditWithdrawableTx(ctx context.Context, tx pgx.Tx, accountID string, amou
 }
 
 // Credit adds micro-USD to an account and records a ledger entry (atomic).
+// Credit adds micro-USD to an account. Returns ErrNegativeAmount if
+// amountMicroUSD is negative (defense-in-depth guard against balance-minting
+// via negative credits that would subtract balance in Postgres arithmetic).
 func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if amountMicroUSD < 0 {
+		return ErrNegativeAmount
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -1777,8 +1784,14 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 	return tx.Commit(ctx)
 }
 
-// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
+// Debit subtracts micro-USD from an account. Returns ErrInsufficientBalance if
+// insufficient funds, or ErrNegativeAmount if amountMicroUSD is negative
+// (defense-in-depth guard against balance-minting via negative debits).
 func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if amountMicroUSD < 0 {
+		return ErrNegativeAmount
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -3009,6 +3022,28 @@ func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (Provider
 		return ProviderEarningsSummary{}, nil
 	}
 
+	return summary, nil
+}
+
+// GetProviderEarningsSummaryForAccount returns lifetime aggregates for a
+// provider node scoped to a single account (see Store interface). Computed
+// from provider_earnings directly because the materialized earnings_summary
+// table has no account dimension.
+func (s *PostgresStore) GetProviderEarningsSummaryForAccount(providerKey, accountID string) (ProviderEarningsSummary, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var summary ProviderEarningsSummary
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
+		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
+		 FROM provider_earnings
+		 WHERE provider_key = $1 AND account_id = $2`,
+		providerKey, accountID,
+	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	if err != nil {
+		return ProviderEarningsSummary{}, nil
+	}
 	return summary, nil
 }
 

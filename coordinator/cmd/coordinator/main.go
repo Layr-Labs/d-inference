@@ -511,11 +511,13 @@ func main() {
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
-		Addr:         ":" + cfg.ServerConfig.Port,
-		Handler:      srv.Handler(),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 0, // SSE streaming requires no write timeout
-		IdleTimeout:  120 * time.Second,
+		Addr:              ":" + cfg.ServerConfig.Port,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      0, // SSE streaming requires no write timeout
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
 
 	// Start listening.

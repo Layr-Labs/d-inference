@@ -17,7 +17,10 @@ func registerBuildsProvider(srv *Server, id string, builds ...string) {
 	models := make([]protocol.ModelInfo, 0, len(builds))
 	slots := make([]protocol.BackendSlotCapacity, 0, len(builds))
 	for _, b := range builds {
-		models = append(models, protocol.ModelInfo{ID: b, ModelType: "chat", Quantization: "4bit"})
+		// Report the seeded weight hash (testHash) — an honest serving provider
+		// always reports the on-disk hash of any model it can serve, which matches
+		// the pinned catalog entry seedActiveModel writes.
+		models = append(models, protocol.ModelInfo{ID: b, ModelType: "chat", Quantization: "4bit", WeightHash: testHash})
 		slots = append(slots, protocol.BackendSlotCapacity{Model: b, State: "running"})
 	}
 	p := srv.registry.Register(id, nil, &protocol.RegisterMessage{

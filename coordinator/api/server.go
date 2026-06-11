@@ -1344,7 +1344,8 @@ func (s *Server) mdmWebhookTokenValid(r *http.Request) bool {
 var installScript []byte
 
 // installScriptPlaceholder is substituted with the coordinator's public URL at
-// serve time. Keep in sync with coordinator/internal/api/install.sh.
+// serve time. Keep coordinator/api/install.sh in sync with scripts/install.sh —
+// the only intentional difference is this placeholder vs the https://api.darkbloom.dev default.
 //
 // The legacy install.sh also substituted __DARKBLOOM_R2_CDN_URL__ and
 // __DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__ for the Python runtime download.
@@ -1433,11 +1434,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/payments/balance", s.requireAuth(s.handleBalance))
 	s.mux.HandleFunc("GET /v1/payments/usage", s.requireAuth(s.handleUsage))
 
-	// Provider earnings — no API key auth (providers identify by provider address).
-	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
+	// Provider earnings — auth required; data scoped to the authenticated account.
+	s.mux.HandleFunc("GET /v1/provider/earnings", s.requireAuth(s.handleProviderEarnings))
 
-	// Per-node provider earnings — public by provider_key, or auth'd by account.
-	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.handleNodeEarnings)
+	// Per-node provider earnings — auth required; data scoped to the authenticated account.
+	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.requireAuth(s.handleNodeEarnings))
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.

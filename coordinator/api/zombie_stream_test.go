@@ -31,12 +31,19 @@ func TestZombieStreamCancellerSweepBounded(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		z.shouldCancel(string(rune('a'+i%26))+string(rune('0'+i%10))+string(rune(i)), base)
 	}
-	// All those are expired relative to a far-future call, which triggers the sweep.
-	z.shouldCancel("trigger", base.Add(zombieCancelThrottle+time.Hour))
 	z.mu.Lock()
 	n := len(z.sent)
 	z.mu.Unlock()
-	if n > 4096 {
+	if n > zombieCancelMaxEntries {
+		t.Fatalf("map not bounded during fresh burst: %d entries", n)
+	}
+
+	// All those are expired relative to a far-future call, which triggers the sweep.
+	z.shouldCancel("trigger", base.Add(zombieCancelThrottle+time.Hour))
+	z.mu.Lock()
+	n = len(z.sent)
+	z.mu.Unlock()
+	if n > zombieCancelMaxEntries {
 		t.Fatalf("map not bounded after sweep: %d entries", n)
 	}
 }

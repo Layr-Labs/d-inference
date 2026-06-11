@@ -11,6 +11,7 @@ import (
 // one cancel per request per this interval is enough to stop a provider that's
 // actually listening, and harmless against one that isn't.
 const zombieCancelThrottle = 10 * time.Second
+const zombieCancelMaxEntries = 4096
 
 // zombieStreamCanceller throttles cancels sent for chunks that arrive for a
 // request the coordinator no longer tracks (consumer gone / already settled).
@@ -32,15 +33,30 @@ func newZombieStreamCanceller() *zombieStreamCanceller {
 func (z *zombieStreamCanceller) shouldCancel(requestID string, now time.Time) bool {
 	z.mu.Lock()
 	defer z.mu.Unlock()
-	if len(z.sent) > 4096 {
+
+	if t, ok := z.sent[requestID]; ok {
+		if now.Sub(t) < zombieCancelThrottle {
+			return false
+		}
+		delete(z.sent, requestID)
+	}
+
+	if len(z.sent) >= zombieCancelMaxEntries {
+		var oldestID string
+		var oldest time.Time
 		for id, t := range z.sent {
 			if now.Sub(t) > zombieCancelThrottle {
 				delete(z.sent, id)
+				continue
+			}
+			if oldestID == "" || t.Before(oldest) {
+				oldestID = id
+				oldest = t
 			}
 		}
-	}
-	if t, ok := z.sent[requestID]; ok && now.Sub(t) < zombieCancelThrottle {
-		return false
+		if len(z.sent) >= zombieCancelMaxEntries && oldestID != "" {
+			delete(z.sent, oldestID)
+		}
 	}
 	z.sent[requestID] = now
 	return true

@@ -3906,7 +3906,10 @@ func (r *Registry) evictStale(timeout time.Duration) {
 	var toEvict []string
 	var evictAges []time.Duration
 	for id, p := range r.providers {
-		age := now.Sub(p.LastHeartbeat)
+		p.mu.Lock()
+		lastHeartbeat := p.LastHeartbeat
+		p.mu.Unlock()
+		age := now.Sub(lastHeartbeat)
 		ages = append(ages, age)
 		if age > timeout {
 			strikes := r.evictStrikes[id] + 1

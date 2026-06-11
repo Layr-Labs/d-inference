@@ -340,7 +340,7 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 		t.Fatal("reuse must not leak across SE keys")
 	}
 
-	// H2 invariant: reuse staleness must never exceed one push cooldown, so a
+	// Invariant: reuse staleness must never exceed one push cooldown, so a
 	// reconnect whose reuse just expired can always push a fresh challenge (no
 	// deroute gap). Guards against widening reuseWindow past pushCooldown again.
 	if th.reuseWindow > th.pushCooldown {

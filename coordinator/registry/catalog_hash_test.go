@@ -1,12 +1,10 @@
 package registry
 
-// Regression test for H3 (SEC-007 model-substitution fail-open): an empty
-// provider-reported weight hash must NOT bypass a pinned catalog entry. The
-// honest provider computes a per-model weight hash from disk at registration
-// for every advertised model (loaded or cold), so an empty hash is never a
-// legitimate "cold model" signal — it's a missing model or a swap-detection
-// dodge. This test MUST fail without the fix (which previously had a
-// `model.WeightHash == ""` short-circuit) and pass with it.
+// Regression test for the catalog weight-hash filter: an empty provider-reported
+// weight hash must not bypass a pinned catalog entry. An honest provider hashes
+// every servable model from disk, so an empty hash is never a valid "cold model"
+// signal — it's a missing model or a swap-detection dodge. Fails without the fix
+// (which previously short-circuited on `model.WeightHash == ""`), passes with it.
 
 import (
 	"testing"
@@ -32,7 +30,7 @@ func TestModelAllowedByCatalog_EmptyHashRejectedWhenPinned(t *testing.T) {
 		model protocol.ModelInfo
 		want  bool
 	}{
-		{"empty hash on a PINNED model is rejected (SEC-007)", protocol.ModelInfo{ID: pinned, WeightHash: ""}, false},
+		{"empty hash on a pinned model is rejected", protocol.ModelInfo{ID: pinned, WeightHash: ""}, false},
 		{"matching hash on a pinned model is allowed", protocol.ModelInfo{ID: pinned, WeightHash: "EXPECTED_HASH"}, true},
 		{"mismatched hash on a pinned model is rejected", protocol.ModelInfo{ID: pinned, WeightHash: "WRONG"}, false},
 		{"unpinned model allows any (incl. empty) hash", protocol.ModelInfo{ID: unpinned, WeightHash: ""}, true},

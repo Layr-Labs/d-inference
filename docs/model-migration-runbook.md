@@ -285,6 +285,25 @@ in this release — retiring it is this explicit operator step.
 
 Optional, once you're confident: deprecate the fp8 model registry entry.
 
+> **TAKEOVER aliases retire in a different order.** The upsert above is
+> **rejected** for a takeover alias: without `takeover` the absorbed-id
+> collision check 409s, and with `takeover: true` validation forces
+> `previous_build == alias_id`, so previous can never be cleared while the
+> absorbed registry record is live. The sequence is:
+>
+> 1. Wait for full convergence **plus the residency drain** (the idle monitor
+>    unloads retired GPU slots up to an hour after each box's last old-build
+>    inference). Deprecating the absorbed record earlier removes its catalog
+>    hash, which voids the challenge alibi for any provider still holding the
+>    old build resident-and-active — it would be HARD-UNTRUSTED at its next
+>    challenge.
+> 2. Deprecate the absorbed registry entry (`POST
+>    /v1/admin/models/gemma-4-26b/status` → deprecated). It drops out of the
+>    active/beta catalog, so the collision check no longer fires.
+> 3. Re-upsert the alias **without** `takeover` and **without**
+>    `previous_build` (the form above). The absorbed id rotates into
+>    `retired_builds` lineage for straggler convergence.
+
 ---
 
 ## Validate on dev first

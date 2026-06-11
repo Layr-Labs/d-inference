@@ -12,13 +12,16 @@
 # registers the new id with the coordinator. No bytes are re-uploaded from this
 # machine except the small manifest.
 #
-# Usage:
+# Usage (registry fields are explicit — the OpenAI-shaped /v1/models response
+# does not carry min_ram_gb/prices in registerable form):
 #   R2_ACCOUNT_ID=… GCP_PROJECT=… ./scripts/preposition-rollback-build.sh \
-#     <src-model-id> <src-version> <new-model-id> <coordinator-url> <publishing-key>
+#     <src-model-id> <src-version> <new-model-id> <coordinator-url> <publishing-key> \
+#     <quantization> <min-ram-gb> <max-context> <max-output> <input-price-µ$/Mtok> <output-price-µ$/Mtok>
 #
-# Example (gemma 4bit cutover):
+# Example (gemma 4bit cutover; values = the absorbed 8bit registry row):
 #   ./scripts/preposition-rollback-build.sh \
-#     gemma-4-26b 2026-05-30-r1 gemma-4-26b-8bit https://api.darkbloom.dev "$ADMIN_KEY"
+#     gemma-4-26b 2026-05-30-r1 gemma-4-26b-8bit https://api.darkbloom.dev "$ADMIN_KEY" \
+#     8bit 36 131072 16384 30000 165000
 set -euo pipefail
 
 SRC_MODEL_ID="${1:?src model id}"
@@ -26,6 +29,13 @@ SRC_VERSION="${2:?src version}"
 NEW_MODEL_ID="${3:?new model id}"
 COORD="${4:?coordinator url}"
 PUBLISH_KEY="${5:?publishing/admin key}"
+QUANT="${6:?quantization (e.g. 8bit)}"
+MIN_RAM_GB="${7:?min ram gb}"
+MAX_CONTEXT="${8:?max context length}"
+MAX_OUTPUT="${9:?max output length}"
+INPUT_PRICE="${10:?input price micro-usd per Mtok}"
+OUTPUT_PRICE="${11:?output price micro-usd per Mtok}"
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-auto}"
 
 R2_BUCKET="${R2_BUCKET:-darkbloom-models}"
 R2_ACCESS_KEY_SECRET="${R2_ACCESS_KEY_SECRET:-darkbloom-r2-access-key-id}"
@@ -70,26 +80,19 @@ PY
 aws s3 cp "$TMP/manifest.json" "s3://$R2_BUCKET/$NEW_PREFIX/manifest.json" --endpoint-url "$ENDPOINT"
 
 echo "Registering $NEW_MODEL_ID with the coordinator…"
-# Pull display fields + pricing from the source registry entry so the rollback
-# build is routable at identical price/limits the moment it's promoted.
-SRC_JSON=$(curl -fsS "$COORD/v1/models?include_builds=1" -H "Authorization: Bearer $PUBLISH_KEY" | \
-  python3 -c "import sys,json;d=json.load(sys.stdin);print(json.dumps(next(m for m in d['data'] if m['id']=='$SRC_MODEL_ID')))")
-python3 - "$SRC_JSON" "$NEW_MODEL_ID" "$SRC_VERSION" <<'PY' > "$TMP/register.json"
+python3 - "$NEW_MODEL_ID" "$SRC_VERSION" "$QUANT" "$MIN_RAM_GB" "$MAX_CONTEXT" "$MAX_OUTPUT" "$INPUT_PRICE" "$OUTPUT_PRICE" <<'PY' > "$TMP/register.json"
 import json, sys
-src = json.loads(sys.argv[1]); new_id = sys.argv[2]; version = sys.argv[3]
+new_id, version, quant, min_ram, max_ctx, max_out, in_p, out_p = sys.argv[1:9]
 print(json.dumps({
   "model_id": new_id,
   "version": version,
-  "display_name": src.get("display_name", new_id) + " (rollback)",
-  "family": src.get("family",""),
-  "architecture": src.get("architecture",""),
-  "quantization": src.get("quantization",""),
-  "max_context_length": src.get("max_context_length", 0),
-  "max_output_length": src.get("max_output_length", 0),
-  "min_ram_gb": src.get("min_ram_gb", 0),
-  "capabilities": src.get("capabilities", {}),
-  "input_price": src.get("input_price", 0),
-  "output_price": src.get("output_price", 0),
+  "display_name": new_id + " (rollback)",
+  "quantization": quant,
+  "min_ram_gb": int(min_ram),
+  "max_context_length": int(max_ctx),
+  "max_output_length": int(max_out),
+  "input_price": int(in_p),
+  "output_price": int(out_p),
 }))
 PY
 curl -fsS -X POST "$COORD/v1/admin/models/register" \

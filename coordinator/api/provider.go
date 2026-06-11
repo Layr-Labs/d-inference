@@ -1574,6 +1574,13 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		return
 	}
 	pr := provider.RemovePending(msg.RequestID)
+	// Always clear any parked settlement record for this request (consumer
+	// disconnected mid-stream). It's the SAME object as a non-nil pr when the
+	// terminal raced the disconnect defer; claiming it here both settles the
+	// disconnect case and stops the grace timer from later no-op-refunding.
+	if parked := s.claimSettlement(msg.RequestID); parked != nil && pr == nil {
+		pr = parked
+	}
 	if pr == nil {
 		s.logger.Warn("complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
 		return
@@ -1602,6 +1609,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// check usage immediately after the HTTP response completes.
 	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
 	s.registry.RecordJobSuccess(providerID, responseTime)
+	// Serving this model proves the pair can load — lift any cool-down early.
+	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
 
 	// Resolve the consumer once: platform-fee override (nil = global default)
 	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
@@ -1918,22 +1927,26 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		return
 	}
 	pr := provider.RemovePending(msg.RequestID)
+	// Clear any parked settlement record (consumer disconnected mid-stream).
+	// Same object as a non-nil pr when the terminal raced the disconnect defer.
+	parked := s.claimSettlement(msg.RequestID)
+	if pr == nil {
+		pr = parked
+	}
 	if pr == nil {
 		s.logger.Warn("error for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
 		return
 	}
-
-	pr.ErrorCh <- *msg
-	close(pr.ChunkCh)
-	close(pr.CompleteCh)
-	close(pr.ErrorCh)
+	consumerGone := parked != nil
 
 	// Record job failure for reputation tracking, but carve out capacity
 	// rejections — those are not provider faults, just the provider declining
 	// work it cannot currently serve (the coordinator reroutes these). Counting
 	// them would unfairly penalise healthy providers shedding load. Capacity
 	// signals: HTTP 503 (service unavailable) / 429 (too many requests), an
-	// exhausted token budget, or an out-of-memory model-load reject.
+	// exhausted token budget, or an out-of-memory model-load reject. Done before
+	// the consumer-gone return so a load reject still records its cool-down even
+	// when the consumer already disconnected.
 	loweredErr := strings.ToLower(msg.Error)
 	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
 		msg.StatusCode == http.StatusTooManyRequests ||
@@ -1943,8 +1956,34 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		s.registry.RecordJobFailure(providerID)
 	}
 
-	// Mark provider idle.
+	// A load reject means the provider cannot serve this model RIGHT NOW and
+	// will fail every dispatch for it identically (observed in prod as
+	// hundreds of dispatch→503 loops against memory-wedged boxes). Put the
+	// provider-model pair on a routing cool-down so retries land on real
+	// capacity; cleared on re-registration or a served request for the pair.
+	if strings.Contains(loweredErr, "insufficient memory") {
+		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
+			s.logger.Warn("load-failure cool-down started",
+				"provider_id", providerID,
+				"model", pr.Model,
+			)
+			s.ddIncr("routing.load_failure_cooldowns", []string{"model:" + pr.Model})
+		}
+	}
+
 	s.registry.SetProviderIdle(providerID)
+
+	if consumerGone {
+		// No reader for the consumer channels (they disconnected) — settle by
+		// refunding the reservation instead of pushing onto ErrorCh.
+		s.refundReservedBalance(pr, "provider_error_after_disconnect:"+msg.RequestID)
+		return
+	}
+
+	pr.ErrorCh <- *msg
+	close(pr.ChunkCh)
+	close(pr.CompleteCh)
+	close(pr.ErrorCh)
 
 	s.logger.Error("inference error",
 		"request_id", msg.RequestID,

@@ -83,7 +83,7 @@ extension BatchScheduler {
                     let isAbort = output.finishReason == "abort"
                     let engineError = !isAbort ? output.error : nil
                     if isAbort || engineError != nil {
-                        _ = await scheduler.recordFinish(
+                        let usage = await scheduler.recordFinish(
                             requestId: id,
                             promptTokens: output.promptTokens,
                             completionTokens: output.completionTokens,
@@ -94,6 +94,18 @@ extension BatchScheduler {
                             // so callers can report it / decide retry.
                             continuation.yield(.error(err))
                         } else {
+                            // An aborted request did real work (prefill +
+                            // partial decode). Emit the authoritative counts
+                            // BEFORE the terminal error so a listener that is
+                            // still attached can settle billing for the
+                            // tokens it already delivered instead of $0.
+                            if usage.promptTokens > 0 || usage.completionTokens > 0 {
+                                continuation.yield(.info(
+                                    promptTokens: usage.promptTokens,
+                                    completionTokens: usage.completionTokens,
+                                    tokensPerSecond: usage.tps
+                                ))
+                            }
                             // Distinct pending-timeout vs. client-cancel
                             // string so operators can tell capacity
                             // exhaustion apart from a closed connection.

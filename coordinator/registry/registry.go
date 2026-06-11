@@ -701,6 +701,17 @@ type Registry struct {
 	// entry lives, the provider is skipped for new load_model sends
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
 	pendingModelLoads map[string]time.Time // key: "providerID:modelID", value: expiry
+
+	// dispatchLoadCooldowns tracks provider-model pairs that rejected a
+	// DISPATCH with a load failure ("insufficient memory to load model").
+	// Routing skips the pair until expiry: a provider in that state fails
+	// every request for the model instantly, and without a cool-down the
+	// scheduler re-picks it (it looks idle and high-scoring) — observed in
+	// prod as hundreds of dispatch→503→retry loops per provider per hour
+	// while real capacity sat behind the retries. Cleared on provider
+	// (re-)registration (a restart frees the memory) and on a served
+	// request for the same pair.
+	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -716,6 +727,13 @@ const pendingModelLoadTTL = 2 * time.Minute
 // re-registration) could serve.
 const pendingModelLoadDrainBackoff = 30 * time.Second
 
+// dispatchLoadCooldownTTL is how long routing skips a provider-model pair
+// after the provider rejected a dispatch with a load failure. Long enough to
+// stop instant-fail retry loops from soaking up dispatch attempts; short
+// enough that a provider that recovers (memory freed, model evicted
+// elsewhere) returns to rotation on its own.
+const dispatchLoadCooldownTTL = 2 * time.Minute
+
 type modelLoadAction struct {
 	providerID string
 	modelID    string
@@ -724,14 +742,72 @@ type modelLoadAction struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:         make(map[string]*Provider),
-		queue:             NewRequestQueue(10, 120*time.Second),
-		MinTrustLevel:     TrustHardware,
-		tpsRegistry:       NewTPSRegistry(),
-		modelProviders:    make(map[string]*atomic.Int64),
-		pendingModelLoads: make(map[string]time.Time),
-		logger:            logger,
+		providers:             make(map[string]*Provider),
+		queue:                 NewRequestQueue(10, 120*time.Second),
+		MinTrustLevel:         TrustHardware,
+		tpsRegistry:           NewTPSRegistry(),
+		modelProviders:        make(map[string]*atomic.Int64),
+		pendingModelLoads:     make(map[string]time.Time),
+		dispatchLoadCooldowns: make(map[string]time.Time),
+		logger:                logger,
 	}
+}
+
+// RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
+// after the provider rejected a dispatch with a load failure. Returns true
+// when this call started a new cool-down (false when one was already live),
+// so callers can emit metrics without double-counting the retry storm.
+func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	// Opportunistic sweep: provider ids are per-session UUIDs, so entries for
+	// disconnected providers expire but are never re-keyed. Bound the map by
+	// dropping expired entries once it grows past any plausible live set.
+	if len(r.dispatchLoadCooldowns) > 1024 {
+		for key, expiry := range r.dispatchLoadCooldowns {
+			if !now.Before(expiry) {
+				delete(r.dispatchLoadCooldowns, key)
+			}
+		}
+	}
+	key := providerID + ":" + modelID
+	_, active := r.dispatchLoadCooldowns[key]
+	active = active && now.Before(r.dispatchLoadCooldowns[key])
+	r.dispatchLoadCooldowns[key] = now.Add(dispatchLoadCooldownTTL)
+	return !active
+}
+
+// ClearDispatchLoadCooldown removes the cool-down for one provider-model pair
+// (called when the pair serves a request successfully — it can load after all).
+func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.dispatchLoadCooldowns, providerID+":"+modelID)
+}
+
+// clearDispatchLoadCooldownsLocked drops every cool-down for a provider. Run
+// on (re-)registration: a fresh process has fresh memory accounting, and the
+// provider-side admission self-heal means a restart genuinely clears the
+// wedge the cool-down was protecting against. Caller holds r.mu.
+func (r *Registry) clearDispatchLoadCooldownsLocked(providerID string) {
+	prefix := providerID + ":"
+	for key := range r.dispatchLoadCooldowns {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.dispatchLoadCooldowns, key)
+		}
+	}
+}
+
+// dispatchLoadCooldownActiveLocked reports whether routing should skip the
+// pair right now. READ-ONLY: some routing entry points hold only r.mu.RLock,
+// so expired entries are NOT deleted here — they are overwritten on the next
+// failure or dropped by ClearDispatchLoadCooldown / re-registration. The map
+// is bounded by live providers × catalog models. Caller holds r.mu (either
+// mode).
+func (r *Registry) dispatchLoadCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
+	expiry, ok := r.dispatchLoadCooldowns[providerID+":"+modelID]
+	return ok && now.Before(expiry)
 }
 
 // SetStore configures the persistence store for the registry.
@@ -1243,6 +1319,9 @@ func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSeri
 // slot required — they load on first demand). Caller holds r.mu (RLock) and p.mu.
 func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
 	if !r.providerServesCatalogModelLocked(p, buildID) {
+		return false
+	}
+	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
 		return false
 	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
@@ -1818,6 +1897,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	for _, m := range models {
 		r.modelProviderInc(m.ID)
 	}
+	// A (re-)registration means a fresh provider process: any dispatch-time
+	// load-failure cool-downs belonged to the previous process's memory state.
+	r.clearDispatchLoadCooldownsLocked(id)
 	r.mu.Unlock()
 
 	// Open a session row for this connection (async; durable uptime history).
@@ -3077,6 +3159,11 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 	for _, p := range r.providers {
 		// Skip explicitly excluded providers (failed on previous retry attempts).
 		if _, excluded := excludeSet[p.ID]; excluded {
+			continue
+		}
+		// Skip pairs cooling down after a dispatch-time load failure —
+		// re-picking them just burns a retry attempt on an instant 503.
+		if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
 			continue
 		}
 

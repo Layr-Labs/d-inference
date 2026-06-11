@@ -48,9 +48,15 @@ struct LaunchAgentServicePlistTests {
             environment: ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/usr/bin"]
         )
         // RunAtLoad=true so a rebooted / auto-login box restarts (and re-attests via
-        // APNs) with no human; KeepAlive stays false to avoid racing the self-updater.
+        // APNs) with no human.
         #expect(plist["RunAtLoad"] as? Bool == true)
-        #expect(plist["KeepAlive"] as? Bool == false)
+        // KeepAlive restarts ONLY on abnormal exit (crash/OOM-kill) — crash
+        // recovery without racing the self-updater. Clean bootout (stop) and
+        // kickstart (update) are unaffected. Must be the dict form
+        // {SuccessfulExit: false}, NOT the old unconditional `false`.
+        let keepAlive = plist["KeepAlive"] as? [String: Bool]
+        #expect(keepAlive == ["SuccessfulExit": false])
+        #expect(plist["KeepAlive"] as? Bool == nil)
         #expect((plist["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 

@@ -2453,8 +2453,30 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// When this function returns (consumer disconnect, timeout, or completion),
-	// send a cancel to the provider so it stops generating tokens.
+	// free the provider's slot and tell it to stop generating. The pending is
+	// removed from the provider's set immediately so the slot frees and the
+	// concurrency/idle accounting is accurate.
+	//
+	// If the request was still in flight (RemovePending returns non-nil — i.e.
+	// the provider's terminal had NOT already settled it), park its billing
+	// record for settlement: a consumer that disconnected mid-stream still
+	// received the streamed tokens, and the provider's terminal (sent right
+	// after it aborts) carries the real usage. Without this hold the terminal
+	// would hit "complete for unknown request", leaking the consumer's
+	// reservation and paying the provider $0 for delivered work. If no terminal
+	// arrives within the grace, holdForSettlement refunds the reservation.
 	defer func() {
+		// Park for settlement BEFORE removing from the pending set, so a
+		// provider terminal racing this defer always finds the billing record
+		// in one place or the other — never in neither (which would drop the
+		// terminal and mis-refund). Parking while still pending is safe: both
+		// settle paths are FinalizeReservation-guarded, so if handleComplete
+		// claims via RemovePending and the grace timer also fires, exactly one
+		// credits. GetPending returns nil if a terminal already settled it
+		// (normal completion), so nothing is parked in that case.
+		s.holdForSettlement(provider.GetPending(requestID))
+		// Then remove from pending so SetProviderIdle (gated on
+		// pendingCount()==0) frees the slot.
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
@@ -5108,10 +5130,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// When this function returns (consumer disconnect, timeout, or
-	// completion), tell the provider to stop generating. Without this the
-	// provider keeps producing tokens into a buffered channel until the
-	// buffer fills, wasting GPU cycles.
+	// completion), free the provider's slot and tell it to stop generating.
+	// A request still in flight at return (RemovePending non-nil) is parked
+	// for late-terminal settlement so its billing isn't lost — see the
+	// identical defer in the chat-completions path for the full rationale.
 	defer func() {
+		// Park for settlement BEFORE removing from pending (see the identical
+		// defer in the chat-completions path) so a racing provider terminal
+		// never sees the record in neither place. GetPending returns nil if a
+		// terminal already settled it, so normal completion parks nothing.
+		s.holdForSettlement(provider.GetPending(requestID))
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)

@@ -210,6 +210,13 @@ type Server struct {
 	// unverified and excluded from routing (but not disconnected).
 	knownRuntimeManifest *RuntimeManifest
 
+	// settlements parks billing records for requests whose consumer disconnected
+	// mid-stream, so a late provider terminal can settle them (or the reservation
+	// is refunded on grace expiry). See settlement.go.
+	settlements *settlementHolder
+	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
+	settleGrace time.Duration
+
 	// minProviderVersion is the minimum provider version accepted for routing.
 	// Providers below this version are excluded and told to update.
 	// Set from EIGENINFERENCE_MIN_PROVIDER_VERSION env var or derived from latest release.
@@ -537,6 +544,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		apiKeyCache:          make(map[string]apiKeyCacheEntry),
 		pendingACME:          make(map[string]*ACMEVerificationResult),
 		codeAttestThrottle:   newCodeAttestThrottle(),
+		settlements:          newSettlementHolder(),
 	}
 	s.registerDefaultGauges()
 	s.routes()

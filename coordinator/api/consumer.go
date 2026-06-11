@@ -170,7 +170,7 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	if providerID == "" || pr == nil {
 		return
 	}
-	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode) {
+	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode, pr.Traits.CooldownShape()) {
 		s.ddIncr("routing.cooldown_entered", []string{"model:" + pr.Model})
 	}
 }
@@ -182,7 +182,7 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 	if pr == nil || pr.ProviderID == "" {
 		return
 	}
-	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model)
+	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model, pr.Traits.CooldownShape())
 }
 
 // noteDispatchProviderError records a provider error received while the
@@ -292,7 +292,7 @@ func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, re
 // immediate capacity, route this request to Previous instead of returning a fast
 // 429. Hard constraints and permanent model-too-large failures are handled by the
 // caller and do not use this fallback.
-func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, allowedProviderSerials []string) (string, bool) {
+func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, allowedProviderSerials []string) (string, bool) {
 	if publicModel == "" || publicModel == currentModel {
 		return currentModel, false
 	}
@@ -303,7 +303,7 @@ func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, 
 	if !s.registry.IsModelInCatalog(target.Previous) {
 		return currentModel, false
 	}
-	candidates, _, _ := s.registry.QuickCapacityCheck(target.Previous, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+	candidates, _, _ := s.registry.QuickCapacityCheck(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, allowedProviderSerials...)
 	if candidates <= 0 {
 		return currentModel, false
 	}
@@ -1404,19 +1404,29 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				withParam("input")))
 			return
 		}
-		if !s.registry.HasVisionProviderForModel(model) {
+		// Constrain the capability check to the eligible provider set: a public
+		// vision-capable provider must not satisfy a request pinned to an
+		// allowlist whose members are all vision-blind. Self-route/prefer owned
+		// sets are matched by ownerAccountID (not expressible as serials here),
+		// so the fail-fast is skipped for them — those paths enforce their own
+		// availability and we must never wrongly block them.
+		if !policy.enabled && !policy.prefer && !s.registry.HasVisionProviderForModel(model, allowedProviderSerials...) {
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("model %q has no vision-capable provider available for image/video input right now", publicModel),
 				withParam("model")))
 			return
 		}
 	}
-	// Tools fail-fast (mirrors the vision gate): when every provider serving
-	// this model is trait-gated — below the tools version floor or advertising
-	// a broken chat-template render — the request can never route. Without
-	// this gate it passes the trait-blind QuickCapacityCheck preflight, queues
-	// for up to 120s, and dies with a misleading capacity 429.
-	if hasTools && !s.registry.HasToolCapableProviderForModel(model) {
+	// Tools fail-fast (mirrors the vision gate): when every constraint-eligible
+	// provider serving this model is trait-gated — below the tools version floor
+	// or advertising a broken chat-template render — the request can never
+	// route. Without this gate it passes the trait-blind QuickCapacityCheck
+	// preflight, queues for up to 120s, and dies with a misleading capacity 429.
+	// Constrained to allowedProviderSerials so a public tool-capable provider
+	// can't satisfy an allowlist-pinned request; skipped for self-route/prefer
+	// whose owned set is matched by ownerAccountID, not serials (those paths
+	// handle availability themselves — never wrongly block them).
+	if hasTools && !policy.enabled && !policy.prefer && !s.registry.HasToolCapableProviderForModel(model, allowedProviderSerials...) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
 			withParam("model")))
@@ -1553,9 +1563,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 503 which counts as downtime. Fast 429s also preserve our TTFT
 		// metrics. Self-route skips this fleet-wide gate — it queues on the
 		// owner's machine instead (handled below).
-		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials); switched {
+			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials); switched {
 				model = fallbackModel
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
@@ -1568,7 +1578,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				} else {
 					rawBody, _ = json.Marshal(parsed)
 				}
-				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
 			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
@@ -1590,6 +1600,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
+			return
+		}
+		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
+			// No provider is even structurally eligible right now: the model's
+			// whole pool is offline/untrusted, trait-gated (below the tools floor
+			// / render-broken), or — the case the shape-keyed breaker introduces —
+			// every serving provider is in inference-error cooldown for THIS
+			// request shape. None of those clear by a slot freeing up, so queueing
+			// for up to 120s only adds misleading latency before the same 429.
+			// Fail fast with a retryable 503 + Retry-After (OpenRouter treats 503
+			// as unavailable, not a uptime-penalised error here because the body
+			// is explicit). This mirrors the trait fast-fails above for the
+			// transient-cooldown case they cannot see.
+			retryAfter := s.estimateRetryAfter(model)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
+				withCode("model_unavailable")))
 			return
 		}
 	}
@@ -2561,7 +2591,17 @@ dispatch:
 								raceDeadline = time.NewTimer(preambleContentTimeout)
 								continue race
 							}
-							// Both missed deadline.
+							// Both missed deadline. A racer that held preamble (role
+							// then stall) is a 504-shaped sickness — feed the breaker
+							// before cancelling, mirroring the single-provider
+							// acceptedWait timeout path so a stalling provider/model
+							// (shape-keyed) trips its cooldown.
+							if len(heldChunks) > 0 {
+								s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout)
+							}
+							if len(backupHeld) > 0 {
+								s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout)
+							}
 							s.cancelDispatch(provider, pr)
 							s.cancelDispatch(backupProvider, backupPR)
 							excludeProviders[provider.ID] = struct{}{}
@@ -2784,7 +2824,7 @@ dispatch:
 		if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
-			_, capRej, _ := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+			_, capRej, _ := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
 			if capRej > 0 {
 				statusCode = http.StatusTooManyRequests
 			} else {
@@ -2997,7 +3037,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		if firstChunk == "" || isSSEDoneChunk(firstChunk) {
 			continue
 		}
-		if strings.Contains(firstChunk, `"response.created"`) || strings.Contains(firstChunk, `"response.output_text.delta"`) {
+		if isResponsesAPIEventChunk(firstChunk) {
 			sawResponsesAPI = true
 		}
 		// A usage-only first chunk (no content/reasoning deltas streamed before it)
@@ -3130,7 +3170,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			timer.Reset(inferenceTimeout)
 
 			if !sawResponsesAPI {
-				if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.output_text.delta"`) {
+				if isResponsesAPIEventChunk(chunk) {
 					sawResponsesAPI = true
 				}
 			}
@@ -3815,6 +3855,28 @@ func isSSEDoneChunk(chunk string) bool {
 	return line == "[DONE]"
 }
 
+// isResponsesAPIEventChunk reports whether a streamed chunk is a Responses API
+// SSE event (its parsed top-level "type" is a "response.*" event). It parses
+// rather than substring-matches: a chat.completion content delta whose text
+// quotes "response.created"/"response.output_text.delta" (e.g. a user asking
+// about the Responses API) must NOT be misread as a Responses stream, which
+// would make the relay skip chat-completions termination handling (usage
+// splicing, [DONE] swallowing, normalizeSSEChunk) and corrupt the stream.
+func isResponsesAPIEventChunk(chunk string) bool {
+	line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(chunk), "data:"))
+	// Cheap gate: every Responses event names a response.* type at top level.
+	if !strings.Contains(line, `"response.`) {
+		return false
+	}
+	var ev struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return false
+	}
+	return strings.HasPrefix(ev.Type, "response.")
+}
+
 // isBoilerplateChunk reports whether a streamed provider chunk carries no
 // consumer-visible output yet: the preamble emitted BEFORE the failure-prone
 // work (media decode, template render, vision prefill) begins. The dispatch
@@ -3828,15 +3890,30 @@ func isSSEDoneChunk(chunk string) bool {
 //     an empty content along with the role), tool_calls absent/null/empty,
 //     finish_reason null, no usage object; or
 //   - a Responses API response.created / response.in_progress lifecycle event
-//     (detected with the same Contains idiom the relay uses for passthrough).
+//     (the parsed top-level "type" equals exactly one of those — NOT a mere
+//     substring match: a chat content delta whose text quotes "response.created"
+//     must still commit).
 //
 // Everything else — content or tool_call deltas, finish chunks, usage-only
 // chunks, [DONE], complete responses, unparseable data — commits the dispatch.
 func isBoilerplateChunk(chunk string) bool {
-	if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.in_progress"`) {
-		return true
+	line := strings.TrimPrefix(strings.TrimPrefix(chunk, "data: "), "data:")
+	line = strings.TrimSpace(line)
+	// Responses API lifecycle preamble: classify ONLY when the parsed top-level
+	// "type" is exactly response.created / response.in_progress. A chat content
+	// delta that merely mentions that text (e.g. a user asking about the
+	// Responses API) parses as a chat.completion.chunk and falls through to the
+	// role-only logic below — it is NOT boilerplate.
+	if strings.Contains(line, `"response.created"`) || strings.Contains(line, `"response.in_progress"`) {
+		var ev struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err == nil {
+			if ev.Type == "response.created" || ev.Type == "response.in_progress" {
+				return true
+			}
+		}
 	}
-	line := strings.TrimPrefix(chunk, "data: ")
 	// Cheap gate: the role preamble always names the role; chunks that can't
 	// be it (content deltas, finish chunks, [DONE], garbage) skip the parse.
 	if !strings.Contains(line, `"role"`) {
@@ -5206,9 +5283,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Vision gating (see handleChatCompletions): a media request must land on a
-	// vision-capable provider, or fail fast when none exists.
+	// constraint-eligible vision-capable provider, or fail fast when none
+	// exists. Constrained to allowedProviderSerials; skipped for self-route/
+	// prefer (owned set matched by ownerAccountID, not serials) so those paths
+	// are never wrongly blocked.
 	requiresVision := detectMediaRequirement(parsed)
-	if requiresVision && !s.registry.HasVisionProviderForModel(model) {
+	if requiresVision && !policy.enabled && !policy.prefer && !s.registry.HasVisionProviderForModel(model, allowedProviderSerials...) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no vision-capable provider available for image/video input right now", publicModel),
 			withParam("model")))
@@ -5217,11 +5297,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Tools gating (see handleChatCompletions): tool-bearing requests only
 	// route to providers past the tools version floor with a healthy
-	// chat-template render, so fail fast when the model's whole pool is
-	// trait-gated instead of queueing into a misleading capacity 429.
+	// chat-template render, so fail fast when the model's whole constraint-
+	// eligible pool is trait-gated instead of queueing into a misleading
+	// capacity 429. Constrained to allowedProviderSerials; skipped for
+	// self-route/prefer whose owned set is matched by ownerAccountID, not
+	// serials (those paths handle availability themselves).
 	// Anthropic and completions bodies share the top-level "tools" field.
 	hasTools := requestHasTools(parsed)
-	if hasTools && !s.registry.HasToolCapableProviderForModel(model) {
+	if hasTools && !policy.enabled && !policy.prefer && !s.registry.HasToolCapableProviderForModel(model, allowedProviderSerials...) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
 			withParam("model")))
@@ -5298,11 +5381,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// Prefer mode skips the public fleet pre-flight (no owner-trust
 		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
-		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials); switched {
+			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials); switched {
 				model = fallbackModel
-				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
+				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
 			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
@@ -5321,6 +5404,20 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
+			return
+		}
+		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
+			// No structurally-eligible provider right now (offline, trait-gated,
+			// or shape-cooled by the inference-error breaker). Queueing cannot help
+			// — fail fast with a retryable 503 instead of a 120s queue. Mirrors the
+			// chat-completions preflight.
+			retryAfter := s.estimateRetryAfter(model)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
+				withCode("model_unavailable")))
 			return
 		}
 	}

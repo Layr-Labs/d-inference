@@ -120,6 +120,29 @@ func TestIsBoilerplateChunk(t *testing.T) {
 			want:  false,
 		},
 		{
+			// Regression: a chat content delta that QUOTES "response.created" in
+			// its content text must NOT be misread as a Responses boilerplate
+			// event — it carries real output and must commit. The old substring
+			// check dropped/retried it.
+			name:  "chat content delta quoting response.created commits",
+			chunk: `data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"The \"response.created\" event signals the start"},"finish_reason":null}]}`,
+			want:  false,
+		},
+		{
+			// Same false positive for the role-only-shaped delta carrying the
+			// literal in content: content is non-empty, so it commits.
+			name:  "content delta quoting response.in_progress commits",
+			chunk: `data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"see response.in_progress in the docs"},"finish_reason":null}]}`,
+			want:  false,
+		},
+		{
+			// A genuine Responses lifecycle event (parsed top-level type) is
+			// still boilerplate even when extra fields mention the string.
+			name:  "real response.created event with nested mentions is boilerplate",
+			chunk: `data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress","instructions":"explain response.in_progress"}}`,
+			want:  true,
+		},
+		{
 			name:  "complete chat.completion object commits",
 			chunk: `data: {"id":"chatcmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`,
 			want:  false,

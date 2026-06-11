@@ -259,10 +259,10 @@ func TestAliasCapacityFallbackUsesPreviousWhenDesiredFull(t *testing.T) {
 	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 1_000
 	p.Mu().Unlock()
 
-	if candidates, rejections, _ := reg.QuickCapacityCheck(aliasQAT, 10, 128); candidates != 0 || rejections != 1 {
+	if candidates, rejections, _ := reg.QuickCapacityCheck(aliasQAT, 10, 128, registry.RequestTraits{}); candidates != 0 || rejections != 1 {
 		t.Fatalf("desired capacity = candidates %d rejections %d, want 0/1", candidates, rejections)
 	}
-	if candidates, rejections, _ := reg.QuickCapacityCheck(aliasFP8, 10, 128); candidates != 1 || rejections != 0 {
+	if candidates, rejections, _ := reg.QuickCapacityCheck(aliasFP8, 10, 128, registry.RequestTraits{}); candidates != 1 || rejections != 0 {
 		t.Fatalf("previous capacity = candidates %d rejections %d, want 1/0", candidates, rejections)
 	}
 
@@ -270,7 +270,7 @@ func TestAliasCapacityFallbackUsesPreviousWhenDesiredFull(t *testing.T) {
 		"model":    aliasQAT,
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	}
-	fallback, switched := srv.maybeFallbackAliasCapacity(parsed, "gemma-4-26b", aliasQAT, 10, 128, nil)
+	fallback, switched := srv.maybeFallbackAliasCapacity(parsed, "gemma-4-26b", aliasQAT, 10, 128, registry.RequestTraits{}, nil)
 	if !switched || fallback != aliasFP8 {
 		t.Fatalf("fallback = %q switched=%v, want previous %q", fallback, switched, aliasFP8)
 	}

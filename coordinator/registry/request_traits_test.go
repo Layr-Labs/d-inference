@@ -106,7 +106,12 @@ func TestProviderEligibleForTraitsTemplateRenderGate(t *testing.T) {
 		{"nil verdict allowed (pre-0.6.5 provider, no opinion)", nil, RequestTraits{HasTools: true}, true},
 		{"render ok allowed", boolPtr(true), RequestTraits{HasTools: true}, true},
 		{"render broken excluded for tool requests", boolPtr(false), RequestTraits{HasTools: true}, false},
-		{"render broken still allowed without tools", boolPtr(false), RequestTraits{}, true},
+		// A crashing chat template breaks EVERY request shape for the pair, not
+		// just tools — the render-broken gate fences plain requests too.
+		{"render broken also excluded without tools", boolPtr(false), RequestTraits{}, false},
+		// nil/true verdicts impose no gate on plain requests.
+		{"render ok allowed without tools", boolPtr(true), RequestTraits{}, true},
+		{"nil verdict allowed without tools", nil, RequestTraits{}, true},
 	}
 	r := New(testLogger())
 	for _, tc := range tests {
@@ -227,11 +232,16 @@ func TestReserveProviderExSkipsTemplateRenderBrokenForTools(t *testing.T) {
 	}
 	healthy.RemovePending("r-render")
 
-	// A plain request may still use the render-broken provider (the verdict
-	// only concerns tool-schema rendering).
+	// A plain (non-tool) request must ALSO avoid the render-broken provider: a
+	// crashing chat template breaks every request shape for the pair, not just
+	// tool-schema rendering. Only the healthy provider remains a candidate.
 	plain := &PendingRequest{RequestID: "r-plain", Model: model, RequestedMaxTokens: 128}
-	if _, decision := reg.ReserveProviderEx(model, plain); decision.CandidateCount != 2 {
-		t.Fatalf("plain request CandidateCount=%d, want 2", decision.CandidateCount)
+	selected, decision = reg.ReserveProviderEx(model, plain)
+	if selected == nil || selected.ID != healthy.ID {
+		t.Fatalf("plain request selected %v, want %q (render-broken excluded for all shapes)", selected, healthy.ID)
+	}
+	if decision.CandidateCount != 1 {
+		t.Fatalf("plain request CandidateCount=%d, want 1 (render-broken fences non-tool requests too)", decision.CandidateCount)
 	}
 }
 

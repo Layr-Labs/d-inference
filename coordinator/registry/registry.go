@@ -715,15 +715,24 @@ type Registry struct {
 	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
 
 	// inferenceErrorStrikes / inferenceErrorCooldowns implement the error-class
-	// circuit breaker for provider-side inference failures: a pair that returns
-	// repeated 5xx errors (e.g. the deterministic Gemma chat-template render
-	// crash on tool schemas) enters a routing cool-down so retries fall to
-	// OTHER providers instead of burning every attempt on the same broken pair.
-	// 4xx (client-shape) errors never count. Strikes slide over
-	// inferenceErrorWindow; a served request clears both. Guarded by r.mu like
-	// dispatchLoadCooldowns. See error_cooldown.go.
-	inferenceErrorStrikes   map[string][]time.Time // key: "providerID:modelID", value: recent 5xx strike times
-	inferenceErrorCooldowns map[string]time.Time   // key: "providerID:modelID", value: expiry
+	// circuit breaker for provider-side inference failures: a (provider, model,
+	// shape) triple that returns repeated 5xx errors (e.g. the deterministic
+	// Gemma chat-template render crash on tool schemas) enters a routing
+	// cool-down so retries fall to OTHER providers instead of burning every
+	// attempt on the same broken pair. 4xx (client-shape) errors never count.
+	//
+	// The key is SHAPE-KEYED (inferenceErrorKey) rather than a "providerID:modelID"
+	// string concat. Shape-keying fixes the root bug where a clean non-tool
+	// success reset the SHARED strike counter, so in mixed traffic a deterministic
+	// tool/template failure interleaved with text successes never reached the
+	// 2-strike threshold and the broken provider was never quarantined for tools.
+	// Strikes now accumulate per shape ("tools" independent of "base"), a success
+	// clears only its own shape bucket, and the struct key also closes the
+	// threat-model colon-collision note (a provider or model id containing ':'
+	// could previously alias another pair). Strikes slide over inferenceErrorWindow.
+	// Guarded by r.mu like dispatchLoadCooldowns. See error_cooldown.go.
+	inferenceErrorStrikes   map[inferenceErrorKey][]time.Time // recent 5xx strike times per (provider, model, shape)
+	inferenceErrorCooldowns map[inferenceErrorKey]time.Time   // cool-down expiry per (provider, model, shape)
 
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
@@ -766,8 +775,8 @@ func New(logger *slog.Logger) *Registry {
 		modelProviders:          make(map[string]*atomic.Int64),
 		pendingModelLoads:       make(map[string]time.Time),
 		dispatchLoadCooldowns:   make(map[string]time.Time),
-		inferenceErrorStrikes:   make(map[string][]time.Time),
-		inferenceErrorCooldowns: make(map[string]time.Time),
+		inferenceErrorStrikes:   make(map[inferenceErrorKey][]time.Time),
+		inferenceErrorCooldowns: make(map[inferenceErrorKey]time.Time),
 		evictStrikes:            make(map[string]int),
 		logger:                  logger,
 	}
@@ -1691,10 +1700,25 @@ func (r *Registry) providerServesVisionModelLocked(p *Provider, model string) bo
 // it to fail a media request fast with a clear error when the fleet has no
 // VLM-capable provider for the model (e.g. before the gemma fleet finishes
 // updating to 0.6.0), instead of queueing the request to a timeout.
-func (r *Registry) HasVisionProviderForModel(model string) bool {
+//
+// When allowedSerials is non-empty the check is restricted to providers whose
+// attested serial is in the set, exactly as the routing path constrains the
+// candidate pool. Without this filter a constrained media request would be
+// falsely reported as serviceable by an unrelated public provider (the same
+// latent gap as HasToolCapableProviderForModel).
+func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...string) bool {
+	allowedSet := make(map[string]struct{}, len(allowedSerials))
+	for _, s := range allowedSerials {
+		allowedSet[s] = struct{}{}
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
+		// Allowed-serial filter first (providerMatchesAllowedSerial takes p.mu
+		// internally), mirroring the routing candidate filter and QuickCapacityCheck.
+		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
+			continue
+		}
 		// p.Status and p.Models are guarded by p.mu (writers hold it), so the
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
@@ -2642,7 +2666,9 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	// modelTooLarge is intentionally ignored here: a model that can never fit
 	// any provider should NOT keep its queued requests waiting (they'd time out
 	// after 120s) — fall through to fail them fast.
-	candidates, capacityRejections, _ := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
+	// Base-shape check: "can any provider serve this model at all?" carries no
+	// tool/vision constraint, so use the default (base) traits.
+	candidates, capacityRejections, _ := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens, RequestTraits{})
 	if candidates > 0 || capacityRejections > 0 {
 		return
 	}

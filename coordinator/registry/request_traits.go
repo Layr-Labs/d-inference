@@ -26,6 +26,27 @@ type RequestTraits struct {
 	AvoidVersion string
 }
 
+// CooldownShape returns the inference-error circuit-breaker dimension for the
+// request shape. The breaker is keyed by (provider, model, shape) so that a
+// deterministic failure that affects ONLY one shape — e.g. a chat-template
+// crash on tool schemas — accumulates strikes in its own bucket and is not
+// reset by interleaved clean text successes. Today only "tools" splits off the
+// "base" bucket; vision (and any future template-rendered shape) can extend
+// this. Keep in sync with the shapes the consumer stamps onto a request.
+//
+// EXPORTED (vs the contract's lowercase cooldownShape): the consumer handler in
+// the coordinator/api package derives the shape for RecordInferenceError /
+// RecordInferenceSuccess by calling this on a registry.RequestTraits, which is
+// impossible across packages with an unexported method. The capitalized name is
+// the only viable cross-package signature; the integrator should ensure the
+// consumer calls CooldownShape().
+func (t RequestTraits) CooldownShape() string {
+	if t.HasTools {
+		return "tools"
+	}
+	return "base"
+}
+
 // capabilityVersionFloors maps a request trait to the minimum provider binary
 // version able to serve it. Providers BELOW a floor — including providers that
 // report no version at all — are excluded from requests carrying that trait.
@@ -124,28 +145,28 @@ func providerTemplateRenderBrokenLocked(p *Provider, model string) bool {
 }
 
 // providerEligibleForTraitsLocked combines the capability version floors with
-// the per-model template_render_ok gate: a tool-bearing request must not route
-// to a provider below the tools floor, nor to one whose advertised build
-// declares a broken chat-template render for this model. Caller holds r.mu and
-// p.mu (same discipline as providerServesVisionModelLocked).
+// the per-model template_render_ok gate. Two distinct scopes:
+//
+//   - The template_render_ok=false gate fences EVERY request shape. A crashing
+//     chat template breaks plain text, tool, and multimodal requests alike for
+//     that (provider, model) pair — the verdict is about the model's template
+//     rendering, not about tools — so a render-broken build must never serve any
+//     request for the model, regardless of traits.
+//   - The capability version floors are trait-scoped: only a tool-bearing
+//     request is held to the tools floor; a plain request may still route to a
+//     below-floor binary.
+//
+// Caller holds r.mu and p.mu (same discipline as providerServesVisionModelLocked).
 func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t RequestTraits) bool {
+	// Render-broken: applies to ALL requests for the model.
+	if providerTemplateRenderBrokenLocked(p, model) {
+		return false
+	}
+	// Version floors: trait-scoped (tools-only today).
 	if !r.providerMeetsTraitFloorsLocked(p, t) {
 		return false
 	}
-	if t.HasTools && providerTemplateRenderBrokenLocked(p, model) {
-		return false
-	}
 	return true
-}
-
-// hasFloorGatedTrait reports whether any trait on t is subject to provider
-// eligibility gating (capability version floors / template_render_ok), i.e.
-// whether the scheduler must take p.mu and consult
-// providerEligibleForTraitsLocked at all. Extend together with
-// capabilityVersionFloors. AvoidVersion is deliberately NOT included — it is a
-// soft pool preference, not an eligibility gate.
-func (t RequestTraits) hasFloorGatedTrait() bool {
-	return t.HasTools
 }
 
 // HasToolCapableProviderForModel reports whether any online, non-untrusted
@@ -158,11 +179,26 @@ func (t RequestTraits) hasFloorGatedTrait() bool {
 // request passes the trait-blind capacity preflight, queues for up to 120s,
 // and dies with a misleading capacity 429. Mirrors HasVisionProviderForModel,
 // including its r.mu/p.mu discipline.
-func (r *Registry) HasToolCapableProviderForModel(model string) bool {
+//
+// When allowedSerials is non-empty the check is restricted to providers whose
+// attested serial is in the set, exactly as the routing path constrains the
+// candidate pool. Without this filter a constrained tools request (e.g. a
+// sandbox/allowlisted account) would be falsely reported as serviceable by an
+// unrelated public provider and fail later with a misleading error.
+func (r *Registry) HasToolCapableProviderForModel(model string, allowedSerials ...string) bool {
 	traits := RequestTraits{HasTools: true}
+	allowedSet := make(map[string]struct{}, len(allowedSerials))
+	for _, s := range allowedSerials {
+		allowedSet[s] = struct{}{}
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
+		// Allowed-serial filter first (providerMatchesAllowedSerial takes p.mu
+		// internally), mirroring the routing candidate filter and QuickCapacityCheck.
+		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
+			continue
+		}
 		// p.Status, p.Version, and p.Models are guarded by p.mu (writers hold
 		// it), so the whole eligibility read must happen under the provider lock.
 		p.mu.Lock()

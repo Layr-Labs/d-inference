@@ -16,7 +16,7 @@ package api
 //
 // INTEGRATION-NOTE(WS-R): the registry primitives these tests assert through
 // (registry/error_cooldown.go RecordInferenceError/RecordInferenceSuccess/
-// InferenceErrorCooldownActive(providerID, modelID), registry/request_traits.go
+// InferenceErrorCooldownActive(providerID, modelID, shape), registry/request_traits.go
 // RequestTraits{HasTools, AvoidVersion} with the "tools" → "0.6.3" floor and
 // the template_render_ok gate, protocol.ModelInfo.TemplateRenderOK) have
 // LANDED. These tests fail until the consumer-side wiring lands: populating
@@ -150,11 +150,13 @@ func TestInferenceErrorCooldown_ExcludesProvider(t *testing.T) {
 
 	// Registry-level assertion via the exported breaker query: the failing
 	// pair is quarantined, the healthy pair is not.
-	if !reg.InferenceErrorCooldownActive(pA.registryID, model) {
-		t.Errorf("InferenceErrorCooldownActive(%s, %s) = false after 2x 5xx in 60s, want true", pA.registryID, model)
+	// Shape "base": these requests carry no tools (buildChatBody tools=nil), so
+	// the dispatch path records strikes in the base shape bucket.
+	if !reg.InferenceErrorCooldownActive(pA.registryID, model, "base") {
+		t.Errorf("InferenceErrorCooldownActive(%s, %s, base) = false after 2x 5xx in 60s, want true", pA.registryID, model)
 	}
-	if reg.InferenceErrorCooldownActive(pB.registryID, model) {
-		t.Errorf("InferenceErrorCooldownActive(%s, %s) = true for the healthy provider, want false", pB.registryID, model)
+	if reg.InferenceErrorCooldownActive(pB.registryID, model, "base") {
+		t.Errorf("InferenceErrorCooldownActive(%s, %s, base) = true for the healthy provider, want false", pB.registryID, model)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1892,5 +1893,27 @@ func TestStreamingChatSignatureRidesUsageChunk(t *testing.T) {
 	}
 	if !strings.HasSuffix(strings.TrimSpace(body), "data: [DONE]") {
 		t.Fatalf("[DONE] must be the final event; body:\n%s", body)
+	}
+}
+
+func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
+	srv, _ := testServer(t)
+	w := httptest.NewRecorder()
+	srv.writeServiceUnavailable(w, "gpt-oss-20b")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header missing")
+	} else if n, err := strconv.Atoi(ra); err != nil || n < 1 {
+		t.Errorf("Retry-After = %q, want positive integer seconds", ra)
+	}
+	var body map[string]map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["error"]["code"] != "service_unavailable" {
+		t.Errorf("code = %v, want service_unavailable", body["error"]["code"])
 	}
 }

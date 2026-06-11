@@ -834,6 +834,14 @@ func (s *Server) estimateRetryAfter(model string) int {
 	return estimate
 }
 
+// writeServiceUnavailable writes a retryable 503 with a Retry-After header so
+// clients (and OpenRouter) can schedule the retry instead of blind backoff.
+func (s *Server) writeServiceUnavailable(w http.ResponseWriter, model string) {
+	w.Header().Set("Retry-After", strconv.Itoa(s.estimateRetryAfter(model)))
+	writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
+		"service temporarily unavailable — please retry"))
+}
+
 func providerHasPayoutDestination(provider *registry.Provider) bool {
 	if provider == nil {
 		return false
@@ -1373,8 +1381,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
 				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
-					"service temporarily unavailable — please retry"))
+				s.writeServiceUnavailable(w, model)
 			}
 			return
 		}
@@ -2380,6 +2387,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("all providers at capacity after %d attempt(s): %s", maxDispatchAttempts, lastErr),
 				withCode("rate_limit_exceeded")))
 		} else {
+			if statusCode == http.StatusServiceUnavailable {
+				w.Header().Set("Retry-After", strconv.Itoa(s.estimateRetryAfter(model)))
+			}
 			writeJSON(w, statusCode, errorResponse("provider_error",
 				fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
 		}
@@ -4710,8 +4720,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
 				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
-					"service temporarily unavailable — please retry"))
+				s.writeServiceUnavailable(w, model)
 			}
 			return
 		}
@@ -4947,8 +4956,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					"your balance is too low for this provider price — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
 				s.logger.Error("provider reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
-					"service temporarily unavailable — please retry"))
+				s.writeServiceUnavailable(w, model)
 			}
 			return
 		}

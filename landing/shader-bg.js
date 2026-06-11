@@ -125,8 +125,16 @@
   var visible = true;
   var raf = null;
   var start = performance.now();
+  var needResize = true;
+
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(function () { needResize = true; }).observe(canvas);
+  } else {
+    window.addEventListener('resize', function () { needResize = true; });
+  }
 
   function resize() {
+    needResize = false;
     var w = canvas.clientWidth;
     var h = canvas.clientHeight;
     if (!w || !h) return;
@@ -140,7 +148,7 @@
   }
 
   function draw(now) {
-    resize();
+    if (needResize) resize();
     mouse.x += (target.x - mouse.x) * 0.04;
     mouse.y += (target.y - mouse.y) * 0.04;
     gl.uniform2f(uRes, canvas.width, canvas.height);
@@ -162,6 +170,7 @@
   if (reducedMotion) {
     requestAnimationFrame(function (now) { draw(now); });
     window.addEventListener('resize', function () {
+      needResize = true;
       requestAnimationFrame(function (now) { draw(now); });
     });
     return;

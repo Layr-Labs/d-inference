@@ -1497,7 +1497,7 @@ func TestBuildNonStreamingResponseReasoningDetails(t *testing.T) {
 	msg := extractedMessage{Content: "4", Reasoning: "2+2"}
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20, ReasoningTokens: 8}
 
-	resp := buildNonStreamingResponse("req-1", "gpt-oss-20b", msg, usage, "", "")
+	resp := buildNonStreamingResponse("req-1", "gpt-oss-20b", msg, usage, 0, "", "")
 	if resp.Usage.CompletionTokensDetails == nil {
 		t.Fatalf("expected completion_tokens_details, got nil")
 	}
@@ -1517,7 +1517,7 @@ func TestBuildNonStreamingResponseReasoningDetails(t *testing.T) {
 	// No reasoning content => no details object (omitempty).
 	plain := buildNonStreamingResponse("req-2", "gpt-oss-20b",
 		extractedMessage{Content: "hi"},
-		protocol.UsageInfo{PromptTokens: 3, CompletionTokens: 1}, "", "")
+		protocol.UsageInfo{PromptTokens: 3, CompletionTokens: 1}, 0, "", "")
 	if plain.Usage.CompletionTokensDetails != nil {
 		t.Errorf("expected no details for non-reasoning response, got %#v", plain.Usage.CompletionTokensDetails)
 	}
@@ -1533,7 +1533,7 @@ func TestBuildResponsesResponseReasoningTokens(t *testing.T) {
 	msg := extractedMessage{Content: "4", Reasoning: "2+2"}
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20, ReasoningTokens: 8}
 
-	resp := buildResponsesResponse("req-1", "gpt-oss-20b", msg, usage, "", "")
+	resp := buildResponsesResponse("req-1", "gpt-oss-20b", msg, usage, 0, "", "")
 	if resp.Usage.OutputTokensDetail.ReasoningTokens != 8 {
 		t.Errorf("reasoning_tokens = %d, want 8 (accurate count, not %d completion)",
 			resp.Usage.OutputTokensDetail.ReasoningTokens, usage.CompletionTokens)

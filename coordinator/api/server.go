@@ -1406,6 +1406,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
 	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
+	// OpenAI "retrieve model" — {id...} matches slashed HuggingFace-style ids;
+	// the literal /v1/models/openrouter and /v1/models/capacity routes win.
+	s.mux.HandleFunc("GET /v1/models/{id...}", s.requireAuth(s.handleGetModel))
 
 	// Sender encryption — public key publication for sender→coordinator E2E.
 	// Optional: senders may use this to encrypt request bodies; plaintext path

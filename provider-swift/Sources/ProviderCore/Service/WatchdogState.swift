@@ -1,19 +1,13 @@
-/// WatchdogState -- the watchdog's small, private cross-tick memory.
-///
-/// The watchdog runs as a one-shot every minute (launchd `StartInterval`), so
-/// it can't hold the "provider has been down since T" timer in process memory.
-/// It persists that here, at `~/.darkbloom/watchdog-state.json` (override with
-/// `DARKBLOOM_WATCHDOG_STATE` for tests). The watchdog is the sole writer —
-/// launchd never runs two ticks of the same job concurrently — so no locking is
-/// needed.
+/// The watchdog's cross-tick timer, persisted at
+/// `~/.darkbloom/watchdog-state.json` (override `DARKBLOOM_WATCHDOG_STATE`).
+/// The watchdog is the only writer — launchd never overlaps ticks.
 
 import Foundation
 
 public struct WatchdogState: Codable, Equatable, Sendable {
-    /// Epoch seconds the watchdog first saw the provider down in the current
-    /// outage, or nil when the provider is up.
+    /// When the watchdog first saw the current outage, or nil when up.
     public var downSince: Double?
-    /// Epoch seconds of the most recent watchdog-initiated restart (diagnostic).
+    /// When the watchdog last restarted the provider (diagnostic).
     public var lastRestartAt: Double?
 
     public init(downSince: Double? = nil, lastRestartAt: Double? = nil) {
@@ -29,8 +23,6 @@ public struct WatchdogState: Codable, Equatable, Sendable {
 
 public enum WatchdogStateStore {
 
-    /// `~/.darkbloom/watchdog-state.json`, or the `DARKBLOOM_WATCHDOG_STATE`
-    /// override.
     public static func path() -> URL {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_WATCHDOG_STATE"], !override.isEmpty {
             return URL(fileURLWithPath: override)
@@ -39,31 +31,27 @@ public enum WatchdogStateStore {
             .appendingPathComponent(".darkbloom/watchdog-state.json")
     }
 
-    /// Read the persisted state. Returns an empty (all-nil) state when the file
-    /// is missing or unreadable — a fresh start, never an error.
+    /// Empty state when the file is missing or unreadable (a fresh start).
     public static func read(from url: URL = WatchdogStateStore.path()) -> WatchdogState {
         guard let data = try? Data(contentsOf: url),
               let state = try? JSONDecoder().decode(WatchdogState.self, from: data)
-        else {
-            return WatchdogState()
-        }
+        else { return WatchdogState() }
         return state
     }
 
-    /// Atomically persist `state`. Best-effort: a failure to write must never
-    /// crash the watchdog (worst case it re-arms the grace window next tick).
-    public static func write(_ state: WatchdogState, to url: URL = WatchdogStateStore.path()) {
+    /// Atomically persist `state`. Returns false on failure so the caller can
+    /// log it: a persistent write failure would otherwise keep the grace window
+    /// from ever advancing, silently disabling recovery.
+    @discardableResult
+    public static func write(_ state: WatchdogState, to url: URL = WatchdogStateStore.path()) -> Bool {
         do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            let data = try encoder.encode(state)
-            try data.write(to: url, options: .atomic)
+            try encoder.encode(state).write(to: url, options: .atomic)
+            return true
         } catch {
-            // Intentionally ignored — see doc comment.
+            return false
         }
     }
 }

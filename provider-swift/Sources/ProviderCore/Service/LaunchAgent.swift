@@ -1,12 +1,9 @@
 /// LaunchAgent -- launchd user agent management for the Darkbloom provider.
 ///
-/// The provider runs only after the user explicitly starts it via
-/// `darkbloom start` (or the macOS app's "Go Online" toggle). Once installed the
-/// agent auto-starts at login (RunAtLoad) so a rebooted box re-attests without a
-/// manual start, and crash recovery is delegated to the separate `WatchdogAgent`
-/// (it relaunches a crashed daemon after a grace period). `darkbloom stop`
-/// unloads the agent and keeps it stopped. The user is always in control of when
-/// their GPU is being used.
+/// The provider runs only after the user explicitly starts it (`darkbloom start`
+/// or the app's "Go Online"). It auto-starts at login (RunAtLoad) so a rebooted
+/// box re-attests without a manual start; crash recovery is delegated to the
+/// separate `WatchdogAgent`. `darkbloom stop` unloads it and keeps it stopped.
 
 import Foundation
 
@@ -15,9 +12,8 @@ public enum LaunchAgent: Sendable {
     public static let label = "io.darkbloom.provider"
     private static let legacyLabels = ["dev.darkbloom.provider"]
 
-    /// Every launchd label the provider may be registered under (canonical +
-    /// legacy). The watchdog probes all of them so it still recognises a running
-    /// provider on a not-yet-migrated install.
+    /// Canonical + legacy labels the provider may be registered under (the
+    /// watchdog probes all of them).
     public static var supportedLabels: [String] { [label] + legacyLabels }
 
     // MARK: - Paths
@@ -180,18 +176,12 @@ public enum LaunchAgent: Sendable {
         throw LaunchAgentError.notInstalled
     }
 
-    /// Restart the provider in place ONLY if it is currently loaded
-    /// (`kickstart -k`). Unlike `restart()`, this never bootstraps an unloaded
-    /// job — so the watchdog can recover a crashed (loaded-but-dead) provider
-    /// without ever reviving one the user intentionally stopped (`bootout`
-    /// unloads the job). Returns `true` if a restart was issued, `false` if the
-    /// provider was not loaded under any supported label.
+    /// Restart in place ONLY if currently loaded (`reloadIfMissing: false`), so
+    /// the watchdog recovers a crashed (loaded-but-dead) provider but never
+    /// revives one the user stopped (`bootout` unloads it). Returns false if not
+    /// loaded under any supported label.
     @discardableResult
     public static func kickstartIfLoaded() throws -> Bool {
-        // `reloadIfMissing: false` is the safety guarantee: if the job vanished
-        // between the isLoaded() check and the kickstart (e.g. a `darkbloom stop`
-        // landed in that window), we do NOT bootstrap it back — reviving a
-        // provider the user just stopped is exactly what the watchdog must avoid.
         if isLoaded() {
             try kickstartInPlace(label: label, reloadIfMissing: false)
             return true
@@ -203,13 +193,9 @@ public enum LaunchAgent: Sendable {
         return false
     }
 
-    /// `launchctl kickstart -k gui/<uid>/<label>` — restart the already-loaded
-    /// service in place. The `-k` flag kills the current instance before
-    /// relaunching it from the existing plist.
-    ///
-    /// `reloadIfMissing` controls the "service vanished" recovery: `restart()`
-    /// wants it (an unloaded-but-installed job should be brought up), but the
-    /// watchdog passes `false` so it never loads a job the user stopped.
+    /// `launchctl kickstart -k` — kill + relaunch the loaded service in place.
+    /// `reloadIfMissing`: `restart()` wants it (bring up an unloaded-but-installed
+    /// job); the watchdog passes false so it never loads a job the user stopped.
     private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws {
         let target = "gui/\(getuid())/\(serviceLabel)"
         let process = Process()

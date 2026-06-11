@@ -1,17 +1,6 @@
-/// LaunchctlControl -- thin shared wrapper over `/bin/launchctl`.
-///
-/// The provider runs two launchd user agents: the main provider service
-/// (`LaunchAgent`, label `io.darkbloom.provider`) and the crash-recovery
-/// watchdog (`WatchdogAgent`, label `io.darkbloom.watchdog`). Both need the
-/// same low-level plumbing -- build a `gui/<uid>/<label>` target, spawn
-/// launchctl, capture its output, and resolve the current executable path.
-/// This enum centralises that plumbing so the agents only encode policy
-/// (which plist keys to write, which launchctl errors are benign).
-///
-/// NOTE: `LaunchAgent` deliberately keeps its own bootstrap/bootout/kickstart
-/// implementations (proven on the whole fleet) and only borrows
-/// `currentExecutablePath()` from here; the watchdog, which is new, is built
-/// entirely on these helpers.
+/// Shared `/bin/launchctl` plumbing for the provider's launchd agents
+/// (`LaunchAgent`, `WatchdogAgent`) and the watchdog probe: target strings,
+/// process spawn + output capture, and executable-path resolution.
 
 import Foundation
 #if canImport(Darwin)
@@ -20,40 +9,27 @@ import Darwin
 
 enum LaunchctlControl {
 
-    /// The current user's GUI launchd domain, e.g. `gui/501`.
-    static func guiDomain(uid: uid_t = getuid()) -> String {
-        "gui/\(uid)"
-    }
+    static func guiDomain(uid: uid_t = getuid()) -> String { "gui/\(uid)" }
+    static func target(label: String, uid: uid_t = getuid()) -> String { "gui/\(uid)/\(label)" }
 
-    /// A launchd service target, e.g. `gui/501/io.darkbloom.watchdog`.
-    static func target(label: String, uid: uid_t = getuid()) -> String {
-        "gui/\(uid)/\(label)"
-    }
-
-    /// The result of running launchctl: exit status plus captured streams.
-    /// `status == -1` means the process could not be spawned at all.
     struct Output: Sendable {
         let status: Int32
         let stdout: String
         let stderr: String
-
         var succeeded: Bool { status == 0 }
     }
 
-    /// Run `/bin/launchctl <arguments>`, capturing stdout (optional) and stderr.
-    ///
-    /// Reads the pipes *before* `waitUntilExit()` so a large `launchctl print`
-    /// dump can't deadlock by filling the pipe buffer while we wait.
+    /// Run launchctl, capturing at most one stream. Capturing only one keeps the
+    /// single drained pipe from deadlocking against an unread one on large output.
     @discardableResult
-    static func run(_ arguments: [String], captureStdout: Bool = false) -> Output {
+    static func run(_ arguments: [String], captureStdout: Bool = false, captureStderr: Bool = false) -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = arguments
-
         let outPipe = captureStdout ? Pipe() : nil
-        let errPipe = Pipe()
+        let errPipe = captureStderr ? Pipe() : nil
         process.standardOutput = outPipe ?? FileHandle.nullDevice
-        process.standardError = errPipe
+        process.standardError = errPipe ?? FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
 
         do {
@@ -61,11 +37,9 @@ enum LaunchctlControl {
         } catch {
             return Output(status: -1, stdout: "", stderr: "could not run launchctl: \(error.localizedDescription)")
         }
-
         let outData = outPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
         process.waitUntilExit()
-
         return Output(
             status: process.terminationStatus,
             stdout: String(data: outData, encoding: .utf8) ?? "",
@@ -73,21 +47,17 @@ enum LaunchctlControl {
         )
     }
 
-    /// Whether `launchctl print <target>` exits 0 — i.e. the job is registered
-    /// (loaded) with launchd, whether or not it is currently running.
+    /// `launchctl print` exit-0 check — i.e. the job is loaded.
     static func printSucceeds(label: String, uid: uid_t = getuid()) -> Bool {
         run(["print", target(label: label, uid: uid)]).succeeded
     }
 
-    /// The full `launchctl print <target>` output (and exit status) for liveness
-    /// parsing. Output is empty when the job is not loaded (non-zero status).
+    /// Full `launchctl print` output for liveness parsing.
     static func printOutput(label: String, uid: uid_t = getuid()) -> Output {
         run(["print", target(label: label, uid: uid)], captureStdout: true)
     }
 
-    /// Resolve the path of the running executable. Falls back to the canonical
-    /// install location (`~/.darkbloom/bin/darkbloom`) if introspection fails so
-    /// a plist we write always points somewhere plausible.
+    /// Path of the running executable; falls back to the canonical install path.
     static func currentExecutablePath() -> String {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         var size = UInt32(MAXPATHLEN)
@@ -99,7 +69,6 @@ enum LaunchctlControl {
             return String(cString: buffer)
         }
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/bin/darkbloom")
-            .path
+            .appendingPathComponent(".darkbloom/bin/darkbloom").path
     }
 }

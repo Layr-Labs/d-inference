@@ -23,10 +23,8 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
     public var name: String
     public var memoryReserveGB: UInt64
     public var autoUpdate: Bool
-    /// When true (default), the watchdog relaunches the provider ~5 minutes
-    /// after a crash. Set `auto_restart = false` to opt out while keeping the
-    /// provider installed (a plain `darkbloom stop` also disables recovery for
-    /// that session). See `WatchdogAgent` / `WatchdogPolicy`.
+    /// When true (default), the watchdog relaunches the provider ~5 min after a
+    /// crash. `false` opts out while keeping the provider installed.
     public var autoRestart: Bool
 
     public init(name: String, memoryReserveGB: UInt64 = 4, autoUpdate: Bool = true, autoRestart: Bool = true) {

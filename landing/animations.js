@@ -13,6 +13,11 @@
 
   var EASE = 'cubicBezier(0.22, 1, 0.36, 1)';
 
+  var PULSES = [
+    { dot: '#hero-pulse-1', route: '#hero-route-1' },
+    { dot: '#hero-pulse-2', route: '#hero-route-2' }
+  ];
+
   function onReady(fn) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', fn);
@@ -64,29 +69,34 @@
       complete: startPulses
     });
 
+    function startPulse(pulse, i) {
+      if (!document.querySelector(pulse.dot) || !document.querySelector(pulse.route)) return null;
+      var path = anime.path(pulse.route);
+      return anime({
+        targets: pulse.dot,
+        translateX: path('x'),
+        translateY: path('y'),
+        opacity: [
+          { value: 0.9, duration: 150 },
+          { value: 0.9, duration: 1100 },
+          { value: 0, duration: 250 }
+        ],
+        easing: 'easeInOutSine',
+        duration: 1500,
+        loop: true,
+        delay: i * 750,
+        endDelay: 600
+      });
+    }
+
     function startPulses() {
-      [['#hero-pulse-1', '#hero-route-1'], ['#hero-pulse-2', '#hero-route-2']]
-        .forEach(function (pair, i) {
-          var dot = document.querySelector(pair[0]);
-          var route = document.querySelector(pair[1]);
-          if (!dot || !route) return;
-          var path = anime.path(pair[1]);
-          anime({
-            targets: pair[0],
-            translateX: path('x'),
-            translateY: path('y'),
-            opacity: [
-              { value: 0.9, duration: 150 },
-              { value: 0.9, duration: 1100 },
-              { value: 0, duration: 250 }
-            ],
-            easing: 'easeInOutSine',
-            duration: 1500,
-            loop: true,
-            delay: i * 750,
-            endDelay: 600
-          });
+      var loops = PULSES.map(startPulse).filter(Boolean);
+      if (!loops.length) return;
+      document.addEventListener('visibilitychange', function () {
+        loops.forEach(function (loop) {
+          if (document.hidden) { loop.pause(); } else { loop.play(); }
         });
+      });
     }
   }
 

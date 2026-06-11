@@ -1,6 +1,6 @@
 #!/bin/bash
 # NOTE: This file is also embedded in the coordinator binary via go:embed.
-# The copy at coordinator/internal/api/install.sh must be kept in sync.
+# Keep both installer copies in sync.
 set -euo pipefail
 
 # Darkbloom Provider Installer (Swift CLI release v0.5.0+)

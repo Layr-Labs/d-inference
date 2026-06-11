@@ -25,8 +25,8 @@ type Config struct {
 	StripeConnectRefreshURL      string // where Stripe redirects if the link expires
 
 	// EncryptionMnemonic is a BIP39 mnemonic phrase used to derive the
-	// coordinator's X25519 encryption key (via HKDF) for sender→coordinator
-	// E2E request encryption (e2e.DeriveCoordinatorKey).
+	// coordinator's X25519 encryption key (via HKDF) for optional
+	// sender→coordinator request sealing (e2e.DeriveCoordinatorKey).
 	EncryptionMnemonic string
 
 	// Referral
@@ -35,8 +35,9 @@ type Config struct {
 	// MockMode skips on-chain verification and auto-credits test balances.
 	// Set EIGENINFERENCE_BILLING_MOCK=true for testing without real payments.
 	//
-	// TODO(linear): audit MockMode code paths — accidental enablement in a real
-	// deployment could silently skip payment verification. Tracked as DAR-59.
+	// DAR-59: a boot-time tripwire (Config.Check) refuses to start when MockMode
+	// is enabled alongside real payment credentials (mnemonic or Stripe key).
+	// The full audit of remaining MockMode code paths is still tracked in DAR-59.
 	MockMode bool
 }
 
@@ -67,13 +68,30 @@ func ReadConfig() Config {
 	return cfg
 }
 
-// Check validates billing configuration invariants. At minimum it prevents
-// MockMode from coexisting with real Stripe credentials — accidental mock
-// enablement in a production deployment with live keys would silently skip
-// payment verification.
+// Check validates billing configuration invariants.
+//
+// Fail-closed tripwire (DAR-59): MockMode must never coexist with real payment
+// credentials. A production deployment that accidentally sets
+// EIGENINFERENCE_BILLING_MOCK=true would silently skip on-chain Solana
+// verification and Stripe payment checks. By refusing to boot in that state we
+// convert a silent exploit path into a loud startup failure.
+//
+// Dev/test environments that legitimately use MockMode have no real credentials,
+// so this check is a no-op for them.
 func (c Config) Check() error {
+	if c.MockMode && c.EncryptionMnemonic != "" {
+		return fmt.Errorf(
+			"billing mock mode is enabled but real payment credentials (Solana mnemonic) are configured — refusing to start (DAR-59); "+
+				"unset MNEMONIC / %s_MNEMONIC / %s_SOLANA_MNEMONIC or disable %s_BILLING_MOCK",
+			env.EnvPrefix, env.EnvPrefix, env.EnvPrefix,
+		)
+	}
 	if c.MockMode && c.StripeSecretKey != "" {
-		return fmt.Errorf("billing mock mode is enabled but a real Stripe secret key is configured — these are mutually exclusive; unset %s_STRIPE_SECRET_KEY or disable %s_BILLING_MOCK", env.EnvPrefix, env.EnvPrefix)
+		return fmt.Errorf(
+			"billing mock mode is enabled but real payment credentials (Stripe secret key) are configured — refusing to start (DAR-59); "+
+				"unset %s_STRIPE_SECRET_KEY or disable %s_BILLING_MOCK",
+			env.EnvPrefix, env.EnvPrefix,
+		)
 	}
 	return nil
 }

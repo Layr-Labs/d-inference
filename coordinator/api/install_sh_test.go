@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -107,6 +110,57 @@ func TestInstallScriptTemplating(t *testing.T) {
 			t.Error("install.sh does not install the Secure Enclave helper")
 		}
 	})
+}
+
+// TestInstallScriptNoDrift asserts that coordinator/api/install.sh and
+// scripts/install.sh are byte-for-byte identical after normalizing the single
+// intentional difference: the COORD_URL default line. In coordinator/api/install.sh
+// that line carries __DARKBLOOM_COORD_URL__ (substituted at serve time); in
+// scripts/install.sh it carries https://api.darkbloom.dev (direct-fetch default).
+// If someone edits one copy without the other this test fails.
+func TestInstallScriptNoDrift(t *testing.T) {
+	// Locate scripts/install.sh relative to this source file. runtime.Caller
+	// gives us the absolute path of the test file; walk up two directories to
+	// the repo root, then descend into scripts/.
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed — cannot locate test source file")
+	}
+	// thisFile: .../coordinator/api/install_sh_test.go
+	// repoRoot: .../
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	scriptsSrc := filepath.Join(repoRoot, "scripts", "install.sh")
+
+	scriptsSrcBytes, err := os.ReadFile(scriptsSrc)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("scripts/install.sh not found at %s (vendored layout?); skipping drift check", scriptsSrc)
+		}
+		t.Fatalf("read scripts/install.sh: %v", err)
+	}
+
+	// installScript is the embedded coordinator/api/install.sh (package-level var).
+	embedded := string(installScript)
+	scriptsRef := string(scriptsSrcBytes)
+
+	// normalizeCoordURL replaces both the placeholder and the prod-URL default
+	// with a fixed token so the one intentional difference is invisible to the
+	// equality check.
+	normalizeCoordURL := func(s string) string {
+		s = strings.ReplaceAll(s, `COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"`, `COORD_URL="__NORMALIZED__"`)
+		s = strings.ReplaceAll(s, `COORD_URL="${COORD_URL:-https://api.darkbloom.dev}"`, `COORD_URL="__NORMALIZED__"`)
+		return s
+	}
+
+	embeddedNorm := normalizeCoordURL(embedded)
+	scriptsNorm := normalizeCoordURL(scriptsRef)
+
+	if embeddedNorm != scriptsNorm {
+		t.Errorf("coordinator/api/install.sh has drifted from scripts/install.sh\n" +
+			"Run: diff scripts/install.sh coordinator/api/install.sh\n" +
+			"The only intentional difference is the COORD_URL default line.\n" +
+			"Sync both copies before committing.")
+	}
 }
 
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {

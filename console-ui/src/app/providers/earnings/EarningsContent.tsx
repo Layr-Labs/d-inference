@@ -119,10 +119,10 @@ export default function EarningsContent() {
   const fetchEarnings = useCallback(async () => {
     setError(null);
     try {
+      // Coordinator URL is build-time pinned — bearer tokens must never
+      // follow a localStorage-derived origin (session poisoning).
       const coordinatorUrl =
-        localStorage.getItem("darkbloom_coordinator_url") ||
-        process.env.NEXT_PUBLIC_COORDINATOR_URL ||
-        "https://api.darkbloom.dev";
+        process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
       const headers = await getAuthHeaders();
 
       const res = await fetch(

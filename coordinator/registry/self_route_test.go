@@ -202,7 +202,7 @@ func TestPrivateOnlyProviderExcludedFromPublicFleet(t *testing.T) {
 	if selected := reg.ReserveProvider(model, publicReq); selected != nil {
 		t.Fatalf("public request selected private-only machine %q", selected.ID)
 	}
-	if cc, _, _ := reg.QuickCapacityCheck(model, 100, 128); cc != 0 {
+	if cc, _, _ := reg.QuickCapacityCheck(model, 100, 128, RequestTraits{}); cc != 0 {
 		t.Fatalf("QuickCapacityCheck candidateCount=%d for a private-only-only fleet, want 0", cc)
 	}
 

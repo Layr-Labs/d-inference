@@ -96,6 +96,14 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// true (matches the coordinator's `is_vision,omitempty`), so pre-0.6.0
     /// providers and text-only builds omit it and are never routed media requests.
     public var isVision: Bool?
+    /// Tri-state template-render self-check result (DAR-130 class): the scanner
+    /// renders the model's chat template(s) against canonical request fixtures
+    /// (`TemplateRenderCheck`). nil = no template found / check didn't run
+    /// (key omitted on the wire, matching old providers); true = every fixture
+    /// rendered; false = some fixture threw — the coordinator uses false to
+    /// refuse routing tool-bearing requests to this (provider, model). Unlike
+    /// `isVision`, FALSE IS THE SIGNAL and must go on the wire.
+    public var templateRenderOK: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -106,6 +114,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case estimatedMemoryGb = "estimated_memory_gb"
         case weightHash = "weight_hash"
         case isVision = "is_vision"
+        case templateRenderOK = "template_render_ok"
     }
 
     public init(
@@ -116,7 +125,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         sizeBytes: UInt64,
         estimatedMemoryGb: Double,
         weightHash: String? = nil,
-        isVision: Bool? = nil
+        isVision: Bool? = nil,
+        templateRenderOK: Bool? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -126,6 +136,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.estimatedMemoryGb = estimatedMemoryGb
         self.weightHash = weightHash
         self.isVision = isVision
+        self.templateRenderOK = templateRenderOK
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -141,6 +152,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         if isVision == true {
             try container.encode(true, forKey: .isVision)
         }
+        // Tri-state: encode BOTH true and false when the check ran — false is
+        // the broken-template routing signal. Omit only when unknown (nil), so
+        // the coordinator can distinguish "check didn't run" from "passed".
+        try container.encodeIfPresent(templateRenderOK, forKey: .templateRenderOK)
     }
 }
 

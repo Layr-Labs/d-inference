@@ -246,10 +246,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// (always owned here) or for prefer when the winner happens to be owned.
 	owned := p.AccountID != "" && p.AccountID == pr.OwnerAccountID
 	relaxTrust := pr.SelfRouteOnly || (pr.PreferOwner && owned)
-	// Re-check the vision gate under the provider lock too: the winner must still
-	// advertise a vision-capable build if the request carries media (guards the
-	// race where its model set changed between snapshot and reservation).
-	if !r.providerCanAdmitLocked(p, model, relaxTrust) ||
+	// Re-check the vision and trait gates under the provider lock too: the
+	// winner must still advertise a vision-capable build if the request carries
+	// media, and must still pass the trait gates — a render-broken build is
+	// fenced for every shape, the tools version floor for tool requests — and
+	// must not have entered the shape-keyed inference-error cooldown (all folded
+	// into providerCanAdmitLocked) between snapshot and reservation.
+	if !r.providerCanAdmitLocked(p, model, pr.Traits, relaxTrust) ||
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model)) {
 		return nil, RoutingDecision{
 			Model:                   model,
@@ -336,7 +339,12 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		// un-enrolled) machine — whether exclusive self-route or prefer — never
 		// for public providers.
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
-		snap, ok := r.snapshotProviderLocked(p, model, relaxTrust)
+		// snapshotProviderLocked applies every per-provider gate via the shared
+		// providerPassesRoutingGatesLocked, INCLUDING the shape-keyed
+		// inference-error cooldown and the trait gates (render-broken fences all
+		// shapes; the tools version floor fences tool requests). A failing
+		// provider is simply dropped here.
+		snap, ok := r.snapshotProviderLocked(p, model, pr.Traits, relaxTrust)
 		if !ok {
 			continue
 		}
@@ -389,6 +397,24 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 		if len(owned) > 0 {
 			pool = owned
+		}
+	}
+
+	// Version-diverse retry (SOFT): when a previous attempt failed on a given
+	// binary version, prefer candidates running any OTHER version so a
+	// deterministic per-version bug (e.g. a chat-template render crash) cannot
+	// consume every retry on identical binaries. Diversity never fails closed:
+	// when every candidate runs the avoided version, keep the full pool rather
+	// than failing the request.
+	if pr.Traits.AvoidVersion != "" {
+		diverse := make([]*routingCandidate, 0, len(pool))
+		for _, c := range pool {
+			if providerVersion(c.provider) != pr.Traits.AvoidVersion {
+				diverse = append(diverse, c)
+			}
+		}
+		if len(diverse) > 0 {
+			pool = diverse
 		}
 	}
 
@@ -467,6 +493,18 @@ func providerOwnedBy(p *Provider, accountID string) bool {
 	return p.AccountID != "" && p.AccountID == accountID
 }
 
+// providerVersion reads the provider's binary version under p.mu (set by the
+// API layer after registration; p.mu guards provider field access — mirrors
+// providerOwnedBy). Used by the version-diverse retry pool filter.
+func providerVersion(p *Provider) string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Version
+}
+
 // OwnedProviderSummary reports, for the given account, how many of its
 // currently-connected providers are online and how many can serve `model`.
 // It powers self-route pre-flight error messaging: distinguishing "your
@@ -532,54 +570,101 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 	)
 }
 
-// snapshotProviderLocked builds a routing snapshot for p, returning ok=false
-// when p fails any structural/privacy/capacity gate. selfRouteOwner is true
-// when this is a self-route request and p is owned by the requesting account.
-// It (1) drops the hardware-trust floor to TrustNone — a personal Mac will not
-// be MDM/MDA enrolled, so without this it would be unroutable to its own owner
-// — and (2) admits a private-only machine, which is otherwise excluded from
-// the public fleet. Every privacy-critical gate (RuntimeVerified, private-text
-// support, challenge freshness) still applies, so plaintext is never exposed
-// and only the genuinely-signed provider binary serves.
-func (r *Registry) snapshotProviderLocked(p *Provider, model string, selfRouteOwner bool) (routingSnapshot, bool) {
-	now := time.Now()
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+// providerPassesRoutingGatesLocked is the single source of truth for the
+// per-provider structural/privacy/cooldown/trait gates a request must clear
+// before a provider is eligible to serve it. snapshotProviderLocked (the
+// production dispatch hot path) and QuickCapacityCheck (the preflight) BOTH call
+// it so the two can never drift — a prior bug had QuickCapacityCheck silently
+// missing the dispatch-load cooldown, the inference-error cooldown, and the
+// trait gates, so the preflight reported capacity that routing then refused.
+//
+// Gates, in evaluation order:
+//   - catalog membership (advertises an allowed build of the model)
+//   - dispatch-load cooldown (pair instant-503'd on "insufficient memory")
+//   - inference-error cooldown, SHAPE-KEYED to traits.CooldownShape() (pair
+//     returning repeated provider-side 5xx for THIS request shape)
+//   - status not offline/untrusted
+//   - private-only admission (only the owner's self-route may use it)
+//   - hardware-trust floor (relaxed to TrustNone for the owner's own machine)
+//   - runtime verified
+//   - private-text support (E2E privacy backstop)
+//   - challenge freshness
+//   - trait eligibility: render-broken fences EVERY request shape; version
+//     floors are trait-scoped (tools-only today)
+//
+// selfRouteOwner relaxes only the trust floor and private-only admission for a
+// caller's own (possibly un-enrolled) machine; every privacy-critical gate
+// still applies. Caller holds r.mu and p.mu.
+func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time) bool {
 	if !r.providerServesCatalogModelLocked(p, model) {
-		return routingSnapshot{}, false
+		return false
 	}
 	// Skip a provider-model pair cooling down after a dispatch-time load
 	// failure ("insufficient memory") — it would instant-503 again, burning a
-	// dispatch attempt. This is the production dispatch hot path
-	// (ReserveProviderEx), so the cool-down MUST be enforced here, not only in
-	// the FindProviderWithTrust / RoutableProviderIDsForBuild paths.
+	// dispatch attempt.
 	if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
-		return routingSnapshot{}, false
+		return false
+	}
+	// Skip a triple quarantined by the inference-error circuit breaker for THIS
+	// request shape: repeated provider-side (5xx) failures — e.g. a deterministic
+	// chat-template render crash on tool schemas — mean a retry here fails
+	// identically, so routing must fall to a different provider. Shape-keyed so a
+	// tool failure does not deroute clean text traffic. Cleared by
+	// RecordInferenceSuccess (same shape) or by TTL expiry.
+	if r.inferenceErrorCooldownActiveLocked(p.ID, model, traits.CooldownShape(), now) {
+		return false
 	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return routingSnapshot{}, false
+		return false
 	}
 	// A private-only machine never serves the public fleet — only its owner's
 	// self-route requests.
 	if p.PrivateOnly && !selfRouteOwner {
-		return routingSnapshot{}, false
+		return false
 	}
 	minTrust := r.MinTrustLevel
 	if selfRouteOwner {
 		minTrust = TrustNone
 	}
 	if trustRank(p.TrustLevel) < trustRank(minTrust) {
-		return routingSnapshot{}, false
+		return false
 	}
 	if !p.RuntimeVerified {
-		return routingSnapshot{}, false
+		return false
 	}
 	if !r.providerSupportsPrivateTextLocked(p) {
-		return routingSnapshot{}, false
+		return false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		return false
+	}
+	// Trait eligibility: a render-broken build is fenced for EVERY request shape
+	// (a crashing chat template breaks plain text, tools, and multimodal alike),
+	// while the capability version floors stay trait-scoped (tools-only today).
+	if !r.providerEligibleForTraitsLocked(p, model, traits) {
+		return false
+	}
+	return true
+}
+
+// snapshotProviderLocked builds a routing snapshot for p, returning ok=false
+// when p fails any structural/privacy/capacity/trait gate. selfRouteOwner is
+// true when this is a self-route request and p is owned by the requesting
+// account. It (1) drops the hardware-trust floor to TrustNone — a personal Mac
+// will not be MDM/MDA enrolled, so without this it would be unroutable to its
+// own owner — and (2) admits a private-only machine, which is otherwise
+// excluded from the public fleet. Every privacy-critical gate (RuntimeVerified,
+// private-text support, challenge freshness) still applies, so plaintext is
+// never exposed and only the genuinely-signed provider binary serves. traits
+// carry the request shape into the shape-keyed inference-error cooldown and the
+// render-broken / version-floor eligibility gates.
+func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool) (routingSnapshot, bool) {
+	now := time.Now()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !r.providerPassesRoutingGatesLocked(p, model, traits, selfRouteOwner, now) {
 		return routingSnapshot{}, false
 	}
 
@@ -933,32 +1018,17 @@ func providerModelIDs(p *Provider) []string {
 	return ids
 }
 
-func (r *Registry) providerCanAdmitLocked(p *Provider, model string, selfRouteOwner bool) bool {
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
-	}
-	if p.PrivateOnly && !selfRouteOwner {
-		return false
-	}
-	minTrust := r.MinTrustLevel
-	if selfRouteOwner {
-		minTrust = TrustNone
-	}
-	if trustRank(p.TrustLevel) < trustRank(minTrust) || !p.RuntimeVerified {
-		return false
-	}
-	if !r.providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || time.Since(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return false
-	}
-	if !r.providerServesCatalogModelLocked(p, model) {
-		return false
-	}
-	// Under-lock re-check: don't admit a pair that entered the dispatch
-	// load-failure cool-down between selection and reservation.
-	if r.dispatchLoadCooldownActiveLocked(p.ID, model, time.Now()) {
+// providerCanAdmitLocked is the under-the-provider-lock admit re-check run in
+// ReserveProviderEx after a winner is selected: it re-applies every routing
+// gate (via the shared providerPassesRoutingGatesLocked — same catalog, trust,
+// privacy, challenge, shape-keyed inference-error cooldown, and trait gates as
+// selection) plus the admit-specific capacity gates (concurrency headroom and
+// non-crashed/non-reloading slot state). This guards the race where the
+// provider's state changed between snapshot and reservation. Caller holds r.mu
+// and p.mu.
+func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool) bool {
+	now := time.Now()
+	if !r.providerPassesRoutingGatesLocked(p, model, traits, selfRouteOwner, now) {
 		return false
 	}
 	if !p.hasConcurrencyHeadroomForModelLocked(model) {
@@ -981,9 +1051,15 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, selfRouteOw
 
 // QuickCapacityCheck performs a fast, read-only scan of the provider fleet to
 // determine whether any provider could serve a request for the given model
-// right now. It runs the same gates as the full routing path (status, trust,
-// runtime, privacy, challenge freshness, concurrency headroom, slot state,
-// free memory) but does NOT reserve capacity or create pending requests.
+// right now. It runs the SAME per-provider gates as the full routing path —
+// via the shared providerPassesRoutingGatesLocked (status, trust, runtime,
+// privacy, challenge freshness, dispatch-load + shape-keyed inference-error
+// cooldowns, and the trait gates: render-broken fences every shape, the tools
+// version floor fences tool requests) — plus the capacity gates (concurrency
+// headroom, slot state, free memory) but does NOT reserve capacity or create
+// pending requests. traits carry the request shape so the preflight excludes a
+// provider for exactly the reasons routing would, instead of reporting phantom
+// capacity that routing then refuses (the drift this consolidation closes).
 //
 // Returns:
 //   - candidateCount: providers that passed ALL gates (could route right now)
@@ -1000,7 +1076,7 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, selfRouteOw
 //     fit it. Kept separate from capacityRejections so the caller does NOT 429
 //     a model that will never fit (the client would retry forever) — it should
 //     surface model_too_large / 503 instead.
-func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
+func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
 	// Use a dummy PendingRequest with the caller's actual token estimates
 	// for the admission gate (freeMemoryAdmits).
 	if estimatedPromptTokens <= 0 {
@@ -1035,34 +1111,11 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		p.mu.Lock()
 
-		// Structural gates (same as snapshotProviderLocked). This pre-flight
-		// only runs for public (non-self-route) requests, so private-only
+		// Per-provider routing gates (same source of truth as snapshotProviderLocked
+		// and the admit re-check). This pre-flight only runs for public
+		// (non-self-route) requests, so selfRouteOwner is false — private-only
 		// machines are excluded unconditionally.
-		if !r.providerServesCatalogModelLocked(p, model) {
-			p.mu.Unlock()
-			continue
-		}
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
-			p.mu.Unlock()
-			continue
-		}
-		if p.PrivateOnly {
-			p.mu.Unlock()
-			continue
-		}
-		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-			p.mu.Unlock()
-			continue
-		}
-		if !p.RuntimeVerified {
-			p.mu.Unlock()
-			continue
-		}
-		if !r.providerSupportsPrivateTextLocked(p) {
-			p.mu.Unlock()
-			continue
-		}
-		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		if !r.providerPassesRoutingGatesLocked(p, model, traits, false, now) {
 			p.mu.Unlock()
 			continue
 		}

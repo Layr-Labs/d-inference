@@ -52,7 +52,9 @@ extension BatchScheduler {
     /// is the value the P1 cumulative-budget gate in `submit()` checks
     /// against `tokenBudgetMax`.
     var activeTokenBudgetUsed: Int {
-        activeBridges.values.reduce(0) { $0 + $1.promptTokens + $1.maxTokens }
+        activeBridges.values.reduce(0) {
+            $0 + ($1.reservedTokens ?? ($1.promptTokens + $1.maxTokens))
+        }
     }
 
     var queuedTokenBudget: Int { pendingSummaryCache.queuedTokens }

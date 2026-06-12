@@ -1017,9 +1017,10 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         if index.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil { return false }
         if inFlightWrites.contains(digestHex) { return false }
 
-        // Find the RAM entry (if it still exists).
-        guard let snap = ram.entriesForFlush(modelHash: binding.modelHash)
-            .first(where: { $0.key.digest == digest }) else {
+        // Find only the target RAM entry. Calling entriesForFlush(...).first
+        // copies every checkpoint for the model and can OOM during a single
+        // second-use promotion.
+        guard let snap = ram.entryForFlush(modelHash: binding.modelHash, digest: digest) else {
             return false
         }
 

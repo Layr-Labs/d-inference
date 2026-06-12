@@ -204,3 +204,29 @@ func entriesForFlushReturnsCopiesPerModel() {
     // entriesForFlush does not remove.
     #expect(ram.count == 2)
 }
+
+@Test
+func entryForFlushReturnsOneIndependentCopy() {
+    let ram = PrefixCacheRAM()
+    ram.put(modelHash: "A", digest: digest("p"), caches: [simpleCache(tokens: 4)], tokenCount: 4)
+    ram.put(modelHash: "A", digest: digest("q"), caches: [simpleCache(tokens: 6)], tokenCount: 6)
+    ram.put(modelHash: "B", digest: digest("p"), caches: [simpleCache(tokens: 8)], tokenCount: 8)
+
+    let flush = ram.entryForFlush(modelHash: "A", digest: digest("q"))
+    #expect(flush != nil)
+    #expect(flush?.key.modelHash == "A")
+    #expect(flush?.key.digest == digest("q"))
+    #expect(flush?.tokenCount == 6)
+    #expect(flush?.caches.count == 1)
+    #expect(flush?.caches[0].offset == 6)
+
+    let extra = MLXArray(Array(repeating: Float(999), count: H * 3 * D), [1, H, 3, D])
+    _ = flush!.caches[0].update(keys: extra, values: extra)
+    eval(flush!.caches[0].innerState())
+    #expect(flush!.caches[0].offset == 9)
+
+    #expect(ram.get(modelHash: "A", digest: digest("q"))?.caches[0].offset == 6,
+            "single-entry flush snapshot must be an independent copy")
+    #expect(ram.entryForFlush(modelHash: "A", digest: digest("missing")) == nil)
+    #expect(ram.count == 3, "entryForFlush snapshots without removing entries")
+}

@@ -81,6 +81,8 @@ public actor BatchScheduler {
     var checkpointManager: PrefixCacheManager?
     /// Sliding-window-derived checkpoint boundaries for the current model.
     var checkpointBoundaries: [Int] = []
+    /// Per-layer cache class/window signature for restore validation.
+    var checkpointLayerSignatures: [CheckpointLayerSignature] = []
 
     /// Engine-tier owner (EncryptedPrefixCachePersistence) for pure-
     /// attention models. Non-nil only when the model classifies as `.engine` AND
@@ -228,6 +230,7 @@ public actor BatchScheduler {
         self.engine = engine
         self.checkpointManager = build.checkpointManager
         self.checkpointBoundaries = build.checkpointBoundaries
+        self.checkpointLayerSignatures = build.checkpointLayerSignatures
         self.engineTierOwner = build.engineTierOwner
         await engine.start()
         // Final epoch check after start() — start can suspend too.
@@ -238,6 +241,7 @@ public actor BatchScheduler {
             if self.engine === engine { self.engine = nil }
             if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
+            if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
             if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
             await engine.stop()
             return
@@ -280,6 +284,7 @@ public actor BatchScheduler {
             if self.engine === engine { self.engine = nil }
             if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
+            if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
             if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
             await engine.stop()
             return
@@ -318,6 +323,7 @@ public actor BatchScheduler {
                     if self.engine === engine { self.engine = nil }
                     if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
                     if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
+                    if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
                     if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
                     await engine.stop()
                     return
@@ -372,18 +378,215 @@ public actor BatchScheduler {
     /// persists token sequences across requests in process memory.
     /// Cross-tenant data-leak risk; do not enable without a fresh
     /// threat model.
+    private struct RestoredCheckpointAdmission {
+        let reservedTokens: Int
+    }
+
     /// Checkpoint-tier lookup: on a hit, attach the restored per-layer caches
     /// to the request so the scheduler decodes only the suffix. No-op when
     /// the checkpoint manager is nil (engine/none models, or flag off). Done
     /// in the async submit path because the engine step loop can't await the
-    /// manager actor. The tokenCount guard mirrors the scheduler's so a
-    /// degenerate hit (no suffix) is never attached.
-    private func maybeRestoreCheckpoint(_ req: Request, promptTokens: [Int], scope: String) async {
-        guard let mgr = checkpointManager else { return }
+    /// manager actor.
+    ///
+    /// MLX shape/runtime errors are fatal traps, not Swift throws. Validate the
+    /// restored checkpoint before it reaches `EngineCore.addRequest`; any
+    /// uncertainty becomes a cold prefill. The returned token count is the
+    /// memory reservation to charge if the restore is accepted.
+    private func maybeRestoreCheckpoint(
+        _ req: Request,
+        promptTokens: [Int],
+        scope: String
+    ) async -> RestoredCheckpointAdmission? {
+        guard let mgr = checkpointManager else { return nil }
         guard let hit = await mgr.lookup(tokens: promptTokens, scope: scope),
               hit.tokenCount >= 1, hit.tokenCount < promptTokens.count
-        else { return }
+        else { return nil }
+
+        guard Self.restoredCheckpointIsUsable(
+            caches: hit.caches,
+            expected: checkpointLayerSignatures,
+            tokenCount: hit.tokenCount,
+            promptTokenCount: promptTokens.count
+        ) else {
+            prefixCacheLogger.warning(
+                "prefix cache restore rejected: invalid checkpoint geometry; falling back to cold prefill")
+            return nil
+        }
+
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
+        return RestoredCheckpointAdmission(
+            reservedTokens: restoredCheckpointReservedTokens(
+                caches: hit.caches,
+                promptTokenCount: promptTokens.count,
+                restoredTokenCount: hit.tokenCount,
+                maxTokens: req.maxTokens
+            )
+        )
+    }
+
+    static func restoredCheckpointIsUsable(
+        caches: [any KVCache],
+        expected: [CheckpointLayerSignature],
+        tokenCount: Int,
+        promptTokenCount: Int
+    ) -> Bool {
+        guard tokenCount >= 1, tokenCount < promptTokenCount else { return false }
+        guard caches.count == expected.count, !caches.isEmpty else { return false }
+
+        for (restored, signature) in zip(caches, expected) {
+            guard restoredLayerIsUsable(restored, expected: signature, tokenCount: tokenCount) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func restoredLayerIsUsable(
+        _ restored: any KVCache,
+        expected: CheckpointLayerSignature,
+        tokenCount: Int
+    ) -> Bool {
+        if restored is ArraysCache { return false }
+        if restored is ChunkedKVCache { return false }
+        if restored is QuantizedKVCache { return false }
+
+        guard let shape = restoredKVShape(restored) else { return false }
+
+        switch expected {
+        case .rotating(let window, let expectedShape):
+            guard let rot = restored as? RotatingKVCache, window > 0 else { return false }
+            guard let restoredWindow = rot.maxSize, restoredWindow == window else { return false }
+            guard restoredShapeMatches(shape, expected: expectedShape) else { return false }
+            let storedTokens = shape.tokenCount
+            let expectedStoredTokens = min(tokenCount, window)
+            return storedTokens == expectedStoredTokens
+        case .simple(let expectedShape):
+            guard let simple = restored as? KVCacheSimple, !(restored is RotatingKVCache) else {
+                return false
+            }
+            guard restoredShapeMatches(shape, expected: expectedShape) else { return false }
+            return simple.offset == tokenCount && shape.tokenCount == tokenCount
+        case .unsupported:
+            return false
+        }
+    }
+
+    private struct RestoredKVShape {
+        let tokenCount: Int
+        let kvHeads: Int
+        let headDim: Int
+    }
+
+    private static func restoredKVShape(_ cache: any KVCache) -> RestoredKVShape? {
+        let state = cache.state
+        guard state.count >= 2 else { return nil }
+        let k = state[0]
+        let v = state[1]
+        guard k.shape.count == 4, v.shape.count == 4 else { return nil }
+        guard k.dim(0) == 1, v.dim(0) == 1 else { return nil }
+        guard k.dim(1) == v.dim(1), k.dim(2) == v.dim(2) else { return nil }
+        guard k.dim(3) == v.dim(3) else { return nil }
+        guard k.dim(1) > 0, k.dim(2) > 0, k.dim(3) > 0 else { return nil }
+        return RestoredKVShape(tokenCount: k.dim(2), kvHeads: k.dim(1), headDim: k.dim(3))
+    }
+
+    private static func restoredShapeMatches(_ restored: RestoredKVShape, expected: CheckpointLayerShape?) -> Bool {
+        guard let expected else { return true }
+        return restored.kvHeads == expected.kvHeads && restored.headDim == expected.headDim
+    }
+
+    /// Reserve for the original request plus restored-KV materialization.
+    ///
+    /// A checkpoint hit can hold multiple live copies briefly: the RAM/SSD hit
+    /// copy returned by `PrefixCacheManager`, plus the B==1 batched cache that
+    /// MLX builds for decode. Charge those copies explicitly so a restore that
+    /// would fit as a cold prefill but not as restored KV is skipped before MLX
+    /// can hit a fatal `metal::malloc`.
+    private func restoredCheckpointReservedTokens(
+        caches: [any KVCache],
+        promptTokenCount: Int,
+        restoredTokenCount: Int,
+        maxTokens: Int
+    ) -> Int {
+        let requestTokens = promptTokenCount + maxTokens
+        guard kvBytesPerToken > 0 else { return requestTokens }
+        let restoredBytes = PrefixCacheRAM.byteSize(of: caches)
+        let extraRestoredCopies = 2
+        let chargedBytes = restoredBytes.multipliedReportingOverflow(by: extraRestoredCopies)
+        let restoredEquivalentTokens: Int
+        if chargedBytes.overflow {
+            restoredEquivalentTokens = Int.max
+        } else {
+            let roundedBytes = chargedBytes.partialValue.addingReportingOverflow(kvBytesPerToken - 1)
+            restoredEquivalentTokens = roundedBytes.overflow
+                ? Int.max
+                : roundedBytes.partialValue / kvBytesPerToken
+        }
+        let suffixAndOutputTokens = max(0, promptTokenCount - restoredTokenCount) + maxTokens
+        let restoredTotal = restoredEquivalentTokens.addingReportingOverflow(suffixAndOutputTokens)
+        return max(requestTokens, restoredTotal.overflow ? Int.max : restoredTotal.partialValue)
+    }
+
+    private func acceptRestoredCheckpointBudget(
+        requestId: String,
+        requestTokens: Int,
+        admission: RestoredCheckpointAdmission?,
+        req: Request
+    ) -> Int {
+        guard let admission, admission.reservedTokens > requestTokens else {
+            return requestTokens
+        }
+        let usedWithoutThis = max(0, activeTokenBudgetUsed - requestTokens)
+        let projected = usedWithoutThis.addingReportingOverflow(admission.reservedTokens)
+        guard !projected.overflow, projected.partialValue <= tokenBudgetMax else {
+            req.restoredCheckpoint = nil
+            prefixCacheLogger.warning(
+                "prefix cache restore skipped: restored KV exceeds token budget; falling back to cold prefill")
+            return requestTokens
+        }
+        if var bridge = activeBridges[requestId] {
+            bridge.reservedTokens = admission.reservedTokens
+            activeBridges[requestId] = bridge
+        }
+        return admission.reservedTokens
+    }
+
+    private func reserveKVForRequest(
+        requestId: String,
+        requestTokens: Int,
+        reservationTokens: Int,
+        req: Request
+    ) async -> Bool {
+        guard let kvBudget else { return true }
+        if await kvBudget.reserve(
+            requestID: requestId,
+            kvBytesPerToken: kvBytesPerToken,
+            tokenCount: reservationTokens
+        ) {
+            return true
+        }
+
+        // A restored checkpoint hit can require materially more headroom than
+        // a cold prefill because restored KV is already materialized. If that
+        // larger reservation fails, drop the restore and retry the normal
+        // request reservation so the cache miss is slow, not fatal.
+        guard req.restoredCheckpoint != nil, reservationTokens > requestTokens else {
+            return false
+        }
+
+        req.restoredCheckpoint = nil
+        if var bridge = activeBridges[requestId] {
+            bridge.reservedTokens = nil
+            activeBridges[requestId] = bridge
+        }
+        prefixCacheLogger.warning(
+            "prefix cache restore skipped: insufficient KV headroom; falling back to cold prefill")
+
+        return await kvBudget.reserve(
+            requestID: requestId,
+            kvBytesPerToken: kvBytesPerToken,
+            tokenCount: requestTokens
+        )
     }
 
     /// Stale-engine enqueue guard: `submit`/`submitTokenized` capture
@@ -466,9 +669,15 @@ public actor BatchScheduler {
     /// a manager with an in-memory KEK here to exercise the real
     /// submit→lookup→admit→capture path that the SE gate otherwise blocks.
     /// Must be called after `loadModel`. Not used in production.
-    func _installCheckpointManagerForTest(_ mgr: PrefixCacheManager, boundaries: [Int]) {
+    func _installCheckpointManagerForTest(_ mgr: PrefixCacheManager, boundaries: [Int]) async {
         self.checkpointManager = mgr
         self.checkpointBoundaries = boundaries
+        self.checkpointLayerSignatures = await modelContainer?.perform { ctx in
+            Self.checkpointLayerSignatures(
+                for: ctx.model.newCache(parameters: nil),
+                layerShapes: Self.probeLayerShapes(model: ctx.model)
+            )
+        } ?? []
         engine?.core.scheduler.checkpointBoundaries = boundaries
         engine?.core.scheduler.onCheckpointCapture = { prefixTokens, length, caches in
             let box = SendableKVCaches(caches)
@@ -487,6 +696,7 @@ public actor BatchScheduler {
         let engine: BatchedEngine
         let checkpointManager: PrefixCacheManager?
         let checkpointBoundaries: [Int]
+        let checkpointLayerSignatures: [CheckpointLayerSignature]
         let engineTierOwner: EncryptedPrefixCachePersistence?
     }
 
@@ -525,14 +735,16 @@ public actor BatchScheduler {
         let nowFn: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970) }
 
         return await container.perform { ctx -> EngineBuild in
+            let cacheLayout = ctx.model.newCache(parameters: nil)
             // Classify from the model's own cache layout.
             let strategy = backing == nil
                 ? PrefixCacheStrategy.none
-                : PrefixCacheStrategy.classify(ctx.model.newCache(parameters: nil))
+                : PrefixCacheStrategy.classify(cacheLayout)
 
             var enginePrefixCache: PrefixCache? = nil
             var checkpointManager: PrefixCacheManager? = nil
             var boundaries: [Int] = []
+            var checkpointLayerSignatures: [CheckpointLayerSignature] = []
             // Capture the engine-tier owner for accountant registration.
             var engineTierOwner: EncryptedPrefixCachePersistence? = nil
 
@@ -559,7 +771,7 @@ public actor BatchScheduler {
                 case .checkpoint:
                     // Boundaries capped at the smallest sliding window so a
                     // snapshot never claims tokens a window has discarded.
-                    let window = PrefixCacheStrategy.minSlidingWindow(ctx.model.newCache(parameters: nil)) ?? 0
+                    let window = PrefixCacheStrategy.minSlidingWindow(cacheLayout) ?? 0
                     // TB-016 sub-feature A: lift ladder past window for proven
                     // families. Use modelId as the arch string (safe fallback;
                     // proven=false for unmatched families keeps today's ladder).
@@ -576,6 +788,10 @@ public actor BatchScheduler {
                     // (kvHeads, headDim) pair can't describe them and the
                     // load-time shape guard would reject the model's own files.
                     let layerShapes = Self.probeLayerShapes(model: ctx.model)
+                    checkpointLayerSignatures = Self.checkpointLayerSignatures(
+                        for: cacheLayout,
+                        layerShapes: layerShapes
+                    )
                     let checkpointBinding = PrefixCacheModelBinding(
                         modelHash: backing.binding.modelHash,
                         modelDtype: backing.binding.modelDtype,
@@ -664,6 +880,7 @@ public actor BatchScheduler {
                 ),
                 checkpointManager: checkpointManager,
                 checkpointBoundaries: boundaries,
+                checkpointLayerSignatures: checkpointLayerSignatures,
                 engineTierOwner: engineTierOwner
             )
         }
@@ -823,6 +1040,21 @@ public actor BatchScheduler {
             shapes.append([k.dim(1), k.dim(3)])  // [kvHeads, headDim]
         }
         return shapes
+    }
+
+    private static func checkpointLayerSignatures(
+        for caches: [any KVCache],
+        layerShapes: [[Int]]?
+    ) -> [CheckpointLayerSignature] {
+        caches.enumerated().map { idx, cache in
+            let shape: [Int]? =
+                if let layerShapes, idx < layerShapes.count {
+                    layerShapes[idx]
+                } else {
+                    nil
+                }
+            return CheckpointLayerSignature.from(cache, layerShape: shape)
+        }
     }
 
     /// Cache identity: bind to the weight hash so a re-download under the
@@ -1081,20 +1313,6 @@ public actor BatchScheduler {
             await refreshPendingSummaryCache()
         }
 
-        if let kvBudget {
-            let reserved = await kvBudget.reserve(
-                requestID: id,
-                kvBytesPerToken: kvBytesPerToken,
-                tokenCount: requestBudget
-            )
-            guard reserved else {
-                await dropBridge(requestId: id)
-                continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
-                continuation.finish()
-                return stream
-            }
-        }
-
         var sp = SamplingParams(maxTokens: maxTokens, temperature: temperature)
         if let topP { sp.topP = topP }
         if let topK { sp.topK = topK }
@@ -1105,7 +1323,24 @@ public actor BatchScheduler {
             prompt: promptTokens as AnyHashable,
             samplingParams: sp
         )
-        await maybeRestoreCheckpoint(req, promptTokens: promptTokens, scope: cacheScope)
+        let restoreAdmission = await maybeRestoreCheckpoint(req, promptTokens: promptTokens, scope: cacheScope)
+        let kvReservationTokens = acceptRestoredCheckpointBudget(
+            requestId: id,
+            requestTokens: requestBudget,
+            admission: restoreAdmission,
+            req: req
+        )
+        guard await reserveKVForRequest(
+            requestId: id,
+            requestTokens: requestBudget,
+            reservationTokens: kvReservationTokens,
+            req: req
+        ) else {
+            await dropBridge(requestId: id)
+            continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
+            continuation.finish()
+            return stream
+        }
         // Re-check the engine is still the one we captured (a reload/
         // unload may have run during the awaits above). Enqueuing onto a stopped/
         // superseded engine hangs the request or runs it on the wrong model.
@@ -1234,20 +1469,6 @@ public actor BatchScheduler {
             await refreshPendingSummaryCache()
         }
 
-        if let kvBudget {
-            let reserved = await kvBudget.reserve(
-                requestID: id,
-                kvBytesPerToken: kvBytesPerToken,
-                tokenCount: requestBudget
-            )
-            guard reserved else {
-                await dropBridge(requestId: id)
-                continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
-                continuation.finish()
-                return stream
-            }
-        }
-
         // Greedy (temperature == 0) hits the engine's vectorized argmax
         // fast path automatically; just pass the requested value through.
         let temperature = request.temperature ?? 0.0
@@ -1261,7 +1482,24 @@ public actor BatchScheduler {
             prompt: promptTokens as AnyHashable,
             samplingParams: sp
         )
-        await maybeRestoreCheckpoint(req, promptTokens: promptTokens, scope: request.cacheScope)
+        let restoreAdmission = await maybeRestoreCheckpoint(req, promptTokens: promptTokens, scope: request.cacheScope)
+        let kvReservationTokens = acceptRestoredCheckpointBudget(
+            requestId: id,
+            requestTokens: requestBudget,
+            admission: restoreAdmission,
+            req: req
+        )
+        guard await reserveKVForRequest(
+            requestId: id,
+            requestTokens: requestBudget,
+            reservationTokens: kvReservationTokens,
+            req: req
+        ) else {
+            await dropBridge(requestId: id)
+            continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
+            continuation.finish()
+            return stream
+        }
         // Re-check the captured engine is still current after the awaits.
         // releaseRequestResources (not bare dropBridge): a cancel/timeout during
         // planner.admit could have dropped the bridge BEFORE we reserved KV, so
@@ -1403,6 +1641,7 @@ public actor BatchScheduler {
         // model (the new model's loadModel reinstalls its own, or nil).
         checkpointManager = nil
         checkpointBoundaries = []
+        checkpointLayerSignatures = []
 
         // Close the engine-tier owner FIRST (before deregister) so no disk
         // mutation slips through between deregistration and the dir being handed

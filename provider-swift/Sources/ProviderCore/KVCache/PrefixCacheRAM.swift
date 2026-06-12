@@ -198,6 +198,15 @@ public final class PrefixCacheRAM {
             .map { ($0.key, $0.caches.map { c in c.copy() }, $0.tokenCount) }
     }
 
+    /// Snapshot one entry for persistence. Used by second-use promotion; do
+    /// not call `entriesForFlush(...).first(where:)` there, because that copies
+    /// every checkpoint for the model before discarding all but one.
+    public func entryForFlush(modelHash: String, digest: Data) -> (key: PrefixCacheKey, caches: [any KVCache], tokenCount: Int)? {
+        let key = PrefixCacheKey(modelHash: modelHash, digest: digest)
+        guard let entry = entries[key] else { return nil }
+        return (entry.key, entry.caches.map { $0.copy() }, entry.tokenCount)
+    }
+
     // MARK: - Introspection
 
     public func contains(_ key: PrefixCacheKey) -> Bool { entries[key] != nil }

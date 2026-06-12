@@ -6,7 +6,38 @@
 
 import Foundation
 import Testing
+@testable import MLX
+@testable import MLXLMCommon
 @testable import ProviderCore
+
+private let restoreB = 1
+private let restoreH = 1
+private let restoreD = 2
+
+private func schedulerSimpleCache(tokens n: Int, heads: Int = restoreH, dim: Int = restoreD) -> KVCacheSimple {
+    let cache = KVCacheSimple()
+    let k = MLXArray.ones([restoreB, heads, n, dim])
+    let v = MLXArray.ones([restoreB, heads, n, dim]) * Float32(2)
+    _ = cache.update(keys: k, values: v)
+    eval(cache.innerState())
+    return cache
+}
+
+private func schedulerRotatingCache(
+    tokens n: Int,
+    maxSize: Int,
+    heads: Int = restoreH,
+    dim: Int = restoreD
+) -> RotatingKVCache {
+    let cache = RotatingKVCache(maxSize: maxSize, keep: 0, step: maxSize)
+    for _ in 0..<n {
+        let k = MLXArray.ones([restoreB, heads, 1, dim])
+        let v = MLXArray.ones([restoreB, heads, 1, dim]) * Float32(2)
+        _ = cache.update(keys: k, values: v)
+        eval(cache.innerState())
+    }
+    return cache
+}
 
 @Suite("BatchScheduler budget gate + progress reporting")
 struct BatchSchedulerBudgetTests {
@@ -39,6 +70,101 @@ struct BatchSchedulerBudgetTests {
         let requestBudget = 500
         #expect(used + requestBudget > budget,
             "P1 gate: third bridge pushing cumulative over tokenBudgetMax must trigger rejection")
+    }
+
+    /// Restored checkpoint hits can hold more live KV than their prompt+decode
+    /// token count because the restored cache is already materialized. The
+    /// scheduler's active-budget view must charge the explicit reservation, not
+    /// the billing prompt count, or concurrent restored hits can overcommit MLX.
+    @Test("activeTokenBudgetUsed uses restored checkpoint reservation when present")
+    func activeTokenBudgetUsesRestoredReservation() async {
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4,
+            defaultMaxTokens: 4096
+        )
+
+        await scheduler._testSeedBridge(
+            id: "restore",
+            promptTokens: 100,
+            maxTokens: 20,
+            reservedTokens: 500
+        )
+
+        #expect(await scheduler.activeTokenBudgetUsed == 500,
+            "restored checkpoint bridges must charge their memory reservation, not prompt+max tokens")
+    }
+
+    /// Guard the pre-MLX restore gate. The crash class here is fatal inside MLX,
+    /// so a bad checkpoint must be rejected before `EngineCore.addRequest`.
+    @Test("restored checkpoint geometry rejects unsafe cache layouts")
+    func restoredCheckpointGeometryRejectsUnsafeLayouts() {
+        let shape = CheckpointLayerShape(kvHeads: restoreH, headDim: restoreD)
+        let expected: [CheckpointLayerSignature] = [
+            .simple(shape: shape),
+            .rotating(window: 4, shape: shape),
+        ]
+        let valid: [any KVCache] = [
+            schedulerSimpleCache(tokens: 6),
+            schedulerRotatingCache(tokens: 6, maxSize: 4),
+        ]
+
+        #expect(BatchScheduler.restoredCheckpointIsUsable(
+            caches: valid,
+            expected: expected,
+            tokenCount: 6,
+            promptTokenCount: 9
+        ))
+
+        let wrongSimpleCount: [any KVCache] = [
+            schedulerSimpleCache(tokens: 5),
+            schedulerRotatingCache(tokens: 6, maxSize: 4),
+        ]
+        #expect(!BatchScheduler.restoredCheckpointIsUsable(
+            caches: wrongSimpleCount,
+            expected: expected,
+            tokenCount: 6,
+            promptTokenCount: 9
+        ))
+
+        let wrongRotatingWindow: [any KVCache] = [
+            schedulerSimpleCache(tokens: 6),
+            schedulerRotatingCache(tokens: 6, maxSize: 8),
+        ]
+        #expect(!BatchScheduler.restoredCheckpointIsUsable(
+            caches: wrongRotatingWindow,
+            expected: expected,
+            tokenCount: 6,
+            promptTokenCount: 9
+        ))
+
+        let wrongHeadShape: [any KVCache] = [
+            schedulerSimpleCache(tokens: 6, heads: 2),
+            schedulerRotatingCache(tokens: 6, maxSize: 4),
+        ]
+        #expect(!BatchScheduler.restoredCheckpointIsUsable(
+            caches: wrongHeadShape,
+            expected: expected,
+            tokenCount: 6,
+            promptTokenCount: 9
+        ))
+
+        let wrongLayerOrder: [any KVCache] = [
+            schedulerRotatingCache(tokens: 6, maxSize: 4),
+            schedulerSimpleCache(tokens: 6),
+        ]
+        #expect(!BatchScheduler.restoredCheckpointIsUsable(
+            caches: wrongLayerOrder,
+            expected: expected,
+            tokenCount: 6,
+            promptTokenCount: 9
+        ))
+
+        #expect(!BatchScheduler.restoredCheckpointIsUsable(
+            caches: valid,
+            expected: expected,
+            tokenCount: 9,
+            promptTokenCount: 9
+        ), "full-prompt restore is not a suffix decode and must be skipped")
     }
 
     /// End-to-end exercise of the P1 helper. Two bridges admitted

@@ -51,6 +51,11 @@ struct BridgeState {
     var promptTokens: Int
     var completionTokens: Int = 0
     let maxTokens: Int
+    /// Memory-admission budget for this request. Normally this is
+    /// `promptTokens + maxTokens`; restored checkpoint hits can require a larger
+    /// reservation because the provider materializes restored KV before handing
+    /// it to MLX, and MLX then builds a batched copy for decode.
+    var reservedTokens: Int? = nil
     let submittedAt: ContinuousClock.Instant
     var admittedAt: ContinuousClock.Instant?
     var firstTokenAt: ContinuousClock.Instant?
@@ -76,6 +81,48 @@ struct LoadSnapshot: @unchecked Sendable {
     let tokenizer: TokenizerHandle
     let eosTokenIds: Set<Int>
     let architecture: ModelArchitecture
+}
+
+/// Sendable summary of the loaded model's per-layer KV cache class.
+/// The restored checkpoint itself is still validated against live cache
+/// shapes before admission; this signature prevents cross-layer/type restores
+/// without moving non-Sendable MLX cache objects across actor boundaries.
+struct CheckpointLayerShape: Sendable, Equatable {
+    let kvHeads: Int
+    let headDim: Int
+
+    init?(raw: [Int]?) {
+        guard let raw, raw.count == 2, raw[0] > 0, raw[1] > 0 else {
+            return nil
+        }
+        self.kvHeads = raw[0]
+        self.headDim = raw[1]
+    }
+
+    init(kvHeads: Int, headDim: Int) {
+        self.kvHeads = kvHeads
+        self.headDim = headDim
+    }
+}
+
+enum CheckpointLayerSignature: Sendable, Equatable {
+    case simple(shape: CheckpointLayerShape?)
+    case rotating(window: Int, shape: CheckpointLayerShape?)
+    case unsupported
+
+    static func from(_ cache: any KVCache, layerShape: [Int]? = nil) -> CheckpointLayerSignature {
+        let shape = CheckpointLayerShape(raw: layerShape)
+        if cache is ArraysCache { return .unsupported }
+        if cache is ChunkedKVCache { return .unsupported }
+        if cache is QuantizedKVCache { return .unsupported }
+        if let rotating = cache as? RotatingKVCache, let window = rotating.maxSize, window > 0 {
+            return .rotating(window: window, shape: shape)
+        }
+        if cache is KVCacheSimple, !(cache is RotatingKVCache) {
+            return .simple(shape: shape)
+        }
+        return .unsupported
+    }
 }
 
 /// Model-architecture fields read from `config.json`, used by

@@ -47,6 +47,18 @@ import (
 // inference path.
 const maxToolNormalizationBytes = 4 * 1024 * 1024
 
+// maxToolSchemaDepth bounds how deep injectDefaultTypes recurses into a single
+// tool schema (through properties / items / additionalProperties / anyOf /
+// oneOf / allOf). A pathological or malicious schema nested thousands of
+// levels deep could otherwise blow the Go stack or burn CPU. Real schemas are
+// only a handful of levels deep, so this ceiling is unreachable in practice;
+// at the limit we stop recursing and return the node UNCHANGED. Leaving a
+// node deeper than this un-normalized is safe — the un-repaired part is
+// bounded and astronomically rare, and the only cost is that one deep template
+// render could still throw (the pre-DAR-130 status quo for that one node),
+// whereas the harm we are preventing is unbounded recursion on every request.
+const maxToolSchemaDepth = 64
+
 // toolsKeyNeedle is the cheap byte gate: only bodies carrying these bytes pay
 // the JSON round-trip.
 var toolsKeyNeedle = []byte(`"tools"`)
@@ -68,9 +80,13 @@ var schemaUnionKeys = []string{"anyOf", "oneOf", "allOf"}
 // otherwise work.
 //
 // The body is decoded with json.Decoder.UseNumber so numbers round-trip
-// verbatim (no float64 mangling of int64s or high-precision decimals).
-// Re-marshalling reorders keys and normalizes whitespace; every field other
-// than "tools" survives value-equivalent.
+// verbatim (no float64 mangling of int64s or high-precision decimals). When a
+// repair IS made the body is re-marshalled, which reorders keys and normalizes
+// whitespace; every field other than "tools" survives value-equivalent. When
+// no tool needed a repair (the common case — modern clients and providers
+// already emit valid types) the ORIGINAL body bytes are returned verbatim: a
+// "changed" signal is threaded out of the recursion so we skip the re-encode
+// entirely, both saving the work and preserving the caller's exact bytes.
 func NormalizeToolSchemas(body []byte) []byte {
 	// Bound the work: skip the round-trip for oversized bodies (see the constant).
 	if len(body) > maxToolNormalizationBytes {
@@ -100,8 +116,15 @@ func NormalizeToolSchemas(body []byte) []byte {
 	if !ok {
 		return body
 	}
+	changed := false
 	for i, tool := range tools {
-		tools[i] = normalizeToolEntry(tool)
+		tools[i] = normalizeToolEntry(tool, &changed)
+	}
+	// Nothing was injected or collapsed across any tool: return the caller's
+	// original bytes untouched rather than re-encoding (which would needlessly
+	// reorder keys and normalize whitespace for no semantic gain).
+	if !changed {
+		return body
 	}
 
 	var buf bytes.Buffer
@@ -134,21 +157,23 @@ func NormalizeToolSchemas(body []byte) []byte {
 // Entries matching no shape — scalars, schema-less maps — pass through
 // untouched (mirrors the Swift per-tool guard). Schema values are handed to
 // injectDefaultTypes as-is: nulls and scalars come back verbatim, and keys
-// are never invented on the tool entry itself.
-func normalizeToolEntry(tool any) any {
+// are never invented on the tool entry itself. Each schema home is traversed
+// from depth 0; *changed is set true if any node anywhere under it was
+// repaired, which lets the caller skip the re-encode when nothing moved.
+func normalizeToolEntry(tool any, changed *bool) any {
 	toolDict, ok := tool.(map[string]any)
 	if !ok {
 		return tool
 	}
 	if function, ok := toolDict["function"].(map[string]any); ok {
 		if parameters, ok := function["parameters"]; ok {
-			function["parameters"] = injectDefaultTypes(parameters)
+			function["parameters"] = injectDefaultTypes(parameters, 0, changed)
 		}
 	} else if parameters, ok := toolDict["parameters"]; ok {
-		toolDict["parameters"] = injectDefaultTypes(parameters)
+		toolDict["parameters"] = injectDefaultTypes(parameters, 0, changed)
 	}
 	if inputSchema, ok := toolDict["input_schema"]; ok {
-		toolDict["input_schema"] = injectDefaultTypes(inputSchema)
+		toolDict["input_schema"] = injectDefaultTypes(inputSchema, 0, changed)
 	}
 	return toolDict
 }
@@ -159,15 +184,23 @@ func normalizeToolEntry(tool any) any {
 // — we never invent types on arbitrary maps. The inferred default favours
 // structure: object when it has properties, array when it has items,
 // otherwise string.
-func injectDefaultTypes(node any) any {
+//
+// depth is the current nesting level (0 at each tool schema home); *changed is
+// set to true if any descendant node is repaired. At maxToolSchemaDepth we
+// stop descending and return the node UNCHANGED — the only depth-bounded path,
+// keeping unbounded recursion off the request hot path (see maxToolSchemaDepth).
+func injectDefaultTypes(node any, depth int, changed *bool) any {
+	if depth >= maxToolSchemaDepth {
+		return node
+	}
 	switch n := node.(type) {
 	case []any:
 		for i, v := range n {
-			n[i] = injectDefaultTypes(v)
+			n[i] = injectDefaultTypes(v, depth+1, changed)
 		}
 		return n
 	case map[string]any:
-		return injectDefaultTypesIntoSchema(n)
+		return injectDefaultTypesIntoSchema(n, depth, changed)
 	default:
 		return node
 	}
@@ -177,25 +210,34 @@ func injectDefaultTypes(node any) any {
 // Children are normalized BEFORE this node's own type is repaired — ordering
 // is load-bearing: a union member declaring `"type": ["string","null"]` must
 // collapse first so the parent's union inference sees a concrete string.
-func injectDefaultTypesIntoSchema(dict map[string]any) map[string]any {
+//
+// depth/changed are threaded exactly as in injectDefaultTypes: children recurse
+// at depth+1 (through injectDefaultTypes, which re-checks the depth ceiling), and
+// *changed is set true the moment any node here is actually repaired (a type
+// collapsed, a missing type inferred, or nullable set), so the caller can skip
+// the re-encode when nothing moved.
+func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool) map[string]any {
 	if props, ok := dict["properties"].(map[string]any); ok {
 		for k, v := range props {
-			props[k] = injectDefaultTypes(v)
+			props[k] = injectDefaultTypes(v, depth+1, changed)
 		}
 	}
 	if items, ok := dict["items"]; ok {
-		dict["items"] = injectDefaultTypes(items)
+		dict["items"] = injectDefaultTypes(items, depth+1, changed)
 	}
 	// additionalProperties may itself be a schema (map-shaped params, e.g.
 	// {"additionalProperties":{"type":"string"}}) — recurse so its inner schema
-	// gets a default type too. A bare `true`/`false` is left untouched.
+	// gets a default type too. A bare `true`/`false` is left untouched. Routed
+	// through injectDefaultTypes (not the schema arm directly) so the depth
+	// ceiling bounds an additionalProperties chain too; for an in-budget map the
+	// result is identical to processing it as a schema node.
 	if addl, ok := dict["additionalProperties"].(map[string]any); ok {
-		dict["additionalProperties"] = injectDefaultTypesIntoSchema(addl)
+		dict["additionalProperties"] = injectDefaultTypes(addl, depth+1, changed)
 	}
 	for _, key := range schemaUnionKeys {
 		if variants, ok := dict[key].([]any); ok {
 			for i, v := range variants {
-				variants[i] = injectDefaultTypes(v)
+				variants[i] = injectDefaultTypes(v, depth+1, changed)
 			}
 		}
 	}
@@ -219,11 +261,13 @@ func injectDefaultTypesIntoSchema(dict map[string]any) map[string]any {
 				}
 			}
 			dict["type"] = collapsedType(members, dict)
+			*changed = true
 		}
 	}
 
 	if _, present := dict["type"]; !present && looksLikeSchemaNode(dict) {
 		dict["type"] = inferredType(dict)
+		*changed = true
 	}
 	return dict
 }

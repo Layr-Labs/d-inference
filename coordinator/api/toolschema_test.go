@@ -942,3 +942,177 @@ func TestNormalizeToolSchemas_AllShapesIdempotentAndNumbersSurvive(t *testing.T)
 		t.Errorf("anthropic c = type %q nullable %v, want number/true", got, c["nullable"])
 	}
 }
+
+// Hardening tests (DAR-130 follow-ups): a depth bound on the recursion so a
+// pathological deeply-nested schema can't blow the stack, and a "changed"
+// signal so a body needing no repair is returned byte-identically (skipping
+// the re-encode).
+
+// tsnDeepPropertiesBody builds a tool body whose parameters schema is a chain
+// of `levels` nested objects, each {"properties":{"child": <next> }}, ending
+// in an enum-only leaf that WOULD gain a "string" type if it were reached. The
+// chain is built inside-out as raw JSON so the nesting is real (not a Go data
+// structure the test would have to walk by hand). The outermost object is the
+// parameters node itself (processed at depth 0); its first child sits at depth
+// 1, and so on, so the leaf lands at depth `levels`.
+func tsnDeepPropertiesBody(levels int) []byte {
+	// Leaf: an enum-only schema — a recognized schema node with no type, the
+	// canonical case that injectDefaultTypes repairs to "string".
+	node := `{"enum":["x"]}`
+	for i := 0; i < levels; i++ {
+		node = `{"properties":{"child":` + node + `}}`
+	}
+	return []byte(`{"tools":[{"type":"function","function":{"name":"f","parameters":` + node + `}}]}`)
+}
+
+// (a) A schema nested far deeper than maxToolSchemaDepth must NOT panic or
+// overflow the stack; the shallow part is normalized and the part beyond the
+// depth budget is left exactly as-is (which is safe — see maxToolSchemaDepth).
+func TestNormalizeToolSchemas_DepthLimitStopsRecursionWithoutPanic(t *testing.T) {
+	const levels = maxToolSchemaDepth + 200 // comfortably past the ceiling
+	body := tsnDeepPropertiesBody(levels)
+
+	var out []byte
+	// A naive unbounded recursion on a sufficiently deep input would overflow
+	// the stack and crash the test process; reaching the assertions at all is
+	// the core guarantee. (defer/recover would not catch a fatal stack overflow,
+	// so the real protection is the depth bound under test, not this guard.)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("normalization panicked on a deeply-nested schema: %v", r)
+			}
+		}()
+		out = NormalizeToolSchemas(body)
+	}()
+
+	// The shallow part WAS repaired, so the body changed and re-encoded.
+	if bytes.Equal(out, body) {
+		t.Fatal("deeply-nested body was returned unchanged; the shallow part should have normalized")
+	}
+
+	// Walk down the properties chain and confirm: nodes above the limit gained
+	// a structural "object" type, and the node at the depth limit was left
+	// untouched (no type invented beyond the budget).
+	node := tsnParams(t, out) // depth 0
+	depth := 0
+	for {
+		props, ok := node["properties"].(map[string]any)
+		if !ok {
+			break
+		}
+		// A node that carries properties and was reached within the budget must
+		// have been typed "object".
+		if depth < maxToolSchemaDepth {
+			if got, ok := node["type"].(string); !ok || got != "object" {
+				t.Fatalf("node at depth %d type = %v, want object (within budget)", depth, node["type"])
+			}
+		} else {
+			// At or beyond the limit, recursion stopped: no type was injected.
+			if _, ok := node["type"]; ok {
+				t.Fatalf("node at depth %d gained a type %v; recursion should have stopped at the limit",
+					depth, node["type"])
+			}
+		}
+		child, ok := props["child"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing properties.child at depth %d", depth)
+		}
+		node = child
+		depth++
+	}
+
+	// The leaf is the enum-only node; it sits at depth `levels`, far past the
+	// limit, so it must NOT have gained a "string" type — proof the deep part
+	// was left as-is rather than (impossibly) traversed.
+	if _, ok := node["type"]; ok {
+		t.Errorf("enum leaf at depth %d gained a type %v; it is past the depth budget and must be untouched",
+			depth, node["type"])
+	}
+	if enum, ok := node["enum"].([]any); !ok || len(enum) != 1 {
+		t.Errorf("enum leaf content changed: %v", node["enum"])
+	}
+}
+
+// A node sitting exactly at the LAST in-budget depth is still normalized; the
+// first node past it is not. Pins the boundary so an off-by-one in the depth
+// accounting is caught.
+func TestNormalizeToolSchemas_DepthLimitBoundaryIsNormalized(t *testing.T) {
+	// Leaf at depth maxToolSchemaDepth-1 (the deepest in-budget node) must be
+	// repaired; building exactly that many wrapper levels puts the enum leaf
+	// one step inside the budget.
+	body := tsnDeepPropertiesBody(maxToolSchemaDepth - 1)
+	out := NormalizeToolSchemas(body)
+	if bytes.Equal(out, body) {
+		t.Fatal("boundary body was not normalized")
+	}
+
+	node := tsnParams(t, out)
+	for i := 0; i < maxToolSchemaDepth-1; i++ {
+		props, ok := node["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing properties at depth %d", i)
+		}
+		node = tsnMap(t, props["child"], "child")
+	}
+	// node is now the enum leaf at depth maxToolSchemaDepth-1 (in budget).
+	if got, ok := node["type"].(string); !ok || got != "string" {
+		t.Errorf("in-budget leaf type = %v, want string", node["type"])
+	}
+}
+
+// (b) A tools body whose every schema node already carries a string `type`
+// needs NO repair, so NormalizeToolSchemas must return the caller's ORIGINAL
+// bytes verbatim — skipping the JSON re-encode entirely. The input is
+// deliberately written with key order and whitespace the Go encoder would
+// rewrite (keys not alphabetized, a space after a colon), so byte-equality
+// proves the re-marshal path was not taken.
+func TestNormalizeToolSchemas_NoRepairReturnsInputBytesIdentical(t *testing.T) {
+	// "tools" precedes "model" (Go's encoder sorts keys, so it would move
+	// "model" first), and there is a space after the first colon (the encoder
+	// emits none). Every schema node has a string type already.
+	body := []byte(`{"tools": [{"type":"function","function":{"name":"f","parameters":` +
+		`{"type":"object","properties":{` +
+		`"city":{"type":"string","description":"city"},` +
+		`"count":{"type":"integer"},` +
+		`"opts":{"type":"object","properties":{"verbose":{"type":"boolean"}}},` +
+		`"tags":{"type":"array","items":{"type":"string"}}},` +
+		`"required":["city"]}}}],"model":"gemma-4-26b"}`)
+
+	out := NormalizeToolSchemas(body)
+	if !bytes.Equal(out, body) {
+		t.Fatalf("fully-typed body was re-encoded; want byte-identical input.\n in: %s\nout: %s", body, out)
+	}
+	// Sanity: had it re-encoded, the encoder would have sorted "model" ahead of
+	// "tools" and dropped the space — so a byte match really does mean no
+	// re-encode. Confirm the distinguishing bytes survived.
+	if !bytes.HasPrefix(out, []byte(`{"tools": [`)) {
+		t.Errorf("output lost its original key order / spacing: %s", out)
+	}
+}
+
+// (c) A body that DOES need normalization is still corrected (regression for
+// the changed-tracking path — a single missing type must flip `changed` and
+// trigger the re-encode that injects it).
+func TestNormalizeToolSchemas_RepairNeededStillCorrected(t *testing.T) {
+	// The `unit` property is enum-only (no type) — exactly one repair needed.
+	body := []byte(`{"model":"m","tools":[{"type":"function","function":{"name":"f",` +
+		`"parameters":{"type":"object","properties":{` +
+		`"city":{"type":"string"},` +
+		`"unit":{"enum":["c","f"]}}}}}]}`)
+
+	out := NormalizeToolSchemas(body)
+	if bytes.Equal(out, body) {
+		t.Fatal("body needing a repair was returned unchanged")
+	}
+	props := tsnProps(t, out)
+	unit := tsnMap(t, props["unit"], "unit")
+	if got := tsnType(t, unit, "unit"); got != "string" {
+		t.Errorf("unit type = %q, want string (the injected default)", got)
+	}
+	// The already-typed sibling is untouched.
+	city := tsnMap(t, props["city"], "city")
+	if got := tsnType(t, city, "city"); got != "string" {
+		t.Errorf("city type = %q, want string (preserved)", got)
+	}
+}

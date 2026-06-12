@@ -325,10 +325,14 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 // which return a DER-encoded certificate chain signed by Apple's Enterprise
 // Attestation Root CA. This is the real MDA — Apple vouches for the device.
 //
-// If nonce is non-empty, it is included as DeviceAttestationNonce. Apple hashes
-// the nonce and embeds the hash as FreshnessCode (OID 1.2.840.113635.100.8.11.1)
-// in the leaf certificate. This binds arbitrary data (e.g. a SE key hash) to
-// Apple's attestation signature.
+// If nonce is non-empty, it is included as DeviceAttestationNonce (base64 in
+// the plist <data> element; <=32 raw bytes). Apple embeds the decoded bytes
+// VERBATIM as FreshnessCode (OID 1.2.840.113635.100.8.11.1) in the leaf
+// certificate -- not a hash of them (hashing is the ACME device-attest-01
+// flow). This binds server-chosen data (the MDA epoch nonce) to Apple's
+// attestation signature. NOTE: new attestations are rate-limited (~1 per
+// device per 7 days); a rate-limited device returns its CACHED cert carrying
+// the PREVIOUS nonce, so callers must tolerate stale FreshnessCodes.
 //
 // When a nonce is provided, we send a raw plist command because MicroMDM's
 // DeviceInformation struct doesn't support DeviceAttestationNonce.

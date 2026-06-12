@@ -184,6 +184,7 @@ type Server struct {
 	profileSigner          *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	codeAttestor           apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
 	codeAttestThrottle     *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
+	mdaNonceSeed           []byte                    // secret seed for MDA epoch nonces (issue #302); random per-boot unless SetMDANonceSeed
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -548,6 +549,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		settlements:          newSettlementHolder(),
 		zombieCanceller:      newZombieStreamCanceller(),
+		mdaNonceSeed:         randomMDANonceSeed(logger),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -761,6 +763,27 @@ func (s *Server) SetCodeAttestor(a apns.CodeIdentityAttestor) {
 // the fleet time to update to 0.6.0 and attest. Wire it from APNS_ENFORCE_AFTER.
 func (s *Server) SetCodeAttestationDeadline(t time.Time) {
 	s.registry.SetCodeAttestationDeadline(t)
+}
+
+// SetMDANonceSeed sets the secret seed for MDA epoch nonces (issue #302). The
+// seed MUST be stable across restarts: rotating it invalidates every
+// outstanding nonce, and Apple's rate limit keeps recently-attested devices
+// from minting a replacement for up to a week (fail-closed under enforcement).
+// Wire it from EIGENINFERENCE_MDA_NONCE_SEED. Without it the server runs on a
+// random per-boot seed — fine for grace-mode measurement; main.go refuses to
+// start enforcement without an explicit seed.
+func (s *Server) SetMDANonceSeed(seed []byte) {
+	if len(seed) > 0 {
+		s.mdaNonceSeed = seed
+	}
+}
+
+// SetMDAEnforceDeadline sets the instant at which the SEP-signed MDA
+// SIP/Full-Security verdict becomes a hard routing prerequisite (issue #302).
+// Zero (or a future instant) leaves the gate in grace mode. Wire it from
+// EIGENINFERENCE_MDA_ENFORCE_AFTER.
+func (s *Server) SetMDAEnforceDeadline(t time.Time) {
+	s.registry.SetMDAEnforceDeadline(t)
 }
 
 // SetMDMWebhookSecret configures an optional shared secret that MicroMDM must

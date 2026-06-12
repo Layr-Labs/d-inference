@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -34,7 +35,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/apns"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/config"
@@ -347,29 +347,11 @@ func main() {
 	if mdmCfg.URL != "" {
 		mdmClient := mdm.NewClient(mdmCfg.URL, mdmCfg.APIKey, logger)
 
-		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
-			reg.ForEachProvider(func(p *registry.Provider) {
-				if p.AttestationResult == nil {
-					return
-				}
-				mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-				if err != nil {
-					logger.Error("late MDA cert parse error", "udid", udid, "error", err)
-					return
-				}
-				if mdaResult.Valid && (mdaResult.DeviceSerial == p.AttestationResult.SerialNumber) {
-					p.MDAVerified = true
-					p.MDACertChain = certChain
-					p.MDAResult = mdaResult
-					logger.Info("late MDA cert stored on provider",
-						"provider_id", p.ID,
-						"serial", mdaResult.DeviceSerial,
-						"udid", mdaResult.DeviceUDID,
-						"os_version", mdaResult.OSVersion,
-					)
-				}
-			})
-		})
+		// Late-arriving MDA cert (webhook after the synchronous wait timed out).
+		// Routed through the Server so it goes through the SAME SIP/Full-Security/
+		// freshness verdict + untrust taxonomy as the synchronous path, and writes
+		// provider fields under the provider lock (issue #302).
+		mdmClient.SetOnMDA(srv.HandleLateMDA)
 
 		// Register callback for late-arriving SecurityInfo responses.
 		// When APN delivery is slow (device sleeping, Power Nap cycle),
@@ -429,6 +411,50 @@ func main() {
 			logger.Warn("EIGENINFERENCE_MDM_WEBHOOK_SECRET not set — MDM webhook relies solely on the CommandUUID gate; set it + keep MicroMDM bound to localhost for defense in depth")
 		}
 		logger.Info("MDM verification enabled", "url", mdmCfg.URL)
+
+		// Issue #302: MDA SIP/Full-Security routing gate. The epoch-nonce seed
+		// makes attestation freshness enforceable (replay window bounded to
+		// attestation.MDAMaxCertAge); the deadline flips grace → enforcement.
+		// Both follow the APNs rollout shape: configuring nothing is safe
+		// (grace, measure + log), and a malformed knob fails startup rather
+		// than silently leaving the gate open.
+		mdaSeed, err := parseMDANonceSeed()
+		if err != nil {
+			logger.Error("refusing to start: EIGENINFERENCE_MDA_NONCE_SEED is set but invalid", "error", err)
+			os.Exit(1)
+		}
+		srv.SetMDANonceSeed(mdaSeed)
+
+		mdaDeadline, err := parseEnforceAfterEnv("EIGENINFERENCE_MDA_ENFORCE_AFTER")
+		if err != nil {
+			logger.Error("refusing to start: EIGENINFERENCE_MDA_ENFORCE_AFTER is set but invalid (fix it, or unset it for grace mode)",
+				"value", os.Getenv("EIGENINFERENCE_MDA_ENFORCE_AFTER"), "error", err)
+			os.Exit(1)
+		}
+		if !mdaDeadline.IsZero() && len(mdaSeed) == 0 {
+			// Enforcement without a STABLE seed would deroute the fleet on every
+			// restart: a fresh random seed invalidates all outstanding nonces and
+			// Apple's rate limit blocks re-mints for up to 7 days.
+			logger.Error("refusing to start: EIGENINFERENCE_MDA_ENFORCE_AFTER is set but EIGENINFERENCE_MDA_NONCE_SEED is not — enforcement requires a stable nonce seed")
+			os.Exit(1)
+		}
+		srv.SetMDAEnforceDeadline(mdaDeadline)
+		switch {
+		case mdaDeadline.IsZero():
+			logger.Info("MDA SIP gate in GRACE mode — SEP-signed SIP/Full-Security is verified and measured, but never deroutes (set EIGENINFERENCE_MDA_ENFORCE_AFTER to begin enforcement; allow ≥14 days after deploy so the fleet re-mints onto epoch nonces)")
+		case time.Now().Before(mdaDeadline):
+			logger.Info("MDA SIP gate configured — GRACE until the enforcement deadline, then mandatory",
+				"enforce_after", mdaDeadline.Format(time.RFC3339))
+		default:
+			logger.Info("MDA SIP gate ENFORCED — providers without a fresh SEP-signed SIP-on/Full-Security attestation are not routed",
+				"enforce_after", mdaDeadline.Format(time.RFC3339))
+		}
+	} else if os.Getenv("EIGENINFERENCE_MDA_ENFORCE_AFTER") != "" {
+		// The MDA gate verifies via MDM; enforcing it without MDM configured
+		// would fail-close the entire fleet. Refuse rather than silently
+		// ignoring a security knob the operator believes is active.
+		logger.Error("refusing to start: EIGENINFERENCE_MDA_ENFORCE_AFTER is set but MDM is not configured — the MDA gate cannot run without MDM")
+		os.Exit(1)
 	}
 
 	// Configure step-ca root CA for ACME client cert verification.
@@ -553,17 +579,43 @@ func main() {
 // malformed value returns an error so the caller fails startup — silently falling
 // back to grace there would be a hidden enforcement downgrade on a typo.
 func parseAPNsEnforceAfter() (time.Time, error) {
-	raw := strings.TrimSpace(os.Getenv("APNS_ENFORCE_AFTER"))
+	return parseEnforceAfterEnv("APNS_ENFORCE_AFTER")
+}
+
+// parseEnforceAfterEnv parses an RFC3339 grace→enforce deadline env var. Unset
+// is intentional (grace/observe is the safe default); only a non-empty-but-
+// malformed value is an error — callers fail startup on it so a typo'd
+// security deadline is caught at deploy, not discovered as a silent gap.
+func parseEnforceAfterEnv(name string) (time.Time, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
-		// Unset is intentional: grace/observe is the safe default. Only a
-		// non-empty-but-malformed value is an error (handled below).
 		return time.Time{}, nil
 	}
 	t, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("APNS_ENFORCE_AFTER %q is not valid RFC3339: %w", raw, err)
+		return time.Time{}, fmt.Errorf("%s %q is not valid RFC3339: %w", name, raw, err)
 	}
 	return t, nil
+}
+
+// parseMDANonceSeed reads EIGENINFERENCE_MDA_NONCE_SEED — hex, ≥32 bytes
+// (64+ hex chars) — the stable secret behind MDA epoch nonces (issue #302).
+// Unset returns nil (the server falls back to a random per-boot seed, fine for
+// grace mode); enforcement refuses to start without it. Generate with:
+// `openssl rand -hex 32`. Managed like the other secrets via KMS env.
+func parseMDANonceSeed() ([]byte, error) {
+	raw := strings.TrimSpace(os.Getenv("EIGENINFERENCE_MDA_NONCE_SEED"))
+	if raw == "" {
+		return nil, nil
+	}
+	seed, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("EIGENINFERENCE_MDA_NONCE_SEED is not valid hex: %w", err)
+	}
+	if len(seed) < 32 {
+		return nil, fmt.Errorf("EIGENINFERENCE_MDA_NONCE_SEED is %d bytes; need >= 32 (generate with `openssl rand -hex 32`)", len(seed))
+	}
+	return seed, nil
 }
 
 // loadAPNsAttestor builds the production APNs code-identity attestor from the

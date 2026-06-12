@@ -219,11 +219,24 @@ type Provider struct {
 	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
 	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
-	Status            ProviderStatus
-	Conn              *websocket.Conn
-	LastHeartbeat     time.Time
-	Stats             protocol.HeartbeatStats // lifetime counters shown to users
-	lastSessionStats  protocol.HeartbeatStats // raw counters from the current provider process
+
+	// MDA routing gate (issue #302). MDASIPVerified is true only when a FRESH
+	// (epoch-nonce-bound) Apple-signed attestation proved SIP-on + Full-Security
+	// for THIS device's SE key. Per-connection, in-memory, never persisted or
+	// restored — a stored verdict would resurrect a stale SIP claim across the
+	// reboot that a SIP downgrade requires. MDAMintedAt is the verified leaf's
+	// NotBefore (mint time): the routing chokepoint re-checks it against
+	// attestation.MDAMaxCertAge on every routing decision, so a verdict expires
+	// even if periodic re-attestation stalls.
+	MDASIPVerified   bool
+	MDAMintedAt      time.Time
+	MDAUDID          string    // MDM UDID captured at MDA time (drives periodic re-checks)
+	MDACheckedAt     time.Time // last MDA attempt (rate-limits the periodic re-check)
+	Status           ProviderStatus
+	Conn             *websocket.Conn
+	LastHeartbeat    time.Time
+	Stats            protocol.HeartbeatStats // lifetime counters shown to users
+	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
 
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
@@ -324,6 +337,15 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 	// exemption (gate everyone). Enforced only once configured AND past the grace
 	// deadline, so the fleet keeps routing through the rollout; fail-closed after.
 	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
+		return false
+	}
+	// Issue #302: the SIP signal that gates routing must be the SEP-signed MDA
+	// verdict — fresh (epoch nonce), SE-key-bound, SIP-on, Full-Security — not
+	// just ChallengeVerifiedSIP above, which the provider PROCESS self-reports
+	// and a SIP-off root owner can forge. Same grace→enforce rollout shape as
+	// the code-attestation gate; the mint-age re-check makes a stale verdict
+	// expire at routing time.
+	if r.mdaEnforcedLocked() && !mdaRoutableLocked(p) {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -490,10 +512,72 @@ func (r *Registry) codeAttestationEnforcedLocked() bool {
 	return !time.Now().Before(r.codeAttestationDeadline)
 }
 
+// SetMDAEnforceDeadline sets the instant at which the SEP-signed MDA
+// SIP/Full-Security verdict becomes a hard routing prerequisite (issue #302).
+// Zero leaves the gate in grace mode (measured, logged, never derouting).
+func (r *Registry) SetMDAEnforceDeadline(deadline time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mdaDeadline = deadline
+}
+
+// MDAEnforced reports whether the MDA SIP gate is currently mandatory for
+// routing. Thread-safe.
+func (r *Registry) MDAEnforced() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mdaEnforcedLocked()
+}
+
+// mdaEnforcedLocked reports whether the MDA SIP gate is currently MANDATORY for
+// routing. Caller must hold r.mu. Like the code-attestation deadline, this is
+// consulted live at the routing chokepoint so the grace→enforce flip needs no
+// reconnect.
+func (r *Registry) mdaEnforcedLocked() bool {
+	if r.mdaDeadline.IsZero() {
+		return false
+	}
+	return !time.Now().Before(r.mdaDeadline)
+}
+
+// mdaRoutableLocked reports whether p currently satisfies the MDA SIP gate: a
+// verified fresh SIP-on/Full-Security verdict whose mint time is still within
+// attestation.MDAMaxCertAge. The age is re-checked against the wall clock on
+// every routing decision so a verdict expires even if re-attestation stalls
+// (e.g. MDM outage) — fail closed, recover on the next passing attestation.
+func mdaRoutableLocked(p *Provider) bool {
+	return p.MDASIPVerified && time.Since(p.MDAMintedAt) <= attestation.MDAMaxCertAge
+}
+
 // Mu returns the provider's mutex for external callers that need to read
 // fields like Status atomically. Prefer dedicated getters where available.
 func (p *Provider) Mu() *sync.Mutex {
 	return &p.mu
+}
+
+// MDARecheckDue reports whether a periodic MDA re-attestation should run now,
+// returning the MDM UDID to use. Due once interval has elapsed since the last
+// attempt — but only for providers that already completed an MDA round (UDID
+// captured), so environments without MDM never trigger it. The caller's
+// verification run stamps MDACheckedAt at start, which keeps concurrent
+// re-checks from stacking. Thread-safe.
+func (p *Provider) MDARecheckDue(interval time.Duration) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.MDAUDID == "" {
+		return "", false
+	}
+	return p.MDAUDID, time.Since(p.MDACheckedAt) >= interval
+}
+
+// SetMDACheckStarted stamps the start of an MDA verification attempt (and the
+// UDID it targets) so periodic re-checks are rate-limited per provider.
+// Thread-safe.
+func (p *Provider) SetMDACheckStarted(udid string, at time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.MDAUDID = udid
+	p.MDACheckedAt = at
 }
 
 // ChallengeShouldStop reports whether the attestation challenge loop should
@@ -682,6 +766,13 @@ type Registry struct {
 	// on automatically when that instant passes.
 	codeAttestationConfigured bool
 	codeAttestationDeadline   time.Time
+
+	// mdaDeadline gates the SEP-signed MDA SIP/Full-Security routing requirement
+	// (issue #302) with the same grace→enforce shape as the code-attestation
+	// deadline: zero = grace (measure + log only), set = enforcement begins when
+	// the instant passes. Wired from EIGENINFERENCE_MDA_ENFORCE_AFTER; main.go
+	// refuses enforcement unless MDM and a stable nonce seed are configured.
+	mdaDeadline time.Time
 
 	modelCatalog map[string]CatalogEntry
 
@@ -904,7 +995,13 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	if !p.Attested {
 		p.Attested = rec.Attested
 	}
-	p.MDAVerified = rec.MDAVerified
+	// Do NOT restore MDAVerified (issue #302): the stored flag has no cert chain
+	// behind it (the chain is not restored) and would claim "Apple attested this
+	// device" across a reconnect — exactly the window a SIP downgrade needs,
+	// since a downgrade requires the reboot that drops the connection. Like
+	// hardware trust above, the MDA verdict must be re-earned by the fresh MDA
+	// run that follows MDM verification on every (re)connection. The per-
+	// connection gate fields (MDASIPVerified, MDAMintedAt) are never persisted.
 	p.ACMEVerified = rec.ACMEVerified
 
 	// Restore challenge state

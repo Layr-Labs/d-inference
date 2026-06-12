@@ -21,12 +21,9 @@ package api
 //   - hardware: MDA certificate chain verified against Apple Root CA (future)
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 
@@ -845,6 +842,12 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 				return
 			}
 			s.sendChallenge(ctx, conn, providerID, provider, tracker)
+			// Periodic MDA re-attestation (issue #302): keeps a long-lived
+			// connection's Apple cert rotating across nonce epochs so an honest
+			// device's routing verdict never ages out. No-op until the first
+			// MDA round captured a UDID, then at most once per
+			// mdaRecheckInterval (the wait runs in its own goroutine).
+			s.maybeRecheckMDA(providerID, provider)
 		}
 	}
 }
@@ -2336,133 +2339,7 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 	// certificate chain that proves this device's identity. This cert
 	// chain can be independently verified by users against Apple's
 	// Enterprise Attestation Root CA.
-	s.verifyAppleDeviceAttestation(providerID, provider, attestResult, mdmResult.UDID)
-}
-
-// verifyAppleDeviceAttestation sends a DeviceInformation command requesting
-// DevicePropertiesAttestation and verifies the Apple-signed certificate chain.
-func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) {
-	if udid == "" {
-		s.logger.Warn("no UDID for MDA verification", "provider_id", providerID)
-		return
-	}
-
-	// Compute SE key hash for nonce-based key binding.
-	// If the provider has an SE public key, include its hash as the
-	// DeviceAttestationNonce (base64-encoded). Apple decodes the nonce and
-	// embeds the raw bytes as FreshnessCode (OID 1.2.840.113635.100.8.11.1)
-	// in the signed cert, cryptographically binding the SE key to genuine hardware.
-	var seKeyNonce string
-	var expectedFreshness [32]byte
-	if attestResult.PublicKey != "" {
-		seKeyHash := sha256.Sum256([]byte(attestResult.PublicKey))
-		seKeyNonce = base64.StdEncoding.EncodeToString(seKeyHash[:])
-		expectedFreshness = seKeyHash
-		s.logger.Info("requesting Apple Device Attestation (MDA) with SE key binding",
-			"provider_id", providerID,
-			"udid", udid,
-			"se_key_hash", hex.EncodeToString(seKeyHash[:8])+"...",
-		)
-	} else {
-		s.logger.Info("requesting Apple Device Attestation (MDA)",
-			"provider_id", providerID,
-			"udid", udid,
-		)
-	}
-
-	// Always send the raw plist command so the nonce reaches Apple's servers.
-	// The structured MicroMDM API doesn't support DeviceAttestationNonce.
-	_, err := s.mdmClient.SendDeviceAttestationCommand(udid, seKeyNonce)
-	if err != nil {
-		s.logger.Warn("failed to send DeviceInformation attestation command",
-			"provider_id", providerID,
-			"error", err,
-		)
-		return
-	}
-
-	// Wait for Apple's response (device contacts Apple's servers — may take longer)
-	attestResp, err := s.mdmClient.WaitForDeviceAttestation(udid, 60*time.Second)
-	if err != nil {
-		s.logger.Warn("DevicePropertiesAttestation response timeout",
-			"provider_id", providerID,
-			"error", err,
-		)
-		return
-	}
-
-	// Verify the certificate chain against Apple's Enterprise Attestation Root CA
-	mdaResult, err := attestation.VerifyMDADeviceAttestation(attestResp.CertChain)
-	if err != nil {
-		s.logger.Error("MDA certificate chain parse error",
-			"provider_id", providerID,
-			"error", err,
-		)
-		return
-	}
-
-	if !mdaResult.Valid {
-		s.logger.Warn("MDA certificate chain verification FAILED — Apple did not attest this device",
-			"provider_id", providerID,
-			"error", mdaResult.Error,
-		)
-		return
-	}
-
-	// Cross-check: MDA serial must match the provider's self-reported serial
-	if mdaResult.DeviceSerial != "" && mdaResult.DeviceSerial != attestResult.SerialNumber {
-		s.logger.Error("MDA serial mismatch — provider is impersonating another device",
-			"provider_id", providerID,
-			"mda_serial", mdaResult.DeviceSerial,
-			"attestation_serial", attestResult.SerialNumber,
-		)
-		s.registry.MarkUntrusted(providerID)
-		return
-	}
-
-	// Apple Device Attestation verified — store proof for user verification.
-	// Acquire provider lock since these fields are read by HTTP handlers
-	// (handleProviderAttestation, handleChatCompletions) concurrently.
-	seKeyBound := false
-	if seKeyNonce != "" && len(mdaResult.FreshnessCode) > 0 {
-		seKeyBound = bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:])
-	}
-
-	provider.Mu().Lock()
-	provider.MDAVerified = true
-	provider.MDACertChain = attestResp.CertChain
-	provider.MDAResult = mdaResult
-	provider.SEKeyBound = seKeyBound
-	provider.Mu().Unlock()
-
-	// Log results.
-	if seKeyNonce != "" && len(mdaResult.FreshnessCode) > 0 {
-		if seKeyBound {
-			s.logger.Info("MDA verified with SE key binding — Apple CA confirmed device + key",
-				"provider_id", providerID,
-				"mda_serial", mdaResult.DeviceSerial,
-				"mda_udid", mdaResult.DeviceUDID,
-				"se_key_bound", true,
-			)
-		} else {
-			s.logger.Warn("MDA verified but FreshnessCode mismatch — SE key NOT bound",
-				"provider_id", providerID,
-				"mda_serial", mdaResult.DeviceSerial,
-				"expected_freshness", hex.EncodeToString(expectedFreshness[:8])+"...",
-				"got_freshness", hex.EncodeToString(mdaResult.FreshnessCode[:min(8, len(mdaResult.FreshnessCode))])+"...",
-			)
-		}
-	} else {
-		s.logger.Info("Apple Device Attestation (MDA) verified — Apple CA confirmed device identity",
-			"provider_id", providerID,
-			"mda_serial", mdaResult.DeviceSerial,
-			"mda_udid", mdaResult.DeviceUDID,
-			"mda_os_version", mdaResult.OSVersion,
-			"mda_sepos_version", mdaResult.SepOSVersion,
-			"se_key_bound", false,
-			"freshness_code_len", len(mdaResult.FreshnessCode),
-		)
-	}
+	s.verifyAppleDeviceAttestation(providerID, provider, attestResult.SerialNumber, attestResult.PublicKey, mdmResult.UDID)
 }
 
 // handleProviderAttestation returns the attestation proof for all providers.
@@ -2503,6 +2380,13 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		MDAUDID       string   `json:"mda_udid,omitempty"`
 		MDAOSVersion  string   `json:"mda_os_version,omitempty"`
 		MDASepVersion string   `json:"mda_sepos_version,omitempty"`
+
+		// SEP-signed routing verdict (issue #302): fresh, SE-key-bound,
+		// SIP-on + Full-Security. The values users should check.
+		MDASIPVerified bool   `json:"mda_sip_verified"`
+		MDASIPEnabled  bool   `json:"mda_sip_enabled"`
+		MDABootState   string `json:"mda_boot_state,omitempty"`
+		MDAMintedAt    string `json:"mda_minted_at,omitempty"`
 	}
 
 	var providers []providerAttestation
@@ -2518,6 +2402,8 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		attestResult := p.AttestationResult
 		mdaCertChain := p.MDACertChain
 		mdaResult := p.MDAResult
+		mdaSIPVerified := p.MDASIPVerified
+		mdaMintedAt := p.MDAMintedAt
 		// p.Models is replaced copy-on-write by UpdateModelWeightHashes on the
 		// challenge goroutine, so its slice header must be read under p.mu. Copy
 		// the IDs out within this same locked section rather than ranging the
@@ -2529,14 +2415,18 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		p.Mu().Unlock()
 
 		pa := providerAttestation{
-			ProviderID:   p.ID,
-			TrustLevel:   string(trustLevel),
-			Status:       string(status),
-			MemoryGB:     p.Hardware.MemoryGB,
-			GPUCores:     p.Hardware.GPUCores,
-			MDMVerified:  trustLevel == registry.TrustHardware,
-			MDAVerified:  mdaVerified,
-			ACMEVerified: acmeVerified,
+			ProviderID:     p.ID,
+			TrustLevel:     string(trustLevel),
+			Status:         string(status),
+			MemoryGB:       p.Hardware.MemoryGB,
+			GPUCores:       p.Hardware.GPUCores,
+			MDMVerified:    trustLevel == registry.TrustHardware,
+			MDAVerified:    mdaVerified,
+			ACMEVerified:   acmeVerified,
+			MDASIPVerified: mdaSIPVerified,
+		}
+		if !mdaMintedAt.IsZero() {
+			pa.MDAMintedAt = mdaMintedAt.UTC().Format(time.RFC3339)
 		}
 
 		pa.Models = append(pa.Models, modelIDs...)
@@ -2564,6 +2454,8 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			pa.MDAUDID = mdaResult.DeviceUDID
 			pa.MDAOSVersion = mdaResult.OSVersion
 			pa.MDASepVersion = mdaResult.SepOSVersion
+			pa.MDASIPEnabled = mdaResult.SIPEnabled
+			pa.MDABootState = mdaResult.BootState
 		}
 
 		providers = append(providers, pa)

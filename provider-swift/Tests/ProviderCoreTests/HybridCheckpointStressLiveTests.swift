@@ -56,8 +56,9 @@ struct HybridCheckpointStressLiveTests {
         var files = 0, bytes = 0
         for p in all where p.hasSuffix(".\(EncryptedKVStore.fileExtension)") {
             files += 1
-            bytes += (try? fm.attributesOfItem(atPath: dir.appendingPathComponent(p).path)[.size] as? Int)
-                .flatMap { $0 } ?? 0
+            let attrs = try? fm.attributesOfItem(atPath: dir.appendingPathComponent(p).path)
+            let size = attrs?[.size] as? Int
+            bytes += size ?? 0
         }
         return (files, bytes)
     }

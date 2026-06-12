@@ -3053,8 +3053,11 @@ public actor ProviderLoop {
         }
 
         do {
-            let activeModelHash = state.currentModel.flatMap { modelId in
-                liveModelHashes[modelId]
+            let activeModelHash: String?
+            if let modelId = state.currentModel {
+                activeModelHash = liveModelHashes[modelId]
+            } else {
+                activeModelHash = nil
             }
 
             // Report hashes ONLY for models we are CURRENTLY SERVING (a live

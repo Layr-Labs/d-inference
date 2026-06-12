@@ -47,6 +47,22 @@ public actor GlobalKVCacheBudget {
         reservations.removeValue(forKey: requestID)
     }
 
+    /// Atomically shrink an existing reservation to a smaller byte count,
+    /// freeing the difference. `reserve`/`release` cannot express a shrink:
+    /// `reserve` refuses when an entry already exists for the id, and a
+    /// release-then-reserve is non-atomic — a concurrent submit could grab the
+    /// freed headroom in between, making the re-reserve spuriously fail and
+    /// stranding the request with NO reservation. This only ever lowers the
+    /// reserved bytes (never grows, never fails), so it is safe to call on the
+    /// fallback path where a planned restore did not materialize and the request
+    /// must drop back to its cold-prefill footprint. No-op if the id is unknown.
+    public func reduceReservation(requestID: String, kvBytesPerToken: Int, tokenCount: Int) {
+        guard let current = reservations[requestID], kvBytesPerToken > 0, tokenCount > 0 else { return }
+        let (bytes, overflow) = UInt64(kvBytesPerToken).multipliedReportingOverflow(by: UInt64(tokenCount))
+        let newBytes = overflow ? UInt64.max : bytes
+        if newBytes < current { reservations[requestID] = newBytes }   // only ever shrink; frees the difference; never fails
+    }
+
     /// Total KV bytes currently promised to in-flight requests. The model-load
     /// gate subtracts this so a new model's weights can't be loaded into memory
     /// already reserved for a request that is mid-decode (those bytes may not

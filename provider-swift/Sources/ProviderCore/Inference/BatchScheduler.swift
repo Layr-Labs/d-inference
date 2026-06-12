@@ -414,18 +414,38 @@ public actor BatchScheduler {
 
     /// Materialize an already-admitted checkpoint candidate and attach it to the
     /// MLX request. This intentionally runs after KV reservation.
+    ///
+    /// Returns `true` iff the restore was actually attached to `req`
+    /// (`req.restoredCheckpoint` set). All four fallback branches — no manager,
+    /// materialize returned nil, geometry unusable, or the materialized KV
+    /// exceeded the admitted estimate — return `false` so the caller can
+    /// downgrade BOTH the scheduler token budget and the global KV-byte
+    /// reservation back to the cold-prefill footprint (otherwise the
+    /// restore-sized reservation leaks for the request's whole life → admission
+    /// starvation under exactly the OOM pressure that triggers restore failures).
     private func materializeRestoredCheckpoint(
         _ req: Request,
         admission: RestoredCheckpointAdmission,
         promptTokens: [Int],
         scope: String
-    ) async {
-        guard let mgr = checkpointManager else { return }
+    ) async -> Bool {
+        guard let mgr = checkpointManager else { return false }
         guard let hit = await mgr.materialize(
             candidate: admission.candidate,
             tokens: promptTokens,
             scope: scope
-        ) else { return }
+        ) else { return false }
+
+        // Use-after-release guard: `mgr.materialize` is an expensive await (RAM
+        // copy / SSD decrypt). A cancel or pending-timeout can run the bridge's
+        // cancel path (releaseKVReservation + bridge drop) while it is in flight.
+        // If the bridge is gone, the reservation these caches were sized against
+        // has already been released — attaching them would allocate KV against a
+        // freed reservation. Discard the materialized caches and report failure;
+        // the cancel path already released the reservation, and the submit path's
+        // `confirmEnqueuedOrAbort` will refuse to runBridge on the missing bridge.
+        // `activeBridges` is this actor's own state — no extra lock needed.
+        guard activeBridges[req.requestId] != nil else { return false }
 
         guard Self.restoredCheckpointIsUsable(
             caches: hit.caches,
@@ -435,7 +455,7 @@ public actor BatchScheduler {
         ) else {
             prefixCacheLogger.warning(
                 "prefix cache restore rejected: invalid checkpoint geometry; falling back to cold prefill")
-            return
+            return false
         }
 
         let actualReservation = restoredCheckpointReservedTokens(
@@ -447,10 +467,53 @@ public actor BatchScheduler {
         guard actualReservation <= admission.reservedTokens else {
             prefixCacheLogger.warning(
                 "prefix cache restore skipped: materialized KV exceeded admitted estimate; falling back to cold prefill")
-            return
+            return false
         }
 
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
+        return true
+    }
+
+    /// Shared restore finalizer for both submit paths. Runs the expensive
+    /// materialize and, when it falls back (returns false), downgrades BOTH
+    /// accounting systems from the restore-sized reservation back to the cold
+    /// `requestBudget` footprint:
+    ///
+    ///   1. scheduler token budget — clear `bridge.reservedTokens` so
+    ///      `activeTokenBudgetUsed` falls back to (promptTokens + maxTokens),
+    ///      mirroring the downgrade in `reserveKVForRequest`.
+    ///   2. global KV bytes — `reduceReservation` shrinks the live reservation to
+    ///      the cold size, atomically freeing the over-charged difference.
+    ///
+    /// When materialize SUCCEEDS both reservations stay at the restore-sized
+    /// amount — the restored KV is really materialized, so that charge is correct.
+    /// Factored out so the two submit paths share one definition (no drift).
+    private func finalizeRestore(
+        _ req: Request,
+        id: String,
+        admission: RestoredCheckpointAdmission,
+        promptTokens: [Int],
+        scope: String,
+        requestBudget: Int
+    ) async {
+        let attached = await materializeRestoredCheckpoint(
+            req,
+            admission: admission,
+            promptTokens: promptTokens,
+            scope: scope
+        )
+        guard !attached else { return }
+        // Restore was planned + accepted (oversized reservations charged) but did
+        // not materialize. Drop both systems back to the cold-prefill size.
+        if var bridge = activeBridges[id] {
+            bridge.reservedTokens = nil
+            activeBridges[id] = bridge
+        }
+        await kvBudget?.reduceReservation(
+            requestID: id,
+            kvBytesPerToken: kvBytesPerToken,
+            tokenCount: requestBudget
+        )
     }
 
     static func restoredCheckpointIsUsable(
@@ -591,19 +654,44 @@ public actor BatchScheduler {
         return admission
     }
 
+    /// Which reservation `reserveKVForRequest` actually secured. The submit
+    /// paths MUST branch on this — capturing `acceptedRestore != nil` before the
+    /// reserve is not enough, because the reserve can DOWNGRADE a restore to a
+    /// cold prefill when the restore-sized headroom is unavailable. Materializing
+    /// the restore-sized KV against a cold-sized reservation under-reserves and
+    /// OOMs under exactly the memory pressure that forced the downgrade.
+    enum KVReservationOutcome {
+        /// The restore-sized reservation is held; the restore may materialize.
+        case restoreReserved
+        /// Only the cold (requestTokens) reservation is held — either no restore
+        /// was planned, or a planned restore was downgraded. The restore must be
+        /// SKIPPED entirely; the request proceeds as a cold prefill.
+        case coldReserved
+        /// No reservation could be secured; the submit must reject the request.
+        case failed
+    }
+
     private func reserveKVForRequest(
         requestId: String,
         requestTokens: Int,
         reservationTokens: Int,
         restorePlanned: Bool
-    ) async -> Bool {
-        guard let kvBudget else { return true }
+    ) async -> KVReservationOutcome {
+        // No budgeting: preserve the legacy "always proceed" behavior. If a
+        // restore was planned, treat it as restore-reserved so the restore still
+        // materializes when budgeting is disabled (the happy path is unchanged).
+        guard let kvBudget else {
+            return restorePlanned ? .restoreReserved : .coldReserved
+        }
         if await kvBudget.reserve(
             requestID: requestId,
             kvBytesPerToken: kvBytesPerToken,
             tokenCount: reservationTokens
         ) {
-            return true
+            // The reservation we asked for landed. When a restore was planned
+            // the requested amount IS the restore-sized reservation; otherwise
+            // it's the cold footprint (reservationTokens == requestTokens).
+            return restorePlanned ? .restoreReserved : .coldReserved
         }
 
         // A restored checkpoint hit can require materially more headroom than
@@ -611,7 +699,7 @@ public actor BatchScheduler {
         // larger reservation fails, drop the restore and retry the normal
         // request reservation so the cache miss is slow, not fatal.
         guard restorePlanned, reservationTokens > requestTokens else {
-            return false
+            return .failed
         }
 
         if var bridge = activeBridges[requestId] {
@@ -621,11 +709,15 @@ public actor BatchScheduler {
         prefixCacheLogger.warning(
             "prefix cache restore skipped: insufficient KV headroom; falling back to cold prefill")
 
-        return await kvBudget.reserve(
+        let coldReserved = await kvBudget.reserve(
             requestID: requestId,
             kvBytesPerToken: kvBytesPerToken,
             tokenCount: requestTokens
         )
+        // Downgraded to cold: the caller MUST NOT materialize the restore — only
+        // the cold reservation is held. bridge.reservedTokens is already nil
+        // (cleared above) so activeTokenBudgetUsed already reflects the cold size.
+        return coldReserved ? .coldReserved : .failed
     }
 
     /// Stale-engine enqueue guard: `submit`/`submitTokenized` capture
@@ -723,6 +815,125 @@ public actor BatchScheduler {
             // TB-016 sub-feature B: test seam also RAM-only (no eager flush).
             Task { await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box) }
         }
+    }
+
+    /// TEST SEAM: drive the real `finalizeRestore` fallback path without a live
+    /// engine. `RestoredCheckpointAdmission` is `private` to this file, so the
+    /// regression test (in another file) cannot build one — this seam constructs
+    /// an admission with the given oversized `reservedTokens` and invokes the
+    /// exact production helper the submit paths call. With no `checkpointManager`
+    /// installed, `materializeRestoredCheckpoint` short-circuits to `false`, so
+    /// this exercises the downgrade-both-systems branch end-to-end. Returns
+    /// nothing; the caller inspects `activeTokenBudgetUsed`, the bridge's
+    /// `reservedTokens`, and the kvBudget reservation. Not used in production.
+    func _testFinalizeRestoreFallback(
+        id: String,
+        promptTokens: [Int],
+        maxTokens: Int,
+        reservedTokens: Int,
+        requestBudget: Int
+    ) async {
+        let candidate = PrefixLookupCandidate(
+            digest: Data(),
+            digestHex: "",
+            tokenCount: max(1, promptTokens.count - 1),
+            estimatedBytes: 0,
+            tier: .ram
+        )
+        let admission = RestoredCheckpointAdmission(
+            candidate: candidate,
+            reservedTokens: reservedTokens
+        )
+        let sp = SamplingParams(maxTokens: maxTokens, temperature: 0.0)
+        let req = Request(
+            requestId: id,
+            prompt: promptTokens as AnyHashable,
+            samplingParams: sp
+        )
+        await finalizeRestore(
+            req,
+            id: id,
+            admission: admission,
+            promptTokens: promptTokens,
+            scope: "",
+            requestBudget: requestBudget
+        )
+    }
+
+    /// TEST SEAM: drive the real `reserveKVForRequest` and return the outcome so
+    /// a non-live test can prove the downgrade path reports `.coldReserved` (so
+    /// the submit paths skip restore) rather than secretly holding a cold
+    /// reservation while reporting success. `reserveKVForRequest` is `private` to
+    /// this file; this thin wrapper invokes the exact production helper. Not used
+    /// in production.
+    func _testReserveKVForRequest(
+        requestId: String,
+        requestTokens: Int,
+        reservationTokens: Int,
+        restorePlanned: Bool
+    ) async -> KVReservationOutcome {
+        await reserveKVForRequest(
+            requestId: requestId,
+            requestTokens: requestTokens,
+            reservationTokens: reservationTokens,
+            restorePlanned: restorePlanned
+        )
+    }
+
+    /// TEST SEAM: replay the EXACT submit-path restore decision against the real
+    /// `reserveKVForRequest`, then apply the same branch the submit paths use:
+    /// call `finalizeRestore` ONLY when the outcome is `.restoreReserved`. Builds
+    /// a real `Request` and a restore-sized `RestoredCheckpointAdmission` (both
+    /// `private` to this file, so the cross-file test cannot construct them) and
+    /// reports the outcome plus whether `req.restoredCheckpoint` stayed nil. This
+    /// proves the BUG-3 fix end-to-end: a downgraded reserve (.coldReserved) must
+    /// NOT attach a restored checkpoint. With no `checkpointManager` installed,
+    /// `materializeRestoredCheckpoint` short-circuits to false, so even the
+    /// `.restoreReserved` branch leaves the checkpoint nil — the load-bearing
+    /// signal here is that the `.coldReserved` branch never calls finalizeRestore
+    /// at all. Not used in production.
+    func _testReserveThenMaybeRestore(
+        id: String,
+        promptTokens: [Int],
+        maxTokens: Int,
+        requestBudget: Int,
+        reservationTokens: Int
+    ) async -> (outcome: KVReservationOutcome, restoredCheckpointWasNil: Bool) {
+        let sp = SamplingParams(maxTokens: maxTokens, temperature: 0.0)
+        let req = Request(
+            requestId: id,
+            prompt: promptTokens as AnyHashable,
+            samplingParams: sp
+        )
+        let candidate = PrefixLookupCandidate(
+            digest: Data(),
+            digestHex: "",
+            tokenCount: max(1, promptTokens.count - 1),
+            estimatedBytes: 0,
+            tier: .ram
+        )
+        let admission = RestoredCheckpointAdmission(
+            candidate: candidate,
+            reservedTokens: reservationTokens
+        )
+        let outcome = await reserveKVForRequest(
+            requestId: id,
+            requestTokens: requestBudget,
+            reservationTokens: reservationTokens,
+            restorePlanned: true
+        )
+        // Mirror the submit paths: materialize the restore ONLY on .restoreReserved.
+        if outcome == .restoreReserved {
+            await finalizeRestore(
+                req,
+                id: id,
+                admission: admission,
+                promptTokens: promptTokens,
+                scope: "",
+                requestBudget: requestBudget
+            )
+        }
+        return (outcome, req.restoredCheckpoint == nil)
     }
 
     /// Result of building the engine: the engine itself plus the optional
@@ -1373,23 +1584,32 @@ public actor BatchScheduler {
             admission: plannedRestore
         )
         let kvReservationTokens = acceptedRestore?.reservedTokens ?? requestBudget
-        guard await reserveKVForRequest(
+        let kvOutcome = await reserveKVForRequest(
             requestId: id,
             requestTokens: requestBudget,
             reservationTokens: kvReservationTokens,
             restorePlanned: acceptedRestore != nil
-        ) else {
+        )
+        guard kvOutcome != .failed else {
             await dropBridge(requestId: id)
             continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
             continuation.finish()
             return stream
         }
-        if let acceptedRestore {
-            await materializeRestoredCheckpoint(
+        // Materialize the restore ONLY when its restore-sized reservation is held
+        // (`.restoreReserved`). On `.coldReserved` the reserve downgraded a planned
+        // restore (or none was planned): only the cold reservation is held, so
+        // attaching restore-sized KV here would under-reserve and OOM. The
+        // downgrade already cleared bridge.reservedTokens; req.restoredCheckpoint
+        // stays nil and the request runs as a cold prefill.
+        if kvOutcome == .restoreReserved, let acceptedRestore {
+            await finalizeRestore(
                 req,
+                id: id,
                 admission: acceptedRestore,
                 promptTokens: promptTokens,
-                scope: cacheScope
+                scope: cacheScope,
+                requestBudget: requestBudget
             )
         }
         // Re-check the engine is still the one we captured (a reload/
@@ -1544,23 +1764,32 @@ public actor BatchScheduler {
             admission: plannedRestore
         )
         let kvReservationTokens = acceptedRestore?.reservedTokens ?? requestBudget
-        guard await reserveKVForRequest(
+        let kvOutcome = await reserveKVForRequest(
             requestId: id,
             requestTokens: requestBudget,
             reservationTokens: kvReservationTokens,
             restorePlanned: acceptedRestore != nil
-        ) else {
+        )
+        guard kvOutcome != .failed else {
             await dropBridge(requestId: id)
             continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
             continuation.finish()
             return stream
         }
-        if let acceptedRestore {
-            await materializeRestoredCheckpoint(
+        // Materialize the restore ONLY when its restore-sized reservation is held
+        // (`.restoreReserved`). On `.coldReserved` the reserve downgraded a planned
+        // restore (or none was planned): only the cold reservation is held, so
+        // attaching restore-sized KV here would under-reserve and OOM. The
+        // downgrade already cleared bridge.reservedTokens; req.restoredCheckpoint
+        // stays nil and the request runs as a cold prefill.
+        if kvOutcome == .restoreReserved, let acceptedRestore {
+            await finalizeRestore(
                 req,
+                id: id,
                 admission: acceptedRestore,
                 promptTokens: promptTokens,
-                scope: request.cacheScope
+                scope: request.cacheScope,
+                requestBudget: requestBudget
             )
         }
         // Re-check the captured engine is still current after the awaits.

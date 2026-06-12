@@ -409,6 +409,14 @@ extension BatchScheduler {
         activeBridges[id] = bridge
     }
 
+    /// Test seam: pin `kvBytesPerToken` so a non-live test can compute exact
+    /// expected reservation byte counts (production derives it from the model
+    /// architecture at load time). Internal + @testable-only; stripped from
+    /// production binaries.
+    func _setKvBytesPerTokenForTest(_ value: Int) {
+        kvBytesPerToken = value
+    }
+
     /// Test accessor: is a bridge still tracked for `id`? This is the exact
     /// signal `confirmEnqueuedOrAbort` checks after `addRequest` to detect a
     /// request that was cancelled / timed-out while the submit task was

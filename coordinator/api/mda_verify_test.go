@@ -56,9 +56,9 @@ func TestEvaluateMDA(t *testing.T) {
 		{"serial mismatch is definitive (impersonation)", func(m *attestation.MDAResult) {
 			m.DeviceSerial = "OTHER-DEVICE"
 		}, false, true, "serial_mismatch"},
-		{"empty MDA serial does not mismatch (pre-existing semantics)", func(m *attestation.MDAResult) {
+		{"empty MDA serial fails closed", func(m *attestation.MDAResult) {
 			m.DeviceSerial = ""
-		}, true, false, "ok"},
+		}, false, true, "serial_missing"},
 		{"SIP disabled is definitive — even on a cached cert", func(m *attestation.MDAResult) {
 			m.SIPEnabled = false
 			m.FreshnessCode = staleNonce
@@ -224,6 +224,118 @@ func TestAttributeAndApplyMDA_LateSIPOffUntrustsWithoutDeadlock(t *testing.T) {
 	got.Mu().Unlock()
 	if status != registry.StatusUntrusted {
 		t.Errorf("a late Apple-signed SIP-off cert must untrust the provider under enforcement; status=%v", status)
+	}
+}
+
+func TestApplyLateMDARequiresWebhookUDIDMatch(t *testing.T) {
+	logger := quietLogger()
+	reg := registry.New(logger)
+	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	seed := []byte("test-seed-0123456789abcdef0123456789abcdef")
+	srv.SetMDANonceSeed(seed)
+	now := time.Now()
+
+	const serialB = "SERIAL-B"
+	const udidA = "UDID-A"
+	const udidB = "UDID-B"
+	const seKeyB = "se-key-b"
+
+	p := reg.Register("p-b", nil, &protocol.RegisterMessage{PublicKey: "k"})
+	p.Mu().Lock()
+	p.AttestationResult = &attestation.VerificationResult{SerialNumber: serialB, PublicKey: seKeyB}
+	p.Mu().Unlock()
+
+	mdaResult := &attestation.MDAResult{
+		Valid:             true,
+		DeviceSerial:      serialB,
+		DeviceUDID:        udidB,
+		SIPEnabled:        true,
+		SecureBootEnabled: true,
+		BootState:         "Full Security",
+		FreshnessCode:     attestation.MDAEpochNonce(seed, attestation.MDANonceEpoch(now), seKeyB),
+		LeafNotBefore:     now,
+	}
+
+	// A solicited command for UDID-A must not be allowed to carry a replayed cert
+	// for UDID-B and grant SERIAL-B's provider the routing verdict.
+	srv.applyLateMDAResult(udidA, mdaResult, [][]byte{{0x01}})
+	p.Mu().Lock()
+	if p.MDASIPVerified {
+		t.Fatal("late MDA cert with mismatched webhook UDID must not grant the routing verdict")
+	}
+	p.Mu().Unlock()
+
+	// The same cert is accepted when the webhook UDID matches the Apple-signed UDID.
+	srv.applyLateMDAResult(udidB, mdaResult, [][]byte{{0x01}})
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if !p.MDASIPVerified {
+		t.Fatal("late MDA cert with matching webhook UDID should grant the routing verdict")
+	}
+}
+
+func TestApplyMDAVerdictDrainsQueuedRequests(t *testing.T) {
+	logger := quietLogger()
+	reg := registry.New(logger)
+	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	seed := []byte("test-seed-0123456789abcdef0123456789abcdef")
+	srv.SetMDANonceSeed(seed)
+	reg.SetMDAEnforceDeadline(time.Now().Add(-time.Minute))
+
+	const model = "mda-drain-model"
+	const serial = "SERIAL-DRAIN"
+	const seKey = "se-key-drain"
+	registerBuildsProvider(srv, "p-drain", model)
+	p := reg.GetProvider("p-drain")
+	if p == nil {
+		t.Fatal("provider not registered")
+	}
+	p.Mu().Lock()
+	p.AttestationResult = &attestation.VerificationResult{Valid: true, SerialNumber: serial, PublicKey: seKey}
+	p.MDASIPVerified = false
+	p.Mu().Unlock()
+
+	req := &registry.QueuedRequest{
+		RequestID:  "queued-mda",
+		Model:      model,
+		ResponseCh: make(chan *registry.Provider, 1),
+		Pending: &registry.PendingRequest{
+			RequestID:             "queued-mda",
+			Model:                 model,
+			RequestedMaxTokens:    128,
+			EstimatedPromptTokens: 32,
+		},
+	}
+	if err := reg.Queue().Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	reg.DrainQueuedRequestsForProvider(p)
+	select {
+	case assigned := <-req.ResponseCh:
+		t.Fatalf("request dispatched before MDA verdict: %+v", assigned)
+	default:
+	}
+
+	now := time.Now()
+	mdaResult := &attestation.MDAResult{
+		Valid:             true,
+		DeviceSerial:      serial,
+		DeviceUDID:        "UDID-DRAIN",
+		SIPEnabled:        true,
+		SecureBootEnabled: true,
+		BootState:         "Full Security",
+		FreshnessCode:     attestation.MDAEpochNonce(seed, attestation.MDANonceEpoch(now), seKey),
+		LeafNotBefore:     now,
+	}
+	srv.applyMDAVerdict(p.ID, p, mdaResult, [][]byte{{0x01}}, serial, seKey)
+
+	select {
+	case assigned := <-req.ResponseCh:
+		if assigned == nil || assigned.ID != p.ID {
+			t.Fatalf("expected dispatch to %q, got %+v", p.ID, assigned)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("MDA verdict did not drain queued request")
 	}
 }
 

@@ -83,6 +83,12 @@ func evaluateMDA(mdaResult *attestation.MDAResult, attestSerial, sePublicKey str
 		// The chain does not verify to Apple's Enterprise Attestation Root CA.
 		eval.Definitive = true
 		eval.Reason = "chain_invalid"
+	case mdaResult.DeviceSerial == "":
+		// A routable MDA verdict must identify the Apple-attested device. Without
+		// the cert serial, the coordinator cannot bind Apple's security properties
+		// to the provider's registered hardware identity.
+		eval.Definitive = true
+		eval.Reason = "serial_missing"
 	case mdaResult.DeviceSerial != "" && mdaResult.DeviceSerial != attestSerial:
 		// Apple attested a DIFFERENT device than the one this connection claims
 		// to be — impersonation, never a transient state.
@@ -223,6 +229,10 @@ func (s *Server) applyMDAVerdict(providerID string, provider *registry.Provider,
 			"mda_udid", mdaResult.DeviceUDID,
 			"minted_at", mdaResult.LeafNotBefore.Format(time.RFC3339),
 		)
+		// Newly eligible under the MDA routing gate — drain requests that queued
+		// waiting for an MDA-verified provider instead of waiting for the next
+		// heartbeat.
+		s.registry.DrainQueuedRequestsForProvider(provider)
 		return
 	}
 	// Transient / migration states (legacy nonce, unrecognized nonce, stale
@@ -251,6 +261,26 @@ func (s *Server) HandleLateMDA(udid string, certChain [][]byte) {
 	if !mdaResult.Valid || mdaResult.DeviceSerial == "" {
 		// Can't safely attribute an unverifiable or serial-less cert to a provider.
 		s.logger.Warn("late MDA cert not attributable", "udid", udid, "valid", mdaResult.Valid)
+		return
+	}
+	s.applyLateMDAResult(udid, mdaResult, certChain)
+}
+
+// applyLateMDAResult attributes an already verified late MDA response to the
+// provider it belongs to. The webhook UDID is part of the attribution: a
+// solicited command sent to device A must not be able to carry a replayed valid
+// Apple cert for device B and grant B's provider a routing verdict.
+func (s *Server) applyLateMDAResult(udid string, mdaResult *attestation.MDAResult, certChain [][]byte) {
+	if mdaResult == nil || !mdaResult.Valid || mdaResult.DeviceSerial == "" {
+		s.logger.Warn("late MDA cert not attributable", "udid", udid, "valid", mdaResult != nil && mdaResult.Valid)
+		return
+	}
+	if udid == "" || mdaResult.DeviceUDID == "" || mdaResult.DeviceUDID != udid {
+		s.logger.Warn("late MDA cert UDID mismatch — dropping",
+			"webhook_udid", udid,
+			"mda_udid", mdaResult.DeviceUDID,
+			"mda_serial", mdaResult.DeviceSerial,
+		)
 		return
 	}
 	s.attributeAndApplyMDA(mdaResult, certChain)

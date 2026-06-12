@@ -487,6 +487,26 @@ trust_boundaries:
         floor Apple's rate limit imposes — instead of indefinitely. Certs minted before
         this scheme (legacy sha256(SE key) nonce) are key-bound but never satisfy the
         routing verdict."
+      - "RESIDUAL (self-asserted serial, #302 follow-up): the serial the MDA SIP gate
+        verifies is the provider's SELF-ASSERTED attestation serial, not one rooted to
+        the connection's Secure-Enclave key. macOS has no App Attest, so an app-held SE
+        key cannot be cryptographically tied to a device serial with the current
+        primitives. A malicious owner with a SECOND, genuinely-SIP-on enrolled Mac can
+        therefore claim that clean device's serial while serving inference from a SIP-off
+        box: the coordinator's MDM/MDA round-trips (keyed by the claimed serial) hit the
+        clean Mac and return a genuine SIP-on attestation, so the SIP-off connection
+        routes. Bar: the attacker must enroll and keep online a second SIP-on Mac; the
+        live per-connection SE challenge still proves the SIP-off box holds the SE key it
+        registered, but nothing binds that key to the claimed serial. The clean fix
+        requires the provider to prove possession of the Apple-attested ACME
+        device-attest key (re-keyed to P-256 so it equals the SE key, or used directly as
+        the connection identity) and the coordinator to read the validated
+        permanent-identifier SAN (not the CSR-controlled cert CN) — a provider-swift +
+        protocol change tracked separately. An interim coordinator-only ACME serial check
+        was prototyped and reverted: the served ACME profile mints a P-384 key the
+        Secure Enclave cannot hardware-bind (SE is P-256-only; the fleet is 0%
+        acme_verified), and step-ca copies the cert CN from the unvalidated CSR, so a
+        coordinator-side CN check is both non-functional and bypassable."
       - "No OCSP/CRL checks on the Apple MDA certificate chain. A revoked Apple
         intermediate CA would be accepted until the embedded root is manually updated."
       - "x509.Verify() is called with ExtKeyUsageAny, which does not enforce leaf or

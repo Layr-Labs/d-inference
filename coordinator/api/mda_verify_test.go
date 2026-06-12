@@ -227,7 +227,12 @@ func TestAttributeAndApplyMDA_LateSIPOffUntrustsWithoutDeadlock(t *testing.T) {
 	}
 }
 
-func TestApplyLateMDARequiresWebhookUDIDMatch(t *testing.T) {
+// The late path attributes a cert by its Apple-signed SERIAL + SE-key-derived
+// nonce, NOT by comparing the cert's .8.9.2 UDID to the webhook UDID (those are
+// different namespaces on a Mac and never match — see applyLateMDAResult). A
+// valid late cert for the provider's serial grants the verdict regardless of
+// the (irrelevant) webhook udid; a cert for a DIFFERENT serial never touches it.
+func TestApplyLateMDAAttributesBySerial(t *testing.T) {
 	logger := quietLogger()
 	reg := registry.New(logger)
 	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
@@ -236,8 +241,6 @@ func TestApplyLateMDARequiresWebhookUDIDMatch(t *testing.T) {
 	now := time.Now()
 
 	const serialB = "SERIAL-B"
-	const udidA = "UDID-A"
-	const udidB = "UDID-B"
 	const seKeyB = "se-key-b"
 
 	p := reg.Register("p-b", nil, &protocol.RegisterMessage{PublicKey: "k"})
@@ -245,32 +248,36 @@ func TestApplyLateMDARequiresWebhookUDIDMatch(t *testing.T) {
 	p.AttestationResult = &attestation.VerificationResult{SerialNumber: serialB, PublicKey: seKeyB}
 	p.Mu().Unlock()
 
-	mdaResult := &attestation.MDAResult{
-		Valid:             true,
-		DeviceSerial:      serialB,
-		DeviceUDID:        udidB,
-		SIPEnabled:        true,
-		SecureBootEnabled: true,
-		BootState:         "Full Security",
-		FreshnessCode:     attestation.MDAEpochNonce(seed, attestation.MDANonceEpoch(now), seKeyB),
-		LeafNotBefore:     now,
+	freshFor := func(serial, seKey string) *attestation.MDAResult {
+		return &attestation.MDAResult{
+			Valid:             true,
+			DeviceSerial:      serial,
+			DeviceUDID:        "irrelevant-provisioning-udid",
+			SIPEnabled:        true,
+			SecureBootEnabled: true,
+			BootState:         "Full Security",
+			FreshnessCode:     attestation.MDAEpochNonce(seed, attestation.MDANonceEpoch(now), seKey),
+			LeafNotBefore:     now,
+		}
 	}
 
-	// A solicited command for UDID-A must not be allowed to carry a replayed cert
-	// for UDID-B and grant SERIAL-B's provider the routing verdict.
-	srv.applyLateMDAResult(udidA, mdaResult, [][]byte{{0x01}})
+	// A cert for a DIFFERENT serial must never touch this provider.
+	srv.applyLateMDAResult("any-webhook-udid", freshFor("SERIAL-OTHER", "se-key-other"), [][]byte{{0x01}})
 	p.Mu().Lock()
-	if p.MDASIPVerified {
-		t.Fatal("late MDA cert with mismatched webhook UDID must not grant the routing verdict")
-	}
+	leaked := p.MDASIPVerified
 	p.Mu().Unlock()
+	if leaked {
+		t.Fatal("a late cert for another serial must not grant THIS provider a verdict")
+	}
 
-	// The same cert is accepted when the webhook UDID matches the Apple-signed UDID.
-	srv.applyLateMDAResult(udidB, mdaResult, [][]byte{{0x01}})
+	// A valid late cert for the provider's serial grants the verdict — the
+	// webhook udid is irrelevant (the old cross-namespace UDID equality check
+	// would have dropped every real Mac cert here).
+	srv.applyLateMDAResult("mismatched-hardware-uuid", freshFor(serialB, seKeyB), [][]byte{{0x01}})
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
 	if !p.MDASIPVerified {
-		t.Fatal("late MDA cert with matching webhook UDID should grant the routing verdict")
+		t.Fatal("a valid late cert for the provider's serial must grant the MDA verdict")
 	}
 }
 

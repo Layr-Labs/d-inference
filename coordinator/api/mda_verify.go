@@ -102,6 +102,12 @@ func evaluateMDA(mdaResult *attestation.MDAResult, attestSerial, sePublicKey str
 	case !mdaResult.SecureBootEnabled:
 		eval.Definitive = true
 		eval.Reason = "not_full_security"
+	// NOTE: mdaResult.ThirdPartyKexts (.13.3) is parsed but intentionally not a
+	// separate gate. On Apple silicon, loading a third-party kext requires
+	// lowering the boot policy to Reduced Security; a "Full Security" boot
+	// (required just above) cannot have third-party kexts enabled, so the
+	// SecureBootEnabled check already excludes the kext-in-kernel memory-read
+	// vector. The field is retained for the attestation display + telemetry.
 	case eval.Freshness == attestation.MDAFreshnessLegacy:
 		// Pre-#302 constant nonce: key-bound but replayable forever — exactly
 		// the migration state of certs minted before this deploy. Re-mints with
@@ -267,20 +273,25 @@ func (s *Server) HandleLateMDA(udid string, certChain [][]byte) {
 }
 
 // applyLateMDAResult attributes an already verified late MDA response to the
-// provider it belongs to. The webhook UDID is part of the attribution: a
-// solicited command sent to device A must not be able to carry a replayed valid
-// Apple cert for device B and grant B's provider a routing verdict.
+// provider it belongs to.
+//
+// It deliberately does NOT bind by comparing the cert UDID to the webhook UDID:
+// on a Mac the cert's .8.9.2 UDID is the Device Provisioning UDID (e.g.
+// 00006041-000C28D61A81401C), a DIFFERENT namespace from the MDM-protocol
+// Hardware UUID the webhook carries — they never match, so such a check would
+// drop every late cert and silently kill the late-recovery path. The device
+// binding is instead:
+//  1. the webhook is solicited — mdm.Client gates it on the CommandUUID and
+//     requires webhook.UDID == the UDID the command was sent to, so the cert
+//     arrived from the device we actually challenged; and
+//  2. attributeAndApplyMDA → evaluateMDA binds on the Apple-signed serial plus
+//     the SE-key-derived epoch nonce — the same proof the synchronous path
+//     trusts. (A replayed cert for another device carries that device's serial
+//     and a nonce not derived from this connection's SE key, so it neither
+//     attributes nor classifies fresh.)
 func (s *Server) applyLateMDAResult(udid string, mdaResult *attestation.MDAResult, certChain [][]byte) {
 	if mdaResult == nil || !mdaResult.Valid || mdaResult.DeviceSerial == "" {
 		s.logger.Warn("late MDA cert not attributable", "udid", udid, "valid", mdaResult != nil && mdaResult.Valid)
-		return
-	}
-	if udid == "" || mdaResult.DeviceUDID == "" || mdaResult.DeviceUDID != udid {
-		s.logger.Warn("late MDA cert UDID mismatch — dropping",
-			"webhook_udid", udid,
-			"mda_udid", mdaResult.DeviceUDID,
-			"mda_serial", mdaResult.DeviceSerial,
-		)
 		return
 	}
 	s.attributeAndApplyMDA(mdaResult, certChain)

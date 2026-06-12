@@ -545,6 +545,14 @@ func (r *Registry) mdaEnforcedLocked() bool {
 // attestation.MDAMaxCertAge. The age is re-checked against the wall clock on
 // every routing decision so a verdict expires even if re-attestation stalls
 // (e.g. MDM outage) — fail closed, recover on the next passing attestation.
+//
+// KNOWN RESIDUAL (issue #302 follow-up): the serial evaluateMDA compares is the
+// provider's SELF-ASSERTED attestation serial, not an Apple-rooted one. A
+// malicious owner with a second, genuinely-SIP-on enrolled Mac can claim that
+// device's serial while serving from a SIP-off box. Cleanly closing this needs
+// the connection to prove possession of the Apple-attested (ACME device-attest)
+// key bound to the serial — a provider-swift + protocol change, tracked
+// separately. See docs/threat-model.yaml.
 func mdaRoutableLocked(p *Provider) bool {
 	return p.MDASIPVerified && time.Since(p.MDAMintedAt) <= attestation.MDAMaxCertAge
 }

@@ -279,7 +279,7 @@ struct Start: AsyncParsableCommand {
             ]
         )
 
-        let schedule = config.schedule.flatMap { Schedule.from(config: $0) }
+        let schedule: Schedule? = config.schedule.flatMap { Schedule.from(config: $0) }
 
         print("darkbloom \(ProviderCore.version)")
         print("Backend: mlx-swift")

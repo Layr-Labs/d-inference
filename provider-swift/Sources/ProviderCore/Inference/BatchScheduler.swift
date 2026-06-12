@@ -1083,7 +1083,7 @@ public actor BatchScheduler {
     /// maxBlocks) even when the cache is disabled, so a malformed value must
     /// degrade — never crash. See resolveMemoryBudget.
     static func prefixCacheBudgetBytes() -> Int {
-        let envGB = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_MAX_GB"]
+        let envGB: Double? = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_MAX_GB"]
             .flatMap(Double.init)
         return resolveMemoryBudget(envGB: envGB, physicalMemory: Int(ProcessInfo.processInfo.physicalMemory))
     }
@@ -1116,7 +1116,7 @@ public actor BatchScheduler {
     /// non-numeric falls back to the default (NOT unlimited). Default = a fixed
     /// 10 GB per model, clamped down to 50% of free space on a tight volume.
     static func prefixCacheDiskBudgetBytes(cacheDir: URL) -> Int {
-        let envGB = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]
+        let envGB: Double? = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]
             .flatMap(Double.init)
         return resolveDiskBudget(envGB: envGB, freeBytes: volumeFreeBytes(at: cacheDir))
     }
@@ -1147,9 +1147,9 @@ public actor BatchScheduler {
     /// active — so an operator-set global cap was silently ignored. The
     /// accountant is the sole authority now, so the env cap must reach IT.
     static func prefixCacheGlobalDiskCeiling() -> Int {
-        guard let gb = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]
-            .flatMap(Double.init), gb > 0, gb.isFinite, gb < gbToBytesCeiling
-        else { return 0 }
+        let envGB: Double? = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_DISK_GB"]
+            .flatMap(Double.init)
+        guard let gb = envGB, gb > 0, gb.isFinite, gb < gbToBytesCeiling else { return 0 }
         return Int(gb * 1_073_741_824)
     }
     // Under the global accountant, DISK_GB semantics differ from

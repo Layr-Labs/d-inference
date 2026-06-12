@@ -123,6 +123,42 @@ func managerFullSSDRoundtrip() async throws {
 }
 
 @Test
+func managerRestoreCandidateDoesNotMaterializeUntilAdmitted() async throws {
+    let (mgr, _) = makeManager(model: "m", ssd: true)
+    let tokens = prompt(10)
+
+    await mgr.store(tokens: tokens, checkpointLength: 8, caches: SendableKVCaches(attnCaches(layers: 2, tokens: 8)))
+
+    let ramCandidate = await mgr.lookupCandidate(tokens: tokens)
+    #expect(ramCandidate?.tier == .ram)
+    #expect(ramCandidate?.tokenCount == 8)
+    #expect((ramCandidate?.estimatedBytes ?? 0) > 0)
+    var stats = await mgr.snapshotStats()
+    #expect(stats.ramHits == 0, "candidate lookup must not copy/materialize RAM KV")
+
+    let ramHit = await mgr.materialize(candidate: ramCandidate!, tokens: tokens)
+    #expect(ramHit?.tier == .ram)
+    stats = await mgr.snapshotStats()
+    #expect(stats.ramHits == 1)
+
+    let written = await mgr.flushToSSD()
+    #expect(written == 1)
+    await mgr.clearRAM()
+
+    let ssdCandidate = await mgr.lookupCandidate(tokens: tokens)
+    #expect(ssdCandidate?.tier == .ssd)
+    #expect(ssdCandidate?.tokenCount == 8)
+    #expect((ssdCandidate?.estimatedBytes ?? 0) > 0)
+    stats = await mgr.snapshotStats()
+    #expect(stats.ssdHits == 0, "SSD candidate lookup must not decrypt/deserialize KV")
+
+    let ssdHit = await mgr.materialize(candidate: ssdCandidate!, tokens: tokens)
+    #expect(ssdHit?.tier == .ssd)
+    stats = await mgr.snapshotStats()
+    #expect(stats.ssdHits == 1)
+}
+
+@Test
 func managerEnforcesDiskBudgetWithEviction() async throws {
     // Partner-stability gate: the checkpoint SSD tier must bound on-disk
     // usage under sustained diverse-prompt traffic, evicting low-value

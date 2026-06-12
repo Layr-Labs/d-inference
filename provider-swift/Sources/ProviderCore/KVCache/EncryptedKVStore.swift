@@ -237,9 +237,8 @@ public enum EncryptedKVStore {
         // into the wrap so tampering with it also breaks DEK unwrap.
         let (dek, wrappedDEK) = try await kek.freshDEK(aad: metadataJSON)
 
-        let body = try buildBody(chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON)
         let header = try assembleHeader(fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
-        try atomicWrite(header: header, body: body, to: url)
+        try atomicWrite(header: header, chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON, to: url)
         storeLogger.debug(
             "wrote \(chunks.count, privacy: .public) chunks to \(url.lastPathComponent, privacy: .public)"
         )
@@ -273,9 +272,8 @@ public enum EncryptedKVStore {
         let dek = SymmetricKey(size: .bits256)
         let wrappedDEK = try wrapDEKSync(dek: dek, kekKey: kekKey, aad: metadataJSON)
 
-        let body = try buildBody(chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON)
         let header = try assembleHeader(fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
-        try atomicWrite(header: header, body: body, to: url)
+        try atomicWrite(header: header, chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON, to: url)
     }
 
     // MARK: Read
@@ -288,12 +286,12 @@ public enum EncryptedKVStore {
         from url: URL,
         kek: KVCacheKEK
     ) async throws -> (EncryptedKVStoreMetadata, [Data]) {
-        let (header, body) = try splitHeaderAndBody(at: url)
+        let header = try readHeader(at: url)
         let dek = try await kek.unwrap(
             wrappedDEK: header.wrappedDEK,
             aad: header.metadataBytes
         )
-        let plaintexts = try decryptChunks(header: header, body: body, dek: dek)
+        let plaintexts = try decryptChunks(at: url, header: header, dek: dek)
         return (header.metadata, plaintexts)
     }
 
@@ -303,9 +301,9 @@ public enum EncryptedKVStore {
         from url: URL,
         kekKey: SymmetricKey
     ) throws -> (EncryptedKVStoreMetadata, [Data]) {
-        let (header, body) = try splitHeaderAndBody(at: url)
+        let header = try readHeader(at: url)
         let dek = try unwrapDEKSync(wrapped: header.wrappedDEK, kekKey: kekKey, aad: header.metadataBytes)
-        let plaintexts = try decryptChunks(header: header, body: body, dek: dek)
+        let plaintexts = try decryptChunks(at: url, header: header, dek: dek)
         return (header.metadata, plaintexts)
     }
 
@@ -320,52 +318,7 @@ public enum EncryptedKVStore {
     /// checkpoint body can be gigabytes — the old path allocated/copied the
     /// whole body per file only to discard it (OOM / huge latency).
     public static func readMetadataOnly(from url: URL) throws -> EncryptedKVStoreMetadata {
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forReadingFrom: url)
-        } catch {
-            throw EncryptedKVStoreError.ioFailure("open \(url.lastPathComponent): \(error)")
-        }
-        defer { try? handle.close() }
-
-        // Fixed prefix: magic(4) version(2) flags(2) fileIV(12) wrappedLen(4) = 24.
-        let prefix = try readExactly(24, from: handle, what: "header prefix")
-
-        guard Array(prefix.prefix(4)) == magic else {
-            throw EncryptedKVStoreError.malformedHeader(
-                "magic mismatch: got \(Array(prefix.prefix(4)).map { String(format: "%02x", $0) }.joined())"
-            )
-        }
-        let version = readUInt16LE(prefix, at: 4)
-        guard version == formatVersion else {
-            throw EncryptedKVStoreError.unsupportedVersion(version)
-        }
-        let flags = readUInt16LE(prefix, at: 6)
-        guard flags == 0 else {
-            throw EncryptedKVStoreError.malformedHeader("flags \(flags) ≠ 0 in v1")
-        }
-
-        // wrapped DEK length + bytes (validate against a hard bound so a corrupt
-        // uint32 can't drive a multi-GB allocation before we've authenticated anything).
-        let wrappedLen = Int(readUInt32LE(prefix, at: 20))
-        guard wrappedLen >= 0, wrappedLen <= maxHeaderFieldBytes else {
-            throw EncryptedKVStoreError.malformedHeader("wrapped DEK length \(wrappedLen) out of bounds")
-        }
-        // Skip the wrapped DEK (not needed for metadata); read the 4-byte
-        // metadata-length field that follows it.
-        _ = try readExactly(wrappedLen, from: handle, what: "wrapped DEK")
-        let metadataLenBytes = try readExactly(4, from: handle, what: "metadata length")
-        let metadataLen = Int(readUInt32LE(metadataLenBytes, at: 0))
-        guard metadataLen >= 0, metadataLen <= maxHeaderFieldBytes else {
-            throw EncryptedKVStoreError.malformedHeader("metadata length \(metadataLen) out of bounds")
-        }
-        let metadataBytes = try readExactly(metadataLen, from: handle, what: "metadata")
-
-        do {
-            return try canonicalDecode(metadataBytes)
-        } catch {
-            throw EncryptedKVStoreError.malformedHeader("metadata JSON: \(error)")
-        }
+        try readHeader(at: url).metadata
     }
 
     /// Read EXACTLY `count` bytes from `handle` or throw `.truncated`.
@@ -417,35 +370,6 @@ public enum EncryptedKVStore {
         }
     }
 
-    /// Build the encrypted body: `[uint32 LE chunk_count]` then each
-    /// chunk sealed against `dek` with `aad`, HKDF-derived per-chunk nonce.
-    private static func buildBody(chunks: [Data], dek: SymmetricKey, fileIV: Data, aad: Data) throws -> Data {
-        var body = Data()
-        body.reserveCapacity(estimatedBodySize(plaintextSizes: chunks.map { $0.count }))
-        body.append(uint32LE(UInt32(chunks.count)))
-        for (i, plaintext) in chunks.enumerated() {
-            let nonce = try deriveChunkNonce(dek: dek, fileIV: fileIV, chunkIndex: UInt32(i))
-            let sealed: AES.GCM.SealedBox
-            do {
-                sealed = try AES.GCM.seal(
-                    plaintext, using: dek, nonce: AES.GCM.Nonce(data: nonce), authenticating: aad)
-            } catch {
-                throw EncryptedKVStoreError.ioFailure("AES.GCM.seal chunk \(i): \(error)")
-            }
-            let ctPlusTag = sealed.ciphertext + sealed.tag
-            guard ctPlusTag.count == plaintext.count + gcmTagLength else {
-                throw EncryptedKVStoreError.ioFailure(
-                    "unexpected sealed size: ct+tag=\(ctPlusTag.count), pt=\(plaintext.count)")
-            }
-            guard ctPlusTag.count <= UInt32.max else {
-                throw EncryptedKVStoreError.sizeOverflow("chunk \(i) too large")
-            }
-            body.append(uint32LE(UInt32(ctPlusTag.count)))
-            body.append(ctPlusTag)
-        }
-        return body
-    }
-
     private static func assembleHeader(fileIV: Data, wrappedDEK: Data, metadataJSON: Data) throws -> Data {
         var header = Data()
         header.reserveCapacity(28 + wrappedDEK.count + metadataJSON.count)
@@ -466,7 +390,14 @@ public enum EncryptedKVStore {
         return header
     }
 
-    private static func atomicWrite(header: Data, body: Data, to url: URL) throws {
+    private static func atomicWrite(
+        header: Data,
+        chunks: [Data],
+        dek: SymmetricKey,
+        fileIV: Data,
+        aad: Data,
+        to url: URL
+    ) throws {
         let tmpURL = url.appendingPathExtension("tmp-\(UUID().uuidString)")
         let dir = url.deletingLastPathComponent()
         try ensureDirectory(dir)
@@ -475,7 +406,7 @@ public enum EncryptedKVStore {
             let handle = try FileHandle(forWritingTo: tmpURL)
             defer { try? handle.close() }
             try writeInBoundedSegments(handle, header)
-            try writeInBoundedSegments(handle, body)
+            try writeEncryptedBody(handle, chunks: chunks, dek: dek, fileIV: fileIV, aad: aad)
             try handle.synchronize()  // fsync before rename
         } catch {
             try? FileManager.default.removeItem(at: tmpURL)
@@ -511,6 +442,42 @@ public enum EncryptedKVStore {
         syncDirectory(dir)
     }
 
+    /// Stream the encrypted body directly to the file handle. This avoids
+    /// constructing one full ciphertext `Data` for multi-GB checkpoints.
+    private static func writeEncryptedBody(
+        _ handle: FileHandle,
+        chunks: [Data],
+        dek: SymmetricKey,
+        fileIV: Data,
+        aad: Data
+    ) throws {
+        guard chunks.count <= UInt32.max else {
+            throw EncryptedKVStoreError.sizeOverflow("too many chunks: \(chunks.count)")
+        }
+        try handle.write(contentsOf: uint32LE(UInt32(chunks.count)))
+        for (i, plaintext) in chunks.enumerated() {
+            guard plaintext.count <= Int(UInt32.max) - gcmTagLength else {
+                throw EncryptedKVStoreError.sizeOverflow("chunk \(i) too large")
+            }
+            let nonce = try deriveChunkNonce(dek: dek, fileIV: fileIV, chunkIndex: UInt32(i))
+            let sealed: AES.GCM.SealedBox
+            do {
+                sealed = try AES.GCM.seal(
+                    plaintext, using: dek, nonce: AES.GCM.Nonce(data: nonce), authenticating: aad)
+            } catch {
+                throw EncryptedKVStoreError.ioFailure("AES.GCM.seal chunk \(i): \(error)")
+            }
+            guard sealed.ciphertext.count == plaintext.count, sealed.tag.count == gcmTagLength else {
+                throw EncryptedKVStoreError.ioFailure(
+                    "unexpected sealed size: ct=\(sealed.ciphertext.count), tag=\(sealed.tag.count), pt=\(plaintext.count)")
+            }
+            let sealedLen = plaintext.count + gcmTagLength
+            try handle.write(contentsOf: uint32LE(UInt32(sealedLen)))
+            try writeInBoundedSegments(handle, sealed.ciphertext)
+            try writeInBoundedSegments(handle, sealed.tag)
+        }
+    }
+
     /// `FileHandle.write(contentsOf:)` issues a SINGLE `write(2)` syscall for
     /// the whole `Data`. On Darwin a single `write` of more than `INT_MAX`
     /// (2_147_483_647) bytes fails with EINVAL ("Invalid argument") — so a
@@ -531,15 +498,20 @@ public enum EncryptedKVStore {
         }
     }
 
-    /// Decrypt the body chunks against `dek`, validating each plaintext
+    /// Decrypt body chunks from disk one at a time, validating each plaintext
     /// size against the metadata. Shared by `read` and `readSync`.
-    private static func decryptChunks(header: ParsedHeader, body: Data, dek: SymmetricKey) throws -> [Data] {
-        var cursor = 0
-        guard body.count >= 4 else {
-            throw EncryptedKVStoreError.truncated("body shorter than chunk_count")
+    private static func decryptChunks(at url: URL, header: ParsedHeader, dek: SymmetricKey) throws -> [Data] {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+            try handle.seek(toOffset: header.bodyOffset)
+        } catch {
+            throw EncryptedKVStoreError.ioFailure("open/seek \(url.lastPathComponent): \(error)")
         }
-        let chunkCount = readUInt32LE(body, at: cursor)
-        cursor += 4
+        defer { try? handle.close() }
+
+        let countBytes = try readExactly(4, from: handle, what: "chunk count")
+        let chunkCount = readUInt32LE(countBytes, at: 0)
         guard Int(chunkCount) == header.metadata.chunkPlaintextSizes.count else {
             throw EncryptedKVStoreError.malformedHeader(
                 "chunk_count \(chunkCount) ≠ metadata.chunkPlaintextSizes.count \(header.metadata.chunkPlaintextSizes.count)")
@@ -547,21 +519,18 @@ public enum EncryptedKVStore {
         var plaintexts: [Data] = []
         plaintexts.reserveCapacity(Int(chunkCount))
         for i in 0..<Int(chunkCount) {
-            guard cursor + 4 <= body.count else {
-                throw EncryptedKVStoreError.truncated("chunk \(i) length field")
-            }
-            let ctLen = Int(readUInt32LE(body, at: cursor))
-            cursor += 4
-            guard cursor + ctLen <= body.count else {
-                throw EncryptedKVStoreError.truncated("chunk \(i) body")
-            }
-            let ctPlusTag = body.subdata(in: cursor..<(cursor + ctLen))
-            cursor += ctLen
+            let ctLenBytes = try readExactly(4, from: handle, what: "chunk \(i) length field")
+            let ctLen = Int(readUInt32LE(ctLenBytes, at: 0))
             guard ctLen >= gcmTagLength else {
                 throw EncryptedKVStoreError.malformedHeader("chunk \(i) shorter than GCM tag")
             }
-            let ciphertext = ctPlusTag.prefix(ctLen - gcmTagLength)
-            let tag = ctPlusTag.suffix(gcmTagLength)
+            let expectedPlaintext = header.metadata.chunkPlaintextSizes[i]
+            guard expectedPlaintext >= 0, ctLen == expectedPlaintext + gcmTagLength else {
+                throw EncryptedKVStoreError.malformedHeader(
+                    "chunk \(i) ciphertext size \(ctLen) inconsistent with metadata plaintext size \(expectedPlaintext)")
+            }
+            let ciphertext = try readExactly(ctLen - gcmTagLength, from: handle, what: "chunk \(i) ciphertext")
+            let tag = try readExactly(gcmTagLength, from: handle, what: "chunk \(i) tag")
             let nonce = try deriveChunkNonce(dek: dek, fileIV: header.fileIV, chunkIndex: UInt32(i))
             let box: AES.GCM.SealedBox
             do {
@@ -593,25 +562,25 @@ public enum EncryptedKVStore {
         let wrappedDEK: Data
         let metadataBytes: Data
         let metadata: EncryptedKVStoreMetadata
+        let bodyOffset: UInt64
     }
 
-    private static func splitHeaderAndBody(at url: URL) throws -> (ParsedHeader, Data) {
-        let raw: Data
+    private static func readHeader(at url: URL) throws -> ParsedHeader {
+        let handle: FileHandle
         do {
-            // mmap-style read: NSData(contentsOf:options: .alwaysMapped)
-            // lets the kernel page in what we need. For P0 this is a
-            // straight read — mmap optimisation lands in §9.O5.
-            raw = try Data(contentsOf: url, options: [.mappedIfSafe])
+            handle = try FileHandle(forReadingFrom: url)
         } catch {
-            throw EncryptedKVStoreError.ioFailure("read \(url.lastPathComponent): \(error)")
+            throw EncryptedKVStoreError.ioFailure("open \(url.lastPathComponent): \(error)")
         }
+        defer { try? handle.close() }
+        return try readHeader(from: handle)
+    }
 
-        guard raw.count >= 24 else {
-            throw EncryptedKVStoreError.truncated("file < 24 bytes")
-        }
+    private static func readHeader(from handle: FileHandle) throws -> ParsedHeader {
+        let prefix = try readExactly(24, from: handle, what: "header prefix")
 
         // Magic.
-        let m = raw.prefix(4)
+        let m = prefix.prefix(4)
         guard Array(m) == magic else {
             throw EncryptedKVStoreError.malformedHeader(
                 "magic mismatch: got \(Array(m).map { String(format: "%02x", $0) }.joined())"
@@ -619,37 +588,34 @@ public enum EncryptedKVStore {
         }
 
         // Version.
-        let version = readUInt16LE(raw, at: 4)
+        let version = readUInt16LE(prefix, at: 4)
         guard version == formatVersion else {
             throw EncryptedKVStoreError.unsupportedVersion(version)
         }
 
         // Flags — must be 0 in v1.
-        let flags = readUInt16LE(raw, at: 6)
+        let flags = readUInt16LE(prefix, at: 6)
         guard flags == 0 else {
             throw EncryptedKVStoreError.malformedHeader("flags \(flags) ≠ 0 in v1")
         }
 
         // file_IV.
-        let fileIV = raw.subdata(in: 8..<20)
+        let fileIV = prefix.subdata(in: 8..<20)
 
         // wrapped DEK length + bytes.
-        let wrappedLen = Int(readUInt32LE(raw, at: 20))
-        let wrappedStart = 24
-        let wrappedEnd = wrappedStart + wrappedLen
-        guard wrappedEnd + 4 <= raw.count else {
-            throw EncryptedKVStoreError.truncated("wrapped DEK extends past EOF")
+        let wrappedLen = Int(readUInt32LE(prefix, at: 20))
+        guard wrappedLen >= 0, wrappedLen <= maxHeaderFieldBytes else {
+            throw EncryptedKVStoreError.malformedHeader("wrapped DEK length \(wrappedLen) out of bounds")
         }
-        let wrappedDEK = raw.subdata(in: wrappedStart..<wrappedEnd)
+        let wrappedDEK = try readExactly(wrappedLen, from: handle, what: "wrapped DEK")
 
         // Metadata length + bytes.
-        let metadataLen = Int(readUInt32LE(raw, at: wrappedEnd))
-        let metadataStart = wrappedEnd + 4
-        let metadataEnd = metadataStart + metadataLen
-        guard metadataEnd <= raw.count else {
-            throw EncryptedKVStoreError.truncated("metadata extends past EOF")
+        let metadataLenBytes = try readExactly(4, from: handle, what: "metadata length")
+        let metadataLen = Int(readUInt32LE(metadataLenBytes, at: 0))
+        guard metadataLen >= 0, metadataLen <= maxHeaderFieldBytes else {
+            throw EncryptedKVStoreError.malformedHeader("metadata length \(metadataLen) out of bounds")
         }
-        let metadataBytes = raw.subdata(in: metadataStart..<metadataEnd)
+        let metadataBytes = try readExactly(metadataLen, from: handle, what: "metadata")
 
         let metadata: EncryptedKVStoreMetadata
         do {
@@ -658,14 +624,14 @@ public enum EncryptedKVStore {
             throw EncryptedKVStoreError.malformedHeader("metadata JSON: \(error)")
         }
 
-        let body = raw.subdata(in: metadataEnd..<raw.count)
         let header = ParsedHeader(
             fileIV: fileIV,
             wrappedDEK: wrappedDEK,
             metadataBytes: metadataBytes,
-            metadata: metadata
+            metadata: metadata,
+            bodyOffset: UInt64(24 + wrappedLen + 4 + metadataLen)
         )
-        return (header, body)
+        return header
     }
 
     // MARK: - Nonce derivation
@@ -749,11 +715,6 @@ public enum EncryptedKVStore {
         let status = SecRandomCopyBytes(kSecRandomDefault, n, &buf)
         precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         return Data(buf)
-    }
-
-    private static func estimatedBodySize(plaintextSizes: [Int]) -> Int {
-        // 4 (count) + per chunk: 4 (len) + plaintext + 16 (tag)
-        4 + plaintextSizes.reduce(0) { $0 + 4 + $1 + gcmTagLength }
     }
 
     private static func ensureDirectory(_ url: URL) throws {

@@ -367,15 +367,14 @@ func bug4_staleUnownedSummaryPrunedAfterEviction() async {
     try? FileManager.default.removeItem(at: kvRoot)
 }
 
-// MARK: - BUG-5: Store() drops oversized checkpoints (MAJOR)
+// MARK: - P0: Store() drops oversized checkpoints instead of direct SSD persist
 
 @Test
-func bug5_storeDirectSSDFallbackWhenRamRejects() async throws {
-    // When RAM tier REJECTS a checkpoint (entry > RAM maxBytes)
-    // AND it's persistable (tokenCount >= minPersistTokens, ssdEnabled), store()
-    // must write it directly to SSD instead of silently dropping. Before fix: RAM
-    // rejection → store returns false, checkpoint lost. After fix: store() checks
-    // isPersistable, drives a direct EncryptedKVStore.write, returns true.
+func p0_storeDropsCheckpointWhenRamRejects() async throws {
+    // When RAM tier rejects a checkpoint (entry > RAM maxBytes), store() must
+    // NOT try to persist it directly to SSD. Direct SSD persistence still has
+    // to serialize the live MLX arrays into plaintext chunks, so the rejected
+    // checkpoint can OOM before disk accounting or eviction can help.
     let dir = tmpKVRoot()
     let modelKey = "testmodel"
     let modelDir = dir.appendingPathComponent(modelKey, isDirectory: true)
@@ -413,21 +412,17 @@ func bug5_storeDirectSSDFallbackWhenRamRejects() async throws {
         return c
     }
 
-    // store() should succeed despite RAM rejection (direct SSD write fallback).
     let stored = await mgr.store(tokens: tokens, checkpointLength: 8, caches: SendableKVCaches(caches))
-    #expect(stored == true, "Store must succeed via direct SSD write when RAM rejects but persistable")
+    #expect(stored == false, "RAM-rejected checkpoints must be dropped, not direct-persisted to SSD")
 
-    // Verify the SSD file was actually written by checking the nested dir structure.
     let modelHashPrefix = String(binding.modelHash.replacingOccurrences(of: "sha256:", with: "").prefix(12))
     let nestedDir = dir.appendingPathComponent(modelHashPrefix, isDirectory: true)
     let filesWritten = (try? FileManager.default.contentsOfDirectory(atPath: nestedDir.path)) ?? []
     let kvFiles = filesWritten.filter { $0.hasSuffix(".\(EncryptedKVStore.fileExtension)") }
-    #expect(kvFiles.count == 1, "Direct SSD write must create 1 file on disk")
+    #expect(kvFiles.isEmpty, "RAM-rejected checkpoint must not create an SSD file")
 
-    // Verify the entry is retrievable via lookup (it may be in RAM or SSD).
     let hit = await mgr.lookup(tokens: tokens)
-    #expect(hit != nil, "Direct-SSD-written entry must be retrievable")
-    #expect(hit?.tokenCount == 8)
+    #expect(hit == nil, "dropped oversized checkpoint must be a cache miss")
 
     try? FileManager.default.removeItem(at: dir)
 }

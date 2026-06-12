@@ -47,6 +47,14 @@ public struct PrefixCacheHit {
     public let tokenCount: Int
 }
 
+/// Lightweight RAM-entry metadata. Used for admission decisions before copying
+/// live KV arrays out of the cache.
+public struct PrefixCacheRAMEntryInfo: Sendable, Equatable {
+    public let key: PrefixCacheKey
+    public let tokenCount: Int
+    public let bytes: Int
+}
+
 // MARK: - Stats
 
 public struct PrefixCacheRAMStats: Sendable, Equatable {
@@ -126,6 +134,17 @@ public final class PrefixCacheRAM {
         get(PrefixCacheKey(modelHash: modelHash, digest: digest))
     }
 
+    /// Return entry metadata without copying KV arrays or bumping recency.
+    public func peek(_ key: PrefixCacheKey) -> PrefixCacheRAMEntryInfo? {
+        guard let entry = entries[key] else { return nil }
+        return PrefixCacheRAMEntryInfo(key: entry.key, tokenCount: entry.tokenCount, bytes: entry.bytes)
+    }
+
+    /// Convenience overload keyed by raw fields.
+    public func peek(modelHash: String, digest: Data) -> PrefixCacheRAMEntryInfo? {
+        peek(PrefixCacheKey(modelHash: modelHash, digest: digest))
+    }
+
     // MARK: - Insert
 
     /// Insert (or replace) a prefix snapshot. Takes ownership of
@@ -198,6 +217,15 @@ public final class PrefixCacheRAM {
             .map { ($0.key, $0.caches.map { c in c.copy() }, $0.tokenCount) }
     }
 
+    /// List flush candidates without copying their KV arrays. The caller can
+    /// filter by persistence threshold, existing SSD entry, and in-flight state
+    /// before copying exactly one selected entry via `entryForFlush`.
+    public func flushCandidates(modelHash: String) -> [PrefixCacheRAMEntryInfo] {
+        entries.values
+            .filter { $0.key.modelHash == modelHash }
+            .map { PrefixCacheRAMEntryInfo(key: $0.key, tokenCount: $0.tokenCount, bytes: $0.bytes) }
+    }
+
     /// Snapshot one entry for persistence. Used by second-use promotion; do
     /// not call `entriesForFlush(...).first(where:)` there, because that copies
     /// every checkpoint for the model before discarding all but one.
@@ -212,6 +240,9 @@ public final class PrefixCacheRAM {
     public func contains(_ key: PrefixCacheKey) -> Bool { entries[key] != nil }
     public var count: Int { entries.count }
     public var byteSize: Int { currentBytes }
+    public func canAdmitEntry(bytes: Int) -> Bool {
+        bytes >= 0 && (maxBytes == 0 || bytes <= maxBytes)
+    }
     public func snapshotStats() -> PrefixCacheRAMStats {
         var s = stats
         s.entries = entries.count

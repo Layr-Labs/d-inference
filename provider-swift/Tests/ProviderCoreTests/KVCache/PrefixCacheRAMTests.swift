@@ -159,6 +159,26 @@ func ramRejectsEntryLargerThanByteBudget() {
 }
 
 @Test
+func ramPeekAndFlushCandidatesDoNotCountAsHits() {
+    let ram = PrefixCacheRAM()
+    let key = PrefixCacheKey(modelHash: "m", digest: digest("p"))
+    let caches = [simpleCache(tokens: 8)]
+    let bytes = PrefixCacheRAM.byteSize(of: caches)
+    ram.put(key, caches: caches, tokenCount: 8)
+
+    let info = ram.peek(key)
+    #expect(info?.tokenCount == 8)
+    #expect(info?.bytes == bytes)
+    #expect(ram.snapshotStats().hits == 0, "peek must not materialize or count as a lookup hit")
+
+    let candidates = ram.flushCandidates(modelHash: "m")
+    #expect(candidates.count == 1)
+    #expect(candidates[0].key == key)
+    #expect(candidates[0].bytes == bytes)
+    #expect(ram.snapshotStats().hits == 0, "flush candidate enumeration must not copy or count as hits")
+}
+
+@Test
 func ramClearByModelDropsOnlyThatModel() {
     let ram = PrefixCacheRAM()
     ram.put(modelHash: "A", digest: digest("p"), caches: [simpleCache(tokens: 2)], tokenCount: 2)

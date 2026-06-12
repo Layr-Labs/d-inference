@@ -379,28 +379,53 @@ public actor BatchScheduler {
     /// Cross-tenant data-leak risk; do not enable without a fresh
     /// threat model.
     private struct RestoredCheckpointAdmission {
+        let candidate: PrefixLookupCandidate
         let reservedTokens: Int
     }
 
-    /// Checkpoint-tier lookup: on a hit, attach the restored per-layer caches
-    /// to the request so the scheduler decodes only the suffix. No-op when
-    /// the checkpoint manager is nil (engine/none models, or flag off). Done
-    /// in the async submit path because the engine step loop can't await the
-    /// manager actor.
+    /// Checkpoint-tier preflight: find a restore candidate and estimate its
+    /// memory cost without copying RAM caches or decrypting SSD chunks. The
+    /// caller reserves budget before `materializeRestoredCheckpoint` touches
+    /// tensors.
     ///
     /// MLX shape/runtime errors are fatal traps, not Swift throws. Validate the
-    /// restored checkpoint before it reaches `EngineCore.addRequest`; any
-    /// uncertainty becomes a cold prefill. The returned token count is the
-    /// memory reservation to charge if the restore is accepted.
-    private func maybeRestoreCheckpoint(
-        _ req: Request,
+    /// restored checkpoint after materialization but before it reaches
+    /// `EngineCore.addRequest`; any uncertainty becomes a cold prefill.
+    private func planRestoredCheckpoint(
         promptTokens: [Int],
-        scope: String
+        scope: String,
+        maxTokens: Int
     ) async -> RestoredCheckpointAdmission? {
         guard let mgr = checkpointManager else { return nil }
-        guard let hit = await mgr.lookup(tokens: promptTokens, scope: scope),
-              hit.tokenCount >= 1, hit.tokenCount < promptTokens.count
+        guard let candidate = await mgr.lookupCandidate(tokens: promptTokens, scope: scope),
+              candidate.tokenCount >= 1, candidate.tokenCount < promptTokens.count
         else { return nil }
+
+        return RestoredCheckpointAdmission(
+            candidate: candidate,
+            reservedTokens: restoredCheckpointReservedTokens(
+                restoredBytes: candidate.estimatedBytes,
+                promptTokenCount: promptTokens.count,
+                restoredTokenCount: candidate.tokenCount,
+                maxTokens: maxTokens
+            )
+        )
+    }
+
+    /// Materialize an already-admitted checkpoint candidate and attach it to the
+    /// MLX request. This intentionally runs after KV reservation.
+    private func materializeRestoredCheckpoint(
+        _ req: Request,
+        admission: RestoredCheckpointAdmission,
+        promptTokens: [Int],
+        scope: String
+    ) async {
+        guard let mgr = checkpointManager else { return }
+        guard let hit = await mgr.materialize(
+            candidate: admission.candidate,
+            tokens: promptTokens,
+            scope: scope
+        ) else { return }
 
         guard Self.restoredCheckpointIsUsable(
             caches: hit.caches,
@@ -410,18 +435,22 @@ public actor BatchScheduler {
         ) else {
             prefixCacheLogger.warning(
                 "prefix cache restore rejected: invalid checkpoint geometry; falling back to cold prefill")
-            return nil
+            return
+        }
+
+        let actualReservation = restoredCheckpointReservedTokens(
+            caches: hit.caches,
+            promptTokenCount: promptTokens.count,
+            restoredTokenCount: hit.tokenCount,
+            maxTokens: req.maxTokens
+        )
+        guard actualReservation <= admission.reservedTokens else {
+            prefixCacheLogger.warning(
+                "prefix cache restore skipped: materialized KV exceeded admitted estimate; falling back to cold prefill")
+            return
         }
 
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
-        return RestoredCheckpointAdmission(
-            reservedTokens: restoredCheckpointReservedTokens(
-                caches: hit.caches,
-                promptTokenCount: promptTokens.count,
-                restoredTokenCount: hit.tokenCount,
-                maxTokens: req.maxTokens
-            )
-        )
     }
 
     static func restoredCheckpointIsUsable(
@@ -508,9 +537,22 @@ public actor BatchScheduler {
         restoredTokenCount: Int,
         maxTokens: Int
     ) -> Int {
+        restoredCheckpointReservedTokens(
+            restoredBytes: PrefixCacheRAM.byteSize(of: caches),
+            promptTokenCount: promptTokenCount,
+            restoredTokenCount: restoredTokenCount,
+            maxTokens: maxTokens
+        )
+    }
+
+    private func restoredCheckpointReservedTokens(
+        restoredBytes: Int,
+        promptTokenCount: Int,
+        restoredTokenCount: Int,
+        maxTokens: Int
+    ) -> Int {
         let requestTokens = promptTokenCount + maxTokens
         guard kvBytesPerToken > 0 else { return requestTokens }
-        let restoredBytes = PrefixCacheRAM.byteSize(of: caches)
         let extraRestoredCopies = 2
         let chargedBytes = restoredBytes.multipliedReportingOverflow(by: extraRestoredCopies)
         let restoredEquivalentTokens: Int
@@ -530,32 +572,30 @@ public actor BatchScheduler {
     private func acceptRestoredCheckpointBudget(
         requestId: String,
         requestTokens: Int,
-        admission: RestoredCheckpointAdmission?,
-        req: Request
-    ) -> Int {
+        admission: RestoredCheckpointAdmission?
+    ) -> RestoredCheckpointAdmission? {
         guard let admission, admission.reservedTokens > requestTokens else {
-            return requestTokens
+            return admission
         }
         let usedWithoutThis = max(0, activeTokenBudgetUsed - requestTokens)
         let projected = usedWithoutThis.addingReportingOverflow(admission.reservedTokens)
         guard !projected.overflow, projected.partialValue <= tokenBudgetMax else {
-            req.restoredCheckpoint = nil
             prefixCacheLogger.warning(
                 "prefix cache restore skipped: restored KV exceeds token budget; falling back to cold prefill")
-            return requestTokens
+            return nil
         }
         if var bridge = activeBridges[requestId] {
             bridge.reservedTokens = admission.reservedTokens
             activeBridges[requestId] = bridge
         }
-        return admission.reservedTokens
+        return admission
     }
 
     private func reserveKVForRequest(
         requestId: String,
         requestTokens: Int,
         reservationTokens: Int,
-        req: Request
+        restorePlanned: Bool
     ) async -> Bool {
         guard let kvBudget else { return true }
         if await kvBudget.reserve(
@@ -570,11 +610,10 @@ public actor BatchScheduler {
         // a cold prefill because restored KV is already materialized. If that
         // larger reservation fails, drop the restore and retry the normal
         // request reservation so the cache miss is slow, not fatal.
-        guard req.restoredCheckpoint != nil, reservationTokens > requestTokens else {
+        guard restorePlanned, reservationTokens > requestTokens else {
             return false
         }
 
-        req.restoredCheckpoint = nil
         if var bridge = activeBridges[requestId] {
             bridge.reservedTokens = nil
             activeBridges[requestId] = bridge
@@ -1323,23 +1362,35 @@ public actor BatchScheduler {
             prompt: promptTokens as AnyHashable,
             samplingParams: sp
         )
-        let restoreAdmission = await maybeRestoreCheckpoint(req, promptTokens: promptTokens, scope: cacheScope)
-        let kvReservationTokens = acceptRestoredCheckpointBudget(
+        let plannedRestore = await planRestoredCheckpoint(
+            promptTokens: promptTokens,
+            scope: cacheScope,
+            maxTokens: maxTokens
+        )
+        let acceptedRestore = acceptRestoredCheckpointBudget(
             requestId: id,
             requestTokens: requestBudget,
-            admission: restoreAdmission,
-            req: req
+            admission: plannedRestore
         )
+        let kvReservationTokens = acceptedRestore?.reservedTokens ?? requestBudget
         guard await reserveKVForRequest(
             requestId: id,
             requestTokens: requestBudget,
             reservationTokens: kvReservationTokens,
-            req: req
+            restorePlanned: acceptedRestore != nil
         ) else {
             await dropBridge(requestId: id)
             continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
             continuation.finish()
             return stream
+        }
+        if let acceptedRestore {
+            await materializeRestoredCheckpoint(
+                req,
+                admission: acceptedRestore,
+                promptTokens: promptTokens,
+                scope: cacheScope
+            )
         }
         // Re-check the engine is still the one we captured (a reload/
         // unload may have run during the awaits above). Enqueuing onto a stopped/
@@ -1482,23 +1533,35 @@ public actor BatchScheduler {
             prompt: promptTokens as AnyHashable,
             samplingParams: sp
         )
-        let restoreAdmission = await maybeRestoreCheckpoint(req, promptTokens: promptTokens, scope: request.cacheScope)
-        let kvReservationTokens = acceptRestoredCheckpointBudget(
+        let plannedRestore = await planRestoredCheckpoint(
+            promptTokens: promptTokens,
+            scope: request.cacheScope,
+            maxTokens: maxTokens
+        )
+        let acceptedRestore = acceptRestoredCheckpointBudget(
             requestId: id,
             requestTokens: requestBudget,
-            admission: restoreAdmission,
-            req: req
+            admission: plannedRestore
         )
+        let kvReservationTokens = acceptedRestore?.reservedTokens ?? requestBudget
         guard await reserveKVForRequest(
             requestId: id,
             requestTokens: requestBudget,
             reservationTokens: kvReservationTokens,
-            req: req
+            restorePlanned: acceptedRestore != nil
         ) else {
             await dropBridge(requestId: id)
             continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
             continuation.finish()
             return stream
+        }
+        if let acceptedRestore {
+            await materializeRestoredCheckpoint(
+                req,
+                admission: acceptedRestore,
+                promptTokens: promptTokens,
+                scope: request.cacheScope
+            )
         }
         // Re-check the captured engine is still current after the awaits.
         // releaseRequestResources (not bare dropBridge): a cancel/timeout during

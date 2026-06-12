@@ -97,6 +97,17 @@ public struct PrefixLookupResult: @unchecked Sendable {
     public let tier: PrefixCacheTier
 }
 
+/// Restore candidate metadata returned before RAM copies or SSD decrypts are
+/// materialized. The scheduler uses this to reserve memory first; the manager
+/// later materializes the exact digest only if admission succeeds.
+struct PrefixLookupCandidate: Sendable, Equatable {
+    let digest: Data
+    let digestHex: String
+    let tokenCount: Int
+    let estimatedBytes: Int
+    let tier: PrefixCacheTier
+}
+
 /// Ownership-transfer box for handing freshly-extracted caches INTO the
 /// manager. The caller (BatchScheduler) extracts caches via
 /// `extractBatched` and transfers ownership — it MUST NOT mutate them
@@ -435,6 +446,20 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// to `tokens`. RAM first, then SSD (with the MB-1 guard). Returns
     /// fresh, caller-owned caches via `sending`, or nil on miss.
     public func lookup(tokens: [Int], scope: String = "") async -> PrefixLookupResult? {
+        guard let candidate = await lookupCandidate(tokens: tokens, scope: scope) else {
+            stats.misses += 1
+            return nil
+        }
+        guard let result = await materialize(candidate: candidate, tokens: tokens, scope: scope) else {
+            stats.misses += 1
+            return nil
+        }
+        return result
+    }
+
+    /// Find the best matching checkpoint without copying/decrypting its KV.
+    /// This is the pre-admission phase for restored checkpoints.
+    func lookupCandidate(tokens: [Int], scope: String = "") async -> PrefixLookupCandidate? {
         // A closed (deregistered/unloaded) manager must not
         // serve hits. Without this, a lookup that started before unload — or one
         // racing teardown — could return KV from a manager whose model is gone,
@@ -445,51 +470,84 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         // capture-hook-driven store() (tokens-only) can recover it.
         recordScope(scope, tokens: tokens)
         let checkpoints = PrefixDigest.checkpoints(tokens: tokens, boundaries: boundaries, scope: scope)
-        guard !checkpoints.isEmpty else {
-            stats.misses += 1
-            return nil
-        }
+        guard !checkpoints.isEmpty else { return nil }
 
         // RAM tier: longest checkpoint first.
         for cp in checkpoints.reversed() {
-            if let hit = ram.get(modelHash: binding.modelHash, digest: cp.digest) {
-                stats.ramHits += 1
-                let digestHex = cp.digest.dbkvHexString
-                if ssdEnabled, let index {
-                    if index.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil {
-                        // The prefix is ALSO on SSD. A RAM hit must slide the
-                        // SSD entry's lastHitAt: the sliding TTL is "time since
-                        // last use", and use includes RAM serves. Without this,
-                        // a RAM-hot prefix older than the TTL gets reaped as
-                        // "expired" the moment RAM pressure evicts it and the
-                        // next lookup falls through to SSD. Gated on TTL being
-                        // enabled so ttl=0 behavior stays byte-identical.
-                        if ttlSeconds > 0 {
-                            index.touch(modelHash: binding.modelHash, digestHex: digestHex, now: now())
-                            persistRecencyIfDue(index)
-                        }
-                    } else if hit.tokenCount >= minPersistTokens {
-                        // TB-016 sub-feature B: 2nd-use promotion. RAM hit above
-                        // the persist threshold and NOT already on SSD — schedule
-                        // a detached promotion (no blocking the lookup actor).
-                        let cpScope = scope
-                        Task.detached { [weak self] in
-                            await self?.persistDigest(cp.digest, scope: cpScope)
-                        }
-                    }
-                }
-                return PrefixLookupResult(caches: hit.caches, tokenCount: hit.tokenCount, tier: .ram)
+            if let info = ram.peek(modelHash: binding.modelHash, digest: cp.digest) {
+                return PrefixLookupCandidate(
+                    digest: cp.digest,
+                    digestHex: cp.digest.dbkvHexString,
+                    tokenCount: info.tokenCount,
+                    estimatedBytes: info.bytes,
+                    tier: .ram
+                )
             }
         }
 
         // SSD tier.
-        if ssdEnabled, let result = await loadFromSSD(tokens: tokens, scope: scope) {
-            stats.ssdHits += 1
-            return result
+        if ssdEnabled, let candidate = await selectSSDCandidate(tokens: tokens, scope: scope) {
+            return PrefixLookupCandidate(
+                digest: candidate.digest,
+                digestHex: candidate.entry.digestHex,
+                tokenCount: candidate.entry.tokenCount,
+                estimatedBytes: candidate.plaintextBytes,
+                tier: .ssd
+            )
         }
 
-        stats.misses += 1
         return nil
+    }
+
+    /// Materialize a previously-admitted restore candidate. Revalidates the
+    /// exact digest before copying RAM KV or decrypting SSD, so a stale/mutated
+    /// candidate degrades to a cold prefill instead of allocating unexpectedly.
+    func materialize(
+        candidate: PrefixLookupCandidate,
+        tokens: [Int],
+        scope: String = ""
+    ) async -> PrefixLookupResult? {
+        guard !closed else { return nil }
+        switch candidate.tier {
+        case .ram:
+            guard let info = ram.peek(modelHash: binding.modelHash, digest: candidate.digest),
+                  info.tokenCount == candidate.tokenCount,
+                  info.bytes <= candidate.estimatedBytes,
+                  let hit = ram.get(modelHash: binding.modelHash, digest: candidate.digest)
+            else { return nil }
+
+            stats.ramHits += 1
+            if ssdEnabled, let index {
+                if index.entry(modelHash: binding.modelHash, digestHex: candidate.digestHex) != nil {
+                    // The prefix is ALSO on SSD. A RAM hit must slide the SSD
+                    // entry's lastHitAt; otherwise RAM-hot prefixes can expire
+                    // on disk while still actively serving from RAM.
+                    if ttlSeconds > 0 {
+                        index.touch(modelHash: binding.modelHash, digestHex: candidate.digestHex, now: now())
+                        persistRecencyIfDue(index)
+                    }
+                } else if hit.tokenCount >= minPersistTokens {
+                    let cpScope = scope
+                    let digest = candidate.digest
+                    Task.detached { [weak self] in
+                        await self?.persistDigest(digest, scope: cpScope)
+                    }
+                }
+            }
+            return PrefixLookupResult(caches: hit.caches, tokenCount: hit.tokenCount, tier: .ram)
+
+        case .ssd:
+            guard let index,
+                  let entry = index.entry(modelHash: binding.modelHash, digestHex: candidate.digestHex),
+                  entry.tokenCount == candidate.tokenCount,
+                  let ssd = await validateSSDCandidate(entry: entry, scope: scope),
+                  ssd.plaintextBytes <= candidate.estimatedBytes
+            else { return nil }
+            return await materializeSSDCandidate(ssd)
+
+        case .miss:
+            return nil
+        }
     }
 
     /// Drop an unusable SSD file (corrupt header, wrong model/
@@ -524,69 +582,55 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         await notifyAccountant()
     }
 
-    private func loadFromSSD(tokens: [Int], scope: String = "") async -> PrefixLookupResult? {
-        guard let index, let kek, let cacheDir else { return nil }
+    private struct SSDLookupCandidate: Sendable {
+        let entry: PrefixIndexEntry
+        let fileURL: URL
+        let metadata: EncryptedKVStoreMetadata
+        let layout: KVCacheLayout
+        let plaintextBytes: Int
+        let digest: Data
+    }
 
-        // Sliding TTL: an entry is expired when it hasn't been hit within
-        // `ttlSeconds` (lastHitAt is bumped on every hit — SSD loads AND RAM
-        // serves — so hot prefixes stay warm). Checked BEFORE decrypt — an
-        // expired entry is reclaimed (same drop path as a corrupt file) and
-        // the search CONTINUES with the next-longest checkpoint: an expired 8k
-        // checkpoint must not mask a shorter, still-fresh one (e.g. a hot
-        // shared system-prefix). Each drop removes the entry from the index,
-        // so findLongestCheckpoint yields the next candidate; progress is
-        // guaranteed. ttlSeconds == 0 disables (infinite retention). Bounds
-        // how long prompt-derived KV survives on disk (TB-007 window shrink).
-        var selected: PrefixIndexEntry?
-        // Defensive cap: dropUnusableSSDFile no-ops when the manager closed
-        // mid-loop (it must not delete in a handed-off dir), which would
-        // otherwise refetch the same entry forever. The `closed` re-check
-        // breaks that cycle; the cap is belt-and-braces against any future
-        // drop path that leaves the entry behind.
+    private func selectSSDCandidate(tokens: [Int], scope: String = "") async -> SSDLookupCandidate? {
+        guard let index, let cacheDir else { return nil }
+
+        // Sliding TTL: an expired longest checkpoint must not mask a shorter,
+        // still-fresh one, so expired entries are dropped and selection retries.
         var attempts = boundaries.count + 1
-        while attempts > 0, !closed, let candidate = index.findLongestCheckpoint(
+        while attempts > 0, !closed, let entry = index.findLongestCheckpoint(
             modelHash: binding.modelHash, tokens: tokens, boundaries: boundaries, scope: scope
         ) {
             attempts -= 1
-            guard isExpired(lastHitAt: candidate.lastHitAt) else {
-                selected = candidate
-                break
+            guard isExpired(lastHitAt: entry.lastHitAt) else {
+                return await validateSSDCandidate(entry: entry, scope: scope)
             }
             stats.ttlExpirations += 1
-            let rel = "\(modelDirComponent)/\(candidate.digestHex).\(EncryptedKVStore.fileExtension)"
+            let rel = "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)"
             await dropUnusableSSDFile(
-                cacheDir.appendingPathComponent(rel), digestHex: candidate.digestHex, index: index)
+                cacheDir.appendingPathComponent(rel), digestHex: entry.digestHex, index: index)
         }
-        guard let entry = selected else { return nil }
+        return nil
+    }
 
-        // Path safety: the on-disk index JSON is plaintext and NOT
-        // authenticated, so a tampered entry.relativePath could contain
-        // "../" and escape cacheDir (an out-of-sandbox read). The path is
-        // written deterministically by flushToSSD, so reconstruct it from
-        // the trusted model binding + the index key (entry.digestHex, which
-        // findLongestCheckpoint already matched against a computed pure-hex
-        // digest) instead of trusting the stored path.
+    /// Validate SSD metadata, layout, scope, and byte estimate without
+    /// decrypting tensor chunks. Any uncertainty is a miss/cold prefill.
+    private func validateSSDCandidate(entry: PrefixIndexEntry, scope: String) async -> SSDLookupCandidate? {
+        guard let index, let cacheDir else { return nil }
+
+        // Path safety: reconstruct the path from trusted binding + digest
+        // rather than using plaintext index.relativePath.
         let relPath = "\(modelDirComponent)/\(entry.digestHex).\(EncryptedKVStore.fileExtension)"
         let fileURL = cacheDir.appendingPathComponent(relPath)
 
-        // MB-1: validate metadata BEFORE unwrap/decrypt. A wrong-model
-        // file decrypts cleanly (AAD is its own metadata), so the cipher
-        // can't catch this — the equality check must.
         let meta: EncryptedKVStoreMetadata
         do {
             meta = try EncryptedKVStore.readMetadataOnly(from: fileURL)
         } catch {
             stats.ssdReadErrors += 1
-            // Truncated/corrupt header (e.g. crash mid-write): drop BOTH the
-            // index entry AND the unusable file, so it can't linger on disk
-            // (leaking + escaping the budget) and be re-read every lookup.
             await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
-        // The model-dir path is reconstructed from THIS model's binding, so a
-        // mismatching file here is genuinely stale/wrong for this model (e.g.
-        // a weight change under the same id) — drop the file too, not just the
-        // index entry, so it can't linger and escape the disk budget.
+
         guard meta.modelHash == binding.modelHash else {
             stats.modelMismatches += 1
             logger.warning("MB-1: prefix file model mismatch — dropping entry \(entry.digestHex, privacy: .public)")
@@ -600,78 +644,99 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
-        // Prefix binding: the file authenticates under its OWN metadata, so
-        // a stale/corrupt index entry (or a same-model file at the wrong
-        // path) would otherwise decrypt cleanly and return KV for a
-        // DIFFERENT prompt prefix. Require the file's prefix hash to match
-        // the index entry's digest, or drop it and cold-prefill.
         guard meta.tokenPrefixHash == entry.digestHex else {
             stats.prefixHashMismatches += 1
             logger.warning("SSD prefix-hash mismatch (index stale/corrupt) — dropping \(entry.digestHex, privacy: .public)")
             await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
-        // Per-tenant scope re-check (defense-in-depth on top of the scoped
-        // digest, which already makes a cross-scope filename match infeasible).
-        // Normalize nil/"" to the same unscoped value. A mismatch should be
-        // unreachable — the scoped digest in findLongestCheckpoint guarantees
-        // the matched entry was keyed with THIS scope — so REFUSE without
-        // deleting: the file legitimately belongs to another scope (only the
-        // owning scope's lookup may reclaim it), exactly like a foreign file.
         let fileScope = meta.scope ?? ""
         guard fileScope == scope else {
             stats.modelMismatches += 1
             logger.warning("SSD scope mismatch — refusing (not deleting) entry \(entry.digestHex, privacy: .public)")
             return nil
         }
-
-        // Decrypt + deserialize.
-        let caches: [any KVCache]
+        guard let layoutJSON = meta.metaState.first,
+              let layout = try? JSONDecoder().decode(KVCacheLayout.self, from: Data(layoutJSON.utf8))
+        else {
+            stats.ssdReadErrors += 1
+            await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
+            return nil
+        }
         do {
-            let (readMeta, chunks) = try await EncryptedKVStore.read(from: fileURL, kek: kek)
-            guard let layoutJSON = readMeta.metaState.first,
-                  let layout = try? JSONDecoder().decode(
-                    KVCacheLayout.self, from: Data(layoutJSON.utf8)) else {
-                throw KVCacheSerializerError.reconstructionFailed("missing/invalid layout in metaState")
-            }
-            // Bind the actual KV tensor shapes (not just the metadata
-            // integers) to the live model before seeding attention.
-            // Per-layer shape validation for heterogeneous models (Gemma-4);
-            // fall back to the scalar check when no per-layer reference.
             if let layerShapes = binding.layerShapes {
                 try KVCacheSerializer.validateLayout(layout, layerShapes: layerShapes)
             } else {
                 try KVCacheSerializer.validateLayout(
                     layout, kvHeads: binding.kvHeads, headDim: binding.headDim)
             }
-            caches = try KVCacheSerializer.deserialize(chunks: chunks, layout: layout)
         } catch {
-            stats.ssdReadErrors += 1
-            logger.warning("SSD prefix read failed for \(entry.digestHex, privacy: .public): \(String(describing: error))")
-            // Drop BOTH the index entry AND the unusable file (corrupt,
-            // truncated, KEK-unwrap failure) so it can't linger on disk
-            // forever consuming the budget and being re-read every lookup.
+            stats.shapeMismatches += 1
             await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
             return nil
         }
+        guard let plaintextBytes = Self.plaintextByteCount(meta.chunkPlaintextSizes),
+              let digestData = Data(hex: entry.digestHex)
+        else {
+            stats.ssdReadErrors += 1
+            await dropUnusableSSDFile(fileURL, digestHex: entry.digestHex, index: index)
+            return nil
+        }
+        return SSDLookupCandidate(
+            entry: entry,
+            fileURL: fileURL,
+            metadata: meta,
+            layout: layout,
+            plaintextBytes: plaintextBytes,
+            digest: digestData
+        )
+    }
 
-        // The manager may have been deregistered (closed) while
-        // we were suspended in the read above. A closed manager must not serve a
-        // hit (its model is gone — seeding a superseded engine) nor mutate RAM/
-        // index state a new same-modelKey manager may now own. Bail.
+    private func materializeSSDCandidate(_ candidate: SSDLookupCandidate) async -> PrefixLookupResult? {
+        guard let index, let kek else { return nil }
+
+        let caches: [any KVCache]
+        do {
+            let (readMeta, chunks) = try await EncryptedKVStore.read(from: candidate.fileURL, kek: kek)
+            guard readMeta == candidate.metadata else {
+                throw KVCacheSerializerError.reconstructionFailed("metadata changed after restore admission")
+            }
+            caches = try KVCacheSerializer.deserialize(chunks: chunks, layout: candidate.layout)
+        } catch {
+            stats.ssdReadErrors += 1
+            logger.warning("SSD prefix read failed for \(candidate.entry.digestHex, privacy: .public): \(String(describing: error))")
+            await dropUnusableSSDFile(candidate.fileURL, digestHex: candidate.entry.digestHex, index: index)
+            return nil
+        }
+
+        // The manager may have been deregistered while suspended in the read.
         guard !closed else { return nil }
 
-        // Promote to RAM for the next hit, and bump index recency.
-        if let digestData = Data(hex: entry.digestHex) {
+        let cacheBytes = PrefixCacheRAM.byteSize(of: caches)
+        if ram.canAdmitEntry(bytes: cacheBytes) {
             ram.put(
-                modelHash: binding.modelHash, digest: digestData,
-                caches: caches.map { $0.copy() }, tokenCount: entry.tokenCount
+                modelHash: binding.modelHash,
+                digest: candidate.digest,
+                caches: caches.map { $0.copy() },
+                tokenCount: candidate.entry.tokenCount
             )
         }
-        index.touch(modelHash: binding.modelHash, digestHex: entry.digestHex, now: now())
+        index.touch(modelHash: binding.modelHash, digestHex: candidate.entry.digestHex, now: now())
         persistRecencyIfDue(index)
+        stats.ssdHits += 1
 
-        return PrefixLookupResult(caches: caches, tokenCount: entry.tokenCount, tier: .ssd)
+        return PrefixLookupResult(caches: caches, tokenCount: candidate.entry.tokenCount, tier: .ssd)
+    }
+
+    private static func plaintextByteCount(_ sizes: [Int]) -> Int? {
+        var total = 0
+        for size in sizes {
+            guard size >= 0 else { return nil }
+            let next = total.addingReportingOverflow(size)
+            guard !next.overflow else { return nil }
+            total = next.partialValue
+        }
+        return total
     }
 
     // MARK: - Store
@@ -680,9 +745,9 @@ public actor PrefixCacheManager: PrefixCacheOwner {
     /// checkpoint digest of `tokens[0..<checkpointLength]`. SSD
     /// persistence happens later via `flushToSSD` (write-back).
     /// Returns true if stored, false if rejected (e.g., exceeds maxBytes).
-    /// When RAM rejects an over-budget checkpoint AND it is
-    /// persistable (>= minPersistTokens or pinned) AND ssdEnabled, fall back
-    /// to a direct SSD write so highest-value checkpoints aren't silently lost.
+    /// Oversized checkpoints are deliberately NOT written directly to SSD:
+    /// direct persistence still has to serialize live MLX arrays into plaintext
+    /// chunks, and can OOM before disk accounting or eviction can help.
     @discardableResult
     public func store(tokens: [Int], checkpointLength: Int, caches: SendableKVCaches) async -> Bool {
         guard !closed else { return false }
@@ -706,76 +771,8 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             return true
         }
 
-        // RAM rejected (over its maxBytes). If this checkpoint is
-        // persistable (>= minPersistTokens or pinned) AND ssdEnabled, persist
-        // it directly to SSD so highest-value checkpoints aren't silently lost
-        // on memory-constrained hosts (where RAM maxBytes = physMem/8 may be
-        // smaller than a past-window checkpoint).
-        let isPersistable = checkpointLength >= minPersistTokens || pinnedDigests.contains(digestHex)
-        guard ssdEnabled, isPersistable, let index, let kek, let cacheDir else { return false }
-        guard KVCacheSerializer.areSupported(caches.caches) else { return false }
-
-        // Dedup: already persisted or in-flight.
-        if index.entry(modelHash: binding.modelHash, digestHex: digestHex) != nil { return false }
-        if inFlightWrites.contains(digestHex) { return false }
-
-        inFlightWrites.insert(digestHex)
-        defer { finishWrite(digestHex) }
-
-        do {
-            let (chunks, layout) = try KVCacheSerializer.serialize(caches.caches)
-            let layoutJSON = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
-            let relativePath = "\(modelDirComponent)/\(digestHex).\(EncryptedKVStore.fileExtension)"
-            let fileURL = cacheDir.appendingPathComponent(relativePath)
-            let meta = EncryptedKVStoreMetadata(
-                modelHash: binding.modelHash, modelDtype: binding.modelDtype, modelArch: binding.modelArch,
-                vocabSize: binding.vocabSize, numLayers: binding.numLayers,
-                kvHeads: binding.kvHeads, headDim: binding.headDim, tokenCount: checkpointLength,
-                tokenPrefixHash: digestHex, kvCacheClass: "mixed",
-                metaState: [layoutJSON], chunkPlaintextSizes: chunks.map { $0.count }, createdAt: now(),
-                expiresAt: expiresAtForWrite(),
-                scope: scope
-            )
-            try await EncryptedKVStore.write(to: fileURL, metadata: meta, chunks: chunks, kek: kek)
-
-            #if DEBUG
-            if let hook = _afterWriteHookForTest { await hook() }
-            #endif
-            // The manager may have been deregistered
-            // (closed=true via deregisterFromAccountant) DURING the await above.
-            // The `closed` contract is that no SSD bookkeeping survives
-            // deregistration: recording here pushes a now-orphaned index entry,
-            // and a later index.save() could clobber a freshly-loaded
-            // same-modelKey manager's index.json. We deliberately do NOT delete
-            // the file — that path/dir may already be OWNED by the new manager
-            // (same modelHash → same modelDirComponent), so removing it would be
-            // the forbidden cross-actor live-delete (and could nuke the new
-            // owner's identical-digest file). The file is reclaimed and counted
-            // by the new manager's reconcileWithDisk (validates model + prefix
-            // binding). Bail without recording/saving/notifying.
-            if closed { return false }
-
-            let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
-            let fileBytes = (attrs?[.size] as? Int) ?? 0
-            index.record(PrefixIndexEntry(
-                modelHash: binding.modelHash, digestHex: digestHex, tokenCount: checkpointLength,
-                relativePath: relativePath, fileBytes: fileBytes, createdAt: now(), lastHitAt: now()
-            ))
-
-            stats.ssdFlushes += 1
-            enforceDiskBudget(index: index, cacheDir: cacheDir)
-
-            unsavedWrites += 1
-            if unsavedWrites >= Self.saveCoalesceThreshold {
-                if (try? index.save()) != nil { unsavedWrites = 0 }
-            }
-            await notifyAccountant()
-            // The checkpoint is now on SSD (not in RAM), so report success.
-            return true
-        } catch {
-            logger.warning("store: direct SSD persist failed for oversized checkpoint \(digestHex, privacy: .public): \(String(describing: error))")
-            return false
-        }
+        logger.warning("prefix checkpoint \(digestHex, privacy: .public) exceeds RAM cache budget; skipping direct SSD persistence")
+        return false
     }
 
     // MARK: - Flush (write-back to SSD)
@@ -794,10 +791,10 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         guard ssdEnabled, let index, let kek, let cacheDir else { return 0 }
 
         var written = 0
-        for snap in ram.entriesForFlush(modelHash: binding.modelHash) {
-            let digestHex = snap.key.digest.dbkvHexString
+        for candidate in ram.flushCandidates(modelHash: binding.modelHash) {
+            let digestHex = candidate.key.digest.dbkvHexString
             // TB-016: skip sub-threshold entries unless pinned.
-            if snap.tokenCount < minPersistTokens,
+            if candidate.tokenCount < minPersistTokens,
                !pinnedDigests.contains(digestHex) {
                 continue
             }
@@ -809,6 +806,9 @@ public actor PrefixCacheManager: PrefixCacheOwner {
             if inFlightWrites.contains(digestHex) { continue }
             // Only serialize SSD-capable stacks (defensive; ssdEnabled
             // should already guarantee this for the model).
+            guard let snap = ram.entryForFlush(modelHash: binding.modelHash, digest: candidate.key.digest) else {
+                continue
+            }
             guard KVCacheSerializer.areSupported(snap.caches) else { continue }
 
             inFlightWrites.insert(digestHex)

@@ -388,6 +388,11 @@ public actor ProviderLoop {
     /// before `run()` starts it.
     private var autoUpdateTask: Task<Void, Never>?
 
+    /// Reacts to kernel memory pressure (reclaim MLX cache, mark an imminent
+    /// OOM). Held for the loop's lifetime so the DispatchSource isn't
+    /// deallocated. See `MemoryPressureMonitor` / `OOMDetector`.
+    private var memoryPressureMonitor: MemoryPressureMonitor?
+
     private let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
 
     private static let shutdownDrainTimeout: Duration = .seconds(600)
@@ -544,6 +549,12 @@ public actor ProviderLoop {
         // Crash recovery is owned by the WatchdogAgent (separate launchd job,
         // #315) — installed from the serve path, so it reaches auto-updated
         // installs too. KeepAlive stays false to avoid racing the updater.
+
+        // Memory protection: surface any OOM that killed the previous run (a
+        // jetsam SIGKILL leaves no in-process trace) and start reacting to live
+        // kernel memory pressure before the next kill. Best-effort, never throws.
+        startMemoryProtection()
+        defer { memoryPressureMonitor?.cancel() }
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. Started before the coordinator connection so local clients can
@@ -2092,6 +2103,56 @@ public actor ProviderLoop {
             preloadTaskIds.removeValue(forKey: modelId)
             preloadStatusSubscribers.removeValue(forKey: modelId)
         }
+    }
+
+    // MARK: - Memory protection
+
+    /// Surface any prior-run OOM and start reacting to live memory pressure.
+    ///
+    /// A jetsam SIGKILL (the dominant office-Mac OOM) is uncatchable and leaves
+    /// no in-process trace, so we recover the signal two ways: (1) scrape the
+    /// kernel's crash logs + consume any pre-death marker on THIS launch and
+    /// emit an `oom` telemetry event; (2) watch kernel memory pressure and, on
+    /// critical, reclaim MLX's cache and drop a marker so the *next* launch can
+    /// attribute a kill that happens before we can report it. All best-effort.
+    private func startMemoryProtection() {
+        let now = Date()
+        let since = OOMDetector.loadLastScan() ?? now.addingTimeInterval(-24 * 3600)
+        let findings = OOMDetector.detectOnLaunch(since: since)
+        OOMDetector.saveLastScan(now)
+        for finding in findings {
+            var fields: [String: AnyCodableValue] = ["detect_source": .string(finding.source.rawValue)]
+            if let reason = finding.reason { fields["reason"] = .string(reason) }
+            if let peak = finding.peakMemoryBytes { fields["peak_memory_bytes"] = .int64(Int64(clamping: peak)) }
+            if let report = finding.reportName { fields["report"] = .string(report) }
+            TelemetryClient.shared.emit(
+                kind: .oom, severity: .error, message: finding.message, fields: fields)
+            logger.error("OOM detected on launch: \(finding.message)")
+        }
+
+        let monitor = MemoryPressureMonitor(
+            clearCache: { MLX.Memory.clearCache() },
+            writeMarker: { _ in
+                let marker = OOMDetector.Marker(
+                    pid: ProcessInfo.processInfo.processIdentifier,
+                    epochSeconds: Date().timeIntervalSince1970,
+                    peakMemoryBytes: UInt64(max(0, MLX.Memory.peakMemory)),
+                    availableBytesAtEvent: SystemMemory.availableBytes() ?? 0)
+                OOMDetector.writeMarker(marker)
+            },
+            emit: { level, severity in
+                TelemetryClient.shared.emit(
+                    kind: .oom, severity: severity,
+                    message: "memory pressure \(level.rawValue) — possible imminent OOM",
+                    fields: [
+                        "pressure": .string(level.rawValue),
+                        "available_bytes": .int64(Int64(clamping: SystemMemory.availableBytes() ?? 0)),
+                        "mlx_active_bytes": .int64(Int64(clamping: UInt64(max(0, MLX.Memory.activeMemory)))),
+                    ])
+            })
+        monitor.start()
+        self.memoryPressureMonitor = monitor
+        logger.info("Memory protection active (OOM detection + pressure monitor)")
     }
 
     // MARK: - Idle timeout

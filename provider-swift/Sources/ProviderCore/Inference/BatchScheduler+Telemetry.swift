@@ -43,7 +43,16 @@ extension BatchScheduler {
         let osReserve = 4 * 1024 * 1024 * 1024
         let safetyMargin = totalMemory / 10
         let globalUsed = Int(MLX.GPU.activeMemory) + Int(MLX.GPU.cacheMemory)
-        let availableHeadroom = max(0, totalMemory - osReserve - safetyMargin - globalUsed)
+        let mlxFree = max(0, totalMemory - globalUsed)
+        // Clamp the MLX-only free figure to what the OS actually reports
+        // available. `totalMemory - MLX.active - MLX.cache` is blind to every
+        // other process on the box, so on a shared office Mac it over-reports
+        // free RAM by whatever Chrome/Xcode/etc. hold — the same OOM hole the
+        // model-load gate and GlobalKVCacheBudget already close via
+        // min(mlxFree, SystemMemory.availableBytes()).
+        let osAvailable = SystemMemory.availableBytes().map { Int(min($0, UInt64(Int.max))) } ?? Int.max
+        let realFree = min(mlxFree, osAvailable)
+        let availableHeadroom = max(0, realFree - osReserve - safetyMargin)
         let liveBudget = activeTokenBudgetUsed + (availableHeadroom / kvBytesPerToken)
         return max(1024, min(staticBudget, liveBudget))
     }

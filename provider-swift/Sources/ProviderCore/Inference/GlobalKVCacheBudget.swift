@@ -7,7 +7,7 @@ import MLX
 public actor GlobalKVCacheBudget {
     private let safetyFactor: Double
     private let reserveBytes: UInt64
-    private let memorySnapshot: @Sendable () -> (total: UInt64, active: UInt64, cache: UInt64)
+    private let memorySnapshot: @Sendable () -> (total: UInt64, active: UInt64, cache: UInt64, systemAvailable: UInt64)
     private var reservations: [String: UInt64] = [:]
 
     public init(reserveBytes: UInt64 = 0, safetyFactor: Double = 0.7) {
@@ -17,7 +17,11 @@ public actor GlobalKVCacheBudget {
             (
                 total: ProcessInfo.processInfo.physicalMemory,
                 active: UInt64(Memory.activeMemory),
-                cache: UInt64(Memory.cacheMemory)
+                cache: UInt64(Memory.cacheMemory),
+                // Real OS-available memory (free + reclaimable), accounting for
+                // every other process on the box. `.max` when unavailable so we
+                // fall back to the MLX-only view rather than admitting nothing.
+                systemAvailable: SystemMemory.availableBytes() ?? .max
             )
         }
     }
@@ -25,7 +29,7 @@ public actor GlobalKVCacheBudget {
     init(
         reserveBytes: UInt64 = 0,
         safetyFactor: Double = 0.7,
-        memorySnapshot: @escaping @Sendable () -> (total: UInt64, active: UInt64, cache: UInt64)
+        memorySnapshot: @escaping @Sendable () -> (total: UInt64, active: UInt64, cache: UInt64, systemAvailable: UInt64)
     ) {
         self.reserveBytes = reserveBytes
         self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
@@ -76,9 +80,19 @@ public actor GlobalKVCacheBudget {
     }
 
     private func availableReservationBytes() -> UInt64 {
-        let (total, active, cache) = memorySnapshot()
-        let usedBeforeReservations = Self.saturatingAdd(active, cache, reserveBytes)
-        let usable = total > usedBeforeReservations ? total - usedBeforeReservations : 0
+        let (total, active, cache, systemAvailable) = memorySnapshot()
+        // MLX-only view: physical total minus what MLX itself holds. This is
+        // blind to every other process on the machine, so on a shared office
+        // Mac it over-reports free memory by whatever Chrome/Xcode/etc. hold.
+        let mlxUsed = Self.saturatingAdd(active, cache)
+        let mlxFree = total > mlxUsed ? total - mlxUsed : 0
+        // Clamp to what the OS actually reports available. The tighter of the
+        // two bounds wins — the exact same clamp the model-LOAD gate applies
+        // (`ModelLoadAdmission.freeForLoadGb`: realFree = min(mlxFree, OS-free)).
+        // Without this, the runtime KV path admits requests against memory other
+        // processes have already taken and drives the box into a jetsam OOM kill.
+        let realFree = min(mlxFree, systemAvailable)
+        let usable = realFree > reserveBytes ? realFree - reserveBytes : 0
         let capped = Double(usable) * safetyFactor
         let reservationCap = capped >= Double(UInt64.max) ? UInt64.max : UInt64(capped)
         let reserved = reservations.values.reduce(UInt64(0)) { partial, value in

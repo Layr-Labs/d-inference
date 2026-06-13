@@ -48,8 +48,13 @@ const (
 	KindInferenceError     TelemetryKind = "inference_error"
 	KindRuntimeMismatch    TelemetryKind = "runtime_mismatch"
 	KindConnectivity       TelemetryKind = "connectivity"
-	KindLog                TelemetryKind = "log"
-	KindCustom             TelemetryKind = "custom"
+	// KindOOM is an out-of-memory event: a provider-detected jetsam/crash-log
+	// OOM surfaced on the NEXT launch (a SIGKILL leaves no in-process trace), or
+	// a coordinator-classified "oom_suspected" disconnect. Mirror of Swift
+	// `TelemetryKind.oom` / TS `oom`.
+	KindOOM    TelemetryKind = "oom"
+	KindLog    TelemetryKind = "log"
+	KindCustom TelemetryKind = "custom"
 )
 
 // TelemetrySourceCustom is returned when a source value can't be classified
@@ -93,6 +98,7 @@ func KnownKinds() map[TelemetryKind]struct{} {
 		KindInferenceError:     {},
 		KindRuntimeMismatch:    {},
 		KindConnectivity:       {},
+		KindOOM:                {},
 		KindLog:                {},
 		KindCustom:             {},
 	}

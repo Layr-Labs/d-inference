@@ -196,6 +196,16 @@ public actor BatchScheduler {
             return
         }
 
+        // Pin MLX's unified-memory ceiling below physical RAM (idempotent, once
+        // per process). MLX defaults memoryLimit to 1.5× the device working set
+        // — above physical RAM — so without this it can allocate the machine
+        // into a jetsam SIGKILL (an invisible OOM). See MLXMemoryGuard.
+        MLXMemoryGuard.configureOnce(log: { limits in
+            FileHandle.standardError.write(Data(
+                "[mlx] memory ceiling set: limit=\(limits.memoryLimitBytes / (1024*1024*1024))GB cache=\(limits.cacheLimitBytes / (1024*1024*1024))GB\n".utf8
+            ))
+        })
+
         await stopCurrentEngine()
         let loadEpoch = generationEpoch
 

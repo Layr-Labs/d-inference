@@ -112,64 +112,8 @@ public enum OOMDetector {
         return try? JSONDecoder().decode(Marker.self, from: data)
     }
 
-    // MARK: - Pure parsers (.ips reports)
-
-    /// Parse a kernel `JetsamEvent-*.ips` (header line + JSON body with a
-    /// `processes` array); finding iff our process was killed. Pure + tolerant.
-    public static func parseJetsamReport(contents: String, processName: String) -> Finding? {
-        guard let body = jsonBody(from: contents) else { return nil }
-        let pageSize = (body["pageSize"] as? Int)
-            ?? ((body["memoryStatus"] as? [String: Any])?["pageSize"] as? Int)
-            ?? 16384
-        guard let processes = body["processes"] as? [[String: Any]] else { return nil }
-        let needle = processName.lowercased()
-        for proc in processes {
-            guard let name = proc["name"] as? String, name.lowercased().contains(needle) else { continue }
-            let rpages = (proc["rpages"] as? Int) ?? (proc["pages"] as? Int) ?? 0
-            let bytes = UInt64(max(0, rpages)) &* UInt64(max(0, pageSize))
-            let reason = (proc["reason"] as? String) ?? (proc["killDelta"] as? String)
-            return Finding(
-                source: .jetsamReport,
-                message: "jetsam killed \(name) (\(reason ?? "memory pressure"))",
-                reason: reason,
-                peakMemoryBytes: bytes > 0 ? bytes : nil)
-        }
-        return nil
-    }
-
-    /// Parse a process crash `.ips` for a memory kill: `EXC_RESOURCE` with a
-    /// MEMORY subtype, or a JETSAM termination namespace. Pure + tolerant.
-    public static func parseMemoryCrashReport(contents: String, processName: String) -> Finding? {
-        guard let header = jsonHeader(from: contents) else { return nil }
-        // Header names the app; only consider reports for our process.
-        let appName = (header["app_name"] as? String) ?? (header["procName"] as? String) ?? ""
-        guard appName.lowercased().contains(processName.lowercased()) else { return nil }
-        guard let body = jsonBody(from: contents) else { return nil }
-
-        if let exception = body["exception"] as? [String: Any] {
-            let type = (exception["type"] as? String) ?? ""
-            let subtype = (exception["subtype"] as? String) ?? ""
-            if type.contains("EXC_RESOURCE") && subtype.uppercased().contains("MEMORY") {
-                return Finding(
-                    source: .memoryCrashReport,
-                    message: "\(appName) hit memory resource limit (\(subtype))",
-                    reason: subtype)
-            }
-        }
-        if let termination = body["termination"] as? [String: Any] {
-            let namespace = (termination["namespace"] as? String) ?? ""
-            if namespace.uppercased().contains("JETSAM") {
-                let reason = (termination["indicator"] as? String) ?? namespace
-                return Finding(
-                    source: .memoryCrashReport,
-                    message: "\(appName) terminated by jetsam (\(reason))",
-                    reason: reason)
-            }
-        }
-        return nil
-    }
-
     // MARK: - Launch detection (I/O)
+    // (.ips parsing lives in OOMDetector+CrashReports.swift)
 
     /// Scan DiagnosticReports for OOM-relevant reports modified since `since`.
     /// Best-effort; returns [] on any directory/read error.
@@ -228,30 +172,5 @@ public enum OOMDetector {
         findings.append(contentsOf: scanDiagnosticReports(
             dir: diagnosticReportsDir, processName: processName, since: since, fileManager: fileManager))
         return findings
-    }
-
-    // MARK: - JSON helpers
-
-    /// The first JSON object in an `.ips` document (the one-line header).
-    static func jsonHeader(from contents: String) -> [String: Any]? {
-        guard let firstLine = contents.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true).first,
-              let data = firstLine.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj
-    }
-
-    /// The JSON body of an `.ips`: whole-file if it parses, else after line 1.
-    static func jsonBody(from contents: String) -> [String: Any]? {
-        if let data = contents.data(using: .utf8),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            return obj
-        }
-        let parts = contents.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
-        guard parts.count == 2,
-              let data = parts[1].data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj
     }
 }

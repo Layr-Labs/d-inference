@@ -3,7 +3,7 @@ import Testing
 
 @Test func globalKVCacheBudgetRejectsDuplicateReservationIDs() async {
     let budget = GlobalKVCacheBudget(safetyFactor: 1.0) {
-        (total: 1024, active: 0, cache: 0, systemAvailable: .max)
+        GlobalKVCacheBudget.MemorySnapshot(total: 1024, active: 0, cache: 0, systemAvailable: .max)
     }
 
     #expect(await budget.reserve(requestID: "same", kvBytesPerToken: 1, tokenCount: 1))
@@ -15,7 +15,7 @@ import Testing
 
 @Test func globalKVCacheBudgetRejectsOverflowingReservationSize() async {
     let budget = GlobalKVCacheBudget(safetyFactor: 1.0) {
-        (total: UInt64.max, active: 0, cache: 0, systemAvailable: .max)
+        GlobalKVCacheBudget.MemorySnapshot(total: UInt64.max, active: 0, cache: 0, systemAvailable: .max)
     }
 
     #expect(!(await budget.reserve(requestID: "overflow", kvBytesPerToken: Int.max, tokenCount: Int.max)))
@@ -23,7 +23,7 @@ import Testing
 
 @Test func globalKVCacheBudgetHonorsSafetyFactorAsTotalReservationCap() async {
     let budget = GlobalKVCacheBudget(safetyFactor: 0.5) {
-        (total: 1000, active: 0, cache: 0, systemAvailable: .max)
+        GlobalKVCacheBudget.MemorySnapshot(total: 1000, active: 0, cache: 0, systemAvailable: .max)
     }
 
     #expect(await budget.reserve(requestID: "first", kvBytesPerToken: 1, tokenCount: 400))
@@ -37,7 +37,7 @@ import Testing
     // but the OS reports only 100 bytes actually available (other apps hold the
     // rest). The budget must bind to the 100, not the 1000.
     let budget = GlobalKVCacheBudget(safetyFactor: 1.0) {
-        (total: 1000, active: 0, cache: 0, systemAvailable: 100)
+        GlobalKVCacheBudget.MemorySnapshot(total: 1000, active: 0, cache: 0, systemAvailable: 100)
     }
 
     // 150 bytes exceeds the real 100-byte OS headroom — must be rejected even
@@ -53,7 +53,7 @@ import Testing
     // OS says everything is free, but MLX already holds 900 of 1000 bytes
     // (resident weights) → only 100 free for KV.
     let budget = GlobalKVCacheBudget(safetyFactor: 1.0) {
-        (total: 1000, active: 900, cache: 0, systemAvailable: .max)
+        GlobalKVCacheBudget.MemorySnapshot(total: 1000, active: 900, cache: 0, systemAvailable: .max)
     }
     #expect(!(await budget.reserve(requestID: "over-mlx", kvBytesPerToken: 1, tokenCount: 150)))
     #expect(await budget.reserve(requestID: "at-mlx", kvBytesPerToken: 1, tokenCount: 100))
@@ -64,7 +64,7 @@ import Testing
 @Test func globalKVCacheBudgetSubtractsReserveFromOSAvailable() async {
     // OS reports 1000 free, reserve 600 → 400 usable; safetyFactor 1.0.
     let budget = GlobalKVCacheBudget(reserveBytes: 600, safetyFactor: 1.0) {
-        (total: 100_000, active: 0, cache: 0, systemAvailable: 1000)
+        GlobalKVCacheBudget.MemorySnapshot(total: 100_000, active: 0, cache: 0, systemAvailable: 1000)
     }
     #expect(!(await budget.reserve(requestID: "over", kvBytesPerToken: 1, tokenCount: 401)))
     #expect(await budget.reserve(requestID: "fits", kvBytesPerToken: 1, tokenCount: 400))

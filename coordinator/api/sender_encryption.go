@@ -75,6 +75,16 @@ type sealedCtxKeyT struct{}
 
 var sealedCtxKey = sealedCtxKeyT{}
 
+// isSealedRequest reports whether r was decrypted by sealedTransport (i.e. the
+// sender NaCl-Box-sealed it to the coordinator). The marker is set on the request
+// context at sender_encryption.go's r.Clone(...WithValue(sealedCtxKey,...)) site.
+// Used to refuse remote-media URL fetching on zero-knowledge requests: the
+// coordinator must not unseal-to-fetch, so sealed media must be an inline data:
+// URI the coordinator never inspects.
+func isSealedRequest(r *http.Request) bool {
+	return r.Context().Value(sealedCtxKey) != nil
+}
+
 // isSealedContentType returns true when ct is the sealed media type, ignoring
 // case (RFC 7231 §3.1.1.1) and any parameters like charset suffixes.
 func isSealedContentType(ct string) bool {

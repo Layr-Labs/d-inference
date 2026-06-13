@@ -40,6 +40,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -344,6 +345,13 @@ type Server struct {
 	// the key inherits the account-level limits. Nil disables per-key limiting.
 	keyRPMLimiter   *ratelimit.Limiter
 	keyTokenLimiter *ratelimit.KeyTokenLimiter
+
+	// mediaResolver fetches remote http(s) image_url/video_url URLs into inline
+	// base64 data: URIs before the request body is E2E-encrypted to a provider,
+	// so consumers can pass links instead of pre-encoding media client-side. The
+	// coordinator is the single SSRF chokepoint; the provider still only ever
+	// sees data: URIs. Never nil (built from env in NewServer).
+	mediaResolver *mediafetch.Resolver
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -629,6 +637,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		settlements:          newSettlementHolder(),
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
+		mediaResolver:        mediafetch.NewResolver(mediafetch.ConfigFromEnv(), logger),
 	}
 	s.registerDefaultGauges()
 	s.routes()

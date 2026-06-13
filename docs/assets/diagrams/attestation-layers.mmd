@@ -1,7 +1,7 @@
 flowchart TB
     subgraph layers["Provider trust stack"]
         direction TB
-        L5["Layer 5: APNs code identity<br/>Genuine Darkbloom binary proof"]
+        L5["Layer 5: APNs code identity<br/>Genuine Darkbloom binary proof<br/>enforced by AppleMobileFileIntegrity.kext"]
         L4["Layer 4: Challenge-response<br/>Fresh SIP / SecureBoot / RDMA every 5 min"]
         L3["Layer 3: MDA-over-MDM<br/>Apple-signed hardware certificate"]
         L2["Layer 2: MDM SecurityInfo<br/>Independent SIP/SecureBoot/ARV"]

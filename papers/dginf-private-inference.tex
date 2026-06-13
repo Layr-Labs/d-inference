@@ -756,6 +756,13 @@ Only the genuine Darkbloom binary receives the push. It decrypts $n$ with $K$, s
 
 On success the connection is marked \texttt{CodeAttested}. Private text routing requires this flag once the code-attestation enforcement deadline has passed. The flag is per-connection and in-memory; reconnecting forces re-attestation, because a SIP downgrade requires a reboot which drops the WebSocket.
 
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\columnwidth]{../docs/assets/diagrams/apns-code-identity.png}
+\caption{APNs code-identity attestation. AMFI (\texttt{AppleMobileFileIntegrity.kext}) enforces code signature, App ID, and \texttt{aps-environment} entitlement at launch, so only the genuine Darkbloom binary can register for our push topic. The coordinator pushes an encrypted nonce to that topic; the provider decrypts it with its bound X25519 key and returns a Secure Enclave signature, proving the WebSocket session is backed by genuine code holding the decryption key. MDM and MDA remain required for SIP, Secure Boot, and hardware provenance.}
+\label{fig:apns}
+\end{figure}
+
 \textbf{MDM remains required.} APNs code identity proves \emph{which binary} is running, but it does not prove the device's security posture (SIP, Secure Boot, hardware genuineness). Those properties still require Layer~2 (MDM \texttt{SecurityInfo}) and Layer~3 (MDA-over-MDM). The provider must therefore still install the combined MDM enrollment profile; APNs is not a replacement for MDM, but rather the missing code-identity piece that MDM and MDA do not provide.
 
 \textbf{Limits.} Background push delivery is best-effort and device-budget-throttled; the coordinator can switch to alert mode if reliability becomes an issue. APNs requires a logged-in macOS GUI Aqua session, so headless or login-screen Macs cannot become code-attested and fail closed for private traffic. APNs binds App ID/Team ID, not exact binary version; version/downgrade control is intended to come from reproducible builds plus a public transparency log of blessed \texttt{cdhash} values.

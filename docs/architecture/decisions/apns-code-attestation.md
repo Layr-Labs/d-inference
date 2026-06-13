@@ -20,6 +20,8 @@ Add an APNs-delivered code-identity challenge that is bound to the provider's We
 6. **APNs mode.** The sender is dual-mode: `background` (default, silent, ~2–3/hour device budget) and `alert` (priority 10, reliable but visible). Alert mode is safe only because the provider never requests `UNUserNotificationCenter` authorization, so the alert is not persisted to the Notification Center DB.
 7. **MDM remains required.** The only working, non-circular SIP/Secure-Boot proof is the Apple-signed MDA obtained via MDM. ACME `device-attest-01` does not currently carry or verify the SIP OID, so slimming enrollment is out of scope.
 
+![APNs code-identity attestation flow](../../assets/diagrams/apns-code-identity.svg)
+
 ```mermaid
 sequenceDiagram
     participant P as Provider (genuine binary)

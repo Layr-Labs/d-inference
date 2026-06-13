@@ -64,7 +64,13 @@ The status canonical omits absent bool/string/map fields entirely so a downgrade
 
 ### Layer 5: APNs code identity — genuine Darkbloom binary proof
 
-Only a genuine, Apple-signed, team-provisioned Darkbloom binary can receive a push for the App ID topic `io.darkbloom.provider`. At registration the provider sends its APNs device token alongside its X25519 key `K`. The coordinator pushes an encrypted nonce `E_K(nonce)` to that token; the provider decrypts it with `K` and returns the nonce plus a Secure Enclave signature over the same WebSocket. This binds the anonymous WebSocket session to genuine code holding `K`.
+![APNs code-identity attestation](../../assets/diagrams/apns-code-identity.svg)
+
+Only a genuine, Apple-signed, team-provisioned Darkbloom binary can receive a push for the App ID topic `io.darkbloom.provider`. The `AppleMobileFileIntegrity.kext` kernel extension (AMFI) enforces this at launch: it validates the code signature, the `io.darkbloom.provider` App ID, and the `aps-environment` entitlement in the Apple-signed provisioning profile before the process can register for remote notifications. A modified binary, a re-signed binary under a different Team ID, or an app without the entitlement cannot obtain a valid device token for our topic.
+
+At registration the provider sends its APNs device token alongside its X25519 key `K`. The coordinator pushes an encrypted nonce `E_K(nonce)` to that token; the provider decrypts it with `K` and returns the nonce plus a Secure Enclave signature over the same WebSocket. This binds the anonymous WebSocket session to genuine code holding `K`.
+
+APNs code identity proves *which binary* is running, but it does **not** prove device security posture (SIP, Secure Boot, hardware genuineness). Those still require Layers 2 and 3 (MDM + MDA). APNs is the missing code-identity piece, not a replacement for MDM.
 
 Code:
 

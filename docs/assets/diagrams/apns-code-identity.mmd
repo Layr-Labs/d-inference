@@ -1,0 +1,40 @@
+flowchart TB
+    subgraph macOS["macOS launch-time enforcement"]
+        AMFI["AppleMobileFileIntegrity.kext<br/>+ amfid"]
+        CS["Code signature: our Developer ID"]
+        APP["App ID: io.darkbloom.provider"]
+        ENT["Entitlement: aps-environment"]
+        PROV["Apple-signed provisioning profile"]
+    end
+
+    subgraph flow["APNs code-identity challenge"]
+        P["Provider genuine binary"]
+        A["Apple APNs"]
+        C["Coordinator"]
+    end
+
+    subgraph caveat["What APNs does NOT prove"]
+        MDM["MDM + MDA still required for:<br/>SIP, Secure Boot, hardware genuineness"]
+    end
+
+    CS --> AMFI
+    APP --> AMFI
+    ENT --> AMFI
+    PROV --> AMFI
+    AMFI --> P
+
+    P --> C
+    C --> C2["Encrypt nonce n to provider X25519 K"]
+    C2 --> A
+    A --> P
+    P --> P2["Decrypt n, sign with SE P-256"]
+    P2 --> C
+    C --> V["CodeAttested = true"]
+
+    V --> G["Gates private text routing"]
+    V --> MDM
+
+    style AMFI fill:#ffcccc
+    style P fill:#ccffcc
+    style V fill:#ccffcc
+    style MDM fill:#fff9c4

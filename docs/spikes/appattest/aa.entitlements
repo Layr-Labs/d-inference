@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- App Attest capability. "development" routes to Apple's dev attestation
+       env; "production" for shipping. Requires a provisioning profile with the
+       App Attest capability for the app's Team+bundle ID. -->
+  <key>com.apple.developer.devicecheck.appattest-environment</key>
+  <string>development</string>
+</dict>
+</plist>

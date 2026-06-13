@@ -138,6 +138,23 @@ This makes the design an extension of the existing APNs code-identity work
 (E_K(nonce) + continuous sealing to K), with App Attest supplying the
 Apple-rooted "genuine app + SIP-on" proof of the keyholder.
 
+### Two invariants the implementation MUST enforce (codex round-3 confirmation)
+
+The relay defense is sound ONLY if both hold — these are the conditions, and the
+concrete holes to avoid:
+
+1. **The genuine app attests/asserts over its OWN `K_pub` only.** The provider
+   must derive `K` locally and bind *that* key into the App Attest clientData; it
+   must NEVER produce an attestation/assertion over a `K_pub` supplied from the
+   wire. Otherwise `M_clean` becomes a generic signing oracle: `M_dirty` feeds it
+   `K_dirty`, `M_clean` vouches for it, and `M_dirty` can decrypt. (So `K` is not
+   a protocol input to the attestor — the provider's own E2E key is the only key
+   it will ever bind.)
+2. **No plaintext fallback / re-encryption path may cross the relay.** ALL
+   private inference must stay sealed to the verified `K`, with no unsealed path,
+   downgrade, or coordinator-side re-encryption that a relay (`M_dirty`) could
+   observe in cleartext. Any such path reintroduces the bypass.
+
 ## Open questions the spike must resolve (docs/spikes/appattest/)
 
 1. **Developer-ID eligibility.** App Attest is keyed to an App ID. Does our

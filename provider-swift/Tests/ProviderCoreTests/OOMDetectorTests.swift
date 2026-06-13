@@ -31,6 +31,25 @@ private let jetsamReport = """
     #expect(OOMDetector.parseJetsamReport(contents: "", processName: "darkbloom") == nil)
 }
 
+/// darkbloom merely PRESENT in the process table (no kill reason, not the
+/// largest process) when something else was jetsammed must NOT be reported as a
+/// provider OOM.
+@Test func oomJetsamReportRequiresKillEvidenceForOurProcess() {
+    let safariKilled = """
+    {"bug_type":"298"}
+    {"pageSize":16384,"largestProcess":"Safari","processes":[{"name":"Safari","pid":111,"rpages":2000,"reason":"per-process-limit"},{"name":"darkbloom","pid":456,"rpages":500}]}
+    """
+    #expect(OOMDetector.parseJetsamReport(contents: safariKilled, processName: "darkbloom") == nil)
+
+    // But if darkbloom is the largestProcess (a kill signal) it IS reported,
+    // even without an explicit per-entry reason.
+    let darkbloomLargest = """
+    {"bug_type":"298"}
+    {"pageSize":16384,"largestProcess":"darkbloom","processes":[{"name":"darkbloom","pid":456,"rpages":1000}]}
+    """
+    #expect(OOMDetector.parseJetsamReport(contents: darkbloomLargest, processName: "darkbloom")?.source == .jetsamReport)
+}
+
 // MARK: - EXC_RESOURCE / jetsam crash report parsing
 
 @Test func oomParsesExcResourceMemoryCrash() {
@@ -116,6 +135,48 @@ private let jetsamReport = """
         .appendingPathComponent("does-not-exist-\(UUID().uuidString)")
     #expect(OOMDetector.scanDiagnosticReports(
         dir: missing, processName: "darkbloom", since: Date(timeIntervalSince1970: 0)).isEmpty)
+}
+
+// MARK: - detectOnLaunch dedup (marker vs crash report)
+
+/// When BOTH a pre-death marker and a real JetsamEvent exist for the same death,
+/// detectOnLaunch must emit ONE finding (the authoritative crash report), not two.
+@Test func oomDetectOnLaunchPrefersCrashReportOverMarker() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("oom-dl-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let markerURL = dir.appendingPathComponent("oom_marker.json")
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    OOMDetector.writeMarker(OOMDetector.Marker(
+        pid: 1, epochSeconds: 1, peakMemoryBytes: 1, availableBytesAtEvent: 0), to: markerURL)
+    try jetsamReport.write(
+        to: dir.appendingPathComponent("JetsamEvent-x.ips"), atomically: true, encoding: .utf8)
+
+    let findings = OOMDetector.detectOnLaunch(
+        markerURL: markerURL, diagnosticReportsDirs: [dir],
+        processName: "darkbloom", since: Date(timeIntervalSince1970: 0))
+    #expect(findings.count == 1)
+    #expect(findings.first?.source == .jetsamReport)
+    // Marker is consumed either way (no lingering false positive next launch).
+    #expect(!FileManager.default.fileExists(atPath: markerURL.path))
+}
+
+/// With no crash report, the marker IS surfaced (the only signal we have).
+@Test func oomDetectOnLaunchEmitsMarkerWhenNoCrashReport() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("oom-dl2-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let markerURL = dir.appendingPathComponent("oom_marker.json")
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    OOMDetector.writeMarker(OOMDetector.Marker(
+        pid: 1, epochSeconds: 1, peakMemoryBytes: 42, availableBytesAtEvent: 0), to: markerURL)
+
+    let findings = OOMDetector.detectOnLaunch(
+        markerURL: markerURL, diagnosticReportsDirs: [dir],
+        processName: "darkbloom", since: Date(timeIntervalSince1970: 0))
+    #expect(findings.count == 1)
+    #expect(findings.first?.source == .memoryPressureMarker)
+    #expect(findings.first?.peakMemoryBytes == 42)
 }
 
 @Test func oomLastScanWatermarkRoundTrip() {

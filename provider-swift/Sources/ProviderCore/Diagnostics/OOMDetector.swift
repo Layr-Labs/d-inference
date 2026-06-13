@@ -63,10 +63,18 @@ public enum OOMDetector {
         home.appendingPathComponent(".darkbloom").appendingPathComponent("oom_marker.json")
     }
 
-    public static func defaultDiagnosticReportsURL(
+    /// Where macOS writes crash/jetsam reports. KERNEL jetsam reports
+    /// (`JetsamEvent-*.ips`) land in the SYSTEM tree `/Library/Logs/...`, not the
+    /// per-user `~/Library/...` — so we must scan both, plus each `Retired`
+    /// subdir where older reports are moved. Missing/unreadable dirs are skipped.
+    public static func defaultDiagnosticReportsDirs(
         home: URL = FileManager.default.homeDirectoryForCurrentUser
-    ) -> URL {
-        home.appendingPathComponent("Library/Logs/DiagnosticReports")
+    ) -> [URL] {
+        let bases = [
+            home.appendingPathComponent("Library/Logs/DiagnosticReports"),
+            URL(fileURLWithPath: "/Library/Logs/DiagnosticReports"),
+        ]
+        return bases + bases.map { $0.appendingPathComponent("Retired") }
     }
 
     /// Last-scan watermark: only reports newer than this are emitted, so a
@@ -112,6 +120,15 @@ public enum OOMDetector {
         return try? JSONDecoder().decode(Marker.self, from: data)
     }
 
+    /// Delete the marker on a GRACEFUL exit. The marker is written on critical
+    /// pressure; if the provider then survives and stops/updates cleanly, this
+    /// removes it so the next normal launch doesn't misreport a recovered
+    /// pressure spike as an OOM. A jetsam SIGKILL bypasses this, leaving the
+    /// marker to be reported — exactly the case we want.
+    public static func clearMarker(at url: URL = defaultMarkerURL()) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
     // MARK: - Launch detection (I/O)
     // (.ips parsing lives in OOMDetector+CrashReports.swift)
 
@@ -152,25 +169,37 @@ public enum OOMDetector {
         return findings
     }
 
-    /// Full launch-time detection: consume any pre-death marker AND scan crash
-    /// logs since `since`. Returns all findings to emit as `oom` telemetry.
+    /// Full launch-time detection: scan crash logs since `since` AND consume any
+    /// pre-death marker. Returns the findings to emit as `oom` telemetry.
     public static func detectOnLaunch(
         markerURL: URL = defaultMarkerURL(),
-        diagnosticReportsDir: URL = defaultDiagnosticReportsURL(),
+        diagnosticReportsDirs: [URL] = defaultDiagnosticReportsDirs(),
         processName: String = "darkbloom",
         since: Date,
         fileManager: FileManager = .default
     ) -> [Finding] {
-        var findings: [Finding] = []
-        if let marker = readAndClearMarker(at: markerURL) {
-            findings.append(Finding(
+        // Crash reports are the authoritative signal. Scan every candidate dir
+        // (user + system + Retired); dedupe by report filename across dirs.
+        var seenReports = Set<String>()
+        var crashFindings: [Finding] = []
+        for dir in diagnosticReportsDirs {
+            for f in scanDiagnosticReports(dir: dir, processName: processName, since: since, fileManager: fileManager) {
+                if let name = f.reportName, !seenReports.insert(name).inserted { continue }
+                crashFindings.append(f)
+            }
+        }
+
+        // Always consume the marker (so it never lingers), but only surface it
+        // when no crash report already attributes this death — otherwise one OOM
+        // would emit twice (marker + JetsamEvent).
+        let marker = readAndClearMarker(at: markerURL)
+        if crashFindings.isEmpty, let marker {
+            return [Finding(
                 source: .memoryPressureMarker,
                 message: "provider observed critical memory pressure before exit (likely OOM)",
                 peakMemoryBytes: marker.peakMemoryBytes > 0 ? marker.peakMemoryBytes : nil,
-                epochSeconds: marker.epochSeconds))
+                epochSeconds: marker.epochSeconds)]
         }
-        findings.append(contentsOf: scanDiagnosticReports(
-            dir: diagnosticReportsDir, processName: processName, since: since, fileManager: fileManager))
-        return findings
+        return crashFindings
     }
 }

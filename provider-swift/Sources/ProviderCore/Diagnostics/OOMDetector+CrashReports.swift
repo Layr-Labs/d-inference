@@ -7,7 +7,13 @@ import Foundation
 extension OOMDetector {
 
     /// Parse a kernel `JetsamEvent-*.ips` (header line + JSON body with a
-    /// `processes` array); finding iff our process was killed.
+    /// `processes` array); finding iff OUR process was the one jetsam killed.
+    ///
+    /// A JetsamEvent lists the whole process table at the pressure event, not
+    /// just the victim — so merely matching the name would flag a provider OOM
+    /// any time darkbloom was resident during someone else's jetsam. Require a
+    /// kill signal on our entry: a `reason` (carried by jetsammed processes) or
+    /// being named the report's `largestProcess`.
     public static func parseJetsamReport(contents: String, processName: String) -> Finding? {
         guard let body = jsonBody(from: contents) else { return nil }
         let pageSize = (body["pageSize"] as? Int)
@@ -15,11 +21,14 @@ extension OOMDetector {
             ?? 16384
         guard let processes = body["processes"] as? [[String: Any]] else { return nil }
         let needle = processName.lowercased()
+        let largest = (body["largestProcess"] as? String)?.lowercased()
         for proc in processes {
             guard let name = proc["name"] as? String, name.lowercased().contains(needle) else { continue }
+            let reason = (proc["reason"] as? String) ?? (proc["killDelta"] as? String)
+            let wasKilled = !(reason ?? "").isEmpty || (largest.map { name.lowercased().contains($0) } ?? false)
+            guard wasKilled else { continue }   // present in the table but not the victim
             let rpages = (proc["rpages"] as? Int) ?? (proc["pages"] as? Int) ?? 0
             let bytes = UInt64(max(0, rpages)) &* UInt64(max(0, pageSize))
-            let reason = (proc["reason"] as? String) ?? (proc["killDelta"] as? String)
             return Finding(
                 source: .jetsamReport,
                 message: "jetsam killed \(name) (\(reason ?? "memory pressure"))",

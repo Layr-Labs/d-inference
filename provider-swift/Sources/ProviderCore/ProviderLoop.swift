@@ -552,7 +552,13 @@ public actor ProviderLoop {
 
         // Surface any prior-run OOM and react to live memory pressure. Best-effort.
         startMemoryProtection()
-        defer { memoryPressureMonitor?.cancel() }
+        // On any controlled exit (return/throw — i.e. NOT a jetsam SIGKILL),
+        // drop a memory-pressure marker so a survived pressure spike isn't
+        // misreported as an OOM next launch. A real kill bypasses this.
+        defer {
+            memoryPressureMonitor?.cancel()
+            OOMDetector.clearMarker()
+        }
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. Started before the coordinator connection so local clients can
@@ -2109,10 +2115,18 @@ public actor ProviderLoop {
     /// telemetry) and watch live memory pressure (reclaim cache + drop a marker
     /// on critical so a kill before we can report it is attributed next launch).
     private func startMemoryProtection() {
+        // Pin the MLX memory ceiling BEFORE any model weights are loaded (the
+        // first big allocation happens in ensureModelLoaded → loadModelContainer,
+        // which runs after this). Idempotent; the BatchScheduler.loadModel call
+        // is a backstop for the standalone path. See MLXMemoryGuard.
+        MLXMemoryGuard.configureOnce(log: { [logger] limits in
+            logger.info(
+                "MLX memory ceiling: limit=\(limits.memoryLimitBytes / (1024 * 1024 * 1024))GB cache=\(limits.cacheLimitBytes / (1024 * 1024 * 1024))GB")
+        })
+
         let now = Date()
         let since = OOMDetector.loadLastScan() ?? now.addingTimeInterval(-24 * 3600)
         let findings = OOMDetector.detectOnLaunch(since: since)
-        OOMDetector.saveLastScan(now)
         for finding in findings {
             var fields: [String: AnyCodableValue] = ["detect_source": .string(finding.source.rawValue)]
             if let reason = finding.reason { fields["reason"] = .string(reason) }
@@ -2122,6 +2136,9 @@ public actor ProviderLoop {
                 kind: .oom, severity: .error, message: finding.message, fields: fields)
             logger.error("OOM detected on launch: \(finding.message)")
         }
+        // Advance the scan watermark only AFTER findings are handed to telemetry,
+        // so a crash before this point re-scans the same reports next launch.
+        OOMDetector.saveLastScan(now)
 
         let monitor = MemoryPressureMonitor(
             clearCache: { MLX.Memory.clearCache() },

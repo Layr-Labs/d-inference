@@ -12,7 +12,7 @@ The canonical privacy model is unchanged by this decision: consumer→coordinato
 
 Add an APNs-delivered code-identity challenge that is bound to the provider's WebSocket connection.
 
-1. **Apple-gated channel.** Only a process that (a) is signed with our Developer ID, (b) carries our globally-unique App ID `io.darkbloom.provider`, and (c) is authorized by an Apple-signed provisioning profile with the `aps-environment` entitlement can receive a push for our topic. AMFI enforces this at launch.
+1. **Apple-gated channel.** Only a process that (a) is signed with our Developer ID, (b) carries our globally-unique App ID `io.darkbloom.provider`, and (c) is authorized by an Apple-signed provisioning profile with the `aps-environment` entitlement can receive a push for our topic. The `AppleMobileFileIntegrity.kext` kernel extension (AMFI) enforces code signature, entitlements, and provisioning-profile validity at launch, so a modified or re-signed binary cannot register for our push topic.
 2. **Encrypted challenge.** The coordinator pushes `E_K(nonce)` — a nonce encrypted to the provider's registered X25519 public key `K` using the same inference E2E path. `K` is decrypt-only and lives in the provider's protected process memory.
 3. **WebSocket reply.** The provider decrypts the nonce with `K` and returns the recovered nonce plus a Secure-Enclave P-256 signature over it (`Sign_SE(nonce)`). The coordinator verifies both the nonce and the signature against the SE public key bound at registration.
 4. **Per-connection state.** `CodeAttested` is in-memory only, reset on disconnect. A SIP downgrade requires reboot, which drops the WebSocket and forces re-attestation.

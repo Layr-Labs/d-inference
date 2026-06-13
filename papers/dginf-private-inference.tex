@@ -132,7 +132,7 @@ The challenge is that Apple Silicon provides no hardware TEE accessible to third
 
 \begin{itemize}[leftmargin=*,itemsep=2pt,topsep=2pt]
     \item The \textbf{Secure Enclave} provides hardware-bound P-256 key generation and ECDSA signing, but cannot encrypt main system memory or provide isolated execution for arbitrary code.
-    \item \textbf{App Attest} (\texttt{DCAppAttestService}) returns \texttt{false} for \texttt{isSupported} on macOS---it is available only on iOS and iPadOS.
+    \item \textbf{App Attest} (\texttt{DCAppAttestService}) returns \texttt{false} for \texttt{isSupported} on macOS---it is available only on iOS and iPadOS. We therefore introduce APNs code-identity attestation as a macOS-compatible replacement for binary-identity proof (Section~\ref{sec:apns-attest}).
     \item No public API exposes boot measurements or PCR-style remote attestation.
 \end{itemize}
 
@@ -730,13 +730,17 @@ The coordinator verifies:
 
 Layers~1--4 establish hardware identity and continuous security posture, but they do not prove \emph{which binary} is running on the device. A malicious provider could run a fork that logs prompts while presenting a valid SE key and MDA certificate. Layer~5 closes this gap through APNs code-identity attestation (v0.6.0).
 
-The protocol relies on two facts about Apple's push infrastructure:
-\begin{enumerate}[leftmargin=*,itemsep=1pt]
-    \item Only a process signed with our Developer ID, carrying our globally unique App ID \texttt{io.darkbloom.provider}, and authorized by an Apple-signed provisioning profile with the \texttt{aps-environment} entitlement can receive a push for our topic. Apple's Mobile File Integrity (AMFI) enforces this at launch.
-    \item The provider holds an in-memory X25519 key $K$ that is bound to its SE identity and used to decrypt every inference request.
-\end{enumerate}
+This is a practical breakthrough because macOS does not expose \texttt{DCAppAttestService} to third-party apps---\texttt{isSupported} returns \texttt{false} on macOS---so App Attest cannot be used to prove binary identity. A self-reported \texttt{binaryHash} is equally insufficient, because the measurer is the potentially adversarial provider. APNs code-identity attestation solves the problem without a new Apple API: it repurposes Apple's existing push-delivery infrastructure as a non-self-reportable code-identity oracle.
 
-At registration the provider sends its APNs device token $T$ alongside its X25519 public key $K$ and SE public key. The coordinator:
+\textbf{Why APNs proves code identity.} Only a process that satisfies three conditions can receive a push for our topic \texttt{io.darkbloom.provider}:
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+    \item It is signed with our Developer ID team certificate.
+    \item It carries our globally unique App ID \texttt{io.darkbloom.provider}.
+    \item It is authorized by an Apple-signed provisioning profile containing the \texttt{aps-environment} entitlement.
+\end{enumerate}
+These conditions are enforced at launch by the \texttt{AppleMobileFileIntegrity.kext} kernel extension (AMFI) working with the user-space \texttt{amfid} daemon. AMFI validates the code signature, entitlements, and provisioning profile before the process is allowed to register for remote notifications with Apple's push service. A modified binary, a re-signed binary under a different Team ID, or an app lacking the entitlement cannot obtain a valid APNs device token for our topic. This makes APNs delivery a strong, Apple-mediated statement that the receiving process is the genuine Darkbloom build.
+
+\textbf{Protocol.} At registration the provider sends its APNs device token $T$ alongside its X25519 public key $K$ and SE public key. The coordinator:
 \begin{enumerate}[leftmargin=*,itemsep=1pt]
     \item Binds $T \leftrightarrow K$ to the WebSocket connection.
     \item Generates a fresh 32-byte nonce $n$.
@@ -751,6 +755,8 @@ Only the genuine Darkbloom binary receives the push. It decrypts $n$ with $K$, s
 \end{itemize}
 
 On success the connection is marked \texttt{CodeAttested}. Private text routing requires this flag once the code-attestation enforcement deadline has passed. The flag is per-connection and in-memory; reconnecting forces re-attestation, because a SIP downgrade requires a reboot which drops the WebSocket.
+
+\textbf{MDM remains required.} APNs code identity proves \emph{which binary} is running, but it does not prove the device's security posture (SIP, Secure Boot, hardware genuineness). Those properties still require Layer~2 (MDM \texttt{SecurityInfo}) and Layer~3 (MDA-over-MDM). The provider must therefore still install the combined MDM enrollment profile; APNs is not a replacement for MDM, but rather the missing code-identity piece that MDM and MDA do not provide.
 
 \textbf{Limits.} Background push delivery is best-effort and device-budget-throttled; the coordinator can switch to alert mode if reliability becomes an issue. APNs requires a logged-in macOS GUI Aqua session, so headless or login-screen Macs cannot become code-attested and fail closed for private traffic. APNs binds App ID/Team ID, not exact binary version; version/downgrade control is intended to come from reproducible builds plus a public transparency log of blessed \texttt{cdhash} values.
 

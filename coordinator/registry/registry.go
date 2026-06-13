@@ -770,6 +770,15 @@ type Registry struct {
 
 	// metricsEmitter, if set, receives warming-related metrics.
 	metricsEmitter MetricsEmitter
+	// metricsEmitterValue is a lock-free box around metricsEmitter so callers
+	// can emit metrics while holding r.mu without deadlocking.
+	metricsEmitterValue atomic.Value
+}
+
+// metricsEmitterBox wraps a MetricsEmitter so atomic.Value always stores the
+// same concrete pointer type.
+type metricsEmitterBox struct {
+	emitter MetricsEmitter
 }
 
 // MetricsEmitter is the minimal interface the registry uses to emit metrics.
@@ -781,8 +790,8 @@ type MetricsEmitter interface {
 
 type noopMetricsEmitter struct{}
 
-func (noopMetricsEmitter) Incr(string, []string)             {}
-func (noopMetricsEmitter) Gauge(string, float64, []string)   {}
+func (noopMetricsEmitter) Incr(string, []string)               {}
+func (noopMetricsEmitter) Gauge(string, float64, []string)     {}
 func (noopMetricsEmitter) Histogram(string, float64, []string) {}
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -844,6 +853,7 @@ func newRegistryWithConfig(logger *slog.Logger, cfg Config) *Registry {
 	}
 	planner.registry = r
 	r.warmingPlanner = planner
+	r.metricsEmitterValue.Store(&metricsEmitterBox{emitter: noopMetricsEmitter{}})
 	return r
 }
 
@@ -867,13 +877,18 @@ func (r *Registry) SetMetricsEmitter(emitter MetricsEmitter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.metricsEmitter = emitter
+	if emitter == nil {
+		r.metricsEmitterValue.Store(&metricsEmitterBox{emitter: noopMetricsEmitter{}})
+		return
+	}
+	r.metricsEmitterValue.Store(&metricsEmitterBox{emitter: emitter})
 }
 
 func (r *Registry) metrics() MetricsEmitter {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.metricsEmitter != nil {
-		return r.metricsEmitter
+	if v := r.metricsEmitterValue.Load(); v != nil {
+		if box, ok := v.(*metricsEmitterBox); ok && box.emitter != nil {
+			return box.emitter
+		}
 	}
 	return noopMetricsEmitter{}
 }
@@ -948,6 +963,34 @@ func (r *Registry) Forecast(ctx context.Context, model string) DemandForecast {
 		return DemandForecast{Model: model}
 	}
 	return r.forecaster.Forecast(ctx, model)
+}
+
+// ModelsWithDemand returns the set of models that have a recent demand signal
+// or queued requests. Used by aggregate warmup-ETA gauges.
+func (r *Registry) ModelsWithDemand() []string {
+	r.mu.RLock()
+	queued := r.queue.QueuedModels()
+	r.mu.RUnlock()
+
+	var forecasted []string
+	if r.forecaster != nil {
+		forecasted = r.forecaster.ModelsWithDemand()
+	}
+
+	seen := make(map[string]struct{}, len(queued)+len(forecasted))
+	models := make([]string, 0, len(queued)+len(forecasted))
+	for _, m := range forecasted {
+		seen[m] = struct{}{}
+		models = append(models, m)
+	}
+	for _, m := range queued {
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		seen[m] = struct{}{}
+		models = append(models, m)
+	}
+	return models
 }
 
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
@@ -2768,7 +2811,9 @@ func (r *Registry) providerHasPendingLoad(providerID string) bool {
 // MarkModelWarm adds a model to the provider's WarmModels list if not already
 // present. Called when load_model_status:succeeded arrives before the next
 // heartbeat, so the scheduler sees the provider as warm during queue drain.
-func (r *Registry) MarkModelWarm(providerID, modelID string) {
+// Returns true if the provider already had the model warm (the load was
+// redundant).
+func (r *Registry) MarkModelWarm(providerID, modelID string) bool {
 	defer func() {
 		if r.warmingPlanner != nil {
 			r.warmingPlanner.RecordWarm(providerID, modelID)
@@ -2779,14 +2824,18 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
 	if !ok {
-		return
+		return false
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, wm := range p.WarmModels {
 		if wm == modelID {
-			return // already warm
+			// The model was already warm when the load completed. The load
+			// command was redundant — likely a race between multiple warming
+			// actions or a stale planner decision.
+			r.metrics().Incr("warming.unnecessary_loads", []string{"model:" + modelID})
+			return true
 		}
 	}
 	p.WarmModels = append(p.WarmModels, modelID)
@@ -2818,6 +2867,7 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 			})
 		}
 	}
+	return false
 }
 
 // ClearPendingModelLoad removes a pending model load entry after a terminal

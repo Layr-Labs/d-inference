@@ -552,3 +552,50 @@ func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
 		}
 	}
 }
+
+// TestServerMetricsEmitterMirrorsRegistryCountersIntoInProcessMetrics verifies
+// that metrics emitted by the registry via MetricsEmitter are also reflected in
+// the in-process /v1/admin/metrics registry.
+func TestServerMetricsEmitterMirrorsRegistryCountersIntoInProcessMetrics(t *testing.T) {
+	collector := newUDPCollector(t)
+	defer collector.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
+
+	model := "mirror-model"
+	p := makeRoutableProvider(t, reg, "mirror-p1", model)
+	p.Mu().Lock()
+	p.BackendCapacity.Slots[0].State = "unknown"
+	p.Mu().Unlock()
+
+	pr := &registry.PendingRequest{
+		RequestID:          "req-mirror",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		ChunkCh:            make(chan string, 1),
+		CompleteCh:         make(chan protocol.UsageInfo, 1),
+		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	_, _ = reg.ReserveProviderEx(model, pr)
+
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+
+	if !hasMetric(packets, "warming.missed_warm_starts") {
+		t.Errorf("missing warming.missed_warm_starts in DogStatsD packets; got %v", packets)
+	}
+
+	snap := srv.Metrics().Snapshot()
+	key := "warming.missed_warm_starts{model=" + model + "}"
+	if snap.Counters[key] != 1 {
+		t.Fatalf("expected in-process counter %q = 1, got %+v", key, snap.Counters)
+	}
+}

@@ -85,7 +85,7 @@ docs/                 architecture, deploy runbooks, MDM/ACME notes, threat mode
 
 - Coordinator HTTP routes include `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/messages`, `GET /v1/models`, `GET /v1/models/capacity`, billing/pricing endpoints, invite flows, stats, enrollment, device authorization, and release registration endpoints.
 - Coordinator auth is split between Privy JWTs, API keys, and device-code login (RFC 8628) for provider machines.
-- Routing uses token-budget admission with engine-reported capacity, speculative TTFT dispatch, EWMA TPS tracking, and early 429 with Retry-After for OpenRouter compatibility.
+- Routing uses token-budget admission with engine-reported capacity, speculative TTFT dispatch, EWMA TPS tracking, early 429 with Retry-After for OpenRouter compatibility, and optional predictive model warming.
 - Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, referrals).
 - Providers serve text inference through the Swift `darkbloom` CLI with continuous batching via MLX-Swift.
 - Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
@@ -193,6 +193,18 @@ Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 - Request queue timeout is 120 seconds. Initial attestation challenge is sent immediately on registration, then every 5 minutes.
 - Backend idle timeout is 1 hour (not 10 minutes as some comments may say).
 
+### Predictive Warming
+
+- Predictive warming is opt-in via `EIGENINFERENCE_PREDICTIVE_WARMING_ENABLED=true`. When disabled the registry still records demand but never sends proactive `load_model` commands.
+- `DemandForecaster` mixes three signals per model: EWMA-smoothed recent request rates (10s, 60s, 5m windows), current queue depth converted to an equivalent rate, and an optional historical baseline from `HistoricalDemandSource`.
+- `WarmingPlanner` runs on a 1-second ticker. Each tick it forecasts demand, computes a target warm count (`targetWarmCount`), and sends `load_model` commands to the best idle/cold providers up to `MaxLoadsPerModelPerTick`.
+- Provider selection for warming applies the same trust, runtime-verified, challenge-freshness, private-text, catalog, thermal-hysteresis, and pending-load gates as routing. Private-only providers are never warmed for the public fleet.
+- The planner tracks `lastWarmAt` for sticky assignments: a provider that recently had a model warm is preferred.
+- `Registry.SetMetricsEmitter` wires a `MetricsEmitter` so warming metrics (`warming.forecasted_rps`, `warming.load_commands_sent`, etc.) are emitted.
+- `Registry.EstimatedWaitSeconds` gives a rough queue + pending-load wait estimate used for `Retry-After` headers.
+- `SetAdaptiveQueueLimit` scales per-model queue capacity with the demand forecast so bursts don't immediately 429.
+- The scheduler penalizes providers with a pending model load (`pendingModelLoadPenaltyMs`) and applies multiplicative thermal derating (`fair` 0.8x, `serious` 0.4x, `critical` rejects) with thermal hysteresis (`thermallyRejectedLocked` requires two consecutive critical readings).
+
 ### Coordinator State Model — Multiple Overlapping Views
 
 Provider state lives in several fields that are read by different code paths with different precedence rules. When mutating any of these, trace every reader:
@@ -200,10 +212,10 @@ Provider state lives in several fields that are read by different code paths wit
 - `BackendCapacity.Slots` is **authoritative** for the scheduler when present (Swift providers). The scheduler derives `slotState`, `modelLoaded`, token budgets, and observed TPS from it. `WarmModels` is only a fallback for legacy providers without `BackendCapacity`.
 - `WarmModels` is updated by heartbeats. It is NOT consulted by `snapshotProviderLocked` or `buildCandidateWithReason` when `BackendCapacity` is non-nil. `TriggerModelSwaps` / `hasWarmProviderLocked` checks it as a fallback. Legacy `ScoreProvider` also reads it for warm bonus, and `/v1/me/providers` copies it into API responses.
 - `CurrentModel` is set from heartbeat `active_model`. A nil/omitted `active_model` means no model is loaded. Stale `CurrentModel` can cause attestation hash mismatches.
-- `pendingModelLoads` is only checked by `TriggerModelSwaps` planning. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `freeMemoryAdmits`. Do not assume pending-load state affects routing decisions.
+- `pendingModelLoads` suppresses duplicate `load_model` sends in both `TriggerModelSwaps` and `WarmingPlanner`. The scheduler also sees a provider's pending-load state via `routingSnapshot.hasPendingLoad` and penalizes it heavily, so routing treats a provider that is mid-load as less desirable.
 - Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
 - Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
-- The provider's `ensureModelLoaded` requires `estimatedMemoryGb * 3.0` headroom. The coordinator's `freeMemoryAdmits` uses a different (less conservative) check. A model the coordinator admits can still fail on the provider side.
+- The provider's `ensureModelLoaded` (via `ModelLoadAdmission`) requires the model's `estimatedMemoryGb` plus a small one-request headroom (`defaultLoadHeadroomGb`, currently 2.0 GB), not a 3x multiplier. The coordinator's hardware-fit gate prefers the catalog's `min_ram_gb` and only falls back to a 2x size multiplier when `min_ram_gb` is unknown. A model the coordinator admits can still fail on the provider side if free memory is tighter than the coordinator's estimate.
 
 ### Coordinator Mutation Checklist
 
@@ -213,7 +225,7 @@ When adding code that mutates provider state or sends commands (`load_model`, et
 2. Check what happens on the failure path — does state get cleaned up on disconnect, timeout, and load failure?
 3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModels`.
 4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
-5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the 3x memory gate on the provider side.
+5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the provider load-admission model (weights plus one-request headroom, not a 3x multiplier).
 
 ## Code Structure & Modularity
 

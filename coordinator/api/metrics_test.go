@@ -1,8 +1,13 @@
 package api
 
 import (
+	"log/slog"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func TestCounterIncrements(t *testing.T) {
@@ -78,5 +83,27 @@ func TestRenderProm(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in prom output:\n%s", want, text)
 		}
+	}
+}
+
+func TestDDTagsToMetricLabels(t *testing.T) {
+	labels := ddTagsToMetricLabels([]string{"model:test-model", "outcome:selected", "badtag"})
+	if len(labels) != 2 {
+		t.Fatalf("expected 2 labels, got %d: %+v", len(labels), labels)
+	}
+	if labels[0].Name != "model" || labels[0].Value != "test-model" {
+		t.Errorf("first label = %+v, want model:test-model", labels[0])
+	}
+}
+
+func TestServerRegistersWarmupETAGauge(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	snap := srv.Metrics().Snapshot()
+	if _, ok := snap.Gauges["warming.max_warmup_eta_seconds"]; !ok {
+		t.Fatalf("expected warming.max_warmup_eta_seconds gauge to be registered, got %+v", snap.Gauges)
 	}
 }

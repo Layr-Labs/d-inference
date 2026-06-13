@@ -662,6 +662,8 @@ type serverMetricsEmitter struct {
 
 func (e serverMetricsEmitter) Incr(name string, tags []string) {
 	e.s.ddIncr(name, tags)
+	labels := ddTagsToMetricLabels(tags)
+	e.s.metrics.IncCounter(name, labels...)
 }
 
 func (e serverMetricsEmitter) Gauge(name string, value float64, tags []string) {
@@ -670,6 +672,21 @@ func (e serverMetricsEmitter) Gauge(name string, value float64, tags []string) {
 
 func (e serverMetricsEmitter) Histogram(name string, value float64, tags []string) {
 	e.s.ddHistogram(name, value, tags)
+	labels := ddTagsToMetricLabels(tags)
+	e.s.metrics.ObserveHistogram(name, value, labels...)
+}
+
+// ddTagsToMetricLabels converts DogStatsD "key:value" tags into the in-process
+// metrics label type so registry-emitted metrics are also visible via
+// /v1/admin/metrics.
+func ddTagsToMetricLabels(tags []string) []MetricLabel {
+	labels := make([]MetricLabel, 0, len(tags))
+	for _, tag := range tags {
+		if idx := strings.IndexByte(tag, ':'); idx > 0 {
+			labels = append(labels, MetricLabel{Name: tag[:idx], Value: tag[idx+1:]})
+		}
+	}
+	return labels
 }
 
 // ddIncr increments a DogStatsD counter. No-op if DD is not configured.
@@ -1616,6 +1633,15 @@ func (s *Server) registerDefaultGauges() {
 			return 1
 		}
 		return 0
+	})
+	s.metrics.RegisterGauge("warming.max_warmup_eta_seconds", func() float64 {
+		var maxETA int
+		for _, model := range s.registry.ModelsWithDemand() {
+			if eta := s.registry.EstimatedWaitSeconds(model); eta > maxETA {
+				maxETA = eta
+			}
+		}
+		return float64(maxETA)
 	})
 }
 

@@ -26,14 +26,14 @@ const (
 	// slow-provider decode, so the cost function actually spreads load
 	// across the fleet. Wider tie window admits more candidates to the
 	// queue-depth tie-break + random distribution.
-	queueDepthPenaltyMs      = 3_000.0
-	totalPendingPenaltyMs    = 750.0
-	memoryPressurePenaltyMs  = 4_000.0
-	cpuUsagePenaltyMs        = 1_500.0
-	gpuUtilizationPenaltyMs  = 5_000.0
+	queueDepthPenaltyMs       = 3_000.0
+	totalPendingPenaltyMs     = 750.0
+	memoryPressurePenaltyMs   = 4_000.0
+	cpuUsagePenaltyMs         = 1_500.0
+	gpuUtilizationPenaltyMs   = 5_000.0
 	pendingModelLoadPenaltyMs = 20_000.0
-	nearTieCostWindowMs      = 3_000.0
-	challengeFreshnessMaxAge = 6 * time.Minute
+	nearTieCostWindowMs       = 3_000.0
+	challengeFreshnessMaxAge  = 6 * time.Minute
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
 	// the free-memory admission gate.
@@ -227,10 +227,15 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		pr.RequestedMaxTokens = defaultRequestedMaxTokens
 	}
 
+	// Capture the metrics emitter once for this routing decision. metrics() is
+	// lock-free, but caching the reference avoids repeated atomic.Value loads
+	// while iterating candidates under r.mu.
+	metrics := r.metrics()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	selected, candidateCount, capacityRejections, tooLargeRejections, visionRejections := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	selected, candidateCount, capacityRejections, tooLargeRejections, visionRejections := r.selectBestCandidateLockedFull(model, pr, metrics, excludeIDs...)
 	if selected == nil {
 		return nil, RoutingDecision{
 			Model:                   model,
@@ -275,6 +280,12 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		p.Status = StatusServing
 	}
 
+	// A request routed to a non-warm provider will pay a cold-start load
+	// penalty. Count these so warming effectiveness can be tracked.
+	if selected.snapshot.slotState != "running" && selected.snapshot.slotState != "idle" {
+		metrics.Incr("warming.missed_warm_starts", []string{"model:" + model})
+	}
+
 	bd := selected.breakdown
 	decision := RoutingDecision{
 		ProviderID:              p.ID,
@@ -305,7 +316,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // no_provider and over_capacity outcome counters.
 // Returns (winner, candidateCount, capacityRejections, modelTooLargeRejections,
 // visionRejections).
-func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int, int) {
+func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, metrics MetricsEmitter, excludeIDs ...string) (*routingCandidate, int, int, int, int) {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -369,7 +380,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 				continue
 			}
 		}
-		candidate, reason, ok := r.buildCandidateWithReason(snap, pr)
+		candidate, reason, ok := r.buildCandidateWithReason(snap, pr, metrics)
 		if !ok {
 			switch reason {
 			case rejectCapacity, rejectThermal:
@@ -807,7 +818,7 @@ func committedTokenBudget(snap routingSnapshot) int64 {
 
 // buildCandidateWithReason returns the candidate plus, on rejection,
 // the reason so callers can split metrics by failure mode.
-func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, candidateRejection, bool) {
+func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest, metrics MetricsEmitter) (*routingCandidate, candidateRejection, bool) {
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
 		return nil, rejectNone, false
@@ -817,6 +828,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	}
 
 	if snap.thermalRejected {
+		metrics.Incr("routing.thermal_rejections", []string{"model:" + snap.model})
 		return nil, rejectThermal, false
 	}
 
@@ -883,6 +895,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		thermalFactor = 0.0
 	}
 	if thermalFactor <= 0 {
+		metrics.Incr("routing.thermal_rejections", []string{"model:" + snap.model})
 		return nil, rejectThermal, false
 	}
 	effectiveTPS *= thermalFactor

@@ -33,12 +33,18 @@ package registry
 // to see which scenarios currently pass.
 
 import (
+	"context"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"nhooyr.io/websocket"
 )
 
 // scenarioProvider builds a fully-attested provider with controllable
@@ -53,6 +59,7 @@ type scenarioProvider struct {
 	backendRun  int    // backend slot's NumRunning
 	backendWait int    // backend slot's NumWaiting
 	slotState   string // running, idle_shutdown, etc.
+	conn        *websocket.Conn
 }
 
 func (sp scenarioProvider) register(t *testing.T, reg *Registry, model string) *Provider {
@@ -61,7 +68,7 @@ func (sp scenarioProvider) register(t *testing.T, reg *Registry, model string) *
 	msg.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 	msg.DecodeTPS = sp.decodeTPS
 	msg.Hardware.MemoryGB = int(sp.totalMemGB)
-	p := reg.Register(sp.id, nil, msg)
+	p := reg.Register(sp.id, sp.conn, msg)
 	p.mu.Lock()
 	p.TrustLevel = TrustHardware
 	p.RuntimeVerified = true
@@ -503,6 +510,267 @@ func TestAlgorithm_Regression_TrustLevelGate(t *testing.T) {
 	}
 	if p.ID != "hardware-slow" {
 		t.Fatalf("got %q, want hardware-slow. Trust gate must reject self-signed.", p.ID)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Predictive warming scenarios
+// ---------------------------------------------------------------------
+
+// testMetricsEmitter captures warming-related metrics for assertions.
+type testMetricsEmitter struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (m *testMetricsEmitter) Incr(name string, tags []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.counts == nil {
+		m.counts = make(map[string]int)
+	}
+	key := name + "|" + strings.Join(tags, "|")
+	m.counts[key]++
+}
+
+func (m *testMetricsEmitter) Gauge(string, float64, []string)     {}
+func (m *testMetricsEmitter) Histogram(string, float64, []string) {}
+
+func (m *testMetricsEmitter) count(name string, tags []string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.counts == nil {
+		return 0
+	}
+	key := name + "|" + strings.Join(tags, "|")
+	return m.counts[key]
+}
+
+// fakeHistoricalSource returns a fixed baseline for demand-forecast tests.
+type fakeHistoricalSource struct {
+	rps float64
+}
+
+func (f *fakeHistoricalSource) HistoricalDemand(context.Context, string, time.Duration) (float64, error) {
+	return f.rps, nil
+}
+
+// newWarmingRegistry creates a registry with predictive warming enabled.
+func newWarmingRegistry(t *testing.T) *Registry {
+	t.Helper()
+	cfg := DefaultWarmingConfig()
+	cfg.Enabled = true
+	return NewWithConfig(testLogger(), cfg)
+}
+
+// newWarmingRegistryWithHistorical creates a registry with warming enabled and
+// a custom historical demand source.
+func newWarmingRegistryWithHistorical(t *testing.T, hist HistoricalDemandSource) *Registry {
+	t.Helper()
+	cfg := DefaultWarmingConfig()
+	cfg.Enabled = true
+	r := NewWithConfig(testLogger(), cfg)
+	if hist != nil {
+		f := NewDemandForecaster(hist, cfg)
+		r.forecaster = f
+		r.warmingPlanner.forecaster = f
+	}
+	return r
+}
+
+// newTestWebSocketConn creates an in-process websocket connection for tests.
+// The returned client connection can be passed to Register so SendLoadModel
+// succeeds without a real network round-trip.
+func newTestWebSocketConn(t *testing.T) *websocket.Conn {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		for {
+			_, _, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws://"+srv.Listener.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+	return conn
+}
+
+// addModel advertises an additional model on an already-registered provider.
+func addModel(t *testing.T, p *Provider, model string) {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, m := range p.Models {
+		if m.ID == model {
+			return
+		}
+	}
+	p.Models = append(p.Models, protocol.ModelInfo{
+		ID:           model,
+		ModelType:    "chat",
+		Quantization: "4bit",
+	})
+}
+
+// pendingLoadForModel returns true if the registry has a pending load_model for
+// (provider, model).
+func pendingLoadForModel(r *Registry, providerID, model string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.pendingModelLoads[providerID+":"+model]
+	return ok
+}
+
+// TestAlgorithm_PW_PreQueueWarm verifies that the warming planner sends a
+// load_model command as soon as demand appears, before any request actually
+// queues. Without predictive warming the request would queue first and only
+// then trigger a reactive swap.
+func TestAlgorithm_PW_PreQueueWarm(t *testing.T) {
+	r := newWarmingRegistry(t)
+	metrics := &testMetricsEmitter{}
+	r.SetMetricsEmitter(metrics)
+
+	model := "pw-prequeue-model"
+	r.SetModelCatalog([]CatalogEntry{{ID: model}})
+
+	scenarioProvider{
+		id: "cold", decodeTPS: 30, totalMemGB: 64, gpuActiveGB: 1,
+		slotState: "idle_shutdown",
+		conn:      newTestWebSocketConn(t),
+	}.register(t, r, model)
+
+	// Simulate requests arriving; no request is actually queued.
+	for i := 0; i < 10; i++ {
+		r.RecordDemand(model)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	r.warmingPlanner.tick()
+
+	if !r.providerHasPendingLoad("cold") {
+		t.Fatal("expected load_model to be sent pre-queue for demanded model")
+	}
+	if !pendingLoadForModel(r, "cold", model) {
+		t.Fatalf("expected pending load for %q on cold provider", model)
+	}
+	if metrics.count("warming.load_commands_sent", []string{"model:" + model}) < 1 {
+		t.Fatal("expected warming.load_commands_sent metric for the model")
+	}
+}
+
+// TestAlgorithm_PW_RapidModelShift verifies that the planner warms providers
+// for a newly-demanded model even when another model was just warmed. This
+// guards against the planner getting stuck on the previous model and ignoring
+// a sudden shift in demand.
+func TestAlgorithm_PW_RapidModelShift(t *testing.T) {
+	r := newWarmingRegistry(t)
+	metrics := &testMetricsEmitter{}
+	r.SetMetricsEmitter(metrics)
+
+	modelA := "pw-shift-model-a"
+	modelB := "pw-shift-model-b"
+	r.SetModelCatalog([]CatalogEntry{{ID: modelA}, {ID: modelB}})
+
+	p1 := scenarioProvider{
+		id: "p1", decodeTPS: 30, totalMemGB: 128, gpuActiveGB: 1,
+		slotState: "idle_shutdown",
+		conn:      newTestWebSocketConn(t),
+	}.register(t, r, modelA)
+	addModel(t, p1, modelB)
+
+	p2 := scenarioProvider{
+		id: "p2", decodeTPS: 30, totalMemGB: 128, gpuActiveGB: 1,
+		slotState: "idle_shutdown",
+		conn:      newTestWebSocketConn(t),
+	}.register(t, r, modelA)
+	addModel(t, p2, modelB)
+
+	// Demand appears for model A. Only one provider needs to be warm.
+	r.RecordQueueDepth(modelA, 1)
+	r.warmingPlanner.tick()
+
+	var warmedForA string
+	for key := range r.pendingModelLoads {
+		pid, m, ok := splitModelLoadKey(key)
+		if ok && m == modelA {
+			warmedForA = pid
+			break
+		}
+	}
+	if warmedForA == "" {
+		t.Fatal("expected a pending load_model for model A")
+	}
+
+	// Simulate the load completing and model A becoming warm on that provider.
+	r.ClearPendingModelLoad(warmedForA, modelA)
+	r.MarkModelWarm(warmedForA, modelA)
+
+	// Demand now shifts to model B.
+	r.RecordQueueDepth(modelB, 1)
+	r.warmingPlanner.tick()
+
+	if !pendingLoadForModel(r, "p1", modelB) && !pendingLoadForModel(r, "p2", modelB) {
+		t.Fatal("expected a load_model for model B after demand shifted")
+	}
+	if metrics.count("warming.load_commands_sent", []string{"model:" + modelB}) < 1 {
+		t.Fatal("expected warming.load_commands_sent metric for model B")
+	}
+
+	// No extra load for A should be sent: one provider is already warm.
+	aLoads := metrics.count("warming.load_commands_sent", []string{"model:" + modelA})
+	if aLoads != 1 {
+		t.Fatalf("expected exactly 1 load command for model A, got %d", aLoads)
+	}
+}
+
+// TestAlgorithm_PW_NoWarmWhenUncertain verifies that a purely historical
+// baseline (no recent requests, no queued requests) does not trigger eager
+// warming. Historical signals alone have low confidence and the planner must
+// wait for stronger evidence before spending provider resources.
+func TestAlgorithm_PW_NoWarmWhenUncertain(t *testing.T) {
+	hist := &fakeHistoricalSource{rps: 0.5}
+	r := newWarmingRegistryWithHistorical(t, hist)
+	metrics := &testMetricsEmitter{}
+	r.SetMetricsEmitter(metrics)
+
+	model := "pw-uncertain-model"
+	r.SetModelCatalog([]CatalogEntry{{ID: model}})
+
+	scenarioProvider{
+		id: "cold", decodeTPS: 30, totalMemGB: 64, gpuActiveGB: 1,
+		slotState: "idle_shutdown",
+		conn:      newTestWebSocketConn(t),
+	}.register(t, r, model)
+
+	r.warmingPlanner.tick()
+
+	if r.providerHasPendingLoad("cold") {
+		t.Fatal("expected no load_model for uncertain historical-only demand")
+	}
+	if metrics.count("warming.load_commands_sent", []string{"model:" + model}) != 0 {
+		t.Fatal("expected no warming.load_commands_sent metric for uncertain demand")
+	}
+
+	f := r.Forecast(context.Background(), model)
+	if f.Confidence >= 0.5 {
+		t.Fatalf("expected low confidence for historical-only signal, got %.2f", f.Confidence)
+	}
+	if f.RequestsPerSecond <= 0 {
+		t.Fatal("expected positive forecasted RPS from historical baseline")
 	}
 }
 

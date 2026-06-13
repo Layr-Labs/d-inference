@@ -419,7 +419,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// Mark the model warm on this provider BEFORE draining so
 				// the scheduler sees it as a candidate. Without this, the
 				// provider still looks cold until the next heartbeat.
-				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
+				alreadyWarm := s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
+				if alreadyWarm {
+					s.metrics.IncCounter("warming.unnecessary_loads", MetricLabel{"model", statusMsg.ModelID})
+				}
 				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
 				s.ddIncr("warming.load_commands_succeeded", []string{"model:" + statusMsg.ModelID})

@@ -1443,3 +1443,109 @@ func TestCapabilityChecksHonorAllowedSerials(t *testing.T) {
 		t.Fatal("constrained to its own serial, the capable provider must satisfy the vision check")
 	}
 }
+
+// TestModelFitsHardware documents the coordinator-side hardware-fit gate. The
+// catalog's authoritative min_ram_gb wins; only when it is unknown does the
+// gate fall back to a 2x multiplier of the on-disk weight size.
+func TestModelFitsHardware(t *testing.T) {
+	// min_ram_gb takes precedence over the 2x size heuristic.
+	if !modelFitsHardware(64, 100, 64) {
+		t.Error("min_ram_gb=64 should fit 64 GB total memory")
+	}
+	if modelFitsHardware(65, 10, 64) {
+		t.Error("min_ram_gb=65 should not fit 64 GB total memory")
+	}
+
+	// Without min_ram_gb, the 2x size fallback applies.
+	if !modelFitsHardware(0, 30, 60) {
+		t.Error("30 GB weights * 2.0 should fit 60 GB total memory")
+	}
+	if modelFitsHardware(0, 30.1, 60) {
+		t.Error("30.1 GB weights * 2.0 should not fit 60 GB total memory")
+	}
+
+	// Unknown memory always passes (fail-open).
+	if !modelFitsHardware(0, 100, 0) {
+		t.Error("unknown total memory should fail open")
+	}
+}
+
+// TestReserveProviderEx_EmitsThermalRejectionMetric verifies that providers
+// rejected because of critical thermal state increment the thermal rejection
+// counter.
+func TestReserveProviderEx_EmitsThermalRejectionMetric(t *testing.T) {
+	reg := New(testLogger())
+	metrics := &testMetricsEmitter{}
+	reg.SetMetricsEmitter(metrics)
+
+	model := "thermal-rejection-model"
+	p := makeSchedulerProvider(t, reg, "hot", model, 100)
+	p.mu.Lock()
+	p.SystemMetrics.ThermalState = "critical"
+	p.thermalHistory = []string{"serious", "critical", "critical"}
+	p.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:          "req-thermal",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected, _ := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Fatal("expected no provider selected for critical thermal")
+	}
+	if got := metrics.count("routing.thermal_rejections", []string{"model:" + model}); got != 1 {
+		t.Fatalf("routing.thermal_rejections count = %d, want 1", got)
+	}
+}
+
+// TestReserveProviderEx_EmitsMissedWarmStartMetric verifies that routing to a
+// cold provider (slot state not running/idle) increments missed_warm_starts.
+func TestReserveProviderEx_EmitsMissedWarmStartMetric(t *testing.T) {
+	reg := New(testLogger())
+	metrics := &testMetricsEmitter{}
+	reg.SetMetricsEmitter(metrics)
+
+	model := "cold-start-model"
+	p := makeSchedulerProvider(t, reg, "cold", model, 100)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].State = "unknown"
+	p.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:          "req-cold",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected, _ := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("expected cold provider to be selected")
+	}
+	if got := metrics.count("warming.missed_warm_starts", []string{"model:" + model}); got != 1 {
+		t.Fatalf("warming.missed_warm_starts count = %d, want 1", got)
+	}
+}
+
+// TestReserveProviderEx_WarmProviderDoesNotEmitMissedWarmStart verifies that
+// routing to a warm provider does not increment missed_warm_starts.
+func TestReserveProviderEx_WarmProviderDoesNotEmitMissedWarmStart(t *testing.T) {
+	reg := New(testLogger())
+	metrics := &testMetricsEmitter{}
+	reg.SetMetricsEmitter(metrics)
+
+	model := "warm-start-model"
+	makeSchedulerProvider(t, reg, "warm", model, 100)
+
+	req := &PendingRequest{
+		RequestID:          "req-warm",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected, _ := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("expected warm provider to be selected")
+	}
+	if got := metrics.count("warming.missed_warm_starts", []string{"model:" + model}); got != 0 {
+		t.Fatalf("warming.missed_warm_starts count = %d, want 0", got)
+	}
+}

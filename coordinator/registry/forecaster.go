@@ -46,11 +46,11 @@ type DemandForecast struct {
 type DemandForecaster struct {
 	historical HistoricalDemandSource
 
-	mu       sync.RWMutex
-	tickers  map[string]*demandTicker // model -> rate tracker
-	queues   map[string]int           // model -> last observed queue depth
-	horizon  time.Duration
-	weights  forecastWeights
+	mu      sync.RWMutex
+	tickers map[string]*demandTicker // model -> rate tracker
+	queues  map[string]int           // model -> last observed queue depth
+	horizon time.Duration
+	weights forecastWeights
 }
 
 type forecastWeights struct {

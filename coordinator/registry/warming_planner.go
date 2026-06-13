@@ -122,7 +122,7 @@ func (p *WarmingPlanner) tick() {
 		return
 	}
 
-	// Emit per-model forecast and warm-count metrics before planning.
+	// Emit per-model forecast, warm-count, and warmup ETA metrics before planning.
 	for _, model := range models {
 		forecast := p.forecaster.Forecast(ctx, model)
 		metrics.Gauge("warming.forecasted_rps", forecast.RequestsPerSecond, []string{"model:" + model})
@@ -134,6 +134,7 @@ func (p *WarmingPlanner) tick() {
 		p.registry.mu.RUnlock()
 		metrics.Gauge("request_queue.adaptive_max_size", float64(p.registry.queue.MaxSizeFor(model)), []string{"model:" + model})
 		metrics.Gauge("request_queue.depth", float64(queueSize), []string{"model:" + model})
+		metrics.Gauge("warming.warmup_eta_seconds", float64(p.registry.EstimatedWaitSeconds(model)), []string{"model:" + model})
 	}
 
 	actions := p.planLoads(ctx, models, now)
@@ -141,6 +142,7 @@ func (p *WarmingPlanner) tick() {
 		return
 	}
 
+	var toSend []modelLoadAction
 	p.registry.mu.Lock()
 	for _, action := range actions {
 		key := action.providerID + ":" + action.modelID
@@ -148,10 +150,17 @@ func (p *WarmingPlanner) tick() {
 			continue
 		}
 		p.registry.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
-		p.registry.SendLoadModel(action.providerID, action.modelID)
-		metrics.Incr("warming.load_commands_sent", []string{"model:" + action.modelID})
+		toSend = append(toSend, action)
 	}
 	p.registry.mu.Unlock()
+
+	for _, action := range toSend {
+		if err := p.registry.SendLoadModel(action.providerID, action.modelID); err != nil {
+			p.registry.ClearPendingModelLoad(action.providerID, action.modelID)
+			continue
+		}
+		metrics.Incr("warming.load_commands_sent", []string{"model:" + action.modelID})
+	}
 }
 
 // planLoads computes the load_model actions for the given models.

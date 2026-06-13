@@ -3051,3 +3051,39 @@ func TestCodeAttestationCoverage(t *testing.T) {
 		t.Fatalf("expected 1 code-attested online provider, got %d", attested)
 	}
 }
+
+// TestMarkModelWarmAlreadyWarmEmitsUnnecessaryLoad verifies that marking a
+// model warm on a provider that already has it warm returns true and emits an
+// unnecessary_load counter.
+func TestMarkModelWarmAlreadyWarmEmitsUnnecessaryLoad(t *testing.T) {
+	r := New(testLogger())
+	metrics := &testMetricsEmitter{}
+	r.SetMetricsEmitter(metrics)
+
+	model := "already-warm-model"
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
+	p := r.Register("p-warm", nil, msg)
+	p.mu.Lock()
+	p.WarmModels = []string{model}
+	p.mu.Unlock()
+
+	if alreadyWarm := r.MarkModelWarm(p.ID, model); !alreadyWarm {
+		t.Fatal("MarkModelWarm should report already warm")
+	}
+	if got := metrics.count("warming.unnecessary_loads", []string{"model:" + model}); got != 1 {
+		t.Fatalf("warming.unnecessary_loads count = %d, want 1", got)
+	}
+
+	// First-time warm should not emit unnecessary_load.
+	model2 := "first-warm-model"
+	p.mu.Lock()
+	p.WarmModels = []string{model}
+	p.mu.Unlock()
+	if alreadyWarm := r.MarkModelWarm(p.ID, model2); alreadyWarm {
+		t.Fatal("MarkModelWarm should report not already warm for a new model")
+	}
+	if got := metrics.count("warming.unnecessary_loads", []string{"model:" + model2}); got != 0 {
+		t.Fatalf("warming.unnecessary_loads count for new model = %d, want 0", got)
+	}
+}

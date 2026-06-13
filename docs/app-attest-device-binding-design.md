@@ -55,44 +55,118 @@ gate. The attestation is anonymous (no serial) — which is fine.
 
 Provider (macOS 27, signed .app + App Attest entitlement):
 1. `DCAppAttestService.shared.generateKey` → `keyID` (a fresh SE-backed key).
-2. `attestKey(keyID, clientDataHash: H(coordinator_challenge))` → CBOR attestation.
-   Send `{keyID, attestation}` to the coordinator once per connection.
+2. `attestKey(keyID, clientDataHash: SHA256(coordinator_challenge ‖ K_pub))`
+   → CBOR attestation. Send `{keyID, attestation, K_pub}` once per connection.
+   Binding `K_pub` (the provider's E2E X25519 public key) into the clientData is
+   what ties the attestation to the key that gates plaintext.
 3. For each per-connection challenge nonce, `generateAssertion(keyID,
-   clientDataHash: H(nonce ‖ ctx))` → assertion; send it.
+   clientDataHash: SHA256(nonce ‖ K_pub))` → assertion; send it. (Plus the
+   existing `E_K(nonce)` round-trip to prove live possession of `K`'s private
+   half on this connection.)
 
-Coordinator:
-1. Verify the attestation: x5c chains to **Apple's App Attest Root CA**; the
-   `rpId` hash equals our **App ID** (Team+bundle); the nonce in the
-   authenticatorData credCert matches the challenge we issued; extract + store
-   the attested public key + initial counter for `keyID`.
-2. Verify each assertion: signature over `H(nonce ‖ ctx)` by the stored public
-   key; counter strictly increases.
-3. Gate: a connection routes private text under enforcement only if it has a
-   valid App-Attest attestation + a fresh valid assertion over the current
-   challenge. Per-connection, in-memory, never persisted (like the MDA verdict).
+Coordinator verifier (per Apple's "Validating Apps That Connect to Your Server",
+adjusted for macOS — get these exact, they are easy to get wrong):
+1. CBOR-decode; require `fmt == "apple-appattest"`.
+2. Verify the `x5c` chain to **Apple's App Attest Root CA**; check cert validity.
+3. **Nonce:** compute `nonce = SHA256(authData ‖ SHA256(clientData))` and compare
+   it to the value in the credCert extension **OID 1.2.840.113635.100.8.2** —
+   NOT "credCert contains the raw challenge". `clientData` here is
+   `challenge ‖ K_pub`, binding the attestation to this connection's `K`.
+4. **rpId:** `SHA256(rpId)` must equal `authData.rpIdHash`. On **macOS the rpId
+   uses the app's signing identifier**, not `TeamID.bundleID` — pin the exact
+   value observed in the spike.
+5. **SIP/Full-Security policy:** check the `aclBlob` extension **OID
+   1.2.840.113635.100.8.6** against Apple's documented Full-Security + SIP-on
+   access-policy hash. This — not chain/nonce success — is what makes a verified
+   attestation imply SIP-on. Also verify the env/aaguid (`appattest` prod vs
+   `appattestdevelop`) and `apple_validation_category` (`6` = Developer ID).
+6. Bind the public key: `keyID == SHA256(attested EC public key)`; store the key
+   + `counter == 0` (initial) for this connection.
+7. Per assertion: signature over `SHA256(authData ‖ clientDataHash)` by the stored
+   key; `counter` strictly greater than the last seen; `rpIdHash` matches.
+8. Challenges: high-entropy, purpose-bound, per-connection, TTL'd, consumed once
+   on BOTH success and failure.
+9. Gate: a connection routes private text under enforcement only with a fully
+   verified attestation (incl. the aclBlob policy) bound to the `K` advertised on
+   this connection, a proven `E_K(nonce)`, and a fresh valid assertion.
+   Per-connection, in-memory, never persisted (like the MDA verdict).
 
-### Why this closes the attack
+### Why a naive "sign the challenge" design does NOT close it (codex review, round 3)
 
-- App Attest success ⟹ Full Security + SIP-on (Apple-enforced on macOS 27). So a
-  routable connection is provably SIP-on — the property #302 wanted — rooted in
-  Apple, not self-asserted.
-- App Attest binds to the genuine app (Team+bundle, Apple-signed). A modified
-  binary (the SIP-off attacker's worker) cannot attest. So the attacker cannot
-  present a valid attestation from a SIP-off/modified box, and cannot relay one
-  from a clean box because the assertion is keyed to *this connection's* App
-  Attest key + *this challenge*.
-- No serial is needed; the "second clean Mac" oracle no longer helps.
+A fresh per-connection challenge stops *replay* but NOT *live relay*. If the
+coordinator only requires "an App-Attest key signed this challenge," the two-Mac
+attacker wins: `M_dirty` (SIP-off, modified) opens the real WebSocket, relays the
+challenge to `M_clean` (genuine app, SIP-on), `M_clean` produces a valid
+attestation/assertion, `M_dirty` forwards it. The counter still increments
+monotonically (it's `M_clean`'s real counter) and the one-time challenge still
+matches (it's live). App Attest here is just a **remote signing oracle** — it
+proves "a genuine app somewhere signed these bytes," not "the process holding
+this connection is that genuine app." This is the same class of bug as a
+detached attestation; a fresh nonce is necessary but not sufficient.
+
+### What actually closes it: bind the attestation to the E2E decryption key K
+
+The fix is channel/transport binding via the key that already gates plaintext —
+the provider's X25519 E2E key `K` (consumer prompts are sealed to `K`; only the
+provider process holding `K`'s private half can decrypt). Bind the App Attest
+proof to `K`:
+
+- The App Attest assertion's `clientDataHash` covers the provider's **public K**
+  (the exact key advertised on this connection) plus a per-connection,
+  TTL'd, one-time coordinator challenge. The coordinator additionally proves
+  liveness of `K` with the existing `E_K(nonce)` round-trip (see
+  apns-code-attestation-design.md) so the connection demonstrably holds `K`'s
+  private half.
+- **All routed inference stays sealed to `K`** (already true today).
+
+Now relay is *pointless*, not just hard: if `M_dirty` relays `M_clean`'s genuine
+App-Attest proof, the coordinator binds the connection to whatever `K` the
+genuine app vouched for — and the genuine app only ever vouches for **its own**
+`K_clean` (it signs over the key it generated). Prompts are then sealed to
+`K_clean`, which only `M_clean` can open. `M_dirty` becomes a dumb pipe that
+never sees plaintext — which defeats the attacker's actual goal (reading
+plaintext on a SIP-off box). The work is served by a genuine, SIP-on app, exactly
+as intended. A SIP-off box that wants the plaintext itself must bind its own
+`K_dirty`, which requires a valid App-Attest proof for `K_dirty` from a SIP-off /
+modified process — which App Attest refuses to produce.
+
+- App Attest success (fully verified, incl. the `aclBlob` policy check below)
+  ⟹ genuine, unmodified app on Full Security + SIP-on hardware — rooted in
+  Apple, not self-asserted. No device serial is needed.
+
+This makes the design an extension of the existing APNs code-identity work
+(E_K(nonce) + continuous sealing to K), with App Attest supplying the
+Apple-rooted "genuine app + SIP-on" proof of the keyholder.
 
 ## Open questions the spike must resolve (docs/spikes/appattest/)
 
 1. **Developer-ID eligibility.** App Attest is keyed to an App ID. Does our
-   Developer-ID (non-App-Store) provider `.app` (which already embeds a
-   provisioning profile) qualify with the App Attest capability, or is App
-   Attest effectively App-Store-only? `aa_attest` answers this.
-2. **SIP-on implication.** Confirm `attestKey` succeeds only under Full
-   Security + SIP-on (test SIP-on = OK; SIP-off = failure). The SIP-off failure
-   *is* the security property.
-3. **Curve/key params** and entitlement/provisioning specifics.
+   Developer-ID (non-App-Store) provider `.app` (already a signed/notarized
+   bundle with an embedded provisioning profile) qualify with the App Attest
+   capability + production env, yielding `apple_validation_category == 6`
+   (Developer ID)? The App Attest entitlement docs don't yet list macOS, so treat
+   this as **unproven, spike-gated**, not solved.
+2. **SIP-on implication via aclBlob.** Confirm the attestation's `aclBlob` (OID
+   1.2.840.113635.100.8.6) carries the Full-Security + SIP-on policy hash under
+   SIP-on, and that it differs / `attestKey` fails under SIP-off / Reduced
+   Security. The SIP-off difference *is* the security property — and the check is
+   on the aclBlob, not mere attestKey success.
+3. **Channel binding feasibility.** Can the genuine app derive a TLS exporter for
+   its own connection (to bind the proof to the transport), or must we rely on
+   the `K_pub`-in-clientData + `E_K(nonce)` + seal-to-K binding (the planned
+   approach)? Confirm `K_pub` can be threaded into `attestKey`/`generateAssertion`
+   clientData.
+4. **The relay test (the one that matters).** Two boxes: `M_dirty` holds the real
+   coordinator connection, `M_clean` runs the genuine app as a signing oracle.
+   Verify that binding to `K` makes the relay pointless (plaintext stays on
+   `M_clean`) and that `M_dirty` cannot bind its own `K_dirty` without a valid
+   SIP-on attestation.
+5. **Verifier negative corpus + assertion mechanics.** `generateAssertion`
+   verification; replay / stale / out-of-order / counter-race; a corpus mutating
+   each required field (bad x5c, wrong rpId, wrong nonce, wrong aclBlob, reused
+   counter) must all be rejected.
+6. **Curve/key params**, entitlement/provisioning specifics, and per-connection
+   **rate-limit** behavior (App Attest may throttle attestations).
 
 ## Rollout
 

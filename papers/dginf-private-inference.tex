@@ -78,14 +78,14 @@
 \pagestyle{fancy}
 \fancyhf{}
 \renewcommand{\headrulewidth}{0.4pt}
-\fancyhead[L]{\small\sffamily Private Decentralized Inference on Consumer Hardware}
+\fancyhead[L]{\small\sffamily Private Distributed Inference on Consumer Hardware}
 \fancyhead[R]{\small\sffamily\thepage}
 \fancyfoot{}
 
 % =====================================================================
 \title{%
 \vspace{-0.5cm}
-{\LARGE\sffamily\bfseries Private Decentralized Inference\\on Consumer Hardware}\\[8pt]
+{\LARGE\sffamily\bfseries Private Distributed Inference\\on Consumer Hardware}\\[8pt]
 {\large\sffamily Enabling Confidential Computation on Third-Party Apple Silicon\\via Software Access Path Elimination}
 }
 
@@ -108,7 +108,7 @@
 \begin{@twocolumnfalse}
 \begin{abstract}
 \noindent
-We present a system and method for private machine learning inference on a decentralized network of consumer hardware. The core problem: a user wants to run an AI model on someone else's Mac, but the machine's owner---who has root access and physical custody---should not be able to see the user's prompts or the model's responses. The machines lack hardware Trusted Execution Environments (TEEs) for application-level memory isolation.
+We present a system and method for private machine learning inference on a distributed network of consumer hardware. The core problem: a user wants to run an AI model on someone else's Mac, but the machine's owner---who has root access and physical custody---should not be able to see the user's prompts or the model's responses. The machines lack hardware Trusted Execution Environments (TEEs) for application-level memory isolation.
 
 Our approach eliminates every software path through which inference data could be observed. The inference engine runs directly inside a single hardened Swift process---no subprocess, no local server, no inter-process communication---using \texttt{mlx-swift-lm} on the Apple Silicon GPU. The macOS kernel blocks all external access to this process's memory: debuggers are denied at the system call level (\texttt{PT\_DENY\_ATTACH}), memory-reading APIs are blocked by Hardened Runtime, and these protections cannot be disabled without rebooting, which terminates the process and erases its data. We prove that System Integrity Protection, once verified, is immutable for the process lifetime (Theorem~\ref{thm:sip}).
 
@@ -126,7 +126,7 @@ After eliminating all software access paths, the only remaining attack requires 
 
 When a user sends a prompt to a cloud AI service, that prompt travels to a server owned and operated by someone else. The user's privacy rests on a contractual promise---a privacy policy---not a technical guarantee. Hardware Trusted Execution Environments (TEEs) such as Intel TDX~\cite{intel-tdx}, AMD SEV-SNP~\cite{amd-sev}, and NVIDIA Confidential Computing~\cite{nvidia-cc} can provide cryptographic memory isolation, but these technologies exist only on enterprise server hardware costing \$14,000 or more.
 
-Meanwhile, over 100 million Apple Silicon Macs have been sold since 2020. With 64--256\,GB of unified memory and 273--819\,GB/s memory bandwidth, they can run models with up to 235 billion parameters at interactive speeds. These machines sit idle most of the day. A decentralized network that lets Mac owners contribute their idle compute for AI inference---while guaranteeing that they cannot see the prompts being processed---would make private inference available at a fraction of the cost of cloud TEEs.
+Meanwhile, over 100 million Apple Silicon Macs have been sold since 2020. With 64--256\,GB of unified memory and 273--819\,GB/s memory bandwidth, they can run models with up to 235 billion parameters at interactive speeds. These machines sit idle most of the day. A distributed network that lets Mac owners contribute their idle compute for AI inference---while guaranteeing that they cannot see the prompts being processed---would make private inference available at a fraction of the cost of cloud TEEs.
 
 The challenge is that Apple Silicon provides no hardware TEE accessible to third-party applications:
 
@@ -140,7 +140,7 @@ We present a system that makes this possible. Rather than encrypting memory (whi
 
 \textbf{Contributions.} This paper makes the following contributions:
 \begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=2pt]
-    \item A \textbf{decentralized private inference architecture} that enables confidential AI computation on a network of third-party Apple Silicon machines, where each machine's owner is assumed to be adversarial.
+    \item A \textbf{distributed private inference architecture} that enables confidential AI computation on a network of third-party Apple Silicon machines, where each machine's owner is assumed to be adversarial.
     \item A \textbf{formal security model} for this setting, including a proof that System Integrity Protection provides runtime immutability under standard assumptions (Theorem~\ref{thm:sip}), and a complete enumeration of the software attack surface.
     \item An \textbf{in-process inference design} that embeds the inference engine directly in a hardened Swift process using \texttt{mlx-swift-lm}, eliminating all inter-process communication channels that could be observed, with optional \textbf{hypervisor memory isolation} reported as telemetry for future RDMA hardening.
     \item A \textbf{multi-layer attestation architecture} combining Secure Enclave signatures, MDM-based independent verification, Apple MDA hardware attestation with Apple-signed certificate chains, MDA nonce-based SE key binding, periodic challenge-response with fresh security state, and APNs code-identity attestation proving the running binary is genuine.
@@ -155,7 +155,7 @@ We present a system that makes this possible. Rather than encrypting memory (whi
 
 \textbf{Hardware TEE-based inference.}\quad Intel TDX~\cite{intel-tdx} and AMD SEV-SNP~\cite{amd-sev} encrypt VM memory and provide remote attestation. NVIDIA Confidential Computing~\cite{nvidia-cc} extends this to GPU memory. These approaches provide strong isolation but require enterprise server hardware. Our work achieves comparable privacy guarantees on consumer hardware without memory encryption.
 
-\textbf{Decentralized compute networks.}\quad Akash~\cite{akash} provides general compute with TEE support in development. io.net~\cite{ionet} aggregates GPU resources without hardware security guarantees. Ritual~\cite{ritual} uses zero-knowledge proofs and Intel SGX. Bittensor~\cite{bittensor} employs stake-weighted consensus for result verification. None address inference privacy on consumer hardware lacking TEEs.
+\textbf{Distributed compute networks.}\quad Akash~\cite{akash} provides general compute with TEE support in development. io.net~\cite{ionet} aggregates GPU resources without hardware security guarantees. Ritual~\cite{ritual} uses zero-knowledge proofs and Intel SGX. Bittensor~\cite{bittensor} employs stake-weighted consensus for result verification. None address inference privacy on consumer hardware lacking TEEs.
 
 \textbf{Apple Private Cloud Compute.}\quad PCC~\cite{apple-pcc} achieves inference privacy on Apple Silicon servers (M2~Ultra) without memory encryption through five requirements: stateless computation, enforceable guarantees, no privileged runtime access, non-targetability, and verifiable transparency. Implementation includes: no persistent storage, no SSH or shell access, immutable OS via Signed System Volume, cryptographic erasure on reboot, and OHTTP anonymization. Our work differs in that PCC operates in \emph{Apple-controlled data centers} with physical security (access controls, tamper detection), while our system must defend against the hardware owner as adversary.
 
@@ -191,13 +191,13 @@ Residual attack & Physical probing & Physical probing \\
 \end{tabularx}
 \end{table}
 
-The key distinction is who owns the hardware. In PCC, Apple owns the servers and controls physical access. In our system, the hardware belongs to an independent provider who may be adversarial. The multi-layer attestation architecture (Section~\ref{sec:attestation}) compensates for the absence of physical security by providing multiple independent verification paths, culminating in Apple-signed hardware provenance certificates. The result is that consumers get the same residual threat model---physical memory probing only---whether they use Apple's private cloud or our decentralized network.
+The key distinction is who owns the hardware. In PCC, Apple owns the servers and controls physical access. In our system, the hardware belongs to an independent provider who may be adversarial. The multi-layer attestation architecture (Section~\ref{sec:attestation}) compensates for the absence of physical security by providing multiple independent verification paths, culminating in Apple-signed hardware provenance certificates. The result is that consumers get the same residual threat model---physical memory probing only---whether they use Apple's private cloud or our distributed network.
 
 % =====================================================================
 \section{Threat Model and Assumptions}
 \label{sec:threat}
 
-The fundamental challenge in decentralized inference is that the person running the computation is not the person who owns the data. A provider contributes their Mac's compute, but should learn nothing about the prompts processed on it. This section formalizes what we assume about each party and what a malicious provider can attempt.
+The fundamental challenge in distributed inference is that the person running the computation is not the person who owns the data. A provider contributes their Mac's compute, but should learn nothing about the prompts processed on it. This section formalizes what we assume about each party and what a malicious provider can attempt.
 
 \subsection{Actors}
 
@@ -260,7 +260,7 @@ where $\lambda$ is the security parameter, under Assumptions 1--3, excluding phy
 \section{System Architecture}
 \label{sec:arch}
 
-The decentralized network comprises three principal components: a \emph{coordinator} that routes consumer requests to providers and verifies their attestations, \emph{provider agents} running on Apple Silicon Macs that execute inference, and a \emph{Secure Enclave module} that gives each provider a hardware-bound cryptographic identity. The provider is a Swift CLI (\texttt{darkbloom}) that runs \texttt{mlx-swift-lm} in-process on the Apple Silicon GPU. Figure~\ref{fig:arch} depicts the complete architecture.
+The distributed network comprises three principal components: a \emph{coordinator} that routes consumer requests to providers and verifies their attestations, \emph{provider agents} running on Apple Silicon Macs that execute inference, and a \emph{Secure Enclave module} that gives each provider a hardware-bound cryptographic identity. The provider is a Swift CLI (\texttt{darkbloom}) that runs \texttt{mlx-swift-lm} in-process on the Apple Silicon GPU. Figure~\ref{fig:arch} depicts the complete architecture.
 
 \begin{figure*}[t]
 \centering
@@ -1096,7 +1096,7 @@ Security overhead is negligible. The SIP check (12\,ms per request) is the large
 \section{Economic Feasibility Analysis}
 \label{sec:economics}
 
-We analyze the economic properties of the system to establish that decentralized inference on consumer hardware is economically viable at the price points required for adoption.
+We analyze the economic properties of the system to establish that distributed inference on consumer hardware is economically viable at the price points required for adoption.
 
 \subsection{Marginal Cost Model}
 
@@ -1153,7 +1153,7 @@ Llama 3.1 70B & \$0.30 & \$0.49 & 0.6$\times$ \\
 \end{tabular}
 \end{table}
 
-Dense models exceeding 32B parameters favor cloud infrastructure: H100 clusters with 3.35\,TB/s memory bandwidth achieve 6$\times$ higher throughput than M4~Max (546\,GB/s) for bandwidth-bound decoding. The economic sweet spot for decentralized inference is MoE models with small active parameter counts on large unified-memory hardware.
+Dense models exceeding 32B parameters favor cloud infrastructure: H100 clusters with 3.35\,TB/s memory bandwidth achieve 6$\times$ higher throughput than M4~Max (546\,GB/s) for bandwidth-bound decoding. The economic sweet spot for distributed inference is MoE models with small active parameter counts on large unified-memory hardware.
 
 % =====================================================================
 \section{Limitations}
@@ -1183,19 +1183,19 @@ Dense models exceeding 32B parameters favor cloud infrastructure: H100 clusters 
 
 \textbf{Transparency log for binary hashes.}\quad APNs code-identity attestation proves the genuine App ID/Team ID but not the exact binary version. A public transparency log of blessed \texttt{cdhash} values, combined with reproducible builds, would let consumers pin or range-accept specific provider releases while retaining the non-self-reportable APNs gate.
 
-\textbf{General private compute.}\quad The access path elimination technique is not specific to inference. Any computation that can be embedded in a hardened process on Apple Silicon---fine-tuning on private data, evaluation on proprietary datasets, confidential data pipelines---can leverage the same security guarantees. The multi-layer attestation architecture generalizes to any workload where computation must remain confidential from the machine's owner, positioning the decentralized network as a general-purpose private compute layer on consumer hardware.
+\textbf{General private compute.}\quad The access path elimination technique is not specific to inference. Any computation that can be embedded in a hardened process on Apple Silicon---fine-tuning on private data, evaluation on proprietary datasets, confidential data pipelines---can leverage the same security guarantees. The multi-layer attestation architecture generalizes to any workload where computation must remain confidential from the machine's owner, positioning the distributed network as a general-purpose private compute layer on consumer hardware.
 
 % =====================================================================
 \section{Conclusion}
 \label{sec:conclusion}
 
-We have presented a decentralized inference system in which consumers get private AI computation on machines they do not own or control. The machine owners---who have root access and physical custody---cannot observe the prompts or responses processed on their hardware.
+We have presented a distributed inference system in which consumers get private AI computation on machines they do not own or control. The machine owners---who have root access and physical custody---cannot observe the prompts or responses processed on their hardware.
 
 The approach works by systematically eliminating every software path to inference data: in-process Swift execution using \texttt{mlx-swift-lm} removes inter-process communication, kernel-enforced isolation blocks memory inspection, and operating system integrity guarantees are provably immutable at runtime (Theorem~\ref{thm:sip}). Hypervisor Stage~2 page tables have been validated as a future hardware-level isolation mechanism for RDMA-based DMA attacks with zero measured performance overhead. A multi-layer attestation architecture---Secure Enclave signatures, MDM-based independent verification, Apple MDA with Apple-signed certificate chains, MDA nonce-based SE key binding, continuous challenge-response with fresh security state, and APNs code-identity attestation---provides defense-in-depth where each layer independently verifies properties that the others cannot.
 
-The residual attack surface reduces to physical memory probing of LPDDR5x soldered into Apple's System-on-Chip package, even when RDMA is enabled. This is the same threat model accepted by Apple's Private Cloud Compute for Siri and Apple Intelligence queries. Our system achieves equivalent privacy guarantees on a decentralized network of independently owned machines.
+The residual attack surface reduces to physical memory probing of LPDDR5x soldered into Apple's System-on-Chip package, even when RDMA is enabled. This is the same threat model accepted by Apple's Private Cloud Compute for Siri and Apple Intelligence queries. Our system achieves equivalent privacy guarantees on a distributed network of independently owned machines.
 
-The system is validated end-to-end on production hardware with live inference, demonstrating negligible security overhead. The economic analysis establishes that Mixture-of-Experts models create 6--32$\times$ cost advantages on unified-memory hardware, making decentralized private inference economically viable. The access path elimination technique generalizes beyond inference to any computation requiring confidentiality on third-party consumer hardware.
+The system is validated end-to-end on production hardware with live inference, demonstrating negligible security overhead. The economic analysis establishes that Mixture-of-Experts models create 6--32$\times$ cost advantages on unified-memory hardware, making distributed private inference economically viable. The access path elimination technique generalizes beyond inference to any computation requiring confidentiality on third-party consumer hardware.
 
 % =====================================================================
 \bibliographystyle{plain}
@@ -1261,7 +1261,7 @@ MicroMDM Project. MicroMDM: A macOS MDM server. \url{https://micromdm.io/}, 2024
 Apple ML Research. MLX: An array framework for Apple Silicon. \url{https://github.com/ml-explore/mlx}, 2024.
 
 \bibitem{darkbloom-repo}
-Darkbloom: Decentralized Private Inference on Apple Silicon. Open-source implementation. \url{https://github.com/Layr-Labs/d-inference}, 2026.
+Darkbloom: Distributed Private Inference on Apple Silicon. Open-source implementation. \url{https://github.com/Layr-Labs/d-inference}, 2026.
 
 \end{thebibliography}
 

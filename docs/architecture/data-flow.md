@@ -1,18 +1,12 @@
 # Darkbloom Request Data Flow
 
+![Darkbloom request data flow sequence diagram](../assets/diagrams/request-data-flow.svg)
+
 This document walks through the lifecycle of a single inference request, from the consumer HTTP call to the provider response and final billing settlement. Every behavioral claim is pinned to a canonical code path.
 
 ## 1. Consumer Request
 
 The consumer sends a request to the coordinator over HTTPS. The canonical entry point is `POST /v1/chat/completions` (`coordinator/api/server.go:1411`).
-
-```text
-Consumer
-    │ POST /v1/chat/completions (application/json)
-    │ or POST /v1/chat/completions (application/eigeninference-sealed+json)
-    ▼
-Coordinator TLS terminator → `handleChatCompletions`
-```
 
 ### Optional sender sealing
 
@@ -42,24 +36,7 @@ Before dispatch, the handler:
 
 ## 3. Provider Selection
 
-The production dispatch hot path calls `Registry.ReserveProviderEx` (`coordinator/registry/scheduler.go:213-292`).
-
-```text
-handleChatCompletions
-    │
-    ▼
-ReserveProviderEx(model, pendingRequest)
-    │
-    ├── selectBestCandidateLockedFull
-    │       ├── providerPassesRoutingGatesLocked   (catalog, trust, runtime, privacy, challenge, cooldowns, traits)
-    │       ├── snapshotProviderLocked             (slot state, TPS, memory, pending counts)
-    │       ├── buildCandidateWithReason           (cost in ms)
-    │       └── pick lowest-cost + tie-break
-    │
-    └── providerCanAdmitLocked + addPendingLocked
-```
-
-The candidate cost is the sum of (`coordinator/registry/scheduler.go:802-894`):
+The production dispatch hot path calls `Registry.ReserveProviderEx` (`coordinator/registry/scheduler.go:213-292`). The candidate cost is the sum of (`coordinator/registry/scheduler.go:802-894`):
 
 | Term | Meaning |
 |---|---|
@@ -139,30 +116,6 @@ Independently of inference traffic, the coordinator runs a periodic challenge-re
 5. Disabled SIP or Secure Boot → immediate untrust; three consecutive transient failures → untrust.
 
 The APNs code-identity attestation loop runs once per connection (not periodically) and proves the running binary's code identity via a push challenge round-trip (`coordinator/api/provider.go:487-617`).
-
-## Data-Flow Diagram
-
-```text
-┌────────────┐      TLS (+ optional NaCl Box)       ┌─────────────────┐
-│  Consumer  │ ────────────────────────────────────▶ │  Coordinator    │
-│  (OpenAI   │                                     │  (CVM memory)   │
-│   SDK)     │ ◀──────────────────────────────────── │                 │
-└────────────┘      TLS (+ optional sealed SSE)      └────────┬────────┘
-                                                              │ WebSocket
-                                                              │ NaCl Box
-                                                              ▼
-                                                       ┌─────────────────┐
-                                                       │     Provider    │
-                                                       │  (Swift/MLX)    │
-                                                       │  SE-bound key   │
-                                                       └────────┬────────┘
-                                                                │
-                                                                ▼
-                                                       ┌─────────────────┐
-                                                       │  Apple Silicon  │
-                                                       │    GPU / Metal  │
-                                                       └─────────────────┘
-```
 
 ## Trust Boundaries
 

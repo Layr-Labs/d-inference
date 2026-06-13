@@ -7,6 +7,8 @@ The code is the source of truth. If a doc contradicts the code, the code wins.
 See [`AGENTS.md`](./AGENTS.md) for authoring rules and the canonical privacy
 model.
 
+![Darkbloom system architecture](./assets/diagrams/system-architecture.svg)
+
 ## Navigation matrix
 
 ### Getting started

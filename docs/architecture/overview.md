@@ -9,21 +9,16 @@ retain prompt content.
 
 ## System diagram
 
-```text
-Consumer (OpenAI SDK / Web UI / curl)
-    │
-    │ HTTPS (+ optional NaCl Box to coordinator)
-    ▼
-Coordinator (Go, Confidential VM in prod)
-    │
-    │ WebSocket (outbound from provider; no inbound port required)
-    │ mandatory per-request NaCl Box
-    ▼
-Provider CLI (Swift `darkbloom`)
-    │
-    ▼
-Apple Silicon GPU (Metal, via mlx-swift-lm)
-```
+![Darkbloom system architecture](../assets/diagrams/system-architecture.svg)
+
+The diagram shows the request flow. Canonical code paths for each hop:
+
+- Consumer → coordinator HTTPS and optional NaCl Box: `coordinator/api/server.go:1411`, `coordinator/api/sender_encryption.go`.
+- Coordinator → provider dispatch and mandatory per-request NaCl Box: `coordinator/api/consumer.go:448-510`, `coordinator/internal/e2e/e2e.go`.
+- Provider decryption, in-process MLX inference, and response encryption: `provider-swift/Sources/ProviderCore/ProviderLoop.swift:959-1178`.
+- Provider attestation and APNs code-identity: `coordinator/api/provider.go:2074-2196`, `coordinator/apns/attestor.go`.
+
+See [`security/encryption.md`](security/encryption.md) for the precise hop-by-hop privacy model.
 
 ## Components
 

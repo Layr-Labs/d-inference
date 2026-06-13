@@ -2,6 +2,8 @@
 
 This directory is the source of truth for how Darkbloom works. The code in `coordinator/`, `provider-swift/`, `console-ui/`, and `e2e/` is canonical; these docs describe and cite it.
 
+![Darkbloom system architecture](../assets/diagrams/system-architecture.svg)
+
 ## Start here
 
 | Doc | What it covers |

@@ -2,25 +2,11 @@
 
 This document is the canonical reference for Darkbloom's hop-by-hop encryption. It describes exactly what is encrypted, who can decrypt it, and what each party learns. The code is the source of truth; marketing language that contradicts these paths is wrong.
 
-## Threat-model goal
-
-Keep prompts and responses confidential from everyone except the consumer and the attested provider. The coordinator is trusted for routing and billing, but it is engineered to minimize what it learns and to discard prompt content after each request.
-
 ## Hop-by-hop model
 
-```
-Consumer (SDK / browser / curl)
-    |
-    | TLS (default); optional NaCl Box to coordinator's X25519 key
-    v
-Coordinator (Confidential VM)
-    |
-    | Mandatory per-request NaCl Box to provider's attested X25519 key K
-    v
-Provider (Apple Silicon Mac, hardened Swift process)
-```
+![Encryption layers for a single inference request](../../assets/diagrams/encryption-layers.svg)
 
-The provider is the decryption endpoint. NaCl Box provides authenticated encryption with X25519 key agreement and XSalsa20-Poly1305 (`crypto_box`).
+The provider is the decryption endpoint. NaCl Box provides authenticated encryption with X25519 key agreement and XSalsa20-Poly1305 (`crypto_box`). The arrows in the diagram map to the legs below; each section cites the code that implements it.
 
 ## Consumer → coordinator
 

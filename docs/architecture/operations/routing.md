@@ -1,8 +1,12 @@
 # Routing
 
-Darkbloom's production dispatch path is a **cost-minimization scheduler**. For each inference request it builds every eligible provider into a candidate, computes an estimated completion time (in milliseconds), and selects the lowest-cost candidate. Ties are broken by queue depth, total pending load, and finally randomization to avoid hot-spotting.
+Darkbloom's production dispatch path is a **cost-minimization scheduler**. For each inference request it builds every eligible provider into a candidate, computes an estimated completion time (in milliseconds), and selects the lowest-cost candidate.
 
 The canonical implementation is `Registry.ReserveProviderEx` in `coordinator/registry/scheduler.go:213-292`.
+
+![Routing request flow](../../assets/diagrams/routing-flow.svg)
+
+The flow above maps to the consumer handler in `coordinator/api/consumer.go`: auth and rate-limit, optional sender-seal (`coordinator/api/sender_encryption.go`), NaCl Box decryption (`consumer.go:448-510`), token estimation and balance reservation, then a `QuickCapacityCheck` (`scheduler.go:1079-1193`) before `ReserveProviderEx` selects a provider. The chosen request is re-encrypted with a fresh per-request NaCl Box to the provider's attested X25519 key and dispatched over the provider WebSocket as an `inference_request`.
 
 ## Privacy boundary
 
@@ -25,18 +29,13 @@ func (r *Registry) ReserveProviderEx(
 ) (*Provider, RoutingDecision)
 ```
 
-`ReserveProviderEx` (`coordinator/registry/scheduler.go:213-292`) is the only production path that both selects a provider and atomically reserves capacity. It returns a `RoutingDecision` (`scheduler.go:172-197`) so callers can emit metrics without reaching into registry internals.
+`ReserveProviderEx` is the only production path that both selects a provider and atomically reserves capacity. It returns a `RoutingDecision` (`scheduler.go:172-197`) so callers can emit metrics without reaching into registry internals.
 
 The public wrapper `ReserveProvider` (`scheduler.go:199-205`) discards the decision and is used by tests and legacy callers.
 
-## Two-pass candidate selection
+## Candidate selection and reservation
 
-`selectBestCandidateLockedFull` (`scheduler.go:302-462`) runs in two passes to avoid order-dependent tie-breaking that appeared in earlier single-pass implementations:
-
-1. **Collect all eligible candidates** by applying every structural and capacity gate to every provider.
-2. **Score and choose** from the collected pool: lowest cost, then queue-depth tie-break, then total-pending tie-break, then randomization among equivalent candidates.
-
-The function also counts rejection reasons so callers can distinguish "no provider serves this model" from "all fitting providers are full":
+`selectBestCandidateLockedFull` (`scheduler.go:302-462`) first collects every provider that passes the structural gates, then scores each one with `buildCandidateWithReason`. It returns the winner plus rejection counters:
 
 | Counter | Meaning |
 |---|---|
@@ -44,6 +43,10 @@ The function also counts rejection reasons so callers can distinguish "no provid
 | `CapacityRejections` | Providers rejected for transient capacity/memory pressure (retryable) |
 | `ModelTooLargeRejections` | Providers whose memory can never fit the model (permanent) |
 | `VisionRejections` | Providers that serve the model only as a text-only build when vision is required |
+
+The lowest-cost candidate wins. Candidates within `nearTieCostWindowMs` (`3_000` ms) of the best are considered tied (`scheduler.go:427-432`); ties are broken by lowest `effectiveQueue`, then lowest `totalPending`, then uniform random choice (`scheduler.go:448-458`).
+
+After selection, `ReserveProviderEx` re-takes the provider lock and runs `providerCanAdmitLocked` (`scheduler.go:1029-1050`) to re-apply the routing gates and capacity/slot-state checks. If the provider's state changed between snapshot and reservation, the selection is rejected and the caller may retry.
 
 ## Structural gates
 
@@ -90,7 +93,7 @@ Penalty constants are defined at `scheduler.go:16-36`.
 
 ### Effective decode TPS
 
-`resolveEffectiveTPS` (`scheduler.go:948-958`) chooses the best available decode estimate in this order:
+`resolveEffectiveTPS` (`scheduler.go:950-958`) chooses the best available decode estimate in this order:
 
 1. Provider-reported observed EWMA (`slot.ObservedDecodeTPS`).
 2. Fleet median TPS for the same model and chip family (`tpsRegistry.Median`).
@@ -114,37 +117,12 @@ The load-scaled fallback divides the static benchmark TPS by `1 + effectiveTPSLo
 
 A model is considered **resident** when the slot state is `running` or `idle`; only resident models skip the absolute hardware-fit gate in `buildCandidateWithReason` (`scheduler.go:839-842`).
 
-## Tie-breaking and randomization
-
-Candidates whose cost is within `nearTieCostWindowMs` (`3_000` ms) of the best are considered tied (`scheduler.go:427-432`). The winner is chosen by:
-
-1. Lowest `effectiveQueue` (`max(pendingForModel, backendRunning + backendWaiting)`).
-2. Lowest `totalPending`.
-3. Random uniform choice among the remaining equivalent candidates (`scheduler.go:448-458`).
-
-## Reservation and final admit
-
-After selection, `ReserveProviderEx` re-takes the provider lock and runs `providerCanAdmitLocked` (`scheduler.go:1029-1050`), which re-applies the routing gates and the capacity/slot-state checks. If the provider's state changed between snapshot and reservation, the selection is rejected and the caller may retry.
-
-On success the request is added to the provider's pending set (`provider.addPendingLocked`), the provider status moves to `StatusServing`, and the `RoutingDecision` is populated.
-
 ## Special routing modes
 
-### Self-route
-
-A `SelfRouteOnly` request (`pr.SelfRouteOnly == true`) is restricted to providers owned by the caller's account and never falls back to the public fleet (`scheduler.go:325-329`). The trust floor and private-only admission are relaxed for the owner's own machine (`scheduler.go:341`, `scheduler.go:598-648`).
-
-### Prefer-owner
-
-A `PreferOwner` request first tries to select among owned candidates; if none are eligible it falls back to the public fleet (`scheduler.go:391-401`). Settlement is free only when the actually selected provider is owned by the caller (`coordinator/api/provider.go:1706-1733`).
-
-### Allowed serials
-
-`AllowedProviderSerials` restricts candidates to providers whose attested serial number (from SE attestation or MDA result) is in the allowlist (`scheduler.go:307-334`, `providerMatchesAllowedSerial` at `scheduler.go:464-481`).
-
-### Version-diverse retry
-
-`Traits.AvoidVersion` is a soft hint used when a previous attempt failed on a specific binary version. Selection prefers candidates running a different version, but never fails closed if every candidate runs the avoided version (`scheduler.go:409-419`).
+* **Self-route** (`pr.SelfRouteOnly`) — restricted to providers owned by the caller; never falls back to the public fleet (`scheduler.go:325-329`). Trust floor and private-only admission are relaxed for the owner's own machine (`scheduler.go:341`, `scheduler.go:598-648`).
+* **Prefer-owner** (`pr.PreferOwner`) — first tries owned candidates, then falls back to the public fleet (`scheduler.go:391-401`). Settlement is free only when the selected provider is owned by the caller (`coordinator/api/provider.go:1706-1733`).
+* **Allowed serials** (`pr.AllowedProviderSerials`) — restricts candidates to providers whose attested serial number is in the allowlist (`scheduler.go:307-334`, `providerMatchesAllowedSerial` at `scheduler.go:464-481`).
+* **Version-diverse retry** (`Traits.AvoidVersion`) — soft hint that prefers a different binary version after a failure, but never fails closed (`scheduler.go:409-419`).
 
 ## Metrics and observability
 

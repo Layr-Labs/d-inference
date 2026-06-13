@@ -80,7 +80,7 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "billing_method",
   "payment_failed",
   "target",
-  // OOM detection / memory pressure (mirror of the Go + Swift allowlists).
+  // OOM / memory pressure (mirror of Go + Swift allowlists).
   "detect_source",
   "peak_memory_bytes",
   "report",

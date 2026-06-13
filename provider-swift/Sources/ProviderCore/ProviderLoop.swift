@@ -550,9 +550,7 @@ public actor ProviderLoop {
         // #315) — installed from the serve path, so it reaches auto-updated
         // installs too. KeepAlive stays false to avoid racing the updater.
 
-        // Memory protection: surface any OOM that killed the previous run (a
-        // jetsam SIGKILL leaves no in-process trace) and start reacting to live
-        // kernel memory pressure before the next kill. Best-effort, never throws.
+        // Surface any prior-run OOM and react to live memory pressure. Best-effort.
         startMemoryProtection()
         defer { memoryPressureMonitor?.cancel() }
 
@@ -2107,14 +2105,9 @@ public actor ProviderLoop {
 
     // MARK: - Memory protection
 
-    /// Surface any prior-run OOM and start reacting to live memory pressure.
-    ///
-    /// A jetsam SIGKILL (the dominant office-Mac OOM) is uncatchable and leaves
-    /// no in-process trace, so we recover the signal two ways: (1) scrape the
-    /// kernel's crash logs + consume any pre-death marker on THIS launch and
-    /// emit an `oom` telemetry event; (2) watch kernel memory pressure and, on
-    /// critical, reclaim MLX's cache and drop a marker so the *next* launch can
-    /// attribute a kill that happens before we can report it. All best-effort.
+    /// Surface any prior-run OOM (consume marker + scrape crash logs → oom
+    /// telemetry) and watch live memory pressure (reclaim cache + drop a marker
+    /// on critical so a kill before we can report it is attributed next launch).
     private func startMemoryProtection() {
         let now = Date()
         let since = OOMDetector.loadLastScan() ?? now.addingTimeInterval(-24 * 3600)

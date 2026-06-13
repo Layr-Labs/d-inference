@@ -18,9 +18,7 @@ public actor GlobalKVCacheBudget {
                 total: ProcessInfo.processInfo.physicalMemory,
                 active: UInt64(Memory.activeMemory),
                 cache: UInt64(Memory.cacheMemory),
-                // Real OS-available memory (free + reclaimable), accounting for
-                // every other process on the box. `.max` when unavailable so we
-                // fall back to the MLX-only view rather than admitting nothing.
+                // Real OS-free RAM; `.max` falls back to the MLX-only view.
                 systemAvailable: SystemMemory.availableBytes() ?? .max
             )
         }
@@ -81,16 +79,11 @@ public actor GlobalKVCacheBudget {
 
     private func availableReservationBytes() -> UInt64 {
         let (total, active, cache, systemAvailable) = memorySnapshot()
-        // MLX-only view: physical total minus what MLX itself holds. This is
-        // blind to every other process on the machine, so on a shared office
-        // Mac it over-reports free memory by whatever Chrome/Xcode/etc. hold.
         let mlxUsed = Self.saturatingAdd(active, cache)
         let mlxFree = total > mlxUsed ? total - mlxUsed : 0
-        // Clamp to what the OS actually reports available. The tighter of the
-        // two bounds wins — the exact same clamp the model-LOAD gate applies
-        // (`ModelLoadAdmission.freeForLoadGb`: realFree = min(mlxFree, OS-free)).
-        // Without this, the runtime KV path admits requests against memory other
-        // processes have already taken and drives the box into a jetsam OOM kill.
+        // Clamp the MLX-only view (blind to other processes) to real OS-free RAM,
+        // mirroring the load gate (ModelLoadAdmission.freeForLoadGb). Without it
+        // the runtime admits against memory other apps hold → jetsam OOM.
         let realFree = min(mlxFree, systemAvailable)
         let usable = realFree > reserveBytes ? realFree - reserveBytes : 0
         let capped = Double(usable) * safetyFactor

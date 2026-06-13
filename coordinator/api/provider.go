@@ -207,12 +207,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 				s.ddIncr("ws.disconnects", []string{"reason:read_error"})
 
-				// A read_error is an abrupt drop — the signature of a killed
-				// process, not a graceful close. Classify it against the last
-				// heartbeat's memory pressure + in-flight count: a jetsam OOM
-				// kill leaves no other trace, so this is the only way to make it
-				// visible (vs. bucketing it as a generic disconnect). See
-				// registry.ClassifyDisconnectReason.
+				// An abrupt read_error under high last-known memory pressure is
+				// very likely a jetsam OOM (the kill leaves no other trace).
+				// Classify + surface it. See registry.ClassifyDisconnectReason.
 				if provider != nil {
 					memPressure, inFlight := provider.DisconnectDiagnostics()
 					if registry.ClassifyDisconnectReason(true, memPressure, inFlight) == registry.DisconnectReasonOOMSuspected {

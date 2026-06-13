@@ -31,9 +31,7 @@ import Testing
 }
 
 /// The OOM fix: the runtime KV budget must clamp to real OS-available memory,
-/// not just the MLX-only view (physical − MLX.active − MLX.cache). On a shared
-/// office Mac the MLX view over-reports free RAM by whatever other processes
-/// hold; admitting against it drives the box into a jetsam OOM kill.
+/// not just the MLX-only view, or it over-admits on a shared box → jetsam OOM.
 @Test func globalKVCacheBudgetClampsToOSAvailableWhenItIsTighter() async {
     // MLX-only view says ~1000 bytes free (total 1000, nothing held by MLX),
     // but the OS reports only 100 bytes actually available (other apps hold the

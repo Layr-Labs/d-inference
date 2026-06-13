@@ -1,23 +1,11 @@
 import Foundation
 
-/// Make out-of-memory crashes VISIBLE.
-///
-/// The defining problem: when macOS jetsam kills the provider for exhausting
-/// unified memory, it sends an uncatchable SIGKILL. No signal handler runs, no
-/// telemetry flushes — the crash leaves no in-process trace. So OOMs are
-/// invisible to our telemetry today (they show up only as a coordinator-side
-/// "read_error" disconnect, indistinguishable from a network blip).
-///
-/// Two complementary detectors recover the signal:
-///  1. **Pre-death marker** — when the provider observes a *critical* memory
-///     pressure event (see `MemoryPressureMonitor`), it writes a small marker
-///     to disk. If we then get SIGKILL'd, the marker survives and the NEXT
-///     launch reports it.
-///  2. **Crash-log scrape** — on launch, scan `~/Library/Logs/DiagnosticReports`
-///     for kernel `JetsamEvent-*.ips` reports and `EXC_RESOURCE` memory crash
-///     reports naming our process, and emit an `oom` telemetry event for each.
-///
-/// Both are best-effort and tolerant: a parse failure must never crash startup.
+/// Make OOM crashes visible. A jetsam SIGKILL is uncatchable and flushes no
+/// telemetry, so OOMs surface only as a coordinator-side "read_error" disconnect.
+/// Two best-effort detectors recover the signal: (1) a pre-death marker written
+/// on critical memory pressure that the NEXT launch reports; (2) a launch scan of
+/// ~/Library/Logs/DiagnosticReports for JetsamEvent/EXC_RESOURCE reports naming
+/// our process. Tolerant: a parse failure never crashes startup.
 public enum OOMDetector {
 
     // MARK: - Types
@@ -68,8 +56,7 @@ public enum OOMDetector {
 
     // MARK: - Paths
 
-    /// Marker lives under ~/.darkbloom/ — a stable, daemon-writable location
-    /// (the install dir under /usr/local may be read-only for the daemon).
+    /// ~/.darkbloom/ — stable + daemon-writable (the /usr/local install dir may not be).
     public static func defaultMarkerURL(
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
@@ -82,9 +69,8 @@ public enum OOMDetector {
         home.appendingPathComponent("Library/Logs/DiagnosticReports")
     }
 
-    /// Watermark of the last crash-log scan. Scanning only reports modified
-    /// after this avoids re-emitting the same JetsamEvent on every launch — the
-    /// difference between one OOM event and a crashloop spamming the same report.
+    /// Last-scan watermark: only reports newer than this are emitted, so a
+    /// crashloop doesn't re-report the same JetsamEvent every launch.
     public static func defaultLastScanURL(
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
@@ -113,8 +99,7 @@ public enum OOMDetector {
             let data = try JSONEncoder().encode(marker)
             try data.write(to: url, options: .atomic)
         } catch {
-            // Best-effort: a marker we can't write just means this particular
-            // OOM stays invisible — never fatal.
+            // Best-effort: a marker we can't write just keeps this OOM invisible.
         }
     }
 
@@ -129,10 +114,8 @@ public enum OOMDetector {
 
     // MARK: - Pure parsers (.ips reports)
 
-    /// Parse a kernel `JetsamEvent-*.ips` report. These are two-part documents:
-    /// a one-line JSON header followed by a JSON body containing a `processes`
-    /// array. Returns a finding if our process appears among the killed
-    /// processes. Pure + tolerant: any malformed input returns nil.
+    /// Parse a kernel `JetsamEvent-*.ips` (header line + JSON body with a
+    /// `processes` array); finding iff our process was killed. Pure + tolerant.
     public static func parseJetsamReport(contents: String, processName: String) -> Finding? {
         guard let body = jsonBody(from: contents) else { return nil }
         let pageSize = (body["pageSize"] as? Int)
@@ -258,9 +241,7 @@ public enum OOMDetector {
         return obj
     }
 
-    /// The JSON body of an `.ips` document. Some reports are a single JSON
-    /// object (whole file parses); most are header-line + body. Try whole-file
-    /// first, then everything after the first newline.
+    /// The JSON body of an `.ips`: whole-file if it parses, else after line 1.
     static func jsonBody(from contents: String) -> [String: Any]? {
         if let data = contents.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {

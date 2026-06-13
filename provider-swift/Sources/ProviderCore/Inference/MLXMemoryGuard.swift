@@ -3,31 +3,18 @@ import MLX
 
 /// Hard ceiling on MLX's unified-memory footprint.
 ///
-/// THE PROBLEM: on Apple Silicon, MLX allocates GPU buffers from the same
-/// unified-memory pool as the OS. MLX's `memoryLimit` defaults to **1.5× the
-/// device's recommended max working-set size** — which is *above* physical RAM —
-/// so by default MLX will happily try to allocate past total RAM. When it does,
-/// macOS jetsam sends the process an uncatchable SIGKILL: an invisible OOM
-/// crash (no panic, no telemetry — the kill leaves no trace the process can
-/// flush). This is the dominant office-Mac failure mode.
-///
-/// THE GUARD: pin `Memory.memoryLimit` to `physical − reserve` once at startup.
-/// Past that limit MLX's allocator applies backpressure (malloc waits on
-/// scheduled GPU tasks to free memory) instead of racing the machine into a
-/// kernel kill. This is a *coarse backstop*; the precise, live, shared-machine
-/// protection is the per-request admission gate (`GlobalKVCacheBudget` /
-/// `tokenBudgetMax`, which clamp to `SystemMemory.availableBytes()`). The two
-/// are complementary: admission keeps us from *trying* to over-allocate; the
-/// ceiling bounds the blast radius if an estimate is ever wrong.
+/// MLX's `memoryLimit` defaults to 1.5× the device working set — above physical
+/// RAM — so by default MLX can allocate past total RAM and hit an uncatchable
+/// jetsam SIGKILL (an invisible OOM). Pinning it to `physical − reserve` makes
+/// the allocator throttle (malloc waits on scheduled tasks) instead. Coarse
+/// backstop; the live per-request gate (GlobalKVCacheBudget / tokenBudgetMax,
+/// clamped to SystemMemory.availableBytes) is the precise one.
 public enum MLXMemoryGuard {
-    /// Default headroom (GB) left below physical RAM for macOS + non-MLX
-    /// process memory. Deliberately larger than the per-request load reserve
-    /// (4 GB) because this is the *whole-machine* ceiling: it must leave room
-    /// for the OS, the window server, and whatever else shares the box.
+    /// Headroom (GB) left below physical RAM for macOS + non-MLX memory. Larger
+    /// than the per-request load reserve (4 GB): this is the whole-machine ceiling.
     public static let defaultReserveGB: UInt64 = 6
 
-    /// Floor so a tiny/misreported machine never gets a pathological (or zero)
-    /// limit that would wedge every allocation.
+    /// Floor so a tiny/misreported machine never gets a pathological limit.
     static let minimumLimitBytes = 2 * 1024 * 1024 * 1024  // 2 GiB
 
     public struct Limits: Equatable, Sendable {
@@ -35,12 +22,9 @@ public enum MLXMemoryGuard {
         public let cacheLimitBytes: Int
     }
 
-    /// Pure, testable sizing policy.
-    /// - memoryLimit = max(floor, physical − reserve)
-    /// - cacheLimit  = memoryLimit × cacheFraction (bounds the reusable buffer
-    ///   pool below the ceiling so freed buffers return to the OS rather than
-    ///   lingering as the classic "MLX memory wedge"). cacheFraction defaults to
-    ///   0.75 — generous enough to preserve reuse/perf, bounded enough to help.
+    /// Pure sizing policy. memoryLimit = max(floor, physical − reserve);
+    /// cacheLimit = memoryLimit × cacheFraction (bounds the reusable pool so
+    /// freed buffers return to the OS; 0.75 keeps reuse/perf while helping).
     static func recommendedLimits(
         physicalBytes: UInt64,
         reserveBytes: UInt64,
@@ -54,10 +38,8 @@ public enum MLXMemoryGuard {
         return Limits(memoryLimitBytes: limit, cacheLimitBytes: min(cache, limit))
     }
 
-    /// Resolve the reserve in BYTES from an explicit byte value, the
-    /// `DARKBLOOM_MLX_MEMORY_RESERVE_GB` env override (in GB), or the default.
-    /// `explicit` is bytes — consistent with `reserveBytes` everywhere else
-    /// (GlobalKVCacheBudget, ProviderLoop.memoryReserveBytes).
+    /// Reserve in BYTES from explicit (bytes), env DARKBLOOM_MLX_MEMORY_RESERVE_GB
+    /// (GB), or default. `explicit` is bytes, like reserveBytes everywhere else.
     static func resolvedReserveBytes(
         explicit: UInt64?,
         env: [String: String] = ProcessInfo.processInfo.environment
@@ -74,14 +56,12 @@ public enum MLXMemoryGuard {
         return overflow ? UInt64.max : bytes
     }
 
-    // Idempotency: the ceiling only needs to be set once per process. loadModel
-    // can run many times (reloads, multi-model), so guard with a lock + flag.
+    // Set once per process; loadModel runs many times, so guard with lock + flag.
     private static let lock = NSLock()
     nonisolated(unsafe) private static var configured = false
 
-    /// Set the MLX memory + cache ceiling once for this process. Idempotent and
-    /// safe to call from every model load. `apply` is injectable for tests so
-    /// they exercise the sizing/once-logic without touching real MLX globals.
+    /// Set the MLX ceiling once per process (idempotent). `apply` is injectable
+    /// for tests so they avoid touching real MLX globals.
     @discardableResult
     public static func configureOnce(
         reserveBytes: UInt64? = nil,

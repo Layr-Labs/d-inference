@@ -10,13 +10,9 @@ public enum MemoryPressureLevel: String, Sendable, Equatable {
 
 /// What the provider should do at a given pressure level.
 public struct MemoryPressureResponse: Equatable, Sendable {
-    /// Drop MLX's reusable buffer pool back to the OS immediately.
-    public var clearCache: Bool
-    /// Persist an OOM marker so that if jetsam SIGKILLs us next, the following
-    /// launch can attribute the death to memory pressure.
-    public var writeMarker: Bool
-    /// Telemetry severity to emit (nil = don't emit).
-    public var severity: TelemetrySeverity?
+    public var clearCache: Bool             // reclaim MLX's buffer pool to the OS
+    public var writeMarker: Bool            // drop an OOM marker for the next launch
+    public var severity: TelemetrySeverity? // nil = don't emit telemetry
 }
 
 /// Pure policy: pressure level -> action. Tested in isolation.
@@ -26,24 +22,19 @@ public enum MemoryPressurePolicy {
         case .normal:
             return MemoryPressureResponse(clearCache: false, writeMarker: false, severity: nil)
         case .warning:
-            // Reclaim the cache early; the live admission gate (GlobalKVCacheBudget /
-            // tokenBudgetMax, now OS-available-aware) naturally tightens as free RAM
-            // falls, so no forced shedding is needed yet — just return memory. No
-            // telemetry: warning pressure is routine on healthy Macs and would
-            // only add noise to the `oom` signal.
+            // Reclaim cache; the live admission gate handles shedding. No telemetry
+            // — warning pressure is routine and would only add noise.
             return MemoryPressureResponse(clearCache: true, writeMarker: false, severity: nil)
         case .critical:
-            // Last chance before a possible jetsam kill: reclaim everything AND
-            // drop a marker so the death isn't invisible.
+            // Last chance before a possible jetsam kill: reclaim + mark for next launch.
             return MemoryPressureResponse(clearCache: true, writeMarker: true, severity: .error)
         }
     }
 }
 
-/// Watches kernel memory pressure and reacts. MLX-free by design: the caller
-/// injects the `clearCache` / `writeMarker` / `emit` actions so this stays
-/// testable and the file has no MLX dependency. `handle(_:)` is the testable
-/// core; `start()` wires it to a real DispatchSource.
+/// Watches kernel memory pressure and reacts. MLX-free: the caller injects the
+/// actions so it stays testable. `handle(_:)` is the core; `start()` wires the
+/// real DispatchSource.
 public final class MemoryPressureMonitor: @unchecked Sendable {
     private let clearCache: @Sendable () -> Void
     private let writeMarker: @Sendable (MemoryPressureLevel) -> Void

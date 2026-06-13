@@ -1,6 +1,6 @@
 # Direct / local mode — talk to your own Mac, no relay
 
-[Self-route](self-route.md) routes "use my own machine, for free" requests
+[self-route](./self-route.md) routes "use my own machine, for free" requests
 through the coordinator (the only rendezvous point, since the provider is an
 outbound-only WebSocket client behind NAT). **Direct mode** removes the relay
 entirely for the case where the client can reach the Mac itself — same machine,
@@ -34,6 +34,8 @@ darkbloom start --local-endpoint --port 8080 --bind 100.x.y.z
 `--local-endpoint` runs it **alongside** the coordinator connection. Both mint a
 persistent bearer token (`~/.darkbloom/local_token`, `0600`); `--local` also
 writes a discovery record (`~/.darkbloom/local.json`, `0600`).
+
+These flags are implemented in `provider-swift/Sources/darkbloom/StartCommand.swift`.
 
 ## Find the endpoint
 
@@ -121,6 +123,7 @@ const { response, via } = await chatCompletionWithFallback(
 | Coordinator needed | no | yes |
 | Auth | local API key | your Darkbloom API key + `X-Darkbloom-Route: self` |
 | Cost | free | free |
+| Code-identity gate | N/A — no coordinator | applies once enforced |
 
 They are complementary modes a client picks by reachability — `localFirst.ts`
 does exactly that.

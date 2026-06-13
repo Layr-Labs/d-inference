@@ -12,7 +12,7 @@ your own usage **and** earn when idle," the strongest incentive to keep nodes
 online.
 
 > When the client can reach your Mac directly (same machine / LAN / tailnet),
-> **[direct mode](direct-mode.md)** skips the coordinator relay entirely —
+> **[direct mode](./direct-mode.md)** skips the coordinator relay entirely —
 > lower latency, offline-capable, bytes never leave your network. Self-route is
 > the relayed path for when you're away.
 
@@ -32,18 +32,20 @@ fallback); one is PREFER (owned-first, paid fallback so it's never a dead end):
 curl https://api.darkbloom.dev/v1/chat/completions \
   -H "Authorization: Bearer dk-..." \
   -H "X-Darkbloom-Route: self" \
-  -d '{"model":"gpt-oss-20b","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gemma-4-26b","messages":[{"role":"user","content":"hi"}]}'
 
 # Prioritized with paid fallback (prefer):
 curl https://api.darkbloom.dev/v1/chat/completions \
   -H "Authorization: Bearer dk-..." \
   -H "X-Darkbloom-Route: prefer" \
-  -d '{"model":"gpt-oss-20b","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gemma-4-26b","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 In the console UI: the **My Machine** toggle in the chat composer sends
 `prefer` (prioritized, never stuck), and the **"My Machine only — free"**
 checkbox on an API key sets the strict `self_route_only` ceiling.
+
+The policy resolution is server-side in `coordinator/api/self_route.go:49-65`.
 
 ### Exclusive vs prefer
 
@@ -72,16 +74,16 @@ so it is unforgeable.
 ## Routing behaviour
 
 The owner filter lives in the registry scheduler
-(`selectBestCandidateLockedFull` → `providerOwnedBy`, mirrored in
-`ReserveProviderEx`/`providerCanAdmitLocked`). A self-route request only ever
-considers providers the caller owns — across immediate dispatch, sequential
-retry, speculative backup, and the 120s queue + queue-drain.
+(`coordinator/registry/scheduler.go`). A self-route request only ever considers
+providers the caller owns — across immediate dispatch, sequential retry,
+speculative backup, and the 120s queue + queue-drain.
 
 **Trust:** a personal Mac is not MDM/MDA-enrolled, so self-route relaxes the
-hardware-trust floor (`MIN_TRUST`) **for the owner's own machine only**. Every
-privacy-critical gate (runtime-verified, encrypted-chunks/SIP private-text
-support, challenge freshness) still applies — plaintext is never exposed and the
-machine remains unroutable to the **public** fleet on low trust.
+hardware-trust floor (`MinTrustLevel`) **for the owner's own machine only**.
+Every privacy-critical gate (runtime-verified, encrypted-chunks/SIP private-text
+support, challenge freshness, and APNs code-identity attestation once enforced)
+still applies — plaintext is never exposed and the machine remains unroutable to
+the **public** fleet on low trust.
 
 **Errors (no fallback):**
 
@@ -91,6 +93,8 @@ machine remains unroutable to the **public** fleet on low trust.
 | Machine(s) offline | 503 + Retry-After | `machine_offline` |
 | Online but model not loaded/in-catalog | 503 + Retry-After | `model_not_loaded` |
 | Owned machine busy (after queue) | 429 + Retry-After | `machine_busy` |
+
+These errors are written by `coordinator/api/self_route.go:73-101`.
 
 ## Billing
 
@@ -122,8 +126,7 @@ private_only = true
 
 This adds a `private_only` field to the registration message, mirrored across
 `coordinator/protocol/messages.go` (Go) and
-`provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift), with
-encode-when-true / decode-default-false symmetry on both sides.
+`provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift).
 
 ## Where it lives
 

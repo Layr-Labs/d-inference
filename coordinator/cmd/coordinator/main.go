@@ -143,12 +143,21 @@ func main() {
 		}
 	}()
 
-	reg := registry.New(logger)
+	reg := registry.NewWithFullConfig(logger, cfg.RegistryCfg)
 
-	// Set minimum trust level for routing.
+	// Set minimum trust level for routing (also present in config, but keep the
+	// explicit override log here for clarity).
 	if cfg.RegistryCfg.MinTrustLevel != "" {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
+	}
+	if cfg.RegistryCfg.Warming.Enabled {
+		reg.StartWarmingPlanner()
+		logger.Info("predictive warming enabled",
+			"interval", cfg.RegistryCfg.Warming.PlannerInterval,
+			"horizon", cfg.RegistryCfg.Warming.ForecastHorizon,
+			"target_utilization", cfg.RegistryCfg.Warming.TargetUtilization,
+		)
 	}
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
@@ -538,6 +547,7 @@ func main() {
 	defer shutdownCancel()
 
 	cancel() // Stop the eviction loop.
+	reg.StopWarmingPlanner()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)

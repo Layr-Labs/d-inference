@@ -69,10 +69,11 @@ func (r *QueuedRequest) Done() <-chan struct{} {
 
 // RequestQueue manages per-model queues for requests awaiting providers.
 type RequestQueue struct {
-	mu      sync.Mutex
-	queues  map[string][]*QueuedRequest // model -> queue
-	maxSize int                         // max queue size per model
-	maxWait time.Duration               // max time a request waits
+	mu         sync.Mutex
+	queues     map[string][]*QueuedRequest // model -> queue
+	maxSize    int                         // max queue size per model
+	maxWait    time.Duration               // max time a request waits
+	adaptiveFn func(model string) int      // optional per-model dynamic limit
 }
 
 // NewRequestQueue creates a new RequestQueue with the given limits.
@@ -82,6 +83,23 @@ func NewRequestQueue(maxSize int, maxWait time.Duration) *RequestQueue {
 		maxSize: maxSize,
 		maxWait: maxWait,
 	}
+}
+
+// SetAdaptiveLimit sets a function that returns the per-model maximum queue
+// size. If nil or if the function returns 0, the static maxSize is used.
+func (q *RequestQueue) SetAdaptiveLimit(fn func(model string) int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.adaptiveFn = fn
+}
+
+func (q *RequestQueue) effectiveMaxSize(model string) int {
+	if q.adaptiveFn != nil {
+		if n := q.adaptiveFn(model); n > 0 {
+			return n
+		}
+	}
+	return q.maxSize
 }
 
 // Enqueue adds a request to the queue for the given model.
@@ -96,7 +114,7 @@ func (q *RequestQueue) Enqueue(req *QueuedRequest) error {
 	q.cleanStaleLocked(req.Model)
 
 	queue := q.queues[req.Model]
-	if len(queue) >= q.maxSize {
+	if len(queue) >= q.effectiveMaxSize(req.Model) {
 		return ErrQueueFull
 	}
 
@@ -188,6 +206,14 @@ func (q *RequestQueue) RequeueFront(req *QueuedRequest) {
 // MaxSize returns the per-model maximum queue depth.
 func (q *RequestQueue) MaxSize() int {
 	return q.maxSize
+}
+
+// MaxSizeFor returns the effective maximum queue depth for a model, taking
+// any adaptive limit into account.
+func (q *RequestQueue) MaxSizeFor(model string) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.effectiveMaxSize(model)
 }
 
 // QueueSize returns the number of queued requests for a model.

@@ -422,6 +422,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
 				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
+				s.ddIncr("warming.load_commands_succeeded", []string{"model:" + statusMsg.ModelID})
 			case protocol.LoadModelStatusFailed:
 				if statusMsg.Error == protocol.ProviderDrainingForUpdate {
 					// Transient: the provider refused only because it is
@@ -437,6 +438,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					// requests immediately rather than making them wait 120s.
 					s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)
 				}
+				s.ddIncr("warming.load_commands_failed", []string{"model:" + statusMsg.ModelID})
 			}
 			// "started" status: no action — load is in progress.
 

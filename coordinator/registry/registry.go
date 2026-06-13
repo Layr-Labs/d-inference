@@ -275,6 +275,12 @@ type Provider struct {
 	// this is set by the coordinator after independently checking the challenge response.
 	ChallengeVerifiedSIP bool `json:"challenge_verified_sip"`
 
+	// thermalHistory tracks the last N thermal states reported by heartbeats for
+	// hysteresis: a provider is only rejected for critical thermal after N
+	// consecutive critical readings, and only re-admitted after M non-critical
+	// readings.
+	thermalHistory []string
+
 	// lastPersisted tracks when this provider was last written to the store.
 	// Used by PersistProviderThrottled to avoid hammering Postgres on every heartbeat.
 	lastPersisted time.Time
@@ -522,6 +528,22 @@ func (p *Provider) GetAttestationResult() *attestation.VerificationResult {
 
 // pendingCount returns the number of in-flight requests.
 // Caller must hold p.mu.
+// thermallyRejectedLocked reports whether the provider should be rejected due to
+// thermal state, using hysteresis. Caller must hold p.mu.
+func (p *Provider) thermallyRejectedLocked() bool {
+	if len(p.thermalHistory) < 2 {
+		return false
+	}
+	critical := 0
+	for _, s := range p.thermalHistory {
+		if s == "critical" {
+			critical++
+		}
+	}
+	// Reject if the two most recent readings are critical.
+	return critical >= 2 && p.thermalHistory[len(p.thermalHistory)-1] == "critical" && p.thermalHistory[len(p.thermalHistory)-2] == "critical"
+}
+
 func (p *Provider) pendingCount() int {
 	return len(p.pendingReqs)
 }
@@ -740,7 +762,28 @@ type Registry struct {
 	// or one missed heartbeat doesn't mass-reap a live fleet. Guarded by r.mu;
 	// rebuilt each sweep so disconnected providers drop out automatically.
 	evictStrikes map[string]int
+
+	// Predictive warming.
+	cfg            Config
+	forecaster     *DemandForecaster
+	warmingPlanner *WarmingPlanner
+
+	// metricsEmitter, if set, receives warming-related metrics.
+	metricsEmitter MetricsEmitter
 }
+
+// MetricsEmitter is the minimal interface the registry uses to emit metrics.
+type MetricsEmitter interface {
+	Incr(name string, tags []string)
+	Gauge(name string, value float64, tags []string)
+	Histogram(name string, value float64, tags []string)
+}
+
+type noopMetricsEmitter struct{}
+
+func (noopMetricsEmitter) Incr(string, []string)             {}
+func (noopMetricsEmitter) Gauge(string, float64, []string)   {}
+func (noopMetricsEmitter) Histogram(string, float64, []string) {}
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
 // suppresses re-sends to the same provider.
@@ -765,9 +808,26 @@ type modelLoadAction struct {
 	modelID    string
 }
 
-// New creates a new Registry.
+// New creates a new Registry with default configuration (predictive warming
+// disabled). Use NewWithConfig to enable warming.
 func New(logger *slog.Logger) *Registry {
-	return &Registry{
+	return NewWithConfig(logger, DefaultWarmingConfig())
+}
+
+// NewWithConfig creates a new Registry with the given warming configuration.
+func NewWithConfig(logger *slog.Logger, cfg WarmingConfig) *Registry {
+	return newRegistryWithConfig(logger, Config{Warming: cfg})
+}
+
+// NewWithFullConfig creates a new Registry with the full registry config.
+func NewWithFullConfig(logger *slog.Logger, cfg Config) *Registry {
+	return newRegistryWithConfig(logger, cfg)
+}
+
+func newRegistryWithConfig(logger *slog.Logger, cfg Config) *Registry {
+	forecaster := NewDemandForecaster(nil, cfg.Warming)
+	planner := NewWarmingPlanner(cfg.Warming, forecaster, nil, logger)
+	r := &Registry{
 		providers:               make(map[string]*Provider),
 		queue:                   NewRequestQueue(10, 120*time.Second),
 		MinTrustLevel:           TrustHardware,
@@ -779,7 +839,115 @@ func New(logger *slog.Logger) *Registry {
 		inferenceErrorCooldowns: make(map[inferenceErrorKey]time.Time),
 		evictStrikes:            make(map[string]int),
 		logger:                  logger,
+		cfg:                     cfg,
+		forecaster:              forecaster,
 	}
+	planner.registry = r
+	r.warmingPlanner = planner
+	return r
+}
+
+// StartWarmingPlanner starts the predictive warming planner ticker.
+func (r *Registry) StartWarmingPlanner() {
+	if r.warmingPlanner != nil {
+		r.SetAdaptiveQueueLimit(10, 50)
+		r.warmingPlanner.Start()
+	}
+}
+
+// StopWarmingPlanner stops the predictive warming planner ticker.
+func (r *Registry) StopWarmingPlanner() {
+	if r.warmingPlanner != nil {
+		r.warmingPlanner.Stop()
+	}
+}
+
+// SetMetricsEmitter sets the metrics emitter used by the registry.
+func (r *Registry) SetMetricsEmitter(emitter MetricsEmitter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.metricsEmitter = emitter
+}
+
+func (r *Registry) metrics() MetricsEmitter {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.metricsEmitter != nil {
+		return r.metricsEmitter
+	}
+	return noopMetricsEmitter{}
+}
+
+// RecordDemand records a consumer request for demand forecasting.
+func (r *Registry) RecordDemand(model string) {
+	if r.forecaster != nil {
+		r.forecaster.RecordRequest(model)
+	}
+}
+
+// RecordQueueDepth records the current queue depth for demand forecasting.
+func (r *Registry) RecordQueueDepth(model string, depth int) {
+	if r.forecaster != nil {
+		r.forecaster.RecordQueue(model, depth)
+	}
+}
+
+// EstimatedWaitSeconds returns a rough estimate of how long a request for the
+// model would wait before a warm provider is available. It considers queue
+// depth and any in-flight model loads.
+func (r *Registry) EstimatedWaitSeconds(model string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	queueDepth := r.queue.QueueSize(model)
+	// Each queued request takes ~3 seconds to drain once a provider is warm.
+	estimate := queueDepth * 3
+
+	// If there is a pending load for this model, add an estimate for load time.
+	for key := range r.pendingModelLoads {
+		if _, m, ok := splitModelLoadKey(key); ok && m == model {
+			estimate += 30 // rough model-load seconds
+			break
+		}
+	}
+
+	if estimate < 2 {
+		estimate = 2
+	}
+	if estimate > 120 {
+		estimate = 120
+	}
+	return estimate
+}
+
+// SetAdaptiveQueueLimit enables a per-model queue size that scales with the
+// demand forecast. When predictive warming is enabled, models with positive
+// demand get a larger queue so bursts don't immediately 429.
+func (r *Registry) SetAdaptiveQueueLimit(baseSize, maxSize int) {
+	r.queue.SetAdaptiveLimit(func(model string) int {
+		if r.forecaster == nil {
+			return baseSize
+		}
+		f := r.forecaster.Forecast(context.Background(), model)
+		if f.RequestsPerSecond <= 0 && f.QueuedRPS <= 0 {
+			return baseSize
+		}
+		// Scale linearly with forecast up to maxSize.
+		n := baseSize + int(f.RequestsPerSecond*r.cfg.Warming.ForecastHorizon.Seconds())
+		if n > maxSize {
+			n = maxSize
+		}
+		return n
+	})
+}
+
+// Forecast returns the current demand forecast for a model (mainly for tests
+// and diagnostics).
+func (r *Registry) Forecast(ctx context.Context, model string) DemandForecast {
+	if r.forecaster == nil {
+		return DemandForecast{Model: model}
+	}
+	return r.forecaster.Forecast(ctx, model)
 }
 
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
@@ -2066,6 +2234,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.Stats.TokensGenerated += cumulativeDelta(p.lastSessionStats.TokensGenerated, msg.Stats.TokensGenerated)
 	p.lastSessionStats = msg.Stats
 	p.SystemMetrics = msg.SystemMetrics
+	p.thermalHistory = append(p.thermalHistory, msg.SystemMetrics.ThermalState)
+	if len(p.thermalHistory) > 3 {
+		p.thermalHistory = p.thermalHistory[1:]
+	}
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = msg.BackendCapacity
@@ -2107,6 +2279,11 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 
 	r.PersistProviderThrottled(p)
 
+	// Refresh the forecaster's view of queue depth for all models.
+	for _, model := range r.queue.QueuedModels() {
+		r.RecordQueueDepth(model, r.queue.QueueSize(model))
+	}
+
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
 	// rather than the legacy direct queue assignment path.
@@ -2114,6 +2291,8 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 
 	// If queue drain didn't satisfy all pending requests (no warm provider),
 	// check if a cold provider should swap models to serve queued demand.
+	// When the predictive warming planner is enabled, this is a reactive backup;
+	// the planner runs independently on a faster ticker.
 	r.TriggerModelSwaps()
 }
 
@@ -2564,6 +2743,16 @@ func modelLoadKey(providerID, modelID string) string {
 	return providerID + ":" + modelID
 }
 
+// splitModelLoadKey splits a key built by modelLoadKey. ok is false if the key
+// does not contain exactly one colon.
+func splitModelLoadKey(key string) (providerID, modelID string, ok bool) {
+	idx := strings.Index(key, ":")
+	if idx < 0 {
+		return "", "", false
+	}
+	return key[:idx], key[idx+1:], true
+}
+
 // providerHasPendingLoad reports whether the provider has any pending
 // load_model command. Caller must hold r.mu (read or write).
 func (r *Registry) providerHasPendingLoad(providerID string) bool {
@@ -2580,6 +2769,12 @@ func (r *Registry) providerHasPendingLoad(providerID string) bool {
 // present. Called when load_model_status:succeeded arrives before the next
 // heartbeat, so the scheduler sees the provider as warm during queue drain.
 func (r *Registry) MarkModelWarm(providerID, modelID string) {
+	defer func() {
+		if r.warmingPlanner != nil {
+			r.warmingPlanner.RecordWarm(providerID, modelID)
+		}
+	}()
+
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()

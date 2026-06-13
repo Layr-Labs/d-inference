@@ -31,8 +31,7 @@ const (
 	memoryPressurePenaltyMs  = 4_000.0
 	cpuUsagePenaltyMs        = 1_500.0
 	gpuUtilizationPenaltyMs  = 5_000.0
-	thermalPenaltyFairMs     = 2_000.0
-	thermalPenaltySeriousMs  = 8_000.0
+	pendingModelLoadPenaltyMs = 20_000.0
 	nearTieCostWindowMs      = 3_000.0
 	challengeFreshnessMaxAge = 6 * time.Minute
 
@@ -90,6 +89,9 @@ type routingSnapshot struct {
 	activeTokenBudgetMax  int64
 	queuedTokenBudget     int64
 	fleetMedianTPS        float64
+
+	hasPendingLoad  bool // provider has any pending model load command
+	thermalRejected bool // provider is thermally rejected per hysteresis
 }
 
 type routingCandidate struct {
@@ -121,6 +123,10 @@ const (
 	// this provider (until it loads a VLM build), so like rejectModelTooLarge it
 	// must NOT inflate the transient busy/429 signal.
 	rejectVisionUnsupported
+	// rejectThermal means the provider is thermally throttled (critical state,
+	// or serious with hysteresis). Transient; provider re-enters the pool when
+	// it cools.
+	rejectThermal
 )
 
 // modelMemoryHeadroomFactor is the FALLBACK multiple of the on-disk weight size
@@ -366,7 +372,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		candidate, reason, ok := r.buildCandidateWithReason(snap, pr)
 		if !ok {
 			switch reason {
-			case rejectCapacity:
+			case rejectCapacity, rejectThermal:
 				capacityRejections++
 			case rejectModelTooLarge:
 				tooLargeRejections++
@@ -713,6 +719,8 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 	snap.modelLoaded = snap.slotState == "running"
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+	snap.hasPendingLoad = r.providerHasPendingLoad(p.ID)
+	snap.thermalRejected = p.thermallyRejectedLocked()
 
 	return snap, true
 }
@@ -808,8 +816,8 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		return nil, rejectCapacity, false
 	}
 
-	if snap.systemMetrics.ThermalState == "critical" {
-		return nil, rejectNone, false
+	if snap.thermalRejected {
+		return nil, rejectThermal, false
 	}
 
 	reqMax := pr.RequestedMaxTokens
@@ -861,9 +869,33 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	}
 
 	effectiveTPS := resolveEffectiveTPS(snap)
+	prefillTPS := snap.prefillTPS
+
+	// Apply multiplicative thermal derating. Thermal throttling reduces GPU
+	// throughput, so it increases both backlog and this-request latency.
+	thermalFactor := 1.0
+	switch snap.systemMetrics.ThermalState {
+	case "fair":
+		thermalFactor = 0.8
+	case "serious":
+		thermalFactor = 0.4
+	case "critical":
+		thermalFactor = 0.0
+	}
+	if thermalFactor <= 0 {
+		return nil, rejectThermal, false
+	}
+	effectiveTPS *= thermalFactor
+	prefillTPS *= thermalFactor
 
 	queueMs := float64(effectiveQueue) * queueDepthPenaltyMs
 	pendingMs := float64(snap.totalPending) * totalPendingPenaltyMs
+	if snap.hasPendingLoad {
+		// Provider is in the middle of a model load. Routing a different model
+		// here risks eviction/contention. Penalize heavily but don't reject,
+		// because the pending load may be for this same model.
+		pendingMs += pendingModelLoadPenaltyMs
+	}
 	var backlogMs float64
 	if snap.activeTokenBudgetMax > 0 {
 		tokensAhead := float64(snap.activeTokenBudgetUsed) + float64(snap.queuedTokenBudget)
@@ -871,7 +903,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	} else {
 		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	}
-	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
+	thisReqMs := float64(reqPrompt)/prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
 
@@ -926,12 +958,6 @@ func backlogTokenMs(maxTokensPotential int64, waitingTokens, unaccountedPendingT
 
 func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) float64 {
 	penalty := m.MemoryPressure*memoryPressurePenaltyMs + m.CPUUsage*cpuUsagePenaltyMs
-	switch m.ThermalState {
-	case "fair":
-		penalty += thermalPenaltyFairMs
-	case "serious":
-		penalty += thermalPenaltySeriousMs
-	}
 	if totalMemGB > 0 {
 		gpuUtil := gpuActiveGB / totalMemGB
 		if gpuUtil < 0 {

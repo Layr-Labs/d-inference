@@ -916,22 +916,10 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 }
 
 // estimateRetryAfter returns a suggested wait time in seconds before retrying
-// a request for the given model. Based on queue depth as a rough proxy for
-// fleet backlog. OpenRouter uses the Retry-After header to schedule retries.
+// a request for the given model. Considers queue depth and any in-flight model
+// loads. OpenRouter uses the Retry-After header to schedule retries.
 func (s *Server) estimateRetryAfter(model string) int {
-	queueDepth := s.registry.Queue().QueueSize(model)
-	if queueDepth == 0 {
-		return 2 // Light load, retry soon
-	}
-	// Rough estimate: each queued request takes ~3 seconds to drain.
-	estimate := queueDepth * 3
-	if estimate < 2 {
-		estimate = 2
-	}
-	if estimate > 30 {
-		estimate = 30
-	}
-	return estimate
+	return s.registry.EstimatedWaitSeconds(model)
 }
 
 // writeServiceUnavailable writes a retryable 503 with a Retry-After header so
@@ -1355,6 +1343,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model, rawBody = buildModel, resolvedBody
+
+	// Record demand for predictive warming. Use the resolved build model so
+	// forecasts align with the model actually routed to providers.
+	s.registry.RecordDemand(model)
 
 	// Vision gating: a request carrying image/video input must land on a provider
 	// advertising a vision-capable (VLM) build of this model, or the media is

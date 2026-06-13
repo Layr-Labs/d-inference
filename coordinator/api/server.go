@@ -549,6 +549,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		settlements:          newSettlementHolder(),
 		zombieCanceller:      newZombieStreamCanceller(),
 	}
+	reg.SetMetricsEmitter(serverMetricsEmitter{s: s})
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -651,6 +652,24 @@ func (s *Server) emitRequest(ctx context.Context, severity protocol.TelemetrySev
 		Fields:    fields,
 		RequestID: requestID,
 	})
+}
+
+// serverMetricsEmitter adapts Server's Datadog helpers to the registry's
+// MetricsEmitter interface.
+type serverMetricsEmitter struct {
+	s *Server
+}
+
+func (e serverMetricsEmitter) Incr(name string, tags []string) {
+	e.s.ddIncr(name, tags)
+}
+
+func (e serverMetricsEmitter) Gauge(name string, value float64, tags []string) {
+	e.s.ddGauge(name, value, tags)
+}
+
+func (e serverMetricsEmitter) Histogram(name string, value float64, tags []string) {
+	e.s.ddHistogram(name, value, tags)
 }
 
 // ddIncr increments a DogStatsD counter. No-op if DD is not configured.

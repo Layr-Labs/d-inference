@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -20,6 +21,10 @@ type Email struct {
 	Text           string
 	HTML           string
 	UnsubscribeURL string
+}
+
+type EmailSender interface {
+	Send(context.Context, Email) error
 }
 
 type ResendClient struct {
@@ -127,8 +132,7 @@ func validateEmail(email Email) error {
 	if _, err := mail.ParseAddress(email.From); err != nil {
 		return fmt.Errorf("email from address is invalid: %w", err)
 	}
-	to, err := mail.ParseAddress(email.To)
-	if err != nil || to.Address != email.To {
+	if _, ok := store.NormalizeNotificationEmail(email.To); !ok {
 		return fmt.Errorf("email to address is invalid")
 	}
 	if email.UnsubscribeURL != "" {

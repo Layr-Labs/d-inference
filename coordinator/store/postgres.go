@@ -3251,11 +3251,7 @@ func unmarshalProviderLocation(raw []byte) *ProviderLocation {
 	return &loc
 }
 
-type providerRecordRow interface {
-	Scan(dest ...interface{}) error
-}
-
-func scanProviderRecord(row providerRecordRow) (ProviderRecord, error) {
+func scanProviderRecord(row pgx.Rows) (ProviderRecord, error) {
 	var p ProviderRecord
 	var locationRaw []byte
 	if err := row.Scan(providerRecordScanDest(&p, &locationRaw)...); err != nil {
@@ -3265,7 +3261,7 @@ func scanProviderRecord(row providerRecordRow) (ProviderRecord, error) {
 	return p, nil
 }
 
-func scanProviderNotificationTarget(row providerRecordRow) (ProviderNotificationTarget, error) {
+func scanProviderNotificationTarget(row pgx.Rows) (ProviderNotificationTarget, error) {
 	var p ProviderRecord
 	var locationRaw []byte
 	var email string
@@ -3274,7 +3270,7 @@ func scanProviderNotificationTarget(row providerRecordRow) (ProviderNotification
 		return ProviderNotificationTarget{}, err
 	}
 	p.Location = unmarshalProviderLocation(locationRaw)
-	email, ok := normalizeNotificationEmail(email)
+	email, ok := NormalizeNotificationEmail(email)
 	if !ok {
 		return ProviderNotificationTarget{}, nil
 	}
@@ -3823,9 +3819,7 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 	}
 	byKey := make(map[providerNotificationKey]ProviderNotificationCheck, len(checks))
 	providerIDs := make([]string, 0, len(checks))
-	reasonKeys := make([]string, 0, maxProviderNotificationReasonKeys)
-	seenProviderIDs := make(map[string]struct{}, len(checks))
-	seenReasonKeys := make(map[string]struct{}, maxProviderNotificationReasonKeys)
+	reasonKeys := make([]string, 0, len(checks))
 	for _, check := range checks {
 		providerID, _, reasonKey, ok := check.DBValues()
 		if !ok {
@@ -3833,14 +3827,8 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		}
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
 		dueByCheck[check] = struct{}{}
-		if _, ok := seenProviderIDs[providerID]; !ok {
-			seenProviderIDs[providerID] = struct{}{}
-			providerIDs = append(providerIDs, providerID)
-		}
-		if _, ok := seenReasonKeys[reasonKey]; !ok {
-			seenReasonKeys[reasonKey] = struct{}{}
-			reasonKeys = append(reasonKeys, reasonKey)
-		}
+		providerIDs = append(providerIDs, providerID)
+		reasonKeys = append(reasonKeys, reasonKey)
 	}
 	if len(providerIDs) == 0 {
 		return ProviderNotificationDueSet{}, nil
@@ -3849,9 +3837,10 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 	cutoff := time.Now().Add(-cooldown)
 	rows, err := s.pool.Query(ctx,
 		`SELECT n.provider_id, n.reason_key, n.last_sent_at
-		   FROM provider_notifications n
-		  WHERE n.provider_id = ANY($1::text[])
-		    AND n.reason_key = ANY($2::text[])`,
+		   FROM unnest($1::text[], $2::text[]) AS input(provider_id, reason_key)
+		   JOIN provider_notifications n
+		     ON n.provider_id = input.provider_id
+		    AND n.reason_key = input.reason_key`,
 		providerIDs, reasonKeys,
 	)
 	if err != nil {

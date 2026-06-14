@@ -69,7 +69,7 @@ func ProviderNotificationStableKey(rec ProviderRecord) string {
 	return "provider:" + rec.ID
 }
 
-func normalizeNotificationEmail(email string) (string, bool) {
+func NormalizeNotificationEmail(email string) (string, bool) {
 	email, ok := trimmedNonEmpty(email)
 	if !ok {
 		return "", false

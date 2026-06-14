@@ -3,11 +3,14 @@ package notifications
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
+
+var resendAPIKeyPattern = regexp.MustCompile(`^re_[A-Za-z0-9]+$`)
 
 const (
 	defaultEmailFrom      = "Darkbloom <providers@darkbloom.dev>"
@@ -32,13 +35,11 @@ type Config struct {
 
 func validatedResendAPIKey(raw string) (string, bool) {
 	key := strings.TrimSpace(raw)
-	if raw != key || len(key) < minResendAPIKeyLength || len(key) > maxResendAPIKeyLength || !strings.HasPrefix(key, "re_") {
+	if raw != key ||
+		len(key) < minResendAPIKeyLength ||
+		len(key) > maxResendAPIKeyLength ||
+		!resendAPIKeyPattern.MatchString(key) {
 		return "", false
-	}
-	for _, r := range key[len("re_"):] {
-		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
-			return "", false
-		}
 	}
 	return key, true
 }

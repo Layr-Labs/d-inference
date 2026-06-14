@@ -27,7 +27,7 @@ const thermalStateCritical providerThermalState = "critical"
 type ProviderNotifier struct {
 	registry *registry.Registry
 	store    store.Store
-	send     func(context.Context, Email) error
+	sender   EmailSender
 	cfg      Config
 	logger   *slog.Logger
 }
@@ -64,7 +64,7 @@ type providerState struct {
 	online                bool
 }
 
-func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, send func(context.Context, Email) error) *ProviderNotifier {
+func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, sender EmailSender) *ProviderNotifier {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -75,13 +75,13 @@ func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, log
 		cfg:      cfg,
 		logger:   logger,
 	}
-	if send != nil {
-		notifier.send = send
+	if sender != nil {
+		notifier.sender = sender
 	} else if cfg.APIKey != "" {
 		if client, err := NewResendClient(cfg.APIKey); err != nil {
 			logger.Warn("provider email notifications enabled but email client configuration is invalid")
 		} else {
-			notifier.send = client.Send
+			notifier.sender = client
 		}
 	}
 	return notifier
@@ -91,7 +91,7 @@ func (n *ProviderNotifier) Start(ctx context.Context) {
 	if n == nil || !n.cfg.Enabled {
 		return
 	}
-	if n.send == nil {
+	if n.sender == nil {
 		n.logger.Warn("provider email notifications enabled but no email client configured")
 		return
 	}
@@ -115,7 +115,7 @@ func (n *ProviderNotifier) Start(ctx context.Context) {
 }
 
 func (n *ProviderNotifier) Check(ctx context.Context) {
-	if n == nil || n.send == nil || n.store == nil || n.registry == nil {
+	if n == nil || n.sender == nil || n.store == nil || n.registry == nil {
 		return
 	}
 	if ctx.Err() != nil {
@@ -180,14 +180,20 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		if checkCtx.Err() != nil {
 			return
 		}
-		sent = append(sent, n.sendDue(
-			checkCtx,
-			candidate.email,
-			candidate.state,
-			reasonsByCheck[candidate.start:candidate.end],
-			checks[candidate.start:candidate.end],
-			dueByCheck,
-		)...)
+		reasons := reasonsByCheck[candidate.start:candidate.start]
+		sentStart := len(sent)
+		for i := candidate.start; i < candidate.end; i++ {
+			if dueByCheck.Contains(checks[i]) {
+				reasons = append(reasons, reasonsByCheck[i])
+				sent = append(sent, checks[i])
+			}
+		}
+		if len(reasons) == 0 {
+			continue
+		}
+		if !n.sendAlertEmail(checkCtx, candidate.email, candidate.state, reasons) {
+			sent = sent[:sentStart]
+		}
 	}
 	n.recordNotificationsSent(checkCtx, sent)
 }
@@ -251,42 +257,29 @@ func (n *ProviderNotifier) recordNotificationsSent(ctx context.Context, sent []s
 	}
 }
 
-func (n *ProviderNotifier) sendDue(
+func (n *ProviderNotifier) sendAlertEmail(
 	ctx context.Context,
 	to string,
 	state providerState,
 	reasons []AlertReason,
-	checks []store.ProviderNotificationCheck,
-	dueByCheck store.ProviderNotificationDueSet,
-) []store.ProviderNotificationCheck {
-	sent := make([]store.ProviderNotificationCheck, 0, len(checks))
-	due := reasons[:0]
-	for i, check := range checks {
-		if dueByCheck.Contains(check) {
-			due = append(due, reasons[i])
-			sent = append(sent, check)
-		}
-	}
-	if len(due) == 0 {
-		return nil
-	}
-	email := buildProviderAlertEmail(n.cfg.From, to, providerDisplayName(state), due, n.cfg.ConsoleURL, n.cfg.UnsubscribeURL)
+) bool {
+	email := buildProviderAlertEmail(n.cfg.From, to, providerDisplayName(state), reasons, n.cfg.ConsoleURL, n.cfg.UnsubscribeURL)
 	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
-	if err := n.send(sendCtx, email); err != nil {
+	if err := n.sender.Send(sendCtx, email); err != nil {
 		n.logger.Warn("provider notifications: email send failed",
 			"provider_id", state.id,
 			"serial", state.serial,
 			"error", err,
 		)
-		return nil
+		return false
 	}
 	n.logger.Info("sent provider owner notification",
 		"provider_id", state.id,
 		"account_id", state.accountID,
-		"reasons", reasonKeys(due),
+		"reasons", reasonKeys(reasons),
 	)
-	return sent
+	return true
 }
 
 func (n *ProviderNotifier) healthAssessor() providerHealthAssessor {

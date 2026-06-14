@@ -2558,7 +2558,7 @@ func (s *MemoryStore) ListProviderNotificationTargets(_ context.Context) ([]Prov
 			loc := *p.Location
 			cp.Location = &loc
 		}
-		email, ok := normalizeNotificationEmail(user.Email)
+		email, ok := NormalizeNotificationEmail(user.Email)
 		if !ok {
 			continue
 		}

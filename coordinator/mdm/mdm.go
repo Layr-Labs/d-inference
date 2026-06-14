@@ -317,7 +317,31 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 	}
 
 	c.trackCommand(result.Payload.CommandUUID, udid, time.Now())
+
+	// Explicitly push to wake the device and trigger an immediate check-in.
+	// MicroMDM's POST /v1/commands enqueues the command, but on a sleeping or
+	// Power-Nap'd Mac the device may not pull it until its next idle wake (up to
+	// ~15 min) — long past our 90s wait. The MDA path (sendDeviceAttestationWithNonce)
+	// already pushes; without parity here the SecurityInfo leg silently relied on
+	// MicroMDM's implicit push and timed out far more often. Best-effort: a failed
+	// push doesn't fail the command (it's queued either way).
+	c.pushDevice(udid)
 	return result.Payload.CommandUUID, nil
+}
+
+// pushDevice sends a best-effort APNs push to a device via MicroMDM to trigger
+// an immediate check-in so a freshly-queued command is pulled promptly rather
+// than at the next idle wake. Errors are intentionally ignored: the command is
+// already enqueued, and the push is only a latency optimization.
+func (c *Client) pushDevice(udid string) {
+	pushReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/push/"+udid, nil)
+	if err != nil {
+		return
+	}
+	pushReq.SetBasicAuth("micromdm", c.apiKey)
+	if resp, err := c.client.Do(pushReq); err == nil {
+		_ = resp.Body.Close()
+	}
 }
 
 // SendDeviceAttestationCommand sends a DeviceInformation command requesting
@@ -397,13 +421,8 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 
 	c.trackCommand(cmdUUID, udid, time.Now())
 
-	// Push to trigger device check-in
-	pushReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/push/"+udid, nil)
-	if err != nil {
-		return cmdUUID, nil // command queued, push failed
-	}
-	pushReq.SetBasicAuth("micromdm", c.apiKey)
-	c.client.Do(pushReq)
+	// Push to trigger device check-in (best-effort; command is already queued).
+	c.pushDevice(udid)
 
 	return cmdUUID, nil
 }

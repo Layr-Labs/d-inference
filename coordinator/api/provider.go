@@ -381,6 +381,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
 			})
 
+			// Start the per-connection MDM verification loop. It runs the initial
+			// SecurityInfo check + a bounded, push-budget-aware retry, decoupled
+			// from the 5-minute challenge ticker. No-op when no MDM client is
+			// configured or the attestation carried no serial.
+			saferun.Go(s.logger, "mdmVerificationLoop", func() {
+				s.mdmVerificationLoop(loopCtx, providerID, provider)
+			})
+
 			// v0.6.0: APNs code-identity attestation. Runs only when an attestor is
 			// configured; otherwise the provider simply never becomes CodeAttested
 			// (fail-closed at the routing chokepoint once enforcement begins). The
@@ -1434,21 +1442,18 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		)
 	}
 
-	// Re-attempt MDM verification for self_signed providers. This handles
-	// providers that installed the MDM enrollment profile after their initial
-	// registration — they would otherwise stay at self_signed trust forever
-	// since verifyProviderViaMDM only ran once at registration time.
+	// MDM SecurityInfo re-verification is intentionally NOT driven from the
+	// challenge response anymore. It used to re-run on every 5-minute challenge
+	// for self_signed providers, which fired an MDM/APNs push each time and got
+	// throttled by Apple (~2-3/hr budget) — the throttling itself caused the
+	// SecurityInfo timeouts that stranded providers at self_signed. SIP/Secure
+	// Boot can't change without a reboot, and a reboot drops this WebSocket, so
+	// the per-connection mdmVerificationLoop (spawned alongside challengeLoop)
+	// now owns MDM verification with a push-budget-aware backoff. See
+	// mdmVerificationLoop.
 	provider.Mu().Lock()
 	trustLevel := provider.TrustLevel
-	attestResult := provider.AttestationResult
 	provider.Mu().Unlock()
-
-	if trustLevel == registry.TrustSelfSigned && s.mdmClient != nil && attestResult != nil {
-		result := *attestResult
-		saferun.Go(s.logger, "retryMDMVerification", func() {
-			s.verifyProviderViaMDM(providerID, provider, result)
-		})
-	}
 
 	// Re-attempt ACME (mTLS device-cert) trust for self_signed providers.
 	// applyACMETrust ran at registration before attestation was bound, so a
@@ -2275,23 +2280,37 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	// This captures the attestation result, serial number, and trust level.
 	s.registry.PersistProvider(provider)
 
-	// MDM verification: independently verify security posture via MicroMDM.
-	// This upgrades trust from self_signed to hardware if MDM confirms
-	// the device is enrolled and SIP/SecureBoot match.
-	if s.mdmClient != nil && result.SerialNumber != "" {
-		saferun.Go(s.logger, "verifyProviderViaMDM", func() {
-			s.verifyProviderViaMDM(providerID, provider, result)
-		})
-	} else if s.mdmClient != nil && result.SerialNumber == "" {
+	// MDM verification is NOT spawned here. It runs once per connection in
+	// mdmVerificationLoop (started alongside challengeLoop in providerReadLoop),
+	// which owns the initial verify + a bounded, push-budget-aware retry. Doing
+	// it per-connection instead of per-registration-and-every-challenge is
+	// security-equivalent (SIP/Secure Boot can't change without a reboot, which
+	// drops the connection) and stops the APNs push throttling that stranded
+	// providers at self_signed.
+	if s.mdmClient != nil && result.SerialNumber == "" {
 		s.logger.Warn("provider attestation has no serial number — cannot verify via MDM",
 			"provider_id", providerID,
 		)
 	}
 }
 
-// verifyProviderViaMDM runs MDM verification in the background.
-// If MDM confirms the device's security posture, the trust level is upgraded.
-func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) {
+// mdmVerifyOutcome classifies the result of one MDM verification attempt so the
+// per-connection mdmVerificationLoop can decide whether to retry.
+type mdmVerifyOutcome int
+
+const (
+	mdmVerifyGranted   mdmVerifyOutcome = iota // hardware trust granted — stop
+	mdmVerifyTransient                         // not-enrolled / not-found / timeout / error — retry
+	mdmVerifyTerminal                          // posture mismatch (hard untrust) — stop
+)
+
+// verifyProviderViaMDM runs one MDM SecurityInfo verification attempt for a
+// provider and, on success, upgrades it to hardware trust + records Apple Device
+// Attestation. It records a bucketed MDMFailureReason on the provider and emits
+// an outcome metric, then returns an outcome the per-connection loop uses to
+// decide whether to retry. It NEVER marks a provider untrusted for a transient
+// failure (not-enrolled / timeout) — only for a genuine posture mismatch.
+func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) mdmVerifyOutcome {
 	s.logger.Info("starting MDM verification",
 		"provider_id", providerID,
 		"serial_number", attestResult.SerialNumber,
@@ -2307,29 +2326,45 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 			"provider_id", providerID,
 			"error", err,
 		)
-		return
+		provider.SetMDMFailureReason("error")
+		s.ddIncr("mdm.verification", []string{"outcome:error"})
+		return mdmVerifyTransient
 	}
 
 	if !mdmResult.DeviceEnrolled {
+		// Distinguish "MicroMDM has no record of this serial" (profile never
+		// installed / check-in never reached the server) from "record exists but
+		// enrollment didn't complete" — different provider-side fixes.
+		reason := "found-not-enrolled"
+		if strings.Contains(mdmResult.Error, "not found") {
+			reason = "device-not-found"
+		}
 		s.logger.Warn("provider device not enrolled in MDM — staying at self_signed trust",
 			"provider_id", providerID,
 			"serial_number", attestResult.SerialNumber,
+			"reason", reason,
 			"error", mdmResult.Error,
 		)
-		return
+		provider.SetMDMFailureReason(reason)
+		s.ddIncr("mdm.verification", []string{"outcome:" + reason})
+		return mdmVerifyTransient
 	}
 
 	if mdmResult.Error != "" {
 		// A timeout means APN latency or device sleep — not evidence of
 		// compromise. Keep the provider at its current trust level (self_signed)
-		// instead of marking it untrusted.
+		// instead of marking it untrusted, and let the loop retry.
 		if strings.Contains(mdmResult.Error, "timeout") {
 			s.logger.Warn("MDM verification timed out — staying at current trust level",
 				"provider_id", providerID,
 				"error", mdmResult.Error,
 			)
-			return
+			provider.SetMDMFailureReason("securityinfo-timeout")
+			s.ddIncr("mdm.verification", []string{"outcome:securityinfo-timeout"})
+			return mdmVerifyTransient
 		}
+		// A real posture mismatch (SIP disabled, Secure Boot not full, attestation
+		// disagrees with MDM) IS evidence of a problem — hard untrust, no retry.
 		s.logger.Warn("MDM verification failed — marking provider untrusted",
 			"provider_id", providerID,
 			"error", mdmResult.Error,
@@ -2338,13 +2373,17 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 			"sip_match", mdmResult.SIPMatch,
 			"secure_boot_match", mdmResult.SecureBootMatch,
 		)
+		provider.SetMDMFailureReason("posture-mismatch")
+		s.ddIncr("mdm.verification", []string{"outcome:posture-mismatch"})
 		s.registry.MarkUntrusted(providerID)
-		return
+		return mdmVerifyTerminal
 	}
 
 	// MDM SecurityInfo verification passed — upgrade to hardware trust.
+	provider.SetMDMFailureReason("")
 	provider.SetAttested(true, registry.TrustHardware)
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "MDM verification passed")
+	s.ddIncr("mdm.verification", []string{"outcome:granted"})
 	s.logger.Info("MDM verification passed — upgraded to hardware trust",
 		"provider_id", providerID,
 		"serial_number", attestResult.SerialNumber,
@@ -2361,6 +2400,67 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 	// chain can be independently verified by users against Apple's
 	// Enterprise Attestation Root CA.
 	s.verifyAppleDeviceAttestation(providerID, provider, attestResult, mdmResult.UDID)
+	return mdmVerifyGranted
+}
+
+// mdmVerificationLoop owns MDM SecurityInfo verification for one provider
+// connection. It replaces the old model where verification ran at registration
+// and then re-ran on every 5-minute challenge for self_signed providers — which
+// fired an MDM/APNs push each time and got throttled by Apple, so the
+// SecurityInfo checks timed out and stranded providers at self_signed.
+//
+// Why per-connection is sufficient (not weaker than polling): SIP and Secure
+// Boot cannot change at runtime — both require a reboot into Recovery — and a
+// reboot drops this WebSocket, which ends this loop and forces a fresh
+// connection that re-verifies. So we don't need to re-poll; we only need the one
+// check to LAND. The backoff below retries within the connection to survive APNs
+// / Power-Nap delivery delays and to catch a provider that finishes enrollment
+// mid-connection, while staying well under Apple's push budget.
+//
+// It stops as soon as hardware trust is earned (here or via ACME concurrently),
+// on a terminal posture mismatch, or when the connection closes (ctx done).
+func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, provider *registry.Provider) {
+	if s.mdmClient == nil {
+		return
+	}
+	provider.Mu().Lock()
+	var result *attestation.VerificationResult
+	if provider.AttestationResult != nil {
+		r := *provider.AttestationResult
+		result = &r
+	}
+	provider.Mu().Unlock()
+	if result == nil || result.SerialNumber == "" {
+		return // no serial → cannot verify via MDM (warned at registration)
+	}
+
+	// Fast first (catch a briefly-asleep device), then a slow cadence that
+	// respects Apple's MDM/APNs push budget while still catching a provider that
+	// completes enrollment later in the same connection.
+	backoff := []time.Duration{30 * time.Second, 2 * time.Minute, 5 * time.Minute}
+	const steadyInterval = 15 * time.Minute
+
+	for attempt := 0; ; attempt++ {
+		// Stop if hardware was already earned — by this loop on a prior iteration,
+		// or by the ACME leg (retryACMETrust) concurrently.
+		if provider.GetTrustLevel() == registry.TrustHardware {
+			return
+		}
+		switch s.verifyProviderViaMDM(providerID, provider, *result) {
+		case mdmVerifyGranted, mdmVerifyTerminal:
+			return
+		}
+		// Transient (not-enrolled / not-found / timeout / error) — schedule retry.
+		d := steadyInterval
+		if attempt < len(backoff) {
+			d = backoff[attempt]
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(d):
+		}
+	}
 }
 
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting
@@ -2552,15 +2652,23 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		}
 		p.Mu().Unlock()
 
+		// The public proofs (mdm/mda/acme) are reported true ONLY for a connection
+		// that currently holds hardware trust. A hardware proof is meaningful for
+		// the connection that earned it live; surfacing mda_verified/acme_verified
+		// on a self_signed connection (e.g. a stored flag, an early-set ACME flag
+		// before binding, or a late-arriving MDA webhook) is the misleading
+		// "mda_verified=true while self_signed" drift. Gating all three on the
+		// live trust level keeps the endpoint internally consistent.
+		isHardware := trustLevel == registry.TrustHardware
 		pa := providerAttestation{
 			ProviderID:   p.ID,
 			TrustLevel:   string(trustLevel),
 			Status:       string(status),
 			MemoryGB:     p.Hardware.MemoryGB,
 			GPUCores:     p.Hardware.GPUCores,
-			MDMVerified:  trustLevel == registry.TrustHardware,
-			MDAVerified:  mdaVerified,
-			ACMEVerified: acmeVerified,
+			MDMVerified:  isHardware,
+			MDAVerified:  mdaVerified && isHardware,
+			ACMEVerified: acmeVerified && isHardware,
 		}
 
 		pa.Models = append(pa.Models, modelIDs...)

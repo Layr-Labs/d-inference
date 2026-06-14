@@ -1642,6 +1642,17 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			for ver, count := range s.registry.ProviderCountByVersion() {
 				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
 			}
+			// Trust-state cohort gauges — alert when self_signed/untrusted grows.
+			for _, b := range s.registry.ProviderCountByTrustStatus() {
+				s.ddGauge("providers.by_trust_status", float64(b.Count),
+					[]string{"trust_level:" + b.TrustLevel, "status:" + b.Status})
+			}
+			// Stuck-cohort breakdown — distinguishes never-enrolled from
+			// enrolled-but-SecurityInfo-timing-out so we know if the problem is
+			// provider-side enrollment or APNs/MDM delivery.
+			for reason, count := range s.registry.ProviderCountByMDMFailure() {
+				s.ddGauge("providers.by_mdm_failure", float64(count), []string{"reason:" + reason})
+			}
 			if s.minProviderVersion != "" {
 				s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
 			}

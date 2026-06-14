@@ -405,6 +405,8 @@ func main() {
 					continue
 				}
 				c.provider.SetAttested(true, registry.TrustHardware)
+				c.provider.SetMDMFailureReason("") // recovered — drop from the stuck-cohort gauge
+				srv.Metrics().IncCounter("mdm_late_securityinfo_upgrade_total")
 				logger.Info("late SecurityInfo arrival — upgraded provider to hardware trust",
 					"provider_id", c.provider.ID,
 					"serial", c.serial,

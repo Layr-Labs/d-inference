@@ -27,13 +27,9 @@ const (
 )
 
 type Config struct {
-	Enabled            bool
-	Email              EmailConfig
-	ConsoleURL         string
-	UnsubscribeURL     string
-	CheckInterval      time.Duration
-	AlertCooldown      time.Duration
-	MinProviderVersion string
+	Enabled bool
+	Email   EmailConfig
+	Alerts  AlertConfig
 }
 
 type EmailConfig struct {
@@ -41,11 +37,27 @@ type EmailConfig struct {
 	From   string
 }
 
+type AlertConfig struct {
+	ConsoleURL         string
+	UnsubscribeURL     string
+	CheckInterval      time.Duration
+	AlertCooldown      time.Duration
+	MinProviderVersion string
+}
+
 func validResendAPIKey(key string) bool {
-	return key == strings.TrimSpace(key) &&
-		len(key) >= minResendAPIKeyLength &&
-		len(key) <= maxResendAPIKeyLength &&
-		resendAPIKeyPattern.MatchString(key)
+	if key != strings.TrimSpace(key) ||
+		len(key) < minResendAPIKeyLength ||
+		len(key) > maxResendAPIKeyLength ||
+		!resendAPIKeyPattern.MatchString(key) {
+		return false
+	}
+	for _, r := range key {
+		if r < ' ' || r > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 func validatedResendAPIKey(raw string) (string, bool) {
@@ -71,11 +83,13 @@ func ReadConfig() Config {
 			APIKey: resendRaw,
 			From:   env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
 		},
-		ConsoleURL:         consoleURL,
-		UnsubscribeURL:     env.EnvOr(env.EnvPrefix+"_EMAIL_UNSUBSCRIBE_URL", defaultUnsubscribeURL),
-		CheckInterval:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHECK_SECONDS", int(defaultCheckInterval.Seconds()))) * time.Second,
-		AlertCooldown:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_COOLDOWN_HOURS", int(defaultAlertCooldown.Hours()))) * time.Hour,
-		MinProviderVersion: strings.TrimSpace(os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION")),
+		Alerts: AlertConfig{
+			ConsoleURL:         consoleURL,
+			UnsubscribeURL:     env.EnvOr(env.EnvPrefix+"_EMAIL_UNSUBSCRIBE_URL", defaultUnsubscribeURL),
+			CheckInterval:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHECK_SECONDS", int(defaultCheckInterval.Seconds()))) * time.Second,
+			AlertCooldown:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_COOLDOWN_HOURS", int(defaultAlertCooldown.Hours()))) * time.Hour,
+			MinProviderVersion: strings.TrimSpace(os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION")),
+		},
 	}
 	if err := cfg.Check(); err != nil {
 		return Config{Enabled: false}
@@ -87,11 +101,11 @@ func (c Config) WithDefaults() Config {
 	if c.Email.From == "" {
 		c.Email.From = defaultEmailFrom
 	}
-	if c.CheckInterval <= 0 {
-		c.CheckInterval = defaultCheckInterval
+	if c.Alerts.CheckInterval <= 0 {
+		c.Alerts.CheckInterval = defaultCheckInterval
 	}
-	if c.AlertCooldown <= 0 {
-		c.AlertCooldown = defaultAlertCooldown
+	if c.Alerts.AlertCooldown <= 0 {
+		c.Alerts.AlertCooldown = defaultAlertCooldown
 	}
 	return c
 }

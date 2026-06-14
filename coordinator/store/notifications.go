@@ -9,6 +9,7 @@ import (
 const (
 	providerNotificationTargetLimit    = 1000
 	providerNotificationTargetLookback = 30 * 24 * time.Hour
+	maxProviderNotificationReasonKeys  = 7
 )
 
 type providerNotificationKey struct {

@@ -71,7 +71,8 @@ extension ProviderLoop {
                 .base64DecodeFailed,
                 .percentDecodeFailed,
                 .imageDecodeFailed,
-                .invalidURL:
+                .invalidURL,
+                .mediaTooLarge:
                 return 400
             case .videoWriteFailed:
                 return 500

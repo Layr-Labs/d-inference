@@ -1322,6 +1322,18 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 // unbounded body.
 const maxMDMWebhookBodyBytes = 1 << 20 // 1 MiB
 
+// maxRequestBodyBytes is the global ceiling bodyLimitMiddleware applies to every
+// request body so no endpoint can be OOM'd by an unbounded POST. It's a coarse
+// outer bound that clears every legitimate body with headroom; the hot paths
+// self-cap tighter on top (the plaintext-inference path at 16 MiB, sized to the
+// provider WS frame budget — see maxInferenceBodyBytes).
+const maxRequestBodyBytes = 64 << 20 // 64 MiB
+
+// maxControlPlaneBodyBytes is the tight cap for small unauthenticated
+// control-plane JSON (enroll, device token, admin auth) — far below the global
+// ceiling so these exposed endpoints buffer at most a few KiB.
+const maxControlPlaneBodyBytes = 64 << 10 // 64 KiB
+
 // HandleMDMWebhook processes a MicroMDM webhook callback.
 // Mount this on the webhook URL configured in MicroMDM.
 //
@@ -1663,6 +1675,35 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 	}
 }
 
+// readCacheJanitorInterval is how often expired readCache entries are reclaimed.
+// Get already skips expired entries, so this only frees memory — but without it
+// high-cardinality keys (e.g. the per-account "account-earnings:" entries) are
+// written and never re-read, so they linger forever and the cache grows unbounded.
+const readCacheJanitorInterval = time.Minute
+
+// StartReadCacheJanitor periodically purges expired entries from the read cache
+// so it can't grow unbounded. Call as a goroutine; stops when ctx is cancelled.
+func (s *Server) StartReadCacheJanitor(ctx context.Context) {
+	s.runReadCacheJanitor(ctx, readCacheJanitorInterval)
+}
+
+// runReadCacheJanitor is StartReadCacheJanitor with an injectable interval (tests).
+func (s *Server) runReadCacheJanitor(ctx context.Context, interval time.Duration) {
+	if s.readCache == nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.readCache.PurgeExpired()
+		}
+	}
+}
+
 // handleAdminMetrics returns the metrics snapshot in JSON or Prometheus text.
 func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 	if !s.isAdminAuthorized(w, r) {
@@ -1696,7 +1737,40 @@ func (s *Server) handleUnimplementedEndpoint(w http.ResponseWriter, r *http.Requ
 //
 // Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.mux)))
+	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.bodyLimitMiddleware(s.mux))))
+}
+
+// bodyLimitMiddleware caps every request body at maxRequestBodyBytes so an
+// unbounded POST can't OOM the coordinator (the trusted TEE component).
+// Per-handler MaxBytesReader caps (tighter) layer on top. The provider
+// WebSocket upgrade is exempt: it hijacks the connection and reads framed
+// messages (bounded separately), not r.Body.
+func (s *Server) bodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.URL.Path != "/ws/provider" {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// decodeCappedJSON JSON-decodes the request body under a hard size cap, writing
+// a 413 (too large) or 400 (bad JSON) and returning false on failure. For small
+// unauthenticated control-plane endpoints that must not buffer an unbounded body.
+func decodeCappedJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge,
+				errorResponse("invalid_request_error", "request body too large"))
+			return false
+		}
+		writeJSON(w, http.StatusBadRequest,
+			errorResponse("invalid_request_error", "invalid JSON"))
+		return false
+	}
+	return true
 }
 
 // recoverMiddleware catches panics in any handler, emits a telemetry event

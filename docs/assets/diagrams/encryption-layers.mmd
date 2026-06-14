@@ -1,0 +1,26 @@
+flowchart TB
+    subgraph consumer["Consumer"]
+        C[Prompt plaintext]
+    end
+
+    subgraph coord["Coordinator — Confidential VM"]
+        CK[Long-lived X25519 key]
+        CE[Ephemeral X25519 key]
+        CVM["Plaintext in CVM memory<br/>(routing/billing only;<br/>not logged or retained)"]
+    end
+
+    subgraph provider["Provider Mac"]
+        PK[Ephemeral X25519 key]
+        SE[Secure Enclave]
+        PT[Prompt plaintext]
+    end
+
+    C -->|"TLS (default)"| CK
+    C -.->|"Optional NaCl Box"| CK
+    CK --> CVM
+    CVM -->|"Mandatory NaCl Box"| PK
+    PK --> PT
+    SE -.->|"binds"| PK
+
+    style CVM fill:#fff9c4
+    style PT fill:#fff9c4

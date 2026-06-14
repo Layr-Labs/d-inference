@@ -111,6 +111,9 @@ public actor StandaloneServer {
         self.diskAccountant = GlobalDiskAccountant(
             kvRoot: kvRoot,
             configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling())
+        // Pin the MLX memory ceiling before any model weights load on this path
+        // (the coordinator path does this in ProviderLoop.startMemoryProtection).
+        MLXMemoryGuard.configureOnce()
     }
 
     static let schedulerMaxConcurrent = 24

@@ -586,8 +586,7 @@ func (s *Server) handleAdminAuthInit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON"))
+	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
 		return
 	}
 	if req.Email == "" {
@@ -620,8 +619,7 @@ func (s *Server) handleAdminAuthVerify(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 		Code  string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON"))
+	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
 		return
 	}
 	if req.Email == "" || req.Code == "" {

@@ -5,27 +5,37 @@ import MLX
 /// schedulers. MLX active/cache counters are global, so per-scheduler token
 /// budgets can otherwise admit requests against the same apparent headroom.
 public actor GlobalKVCacheBudget {
+    /// The four memory figures an admission decision needs: physical total, MLX's
+    /// own active + cache, and the OS's real free RAM (the cross-process view).
+    public struct MemorySnapshot: Sendable {
+        public var total: UInt64
+        public var active: UInt64
+        public var cache: UInt64
+        public var systemAvailable: UInt64
+    }
+
     private let safetyFactor: Double
     private let reserveBytes: UInt64
-    private let memorySnapshot: @Sendable () -> (total: UInt64, active: UInt64, cache: UInt64)
+    private let memorySnapshot: @Sendable () -> MemorySnapshot
     private var reservations: [String: UInt64] = [:]
 
     public init(reserveBytes: UInt64 = 0, safetyFactor: Double = 0.7) {
         self.reserveBytes = reserveBytes
         self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
         self.memorySnapshot = {
-            (
+            MemorySnapshot(
                 total: ProcessInfo.processInfo.physicalMemory,
                 active: UInt64(Memory.activeMemory),
-                cache: UInt64(Memory.cacheMemory)
-            )
+                cache: UInt64(Memory.cacheMemory),
+                // Real OS-free RAM; `.max` falls back to the MLX-only view.
+                systemAvailable: SystemMemory.availableBytes() ?? .max)
         }
     }
 
     init(
         reserveBytes: UInt64 = 0,
         safetyFactor: Double = 0.7,
-        memorySnapshot: @escaping @Sendable () -> (total: UInt64, active: UInt64, cache: UInt64)
+        memorySnapshot: @escaping @Sendable () -> MemorySnapshot
     ) {
         self.reserveBytes = reserveBytes
         self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
@@ -76,9 +86,14 @@ public actor GlobalKVCacheBudget {
     }
 
     private func availableReservationBytes() -> UInt64 {
-        let (total, active, cache) = memorySnapshot()
-        let usedBeforeReservations = Self.saturatingAdd(active, cache, reserveBytes)
-        let usable = total > usedBeforeReservations ? total - usedBeforeReservations : 0
+        let snap = memorySnapshot()
+        let mlxUsed = Self.saturatingAdd(snap.active, snap.cache)
+        let mlxFree = snap.total > mlxUsed ? snap.total - mlxUsed : 0
+        // Clamp the MLX-only view (blind to other processes) to real OS-free RAM,
+        // mirroring the load gate (ModelLoadAdmission.freeForLoadGb). Without it
+        // the runtime admits against memory other apps hold → jetsam OOM.
+        let realFree = min(mlxFree, snap.systemAvailable)
+        let usable = realFree > reserveBytes ? realFree - reserveBytes : 0
         let capped = Double(usable) * safetyFactor
         let reservationCap = capped >= Double(UInt64.max) ? UInt64.max : UInt64(capped)
         let reserved = reservations.values.reduce(UInt64(0)) { partial, value in

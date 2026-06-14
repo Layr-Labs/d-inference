@@ -1,0 +1,20 @@
+flowchart TB
+    subgraph layers["Provider trust stack"]
+        direction TB
+        L5["Layer 5: APNs code identity<br/>Genuine Darkbloom binary proof<br/>enforced by AppleMobileFileIntegrity.kext"]
+        L4["Layer 4: Challenge-response<br/>Fresh SIP / SecureBoot / RDMA every 5 min"]
+        L3["Layer 3: MDA-over-MDM<br/>Apple-signed hardware certificate"]
+        L2["Layer 2: MDM SecurityInfo<br/>Independent SIP/SecureBoot/ARV"]
+        L1["Layer 1: SE P-256 blob<br/>Hardware-bound identity + X25519 binding"]
+    end
+
+    L1 --> L2
+    L2 --> L3
+    L3 --> L4
+    L4 --> L5
+
+    Gate["Routing gate:<br/>providerSupportsPrivateTextLocked"]
+    L5 --> Gate
+
+    style L5 fill:#e8f5e9
+    style Gate fill:#fff3e0

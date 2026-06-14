@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -24,8 +23,7 @@ var serialRegex = regexp.MustCompile(`^[A-Z0-9]{8,14}$`)
 // Security comes from Apple's attestation during the ACME challenge.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	var req enrollRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
 		return
 	}
 

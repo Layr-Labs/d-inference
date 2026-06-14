@@ -1300,9 +1300,10 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 const maxMDMWebhookBodyBytes = 1 << 20 // 1 MiB
 
 // maxRequestBodyBytes is the global ceiling bodyLimitMiddleware applies to every
-// request body so no endpoint can be OOM'd by an unbounded POST. It clears the
-// largest legitimate body (the 64 MiB plaintext-inference image path); handlers
-// needing less wrap r.Body in a tighter MaxBytesReader on top.
+// request body so no endpoint can be OOM'd by an unbounded POST. It's a coarse
+// outer bound that clears every legitimate body with headroom; the hot paths
+// self-cap tighter on top (the plaintext-inference path at 16 MiB, sized to the
+// provider WS frame budget — see maxInferenceBodyBytes).
 const maxRequestBodyBytes = 64 << 20 // 64 MiB
 
 // maxControlPlaneBodyBytes is the tight cap for small unauthenticated

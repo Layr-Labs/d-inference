@@ -1403,7 +1403,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// silent post-inference charge failure would hand the consumer free
 	// inference (GitHub issue #33).
 	if ensureMaxTokensBound(parsed, isResponsesAPI, maxOutputBound) {
-		rawBody, _ = json.Marshal(parsed)
+		rawBody, _ = marshalForwardBody(parsed)
 	}
 
 	stream, _ := parsed["stream"].(bool)
@@ -1418,7 +1418,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return
 		}
-		rawBody, _ = json.Marshal(providerParsed)
+		rawBody, _ = marshalForwardBody(providerParsed)
+	}
+
+	// Re-check the cap on the FINAL body we'll seal. The read cap bounded the
+	// input, but the body above was re-marshaled after mutation (max_tokens
+	// injection, Responses→chat lowering); the coordinator seals it and sends it
+	// as ONE WebSocket frame, and a body over the cap produces a frame the
+	// provider rejects by tearing down its session (see maxInferenceBodyBytes /
+	// CoordinatorClient.maxInboundMessageBytes). Fail fast with a clean 413 here —
+	// before the balance reservation, so there's nothing to refund — rather than
+	// disconnecting a provider mid-flight.
+	if len(rawBody) > maxInferenceBodyBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
+			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
+		return
 	}
 
 	// Per-account token rate limiting (ITPM/OTPM) — the industry-standard
@@ -4198,7 +4212,21 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	inferenceBody, _ := json.Marshal(parsed)
+	inferenceBody, _ := marshalForwardBody(parsed)
+
+	// Re-check the cap on the FINAL body we'll seal (the input cap bounded the
+	// read; this body was re-marshaled after mutation). A body over the cap seals
+	// into a frame the provider rejects by tearing down its session — return a
+	// clean 413 instead (see maxInferenceBodyBytes). Billing is already reserved
+	// at this point, so refund before returning.
+	if len(inferenceBody) > maxInferenceBodyBytes {
+		cleanupPending()
+		refundExtra()
+		refundReservation()
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
+			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
+		return
+	}
 
 	if provider.PublicKey == "" {
 		cleanupPending()

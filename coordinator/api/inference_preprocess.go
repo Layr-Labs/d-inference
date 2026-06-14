@@ -12,6 +12,7 @@ package api
 // caller to return via ok=false / handled=true.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,7 +39,34 @@ import (
 // (chat-messages.ts), but a single 4×10 MB turn (~53 MiB) still exceeds this and
 // is undeliverable to any provider — aligning the per-turn UI image budget with
 // the frame cap is tracked separately.
+//
+// This caps the body we READ. The body we actually SEAL can differ: the handlers
+// re-marshal the parsed request after mutating it (max_tokens injection, tool
+// normalization). The cap is therefore re-checked on that final body before
+// encryption (see handleChatCompletions / handleGenericInference) using
+// marshalForwardBody, which also disables HTML escaping so the re-marshal can't
+// silently inflate a benign body past this limit.
 const maxInferenceBodyBytes = 16 << 20 // 16 MiB
+
+// marshalForwardBody serializes a parsed request body for forwarding to a
+// provider WITHOUT HTML escaping. encoding/json's default Marshal escapes the
+// bytes '<', '>', and '&' into their 6-byte \uXXXX forms — a 6× per-character
+// inflation that is meaningless on this path (the body is sealed and parsed as
+// JSON by the provider, never embedded in HTML) yet can balloon a benign request
+// — e.g. a prompt containing a long run of '<' — past the provider's
+// single-frame WebSocket limit, tearing down its session. Disabling escaping
+// keeps the re-marshaled body within a small constant of the (already
+// size-capped) input. Mirrors NormalizeToolSchemas's own non-escaping round-trip.
+func marshalForwardBody(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	// Encoder.Encode appends a trailing newline the encrypted body shouldn't carry.
+	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
+}
 
 // inferencePrelude carries the parsed request shape produced by the shared
 // prelude: the (tool-schema-normalized) raw body and its parsed map, plus the

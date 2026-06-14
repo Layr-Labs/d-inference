@@ -10,6 +10,57 @@ device. It makes the existing OR-trust model reliable and observable.
 
 ---
 
+## At a glance: before vs after
+
+**Before** — MDM `SecurityInfo` was re-run on the 5-minute challenge for every
+`self_signed` provider. Each run pushed via APNs; Apple throttles those, so the
+checks timed out and the provider never escaped `self_signed`:
+
+```mermaid
+flowchart TD
+    A["Provider connects"] --> B["SE attestation → self_signed"]
+    B --> C{"every 5 min: SE challenge"}
+    C -->|"still self_signed → re-run MDM"| D["MDM SecurityInfo<br/>+ implicit APNs push to device"]
+    D --> E{"Apple APNs push budget<br/>~2-3 / hr / device"}
+    E -->|"5-min poll = 12 / hr → THROTTLED"| F["push dropped<br/>device never wakes"]
+    F --> G["SecurityInfo waiter times out (90s)"]
+    G -->|"any non-timeout error also<br/>treated as posture mismatch"| K["wrongly hard-untrusted"]
+    G -->|"loops every 5 min, forever"| C
+    B -.->|"reconnect"| H["trust capped to self_signed<br/>but MDAVerified restored"]
+    H --> I["mda_verified=true while self_signed<br/>(drift on attestation endpoint)"]
+    G --> J["self_signed / untrusted<br/>UNROUTABLE — ~11% of fleet"]
+    K --> J
+    style J fill:#ffdddd,stroke:#cc0000
+    style F fill:#ffdddd
+    style G fill:#ffdddd
+    style K fill:#ffdddd
+    style I fill:#ffeecc,stroke:#cc8800
+```
+
+**After** — the cheap SE liveness challenge stays on its ticker; MDM
+`SecurityInfo` moves to a per-connection loop with an explicit push and a
+push-budget-aware backoff. The check lands once and trust sticks for the
+connection (a reboot — the only way SIP/Secure Boot can change — drops the
+WebSocket and forces a fresh, re-verified connection):
+
+```mermaid
+flowchart TD
+    A["Provider connects"] --> B["SE attestation → self_signed"]
+    B --> C["challengeLoop: cheap SE liveness<br/>every 5 min, NO push<br/>feeds 6-min routing-freshness gate"]
+    B --> D["mdmVerificationLoop<br/>ONCE per connection"]
+    D --> E["SecurityInfo + explicit GET /push/udid<br/>bounded backoff 30s → 2m → 5m → 15m"]
+    E --> F{"outcome"}
+    F -->|"SecurityInfo confirms<br/>SIP on + Secure Boot full"| G["hardware → ROUTABLE"]
+    F -->|"transient: timeout / not-enrolled /<br/>transport error → retry in-budget, NO untrust"| E
+    F -->|"posture mismatch:<br/>SIP off / Secure Boot not full"| H["untrusted (terminal)"]
+    G --> R{"reboot?<br/>(only way SIP/Secure Boot changes)"}
+    R -->|"reboot drops the WebSocket"| A
+    style G fill:#ddffdd,stroke:#00aa00
+    style H fill:#ffdddd
+```
+
+---
+
 ## 1. The problem
 
 Hardware trust via MDM is established by issuing a live **SecurityInfo** command

@@ -324,7 +324,12 @@ func buildCoordinatorDoctorChecks(
             provider.acmeVerified ? "acme" : nil,
             provider.mdaVerified ? "mda" : nil,
         ].compactMap { $0 }.joined(separator: ",")
-        let proofText = proofs.isEmpty ? "self-signed only" : proofs
+        // When still self_signed, spell out that the MDM SecurityInfo proof is
+        // PENDING (not failed/absent) so the operator reads "waiting on the
+        // coordinator's live MDM check" rather than "self-signed only".
+        let proofText = proofs.isEmpty
+            ? "self-signed only, mdm=pending (coordinator's live MDM SecurityInfo check not yet passed)"
+            : proofs
         checks.append(.init(
             name: "coordinator trust",
             status: status,

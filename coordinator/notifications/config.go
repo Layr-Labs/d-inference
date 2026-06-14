@@ -39,36 +39,16 @@ type EmailConfig struct {
 }
 
 func validResendAPIKey(key string) bool {
-	if key != strings.TrimSpace(key) ||
-		len(key) < minResendAPIKeyLength ||
-		len(key) > maxResendAPIKeyLength ||
-		!strings.HasPrefix(key, resendAPIKeyPrefix) {
-		return false
-	}
-	body := strings.TrimPrefix(key, resendAPIKeyPrefix)
-	if len(body) < minResendAPIKeyLength-len(resendAPIKeyPrefix) {
-		return false
-	}
-	for _, r := range body {
-		if !resendAPIKeyChar(r) {
-			return false
-		}
-	}
-	return true
-}
-
-func resendAPIKeyChar(r rune) bool {
-	return ('a' <= r && r <= 'z') ||
-		('A' <= r && r <= 'Z') ||
-		('0' <= r && r <= '9') ||
-		r == '_' ||
-		r == '-'
+	return key == strings.TrimSpace(key) &&
+		len(key) >= minResendAPIKeyLength &&
+		len(key) <= maxResendAPIKeyLength &&
+		strings.HasPrefix(key, resendAPIKeyPrefix)
 }
 
 func ReadConfig() Config {
 	resendRaw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
 	if resendRaw == "" || !validResendAPIKey(resendRaw) {
-		return Config{}
+		return Config{Enabled: false}
 	}
 
 	consoleURL := strings.TrimRight(os.Getenv(env.EnvPrefix+"_CONSOLE_URL"), "/")

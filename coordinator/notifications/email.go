@@ -42,15 +42,15 @@ type resendEmailHeaders struct {
 	ListUnsubscribePost string `json:"List-Unsubscribe-Post,omitempty"`
 }
 
-func NewResendClient(apiKey string) *ResendClient {
+func NewResendClient(apiKey string) (*ResendClient, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if !validResendAPIKey(apiKey) {
-		return nil
+		return nil, fmt.Errorf("resend api key has an invalid format")
 	}
 	return &ResendClient{
 		apiKey: apiKey,
 		client: &http.Client{Timeout: 10 * time.Second},
-	}
+	}, nil
 }
 
 func (c *ResendClient) Send(ctx context.Context, email Email) error {
@@ -84,7 +84,11 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	authorization, err := resendAuthorization(c.apiKey)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", authorization)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -95,6 +99,13 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 		return fmt.Errorf("resend returned %s", resp.Status)
 	}
 	return nil
+}
+
+func resendAuthorization(apiKey string) (string, error) {
+	if !validResendAPIKey(apiKey) || hasHeaderInjection(apiKey) {
+		return "", fmt.Errorf("resend api key has an invalid format")
+	}
+	return "Bearer " + apiKey, nil
 }
 
 func validateEmail(email Email) error {

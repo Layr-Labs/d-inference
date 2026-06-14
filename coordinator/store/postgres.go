@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -3804,57 +3803,50 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		return due, nil
 	}
 	byKey := make(map[providerNotificationKey]ProviderNotificationCheck, len(checks))
+	providerIDs := make([]string, 0, len(checks))
+	reasonKeys := make([]string, 0, len(checks))
 	for _, check := range checks {
+		reasonKey, ok := check.ReasonKey.DBValue()
+		if !ok {
+			continue
+		}
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
 		due[check] = struct{}{}
+		providerIDs = append(providerIDs, check.ProviderID)
+		reasonKeys = append(reasonKeys, reasonKey)
+	}
+	if len(providerIDs) == 0 {
+		return due, nil
 	}
 
 	cutoff := time.Now().Add(-cooldown)
-	for start := 0; start < len(checks); start += providerNotificationBatchSize {
-		end := start + providerNotificationBatchSize
-		if end > len(checks) {
-			end = len(checks)
+	rows, err := s.pool.Query(ctx,
+		`SELECT n.provider_id, n.reason_key, n.last_sent_at
+		   FROM unnest($1::text[], $2::text[]) AS input(provider_id, reason_key)
+		   JOIN provider_notifications n
+		     ON n.provider_id = input.provider_id
+		    AND n.reason_key = input.reason_key`,
+		providerIDs, reasonKeys,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: provider notification lookup: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var providerID string
+		var reasonKey string
+		var lastSent time.Time
+		if err := rows.Scan(&providerID, &reasonKey, &lastSent); err != nil {
+			return nil, fmt.Errorf("store: scan provider notification: %w", err)
 		}
-		var query strings.Builder
-		query.WriteString(`SELECT n.provider_id, n.reason_key, n.last_sent_at
-			   FROM (VALUES `)
-		args := make([]any, 0, (end-start)*2)
-		arg := 1
-		for i, check := range checks[start:end] {
-			if i > 0 {
-				query.WriteString(",")
-			}
-			fmt.Fprintf(&query, "($%d::text,$%d::text)", arg, arg+1)
-			args = append(args, check.ProviderID, string(check.ReasonKey))
-			arg += 2
+		key := providerNotificationKey{ProviderID: providerID, ReasonKey: ProviderNotificationReasonKey(reasonKey)}
+		check, exists := byKey[key]
+		if exists && lastSent.After(cutoff) {
+			delete(due, check)
 		}
-		query.WriteString(`) AS input(provider_id, reason_key)
-			   JOIN provider_notifications n
-			     ON n.provider_id = input.provider_id
-			    AND n.reason_key = input.reason_key`)
-		rows, err := s.pool.Query(ctx, query.String(), args...)
-		if err != nil {
-			return nil, fmt.Errorf("store: provider notification lookup: %w", err)
-		}
-		for rows.Next() {
-			var providerID string
-			var reasonKey string
-			var lastSent time.Time
-			if err := rows.Scan(&providerID, &reasonKey, &lastSent); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("store: scan provider notification: %w", err)
-			}
-			key := providerNotificationKey{ProviderID: providerID, ReasonKey: ProviderNotificationReasonKey(reasonKey)}
-			check, exists := byKey[key]
-			if exists && lastSent.After(cutoff) {
-				delete(due, check)
-			}
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("store: iterate provider notifications: %w", err)
-		}
-		rows.Close()
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider notifications: %w", err)
 	}
 	return due, nil
 }
@@ -3866,32 +3858,35 @@ func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, che
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	for start := 0; start < len(checks); start += providerNotificationBatchSize {
-		end := start + providerNotificationBatchSize
-		if end > len(checks) {
-			end = len(checks)
+	providerIDs := make([]string, 0, len(checks))
+	accountIDs := make([]string, 0, len(checks))
+	reasonKeys := make([]string, 0, len(checks))
+	sentAtValues := make([]time.Time, 0, len(checks))
+	for _, check := range checks {
+		reasonKey, ok := check.ReasonKey.DBValue()
+		if !ok {
+			continue
 		}
-		batch := &pgx.Batch{}
-		for _, check := range checks[start:end] {
-			batch.Queue(
-				`INSERT INTO provider_notifications (provider_id, account_id, reason_key, last_sent_at)
-				 VALUES ($1, $2, $3, $4)
-				 ON CONFLICT (provider_id, reason_key) DO UPDATE
-				    SET account_id = EXCLUDED.account_id,
-				        last_sent_at = EXCLUDED.last_sent_at`,
-				check.ProviderID, check.AccountID, string(check.ReasonKey), sentAt,
-			)
-		}
-		results := s.pool.SendBatch(ctx, batch)
-		for range checks[start:end] {
-			if _, err := results.Exec(); err != nil {
-				results.Close()
-				return fmt.Errorf("store: record provider notification: %w", err)
-			}
-		}
-		if err := results.Close(); err != nil {
-			return fmt.Errorf("store: record provider notification: %w", err)
-		}
+		providerIDs = append(providerIDs, check.ProviderID)
+		accountIDs = append(accountIDs, check.AccountID)
+		reasonKeys = append(reasonKeys, reasonKey)
+		sentAtValues = append(sentAtValues, sentAt)
+	}
+	if len(providerIDs) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_notifications (provider_id, account_id, reason_key, last_sent_at)
+		   SELECT provider_id, account_id, reason_key, last_sent_at
+		     FROM unnest($1::text[], $2::text[], $3::text[], $4::timestamptz[])
+		       AS input(provider_id, account_id, reason_key, last_sent_at)
+		   ON CONFLICT (provider_id, reason_key) DO UPDATE
+		      SET account_id = EXCLUDED.account_id,
+		          last_sent_at = EXCLUDED.last_sent_at`,
+		providerIDs, accountIDs, reasonKeys, sentAtValues,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record provider notification: %w", err)
 	}
 	return nil
 }

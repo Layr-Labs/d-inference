@@ -13,23 +13,15 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-var providerNotificationRuntime = struct {
-	heartbeatTimeout      time.Duration
-	challengeMaxAge       time.Duration
-	checkOperationTimeout time.Duration
-	storeOperationTimeout time.Duration
-	emailSendTimeout      time.Duration
-	maxReasons            int
-	maxTargets            int
-}{
-	heartbeatTimeout:      90 * time.Second,
-	challengeMaxAge:       6 * time.Minute,
-	checkOperationTimeout: 5 * time.Minute,
-	storeOperationTimeout: 10 * time.Second,
-	emailSendTimeout:      5 * time.Second,
-	maxReasons:            7,
-	maxTargets:            1000,
-}
+const (
+	providerHeartbeatTimeout = 90 * time.Second
+	challengeMaxAge          = 6 * time.Minute
+	checkOperationTimeout    = 5 * time.Minute
+	storeOperationTimeout    = 10 * time.Second
+	emailSendTimeout         = 5 * time.Second
+	maxProviderAlertReasons  = 7
+	maxProviderAlertTargets  = 1000
+)
 
 type ProviderNotifier struct {
 	registry *registry.Registry
@@ -55,30 +47,20 @@ type AlertReason struct {
 	Action string
 }
 
-type AlertReasonKey string
+type AlertReasonKey = store.ProviderNotificationReasonKey
 
 const (
-	alertReasonOffline           AlertReasonKey = "offline"
-	alertReasonVersionBelowMin   AlertReasonKey = "version_below_min"
-	alertReasonRuntimeUnverified AlertReasonKey = "runtime_unverified"
-	alertReasonThermalCritical   AlertReasonKey = "thermal_critical"
-	alertReasonChallengeStale    AlertReasonKey = "challenge_stale"
-	alertReasonUntrusted         AlertReasonKey = "untrusted"
-	alertReasonTrustBelowMinimum AlertReasonKey = "trust_below_minimum"
+	alertReasonOffline           = store.ProviderNotificationReasonOffline
+	alertReasonVersionBelowMin   = store.ProviderNotificationReasonVersionBelowMin
+	alertReasonRuntimeUnverified = store.ProviderNotificationReasonRuntimeUnverified
+	alertReasonThermalCritical   = store.ProviderNotificationReasonThermalCritical
+	alertReasonChallengeStale    = store.ProviderNotificationReasonChallengeStale
+	alertReasonUntrusted         = store.ProviderNotificationReasonUntrusted
+	alertReasonTrustBelowMinimum = store.ProviderNotificationReasonTrustBelowMinimum
 )
 
-func (k AlertReasonKey) valid() bool {
-	switch k {
-	case alertReasonOffline,
-		alertReasonVersionBelowMin,
-		alertReasonRuntimeUnverified,
-		alertReasonThermalCritical,
-		alertReasonChallengeStale,
-		alertReasonUntrusted,
-		alertReasonTrustBelowMinimum:
-		return true
-	}
-	return false
+func validAlertReasonKey(k AlertReasonKey) bool {
+	return k.Valid()
 }
 
 type providerState struct {
@@ -124,8 +106,8 @@ func resendSender(apiKey string) func(context.Context, Email) error {
 	if apiKey == "" {
 		return nil
 	}
-	client := NewResendClient(apiKey)
-	if client == nil {
+	client, err := NewResendClient(apiKey)
+	if err != nil {
 		return nil
 	}
 	return client.Send
@@ -165,23 +147,27 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, providerNotificationRuntime.checkOperationTimeout)
+	checkCtx, cancel := context.WithTimeout(ctx, checkOperationTimeout)
 	defer cancel()
-	storeCtx, storeCancel := context.WithTimeout(checkCtx, providerNotificationRuntime.storeOperationTimeout)
+	storeCtx, storeCancel := context.WithTimeout(checkCtx, storeOperationTimeout)
 	targets, err := n.store.ListProviderNotificationTargets(storeCtx)
 	storeCancel()
 	if err != nil {
 		n.logger.Warn("provider notifications: list provider targets failed", "error", err)
 		return
 	}
-	if len(targets) > providerNotificationRuntime.maxTargets {
-		targets = targets[:providerNotificationRuntime.maxTargets]
+	targetLimit := min(len(targets), maxProviderAlertTargets)
+	limitedTargets := make([]store.ProviderNotificationTarget, 0, targetLimit)
+	limitedTargets = append(limitedTargets, targets[:targetLimit]...)
+	targets = limitedTargets
+	if len(targets) == 0 {
+		return
 	}
 	candidates, checks := n.alertCandidates(targets)
 	if len(checks) == 0 {
 		return
 	}
-	storeCtx, storeCancel = context.WithTimeout(checkCtx, providerNotificationRuntime.storeOperationTimeout)
+	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
 	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks, n.cfg.AlertCooldown)
 	storeCancel()
 	if err != nil {
@@ -192,7 +178,7 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	for _, candidate := range candidates {
 		sent = append(sent, n.sendDue(checkCtx, candidate, dueByCheck)...)
 	}
-	storeCtx, storeCancel = context.WithTimeout(checkCtx, providerNotificationRuntime.storeOperationTimeout)
+	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
 	err = n.store.RecordProviderNotificationsSent(storeCtx, sent, time.Now())
 	storeCancel()
 	if err != nil {
@@ -201,9 +187,8 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 }
 
 func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationTarget) ([]providerAlertCandidate, []store.ProviderNotificationCheck) {
-	candidateCapacity := len(targets)
-	candidates := make([]providerAlertCandidate, 0, candidateCapacity)
-	checkCapacity := candidateCapacity * providerNotificationRuntime.maxReasons
+	candidates := make([]providerAlertCandidate, 0, len(targets))
+	checkCapacity := len(targets) * maxProviderAlertReasons
 	checks := make([]store.ProviderNotificationCheck, 0, checkCapacity)
 	seen := make(map[string]struct{}, len(targets))
 	for _, target := range targets {
@@ -227,13 +212,13 @@ func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationT
 			reasons:   reasons,
 		})
 		for _, reason := range reasons {
-			if !reason.Key.valid() {
+			if !validAlertReasonKey(reason.Key) {
 				continue
 			}
 			checks = append(checks, store.ProviderNotificationCheck{
 				ProviderID: stableKey,
 				AccountID:  state.accountID,
-				ReasonKey:  store.ProviderNotificationReasonKey(reason.Key),
+				ReasonKey:  reason.Key,
 			})
 		}
 		seen[stableKey] = struct{}{}
@@ -245,13 +230,13 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 	due := make([]AlertReason, 0, len(candidate.reasons))
 	sent := make([]store.ProviderNotificationCheck, 0, len(candidate.reasons))
 	for _, reason := range candidate.reasons {
-		if !reason.Key.valid() {
+		if !validAlertReasonKey(reason.Key) {
 			continue
 		}
 		check := store.ProviderNotificationCheck{
 			ProviderID: candidate.stableKey,
 			AccountID:  candidate.state.accountID,
-			ReasonKey:  store.ProviderNotificationReasonKey(reason.Key),
+			ReasonKey:  reason.Key,
 		}
 		if dueByCheck.Contains(check) {
 			due = append(due, reason)
@@ -262,7 +247,7 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 		return nil
 	}
 	email := n.buildEmail(candidate.email, candidate.state, due)
-	sendCtx, cancel := context.WithTimeout(ctx, providerNotificationRuntime.emailSendTimeout)
+	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
 	if err := n.send(sendCtx, email); err != nil {
 		n.logger.Warn("provider notifications: email send failed",
@@ -281,63 +266,95 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 }
 
 func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason {
-	out := make([]AlertReason, 0, providerNotificationRuntime.maxReasons)
-	if !p.online && now.Sub(p.lastSeen) >= providerNotificationRuntime.heartbeatTimeout {
-		out = append(out, AlertReason{
-			Key:    alertReasonOffline,
-			Title:  "Machine offline",
-			Detail: fmt.Sprintf("No heartbeat since %s.", p.lastSeen.UTC().Format(time.RFC822)),
-			Action: "Start the provider with `darkbloom start` or check the machine/network.",
-		})
-	}
 	providerVersion := semverCanonical(p.version)
 	minVersion := semverCanonical(n.cfg.MinProviderVersion)
-	if providerVersion != "" && minVersion != "" && semver.Compare(providerVersion, minVersion) < 0 {
-		out = append(out, AlertReason{
-			Key:    alertReasonVersionBelowMin,
-			Title:  "Provider update required",
-			Detail: fmt.Sprintf("This machine is on v%s; the coordinator requires v%s or newer.", p.version, n.cfg.MinProviderVersion),
-			Action: "Update with the Darkbloom install script, then restart the provider.",
-		})
+	rules := []struct {
+		when  bool
+		build func() AlertReason
+	}{
+		{
+			when: !p.online && now.Sub(p.lastSeen) >= providerHeartbeatTimeout,
+			build: func() AlertReason {
+				return AlertReason{
+					Key:    alertReasonOffline,
+					Title:  "Machine offline",
+					Detail: fmt.Sprintf("No heartbeat since %s.", p.lastSeen.UTC().Format(time.RFC822)),
+					Action: "Start the provider with `darkbloom start` or check the machine/network.",
+				}
+			},
+		},
+		{
+			when: providerVersion != "" && minVersion != "" && semver.Compare(providerVersion, minVersion) < 0,
+			build: func() AlertReason {
+				return AlertReason{
+					Key:    alertReasonVersionBelowMin,
+					Title:  "Provider update required",
+					Detail: fmt.Sprintf("This machine is on v%s; the coordinator requires v%s or newer.", p.version, n.cfg.MinProviderVersion),
+					Action: "Update with the Darkbloom install script, then restart the provider.",
+				}
+			},
+		},
+		{
+			when: !p.runtimeVerified,
+			build: func() AlertReason {
+				return AlertReason{
+					Key:    alertReasonRuntimeUnverified,
+					Title:  "Runtime verification failed",
+					Detail: "The provider runtime hashes do not match the known-good release manifest.",
+					Action: "Reinstall with the latest Darkbloom installer to restore routing eligibility.",
+				}
+			},
+		},
+		{
+			when: p.thermalState == "critical",
+			build: func() AlertReason {
+				return AlertReason{
+					Key:    alertReasonThermalCritical,
+					Title:  "Machine is thermally throttled",
+					Detail: "The Mac reported a critical thermal state, so the coordinator will not route work to it.",
+					Action: "Cool the machine and make sure it has adequate ventilation.",
+				}
+			},
+		},
+		{
+			when: p.online && p.lastChallengeVerified != nil && p.status != registry.StatusUntrusted && now.Sub(*p.lastChallengeVerified) > challengeMaxAge,
+			build: func() AlertReason {
+				return AlertReason{
+					Key:    alertReasonChallengeStale,
+					Title:  "Attestation challenge stale",
+					Detail: fmt.Sprintf("The last verified attestation challenge was %d minutes ago.", int(now.Sub(*p.lastChallengeVerified).Minutes())),
+					Action: "Restart the provider so it can complete a fresh attestation handshake.",
+				}
+			},
+		},
+		{
+			when: p.status == registry.StatusUntrusted || p.failedChallenges >= registry.MaxFailedChallenges,
+			build: func() AlertReason {
+				return AlertReason{
+					Key:    alertReasonUntrusted,
+					Title:  "Attestation challenge failures",
+					Detail: fmt.Sprintf("%d consecutive challenge failures; this machine is not receiving requests.", p.failedChallenges),
+					Action: "Restart the provider and run `darkbloom doctor` if it does not recover.",
+				}
+			},
+		},
+		{
+			when: p.status != registry.StatusUntrusted && p.failedChallenges < registry.MaxFailedChallenges && trustRank(p.trustLevel) < trustRank(n.registry.MinTrustLevel),
+			build: func() AlertReason {
+				return AlertReason{
+					Key:    alertReasonTrustBelowMinimum,
+					Title:  "MDM enrollment or hardware verification required",
+					Detail: fmt.Sprintf("This machine is %s trust; public routing requires %s trust.", displayTrust(p.trustLevel), displayTrust(n.registry.MinTrustLevel)),
+					Action: "Run `darkbloom enroll` on the Mac and approve the Darkbloom device-management profile.",
+				}
+			},
+		},
 	}
-	if !p.runtimeVerified {
-		out = append(out, AlertReason{
-			Key:    alertReasonRuntimeUnverified,
-			Title:  "Runtime verification failed",
-			Detail: "The provider runtime hashes do not match the known-good release manifest.",
-			Action: "Reinstall with the latest Darkbloom installer to restore routing eligibility.",
-		})
-	}
-	if p.thermalState == "critical" {
-		out = append(out, AlertReason{
-			Key:    alertReasonThermalCritical,
-			Title:  "Machine is thermally throttled",
-			Detail: "The Mac reported a critical thermal state, so the coordinator will not route work to it.",
-			Action: "Cool the machine and make sure it has adequate ventilation.",
-		})
-	}
-	if p.online && p.lastChallengeVerified != nil && p.status != registry.StatusUntrusted && now.Sub(*p.lastChallengeVerified) > providerNotificationRuntime.challengeMaxAge {
-		out = append(out, AlertReason{
-			Key:    alertReasonChallengeStale,
-			Title:  "Attestation challenge stale",
-			Detail: fmt.Sprintf("The last verified attestation challenge was %d minutes ago.", int(now.Sub(*p.lastChallengeVerified).Minutes())),
-			Action: "Restart the provider so it can complete a fresh attestation handshake.",
-		})
-	}
-	if p.status == registry.StatusUntrusted || p.failedChallenges >= registry.MaxFailedChallenges {
-		out = append(out, AlertReason{
-			Key:    alertReasonUntrusted,
-			Title:  "Attestation challenge failures",
-			Detail: fmt.Sprintf("%d consecutive challenge failures; this machine is not receiving requests.", p.failedChallenges),
-			Action: "Restart the provider and run `darkbloom doctor` if it does not recover.",
-		})
-	} else if trustRank(p.trustLevel) < trustRank(n.registry.MinTrustLevel) {
-		out = append(out, AlertReason{
-			Key:    alertReasonTrustBelowMinimum,
-			Title:  "MDM enrollment or hardware verification required",
-			Detail: fmt.Sprintf("This machine is %s trust; public routing requires %s trust.", displayTrust(p.trustLevel), displayTrust(n.registry.MinTrustLevel)),
-			Action: "Run `darkbloom enroll` on the Mac and approve the Darkbloom device-management profile.",
-		})
+	out := make([]AlertReason, 0, maxProviderAlertReasons)
+	for _, rule := range rules {
+		if rule.when {
+			out = append(out, rule.build())
+		}
 	}
 	return out
 }

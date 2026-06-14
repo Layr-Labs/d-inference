@@ -9,12 +9,42 @@ import (
 const (
 	providerNotificationTargetLimit    = 1000
 	providerNotificationTargetLookback = 30 * 24 * time.Hour
-	providerNotificationBatchSize      = 1000
 )
 
 type providerNotificationKey struct {
 	ProviderID string
 	ReasonKey  ProviderNotificationReasonKey
+}
+
+const (
+	ProviderNotificationReasonOffline           ProviderNotificationReasonKey = "offline"
+	ProviderNotificationReasonVersionBelowMin   ProviderNotificationReasonKey = "version_below_min"
+	ProviderNotificationReasonRuntimeUnverified ProviderNotificationReasonKey = "runtime_unverified"
+	ProviderNotificationReasonThermalCritical   ProviderNotificationReasonKey = "thermal_critical"
+	ProviderNotificationReasonChallengeStale    ProviderNotificationReasonKey = "challenge_stale"
+	ProviderNotificationReasonUntrusted         ProviderNotificationReasonKey = "untrusted"
+	ProviderNotificationReasonTrustBelowMinimum ProviderNotificationReasonKey = "trust_below_minimum"
+)
+
+func (k ProviderNotificationReasonKey) Valid() bool {
+	switch k {
+	case ProviderNotificationReasonOffline,
+		ProviderNotificationReasonVersionBelowMin,
+		ProviderNotificationReasonRuntimeUnverified,
+		ProviderNotificationReasonThermalCritical,
+		ProviderNotificationReasonChallengeStale,
+		ProviderNotificationReasonUntrusted,
+		ProviderNotificationReasonTrustBelowMinimum:
+		return true
+	}
+	return false
+}
+
+func (k ProviderNotificationReasonKey) DBValue() (string, bool) {
+	if !k.Valid() {
+		return "", false
+	}
+	return string(k), true
 }
 
 type ProviderNotificationDueSet map[ProviderNotificationCheck]struct{}
@@ -53,7 +83,7 @@ func compactProviderNotificationChecks(checks []ProviderNotificationCheck) []Pro
 		check.ProviderID = strings.TrimSpace(check.ProviderID)
 		check.AccountID = strings.TrimSpace(check.AccountID)
 		check.ReasonKey = ProviderNotificationReasonKey(strings.TrimSpace(string(check.ReasonKey)))
-		if check.ProviderID == "" || check.AccountID == "" || check.ReasonKey == "" {
+		if check.ProviderID == "" || check.AccountID == "" || !check.ReasonKey.Valid() {
 			continue
 		}
 		if _, ok := seen[check]; ok {

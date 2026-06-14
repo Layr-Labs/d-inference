@@ -17,6 +17,7 @@ const (
 	checkOperationTimeout    = 5 * time.Minute
 	storeOperationTimeout    = 10 * time.Second
 	emailSendTimeout         = 5 * time.Second
+	maxProviderAlertReasons  = 7
 )
 
 type ProviderNotifier struct {
@@ -137,17 +138,14 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if len(candidates) == 0 {
 		return
 	}
-	checkCount := providerNotificationCheckCount(candidates)
-	checks := make([]store.ProviderNotificationCheck, checkCount)
-	checkIndex := 0
+	checks := make([]store.ProviderNotificationCheck, 0, len(candidates)*maxProviderAlertReasons)
 	for _, candidate := range candidates {
 		for _, reason := range candidate.reasons {
-			checks[checkIndex] = store.ProviderNotificationCheck{
+			checks = append(checks, store.ProviderNotificationCheck{
 				ProviderID: candidate.stableKey,
 				AccountID:  candidate.target.Provider.AccountID,
 				ReasonKey:  string(reason.Key),
-			}
-			checkIndex++
+			})
 		}
 	}
 	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
@@ -157,7 +155,7 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		n.logger.Warn("provider notifications: cooldown lookup failed", "error", err)
 		return
 	}
-	sent := make([]store.ProviderNotificationCheck, 0, checkCount)
+	sent := make([]store.ProviderNotificationCheck, 0, len(checks))
 	for _, candidate := range candidates {
 		sent = append(sent, n.sendDue(checkCtx, candidate, dueByCheck)...)
 	}
@@ -167,14 +165,6 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if err != nil {
 		n.logger.Warn("provider notifications: record sends failed", "error", err)
 	}
-}
-
-func providerNotificationCheckCount(candidates []providerAlertCandidate) int {
-	n := 0
-	for _, candidate := range candidates {
-		n += len(candidate.reasons)
-	}
-	return n
 }
 
 func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationTarget) []providerAlertCandidate {
@@ -202,7 +192,7 @@ func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationT
 	return candidates
 }
 
-func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertCandidate, dueByCheck map[store.ProviderNotificationCheck]bool) []store.ProviderNotificationCheck {
+func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertCandidate, dueByCheck store.ProviderNotificationDueSet) []store.ProviderNotificationCheck {
 	rec := candidate.target.Provider
 	due := make([]AlertReason, 0, len(candidate.reasons))
 	sent := make([]store.ProviderNotificationCheck, 0, len(candidate.reasons))
@@ -212,7 +202,7 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 			AccountID:  rec.AccountID,
 			ReasonKey:  string(reason.Key),
 		}
-		if isDue, exists := dueByCheck[check]; exists && isDue {
+		if _, isDue := dueByCheck[check]; isDue {
 			due = append(due, reason)
 			sent = append(sent, check)
 		}
@@ -240,7 +230,7 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 }
 
 func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason {
-	out := make([]AlertReason, 0, 7)
+	out := make([]AlertReason, 0, maxProviderAlertReasons)
 	if !p.online && now.Sub(p.lastSeen) >= providerHeartbeatTimeout {
 		out = append(out, AlertReason{
 			Key:    alertReasonOffline,

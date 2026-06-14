@@ -3804,20 +3804,20 @@ func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefo
 	return int(tag.RowsAffected()), nil
 }
 
-func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (map[ProviderNotificationCheck]bool, error) {
+func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (ProviderNotificationDueSet, error) {
 	checks = compactProviderNotificationChecks(checks)
-	due := make(map[ProviderNotificationCheck]bool, len(checks))
+	due := make(ProviderNotificationDueSet, len(checks))
 	if len(checks) == 0 {
 		return due, nil
 	}
 	byKey := make(map[providerNotificationKey]ProviderNotificationCheck, len(checks))
-	providerIDs := make([]string, 0, len(checks))
-	reasonKeys := make([]string, 0, len(checks))
-	for _, check := range checks {
+	providerIDs := make([]string, len(checks))
+	reasonKeys := make([]string, len(checks))
+	for i, check := range checks {
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
-		providerIDs = append(providerIDs, check.ProviderID)
-		reasonKeys = append(reasonKeys, check.ReasonKey)
-		due[check] = true
+		providerIDs[i] = check.ProviderID
+		reasonKeys[i] = check.ReasonKey
+		due[check] = struct{}{}
 	}
 
 	rows, err := s.pool.Query(ctx,
@@ -3841,7 +3841,7 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		}
 		check, exists := byKey[key]
 		if exists && lastSent.After(cutoff) {
-			due[check] = false
+			delete(due, check)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -3855,6 +3855,8 @@ func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, che
 	if len(checks) == 0 {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	batch := &pgx.Batch{}
 	for _, check := range checks {
 		batch.Queue(

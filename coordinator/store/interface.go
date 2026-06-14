@@ -489,7 +489,7 @@ type Store interface {
 
 	// ProviderNotificationsDue reports which provider/account/reason emails may
 	// be sent under the configured cooldown.
-	ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (map[ProviderNotificationCheck]bool, error)
+	ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (ProviderNotificationDueSet, error)
 
 	// RecordProviderNotificationsSent records successful notification sends.
 	RecordProviderNotificationsSent(ctx context.Context, checks []ProviderNotificationCheck, sentAt time.Time) error

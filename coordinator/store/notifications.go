@@ -65,8 +65,8 @@ func ProviderNotificationStableKey(rec ProviderRecord) string {
 }
 
 func normalizeNotificationEmail(email string) (string, bool) {
-	email = strings.TrimSpace(email)
-	if email == "" {
+	email, ok := trimmedNonEmpty(email)
+	if !ok {
 		return "", false
 	}
 	addr, err := mail.ParseAddress(email)
@@ -77,10 +77,17 @@ func normalizeNotificationEmail(email string) (string, bool) {
 }
 
 func (check ProviderNotificationCheck) Normalized() (ProviderNotificationCheck, bool) {
-	check.ProviderID = strings.TrimSpace(check.ProviderID)
-	check.AccountID = strings.TrimSpace(check.AccountID)
+	var ok bool
+	check.ProviderID, ok = trimmedNonEmpty(check.ProviderID)
+	if !ok {
+		return ProviderNotificationCheck{}, false
+	}
+	check.AccountID, ok = trimmedNonEmpty(check.AccountID)
+	if !ok {
+		return ProviderNotificationCheck{}, false
+	}
 	check.ReasonKey = ProviderNotificationReasonKey(strings.TrimSpace(string(check.ReasonKey)))
-	if check.ProviderID == "" || check.AccountID == "" || !check.ReasonKey.Valid() {
+	if !check.ReasonKey.Valid() {
 		return ProviderNotificationCheck{}, false
 	}
 	return check, true
@@ -96,6 +103,14 @@ func (check ProviderNotificationCheck) DBValues() (providerID string, accountID 
 		return "", "", "", false
 	}
 	return check.ProviderID, check.AccountID, reasonKey, true
+}
+
+func trimmedNonEmpty(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	return s, true
 }
 
 func compactProviderNotificationChecks(checks []ProviderNotificationCheck) []ProviderNotificationCheck {

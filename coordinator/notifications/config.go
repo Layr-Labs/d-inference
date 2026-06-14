@@ -16,7 +16,7 @@ const (
 	maxResendAPIKeyLength = 128
 )
 
-var resendAPIKeyPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(resendAPIKeyPrefix) + `[A-Za-z0-9_-]+$`)
+var resendAPIKeyPattern = regexp.MustCompile(`^re_[A-Za-z0-9_-]{21,125}$`)
 
 const (
 	defaultEmailFrom      = "Darkbloom <providers@darkbloom.dev>"
@@ -45,19 +45,12 @@ type AlertConfig struct {
 	MinProviderVersion string
 }
 
-func validResendAPIKey(key string) bool {
-	if key != strings.TrimSpace(key) ||
+func validatedResendAPIKey(raw string) (string, bool) {
+	key := strings.TrimSpace(raw)
+	if raw != key ||
 		len(key) < minResendAPIKeyLength ||
 		len(key) > maxResendAPIKeyLength ||
 		!resendAPIKeyPattern.MatchString(key) {
-		return false
-	}
-	return true
-}
-
-func validatedResendAPIKey(raw string) (string, bool) {
-	key := strings.TrimSpace(raw)
-	if !validResendAPIKey(key) {
 		return "", false
 	}
 	return key, true

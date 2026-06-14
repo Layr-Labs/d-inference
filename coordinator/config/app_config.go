@@ -9,6 +9,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/notifications"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -19,21 +20,22 @@ const EnvPrefix = env.EnvPrefix
 
 // AppConfig is the root configuration struct, composing per-package configs.
 type AppConfig struct {
-	StoreConfig    store.Config
-	ServerConfig   api.ServerConfig
-	BillingConfig  billing.Config
-	AuthConfig     auth.Config
-	RateLimitCfg   ratelimit.Config
-	FinancialRL    ratelimit.Config
-	ServiceRL      ratelimit.Config
-	ConsumerTokens ratelimit.TokenConfig
-	ServiceTokens  ratelimit.TokenConfig
-	RegistryCfg    registry.Config
-	MDMConfig      mdm.Config
-	DatadogConfig  datadog.Config
-	AdminKey       string
-	AdminEmails    []string
-	ReleaseKey     string
+	StoreConfig     store.Config
+	ServerConfig    api.ServerConfig
+	BillingConfig   billing.Config
+	AuthConfig      auth.Config
+	RateLimitCfg    ratelimit.Config
+	FinancialRL     ratelimit.Config
+	ServiceRL       ratelimit.Config
+	ConsumerTokens  ratelimit.TokenConfig
+	ServiceTokens   ratelimit.TokenConfig
+	RegistryCfg     registry.Config
+	MDMConfig       mdm.Config
+	NotificationCfg notifications.Config
+	DatadogConfig   datadog.Config
+	AdminKey        string
+	AdminEmails     []string
+	ReleaseKey      string
 }
 
 // Check runs validation on every per-package config.
@@ -69,20 +71,21 @@ func (c AppConfig) Check() error {
 func ReadAppConfig() AppConfig {
 	rlCfg := ratelimit.ReadConfig()
 	return AppConfig{
-		StoreConfig:    store.ReadConfig(),
-		ServerConfig:   api.ReadServerConfig(),
-		BillingConfig:  billing.ReadConfig(),
-		AuthConfig:     auth.ReadConfig(),
-		RateLimitCfg:   rlCfg.Inference,
-		FinancialRL:    rlCfg.Financial,
-		ServiceRL:      rlCfg.Service,
-		ConsumerTokens: rlCfg.ConsumerTokens,
-		ServiceTokens:  rlCfg.ServiceTokens,
-		RegistryCfg:    registry.ReadConfig(),
-		MDMConfig:      mdm.ReadConfig(),
-		DatadogConfig:  datadog.ConfigFromEnv(),
-		AdminKey:       EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
-		AdminEmails:    api.ParseCommaList(EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:     EnvOr(EnvPrefix+"_RELEASE_KEY", ""),
+		StoreConfig:     store.ReadConfig(),
+		ServerConfig:    api.ReadServerConfig(),
+		BillingConfig:   billing.ReadConfig(),
+		AuthConfig:      auth.ReadConfig(),
+		RateLimitCfg:    rlCfg.Inference,
+		FinancialRL:     rlCfg.Financial,
+		ServiceRL:       rlCfg.Service,
+		ConsumerTokens:  rlCfg.ConsumerTokens,
+		ServiceTokens:   rlCfg.ServiceTokens,
+		RegistryCfg:     registry.ReadConfig(),
+		MDMConfig:       mdm.ReadConfig(),
+		NotificationCfg: notifications.ReadConfig(),
+		DatadogConfig:   datadog.ConfigFromEnv(),
+		AdminKey:        EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
+		AdminEmails:     api.ParseCommaList(EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:      EnvOr(EnvPrefix+"_RELEASE_KEY", ""),
 	}
 }

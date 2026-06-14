@@ -43,10 +43,9 @@ func TestProviderNotifierSendsOfflineAlertOncePerCooldown(t *testing.T) {
 		registry.New(testLogger()),
 		st,
 		Config{
-			Enabled:          true,
-			From:             "Darkbloom <providers@darkbloom.dev>",
-			HeartbeatTimeout: 90 * time.Second,
-			AlertCooldown:    24 * time.Hour,
+			Enabled:       true,
+			From:          "Darkbloom <providers@darkbloom.dev>",
+			AlertCooldown: 24 * time.Hour,
 		},
 		testLogger(),
 		email,
@@ -96,7 +95,6 @@ func TestProviderNotifierSendsVersionAndMDMReasons(t *testing.T) {
 		Config{
 			Enabled:            true,
 			MinProviderVersion: "0.6.4",
-			HeartbeatTimeout:   90 * time.Second,
 			AlertCooldown:      24 * time.Hour,
 		},
 		testLogger(),

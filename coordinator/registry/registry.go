@@ -429,6 +429,34 @@ func (p *Provider) GetMDMFailureReason() string {
 	return p.MDMFailureReason
 }
 
+// SetMDAProofIfHardware atomically attaches a late-arriving Apple Device
+// Attestation proof to the provider IFF it currently holds hardware trust and
+// the MDA serial matches the attested serial. Returns true if attached.
+//
+// The trust check and the field writes happen under a single p.mu acquisition on
+// purpose: doing them separately (read GetTrustLevel, then write the fields) is a
+// TOCTOU — a concurrent SetAttested demotion between the check and the write
+// would attach MDA proof to a now-self_signed connection, re-creating the
+// "mda_verified while self_signed" drift. The single lock also closes the data
+// race with handleProviderAttestation, which reads these fields under p.mu.
+func (p *Provider) SetMDAProofIfHardware(certChain [][]byte, mdaResult *attestation.MDAResult) bool {
+	if mdaResult == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.TrustLevel != TrustHardware {
+		return false
+	}
+	if p.AttestationResult == nil || mdaResult.DeviceSerial != p.AttestationResult.SerialNumber {
+		return false
+	}
+	p.MDAVerified = true
+	p.MDACertChain = certChain
+	p.MDAResult = mdaResult
+	return true
+}
+
 // SetLastChallengeVerified updates the challenge timestamp (thread-safe).
 func (p *Provider) SetLastChallengeVerified(t time.Time) {
 	p.mu.Lock()

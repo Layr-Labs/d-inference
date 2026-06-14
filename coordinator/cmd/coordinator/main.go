@@ -348,27 +348,24 @@ func main() {
 		mdmClient := mdm.NewClient(mdmCfg.URL, mdmCfg.APIKey, logger)
 
 		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
+			// Parse + verify the Apple cert chain once (not per provider).
+			mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
+			if err != nil {
+				logger.Error("late MDA cert parse error", "udid", udid, "error", err)
+				return
+			}
+			if !mdaResult.Valid {
+				return
+			}
+			// Attach the proof only to a connection that currently holds hardware
+			// trust, atomically (trust check + writes under one lock). A late
+			// DevicePropertiesAttestation can arrive after the device reconnected as
+			// self_signed (RestoreProviderState caps it); attaching MDA to a
+			// self_signed provider is the drift this fix removes — and a separate
+			// check-then-write would be a TOCTOU. MDA is re-earned live once hardware
+			// is re-granted this connection.
 			reg.ForEachProvider(func(p *registry.Provider) {
-				if p.AttestationResult == nil {
-					return
-				}
-				mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-				if err != nil {
-					logger.Error("late MDA cert parse error", "udid", udid, "error", err)
-					return
-				}
-				// Only attach the MDA proof to a connection that currently holds
-				// hardware trust. A late DevicePropertiesAttestation can arrive after
-				// the device reconnected as self_signed (RestoreProviderState caps it),
-				// and storing MDAVerified/cert-chain on a self_signed provider is the
-				// drift this fix removes — MDA is re-earned live once hardware is
-				// re-granted this connection.
-				if mdaResult.Valid &&
-					mdaResult.DeviceSerial == p.AttestationResult.SerialNumber &&
-					p.GetTrustLevel() == registry.TrustHardware {
-					p.MDAVerified = true
-					p.MDACertChain = certChain
-					p.MDAResult = mdaResult
+				if p.SetMDAProofIfHardware(certChain, mdaResult) {
 					logger.Info("late MDA cert stored on provider",
 						"provider_id", p.ID,
 						"serial", mdaResult.DeviceSerial,

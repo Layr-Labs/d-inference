@@ -69,9 +69,6 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if c == nil {
 		return fmt.Errorf("resend api key not configured")
 	}
-	if _, ok := validatedResendAPIKey(c.apiKey); !ok {
-		return fmt.Errorf("resend api key has an invalid format")
-	}
 	if err := validateEmail(email); err != nil {
 		return err
 	}

@@ -3804,9 +3804,9 @@ func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefo
 
 func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (ProviderNotificationDueSet, error) {
 	checks = compactProviderNotificationChecks(checks)
-	due := make(ProviderNotificationDueSet, len(checks))
+	dueByCheck := make(map[ProviderNotificationCheck]struct{}, len(checks))
 	if len(checks) == 0 {
-		return due, nil
+		return ProviderNotificationDueSet{}, nil
 	}
 	byKey := make(map[providerNotificationKey]ProviderNotificationCheck, len(checks))
 	providerIDs := make([]string, 0, len(checks))
@@ -3819,7 +3819,7 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 			continue
 		}
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
-		due[check] = struct{}{}
+		dueByCheck[check] = struct{}{}
 		if _, ok := seenProviderIDs[providerID]; !ok {
 			seenProviderIDs[providerID] = struct{}{}
 			providerIDs = append(providerIDs, providerID)
@@ -3830,7 +3830,7 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		}
 	}
 	if len(providerIDs) == 0 {
-		return due, nil
+		return ProviderNotificationDueSet{}, nil
 	}
 
 	cutoff := time.Now().Add(-cooldown)
@@ -3855,11 +3855,17 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		key := providerNotificationKey{ProviderID: providerID, ReasonKey: ProviderNotificationReasonKey(reasonKey)}
 		check, exists := byKey[key]
 		if exists && lastSent.After(cutoff) {
-			delete(due, check)
+			delete(dueByCheck, check)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate provider notifications: %w", err)
+	}
+	due := make(ProviderNotificationDueSet, 0, len(dueByCheck))
+	for _, check := range checks {
+		if _, ok := dueByCheck[check]; ok {
+			due = append(due, check)
+		}
 	}
 	return due, nil
 }

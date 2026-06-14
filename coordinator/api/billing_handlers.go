@@ -773,7 +773,17 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 
 // handleNodeEarnings handles GET /v1/provider/node-earnings?provider_key=<key>&limit=50.
 // Returns recent per-node earnings history plus lifetime aggregates for the node.
+//
+// Privy-authenticated and ownership-scoped (DAR-290): the provider_key (X25519
+// E2E key) is NOT secret — it is published at /v1/encryption-key — so this
+// endpoint must verify the caller's account owns the node before returning any
+// earnings, or it leaks one account's per-job revenue to any caller.
 func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
+	user := s.requirePrivyUser(w, r)
+	if user == nil {
+		return // 401 already written
+	}
+
 	providerKey := r.URL.Query().Get("provider_key")
 	if providerKey == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "provider_key query parameter is required"))
@@ -790,11 +800,30 @@ func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
 		limit = 1000
 	}
 
-	earnings, err := s.store.GetProviderEarnings(providerKey, limit)
+	// Ownership check (DAR-290): confirm the caller's account owns this X25519
+	// key via the live registry / persisted provider records — NOT by sampling
+	// an earnings row. Sampling broke two ways: a legitimately-owned machine
+	// with no earnings yet got a false 403, and a key re-linked across accounts
+	// could authorize the wrong owner. A non-owner -> 403 (don't leak existence).
+	if !s.accountOwnsProviderKey(r.Context(), user.AccountID, providerKey) {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "this provider belongs to another account"))
+		return
+	}
+
+	allEarnings, err := s.store.GetProviderEarnings(providerKey, limit)
 	if err != nil {
 		s.logger.Error("get provider earnings failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
 		return
+	}
+	// Scope per-job rows to the caller's account so a machine re-linked from a
+	// prior owner never exposes that owner's per-request revenue (the key is
+	// stable across re-links; the account_id on each row is not).
+	earnings := make([]store.ProviderEarning, 0, len(allEarnings))
+	for _, e := range allEarnings {
+		if e.AccountID == user.AccountID {
+			earnings = append(earnings, e)
+		}
 	}
 
 	summary, err := s.store.GetProviderEarningsSummary(providerKey)

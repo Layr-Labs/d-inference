@@ -1,5 +1,7 @@
-// Earnings + reputation + lifetime throughput + responsiveness for one
+// Earnings + reputation + lifetime throughput + time-to-first-token for one
 // machine. Money sits first and is always visible (never behind a toggle).
+// Earnings/tokens are per-box (DAR-290); the "Avg TTFT" stat reflects real
+// time-to-first-token, not answer length (DAR-288).
 
 import type { MyProvider } from "../types";
 import { abbreviateNumber, formatUSD, humanizeUptime } from "./format";
@@ -28,7 +30,8 @@ function Stat({
 
 export function CardEarningsRow({ provider }: { provider: MyProvider }) {
   const rep = provider.reputation;
-  const latency = rep.avg_response_time_ms > 0 ? `${Math.round(rep.avg_response_time_ms)}ms` : "—";
+  // avg_response_time_ms now holds an EWMA of real time-to-first-token (ms).
+  const ttft = rep.avg_response_time_ms > 0 ? `${Math.round(rep.avg_response_time_ms)}ms` : "—";
 
   return (
     <div className="px-4 py-4 border-t border-border-dim/40 grid grid-cols-2 md:grid-cols-4 gap-2.5">
@@ -47,7 +50,7 @@ export function CardEarningsRow({ provider }: { provider: MyProvider }) {
         value={abbreviateNumber(provider.lifetime_tokens_generated)}
         sub={`${abbreviateNumber(provider.lifetime_requests_served)} reqs`}
       />
-      <Stat label="Avg latency" value={latency} sub={`up ${humanizeUptime(rep.total_uptime_seconds)}`} />
+      <Stat label="Avg TTFT" value={ttft} sub={`up ${humanizeUptime(rep.total_uptime_seconds)}`} />
     </div>
   );
 }

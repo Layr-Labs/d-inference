@@ -20,10 +20,12 @@ export function MachineGrid({
   providers,
   ctx,
   fleetMaxDecodeTps,
+  onRemoved,
 }: {
   providers: MyProvider[];
   ctx: RoutingCtx;
   fleetMaxDecodeTps: number;
+  onRemoved?: () => void;
 }) {
   const [sort, setSort] = useState<SortMode>("attention");
   const [density, setDensity] = useState<Density>("grid");
@@ -56,7 +58,13 @@ export function MachineGrid({
       />
       <div className={`grid gap-4 ${density === "grid" ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1"}`}>
         {sorted.map((p) => (
-          <MachineCard key={p.id} provider={p} ctx={ctx} fleetMaxDecodeTps={fleetMaxDecodeTps} />
+          <MachineCard
+            key={p.id}
+            provider={p}
+            ctx={ctx}
+            fleetMaxDecodeTps={fleetMaxDecodeTps}
+            onRemoved={onRemoved}
+          />
         ))}
       </div>
     </div>

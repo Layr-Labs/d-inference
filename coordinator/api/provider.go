@@ -1687,8 +1687,17 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Record job success and usage BEFORE closing ChunkCh. Closing
 	// ChunkCh unblocks the consumer response handler, and callers may
 	// check usage immediately after the HTTP response completes.
-	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
-	s.registry.RecordJobSuccess(providerID, responseTime)
+	//
+	// Feed the REAL time-to-first-token (FirstChunkAt - DispatchedAt) from the
+	// winning attempt's timing into the reputation latency EWMA. pr is the
+	// winning PendingRequest, so pr.Timing carries the timestamps the X-Timing
+	// header reads. A parked/disconnect completion may lack FirstChunkAt; the
+	// guard yields ttft=0 and RecordJobSuccess no-ops the latency update.
+	var ttft time.Duration
+	if pr.Timing != nil && !pr.Timing.FirstChunkAt.IsZero() && !pr.Timing.DispatchedAt.IsZero() {
+		ttft = pr.Timing.FirstChunkAt.Sub(pr.Timing.DispatchedAt)
+	}
+	s.registry.RecordJobSuccess(providerID, ttft)
 	// Serving this model proves the pair can load — lift any cool-down early.
 	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
 

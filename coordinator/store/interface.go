@@ -460,6 +460,13 @@ type Store interface {
 	// UpdateProviderRuntime persists runtime integrity verification state.
 	UpdateProviderRuntime(ctx context.Context, id string, verified bool, pythonHash, runtimeHash string) error
 
+	// DeleteProvidersBySerial removes every persisted provider record sharing the
+	// given stable identity (serial, or a session id when serial is empty),
+	// scoped to ownerAccountID, plus their provider_reputation rows. usage,
+	// provider_earnings and provider_sessions (billing/uptime history) are
+	// preserved. Returns the number of provider rows removed.
+	DeleteProvidersBySerial(ctx context.Context, ownerAccountID, serialOrID string) (int, error)
+
 	// OpenProviderSession records the start of a provider connection (one row per
 	// websocket session). serial/account may be empty at connect time and are
 	// backfilled by TouchProviderSession once attestation/linking completes.
@@ -1051,32 +1058,37 @@ type BillingSession struct {
 // ProviderRecord is the persistent representation of a provider for storage.
 // Transient fields (WebSocket conn, pending requests, system metrics) are NOT persisted.
 type ProviderRecord struct {
-	ID                         string            `json:"id"`
-	Hardware                   json.RawMessage   `json:"hardware"`
-	Models                     json.RawMessage   `json:"models"`
-	Backend                    string            `json:"backend"`
-	Location                   *ProviderLocation `json:"location,omitempty"`
-	TrustLevel                 string            `json:"trust_level"`
-	Attested                   bool              `json:"attested"`
-	AttestationResult          json.RawMessage   `json:"attestation_result,omitempty"`
-	SEPublicKey                string            `json:"se_public_key,omitempty"`
-	SerialNumber               string            `json:"serial_number,omitempty"`
-	MDAVerified                bool              `json:"mda_verified"`
-	MDACertChain               json.RawMessage   `json:"mda_cert_chain,omitempty"`
-	ACMEVerified               bool              `json:"acme_verified"`
-	Version                    string            `json:"version,omitempty"`
-	RuntimeVerified            bool              `json:"runtime_verified"`
-	PythonHash                 string            `json:"python_hash,omitempty"`
-	RuntimeHash                string            `json:"runtime_hash,omitempty"`
-	LastChallengeVerified      *time.Time        `json:"last_challenge_verified,omitempty"`
-	FailedChallenges           int               `json:"failed_challenges"`
-	AccountID                  string            `json:"account_id,omitempty"`
-	LifetimeRequestsServed     int64             `json:"lifetime_requests_served"`
-	LifetimeTokensGenerated    int64             `json:"lifetime_tokens_generated"`
-	LastSessionRequestsServed  int64             `json:"last_session_requests_served"`
-	LastSessionTokensGenerated int64             `json:"last_session_tokens_generated"`
-	RegisteredAt               time.Time         `json:"registered_at"`
-	LastSeen                   time.Time         `json:"last_seen"`
+	ID                string            `json:"id"`
+	Hardware          json.RawMessage   `json:"hardware"`
+	Models            json.RawMessage   `json:"models"`
+	Backend           string            `json:"backend"`
+	Location          *ProviderLocation `json:"location,omitempty"`
+	TrustLevel        string            `json:"trust_level"`
+	Attested          bool              `json:"attested"`
+	AttestationResult json.RawMessage   `json:"attestation_result,omitempty"`
+	SEPublicKey       string            `json:"se_public_key,omitempty"`
+	// PublicKey is the machine's X25519 E2E public key (non-secret — published
+	// at /v1/encryption-key). Persisted so per-node earnings (keyed on this key)
+	// and node-earnings ownership resolve for OFFLINE machines, not just online
+	// ones (DAR-290).
+	PublicKey                  string          `json:"public_key,omitempty"`
+	SerialNumber               string          `json:"serial_number,omitempty"`
+	MDAVerified                bool            `json:"mda_verified"`
+	MDACertChain               json.RawMessage `json:"mda_cert_chain,omitempty"`
+	ACMEVerified               bool            `json:"acme_verified"`
+	Version                    string          `json:"version,omitempty"`
+	RuntimeVerified            bool            `json:"runtime_verified"`
+	PythonHash                 string          `json:"python_hash,omitempty"`
+	RuntimeHash                string          `json:"runtime_hash,omitempty"`
+	LastChallengeVerified      *time.Time      `json:"last_challenge_verified,omitempty"`
+	FailedChallenges           int             `json:"failed_challenges"`
+	AccountID                  string          `json:"account_id,omitempty"`
+	LifetimeRequestsServed     int64           `json:"lifetime_requests_served"`
+	LifetimeTokensGenerated    int64           `json:"lifetime_tokens_generated"`
+	LastSessionRequestsServed  int64           `json:"last_session_requests_served"`
+	LastSessionTokensGenerated int64           `json:"last_session_tokens_generated"`
+	RegisteredAt               time.Time       `json:"registered_at"`
+	LastSeen                   time.Time       `json:"last_seen"`
 }
 
 // ProviderSession is one connect→disconnect lifecycle of a provider machine.

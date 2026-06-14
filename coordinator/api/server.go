@@ -1529,13 +1529,17 @@ func (s *Server) routes() {
 	// Provider earnings — no API key auth (providers identify by provider address).
 	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
 
-	// Per-node provider earnings — public by provider_key, or auth'd by account.
-	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.handleNodeEarnings)
+	// Per-node provider earnings — Privy-auth + ownership-scoped; not public.
+	// The provider_key (X25519) isn't secret, so the handler verifies the
+	// caller's account owns the node before returning earnings (DAR-290).
+	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.requirePrivyAuth(s.handleNodeEarnings))
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	// Ownership-checked hard delete of a retired/offline machine's record(s).
+	s.mux.HandleFunc("DELETE /v1/me/providers/{serial}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
 
 	// ACME enrollment — generates per-device .mobileconfig for device-attest-01.
 	// No auth needed — security comes from Apple's attestation during ACME challenge.

@@ -129,9 +129,10 @@ enum DoctorRunner {
                                       message: "running but its last update was \(Int(state.ageSeconds(now: now)))s ago — it may be wedged.",
                                       fix: "check `darkbloom logs`; consider `darkbloom stop && darkbloom start`."))
             } else {
-                let model = state.currentModel ?? "none loaded"
+                let warm = WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel)
+                let mru = WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel)
                 out.append(Diagnostic(section: .runtime, name: "daemon connected", level: .pass,
-                                      message: "up \(formatDuration(state.uptimeSeconds(now: now))), model: \(model), \(state.stats.requestsServed) requests served.",
+                                      message: "up \(formatDuration(state.uptimeSeconds(now: now))), warm models: \(warm) (\(WarmModelsFormat.mostRecentlyUsedLabel.lowercased()): \(mru)), \(state.stats.requestsServed) requests served.",
                                       fix: nil))
             }
             if let err = state.lastModelLoadError {

@@ -24,13 +24,13 @@ const (
 type ProviderNotifier struct {
 	registry *registry.Registry
 	store    store.Store
-	email    EmailClient
+	send     func(context.Context, Email) error
 	cfg      Config
 	logger   *slog.Logger
 }
 
 type providerAlertCandidate struct {
-	target    store.ProviderNotificationTarget
+	email     string
 	state     providerState
 	stableKey string
 	reasons   []AlertReason
@@ -72,21 +72,23 @@ type providerState struct {
 
 func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger) *ProviderNotifier {
 	cfg = cfg.WithDefaults()
-	var client EmailClient
-	if cfg.Email.Provider == emailProviderResend && cfg.Email.APIKey != "" {
-		client = NewResendClient(cfg.Email.APIKey)
+	var send func(context.Context, Email) error
+	if cfg.Email.APIKey != "" {
+		if client := NewResendClient(cfg.Email.APIKey); client != nil {
+			send = client.Send
+		}
 	}
-	return NewProviderNotifierWithEmail(reg, st, cfg, logger, client)
+	return NewProviderNotifierWithEmail(reg, st, cfg, logger, send)
 }
 
-func NewProviderNotifierWithEmail(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, email EmailClient) *ProviderNotifier {
+func NewProviderNotifierWithEmail(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, send func(context.Context, Email) error) *ProviderNotifier {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &ProviderNotifier{
 		registry: reg,
 		store:    st,
-		email:    email,
+		send:     send,
 		cfg:      cfg.WithDefaults(),
 		logger:   logger,
 	}
@@ -96,7 +98,7 @@ func (n *ProviderNotifier) Start(ctx context.Context) {
 	if n == nil || !n.cfg.Enabled {
 		return
 	}
-	if n.email == nil {
+	if n.send == nil {
 		n.logger.Warn("provider email notifications enabled but no email client configured")
 		return
 	}
@@ -120,7 +122,7 @@ func (n *ProviderNotifier) Start(ctx context.Context) {
 }
 
 func (n *ProviderNotifier) Check(ctx context.Context) {
-	if n == nil || n.email == nil || n.store == nil || n.registry == nil {
+	if n == nil || n.send == nil || n.store == nil || n.registry == nil {
 		return
 	}
 	if ctx.Err() != nil {
@@ -147,7 +149,7 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		for _, reason := range candidate.reasons {
 			checks = append(checks, store.ProviderNotificationCheck{
 				ProviderID: candidate.stableKey,
-				AccountID:  candidate.target.Provider.AccountID,
+				AccountID:  candidate.state.accountID,
 				ReasonKey:  string(reason.Key),
 			})
 		}
@@ -176,37 +178,39 @@ func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationT
 		targets = targets[:maxProviderAlertTargets]
 	}
 	candidates := make([]providerAlertCandidate, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
 	for _, target := range targets {
 		rec := target.Provider
 		if rec.AccountID == "" || target.Email == "" {
 			continue
 		}
-		state := providerStateFromRecord(rec)
-		if live := n.registry.GetProvider(rec.ID); live != nil {
-			state = providerStateFromLive(live, rec)
+		stableKey := notificationStableKey(rec)
+		if _, ok := seen[stableKey]; ok {
+			continue
 		}
+		state := providerStateFrom(rec, n.registry.GetProvider(rec.ID))
 		reasons := n.reasons(state, time.Now())
 		if len(reasons) == 0 {
 			continue
 		}
 		candidates = append(candidates, providerAlertCandidate{
-			target:    target,
+			email:     target.Email,
 			state:     state,
-			stableKey: notificationStableKey(rec),
+			stableKey: stableKey,
 			reasons:   reasons,
 		})
+		seen[stableKey] = struct{}{}
 	}
 	return candidates
 }
 
 func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertCandidate, dueByCheck store.ProviderNotificationDueSet) []store.ProviderNotificationCheck {
-	rec := candidate.target.Provider
 	due := make([]AlertReason, 0, len(candidate.reasons))
 	sent := make([]store.ProviderNotificationCheck, 0, len(candidate.reasons))
 	for _, reason := range candidate.reasons {
 		check := store.ProviderNotificationCheck{
 			ProviderID: candidate.stableKey,
-			AccountID:  rec.AccountID,
+			AccountID:  candidate.state.accountID,
 			ReasonKey:  string(reason.Key),
 		}
 		if dueByCheck[check] {
@@ -217,20 +221,20 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 	if len(due) == 0 {
 		return nil
 	}
-	email := n.buildEmail(candidate.target.Email, candidate.state, due)
+	email := n.buildEmail(candidate.email, candidate.state, due)
 	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
-	if err := n.email.Send(sendCtx, email); err != nil {
+	if err := n.send(sendCtx, email); err != nil {
 		n.logger.Warn("provider notifications: email send failed",
-			"provider_id", rec.ID,
-			"serial", rec.SerialNumber,
+			"provider_id", candidate.state.id,
+			"serial", candidate.state.serial,
 			"error", err,
 		)
 		return nil
 	}
 	n.logger.Info("sent provider owner notification",
-		"provider_id", rec.ID,
-		"account_id", rec.AccountID,
+		"provider_id", candidate.state.id,
+		"account_id", candidate.state.accountID,
 		"reasons", reasonKeys(due),
 	)
 	return sent

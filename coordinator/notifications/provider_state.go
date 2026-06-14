@@ -10,7 +10,10 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-func providerStateFromRecord(rec store.ProviderRecord) providerState {
+func providerStateFrom(rec store.ProviderRecord, live *registry.Provider) providerState {
+	if live != nil {
+		return providerStateFromLive(rec, live)
+	}
 	return providerState{
 		id:                    rec.ID,
 		accountID:             rec.AccountID,
@@ -26,7 +29,7 @@ func providerStateFromRecord(rec store.ProviderRecord) providerState {
 	}
 }
 
-func providerStateFromLive(p *registry.Provider, rec store.ProviderRecord) providerState {
+func providerStateFromLive(rec store.ProviderRecord, p *registry.Provider) providerState {
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
 	var lastChallenge *time.Time

@@ -50,7 +50,7 @@ func TestProviderNotifierSendsOfflineAlertOncePerCooldown(t *testing.T) {
 			AlertCooldown: 24 * time.Hour,
 		},
 		testLogger(),
-		email,
+		email.Send,
 	)
 
 	notifier.Check(ctx)
@@ -100,7 +100,7 @@ func TestProviderNotifierSendsVersionAndMDMReasons(t *testing.T) {
 			AlertCooldown:      24 * time.Hour,
 		},
 		testLogger(),
-		email,
+		email.Send,
 	)
 
 	notifier.Check(ctx)

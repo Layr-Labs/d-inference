@@ -3390,7 +3390,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	}
 	defer rows.Close()
 
-	records := make([]ProviderRecord, 0, 1024)
+	records := make([]ProviderRecord, 0)
 	for rows.Next() {
 		var p ProviderRecord
 		var locationRaw []byte
@@ -3422,12 +3422,7 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT ON (
-			COALESCE(NULLIF(p.serial_number, ''),
-			         NULLIF(p.se_public_key, ''),
-			         p.id)
-		 )
-		 p.id, p.hardware, p.models, p.backend, p.location, p.trust_level, p.attested,
+		`SELECT p.id, p.hardware, p.models, p.backend, p.location, p.trust_level, p.attested,
 			p.attestation_result, p.se_public_key, p.serial_number,
 			p.mda_verified, p.mda_cert_chain, p.acme_verified,
 			p.version, p.runtime_verified, p.python_hash, p.runtime_hash,
@@ -3439,10 +3434,7 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 		 FROM providers p
 		 JOIN users u ON u.account_id = p.account_id
 		 WHERE p.account_id <> '' AND BTRIM(u.email) <> '' AND p.last_seen >= $1
-		 ORDER BY COALESCE(NULLIF(p.serial_number, ''),
-		                   NULLIF(p.se_public_key, ''),
-		                   p.id),
-		          p.last_seen DESC
+		 ORDER BY p.last_seen DESC
 		 LIMIT $2`,
 		time.Now().Add(-providerNotificationTargetLookback), providerNotificationTargetLimit,
 	)

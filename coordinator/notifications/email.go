@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"strings"
 	"time"
 )
@@ -17,10 +18,6 @@ type Email struct {
 	Text           string
 	HTML           string
 	UnsubscribeURL string
-}
-
-type EmailClient interface {
-	Send(ctx context.Context, email Email) error
 }
 
 type ResendClient struct {
@@ -68,6 +65,9 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if c == nil {
 		return fmt.Errorf("resend api key not configured")
 	}
+	if err := validateEmail(email); err != nil {
+		return err
+	}
 	payload := resendEmailPayload{
 		From:    email.From,
 		To:      []string{email.To},
@@ -100,4 +100,25 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 		return fmt.Errorf("resend returned %s", resp.Status)
 	}
 	return nil
+}
+
+func validateEmail(email Email) error {
+	if hasHeaderBreaks(email.From) || hasHeaderBreaks(email.To) || hasHeaderBreaks(email.Subject) || hasHeaderBreaks(email.UnsubscribeURL) {
+		return fmt.Errorf("email contains invalid header characters")
+	}
+	if strings.TrimSpace(email.Subject) == "" {
+		return fmt.Errorf("email subject is required")
+	}
+	if _, err := mail.ParseAddress(email.From); err != nil {
+		return fmt.Errorf("email from address is invalid: %w", err)
+	}
+	to, err := mail.ParseAddress(email.To)
+	if err != nil || to.Address != email.To {
+		return fmt.Errorf("email to address is invalid")
+	}
+	return nil
+}
+
+func hasHeaderBreaks(s string) bool {
+	return strings.ContainsAny(s, "\r\n")
 }

@@ -32,14 +32,9 @@ type Config struct {
 	MinProviderVersion string
 }
 
-type EmailProvider string
-
-const emailProviderResend EmailProvider = "resend"
-
 type EmailConfig struct {
-	Provider EmailProvider
-	APIKey   string
-	From     string
+	APIKey string
+	From   string
 }
 
 func validResendAPIKey(key string) bool {
@@ -48,14 +43,8 @@ func validResendAPIKey(key string) bool {
 
 func ReadConfig() Config {
 	resendRaw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
-	if resendRaw == "" {
+	if resendRaw == "" || !validResendAPIKey(resendRaw) {
 		return Config{}
-	}
-	var provider EmailProvider
-	provider = emailProviderResend
-	var apiKey string
-	if validResendAPIKey(resendRaw) {
-		apiKey = resendRaw
 	}
 
 	consoleURL := strings.TrimRight(os.Getenv(env.EnvPrefix+"_CONSOLE_URL"), "/")
@@ -64,11 +53,10 @@ func ReadConfig() Config {
 	}
 
 	cfg := Config{
-		Enabled: resendRaw != "",
+		Enabled: true,
 		Email: EmailConfig{
-			Provider: provider,
-			APIKey:   apiKey,
-			From:     env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
+			APIKey: resendRaw,
+			From:   env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
 		},
 		ConsoleURL:         consoleURL,
 		UnsubscribeURL:     env.EnvOr(env.EnvPrefix+"_EMAIL_UNSUBSCRIBE_URL", defaultUnsubscribeURL),
@@ -95,9 +83,6 @@ func (c Config) WithDefaults() Config {
 func (c Config) Check() error {
 	if !c.Enabled {
 		return nil
-	}
-	if c.Email.Provider != emailProviderResend {
-		return fmt.Errorf("unsupported provider email service")
 	}
 	if strings.TrimSpace(c.Email.APIKey) == "" {
 		return fmt.Errorf("provider email service credentials are not configured")

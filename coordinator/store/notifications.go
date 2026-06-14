@@ -42,15 +42,18 @@ func normalizeNotificationEmail(email string) (string, bool) {
 
 func compactProviderNotificationChecks(checks []ProviderNotificationCheck) []ProviderNotificationCheck {
 	out := make([]ProviderNotificationCheck, 0, len(checks))
-	seen := make(map[ProviderNotificationCheck]bool, len(checks))
+	seen := make(map[ProviderNotificationCheck]struct{}, len(checks))
 	for _, check := range checks {
 		check.ProviderID = strings.TrimSpace(check.ProviderID)
 		check.AccountID = strings.TrimSpace(check.AccountID)
 		check.ReasonKey = strings.TrimSpace(check.ReasonKey)
-		if check.ProviderID == "" || check.AccountID == "" || check.ReasonKey == "" || seen[check] {
+		if check.ProviderID == "" || check.AccountID == "" || check.ReasonKey == "" {
 			continue
 		}
-		seen[check] = true
+		if _, ok := seen[check]; ok {
+			continue
+		}
+		seen[check] = struct{}{}
 		out = append(out, check)
 	}
 	return out

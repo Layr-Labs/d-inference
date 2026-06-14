@@ -3,6 +3,7 @@ package notifications
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ const (
 	minResendAPIKeyLength = 24
 	maxResendAPIKeyLength = 128
 )
+
+var resendAPIKeyPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(resendAPIKeyPrefix) + `[A-Za-z0-9_-]+$`)
 
 const (
 	defaultEmailFrom      = "Darkbloom <providers@darkbloom.dev>"
@@ -39,30 +42,25 @@ type EmailConfig struct {
 }
 
 func validResendAPIKey(key string) bool {
-	if key != strings.TrimSpace(key) ||
-		len(key) < minResendAPIKeyLength ||
-		len(key) > maxResendAPIKeyLength ||
-		!strings.HasPrefix(key, resendAPIKeyPrefix) {
-		return false
-	}
-	for _, r := range key[len(resendAPIKeyPrefix):] {
-		if !safeResendAPIKeyRune(r) {
-			return false
-		}
-	}
-	return true
+	return key == strings.TrimSpace(key) &&
+		len(key) >= minResendAPIKeyLength &&
+		len(key) <= maxResendAPIKeyLength &&
+		resendAPIKeyPattern.MatchString(key)
 }
 
-func safeResendAPIKeyRune(r rune) bool {
-	return ('a' <= r && r <= 'z') ||
-		('A' <= r && r <= 'Z') ||
-		('0' <= r && r <= '9') ||
-		r == '_' ||
-		r == '-'
+func validatedResendAPIKey(raw string) (string, bool) {
+	key := strings.TrimSpace(raw)
+	if !validResendAPIKey(key) {
+		return "", false
+	}
+	return key, true
 }
 
 func ReadConfig() Config {
-	resendRaw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
+	resendRaw, ok := validatedResendAPIKey(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
+	if !ok {
+		return Config{Enabled: false}
+	}
 	consoleURL := strings.TrimRight(os.Getenv(env.EnvPrefix+"_CONSOLE_URL"), "/")
 	if consoleURL != "" {
 		consoleURL += defaultConsolePath
@@ -105,7 +103,7 @@ func (c Config) Check() error {
 	if strings.TrimSpace(c.Email.APIKey) == "" {
 		return fmt.Errorf("provider email service credentials are not configured")
 	}
-	if !validResendAPIKey(c.Email.APIKey) {
+	if _, ok := validatedResendAPIKey(c.Email.APIKey); !ok {
 		return fmt.Errorf("provider email service credentials have an invalid format")
 	}
 	if strings.TrimSpace(c.Email.From) == "" {

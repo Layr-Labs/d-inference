@@ -3390,7 +3390,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	}
 	defer rows.Close()
 
-	records := make([]ProviderRecord, 0)
+	records := make([]ProviderRecord, 0, 64)
 	for rows.Next() {
 		var p ProviderRecord
 		var locationRaw []byte
@@ -3443,7 +3443,7 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 	}
 	defer rows.Close()
 
-	targets := make([]ProviderNotificationTarget, 0, 64)
+	targets := make([]ProviderNotificationTarget, 0, 128)
 	for rows.Next() {
 		var p ProviderRecord
 		var locationRaw []byte

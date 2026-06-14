@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -44,26 +45,22 @@ type resendEmailHeaders struct {
 }
 
 func NewResendClient(apiKey string) *ResendClient {
-	return NewResendClientWithHTTPClient(apiKey, &http.Client{Timeout: resendHTTPTimeout})
-}
-
-func NewResendClientWithHTTPClient(apiKey string, client *http.Client) *ResendClient {
 	apiKey = strings.TrimSpace(apiKey)
 	if !validResendAPIKey(apiKey) {
 		return nil
 	}
-	if client == nil || client.Timeout <= 0 {
-		return nil
-	}
 	return &ResendClient{
 		apiKey: apiKey,
-		client: client,
+		client: &http.Client{Timeout: resendHTTPTimeout},
 	}
 }
 
 func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if c == nil {
 		return fmt.Errorf("resend api key not configured")
+	}
+	if !validResendAPIKey(c.apiKey) {
+		return fmt.Errorf("resend api key has an invalid format")
 	}
 	if err := validateEmail(email); err != nil {
 		return err
@@ -103,7 +100,7 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 }
 
 func validateEmail(email Email) error {
-	if hasHeaderBreaks(email.From) || hasHeaderBreaks(email.To) || hasHeaderBreaks(email.Subject) || hasHeaderBreaks(email.UnsubscribeURL) {
+	if hasHeaderControls(email.From) || hasHeaderControls(email.To) || hasHeaderControls(email.Subject) || hasHeaderControls(email.UnsubscribeURL) {
 		return fmt.Errorf("email contains invalid header characters")
 	}
 	if strings.TrimSpace(email.Subject) == "" {
@@ -116,9 +113,17 @@ func validateEmail(email Email) error {
 	if err != nil || to.Address != email.To {
 		return fmt.Errorf("email to address is invalid")
 	}
+	if email.UnsubscribeURL != "" {
+		u, err := url.Parse(email.UnsubscribeURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("email unsubscribe url is invalid")
+		}
+	}
 	return nil
 }
 
-func hasHeaderBreaks(s string) bool {
-	return strings.ContainsAny(s, "\r\n")
+func hasHeaderControls(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
+		return r < 0x20 || r == 0x7f
+	})
 }

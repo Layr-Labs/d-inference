@@ -10,7 +10,11 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
-const minResendAPIKeyLength = 16
+const (
+	resendAPIKeyPrefix    = "re_"
+	minResendAPIKeyLength = 24
+	maxResendAPIKeyLength = 128
+)
 
 var resendAPIKeyPattern = regexp.MustCompile(`^re_[A-Za-z0-9_-]+$`)
 
@@ -38,7 +42,12 @@ type EmailConfig struct {
 }
 
 func validResendAPIKey(key string) bool {
-	return len(key) >= minResendAPIKeyLength && resendAPIKeyPattern.MatchString(key)
+	return key == strings.TrimSpace(key) &&
+		len(key) >= minResendAPIKeyLength &&
+		len(key) <= maxResendAPIKeyLength &&
+		strings.HasPrefix(key, resendAPIKeyPrefix) &&
+		len(strings.TrimPrefix(key, resendAPIKeyPrefix)) >= minResendAPIKeyLength-len(resendAPIKeyPrefix) &&
+		resendAPIKeyPattern.MatchString(key)
 }
 
 func ReadConfig() Config {

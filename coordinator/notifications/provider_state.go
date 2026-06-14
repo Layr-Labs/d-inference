@@ -14,13 +14,14 @@ func providerStateFrom(rec store.ProviderRecord, live *registry.Provider) provid
 	if live != nil {
 		return providerStateFromLive(rec, live)
 	}
+	trustLevel, _ := parseTrustLevel(rec.TrustLevel)
 	return providerState{
 		id:                    rec.ID,
 		accountID:             rec.AccountID,
 		serial:                rec.SerialNumber,
 		version:               rec.Version,
 		status:                registry.StatusOffline,
-		trustLevel:            parseTrustLevel(rec.TrustLevel),
+		trustLevel:            trustLevel,
 		runtimeVerified:       rec.RuntimeVerified,
 		lastSeen:              rec.LastSeen,
 		lastChallengeVerified: rec.LastChallengeVerified,
@@ -100,13 +101,13 @@ func displayTrust(level registry.TrustLevel) string {
 	return strings.ReplaceAll(string(level), "_", " ")
 }
 
-func parseTrustLevel(level string) registry.TrustLevel {
+func parseTrustLevel(level string) (registry.TrustLevel, bool) {
 	trust := registry.TrustLevel(strings.TrimSpace(level))
 	switch trust {
 	case registry.TrustNone, registry.TrustSelfSigned, registry.TrustHardware:
-		return trust
+		return trust, true
 	}
-	return registry.TrustNone
+	return registry.TrustNone, false
 }
 
 func trustRank(level registry.TrustLevel) int {

@@ -72,16 +72,14 @@ type providerState struct {
 
 func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger) *ProviderNotifier {
 	cfg = cfg.WithDefaults()
-	var send func(context.Context, Email) error
-	if cfg.Email.APIKey != "" {
-		if client := NewResendClient(cfg.Email.APIKey); client != nil {
-			send = client.Send
-		}
-	}
-	return NewProviderNotifierWithEmail(reg, st, cfg, logger, send)
+	return newProviderNotifier(reg, st, cfg, logger, resendSender(cfg.Email.APIKey))
 }
 
 func NewProviderNotifierWithEmail(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, send func(context.Context, Email) error) *ProviderNotifier {
+	return newProviderNotifier(reg, st, cfg, logger, send)
+}
+
+func newProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, send func(context.Context, Email) error) *ProviderNotifier {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -92,6 +90,17 @@ func NewProviderNotifierWithEmail(reg *registry.Registry, st store.Store, cfg Co
 		cfg:      cfg.WithDefaults(),
 		logger:   logger,
 	}
+}
+
+func resendSender(apiKey string) func(context.Context, Email) error {
+	if apiKey == "" {
+		return nil
+	}
+	client := NewResendClient(apiKey)
+	if client == nil {
+		return nil
+	}
+	return client.Send
 }
 
 func (n *ProviderNotifier) Start(ctx context.Context) {
@@ -144,7 +153,8 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if len(candidates) > maxProviderAlertTargets {
 		candidates = candidates[:maxProviderAlertTargets]
 	}
-	checks := make([]store.ProviderNotificationCheck, 0, len(candidates)*maxProviderAlertReasons)
+	checkCapacity := len(candidates) * maxProviderAlertReasons
+	checks := make([]store.ProviderNotificationCheck, 0, checkCapacity)
 	for _, candidate := range candidates {
 		for _, reason := range candidate.reasons {
 			checks = append(checks, store.ProviderNotificationCheck{
@@ -177,7 +187,8 @@ func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationT
 	if len(targets) > maxProviderAlertTargets {
 		targets = targets[:maxProviderAlertTargets]
 	}
-	candidates := make([]providerAlertCandidate, 0, len(targets))
+	candidateCapacity := len(targets)
+	candidates := make([]providerAlertCandidate, 0, candidateCapacity)
 	seen := make(map[string]struct{}, len(targets))
 	for _, target := range targets {
 		rec := target.Provider

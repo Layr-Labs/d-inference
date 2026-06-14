@@ -53,7 +53,7 @@ func providerStateFromLive(rec store.ProviderRecord, p *registry.Provider) provi
 		status:                p.Status,
 		trustLevel:            p.TrustLevel,
 		runtimeVerified:       p.RuntimeVerified,
-		thermalState:          p.SystemMetrics.ThermalState,
+		thermalState:          providerThermalState(p.SystemMetrics.ThermalState),
 		lastSeen:              p.LastHeartbeat,
 		lastChallengeVerified: lastChallenge,
 		failedChallenges:      p.FailedChallenges,

@@ -28,10 +28,22 @@ type ResendClient struct {
 	client *http.Client
 }
 
+type resendEmailPayload struct {
+	From    string            `json:"from"`
+	To      []string          `json:"to"`
+	Subject string            `json:"subject"`
+	Text    string            `json:"text"`
+	HTML    string            `json:"html"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
 func NewResendClient(apiKey string) *ResendClient {
 	return &ResendClient{
 		apiKey: strings.TrimSpace(apiKey),
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: &http.Client{
+			Timeout:       10 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 }
 
@@ -39,15 +51,15 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if c == nil || c.apiKey == "" {
 		return fmt.Errorf("resend api key not configured")
 	}
-	payload := map[string]any{
-		"from":    email.From,
-		"to":      []string{email.To},
-		"subject": email.Subject,
-		"text":    email.Text,
-		"html":    email.HTML,
+	payload := resendEmailPayload{
+		From:    email.From,
+		To:      []string{email.To},
+		Subject: email.Subject,
+		Text:    email.Text,
+		HTML:    email.HTML,
 	}
 	if email.UnsubscribeURL != "" {
-		payload["headers"] = map[string]string{
+		payload.Headers = map[string]string{
 			"List-Unsubscribe":      "<" + email.UnsubscribeURL + ">",
 			"List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
 		}

@@ -40,6 +40,9 @@ public enum TelemetryKind: String, Codable, Sendable {
     case inferenceError = "inference_error"
     case runtimeMismatch = "runtime_mismatch"
     case connectivity
+    /// Out-of-memory: a jetsam/crash-log OOM detected on the next launch, or a
+    /// critical memory-pressure event observed before death.
+    case oom
     case log
     case custom
 }
@@ -233,6 +236,9 @@ public enum TelemetryFieldFilter {
         "handler", "provider_id", "trust_level", "queue_depth", "reason",
         "runtime_component", "reconnect_count", "last_error", "ws_state",
         "billing_method", "payment_failed", "target",
+        // OOM / memory-pressure fields (non-sensitive). Mirror in Go allowlist.
+        "detect_source", "peak_memory_bytes", "report", "pressure",
+        "available_bytes", "mlx_active_bytes", "memory_pressure", "in_flight",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

@@ -955,20 +955,16 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	if !p.Attested {
 		p.Attested = rec.Attested
 	}
-	// Do NOT resurrect MDA/ACME proofs as standalone badges when trust was just
-	// capped back to self_signed: a hardware proof is only meaningful for the
-	// connection that earned it live. Restoring MDAVerified=true onto a fresh
-	// self_signed connection produced the misleading "mda_verified=true while
-	// self_signed" drift on /v1/providers/attestation. These flags are re-set by
-	// the live MDM/ACME legs (verifyAppleDeviceAttestation / applyACMETrust) once
-	// hardware is re-earned this connection.
-	if p.TrustLevel == TrustHardware {
-		p.MDAVerified = rec.MDAVerified
-		p.ACMEVerified = rec.ACMEVerified
-	} else {
-		p.MDAVerified = false
-		p.ACMEVerified = false
-	}
+	// Never resurrect MDA/ACME proofs from the store. Trust above self_signed was
+	// just capped away (see above), so a restored connection is always
+	// self_signed or lower — and a hardware proof is only meaningful for the
+	// connection that earned it live. Restoring MDAVerified=true here produced the
+	// misleading "mda_verified=true while self_signed" drift on
+	// /v1/providers/attestation. These flags are re-set by the live MDM/ACME legs
+	// (verifyAppleDeviceAttestation / applyACMETrust) once hardware is re-earned
+	// this connection.
+	p.MDAVerified = false
+	p.ACMEVerified = false
 
 	// Restore challenge state
 	if rec.LastChallengeVerified != nil {

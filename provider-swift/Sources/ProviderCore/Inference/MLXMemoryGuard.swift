@@ -46,10 +46,22 @@ public enum MLXMemoryGuard {
     ) -> UInt64 {
         if let explicit { return explicit }
         if let raw = env["DARKBLOOM_MLX_MEMORY_RESERVE_GB"], let gb = Double(raw), gb >= 0, gb.isFinite {
-            return UInt64(min(gb * 1_073_741_824, Double(UInt64.max)))
+            // Saturate WITHOUT `UInt64(Double(UInt64.max))`: that round-trip rounds
+            // UInt64.max up to 2^64, which is outside UInt64, so `UInt64(...)` traps
+            // — a huge finite reserve override would crash the provider during
+            // configureOnce() at startup/model load. `uint64MaxAsDouble` is exactly
+            // 2^64; anything ≥ it saturates. Mirrors the VLM env clamps.
+            let scaled = gb * 1_073_741_824
+            return scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
         }
         return saturatingGiBToBytes(defaultReserveGB)
     }
+
+    /// `Double(UInt64.max)` rounded to the nearest representable Double — exactly
+    /// 2^64 (one more than `UInt64.max`). Used as the saturation threshold so a
+    /// `>= uint64MaxAsDouble` comparison catches every value that would trap on
+    /// `UInt64(_:)` conversion.
+    static let uint64MaxAsDouble = Double(UInt64.max)
 
     private static func saturatingGiBToBytes(_ gib: UInt64) -> UInt64 {
         let (bytes, overflow) = gib.multipliedReportingOverflow(by: 1_073_741_824)

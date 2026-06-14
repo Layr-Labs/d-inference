@@ -45,6 +45,27 @@ private let gib = 1024 * 1024 * 1024
         == MLXMemoryGuard.defaultReserveGB * 1_073_741_824)
 }
 
+@Test func mlxGuardReserveEnvClampsHugeValueInsteadOfTrapping() {
+    // A huge-but-finite GB override would, naively, do
+    // `UInt64(min(gb * 1GiB, Double(UInt64.max)))` — but `Double(UInt64.max)`
+    // rounds up to 2^64, which is outside UInt64, so `UInt64(...)` traps and
+    // crashes the provider in configureOnce() at startup. The fix saturates.
+    #expect(MLXMemoryGuard.resolvedReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "1e308"]) == UInt64.max)
+    // A value whose ×1GiB lands exactly at the 2^64 boundary also saturates,
+    // not traps.
+    let boundaryGB = String(MLXMemoryGuard.uint64MaxAsDouble / 1_073_741_824)
+    #expect(MLXMemoryGuard.resolvedReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": boundaryGB]) == UInt64.max)
+    // A normal large-but-representable value still converts correctly.
+    #expect(MLXMemoryGuard.resolvedReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "64"])
+        == UInt64(64) * 1_073_741_824)
+    // Zero is honored (operator's accepted DoS knob; must not trap or fall back).
+    #expect(MLXMemoryGuard.resolvedReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "0"]) == 0)
+}
+
 @Test func mlxGuardConfigureOnceAppliesExactlyOnce() {
     MLXMemoryGuard._resetForTest()
     var applied: [MLXMemoryGuard.Limits] = []

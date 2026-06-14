@@ -9,7 +9,6 @@ import (
 	"net/mail"
 	"net/url"
 	"strings"
-	"time"
 
 	"golang.org/x/net/http/httpguts"
 )
@@ -61,7 +60,7 @@ func NewResendClient(apiKey string) (*ResendClient, error) {
 	}
 	return &ResendClient{
 		apiKey: apiKey,
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: http.DefaultClient,
 	}, nil
 }
 

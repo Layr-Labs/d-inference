@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -3417,6 +3418,67 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	return records, nil
 }
 
+func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]ProviderNotificationTarget, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT ON (
+			COALESCE(NULLIF(p.serial_number, ''),
+			         NULLIF(p.se_public_key, ''),
+			         p.id)
+		 )
+		 p.id, p.hardware, p.models, p.backend, p.location, p.trust_level, p.attested,
+			p.attestation_result, p.se_public_key, p.serial_number,
+			p.mda_verified, p.mda_cert_chain, p.acme_verified,
+			p.version, p.runtime_verified, p.python_hash, p.runtime_hash,
+			p.last_challenge_verified, p.failed_challenges, p.account_id,
+			p.lifetime_requests_served, p.lifetime_tokens_generated,
+			p.last_session_requests_served, p.last_session_tokens_generated,
+			p.registered_at, p.last_seen,
+			u.email
+		 FROM providers p
+		 JOIN users u ON u.account_id = p.account_id
+		 WHERE p.account_id <> '' AND BTRIM(u.email) <> ''
+		 ORDER BY COALESCE(NULLIF(p.serial_number, ''),
+		                   NULLIF(p.se_public_key, ''),
+		                   p.id),
+		          p.last_seen DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list provider notification targets: %w", err)
+	}
+	defer rows.Close()
+
+	targets := make([]ProviderNotificationTarget, 0)
+	for rows.Next() {
+		var p ProviderRecord
+		var locationRaw []byte
+		var email string
+		if err := rows.Scan(
+			&p.ID, &p.Hardware, &p.Models, &p.Backend,
+			&locationRaw,
+			&p.TrustLevel, &p.Attested,
+			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
+			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
+			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
+			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
+			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+			&p.RegisteredAt, &p.LastSeen,
+			&email,
+		); err != nil {
+			continue
+		}
+		p.Location = unmarshalProviderLocation(locationRaw)
+		targets = append(targets, ProviderNotificationTarget{
+			Provider: p,
+			Email:    strings.TrimSpace(email),
+		})
+	}
+	return targets, nil
+}
+
 func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error) {
 	if accountID == "" {
 		return []ProviderRecord{}, nil
@@ -3734,40 +3796,70 @@ func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefo
 	return int(tag.RowsAffected()), nil
 }
 
-func (s *PostgresStore) ProviderNotificationDue(ctx context.Context, providerID, accountID, reasonKey string, cooldown time.Duration) (bool, error) {
-	if providerID == "" || accountID == "" || reasonKey == "" {
-		return false, nil
+func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, providerID, accountID string, reasonKeys []string, cooldown time.Duration) (map[string]bool, error) {
+	due := make(map[string]bool, len(reasonKeys))
+	reasonKeys = compactReasonKeys(reasonKeys)
+	if providerID == "" || accountID == "" || len(reasonKeys) == 0 {
+		return due, nil
 	}
-	var lastSent time.Time
-	err := s.pool.QueryRow(ctx,
-		`SELECT last_sent_at
+	for _, reasonKey := range reasonKeys {
+		due[reasonKey] = true
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT reason_key, last_sent_at
 		   FROM provider_notifications
-		  WHERE provider_id = $1 AND reason_key = $2`,
-		providerID, reasonKey,
-	).Scan(&lastSent)
+		  WHERE provider_id = $1 AND reason_key = ANY($2::text[])`,
+		providerID, reasonKeys,
+	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return true, nil
-		}
-		return false, fmt.Errorf("store: provider notification lookup: %w", err)
+		return nil, fmt.Errorf("store: provider notification lookup: %w", err)
 	}
-	return time.Since(lastSent) >= cooldown, nil
+	defer rows.Close()
+
+	cutoff := time.Now().Add(-cooldown)
+	for rows.Next() {
+		var reasonKey string
+		var lastSent time.Time
+		if err := rows.Scan(&reasonKey, &lastSent); err != nil {
+			return nil, fmt.Errorf("store: scan provider notification: %w", err)
+		}
+		if lastSent.After(cutoff) {
+			due[reasonKey] = false
+		}
+	}
+	return due, nil
 }
 
-func (s *PostgresStore) RecordProviderNotificationSent(ctx context.Context, providerID, accountID, reasonKey string, sentAt time.Time) error {
-	if providerID == "" || accountID == "" || reasonKey == "" {
+func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, providerID, accountID string, reasonKeys []string, sentAt time.Time) error {
+	reasonKeys = compactReasonKeys(reasonKeys)
+	if providerID == "" || accountID == "" || len(reasonKeys) == 0 {
 		return nil
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO provider_notifications (provider_id, account_id, reason_key, last_sent_at)
-		 VALUES ($1, $2, $3, $4)
+		 SELECT $1, $2, unnest($3::text[]), $4
 		 ON CONFLICT (provider_id, reason_key) DO UPDATE
 		    SET account_id = EXCLUDED.account_id,
 		        last_sent_at = EXCLUDED.last_sent_at`,
-		providerID, accountID, reasonKey, sentAt,
+		providerID, accountID, reasonKeys, sentAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: record provider notification: %w", err)
 	}
 	return nil
+}
+
+func compactReasonKeys(reasonKeys []string) []string {
+	out := make([]string, 0, len(reasonKeys))
+	seen := make(map[string]bool, len(reasonKeys))
+	for _, reasonKey := range reasonKeys {
+		reasonKey = strings.TrimSpace(reasonKey)
+		if reasonKey == "" || seen[reasonKey] {
+			continue
+		}
+		seen[reasonKey] = true
+		out = append(out, reasonKey)
+	}
+	return out
 }

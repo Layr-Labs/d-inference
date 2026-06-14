@@ -3,9 +3,13 @@ package store
 import (
 	"net/mail"
 	"strings"
+	"time"
 )
 
-const providerNotificationTargetLimit = 10000
+const (
+	providerNotificationTargetLimit    = 10000
+	providerNotificationTargetLookback = 30 * 24 * time.Hour
+)
 
 type providerNotificationKey struct {
 	ProviderID string

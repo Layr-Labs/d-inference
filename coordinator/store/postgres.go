@@ -3390,31 +3390,68 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	}
 	defer rows.Close()
 
-	var records []ProviderRecord
+	records := make([]ProviderRecord, 0)
 	for rows.Next() {
-		var p ProviderRecord
-		var locationRaw []byte
-		if err := rows.Scan(
-			&p.ID, &p.Hardware, &p.Models, &p.Backend,
-			&locationRaw,
-			&p.TrustLevel, &p.Attested,
-			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
-			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
-			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-			&p.RegisteredAt, &p.LastSeen,
-		); err != nil {
-			continue
+		p, err := scanProviderRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan provider record: %w", err)
 		}
-		p.Location = unmarshalProviderLocation(locationRaw)
 		records = append(records, p)
 	}
-	if records == nil {
-		return []ProviderRecord{}, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider records: %w", err)
 	}
 	return records, nil
+}
+
+type providerRecordScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanProviderRecord(row providerRecordScanner) (ProviderRecord, error) {
+	var p ProviderRecord
+	var locationRaw []byte
+	err := row.Scan(
+		&p.ID, &p.Hardware, &p.Models, &p.Backend,
+		&locationRaw,
+		&p.TrustLevel, &p.Attested,
+		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
+		&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
+		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
+		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
+		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+		&p.RegisteredAt, &p.LastSeen,
+	)
+	if err != nil {
+		return ProviderRecord{}, err
+	}
+	p.Location = unmarshalProviderLocation(locationRaw)
+	return p, nil
+}
+
+func scanProviderNotificationTarget(row providerRecordScanner) (ProviderRecord, string, error) {
+	var p ProviderRecord
+	var locationRaw []byte
+	var email string
+	err := row.Scan(
+		&p.ID, &p.Hardware, &p.Models, &p.Backend,
+		&locationRaw,
+		&p.TrustLevel, &p.Attested,
+		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
+		&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
+		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
+		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
+		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+		&p.RegisteredAt, &p.LastSeen,
+		&email,
+	)
+	if err != nil {
+		return ProviderRecord{}, "", err
+	}
+	p.Location = unmarshalProviderLocation(locationRaw)
+	return p, email, nil
 }
 
 func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]ProviderNotificationTarget, error) {
@@ -3438,13 +3475,13 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 			u.email
 		 FROM providers p
 		 JOIN users u ON u.account_id = p.account_id
-		 WHERE p.account_id <> '' AND BTRIM(u.email) <> ''
+		 WHERE p.account_id <> '' AND BTRIM(u.email) <> '' AND p.last_seen >= $1
 		 ORDER BY COALESCE(NULLIF(p.serial_number, ''),
 		                   NULLIF(p.se_public_key, ''),
 		                   p.id),
 		          p.last_seen DESC
-		 LIMIT $1`,
-		providerNotificationTargetLimit,
+		 LIMIT $2`,
+		time.Now().Add(-providerNotificationTargetLookback), providerNotificationTargetLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list provider notification targets: %w", err)
@@ -3453,25 +3490,10 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 
 	targets := make([]ProviderNotificationTarget, 0, 256)
 	for rows.Next() {
-		var p ProviderRecord
-		var locationRaw []byte
-		var email string
-		if err := rows.Scan(
-			&p.ID, &p.Hardware, &p.Models, &p.Backend,
-			&locationRaw,
-			&p.TrustLevel, &p.Attested,
-			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
-			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
-			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-			&p.RegisteredAt, &p.LastSeen,
-			&email,
-		); err != nil {
-			continue
+		p, email, err := scanProviderNotificationTarget(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan provider notification target: %w", err)
 		}
-		p.Location = unmarshalProviderLocation(locationRaw)
 		email, ok := normalizeNotificationEmail(email)
 		if !ok {
 			continue
@@ -3480,6 +3502,9 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 			Provider: p,
 			Email:    email,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider notification targets: %w", err)
 	}
 	return targets, nil
 }

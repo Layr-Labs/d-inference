@@ -22,10 +22,6 @@ type Email struct {
 	UnsubscribeURL string
 }
 
-type EmailSender interface {
-	Send(context.Context, Email) error
-}
-
 type ResendClient struct {
 	apiKey string
 	client *http.Client

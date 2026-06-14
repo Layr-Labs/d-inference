@@ -27,7 +27,7 @@ const thermalStateCritical providerThermalState = "critical"
 type ProviderNotifier struct {
 	registry *registry.Registry
 	store    store.Store
-	sender   EmailSender
+	send     func(context.Context, Email) error
 	cfg      Config
 	logger   *slog.Logger
 }
@@ -64,7 +64,7 @@ type providerState struct {
 	online                bool
 }
 
-func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, sender EmailSender) *ProviderNotifier {
+func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, send func(context.Context, Email) error) *ProviderNotifier {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -75,13 +75,13 @@ func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, log
 		cfg:      cfg,
 		logger:   logger,
 	}
-	if sender != nil {
-		notifier.sender = sender
+	if send != nil {
+		notifier.send = send
 	} else if cfg.APIKey != "" {
 		if client, err := NewResendClient(cfg.APIKey); err != nil {
 			logger.Warn("provider email notifications enabled but email client configuration is invalid")
 		} else {
-			notifier.sender = client
+			notifier.send = client.Send
 		}
 	}
 	return notifier
@@ -91,7 +91,7 @@ func (n *ProviderNotifier) Start(ctx context.Context) {
 	if n == nil || !n.cfg.Enabled {
 		return
 	}
-	if n.sender == nil {
+	if n.send == nil {
 		n.logger.Warn("provider email notifications enabled but no email client configured")
 		return
 	}
@@ -115,7 +115,7 @@ func (n *ProviderNotifier) Start(ctx context.Context) {
 }
 
 func (n *ProviderNotifier) Check(ctx context.Context) {
-	if n == nil || n.sender == nil || n.store == nil || n.registry == nil {
+	if n == nil || n.send == nil || n.store == nil || n.registry == nil {
 		return
 	}
 	if ctx.Err() != nil {
@@ -128,46 +128,23 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		return
 	}
 	if len(targets) > maxProviderAlertTargets {
-		targets = targets[:maxProviderAlertTargets:maxProviderAlertTargets]
+		targets = targets[:maxProviderAlertTargets]
 	}
 	if len(targets) == 0 {
 		return
 	}
-	candidates := make([]struct {
-		email   string
-		state   providerState
-		reasons []AlertReason
-		checks  []store.ProviderNotificationCheck
-	}, 0, len(targets))
+	candidates := make([]providerNotificationCandidate, 0, len(targets))
 	checks := make([]store.ProviderNotificationCheck, 0, len(targets)*maxProviderAlertReasons)
+	reasonsByCheck := make([]AlertReason, 0, len(targets)*maxProviderAlertReasons)
 	seen := make(map[string]struct{}, len(targets))
 	assessor := n.healthAssessor()
 	now := time.Now()
 	for _, target := range targets {
-		rec := target.Provider
-		if rec.AccountID == "" || target.Email == "" {
+		state, stableKey, reasons, ok := n.notificationCandidate(target, assessor, now, seen)
+		if !ok {
 			continue
 		}
-		stableKey := store.ProviderNotificationStableKey(rec)
-		if _, ok := seen[stableKey]; ok {
-			continue
-		}
-		state := providerStateFrom(rec, n.registry.GetProvider(rec.ID))
-		reasons := assessor.reasons(state, now)
-		if len(reasons) == 0 {
-			continue
-		}
-		candidate := struct {
-			email   string
-			state   providerState
-			reasons []AlertReason
-			checks  []store.ProviderNotificationCheck
-		}{
-			email:   target.Email,
-			state:   state,
-			reasons: reasons[:0],
-			checks:  make([]store.ProviderNotificationCheck, 0, len(reasons)),
-		}
+		start := len(checks)
 		for _, reason := range reasons {
 			check := store.ProviderNotificationCheck{
 				ProviderID: stableKey,
@@ -177,14 +154,18 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 			if _, _, _, ok := check.DBValues(); !ok {
 				continue
 			}
-			candidate.reasons = append(candidate.reasons, reason)
-			candidate.checks = append(candidate.checks, check)
+			checks = append(checks, check)
+			reasonsByCheck = append(reasonsByCheck, reason)
 		}
-		if len(candidate.checks) == 0 {
+		if start == len(checks) {
 			continue
 		}
-		checks = append(checks, candidate.checks...)
-		candidates = append(candidates, candidate)
+		candidates = append(candidates, providerNotificationCandidate{
+			email: target.Email,
+			state: state,
+			start: start,
+			end:   len(checks),
+		})
 		seen[stableKey] = struct{}{}
 	}
 	if len(checks) == 0 {
@@ -199,9 +180,45 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		if checkCtx.Err() != nil {
 			return
 		}
-		sent = append(sent, n.sendDue(checkCtx, candidate.email, candidate.state, candidate.reasons, candidate.checks, dueByCheck)...)
+		sent = append(sent, n.sendDue(
+			checkCtx,
+			candidate.email,
+			candidate.state,
+			reasonsByCheck[candidate.start:candidate.end],
+			checks[candidate.start:candidate.end],
+			dueByCheck,
+		)...)
 	}
 	n.recordNotificationsSent(checkCtx, sent)
+}
+
+type providerNotificationCandidate struct {
+	email string
+	state providerState
+	start int
+	end   int
+}
+
+func (n *ProviderNotifier) notificationCandidate(
+	target store.ProviderNotificationTarget,
+	assessor providerHealthAssessor,
+	now time.Time,
+	seen map[string]struct{},
+) (providerState, string, []AlertReason, bool) {
+	rec := target.Provider
+	if rec.AccountID == "" || target.Email == "" {
+		return providerState{}, "", nil, false
+	}
+	stableKey := store.ProviderNotificationStableKey(rec)
+	if _, ok := seen[stableKey]; ok {
+		return providerState{}, "", nil, false
+	}
+	state := providerStateFrom(rec, n.registry.GetProvider(rec.ID))
+	reasons := assessor.reasons(state, now)
+	if len(reasons) == 0 {
+		return providerState{}, "", nil, false
+	}
+	return state, stableKey, reasons, true
 }
 
 func (n *ProviderNotifier) notificationTargets(ctx context.Context) ([]store.ProviderNotificationTarget, bool) {
@@ -256,7 +273,7 @@ func (n *ProviderNotifier) sendDue(
 	email := buildProviderAlertEmail(n.cfg.From, to, providerDisplayName(state), due, n.cfg.ConsoleURL, n.cfg.UnsubscribeURL)
 	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
-	if err := n.sender.Send(sendCtx, email); err != nil {
+	if err := n.send(sendCtx, email); err != nil {
 		n.logger.Warn("provider notifications: email send failed",
 			"provider_id", state.id,
 			"serial", state.serial,

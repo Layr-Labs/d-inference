@@ -60,7 +60,11 @@ the raster is allocated:
   with no frame decode. Per-frame reuses `maxImagePixels`; duration cap
   `DARKBLOOM_MAX_VIDEO_SECONDS` (default 600) bounds the sampled frame count.
   (The model samples frames from these same properties, so a usable video is
-  always probeable — fail-closed never rejects one.)
+  always probeable — fail-closed never rejects one.) Plus request-wide caps —
+  max video parts (`DARKBLOOM_MAX_VIDEOS_PER_REQUEST`, 8) and summed per-frame
+  pixels across videos (`DARKBLOOM_MAX_REQUEST_VIDEO_FRAME_MEGAPIXELS`, 384),
+  since the model samples N frames *per* video so a per-video cap alone isn't
+  enough.
 - **Both** — per-part decoded-byte cap (`DARKBLOOM_MAX_MEDIA_MIB`, default 25),
   also bounding the inline-video temp file + RAM.
 

@@ -156,7 +156,8 @@ func vlmDecodeImageGarbageThrows() {
 func vlmDecodeVideoDataURIWritesTempFile() async throws {
     var tempFiles: [URL] = []
     // A real, probeable 64x64 video passes the limits and is written + tracked.
-    let video = try await VLMRequestInference.decodeVideo(tinyMP4DataURI, tempFiles: &tempFiles)
+    let (video, _) = try await VLMRequestInference.decodeVideo(
+        tinyMP4DataURI, tempFiles: &tempFiles)
     guard case .url(let url) = video else {
         Issue.record("expected .url, got \(video)")
         return
@@ -495,6 +496,8 @@ func vlmMediaLimitDefaults() {
     #expect(VLMRequestInference.maxRequestImagePixels == 384_000_000)
     #expect(VLMRequestInference.maxMediaDecodedBytes == 25 * 1024 * 1024)
     #expect(VLMRequestInference.maxVideoDurationSeconds == 600)
+    #expect(VLMRequestInference.maxVideosPerRequest == 8)
+    #expect(VLMRequestInference.maxRequestVideoFramePixels == 384_000_000)
 }
 
 /// Build a real PNG of the given dimensions (uniform gray) via ImageIO — to
@@ -548,7 +551,7 @@ func vlmDecodeVideoRejectsOverFrameCap() async {
 @Test("decodeVideo accepts a video within the per-frame cap (no regression)")
 func vlmDecodeVideoWithinFrameCapPasses() async throws {
     var tempFiles: [URL] = []
-    let video = try await VLMRequestInference.decodeVideo(
+    let (video, _) = try await VLMRequestInference.decodeVideo(
         tinyMP4DataURI, tempFiles: &tempFiles, maxFramePixels: 10_000)
     guard case .url(let url) = video else {
         Issue.record("expected .url, got \(video)")
@@ -566,4 +569,41 @@ func vlmDecodeImageRealMultiPixelRejected() async throws {
     await expectMediaTooLarge {
         _ = try VLMRequestInference.decodeImage(uri, maxImagePixels: 1_000)
     }
+}
+
+@Test("buildUserInput rejects more videos than the per-request count cap")
+func vlmBuildUserInputRejectsVideoCount() async {
+    // Three tiny valid videos with a 2-video cap -> rejected on the third,
+    // bounding the "many tiny MP4s" aggregate-frame amplification.
+    var tempFiles: [URL] = []
+    let request = OpenAIChatCompletionRequest(
+        model: "vlm",
+        messages: [
+            .init(
+                role: .user,
+                content: .parts([
+                    .videoURL(tinyMP4DataURI),
+                    .videoURL(tinyMP4DataURI),
+                    .videoURL(tinyMP4DataURI),
+                ]))
+        ])
+    await expectMediaTooLarge {
+        _ = try await VLMRequestInference.buildUserInput(
+            from: request, tempFiles: &tempFiles, maxVideosPerRequest: 2)
+    }
+    for u in tempFiles { try? FileManager.default.removeItem(at: u) }
+}
+
+@Test("buildUserInput rejects videos whose aggregate frame pixels exceed the cap")
+func vlmBuildUserInputRejectsVideoFramePixels() async {
+    // One 64x64 video = 4096 frame px; a 1-px aggregate cap trips it.
+    var tempFiles: [URL] = []
+    let request = OpenAIChatCompletionRequest(
+        model: "vlm",
+        messages: [.init(role: .user, content: .parts([.videoURL(tinyMP4DataURI)]))])
+    await expectMediaTooLarge {
+        _ = try await VLMRequestInference.buildUserInput(
+            from: request, tempFiles: &tempFiles, maxRequestVideoFramePixels: 1)
+    }
+    for u in tempFiles { try? FileManager.default.removeItem(at: u) }
 }

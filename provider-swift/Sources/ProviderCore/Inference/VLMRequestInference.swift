@@ -210,14 +210,21 @@ public enum VLMRequestInference {
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         tempFiles: inout [URL],
-        maxRequestImagePixels: Int = Self.maxRequestImagePixels
+        maxRequestImagePixels: Int = Self.maxRequestImagePixels,
+        maxVideosPerRequest: Int = Self.maxVideosPerRequest,
+        maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
         var chatMessages: [Chat.Message] = []
         var totalPixels = 0
+        var totalVideoPixels = 0
+        var videoCount = 0
         for message in request.messages {
             let (text, images, videos) = try await parts(
                 from: message.content, tempFiles: &tempFiles, totalPixels: &totalPixels,
-                maxRequestImagePixels: maxRequestImagePixels)
+                totalVideoPixels: &totalVideoPixels, videoCount: &videoCount,
+                maxRequestImagePixels: maxRequestImagePixels,
+                maxVideosPerRequest: maxVideosPerRequest,
+                maxRequestVideoFramePixels: maxRequestVideoFramePixels)
             switch message.role {
             case .user:
                 chatMessages.append(.user(text, images: images, videos: videos))
@@ -236,11 +243,15 @@ public enum VLMRequestInference {
     /// tests that pass only base64/url images (no inline videos).
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
-        maxRequestImagePixels: Int = Self.maxRequestImagePixels
+        maxRequestImagePixels: Int = Self.maxRequestImagePixels,
+        maxVideosPerRequest: Int = Self.maxVideosPerRequest,
+        maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
         var sink: [URL] = []
         return try await buildUserInput(
-            from: request, tempFiles: &sink, maxRequestImagePixels: maxRequestImagePixels)
+            from: request, tempFiles: &sink, maxRequestImagePixels: maxRequestImagePixels,
+            maxVideosPerRequest: maxVideosPerRequest,
+            maxRequestVideoFramePixels: maxRequestVideoFramePixels)
     }
 
     /// Split a message's content into the concatenated text plus decoded
@@ -251,7 +262,11 @@ public enum VLMRequestInference {
         from content: OpenAIMessageContent,
         tempFiles: inout [URL],
         totalPixels: inout Int,
-        maxRequestImagePixels: Int
+        totalVideoPixels: inout Int,
+        videoCount: inout Int,
+        maxRequestImagePixels: Int,
+        maxVideosPerRequest: Int,
+        maxRequestVideoFramePixels: Int
     ) async throws -> (text: String, images: [UserInput.Image], videos: [UserInput.Video]) {
         switch content {
         case .text(let string):
@@ -283,7 +298,24 @@ public enum VLMRequestInference {
                     }
                     images.append(image)
                 case .videoURL(let uri):
-                    videos.append(try await decodeVideo(uri, tempFiles: &tempFiles))
+                    // Per-request video caps: count + summed per-frame pixels.
+                    // The model samples up to N frames PER video, so a per-video
+                    // cap alone doesn't bound many-tiny-videos amplification.
+                    videoCount += 1
+                    guard videoCount <= maxVideosPerRequest else {
+                        throw MediaError.mediaTooLarge(
+                            "request has \(videoCount) videos; cap is \(maxVideosPerRequest)")
+                    }
+                    let decoded = try await decodeVideo(uri, tempFiles: &tempFiles)
+                    let (sum, overflow) =
+                        totalVideoPixels.addingReportingOverflow(decoded.framePixels)
+                    totalVideoPixels = overflow ? Int.max : sum
+                    guard totalVideoPixels <= maxRequestVideoFramePixels else {
+                        throw MediaError.mediaTooLarge(
+                            "request video frames total \(totalVideoPixels) px; aggregate cap is "
+                                + "\(maxRequestVideoFramePixels) px")
+                    }
+                    videos.append(decoded.video)
                 case .unsupported:
                     continue
                 }
@@ -324,6 +356,17 @@ public enum VLMRequestInference {
     public static let maxVideoDurationSeconds = resolveMaxSeconds(
         env: "DARKBLOOM_MAX_VIDEO_SECONDS", defaultSeconds: 600)
 
+    /// Max inline video parts per request — bounds the "many tiny valid MP4s"
+    /// amplification (each video passes per-part checks, but the model samples
+    /// up to N frames PER video, so aggregate frame/tensor work still explodes).
+    public static let maxVideosPerRequest = resolveMaxCount(
+        env: "DARKBLOOM_MAX_VIDEOS_PER_REQUEST", defaultCount: 8)
+
+    /// Aggregate per-frame pixel ceiling summed across every video in a request
+    /// (the video analog of `maxRequestImagePixels`).
+    public static let maxRequestVideoFramePixels = resolveMaxPixels(
+        env: "DARKBLOOM_MAX_REQUEST_VIDEO_FRAME_MEGAPIXELS", defaultMegapixels: 384)
+
     /// Resolve a megapixel limit from `env` (a positive megapixel count) or fall
     /// back to `defaultMegapixels`. Injectable environment for tests.
     static func resolveMaxPixels(
@@ -356,6 +399,15 @@ public enum VLMRequestInference {
             return s
         }
         return defaultSeconds
+    }
+
+    /// Resolve a positive integer count from `env` or `defaultCount`.
+    static func resolveMaxCount(
+        env name: String, defaultCount: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        if let raw = environment[name], let n = Int(raw), n > 0 { return n }
+        return defaultCount
     }
 
     /// Pixel count (width × height) read from the image's format **header only**
@@ -436,7 +488,7 @@ public enum VLMRequestInference {
         maxFramePixels: Int = Self.maxImagePixels,
         maxVideoDurationSeconds: Double = Self.maxVideoDurationSeconds,
         maxMediaDecodedBytes: Int = Self.maxMediaDecodedBytes
-    ) async throws -> UserInput.Video {
+    ) async throws -> (video: UserInput.Video, framePixels: Int) {
         guard uri.hasPrefix("data:") else {
             throw MediaError.invalidURL(uri)
         }
@@ -452,8 +504,9 @@ public enum VLMRequestInference {
         // decodes frames — the byte cap alone doesn't bound the decoded raster.
         // Read track metadata only; no frame decode. The temp file isn't tracked
         // in `tempFiles` until it passes, so remove it on the reject path.
+        let framePixels: Int
         do {
-            try await enforceVideoLimits(
+            framePixels = try await enforceVideoLimits(
                 tempURL, maxFramePixels: maxFramePixels,
                 maxDurationSeconds: maxVideoDurationSeconds)
         } catch {
@@ -461,7 +514,7 @@ public enum VLMRequestInference {
             throw error
         }
         tempFiles.append(tempURL)
-        return .url(tempURL)
+        return (.url(tempURL), framePixels)
     }
 
     /// Reject a video bomb using track metadata only (no frame decode). Fails
@@ -470,9 +523,10 @@ public enum VLMRequestInference {
     /// can't be read and proven within cap is rejected. The model samples frames
     /// from these same properties, so a video it can actually use is always
     /// probeable here — fail-closed never rejects a usable video.
+    @discardableResult
     static func enforceVideoLimits(
         _ url: URL, maxFramePixels: Int, maxDurationSeconds: Double
-    ) async throws {
+    ) async throws -> Int {
         let asset = AVURLAsset(url: url)
 
         // Duration bounds the sampled frame count (frames = duration × fps).
@@ -493,6 +547,7 @@ public enum VLMRequestInference {
         // AVAssetImageGenerator scales to naturalSize) must be readable and ≤ cap.
         // A file can understate naturalSize while coding huge frames, so charge
         // the larger of naturalSize and the format-description dimensions.
+        var maxTrackPixels = 0
         for track in tracks {
             guard let formats = try? await track.load(.formatDescriptions), !formats.isEmpty else {
                 throw MediaError.mediaTooLarge("video frame dimensions are unreadable")
@@ -512,7 +567,9 @@ public enum VLMRequestInference {
                 throw MediaError.mediaTooLarge(
                     "video frame is \(framePixels) px; per-frame cap is \(maxFramePixels) px")
             }
+            maxTrackPixels = max(maxTrackPixels, framePixels)
         }
+        return maxTrackPixels
     }
 
     /// Extract the raw bytes from a `data:` URI. The header before the
@@ -545,6 +602,17 @@ public enum VLMRequestInference {
             return data
         }
 
+        // Percent-encoded: each %XX (3 bytes) decodes to 1 byte and every other
+        // byte is itself, so decoded length = len − 2·(number of '%'). Preflight
+        // from that length BEFORE allocating the decoded String/Data (mirrors the
+        // base64 path; the post-decode check below stays as a backstop).
+        let encoded = payload.utf8
+        let percentCount = encoded.lazy.filter { $0 == UInt8(ascii: "%") }.count
+        let approxDecoded = encoded.count - 2 * percentCount
+        guard approxDecoded <= maxMediaDecodedBytes else {
+            throw MediaError.mediaTooLarge(
+                "payload ~\(approxDecoded) bytes; cap is \(maxMediaDecodedBytes) bytes")
+        }
         guard let decoded = payload.removingPercentEncoding,
             let data = decoded.data(using: .utf8)
         else {

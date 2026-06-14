@@ -3,6 +3,7 @@ package notifications
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 )
 
 const minResendAPIKeyLength = 16
+
+var resendAPIKeyPattern = regexp.MustCompile(`^re_[A-Za-z0-9_-]+$`)
 
 const (
 	defaultEmailFrom      = "Darkbloom <providers@darkbloom.dev>"
@@ -40,24 +43,16 @@ type EmailConfig struct {
 }
 
 func validResendAPIKey(key string) bool {
-	if len(key) < minResendAPIKeyLength || !strings.HasPrefix(key, "re_") {
-		return false
-	}
-	for _, c := range key[len("re_"):] {
-		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return len(key) >= minResendAPIKeyLength && resendAPIKeyPattern.MatchString(key)
 }
 
 func ReadConfig() Config {
 	resendRaw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
-	var provider EmailProvider
-	if resendRaw != "" {
-		provider = emailProviderResend
+	if resendRaw == "" {
+		return Config{}
 	}
+	var provider EmailProvider
+	provider = emailProviderResend
 	var apiKey string
 	if validResendAPIKey(resendRaw) {
 		apiKey = resendRaw

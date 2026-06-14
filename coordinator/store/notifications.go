@@ -16,7 +16,7 @@ type providerNotificationKey struct {
 	ReasonKey  string
 }
 
-type ProviderNotificationDueSet map[ProviderNotificationCheck]struct{}
+type ProviderNotificationDueSet map[ProviderNotificationCheck]bool
 
 func providerNotificationStableKey(rec ProviderRecord) string {
 	if rec.SerialNumber != "" {
@@ -42,18 +42,15 @@ func normalizeNotificationEmail(email string) (string, bool) {
 
 func compactProviderNotificationChecks(checks []ProviderNotificationCheck) []ProviderNotificationCheck {
 	out := make([]ProviderNotificationCheck, 0, len(checks))
-	seen := make(map[ProviderNotificationCheck]struct{}, len(checks))
+	seen := make(map[ProviderNotificationCheck]bool, len(checks))
 	for _, check := range checks {
 		check.ProviderID = strings.TrimSpace(check.ProviderID)
 		check.AccountID = strings.TrimSpace(check.AccountID)
 		check.ReasonKey = strings.TrimSpace(check.ReasonKey)
-		if check.ProviderID == "" || check.AccountID == "" || check.ReasonKey == "" {
+		if check.ProviderID == "" || check.AccountID == "" || check.ReasonKey == "" || seen[check] {
 			continue
 		}
-		if _, exists := seen[check]; exists {
-			continue
-		}
-		seen[check] = struct{}{}
+		seen[check] = true
 		out = append(out, check)
 	}
 	return out

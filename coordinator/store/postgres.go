@@ -3390,7 +3390,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	}
 	defer rows.Close()
 
-	records := make([]ProviderRecord, 0, 256)
+	records := make([]ProviderRecord, 0, 1024)
 	for rows.Next() {
 		var p ProviderRecord
 		var locationRaw []byte
@@ -3451,7 +3451,7 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 	}
 	defer rows.Close()
 
-	targets := make([]ProviderNotificationTarget, 0, providerNotificationTargetLimit)
+	targets := make([]ProviderNotificationTarget, 0, 64)
 	for rows.Next() {
 		var p ProviderRecord
 		var locationRaw []byte
@@ -3817,7 +3817,7 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
 		providerIDs[i] = check.ProviderID
 		reasonKeys[i] = check.ReasonKey
-		due[check] = struct{}{}
+		due[check] = true
 	}
 
 	rows, err := s.pool.Query(ctx,

@@ -47,7 +47,7 @@ type resendEmailHeaders struct {
 }
 
 func NewResendClient(apiKey string) *ResendClient {
-	return NewResendClientWithHTTPClient(apiKey, http.DefaultClient)
+	return NewResendClientWithHTTPClient(apiKey, &http.Client{Timeout: resendHTTPTimeout})
 }
 
 func NewResendClientWithHTTPClient(apiKey string, client *http.Client) *ResendClient {
@@ -55,12 +55,8 @@ func NewResendClientWithHTTPClient(apiKey string, client *http.Client) *ResendCl
 	if !validResendAPIKey(apiKey) {
 		return nil
 	}
-	if client == nil {
-		client = &http.Client{Timeout: resendHTTPTimeout}
-	} else if client.Timeout <= 0 {
-		copy := *client
-		copy.Timeout = resendHTTPTimeout
-		client = &copy
+	if client == nil || client.Timeout <= 0 {
+		return nil
 	}
 	return &ResendClient{
 		apiKey: apiKey,

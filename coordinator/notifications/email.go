@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 type Email struct {
@@ -53,8 +55,8 @@ type resendEmailHeaders struct {
 }
 
 func NewResendClient(apiKey string) (*ResendClient, error) {
-	apiKey = strings.TrimSpace(apiKey)
-	if !validResendAPIKey(apiKey) {
+	apiKey, ok := validatedResendAPIKey(apiKey)
+	if !ok {
 		return nil, fmt.Errorf("resend api key has an invalid format")
 	}
 	return &ResendClient{
@@ -67,7 +69,7 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if c == nil {
 		return fmt.Errorf("resend api key not configured")
 	}
-	if !validResendAPIKey(c.apiKey) {
+	if _, ok := validatedResendAPIKey(c.apiKey); !ok {
 		return fmt.Errorf("resend api key has an invalid format")
 	}
 	if err := validateEmail(email); err != nil {
@@ -112,14 +114,19 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 }
 
 func resendAuthorization(apiKey string) (string, error) {
-	if !validResendAPIKey(apiKey) || hasHeaderInjection(apiKey) {
+	apiKey, ok := validatedResendAPIKey(apiKey)
+	if !ok {
 		return "", fmt.Errorf("resend api key has an invalid format")
 	}
-	return "Bearer " + apiKey, nil
+	authorization := "Bearer " + apiKey
+	if !httpguts.ValidHeaderFieldValue(authorization) {
+		return "", fmt.Errorf("resend api key has an invalid format")
+	}
+	return authorization, nil
 }
 
 func validateEmail(email Email) error {
-	if hasHeaderInjection(email.From) || hasHeaderInjection(email.To) || hasHeaderInjection(email.Subject) || hasHeaderInjection(email.UnsubscribeURL) {
+	if !validEmailHeaderValue(email.From) || !validEmailHeaderValue(email.To) || !validEmailHeaderValue(email.Subject) || !validEmailHeaderValue(email.UnsubscribeURL) {
 		return fmt.Errorf("email contains invalid header characters")
 	}
 	if strings.TrimSpace(email.Subject) == "" {
@@ -141,11 +148,9 @@ func validateEmail(email Email) error {
 	return nil
 }
 
-func hasHeaderInjection(s string) bool {
-	if strings.Contains(s, "\r") || strings.Contains(s, "\n") || strings.Contains(s, "\u2028") || strings.Contains(s, "\u2029") {
-		return true
+func validEmailHeaderValue(s string) bool {
+	if strings.Contains(s, "\u2028") || strings.Contains(s, "\u2029") {
+		return false
 	}
-	return strings.ContainsFunc(s, func(r rune) bool {
-		return r < 0x20 || r == 0x7f
-	})
+	return httpguts.ValidHeaderFieldValue(s)
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type Email struct {
@@ -28,6 +29,8 @@ type ResendClient struct {
 }
 
 const resendAPIURL = "https://api.resend.com/emails"
+
+const resendHTTPTimeout = 10 * time.Second
 
 type resendEmailPayload struct {
 	From    string              `json:"from"`
@@ -53,7 +56,11 @@ func NewResendClientWithHTTPClient(apiKey string, client *http.Client) *ResendCl
 		return nil
 	}
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: resendHTTPTimeout}
+	} else if client.Timeout <= 0 {
+		copy := *client
+		copy.Timeout = resendHTTPTimeout
+		client = &copy
 	}
 	return &ResendClient{
 		apiKey: apiKey,

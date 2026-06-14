@@ -9,6 +9,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
+const minResendAPIKeyLength = 16
+
 const (
 	defaultEmailFrom      = "Darkbloom <providers@darkbloom.dev>"
 	defaultCheckInterval  = 5 * time.Minute
@@ -38,7 +40,16 @@ type EmailConfig struct {
 }
 
 func validResendAPIKey(key string) bool {
-	return key != "" && strings.HasPrefix(key, "re_") && !strings.ContainsAny(key, " \t\r\n")
+	if len(key) < minResendAPIKeyLength || !strings.HasPrefix(key, "re_") {
+		return false
+	}
+	for _, c := range key[len("re_"):] {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func ReadConfig() Config {

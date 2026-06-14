@@ -118,18 +118,7 @@ func trustRank(level registry.TrustLevel) int {
 }
 
 func semverLess(a, b string) bool {
-	a = normalizeSemver(a)
-	b = normalizeSemver(b)
-	return semver.IsValid(a) && semver.IsValid(b) && semver.Compare(a, b) < 0
-}
-
-func normalizeSemver(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return ""
-	}
-	if !strings.HasPrefix(v, "v") {
-		v = "v" + v
-	}
-	return v
+	a = "v" + strings.TrimPrefix(strings.TrimSpace(a), "v")
+	b = "v" + strings.TrimPrefix(strings.TrimSpace(b), "v")
+	return a != "v" && b != "v" && semver.IsValid(a) && semver.IsValid(b) && semver.Compare(a, b) < 0
 }

@@ -67,6 +67,14 @@ func (c *ttlCache) PurgeExpired() {
 	c.mu.Unlock()
 }
 
+// Len returns the number of entries currently held (including not-yet-purged
+// expired ones). Used by the janitor's tests to observe reclamation.
+func (c *ttlCache) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.data)
+}
+
 // writeCachedJSON writes pre-serialized JSON bytes with the standard
 // Content-Type header. Used on cache hit to skip json.Marshal.
 func writeCachedJSON(w http.ResponseWriter, body []byte) {

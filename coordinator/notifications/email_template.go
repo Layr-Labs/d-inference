@@ -6,6 +6,21 @@ import (
 	"strings"
 )
 
+func buildProviderAlertEmail(from, to, name string, reasons []AlertReason, consoleURL, unsubscribeURL string) Email {
+	subject := fmt.Sprintf("Action needed: %s needs attention on Darkbloom", name)
+	if len(reasons) == 1 && reasons[0].Key == alertReasonOffline {
+		subject = fmt.Sprintf("Action needed: %s is offline on Darkbloom", name)
+	}
+	return Email{
+		From:           from,
+		To:             to,
+		Subject:        subject,
+		Text:           buildTextEmail(name, reasons, consoleURL),
+		HTML:           buildHTMLEmail(name, reasons, consoleURL),
+		UnsubscribeURL: unsubscribeURL,
+	}
+}
+
 func buildTextEmail(name string, reasons []AlertReason, consoleURL string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s needs attention on Darkbloom.\n\n", name)

@@ -21,17 +21,9 @@ const (
 )
 
 type Config struct {
-	Enabled bool
-	Email   EmailConfig
-	Alerts  AlertConfig
-}
-
-type EmailConfig struct {
-	APIKey string
-	From   string
-}
-
-type AlertConfig struct {
+	Enabled            bool
+	APIKey             string
+	From               string
 	ConsoleURL         string
 	UnsubscribeURL     string
 	CheckInterval      time.Duration
@@ -58,18 +50,14 @@ func ReadConfig() Config {
 		consoleURL += defaultConsolePath
 	}
 	cfg := Config{
-		Enabled: true,
-		Email: EmailConfig{
-			APIKey: apiKey,
-			From:   env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
-		},
-		Alerts: AlertConfig{
-			ConsoleURL:         consoleURL,
-			UnsubscribeURL:     env.EnvOr(env.EnvPrefix+"_EMAIL_UNSUBSCRIBE_URL", defaultUnsubscribeURL),
-			CheckInterval:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHECK_SECONDS", int(defaultCheckInterval.Seconds()))) * time.Second,
-			AlertCooldown:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_COOLDOWN_HOURS", int(defaultAlertCooldown.Hours()))) * time.Hour,
-			MinProviderVersion: strings.TrimSpace(os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION")),
-		},
+		Enabled:            true,
+		APIKey:             apiKey,
+		From:               env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
+		ConsoleURL:         consoleURL,
+		UnsubscribeURL:     env.EnvOr(env.EnvPrefix+"_EMAIL_UNSUBSCRIBE_URL", defaultUnsubscribeURL),
+		CheckInterval:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHECK_SECONDS", int(defaultCheckInterval.Seconds()))) * time.Second,
+		AlertCooldown:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_COOLDOWN_HOURS", int(defaultAlertCooldown.Hours()))) * time.Hour,
+		MinProviderVersion: strings.TrimSpace(os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION")),
 	}
 	if err := cfg.Check(); err != nil {
 		return Config{Enabled: false}
@@ -78,14 +66,14 @@ func ReadConfig() Config {
 }
 
 func (c Config) WithDefaults() Config {
-	if c.Email.From == "" {
-		c.Email.From = defaultEmailFrom
+	if c.From == "" {
+		c.From = defaultEmailFrom
 	}
-	if c.Alerts.CheckInterval <= 0 {
-		c.Alerts.CheckInterval = defaultCheckInterval
+	if c.CheckInterval <= 0 {
+		c.CheckInterval = defaultCheckInterval
 	}
-	if c.Alerts.AlertCooldown <= 0 {
-		c.Alerts.AlertCooldown = defaultAlertCooldown
+	if c.AlertCooldown <= 0 {
+		c.AlertCooldown = defaultAlertCooldown
 	}
 	return c
 }
@@ -94,13 +82,13 @@ func (c Config) Check() error {
 	if !c.Enabled {
 		return nil
 	}
-	if strings.TrimSpace(c.Email.APIKey) == "" {
+	if strings.TrimSpace(c.APIKey) == "" {
 		return fmt.Errorf("provider email service is not configured")
 	}
-	if _, ok := validatedResendAPIKey(c.Email.APIKey); !ok {
+	if _, ok := validatedResendAPIKey(c.APIKey); !ok {
 		return fmt.Errorf("provider email service configuration is invalid")
 	}
-	if strings.TrimSpace(c.Email.From) == "" {
+	if strings.TrimSpace(c.From) == "" {
 		return fmt.Errorf("provider email sender is not configured")
 	}
 	return nil

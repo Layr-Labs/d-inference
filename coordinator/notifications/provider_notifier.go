@@ -2,7 +2,6 @@ package notifications
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -78,8 +77,8 @@ func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, log
 	}
 	if sender != nil {
 		notifier.sender = sender
-	} else if cfg.Email.APIKey != "" {
-		if client, err := NewResendClient(cfg.Email.APIKey); err != nil {
+	} else if cfg.APIKey != "" {
+		if client, err := NewResendClient(cfg.APIKey); err != nil {
 			logger.Warn("provider email notifications enabled but email client configuration is invalid")
 		} else {
 			notifier.sender = client
@@ -96,7 +95,7 @@ func (n *ProviderNotifier) Start(ctx context.Context) {
 		n.logger.Warn("provider email notifications enabled but no email client configured")
 		return
 	}
-	ticker := time.NewTicker(n.cfg.Alerts.CheckInterval)
+	ticker := time.NewTicker(n.cfg.CheckInterval)
 	saferun.Go(n.logger, "providerEmailNotifier", func() {
 		defer ticker.Stop()
 		for {
@@ -219,7 +218,7 @@ func (n *ProviderNotifier) notificationTargets(ctx context.Context) ([]store.Pro
 func (n *ProviderNotifier) notificationsDue(ctx context.Context, checks []store.ProviderNotificationCheck) (store.ProviderNotificationDueSet, bool) {
 	storeCtx, cancel := context.WithTimeout(ctx, storeOperationTimeout)
 	defer cancel()
-	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks, n.cfg.Alerts.AlertCooldown)
+	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks, n.cfg.AlertCooldown)
 	if err != nil {
 		n.logger.Warn("provider notifications: cooldown lookup failed", "error", err)
 		return nil, false
@@ -254,7 +253,7 @@ func (n *ProviderNotifier) sendDue(
 	if len(due) == 0 {
 		return nil
 	}
-	email := n.buildEmail(to, state, due)
+	email := buildProviderAlertEmail(n.cfg.From, to, providerDisplayName(state), due, n.cfg.ConsoleURL, n.cfg.UnsubscribeURL)
 	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
 	if err := n.sender.Send(sendCtx, email); err != nil {
@@ -275,25 +274,7 @@ func (n *ProviderNotifier) sendDue(
 
 func (n *ProviderNotifier) healthAssessor() providerHealthAssessor {
 	return providerHealthAssessor{
-		minProviderVersion: n.cfg.Alerts.MinProviderVersion,
+		minProviderVersion: n.cfg.MinProviderVersion,
 		minTrustLevel:      n.registry.MinTrustLevel,
-	}
-}
-
-func (n *ProviderNotifier) buildEmail(to string, p providerState, reasons []AlertReason) Email {
-	name := providerDisplayName(p)
-	subject := fmt.Sprintf("Action needed: %s needs attention on Darkbloom", name)
-	if len(reasons) == 1 && reasons[0].Key == alertReasonOffline {
-		subject = fmt.Sprintf("Action needed: %s is offline on Darkbloom", name)
-	}
-	text := buildTextEmail(name, reasons, n.cfg.Alerts.ConsoleURL)
-	htmlBody := buildHTMLEmail(name, reasons, n.cfg.Alerts.ConsoleURL)
-	return Email{
-		From:           n.cfg.Email.From,
-		To:             to,
-		Subject:        subject,
-		Text:           text,
-		HTML:           htmlBody,
-		UnsubscribeURL: n.cfg.Alerts.UnsubscribeURL,
 	}
 }

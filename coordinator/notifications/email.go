@@ -31,7 +31,10 @@ type ResendClient struct {
 	client *http.Client
 }
 
-const resendAPIURL = "https://api.resend.com/emails"
+const (
+	resendAPIURL                 = "https://api.resend.com/emails"
+	maxAuthorizationHeaderLength = 4096
+)
 
 type resendEmailPayload struct {
 	From    string              `json:"from"`
@@ -109,7 +112,7 @@ func resendAuthorization(apiKey string) (string, error) {
 		return "", fmt.Errorf("email service configuration is invalid")
 	}
 	authorization := "Bearer " + apiKey
-	if !httpguts.ValidHeaderFieldValue(authorization) {
+	if len(authorization) > maxAuthorizationHeaderLength || !httpguts.ValidHeaderFieldValue(authorization) {
 		return "", fmt.Errorf("email service configuration is invalid")
 	}
 	return authorization, nil

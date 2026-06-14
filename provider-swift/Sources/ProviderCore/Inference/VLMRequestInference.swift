@@ -100,6 +100,37 @@ public enum VLMRequestInference {
     /// `.content` chunks during generation, then a final `.info` carrying
     /// token counts and timing. Inline-video temp files are removed when
     /// the stream ends (normal completion, error, or cancellation).
+    /// Validate all inline media for a request UP FRONT, throwing `MediaError`
+    /// synchronously on any oversized/malformed/non-`data:` payload (or video-cap
+    /// violation). Callers MUST call this (and propagate the throw) BEFORE
+    /// returning a streaming response, so the correct 4xx is surfaced instead of
+    /// a 200 SSE body that only errors mid-iteration — `stream` builds its own
+    /// `UserInput` inside the generation task (UserInput isn't Sendable, so it
+    /// can't cross the task boundary), which is why validation is a separate
+    /// pass here rather than handing the decoded input through.
+    ///
+    /// This runs the same decode path as `stream` (`buildUserInput`) purely for
+    /// its throwing side-effects and discards the result; any inline-video temp
+    /// file it writes is removed before returning. The decode work is bounded by
+    /// the very caps it enforces (≤ per-image / aggregate pixels, ≤ byte cap), so
+    /// the up-front pass can't itself be a DoS, and the eventual rebuild inside
+    /// `stream` re-validates identically.
+    public static func validateMedia(
+        _ request: OpenAIChatCompletionRequest,
+        maxImagePixels: Int = Self.maxImagePixels,
+        maxRequestImagePixels: Int = Self.maxRequestImagePixels,
+        maxVideosPerRequest: Int = Self.maxVideosPerRequest,
+        maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
+    ) async throws {
+        var tempFiles: [URL] = []
+        defer { for url in tempFiles { try? FileManager.default.removeItem(at: url) } }
+        _ = try await buildUserInput(
+            from: request, tempFiles: &tempFiles, maxImagePixels: maxImagePixels,
+            maxRequestImagePixels: maxRequestImagePixels,
+            maxVideosPerRequest: maxVideosPerRequest,
+            maxRequestVideoFramePixels: maxRequestVideoFramePixels)
+    }
+
     public static func stream(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
@@ -108,7 +139,11 @@ public enum VLMRequestInference {
         AsyncThrowingStream { continuation in
             let task = Task {
                 // Inline `data:` videos are materialized to temp files for
-                // AVFoundation; track them so we can clean up on exit.
+                // AVFoundation; track them so we can clean up on exit. Media was
+                // already validated up front by `validateMedia` (so an oversized
+                // payload surfaced its 4xx before this stream was returned); the
+                // rebuild here re-runs the same decode to produce the UserInput
+                // (which isn't Sendable and so can't cross the task boundary).
                 var tempFiles: [URL] = []
                 defer {
                     for url in tempFiles {

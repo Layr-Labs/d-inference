@@ -224,3 +224,33 @@ func vlmBuildUserInputRejectsAggregateBombBeforeDecode() async {
             from: request, maxImagePixels: 8_000_000, maxRequestImagePixels: 5_000_000)
     }
 }
+
+@Test("validateMedia throws MediaError synchronously (before any stream is returned)")
+func vlmValidateMediaThrowsUpFront() async {
+    // The streaming HTTP path (sseResponse) returns a 200 SSE Response and only
+    // surfaces a generation error mid-iteration — too late for a 4xx. So the
+    // engine calls validateMedia(request) and propagates its throw BEFORE
+    // returning the stream. This asserts validateMedia actually throws on an
+    // oversized payload, so the engine's `try await` surfaces the MediaError to
+    // the HTTP/WS layer. Uses a small (fast-to-generate) bomb + a low injected
+    // cap rather than a real >100 Mpx image.
+    let uri = PNGBomb.dataURI(width: 2000, height: 2000)  // 4 Mpx
+    let request = OpenAIChatCompletionRequest(
+        model: "vlm",
+        messages: [.init(role: .user, content: .parts([.imageURL(uri)]))])
+    await expectMediaTooLarge {
+        try await VLMRequestInference.validateMedia(request, maxImagePixels: 1_000_000)
+    }
+}
+
+@Test("validateMedia passes a within-cap request (no false positive)")
+func vlmValidateMediaAcceptsWithinCap() async throws {
+    // A normal small image must validate cleanly so genuine requests aren't
+    // rejected before they ever reach generation.
+    let request = OpenAIChatCompletionRequest(
+        model: "vlm",
+        messages: [.init(role: .user, content: .parts([
+            .text("describe"), .imageURL(PNGBomb.dataURI(width: 64, height: 64)),
+        ]))])
+    try await VLMRequestInference.validateMedia(request)
+}

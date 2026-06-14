@@ -726,6 +726,17 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Partial index over still-open sessions — speeds the online-now count and
 		// the startup reconcile. (session_id lookups use the UNIQUE index.)
 		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_open ON provider_sessions(connected_at) WHERE disconnected_at IS NULL`,
+
+		// Provider owner notifications — one cooldown row per machine/reason to
+		// avoid repeatedly emailing owners for the same outage or setup issue.
+		`CREATE TABLE IF NOT EXISTS provider_notifications (
+			provider_id TEXT NOT NULL,
+			account_id TEXT NOT NULL DEFAULT '',
+			reason_key TEXT NOT NULL,
+			last_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (provider_id, reason_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_notifications_account ON provider_notifications(account_id, last_sent_at DESC)`,
 	}
 
 	for _, m := range migrations {
@@ -3721,4 +3732,42 @@ func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefo
 		return 0, fmt.Errorf("store: close open provider sessions: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+func (s *PostgresStore) ProviderNotificationDue(ctx context.Context, providerID, accountID, reasonKey string, cooldown time.Duration) (bool, error) {
+	if providerID == "" || accountID == "" || reasonKey == "" {
+		return false, nil
+	}
+	var lastSent time.Time
+	err := s.pool.QueryRow(ctx,
+		`SELECT last_sent_at
+		   FROM provider_notifications
+		  WHERE provider_id = $1 AND reason_key = $2`,
+		providerID, reasonKey,
+	).Scan(&lastSent)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return true, nil
+		}
+		return false, fmt.Errorf("store: provider notification lookup: %w", err)
+	}
+	return time.Since(lastSent) >= cooldown, nil
+}
+
+func (s *PostgresStore) RecordProviderNotificationSent(ctx context.Context, providerID, accountID, reasonKey string, sentAt time.Time) error {
+	if providerID == "" || accountID == "" || reasonKey == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_notifications (provider_id, account_id, reason_key, last_sent_at)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (provider_id, reason_key) DO UPDATE
+		    SET account_id = EXCLUDED.account_id,
+		        last_sent_at = EXCLUDED.last_sent_at`,
+		providerID, accountID, reasonKey, sentAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record provider notification: %w", err)
+	}
+	return nil
 }

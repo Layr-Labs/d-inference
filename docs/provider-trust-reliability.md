@@ -114,6 +114,23 @@ confirmation (is the ingress actually terminating mTLS? is step-ca issuing on
 this path?). This change only makes the dormant-vs-active state observable so
 activation can be validated.
 
+> **SECURITY GATE — do NOT activate ACME without this.** Today `applyACMETrust`
+> grants `hardware` on (a) the cert chaining to the step-ca root and (b) the cert
+> key matching the attested SE key. It does **not** independently verify the
+> device's **SIP / Secure Boot** posture — it implicitly trusts step-ca's
+> issuance policy, and a cert's posture is *issuance-time*, not live. While ACME
+> is dormant this grants nothing, so it is not a live hole. But activating ACME
+> as-is would make `hardware` trust reachable with a *weaker* posture guarantee
+> than MDM SecurityInfo (the exact privacy invariant the gate exists to protect:
+> real traffic only to genuinely SIP-on / Secure-Boot-full hardware). Before
+> activation, `extractAndVerifyClientCert`/`applyACMETrust` MUST **fail closed**
+> unless the cert's Apple device-attest extensions assert SIP enabled + Secure
+> Boot full (OIDs `1.2.840.113635.100.8.13.*`, parsed by `attestation/mda.go`),
+> **and** the certs must be short-lived / re-attested per connection so the
+> posture is fresh (a long-lived cert lets a box that later disables Secure Boot
+> keep presenting an "all good" cert). Implement that OID posture check as step 1
+> of activation, with a test, before wiring step-ca + ingress mTLS.
+
 To validate activation once wired: watch `acme.client_cert{outcome:present_valid}`
 climb (certs are reaching us and verifying) and `acme.trust{outcome:granted}`
 follow (those certs are upgrading providers to hardware). See §6.

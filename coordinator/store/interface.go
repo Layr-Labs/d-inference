@@ -1097,10 +1097,12 @@ type ProviderNotificationTarget struct {
 	Email    string         `json:"email"`
 }
 
+type ProviderNotificationReasonKey string
+
 type ProviderNotificationCheck struct {
 	ProviderID string
 	AccountID  string
-	ReasonKey  string
+	ReasonKey  ProviderNotificationReasonKey
 }
 
 // ProviderSession is one connect→disconnect lifecycle of a provider machine.

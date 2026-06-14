@@ -7,7 +7,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"golang.org/x/mod/semver"
 )
 
 func providerStateFrom(rec store.ProviderRecord, live *registry.Provider) providerState {
@@ -119,10 +118,4 @@ func trustRank(level registry.TrustLevel) int {
 	default:
 		return 0
 	}
-}
-
-func semverLess(a, b string) bool {
-	a = "v" + strings.TrimPrefix(strings.TrimSpace(a), "v")
-	b = "v" + strings.TrimPrefix(strings.TrimSpace(b), "v")
-	return a != "v" && b != "v" && semver.IsValid(a) && semver.IsValid(b) && semver.Compare(a, b) < 0
 }

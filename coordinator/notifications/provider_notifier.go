@@ -4,22 +4,32 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"golang.org/x/mod/semver"
 )
 
-const (
-	providerHeartbeatTimeout = 90 * time.Second
-	challengeMaxAge          = 6 * time.Minute
-	checkOperationTimeout    = 5 * time.Minute
-	storeOperationTimeout    = 10 * time.Second
-	emailSendTimeout         = 5 * time.Second
-	maxProviderAlertReasons  = 7
-	maxProviderAlertTargets  = 1000
-)
+var providerNotificationRuntime = struct {
+	heartbeatTimeout      time.Duration
+	challengeMaxAge       time.Duration
+	checkOperationTimeout time.Duration
+	storeOperationTimeout time.Duration
+	emailSendTimeout      time.Duration
+	maxReasons            int
+	maxTargets            int
+}{
+	heartbeatTimeout:      90 * time.Second,
+	challengeMaxAge:       6 * time.Minute,
+	checkOperationTimeout: 5 * time.Minute,
+	storeOperationTimeout: 10 * time.Second,
+	emailSendTimeout:      5 * time.Second,
+	maxReasons:            7,
+	maxTargets:            1000,
+}
 
 type ProviderNotifier struct {
 	registry *registry.Registry
@@ -35,6 +45,8 @@ type providerAlertCandidate struct {
 	stableKey string
 	reasons   []AlertReason
 }
+
+type ProviderNotifierOption func(*ProviderNotifier)
 
 type AlertReason struct {
 	Key    AlertReasonKey
@@ -55,6 +67,20 @@ const (
 	alertReasonTrustBelowMinimum AlertReasonKey = "trust_below_minimum"
 )
 
+func (k AlertReasonKey) valid() bool {
+	switch k {
+	case alertReasonOffline,
+		alertReasonVersionBelowMin,
+		alertReasonRuntimeUnverified,
+		alertReasonThermalCritical,
+		alertReasonChallengeStale,
+		alertReasonUntrusted,
+		alertReasonTrustBelowMinimum:
+		return true
+	}
+	return false
+}
+
 type providerState struct {
 	id                    string
 	accountID             string
@@ -70,25 +96,27 @@ type providerState struct {
 	online                bool
 }
 
-func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger) *ProviderNotifier {
-	cfg = cfg.WithDefaults()
-	return newProviderNotifier(reg, st, cfg, logger, resendSender(cfg.Email.APIKey))
-}
-
-func NewProviderNotifierWithEmail(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, send func(context.Context, Email) error) *ProviderNotifier {
-	return newProviderNotifier(reg, st, cfg, logger, send)
-}
-
-func newProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, send func(context.Context, Email) error) *ProviderNotifier {
+func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, opts ...ProviderNotifierOption) *ProviderNotifier {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &ProviderNotifier{
+	cfg = cfg.WithDefaults()
+	notifier := &ProviderNotifier{
 		registry: reg,
 		store:    st,
-		send:     send,
-		cfg:      cfg.WithDefaults(),
+		send:     resendSender(cfg.Email.APIKey),
+		cfg:      cfg,
 		logger:   logger,
+	}
+	for _, opt := range opts {
+		opt(notifier)
+	}
+	return notifier
+}
+
+func WithProviderNotificationSender(send func(context.Context, Email) error) ProviderNotifierOption {
+	return func(n *ProviderNotifier) {
+		n.send = send
 	}
 }
 
@@ -137,45 +165,34 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, checkOperationTimeout)
+	checkCtx, cancel := context.WithTimeout(ctx, providerNotificationRuntime.checkOperationTimeout)
 	defer cancel()
-	storeCtx, storeCancel := context.WithTimeout(checkCtx, storeOperationTimeout)
+	storeCtx, storeCancel := context.WithTimeout(checkCtx, providerNotificationRuntime.storeOperationTimeout)
 	targets, err := n.store.ListProviderNotificationTargets(storeCtx)
 	storeCancel()
 	if err != nil {
 		n.logger.Warn("provider notifications: list provider targets failed", "error", err)
 		return
 	}
-	candidates := n.alertCandidates(targets)
-	if len(candidates) == 0 {
+	if len(targets) > providerNotificationRuntime.maxTargets {
+		targets = targets[:providerNotificationRuntime.maxTargets]
+	}
+	candidates, checks := n.alertCandidates(targets)
+	if len(checks) == 0 {
 		return
 	}
-	if len(candidates) > maxProviderAlertTargets {
-		candidates = candidates[:maxProviderAlertTargets]
-	}
-	checkCapacity := len(candidates) * maxProviderAlertReasons
-	checks := make([]store.ProviderNotificationCheck, 0, checkCapacity)
-	for _, candidate := range candidates {
-		for _, reason := range candidate.reasons {
-			checks = append(checks, store.ProviderNotificationCheck{
-				ProviderID: candidate.stableKey,
-				AccountID:  candidate.state.accountID,
-				ReasonKey:  string(reason.Key),
-			})
-		}
-	}
-	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
+	storeCtx, storeCancel = context.WithTimeout(checkCtx, providerNotificationRuntime.storeOperationTimeout)
 	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks, n.cfg.AlertCooldown)
 	storeCancel()
 	if err != nil {
 		n.logger.Warn("provider notifications: cooldown lookup failed", "error", err)
 		return
 	}
-	sent := make([]store.ProviderNotificationCheck, 0, len(checks))
+	sent := make([]store.ProviderNotificationCheck, 0, cap(checks))
 	for _, candidate := range candidates {
 		sent = append(sent, n.sendDue(checkCtx, candidate, dueByCheck)...)
 	}
-	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
+	storeCtx, storeCancel = context.WithTimeout(checkCtx, providerNotificationRuntime.storeOperationTimeout)
 	err = n.store.RecordProviderNotificationsSent(storeCtx, sent, time.Now())
 	storeCancel()
 	if err != nil {
@@ -183,12 +200,11 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	}
 }
 
-func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationTarget) []providerAlertCandidate {
-	if len(targets) > maxProviderAlertTargets {
-		targets = targets[:maxProviderAlertTargets]
-	}
+func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationTarget) ([]providerAlertCandidate, []store.ProviderNotificationCheck) {
 	candidateCapacity := len(targets)
 	candidates := make([]providerAlertCandidate, 0, candidateCapacity)
+	checkCapacity := candidateCapacity * providerNotificationRuntime.maxReasons
+	checks := make([]store.ProviderNotificationCheck, 0, checkCapacity)
 	seen := make(map[string]struct{}, len(targets))
 	for _, target := range targets {
 		rec := target.Provider
@@ -210,21 +226,34 @@ func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationT
 			stableKey: stableKey,
 			reasons:   reasons,
 		})
+		for _, reason := range reasons {
+			if !reason.Key.valid() {
+				continue
+			}
+			checks = append(checks, store.ProviderNotificationCheck{
+				ProviderID: stableKey,
+				AccountID:  state.accountID,
+				ReasonKey:  store.ProviderNotificationReasonKey(reason.Key),
+			})
+		}
 		seen[stableKey] = struct{}{}
 	}
-	return candidates
+	return candidates, checks
 }
 
 func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertCandidate, dueByCheck store.ProviderNotificationDueSet) []store.ProviderNotificationCheck {
 	due := make([]AlertReason, 0, len(candidate.reasons))
 	sent := make([]store.ProviderNotificationCheck, 0, len(candidate.reasons))
 	for _, reason := range candidate.reasons {
+		if !reason.Key.valid() {
+			continue
+		}
 		check := store.ProviderNotificationCheck{
 			ProviderID: candidate.stableKey,
 			AccountID:  candidate.state.accountID,
-			ReasonKey:  string(reason.Key),
+			ReasonKey:  store.ProviderNotificationReasonKey(reason.Key),
 		}
-		if dueByCheck[check] {
+		if dueByCheck.Contains(check) {
 			due = append(due, reason)
 			sent = append(sent, check)
 		}
@@ -233,7 +262,7 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 		return nil
 	}
 	email := n.buildEmail(candidate.email, candidate.state, due)
-	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
+	sendCtx, cancel := context.WithTimeout(ctx, providerNotificationRuntime.emailSendTimeout)
 	defer cancel()
 	if err := n.send(sendCtx, email); err != nil {
 		n.logger.Warn("provider notifications: email send failed",
@@ -252,8 +281,8 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 }
 
 func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason {
-	out := make([]AlertReason, 0, maxProviderAlertReasons)
-	if !p.online && now.Sub(p.lastSeen) >= providerHeartbeatTimeout {
+	out := make([]AlertReason, 0, providerNotificationRuntime.maxReasons)
+	if !p.online && now.Sub(p.lastSeen) >= providerNotificationRuntime.heartbeatTimeout {
 		out = append(out, AlertReason{
 			Key:    alertReasonOffline,
 			Title:  "Machine offline",
@@ -261,7 +290,9 @@ func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason
 			Action: "Start the provider with `darkbloom start` or check the machine/network.",
 		})
 	}
-	if n.cfg.MinProviderVersion != "" && p.version != "" && semverLess(p.version, n.cfg.MinProviderVersion) {
+	providerVersion := semverCanonical(p.version)
+	minVersion := semverCanonical(n.cfg.MinProviderVersion)
+	if providerVersion != "" && minVersion != "" && semver.Compare(providerVersion, minVersion) < 0 {
 		out = append(out, AlertReason{
 			Key:    alertReasonVersionBelowMin,
 			Title:  "Provider update required",
@@ -285,7 +316,7 @@ func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason
 			Action: "Cool the machine and make sure it has adequate ventilation.",
 		})
 	}
-	if p.online && p.lastChallengeVerified != nil && p.status != registry.StatusUntrusted && now.Sub(*p.lastChallengeVerified) > challengeMaxAge {
+	if p.online && p.lastChallengeVerified != nil && p.status != registry.StatusUntrusted && now.Sub(*p.lastChallengeVerified) > providerNotificationRuntime.challengeMaxAge {
 		out = append(out, AlertReason{
 			Key:    alertReasonChallengeStale,
 			Title:  "Attestation challenge stale",
@@ -327,4 +358,12 @@ func (n *ProviderNotifier) buildEmail(to string, p providerState, reasons []Aler
 		HTML:           htmlBody,
 		UnsubscribeURL: n.cfg.UnsubscribeURL,
 	}
+}
+
+func semverCanonical(v string) string {
+	v = "v" + strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if v == "v" || !semver.IsValid(v) {
+		return ""
+	}
+	return v
 }

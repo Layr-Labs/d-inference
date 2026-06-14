@@ -28,8 +28,6 @@ type ResendClient struct {
 
 const resendAPIURL = "https://api.resend.com/emails"
 
-const resendHTTPTimeout = 10 * time.Second
-
 type resendEmailPayload struct {
 	From    string              `json:"from"`
 	To      []string            `json:"to"`
@@ -51,7 +49,7 @@ func NewResendClient(apiKey string) *ResendClient {
 	}
 	return &ResendClient{
 		apiKey: apiKey,
-		client: &http.Client{Timeout: resendHTTPTimeout},
+		client: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -100,7 +98,7 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 }
 
 func validateEmail(email Email) error {
-	if hasHeaderControls(email.From) || hasHeaderControls(email.To) || hasHeaderControls(email.Subject) || hasHeaderControls(email.UnsubscribeURL) {
+	if hasHeaderInjection(email.From) || hasHeaderInjection(email.To) || hasHeaderInjection(email.Subject) || hasHeaderInjection(email.UnsubscribeURL) {
 		return fmt.Errorf("email contains invalid header characters")
 	}
 	if strings.TrimSpace(email.Subject) == "" {
@@ -115,14 +113,17 @@ func validateEmail(email Email) error {
 	}
 	if email.UnsubscribeURL != "" {
 		u, err := url.Parse(email.UnsubscribeURL)
-		if err != nil || u.Scheme != "https" || u.Host == "" {
+		if err != nil || u.Scheme != "https" || u.Host == "" || strings.ContainsAny(email.UnsubscribeURL, "<>,") {
 			return fmt.Errorf("email unsubscribe url is invalid")
 		}
 	}
 	return nil
 }
 
-func hasHeaderControls(s string) bool {
+func hasHeaderInjection(s string) bool {
+	if strings.Contains(s, "\r") || strings.Contains(s, "\n") || strings.Contains(s, "\u2028") || strings.Contains(s, "\u2029") {
+		return true
+	}
 	return strings.ContainsFunc(s, func(r rune) bool {
 		return r < 0x20 || r == 0x7f
 	})

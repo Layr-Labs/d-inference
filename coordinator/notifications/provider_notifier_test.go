@@ -39,7 +39,7 @@ func TestProviderNotifierSendsOfflineAlertOncePerCooldown(t *testing.T) {
 	}
 
 	email := &captureEmailClient{}
-	notifier := NewProviderNotifierWithEmail(
+	notifier := NewProviderNotifier(
 		registry.New(testLogger()),
 		st,
 		Config{
@@ -50,7 +50,7 @@ func TestProviderNotifierSendsOfflineAlertOncePerCooldown(t *testing.T) {
 			AlertCooldown: 24 * time.Hour,
 		},
 		testLogger(),
-		email.Send,
+		WithProviderNotificationSender(email.Send),
 	)
 
 	notifier.Check(ctx)
@@ -91,7 +91,7 @@ func TestProviderNotifierSendsVersionAndMDMReasons(t *testing.T) {
 	email := &captureEmailClient{}
 	reg := registry.New(testLogger())
 	reg.MinTrustLevel = registry.TrustHardware
-	notifier := NewProviderNotifierWithEmail(
+	notifier := NewProviderNotifier(
 		reg,
 		st,
 		Config{
@@ -100,7 +100,7 @@ func TestProviderNotifierSendsVersionAndMDMReasons(t *testing.T) {
 			AlertCooldown:      24 * time.Hour,
 		},
 		testLogger(),
-		email.Send,
+		WithProviderNotificationSender(email.Send),
 	)
 
 	notifier.Check(ctx)

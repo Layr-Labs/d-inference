@@ -9,14 +9,20 @@ import (
 const (
 	providerNotificationTargetLimit    = 1000
 	providerNotificationTargetLookback = 30 * 24 * time.Hour
+	providerNotificationBatchSize      = 1000
 )
 
 type providerNotificationKey struct {
 	ProviderID string
-	ReasonKey  string
+	ReasonKey  ProviderNotificationReasonKey
 }
 
-type ProviderNotificationDueSet map[ProviderNotificationCheck]bool
+type ProviderNotificationDueSet map[ProviderNotificationCheck]struct{}
+
+func (s ProviderNotificationDueSet) Contains(check ProviderNotificationCheck) bool {
+	_, ok := s[check]
+	return ok
+}
 
 func providerNotificationStableKey(rec ProviderRecord) string {
 	if rec.SerialNumber != "" {
@@ -46,7 +52,7 @@ func compactProviderNotificationChecks(checks []ProviderNotificationCheck) []Pro
 	for _, check := range checks {
 		check.ProviderID = strings.TrimSpace(check.ProviderID)
 		check.AccountID = strings.TrimSpace(check.AccountID)
-		check.ReasonKey = strings.TrimSpace(check.ReasonKey)
+		check.ReasonKey = ProviderNotificationReasonKey(strings.TrimSpace(string(check.ReasonKey)))
 		if check.ProviderID == "" || check.AccountID == "" || check.ReasonKey == "" {
 			continue
 		}

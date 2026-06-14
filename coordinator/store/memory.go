@@ -2871,7 +2871,7 @@ func (s *MemoryStore) ProviderNotificationsDue(_ context.Context, checks []Provi
 	for _, check := range checks {
 		lastSent, ok := s.providerNotifications[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}]
 		if !ok || now.Sub(lastSent) >= cooldown {
-			due[check] = true
+			due[check] = struct{}{}
 		}
 	}
 	return due, nil

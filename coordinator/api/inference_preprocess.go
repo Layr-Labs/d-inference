@@ -13,10 +13,23 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 )
+
+// maxInferenceBodyBytes caps the plaintext inference request body. Without it
+// the common (non-sealed) path does io.ReadAll(r.Body) with no limit, so any
+// API-key holder could POST a multi-GB body and OOM the coordinator (the trusted
+// TEE component).
+//
+// Sized to the first-party UI's per-message image limit so legitimate multimodal
+// requests aren't rejected: MAX_IMAGES_PER_MESSAGE (4) × MAX_IMAGE_BYTES (10 MB)
+// = 40 MB raw ≈ 53 MiB after base64 inflation, plus JSON/text overhead — see
+// console-ui/src/lib/image-upload.ts. (The sealed E2E path enforces its own
+// 16 MiB cap in sender_encryption.go; this is the plaintext image path.)
+const maxInferenceBodyBytes = 64 << 20 // 64 MiB
 
 // inferencePrelude carries the parsed request shape produced by the shared
 // prelude: the (tool-schema-normalized) raw body and its parsed map, plus the
@@ -36,8 +49,17 @@ type inferencePrelude struct {
 func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (inferencePrelude, bool) {
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.
+	// Cap it first: io.ReadAll would otherwise buffer an unbounded body and a
+	// multi-GB POST would OOM the coordinator.
+	r.Body = http.MaxBytesReader(w, r.Body, maxInferenceBodyBytes)
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
+				fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
+			return inferencePrelude{}, false
+		}
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read request body"))
 		return inferencePrelude{}, false
 	}

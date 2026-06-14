@@ -3385,8 +3385,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			registered_at, last_seen
-		 FROM providers ORDER BY last_seen DESC LIMIT $1`,
-		providerRecordListLimit,
+		 FROM providers ORDER BY last_seen DESC LIMIT 10000`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list providers: %w", err)
@@ -3811,7 +3810,9 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 	}
 	byKey := make(map[providerNotificationKey]ProviderNotificationCheck, len(checks))
 	providerIDs := make([]string, 0, len(checks))
-	reasonKeys := make([]string, 0, len(checks))
+	reasonKeys := make([]string, 0, maxProviderNotificationReasonKeys)
+	seenProviderIDs := make(map[string]struct{}, len(checks))
+	seenReasonKeys := make(map[string]struct{}, maxProviderNotificationReasonKeys)
 	for _, check := range checks {
 		providerID, _, reasonKey, ok := check.DBValues()
 		if !ok {
@@ -3819,8 +3820,14 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		}
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
 		due[check] = struct{}{}
-		providerIDs = append(providerIDs, providerID)
-		reasonKeys = append(reasonKeys, reasonKey)
+		if _, ok := seenProviderIDs[providerID]; !ok {
+			seenProviderIDs[providerID] = struct{}{}
+			providerIDs = append(providerIDs, providerID)
+		}
+		if _, ok := seenReasonKeys[reasonKey]; !ok {
+			seenReasonKeys[reasonKey] = struct{}{}
+			reasonKeys = append(reasonKeys, reasonKey)
+		}
 	}
 	if len(providerIDs) == 0 {
 		return due, nil
@@ -3830,12 +3837,8 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 	rows, err := s.pool.Query(ctx,
 		`SELECT n.provider_id, n.reason_key, n.last_sent_at
 		   FROM provider_notifications n
-		  WHERE EXISTS (
-		        SELECT 1
-		          FROM unnest($1::text[], $2::text[]) AS input(provider_id, reason_key)
-		         WHERE input.provider_id = n.provider_id
-		           AND input.reason_key = n.reason_key
-		  )`,
+		  WHERE n.provider_id = ANY($1::text[])
+		    AND n.reason_key = ANY($2::text[])`,
 		providerIDs, reasonKeys,
 	)
 	if err != nil {

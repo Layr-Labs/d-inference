@@ -120,7 +120,7 @@ type MemoryStore struct {
 	providerSessionSeq int64
 
 	// Provider owner notification cooldowns
-	providerNotifications map[string]time.Time
+	providerNotifications map[providerNotificationKey]time.Time
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -167,7 +167,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
-		providerNotifications:         make(map[string]time.Time),
+		providerNotifications:         make(map[providerNotificationKey]time.Time),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{
@@ -2558,9 +2558,13 @@ func (s *MemoryStore) ListProviderNotificationTargets(_ context.Context) ([]Prov
 			loc := *p.Location
 			cp.Location = &loc
 		}
+		email, ok := normalizeNotificationEmail(user.Email)
+		if !ok {
+			continue
+		}
 		targets = append(targets, ProviderNotificationTarget{
 			Provider: cp,
-			Email:    strings.TrimSpace(user.Email),
+			Email:    email,
 		})
 	}
 	return targets, nil
@@ -2846,10 +2850,6 @@ func (s *MemoryStore) CloseOpenProviderSessions(_ context.Context, staleBefore t
 	return n, nil
 }
 
-func providerNotificationKey(providerID, reasonKey string) string {
-	return providerID + "\x00" + reasonKey
-}
-
 func (s *MemoryStore) ProviderNotificationsDue(_ context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (map[ProviderNotificationCheck]bool, error) {
 	checks = compactProviderNotificationChecks(checks)
 	due := make(map[ProviderNotificationCheck]bool, len(checks))
@@ -2860,7 +2860,7 @@ func (s *MemoryStore) ProviderNotificationsDue(_ context.Context, checks []Provi
 	defer s.mu.RUnlock()
 	now := time.Now()
 	for _, check := range checks {
-		lastSent, ok := s.providerNotifications[providerNotificationKey(check.ProviderID, check.ReasonKey)]
+		lastSent, ok := s.providerNotifications[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}]
 		due[check] = !ok || now.Sub(lastSent) >= cooldown
 	}
 	return due, nil
@@ -2874,25 +2874,9 @@ func (s *MemoryStore) RecordProviderNotificationsSent(_ context.Context, checks 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, check := range checks {
-		s.providerNotifications[providerNotificationKey(check.ProviderID, check.ReasonKey)] = sentAt
+		s.providerNotifications[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = sentAt
 	}
 	return nil
-}
-
-func compactProviderNotificationChecks(checks []ProviderNotificationCheck) []ProviderNotificationCheck {
-	out := make([]ProviderNotificationCheck, 0, len(checks))
-	seen := make(map[ProviderNotificationCheck]bool, len(checks))
-	for _, check := range checks {
-		check.ProviderID = strings.TrimSpace(check.ProviderID)
-		check.AccountID = strings.TrimSpace(check.AccountID)
-		check.ReasonKey = strings.TrimSpace(check.ReasonKey)
-		if check.ProviderID == "" || check.AccountID == "" || check.ReasonKey == "" || seen[check] {
-			continue
-		}
-		seen[check] = true
-		out = append(out, check)
-	}
-	return out
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.

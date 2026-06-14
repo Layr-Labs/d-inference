@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ const (
 type Config struct {
 	Enabled            bool
 	Provider           string
-	ResendAPIKey       string
+	ResendAPIKey       ResendAPIKey
 	From               string
 	ConsoleURL         string
 	UnsubscribeURL     string
@@ -29,15 +30,37 @@ type Config struct {
 	MinProviderVersion string
 }
 
-func ReadConfig() Config {
-	provider := strings.ToLower(strings.TrimSpace(os.Getenv(env.EnvPrefix + "_EMAIL_PROVIDER")))
-	resendKey := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
-	enabled := os.Getenv(env.EnvPrefix+"_PROVIDER_EMAIL_NOTIFICATIONS") == "true"
-	if provider == "" && resendKey != "" {
-		provider = "resend"
+type ResendAPIKey string
+
+func (k ResendAPIKey) Value() string {
+	return string(k)
+}
+
+func (k ResendAPIKey) String() string {
+	if k == "" {
+		return ""
 	}
-	if provider != "" && resendKey != "" {
-		enabled = true
+	return "[redacted]"
+}
+
+func (k ResendAPIKey) GoString() string {
+	return k.String()
+}
+
+func (k ResendAPIKey) LogValue() slog.Value {
+	return slog.StringValue(k.String())
+}
+
+func (k ResendAPIKey) Valid() bool {
+	v := k.Value()
+	return strings.HasPrefix(v, "re_") && !strings.ContainsAny(v, " \t\r\n")
+}
+
+func ReadConfig() Config {
+	resendKey := ResendAPIKey(strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY")))
+	provider := ""
+	if resendKey != "" {
+		provider = "resend"
 	}
 
 	consoleURL := strings.TrimRight(os.Getenv(env.EnvPrefix+"_CONSOLE_URL"), "/")
@@ -46,7 +69,7 @@ func ReadConfig() Config {
 	}
 
 	return Config{
-		Enabled:            enabled,
+		Enabled:            resendKey != "",
 		Provider:           provider,
 		ResendAPIKey:       resendKey,
 		From:               env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
@@ -78,10 +101,10 @@ func (c Config) Check() error {
 	if c.Provider != "resend" {
 		return fmt.Errorf("unsupported provider email service")
 	}
-	if strings.TrimSpace(c.ResendAPIKey) == "" {
+	if strings.TrimSpace(c.ResendAPIKey.Value()) == "" {
 		return fmt.Errorf("provider email service credentials are not configured")
 	}
-	if !strings.HasPrefix(strings.TrimSpace(c.ResendAPIKey), "re_") {
+	if !c.ResendAPIKey.Valid() {
 		return fmt.Errorf("provider email service credentials have an invalid format")
 	}
 	if strings.TrimSpace(c.From) == "" {

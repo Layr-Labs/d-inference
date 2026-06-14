@@ -8,8 +8,6 @@ blocked from routing.
 Set these coordinator environment variables:
 
 ```bash
-EIGENINFERENCE_PROVIDER_EMAIL_NOTIFICATIONS=true
-EIGENINFERENCE_EMAIL_PROVIDER=resend
 EIGENINFERENCE_RESEND_API_KEY=...
 EIGENINFERENCE_EMAIL_FROM='Darkbloom <providers@darkbloom.dev>'
 EIGENINFERENCE_CONSOLE_URL=https://console.darkbloom.dev

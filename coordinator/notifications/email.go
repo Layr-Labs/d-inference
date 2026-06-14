@@ -24,7 +24,7 @@ type EmailClient interface {
 }
 
 type ResendClient struct {
-	apiKey string
+	apiKey ResendAPIKey
 	client *http.Client
 }
 
@@ -39,7 +39,7 @@ type resendEmailPayload struct {
 
 func NewResendClient(apiKey string) *ResendClient {
 	return &ResendClient{
-		apiKey: strings.TrimSpace(apiKey),
+		apiKey: ResendAPIKey(strings.TrimSpace(apiKey)),
 		client: &http.Client{
 			Timeout:       10 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -72,7 +72,7 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey.Value())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {

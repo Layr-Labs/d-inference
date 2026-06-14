@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -3443,14 +3442,16 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 		 ORDER BY COALESCE(NULLIF(p.serial_number, ''),
 		                   NULLIF(p.se_public_key, ''),
 		                   p.id),
-		          p.last_seen DESC`,
+		          p.last_seen DESC
+		 LIMIT $1`,
+		providerNotificationTargetLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list provider notification targets: %w", err)
 	}
 	defer rows.Close()
 
-	targets := make([]ProviderNotificationTarget, 0)
+	targets := make([]ProviderNotificationTarget, 0, 256)
 	for rows.Next() {
 		var p ProviderRecord
 		var locationRaw []byte
@@ -3471,9 +3472,13 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 			continue
 		}
 		p.Location = unmarshalProviderLocation(locationRaw)
+		email, ok := normalizeNotificationEmail(email)
+		if !ok {
+			continue
+		}
 		targets = append(targets, ProviderNotificationTarget{
 			Provider: p,
-			Email:    strings.TrimSpace(email),
+			Email:    email,
 		})
 	}
 	return targets, nil

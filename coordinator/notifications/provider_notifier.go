@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -91,28 +90,25 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if n == nil || n.email == nil || n.store == nil || n.registry == nil {
 		return
 	}
-	records, err := n.store.ListProviderRecords(ctx)
+	targets, err := n.store.ListProviderNotificationTargets(ctx)
 	if err != nil {
-		n.logger.Warn("provider notifications: list providers failed", "error", err)
+		n.logger.Warn("provider notifications: list provider targets failed", "error", err)
 		return
 	}
-	for _, rec := range latestProviderRecords(records) {
-		if err := n.checkProvider(ctx, rec); err != nil {
+	for _, target := range latestProviderNotificationTargets(targets) {
+		if err := n.checkProvider(ctx, target); err != nil {
 			n.logger.Warn("provider notifications: provider check failed",
-				"provider_id", rec.ID,
-				"serial", rec.SerialNumber,
+				"provider_id", target.Provider.ID,
+				"serial", target.Provider.SerialNumber,
 				"error", err,
 			)
 		}
 	}
 }
 
-func (n *ProviderNotifier) checkProvider(ctx context.Context, rec store.ProviderRecord) error {
-	if rec.AccountID == "" {
-		return nil
-	}
-	user, err := n.store.GetUserByAccountID(rec.AccountID)
-	if err != nil || strings.TrimSpace(user.Email) == "" {
+func (n *ProviderNotifier) checkProvider(ctx context.Context, target store.ProviderNotificationTarget) error {
+	rec := target.Provider
+	if rec.AccountID == "" || target.Email == "" {
 		return nil
 	}
 	state := providerStateFromRecord(rec)
@@ -125,38 +121,35 @@ func (n *ProviderNotifier) checkProvider(ctx context.Context, rec store.Provider
 	}
 	var due []AlertReason
 	stableKey := notificationStableKey(rec)
+	dueByReason, err := n.store.ProviderNotificationsDue(ctx, stableKey, rec.AccountID, reasonKeys(reasons), n.cfg.AlertCooldown)
+	if err != nil {
+		return err
+	}
 	for _, reason := range reasons {
-		ok, err := n.store.ProviderNotificationDue(ctx, stableKey, rec.AccountID, reason.Key, n.cfg.AlertCooldown)
-		if err != nil {
-			return err
-		}
-		if ok {
+		if dueByReason[reason.Key] {
 			due = append(due, reason)
 		}
 	}
 	if len(due) == 0 {
 		return nil
 	}
-	email := n.buildEmail(user.Email, state, due)
+	email := n.buildEmail(target.Email, state, due)
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err := n.email.Send(sendCtx, email); err != nil {
 		return err
 	}
 	sentAt := time.Now()
-	for _, reason := range due {
-		if err := n.store.RecordProviderNotificationSent(ctx, stableKey, rec.AccountID, reason.Key, sentAt); err != nil {
-			n.logger.Warn("provider notifications: record send failed",
-				"provider_id", rec.ID,
-				"reason", reason.Key,
-				"error", err,
-			)
-		}
+	if err := n.store.RecordProviderNotificationsSent(ctx, stableKey, rec.AccountID, reasonKeys(due), sentAt); err != nil {
+		n.logger.Warn("provider notifications: record send failed",
+			"provider_id", rec.ID,
+			"reasons", reasonKeys(due),
+			"error", err,
+		)
 	}
 	n.logger.Info("sent provider owner notification",
 		"provider_id", rec.ID,
 		"account_id", rec.AccountID,
-		"email", user.Email,
 		"reasons", reasonKeys(due),
 	)
 	return nil

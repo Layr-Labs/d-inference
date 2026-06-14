@@ -28,6 +28,7 @@ export type TelemetryKind =
   | "inference_error"
   | "runtime_mismatch"
   | "connectivity"
+  | "oom"
   | "log"
   | "custom";
 
@@ -79,6 +80,15 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "billing_method",
   "payment_failed",
   "target",
+  // OOM / memory pressure (mirror of Go + Swift allowlists).
+  "detect_source",
+  "peak_memory_bytes",
+  "report",
+  "pressure",
+  "available_bytes",
+  "mlx_active_bytes",
+  "memory_pressure",
+  "in_flight",
   "url",
   "user_agent",
   "route",

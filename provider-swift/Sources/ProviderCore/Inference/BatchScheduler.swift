@@ -196,6 +196,14 @@ public actor BatchScheduler {
             return
         }
 
+        // Pin MLX's memory ceiling below physical RAM (idempotent). MLX's default
+        // (1.5× working set, above RAM) otherwise allows a jetsam OOM. See MLXMemoryGuard.
+        MLXMemoryGuard.configureOnce(log: { limits in
+            FileHandle.standardError.write(Data(
+                "[mlx] memory ceiling set: limit=\(limits.memoryLimitBytes / (1024*1024*1024))GB cache=\(limits.cacheLimitBytes / (1024*1024*1024))GB\n".utf8
+            ))
+        })
+
         await stopCurrentEngine()
         let loadEpoch = generationEpoch
 

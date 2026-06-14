@@ -2850,36 +2850,49 @@ func providerNotificationKey(providerID, reasonKey string) string {
 	return providerID + "\x00" + reasonKey
 }
 
-func (s *MemoryStore) ProviderNotificationsDue(_ context.Context, providerID, accountID string, reasonKeys []string, cooldown time.Duration) (map[string]bool, error) {
-	due := make(map[string]bool, len(reasonKeys))
-	if providerID == "" || accountID == "" {
+func (s *MemoryStore) ProviderNotificationsDue(_ context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (map[ProviderNotificationCheck]bool, error) {
+	checks = compactProviderNotificationChecks(checks)
+	due := make(map[ProviderNotificationCheck]bool, len(checks))
+	if len(checks) == 0 {
 		return due, nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	now := time.Now()
-	for _, reasonKey := range reasonKeys {
-		if reasonKey == "" {
-			continue
-		}
-		lastSent, ok := s.providerNotifications[providerNotificationKey(providerID, reasonKey)]
-		due[reasonKey] = !ok || now.Sub(lastSent) >= cooldown
+	for _, check := range checks {
+		lastSent, ok := s.providerNotifications[providerNotificationKey(check.ProviderID, check.ReasonKey)]
+		due[check] = !ok || now.Sub(lastSent) >= cooldown
 	}
 	return due, nil
 }
 
-func (s *MemoryStore) RecordProviderNotificationsSent(_ context.Context, providerID, accountID string, reasonKeys []string, sentAt time.Time) error {
-	if providerID == "" || accountID == "" {
+func (s *MemoryStore) RecordProviderNotificationsSent(_ context.Context, checks []ProviderNotificationCheck, sentAt time.Time) error {
+	checks = compactProviderNotificationChecks(checks)
+	if len(checks) == 0 {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, reasonKey := range reasonKeys {
-		if reasonKey != "" {
-			s.providerNotifications[providerNotificationKey(providerID, reasonKey)] = sentAt
-		}
+	for _, check := range checks {
+		s.providerNotifications[providerNotificationKey(check.ProviderID, check.ReasonKey)] = sentAt
 	}
 	return nil
+}
+
+func compactProviderNotificationChecks(checks []ProviderNotificationCheck) []ProviderNotificationCheck {
+	out := make([]ProviderNotificationCheck, 0, len(checks))
+	seen := make(map[ProviderNotificationCheck]bool, len(checks))
+	for _, check := range checks {
+		check.ProviderID = strings.TrimSpace(check.ProviderID)
+		check.AccountID = strings.TrimSpace(check.AccountID)
+		check.ReasonKey = strings.TrimSpace(check.ReasonKey)
+		if check.ProviderID == "" || check.AccountID == "" || check.ReasonKey == "" || seen[check] {
+			continue
+		}
+		seen[check] = true
+		out = append(out, check)
+	}
+	return out
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.

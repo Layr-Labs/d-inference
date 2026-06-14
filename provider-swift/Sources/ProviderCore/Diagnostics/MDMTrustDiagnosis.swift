@@ -25,9 +25,10 @@ public enum MDMTrustDiagnosis {
     /// state.
     ///
     /// - Parameters:
-    ///   - trustLevel: the coordinator's last reported trust level for this box
-    ///     (`"self_signed"`, `"hardware"`, `"mda_verified"`, …) — nil when the
-    ///     daemon hasn't received a trust status yet.
+    ///   - trustLevel: the coordinator's last reported trust level for this box.
+    ///     The coordinator only ever emits `"none"`, `"self_signed"`, or
+    ///     `"hardware"` (mda_verified is a separate boolean *proof*, never a trust
+    ///     level) — nil when the daemon hasn't received a trust status yet.
     ///   - enrollment: this Mac's MDM enrollment state from `checkMDMEnrollment`.
     /// - Returns: a `.trust` diagnostic to surface, or nil when no MDM-enrollment
     ///   hint is warranted (e.g. already enrolled AND hardware-trusted, where the
@@ -35,16 +36,15 @@ public enum MDMTrustDiagnosis {
     ///
     /// Callers should only invoke this when the box is NOT already
     /// hardware-trusted (the enrollment hint is pointless once hardware trust is
-    /// granted — e.g. via ACME, which needs no MDM profile). The `.hardware` /
-    /// `.mda_verified` short-circuit below is a defensive backstop, not the
-    /// primary gate.
+    /// granted — e.g. via ACME, which needs no MDM profile). The `"hardware"`
+    /// short-circuit below is a defensive backstop, not the primary gate.
     public static func diagnose(
         trustLevel: String?,
         enrollment: MDMEnrollmentState
     ) -> Diagnostic? {
         // Defensive: a hardware-trusted box never needs an enrollment nag, even
         // if a caller forgets to gate on it.
-        if let trustLevel, trustLevel == "hardware" || trustLevel == "mda_verified" {
+        if trustLevel == "hardware" {
             return nil
         }
 

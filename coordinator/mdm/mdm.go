@@ -15,6 +15,7 @@ package mdm
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -244,7 +245,17 @@ type VerificationResult struct {
 	MDMRecoveryLocked bool // Recovery Lock prevents Recovery OS access (blocks rdma_ctl enable)
 	SIPMatch          bool // MDM SIP matches attestation SIP
 	SecureBootMatch   bool // MDM SecureBoot matches attestation
-	Error             string
+
+	// SecurityMismatch is true ONLY for a genuine posture failure proven by a
+	// received SecurityInfo response: SIP disabled, Secure Boot not full, or the
+	// MDM-reported posture disagreeing with the provider's attestation. It is the
+	// single signal callers use to decide a hard (terminal) untrust. It is FALSE
+	// for every "could not complete the check" condition (device not found / not
+	// enrolled, command send failure, SecurityInfo timeout, context cancellation),
+	// so a transient MicroMDM/APNs problem never hard-untrusts an enrolled box.
+	SecurityMismatch bool
+
+	Error string
 }
 
 // LookupDevice checks if a device with the given serial number is enrolled.
@@ -428,7 +439,9 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 }
 
 // WaitForDeviceAttestation waits for a DevicePropertiesAttestation response.
-func (c *Client) WaitForDeviceAttestation(udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
+// It returns early if ctx is cancelled (e.g. the provider disconnected), so a
+// teardown isn't blocked for the full timeout.
+func (c *Client) WaitForDeviceAttestation(ctx context.Context, udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
 	ch := make(chan *DeviceAttestationResponse, 1)
 
 	c.waitMu.Lock()
@@ -444,6 +457,8 @@ func (c *Client) WaitForDeviceAttestation(udid string, timeout time.Duration) (*
 	select {
 	case resp := <-ch:
 		return resp, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("device attestation wait cancelled for %s: %w", udid, ctx.Err())
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout waiting for DevicePropertiesAttestation from %s", udid)
 	}
@@ -581,8 +596,11 @@ func (c *Client) HandleWebhook(body []byte) {
 	}
 }
 
-// WaitForSecurityInfo waits for a SecurityInfo response for the given UDID.
-func (c *Client) WaitForSecurityInfo(udid string, timeout time.Duration) (*SecurityInfoResponse, error) {
+// WaitForSecurityInfo waits for a SecurityInfo response for the given UDID. It
+// returns early if ctx is cancelled (e.g. the provider disconnected), so the
+// per-connection verification goroutine isn't blocked for the full timeout after
+// the connection is gone.
+func (c *Client) WaitForSecurityInfo(ctx context.Context, udid string, timeout time.Duration) (*SecurityInfoResponse, error) {
 	ch := make(chan *SecurityInfoResponse, 1)
 
 	c.waitMu.Lock()
@@ -598,6 +616,8 @@ func (c *Client) WaitForSecurityInfo(udid string, timeout time.Duration) (*Secur
 	select {
 	case resp := <-ch:
 		return resp, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("SecurityInfo wait cancelled for %s: %w", udid, ctx.Err())
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout waiting for SecurityInfo from %s", udid)
 	}
@@ -610,7 +630,7 @@ func (c *Client) WaitForSecurityInfo(udid string, timeout time.Duration) (*Secur
 //  3. Send SecurityInfo command
 //  4. Wait for and parse response
 //  5. Cross-check against attestation
-func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestationSecureBoot bool) (*VerificationResult, error) {
+func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attestationSIP, attestationSecureBoot bool) (*VerificationResult, error) {
 	result := &VerificationResult{
 		SerialNumber: serialNumber,
 	}
@@ -643,8 +663,9 @@ func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestation
 	}
 
 	// Step 3: Wait for response (via webhook). 90 seconds allows for APN
-	// delivery delays during Power Nap cycles (every ~15 minutes on AC).
-	secInfo, err := c.WaitForSecurityInfo(device.UDID, 90*time.Second)
+	// delivery delays during Power Nap cycles (every ~15 minutes on AC). Returns
+	// early if ctx is cancelled (provider disconnected).
+	secInfo, err := c.WaitForSecurityInfo(ctx, device.UDID, 90*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("SecurityInfo response: %v", err)
 		return result, nil
@@ -660,14 +681,22 @@ func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestation
 	result.SIPMatch = result.MDMSIPEnabled == attestationSIP
 	result.SecureBootMatch = result.MDMSecureBootFull == attestationSecureBoot
 
+	// A non-empty Error set below is a GENUINE posture failure proven by a
+	// received SecurityInfo response — mark SecurityMismatch so the caller hard-
+	// untrusts. (Transport/timeout/not-enrolled errors return above with
+	// SecurityMismatch=false and must NOT untrust.)
 	if !result.MDMSIPEnabled {
 		result.Error = "MDM reports SIP disabled"
+		result.SecurityMismatch = true
 	} else if !result.MDMSecureBootFull {
 		result.Error = "MDM reports Secure Boot not full"
+		result.SecurityMismatch = true
 	} else if !result.SIPMatch {
 		result.Error = "attestation SIP does not match MDM SIP — provider may be lying"
+		result.SecurityMismatch = true
 	} else if !result.SecureBootMatch {
 		result.Error = "attestation SecureBoot does not match MDM — provider may be lying"
+		result.SecurityMismatch = true
 	}
 	// Recovery Lock is recommended but not enforced yet — log a warning.
 	// When enforced, providers without Recovery Lock could enable RDMA via Recovery OS.

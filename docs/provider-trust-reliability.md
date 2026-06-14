@@ -25,10 +25,20 @@ repeated. Net effect: roughly **11% of the fleet was stranded** unroutable at
 `self_signed`/`untrusted` even though the machines were genuine, enrolled Apple
 hardware — the trust path was self-inflicting an APNs throttle.
 
-A separate **drift** bug compounded this: a transient SecurityInfo miss (device
-briefly asleep, push delayed) could *downgrade* an already-trusted provider,
-because the verify path treated "no answer right now" the same as "posture
-failed."
+Two **drift / mis-classification** bugs compounded the noise (neither was a
+trust *downgrade* — a SecurityInfo timeout already stayed `self_signed` without
+untrusting):
+
+1. **Display drift:** on reconnect, trust is capped back to `self_signed` but the
+   stored `MDAVerified`/`ACMEVerified` flags (and the late-MDA cert payload) were
+   resurrected, so `/v1/providers/attestation` showed `mda_verified=true` next to
+   a `self_signed` provider — misleading anyone verifying a provider's hardware.
+2. **Outcome mis-classification:** the verify path treated *any* non-timeout
+   error as a posture mismatch — so a transient MicroMDM transport hiccup (the
+   SecurityInfo command failing to enqueue) would wrongly **hard-untrust** an
+   enrolled, genuinely-secure box. Only a SecurityInfo response that actually
+   reports SIP-off / Secure-Boot-not-full (or disagrees with the attestation) is
+   a real mismatch.
 
 ---
 

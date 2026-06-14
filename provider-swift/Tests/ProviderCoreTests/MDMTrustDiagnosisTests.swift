@@ -51,9 +51,6 @@ import Testing
         #expect(MDMTrustDiagnosis.diagnose(
             trustLevel: "hardware",
             enrollment: .enrolledDarkbloom(serverURL: "https://api.darkbloom.dev/mdm/connect")) == nil)
-        #expect(MDMTrustDiagnosis.diagnose(
-            trustLevel: "mda_verified",
-            enrollment: .enrolledDarkbloom(serverURL: "https://api.darkbloom.dev/mdm/connect")) == nil)
     }
 
     @Test func notEnrolledIsADistinctWarning() throws {

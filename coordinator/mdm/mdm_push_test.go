@@ -1,6 +1,7 @@
 package mdm
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -178,7 +179,7 @@ func TestVerifyProviderSuccess(t *testing.T) {
 		c.HandleWebhook(buildSecurityInfoWebhook("UDID-OK", "cmd-ok"))
 	}()
 
-	res, err := c.VerifyProvider("SERIAL-OK", true /*sip*/, true /*secureboot*/)
+	res, err := c.VerifyProvider(context.Background(), "SERIAL-OK", true /*sip*/, true /*secureboot*/)
 	if err != nil {
 		t.Fatalf("VerifyProvider returned transport error: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestVerifyProviderSuccess(t *testing.T) {
 // verifyProviderViaMDM buckets as securityinfo-timeout.
 func TestVerifyProviderTimeoutErrorString(t *testing.T) {
 	c := testClient()
-	_, err := c.WaitForSecurityInfo("UDID-NO-REPLY", 50*time.Millisecond)
+	_, err := c.WaitForSecurityInfo(context.Background(), "UDID-NO-REPLY", 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected a timeout error when no webhook arrives")
 	}
@@ -221,7 +222,7 @@ func TestVerifyProviderDeviceNotFound(t *testing.T) {
 	fake := &fakeMicroMDM{device: nil, commandUUID: "unused"}
 	c, _ := newFakeMDM(t, fake)
 
-	res, err := c.VerifyProvider("SERIAL-MISSING", true, true)
+	res, err := c.VerifyProvider(context.Background(), "SERIAL-MISSING", true, true)
 	if err != nil {
 		t.Fatalf("VerifyProvider transport error: %v", err)
 	}

@@ -2314,13 +2314,14 @@ const (
 // an outcome metric, then returns an outcome the per-connection loop uses to
 // decide whether to retry. It NEVER marks a provider untrusted for a transient
 // failure (not-enrolled / timeout) — only for a genuine posture mismatch.
-func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) mdmVerifyOutcome {
+func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) mdmVerifyOutcome {
 	s.logger.Info("starting MDM verification",
 		"provider_id", providerID,
 		"serial_number", attestResult.SerialNumber,
 	)
 
 	mdmResult, err := s.mdmClient.VerifyProvider(
+		ctx,
 		attestResult.SerialNumber,
 		attestResult.SIPEnabled,
 		attestResult.SecureBootEnabled,
@@ -2355,16 +2356,26 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 	}
 
 	if mdmResult.Error != "" {
-		// A timeout means APN latency or device sleep — not evidence of
-		// compromise. Keep the provider at its current trust level (self_signed)
-		// instead of marking it untrusted, and let the loop retry.
-		if strings.Contains(mdmResult.Error, "timeout") {
-			s.logger.Warn("MDM verification timed out — staying at current trust level",
+		// Hard untrust ONLY for a genuine posture mismatch proven by a received
+		// SecurityInfo response (SecurityMismatch). Everything else with a non-empty
+		// error — a SecurityInfo timeout, a MicroMDM command-send/transport failure,
+		// a decode error, or a context cancellation on disconnect — is a "could not
+		// complete the check" condition: keep the provider at its current trust
+		// level (self_signed) and let the loop retry. Treating a transient MicroMDM
+		// API hiccup as a posture mismatch would wrongly hard-untrust an enrolled,
+		// genuinely-secure box.
+		if !mdmResult.SecurityMismatch {
+			reason := "error"
+			if strings.Contains(mdmResult.Error, "timeout") {
+				reason = "securityinfo-timeout"
+			}
+			s.logger.Warn("MDM verification did not complete — staying at current trust level",
 				"provider_id", providerID,
+				"reason", reason,
 				"error", mdmResult.Error,
 			)
-			provider.SetMDMFailureReason("securityinfo-timeout")
-			s.ddIncr("mdm.verification", []string{"outcome:securityinfo-timeout"})
+			provider.SetMDMFailureReason(reason)
+			s.ddIncr("mdm.verification", []string{"outcome:" + reason})
 			return mdmVerifyTransient
 		}
 		// A real posture mismatch (SIP disabled, Secure Boot not full, attestation
@@ -2381,6 +2392,15 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 		s.ddIncr("mdm.verification", []string{"outcome:posture-mismatch"})
 		s.registry.MarkUntrusted(providerID)
 		return mdmVerifyTerminal
+	}
+
+	// If the connection went away while we were waiting on SecurityInfo, do NOT
+	// mutate/persist trust for a provider that is no longer here — the next
+	// connection re-verifies from scratch (RestoreProviderState caps to
+	// self_signed). Treat as transient; the loop's ctx.Done will end it.
+	if ctx.Err() != nil {
+		provider.SetMDMFailureReason("securityinfo-timeout")
+		return mdmVerifyTransient
 	}
 
 	// MDM SecurityInfo verification passed — upgrade to hardware trust.
@@ -2403,7 +2423,7 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 	// certificate chain that proves this device's identity. This cert
 	// chain can be independently verified by users against Apple's
 	// Enterprise Attestation Root CA.
-	s.verifyAppleDeviceAttestation(providerID, provider, attestResult, mdmResult.UDID)
+	s.verifyAppleDeviceAttestation(ctx, providerID, provider, attestResult, mdmResult.UDID)
 	return mdmVerifyGranted
 }
 
@@ -2450,7 +2470,17 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 		if provider.GetTrustLevel() == registry.TrustHardware {
 			return
 		}
-		switch s.verifyProviderViaMDM(providerID, provider, *result) {
+		// Stop if the provider was HARD-untrusted out-of-band (e.g. the challenge
+		// loop saw SIP disabled or a binary-hash change). Re-granting hardware to a
+		// hard-untrusted provider would leave TrustLevel=hardware while
+		// Status=untrusted — an inconsistent state. A hard untrust recovers only by
+		// reconnect, which restarts this loop. A *transient* untrust (missed-
+		// challenge timeouts) is intentionally NOT a stop: it can recover on a later
+		// passing challenge, after which MDM should still be able to grant hardware.
+		if provider.ChallengeShouldStop() {
+			return
+		}
+		switch s.verifyProviderViaMDM(ctx, providerID, provider, *result) {
 		case mdmVerifyGranted, mdmVerifyTerminal:
 			return
 		}
@@ -2469,7 +2499,7 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting
 // DevicePropertiesAttestation and verifies the Apple-signed certificate chain.
-func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) {
+func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) {
 	if udid == "" {
 		s.logger.Warn("no UDID for MDA verification", "provider_id", providerID)
 		return
@@ -2510,7 +2540,7 @@ func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *regis
 	}
 
 	// Wait for Apple's response (device contacts Apple's servers — may take longer)
-	attestResp, err := s.mdmClient.WaitForDeviceAttestation(udid, 60*time.Second)
+	attestResp, err := s.mdmClient.WaitForDeviceAttestation(ctx, udid, 60*time.Second)
 	if err != nil {
 		s.logger.Warn("DevicePropertiesAttestation response timeout",
 			"provider_id", providerID,
@@ -2689,17 +2719,24 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			pa.SEPublicKey = attestResult.PublicKey
 		}
 
-		// Include MDA cert chain for independent verification
-		if len(mdaCertChain) > 0 {
-			for _, der := range mdaCertChain {
-				pa.MDACertChain = append(pa.MDACertChain, base64.StdEncoding.EncodeToString(der))
+		// Include the MDA cert chain + parsed fields for independent verification
+		// ONLY for a connection currently holding hardware trust — same gate as the
+		// mda_verified boolean above. The late-MDA callback (main.go) can attach a
+		// cert chain to a provider that has since reconnected as self_signed; without
+		// this gate the endpoint would emit mda_verified=false alongside a non-empty
+		// mda_cert_chain_b64/serial/udid, which is exactly the drift this fix removes.
+		if isHardware {
+			if len(mdaCertChain) > 0 {
+				for _, der := range mdaCertChain {
+					pa.MDACertChain = append(pa.MDACertChain, base64.StdEncoding.EncodeToString(der))
+				}
 			}
-		}
-		if mdaResult != nil {
-			pa.MDASerial = mdaResult.DeviceSerial
-			pa.MDAUDID = mdaResult.DeviceUDID
-			pa.MDAOSVersion = mdaResult.OSVersion
-			pa.MDASepVersion = mdaResult.SepOSVersion
+			if mdaResult != nil {
+				pa.MDASerial = mdaResult.DeviceSerial
+				pa.MDAUDID = mdaResult.DeviceUDID
+				pa.MDAOSVersion = mdaResult.OSVersion
+				pa.MDASepVersion = mdaResult.SepOSVersion
+			}
 		}
 
 		providers = append(providers, pa)

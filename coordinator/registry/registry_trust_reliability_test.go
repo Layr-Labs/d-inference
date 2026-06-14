@@ -44,13 +44,13 @@ func TestRestoreProviderStateDoesNotResurrectMDAWhenSelfSigned(t *testing.T) {
 	}
 }
 
-// TestRestoreProviderStateKeepsProofsWhenSelfSignedStored verifies the
+// TestRestoreProviderStateClearsProofsForSelfSignedRecord verifies the
 // complementary branch: a record whose stored trust is at/below self_signed is
-// restored verbatim (not capped), and since the live trust is then NOT hardware,
-// MDA/ACME are still forced false. (RestoreProviderState only carries the proof
-// flags through when the post-restore trust level is hardware; because hardware
-// is always capped from a stored record, the practical guarantee is that a
-// restore never produces proofs on a non-hardware connection.)
+// restored verbatim (not capped), and MDA/ACME proofs are still forced false.
+// RestoreProviderState always clears the proof flags (a restored connection is
+// always <= self_signed since hardware is capped away), so the guarantee is that
+// a restore never produces MDA/ACME proofs on a non-hardware connection — they
+// are re-earned live by the MDM/ACME legs this connection.
 func TestRestoreProviderStateClearsProofsForSelfSignedRecord(t *testing.T) {
 	reg := New(testLogger())
 	p := reg.Register("p1", nil, testRegisterMessage())

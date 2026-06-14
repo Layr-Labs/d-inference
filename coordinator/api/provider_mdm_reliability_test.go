@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -35,6 +36,11 @@ type fakeMDMServer struct {
 	// blocking 60s waiting for an Apple attestation webhook in the success test.
 	failMDARawCommand bool
 
+	// failSecurityInfoCommand makes POST /v1/commands (the SecurityInfo enqueue)
+	// return a 500 so mdm.SendSecurityInfoCommand errors — simulating a transient
+	// MicroMDM transport failure. This must NOT hard-untrust an enrolled provider.
+	failSecurityInfoCommand bool
+
 	pushedUDIDs []string
 }
 
@@ -59,7 +65,13 @@ func (f *fakeMDMServer) handler() http.Handler {
 		_, _ = io.Copy(io.Discard, r.Body)
 		f.mu.Lock()
 		uuid := f.commandUUID
+		fail := f.failSecurityInfoCommand
 		f.mu.Unlock()
+		if fail {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("micromdm unavailable"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"payload":{"command_uuid":"` + uuid + `"}}`))
 	})
@@ -196,7 +208,7 @@ func TestVerifyProviderViaMDM_PostureMismatchTerminal(t *testing.T) {
 	// MDM says SIP=false (mismatch vs attestation SIP=true) → posture mismatch.
 	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-mismatch", false /*sip*/, true)
 
-	outcome := srv.verifyProviderViaMDM("prov-mdm", p, attestResultOf(p))
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
 	if outcome != mdmVerifyTerminal {
 		t.Errorf("outcome = %v, want mdmVerifyTerminal", outcome)
@@ -233,7 +245,7 @@ func TestVerifyProviderViaMDM_TimeoutTransient(t *testing.T) {
 	srv, p := mdmReliabilityServer(t, fake)
 
 	// Deliberately never deliver a webhook → WaitForSecurityInfo times out.
-	outcome := srv.verifyProviderViaMDM("prov-mdm", p, attestResultOf(p))
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
 	if outcome != mdmVerifyTransient {
 		t.Errorf("outcome = %v, want mdmVerifyTransient", outcome)
@@ -256,7 +268,7 @@ func TestVerifyProviderViaMDM_DeviceNotFoundTransient(t *testing.T) {
 	fake := &fakeMDMServer{device: nil, commandUUID: "unused"}
 	srv, p := mdmReliabilityServer(t, fake)
 
-	outcome := srv.verifyProviderViaMDM("prov-mdm", p, attestResultOf(p))
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
 	if outcome != mdmVerifyTransient {
 		t.Errorf("outcome = %v, want mdmVerifyTransient", outcome)
@@ -289,7 +301,7 @@ func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 
 	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true /*sip*/, true /*secureboot*/)
 
-	outcome := srv.verifyProviderViaMDM("prov-mdm", p, attestResultOf(p))
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
 	if outcome != mdmVerifyGranted {
 		t.Errorf("outcome = %v, want mdmVerifyGranted", outcome)
@@ -385,5 +397,103 @@ func TestProviderAttestationGatesProofsOnHardware(t *testing.T) {
 	}
 	if !hw.mdm || !hw.mda || !hw.acme {
 		t.Errorf("hardware proofs should all be true, got mdm=%v mda=%v acme=%v", hw.mdm, hw.mda, hw.acme)
+	}
+}
+
+// TestVerifyProviderViaMDM_TransportErrorTransient is the regression for the
+// classifier bug where a non-timeout MicroMDM error (e.g. the SecurityInfo
+// command enqueue failing — HTTP 500 / decode error) was treated as a posture
+// mismatch and hard-untrusted an enrolled, genuinely-secure provider. A transport
+// failure proves nothing about posture (SecurityMismatch=false), so it must be
+// transient ("error") and must NOT untrust.
+func TestVerifyProviderViaMDM_TransportErrorTransient(t *testing.T) {
+	fake := &fakeMDMServer{
+		device:                  &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+		commandUUID:             "cmd-unused",
+		failSecurityInfoCommand: true, // POST /v1/commands → 500 → SendSecurityInfoCommand errors
+	}
+	srv, p := mdmReliabilityServer(t, fake)
+
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
+
+	if outcome != mdmVerifyTransient {
+		t.Errorf("outcome = %v, want mdmVerifyTransient (transport error is not a posture mismatch)", outcome)
+	}
+	if got := p.GetMDMFailureReason(); got != "error" {
+		t.Errorf("MDMFailureReason = %q, want %q", got, "error")
+	}
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
+		t.Errorf("trust = %q, want %q (transport error must not change trust)", lvl, registry.TrustSelfSigned)
+	}
+	if status := srv.registry.GetProvider("prov-mdm").GetStatus(); status == registry.StatusUntrusted {
+		t.Error("a transient MicroMDM transport error must NOT hard-untrust an enrolled provider")
+	}
+}
+
+// TestProviderAttestationGatesMDAPayloadOnHardware is the regression for the
+// drift where /v1/providers/attestation gated the mda_verified boolean on
+// hardware but still emitted the MDA cert chain + serial/udid payload (which the
+// late-MDA callback can attach to a since-reconnected self_signed provider). The
+// whole MDA payload must be suppressed for non-hardware connections, so the
+// endpoint can never show mda_verified=false alongside a populated cert chain.
+func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	mk := func(id, model string, trust registry.TrustLevel) {
+		msg := &protocol.RegisterMessage{
+			Type:      protocol.TypeRegister,
+			Hardware:  protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+			Models:    []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+			Backend:   "mlx-swift",
+			PublicKey: testPublicKeyB64(),
+		}
+		p := reg.Register(id, nil, msg)
+		p.Mu().Lock()
+		p.TrustLevel = trust
+		p.MDAVerified = true
+		p.MDACertChain = [][]byte{[]byte("der-leaf"), []byte("der-intermediate")}
+		p.MDAResult = &attestation.MDAResult{DeviceSerial: "MDA-" + id, DeviceUDID: "UDID-" + id, OSVersion: "26.5"}
+		p.AttestationResult = &attestation.VerificationResult{SerialNumber: "S-" + id, SIPEnabled: true, SecureBootEnabled: true}
+		p.Mu().Unlock()
+	}
+	mk("ss-payload", "m-ss", registry.TrustSelfSigned)
+	mk("hw-payload", "m-hw", registry.TrustHardware)
+
+	resp, err := http.Get(ts.URL + "/v1/providers/attestation")
+	if err != nil {
+		t.Fatalf("GET attestation: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var parsed struct {
+		Providers []struct {
+			ProviderID   string   `json:"provider_id"`
+			MDAVerified  bool     `json:"mda_verified"`
+			MDACertChain []string `json:"mda_cert_chain_b64"`
+			MDASerial    string   `json:"mda_serial"`
+			MDAUDID      string   `json:"mda_udid"`
+		} `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, pr := range parsed.Providers {
+		switch pr.ProviderID {
+		case "ss-payload":
+			if pr.MDAVerified || len(pr.MDACertChain) != 0 || pr.MDASerial != "" || pr.MDAUDID != "" {
+				t.Errorf("self_signed provider leaked MDA payload: verified=%v chain=%d serial=%q udid=%q",
+					pr.MDAVerified, len(pr.MDACertChain), pr.MDASerial, pr.MDAUDID)
+			}
+		case "hw-payload":
+			if !pr.MDAVerified || len(pr.MDACertChain) != 2 || pr.MDASerial == "" {
+				t.Errorf("hardware provider should expose MDA payload: verified=%v chain=%d serial=%q",
+					pr.MDAVerified, len(pr.MDACertChain), pr.MDASerial)
+			}
+		}
 	}
 }

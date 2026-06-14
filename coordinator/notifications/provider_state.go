@@ -58,25 +58,6 @@ func providerStateFromLive(p *registry.Provider, rec store.ProviderRecord) provi
 	}
 }
 
-func latestProviderRecords(records []store.ProviderRecord) []store.ProviderRecord {
-	byKey := make(map[string]store.ProviderRecord)
-	for _, rec := range records {
-		key := notificationStableKey(rec)
-		prev, ok := byKey[key]
-		if !ok || rec.LastSeen.After(prev.LastSeen) {
-			byKey[key] = rec
-		}
-	}
-	out := make([]store.ProviderRecord, 0, len(byKey))
-	for _, rec := range byKey {
-		out = append(out, rec)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].LastSeen.After(out[j].LastSeen)
-	})
-	return out
-}
-
 func latestProviderNotificationTargets(targets []store.ProviderNotificationTarget) []store.ProviderNotificationTarget {
 	byKey := make(map[string]store.ProviderNotificationTarget)
 	for _, target := range targets {

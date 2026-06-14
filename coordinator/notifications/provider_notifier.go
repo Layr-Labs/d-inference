@@ -36,6 +36,7 @@ type providerAlertCandidate struct {
 	state     providerState
 	stableKey string
 	reasons   []AlertReason
+	checks    []store.ProviderNotificationCheck
 }
 
 type ProviderNotifierOption func(*ProviderNotifier)
@@ -119,7 +120,7 @@ func (n *ProviderNotifier) Start(ctx context.Context) {
 		n.logger.Warn("provider email notifications enabled but no email client configured")
 		return
 	}
-	ticker := time.NewTicker(n.cfg.CheckInterval)
+	ticker := time.NewTicker(n.cfg.Alerts.CheckInterval)
 	saferun.Go(n.logger, "providerEmailNotifier", func() {
 		defer ticker.Stop()
 		for {
@@ -147,11 +148,8 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, checkOperationTimeout)
 	defer cancel()
-	storeCtx, storeCancel := context.WithTimeout(checkCtx, storeOperationTimeout)
-	targets, err := n.store.ListProviderNotificationTargets(storeCtx)
-	storeCancel()
-	if err != nil {
-		n.logger.Warn("provider notifications: list provider targets failed", "error", err)
+	targets, ok := n.notificationTargets(checkCtx)
+	if !ok {
 		return
 	}
 	if len(targets) > maxProviderAlertTargets {
@@ -168,21 +166,43 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if len(checks) == 0 {
 		return
 	}
-	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
-	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks, n.cfg.AlertCooldown)
-	storeCancel()
-	if err != nil {
-		n.logger.Warn("provider notifications: cooldown lookup failed", "error", err)
+	dueByCheck, ok := n.notificationsDue(checkCtx, checks)
+	if !ok {
 		return
 	}
 	sent := make([]store.ProviderNotificationCheck, 0, len(checks))
 	for _, candidate := range candidates {
 		sent = append(sent, n.sendDue(checkCtx, candidate, dueByCheck)...)
 	}
-	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
-	err = n.store.RecordProviderNotificationsSent(storeCtx, sent, time.Now())
-	storeCancel()
+	n.recordNotificationsSent(checkCtx, sent)
+}
+
+func (n *ProviderNotifier) notificationTargets(ctx context.Context) ([]store.ProviderNotificationTarget, bool) {
+	storeCtx, cancel := context.WithTimeout(ctx, storeOperationTimeout)
+	defer cancel()
+	targets, err := n.store.ListProviderNotificationTargets(storeCtx)
 	if err != nil {
+		n.logger.Warn("provider notifications: list provider targets failed", "error", err)
+		return nil, false
+	}
+	return targets, true
+}
+
+func (n *ProviderNotifier) notificationsDue(ctx context.Context, checks []store.ProviderNotificationCheck) (store.ProviderNotificationDueSet, bool) {
+	storeCtx, cancel := context.WithTimeout(ctx, storeOperationTimeout)
+	defer cancel()
+	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks, n.cfg.Alerts.AlertCooldown)
+	if err != nil {
+		n.logger.Warn("provider notifications: cooldown lookup failed", "error", err)
+		return nil, false
+	}
+	return dueByCheck, true
+}
+
+func (n *ProviderNotifier) recordNotificationsSent(ctx context.Context, sent []store.ProviderNotificationCheck) {
+	storeCtx, cancel := context.WithTimeout(ctx, storeOperationTimeout)
+	defer cancel()
+	if err := n.store.RecordProviderNotificationsSent(storeCtx, sent, time.Now()); err != nil {
 		n.logger.Warn("provider notifications: record sends failed", "error", err)
 	}
 }
@@ -207,41 +227,41 @@ func (n *ProviderNotifier) alertCandidates(
 		if len(reasons) == 0 {
 			continue
 		}
-		candidates = append(candidates, providerAlertCandidate{
+		candidate := providerAlertCandidate{
 			email:     target.Email,
 			state:     state,
 			stableKey: stableKey,
-			reasons:   reasons,
-		})
+			reasons:   reasons[:0],
+			checks:    make([]store.ProviderNotificationCheck, 0, len(reasons)),
+		}
 		for _, reason := range reasons {
 			if !validAlertReasonKey(reason.Key) {
 				continue
 			}
-			checks = append(checks, store.ProviderNotificationCheck{
+			check := store.ProviderNotificationCheck{
 				ProviderID: stableKey,
 				AccountID:  state.accountID,
 				ReasonKey:  reason.Key,
-			})
+			}
+			candidate.reasons = append(candidate.reasons, reason)
+			candidate.checks = append(candidate.checks, check)
+			checks = append(checks, check)
 		}
+		if len(candidate.checks) == 0 {
+			continue
+		}
+		candidates = append(candidates, candidate)
 		seen[stableKey] = struct{}{}
 	}
 	return candidates, checks
 }
 
 func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertCandidate, dueByCheck store.ProviderNotificationDueSet) []store.ProviderNotificationCheck {
-	sent := make([]store.ProviderNotificationCheck, 0, len(candidate.reasons))
+	sent := make([]store.ProviderNotificationCheck, 0, len(candidate.checks))
 	due := candidate.reasons[:0]
-	for _, reason := range candidate.reasons {
-		if !validAlertReasonKey(reason.Key) {
-			continue
-		}
-		check := store.ProviderNotificationCheck{
-			ProviderID: candidate.stableKey,
-			AccountID:  candidate.state.accountID,
-			ReasonKey:  reason.Key,
-		}
+	for i, check := range candidate.checks {
 		if dueByCheck.Contains(check) {
-			due = append(due, reason)
+			due = append(due, candidate.reasons[i])
 			sent = append(sent, check)
 		}
 	}
@@ -269,7 +289,7 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 
 func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason {
 	providerVersion := semverCanonical(p.version)
-	minVersion := semverCanonical(n.cfg.MinProviderVersion)
+	minVersion := semverCanonical(n.cfg.Alerts.MinProviderVersion)
 	out := make([]AlertReason, 0, maxProviderAlertReasons)
 	if !p.online && now.Sub(p.lastSeen) >= providerHeartbeatTimeout {
 		out = append(out, AlertReason{
@@ -283,7 +303,7 @@ func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason
 		out = append(out, AlertReason{
 			Key:    alertReasonVersionBelowMin,
 			Title:  "Provider update required",
-			Detail: fmt.Sprintf("This machine is on v%s; the coordinator requires v%s or newer.", p.version, n.cfg.MinProviderVersion),
+			Detail: fmt.Sprintf("This machine is on v%s; the coordinator requires v%s or newer.", p.version, n.cfg.Alerts.MinProviderVersion),
 			Action: "Update with the Darkbloom install script, then restart the provider.",
 		})
 	}
@@ -336,15 +356,15 @@ func (n *ProviderNotifier) buildEmail(to string, p providerState, reasons []Aler
 	if len(reasons) == 1 && reasons[0].Key == alertReasonOffline {
 		subject = fmt.Sprintf("Action needed: %s is offline on Darkbloom", name)
 	}
-	text := buildTextEmail(name, reasons, n.cfg.ConsoleURL)
-	htmlBody := buildHTMLEmail(name, reasons, n.cfg.ConsoleURL)
+	text := buildTextEmail(name, reasons, n.cfg.Alerts.ConsoleURL)
+	htmlBody := buildHTMLEmail(name, reasons, n.cfg.Alerts.ConsoleURL)
 	return Email{
 		From:           n.cfg.Email.From,
 		To:             to,
 		Subject:        subject,
 		Text:           text,
 		HTML:           htmlBody,
-		UnsubscribeURL: n.cfg.UnsubscribeURL,
+		UnsubscribeURL: n.cfg.Alerts.UnsubscribeURL,
 	}
 }
 

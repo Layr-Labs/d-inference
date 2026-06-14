@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,8 @@ import (
 var _ Store = (*PostgresStore)(nil)
 
 const providerRecordListLimit = 10000
+
+var errInvalidProviderNotificationEmail = errors.New("store: invalid provider notification email")
 
 // PostgresStore is a PostgreSQL-backed implementation of Store.
 type PostgresStore struct {
@@ -3272,7 +3275,7 @@ func scanProviderNotificationTarget(row pgx.Rows) (ProviderNotificationTarget, e
 	p.Location = unmarshalProviderLocation(locationRaw)
 	email, ok := NormalizeNotificationEmail(email)
 	if !ok {
-		return ProviderNotificationTarget{}, nil
+		return ProviderNotificationTarget{}, errInvalidProviderNotificationEmail
 	}
 	return ProviderNotificationTarget{Provider: p, Email: email}, nil
 }
@@ -3481,6 +3484,9 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 		}
 		target, err := scanProviderNotificationTarget(rows)
 		if err != nil {
+			if errors.Is(err, errInvalidProviderNotificationEmail) {
+				continue
+			}
 			return nil, fmt.Errorf("store: scan provider notification target: %w", err)
 		}
 		if target.Email == "" {
@@ -3819,7 +3825,7 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 	}
 	byKey := make(map[providerNotificationKey]ProviderNotificationCheck, len(checks))
 	providerIDs := make([]string, 0, len(checks))
-	reasonKeys := make([]string, 0, len(checks))
+	queryArgs := make([]interface{}, 0, len(checks)*2)
 	for _, check := range checks {
 		providerID, _, reasonKey, ok := check.DBValues()
 		if !ok {
@@ -3828,7 +3834,7 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
 		dueByCheck[check] = struct{}{}
 		providerIDs = append(providerIDs, providerID)
-		reasonKeys = append(reasonKeys, reasonKey)
+		queryArgs = append(queryArgs, providerID, reasonKey)
 	}
 	if len(providerIDs) == 0 {
 		return ProviderNotificationDueSet{}, nil
@@ -3836,12 +3842,8 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 
 	cutoff := time.Now().Add(-cooldown)
 	rows, err := s.pool.Query(ctx,
-		`SELECT n.provider_id, n.reason_key, n.last_sent_at
-		   FROM unnest($1::text[], $2::text[]) AS input(provider_id, reason_key)
-		   JOIN provider_notifications n
-		     ON n.provider_id = input.provider_id
-		    AND n.reason_key = input.reason_key`,
-		providerIDs, reasonKeys,
+		providerNotificationLookupQuery(len(providerIDs)),
+		queryArgs...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider notification lookup: %w", err)
@@ -3870,6 +3872,21 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		}
 	}
 	return due, nil
+}
+
+func providerNotificationLookupQuery(count int) string {
+	var b strings.Builder
+	b.WriteString(`SELECT n.provider_id, n.reason_key, n.last_sent_at
+		   FROM provider_notifications n
+		  WHERE (n.provider_id, n.reason_key) IN (`)
+	for i := 0; i < count; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "($%d, $%d)", i*2+1, i*2+2)
+	}
+	b.WriteString(")")
+	return b.String()
 }
 
 func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, checks []ProviderNotificationCheck, sentAt time.Time) error {

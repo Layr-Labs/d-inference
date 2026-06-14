@@ -66,7 +66,9 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if c == nil {
 		return fmt.Errorf("email service is not configured")
 	}
-	if err := validateEmail(email); err != nil {
+	var err error
+	email, err = validateEmail(email)
+	if err != nil {
 		return err
 	}
 	payload := resendEmailPayload{
@@ -112,34 +114,39 @@ func resendAuthorization(apiKey string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("email service configuration is invalid")
 	}
+	if len(apiKey) > maxAuthorizationHeaderLength-len("Bearer ") {
+		return "", fmt.Errorf("email service configuration is invalid")
+	}
 	authorization := "Bearer " + apiKey
-	if len(authorization) > maxAuthorizationHeaderLength || !httpguts.ValidHeaderFieldValue(authorization) {
+	if !httpguts.ValidHeaderFieldValue(authorization) {
 		return "", fmt.Errorf("email service configuration is invalid")
 	}
 	return authorization, nil
 }
 
-func validateEmail(email Email) error {
+func validateEmail(email Email) (Email, error) {
 	if !httpguts.ValidHeaderFieldValue(email.From) ||
 		!httpguts.ValidHeaderFieldValue(email.To) ||
 		!httpguts.ValidHeaderFieldValue(email.Subject) ||
 		!httpguts.ValidHeaderFieldValue(email.UnsubscribeURL) {
-		return fmt.Errorf("email contains invalid header characters")
+		return Email{}, fmt.Errorf("email contains invalid header characters")
 	}
 	if strings.TrimSpace(email.Subject) == "" {
-		return fmt.Errorf("email subject is required")
+		return Email{}, fmt.Errorf("email subject is required")
 	}
 	if _, err := mail.ParseAddress(email.From); err != nil {
-		return fmt.Errorf("email from address is invalid: %w", err)
+		return Email{}, fmt.Errorf("email from address is invalid: %w", err)
 	}
-	if _, ok := store.NormalizeNotificationEmail(email.To); !ok {
-		return fmt.Errorf("email to address is invalid")
+	var ok bool
+	email.To, ok = store.NormalizeNotificationEmail(email.To)
+	if !ok {
+		return Email{}, fmt.Errorf("email to address is invalid")
 	}
 	if email.UnsubscribeURL != "" {
 		u, err := url.Parse(email.UnsubscribeURL)
 		if err != nil || u.Scheme != "https" || u.Host == "" || strings.ContainsAny(email.UnsubscribeURL, "<>,") {
-			return fmt.Errorf("email unsubscribe url is invalid")
+			return Email{}, fmt.Errorf("email unsubscribe url is invalid")
 		}
 	}
-	return nil
+	return email, nil
 }

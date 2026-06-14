@@ -10,7 +10,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
-var resendAPIKeyPattern = regexp.MustCompile(`^re_[A-Za-z0-9]+$`)
+var resendAPIKeyPattern = regexp.MustCompile(`^re_[A-Za-z0-9]{21,125}$`)
 
 const (
 	defaultEmailFrom      = "Darkbloom <providers@darkbloom.dev>"

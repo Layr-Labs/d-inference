@@ -52,11 +52,17 @@ type ProviderNotificationDueSet []ProviderNotificationCheck
 
 func (s ProviderNotificationDueSet) Contains(check ProviderNotificationCheck) bool {
 	for _, due := range s {
-		if due == check {
+		if due.Equal(check) {
 			return true
 		}
 	}
 	return false
+}
+
+func (check ProviderNotificationCheck) Equal(other ProviderNotificationCheck) bool {
+	return check.ProviderID == other.ProviderID &&
+		check.AccountID == other.AccountID &&
+		check.ReasonKey == other.ReasonKey
 }
 
 func ProviderNotificationStableKey(rec ProviderRecord) string {

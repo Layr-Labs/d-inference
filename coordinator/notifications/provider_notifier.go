@@ -130,12 +130,37 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if len(targets) > maxProviderAlertTargets {
 		targets = targets[:maxProviderAlertTargets]
 	}
-	if len(targets) == 0 {
+	plan := n.notificationPlan(targets)
+	if len(plan.checks) == 0 {
 		return
 	}
-	candidates := make([]providerNotificationCandidate, 0, len(targets))
-	checks := make([]store.ProviderNotificationCheck, 0, len(targets)*maxProviderAlertReasons)
-	reasonsByCheck := make([]AlertReason, 0, len(targets)*maxProviderAlertReasons)
+	dueByCheck, ok := n.notificationsDue(checkCtx, plan.checks)
+	if !ok {
+		return
+	}
+	n.recordNotificationsSent(checkCtx, n.sendDueNotifications(checkCtx, plan, dueByCheck))
+}
+
+type providerNotificationPlan struct {
+	candidates     []providerNotificationCandidate
+	checks         []store.ProviderNotificationCheck
+	reasonsByCheck []AlertReason
+}
+
+func newProviderNotificationPlan(targetCount int) providerNotificationPlan {
+	checkCapacity := targetCount * maxProviderAlertReasons
+	return providerNotificationPlan{
+		candidates:     make([]providerNotificationCandidate, 0, targetCount),
+		checks:         make([]store.ProviderNotificationCheck, 0, checkCapacity),
+		reasonsByCheck: make([]AlertReason, 0, checkCapacity),
+	}
+}
+
+func (n *ProviderNotifier) notificationPlan(targets []store.ProviderNotificationTarget) providerNotificationPlan {
+	plan := newProviderNotificationPlan(len(targets))
+	if len(targets) == 0 {
+		return plan
+	}
 	seen := make(map[string]struct{}, len(targets))
 	assessor := n.healthAssessor()
 	now := time.Now()
@@ -144,58 +169,61 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		start := len(checks)
-		for _, reason := range reasons {
-			check := store.ProviderNotificationCheck{
-				ProviderID: stableKey,
-				AccountID:  state.accountID,
-				ReasonKey:  reason.Key,
-			}
-			if _, _, _, ok := check.DBValues(); !ok {
-				continue
-			}
-			checks = append(checks, check)
-			reasonsByCheck = append(reasonsByCheck, reason)
+		if n.appendNotificationCandidate(&plan, target.Email, state, stableKey, reasons) {
+			seen[stableKey] = struct{}{}
 		}
-		if start == len(checks) {
+	}
+	return plan
+}
+
+func (n *ProviderNotifier) appendNotificationCandidate(plan *providerNotificationPlan, email string, state providerState, stableKey string, reasons []AlertReason) bool {
+	start := len(plan.checks)
+	for _, reason := range reasons {
+		check := store.ProviderNotificationCheck{
+			ProviderID: stableKey,
+			AccountID:  state.accountID,
+			ReasonKey:  reason.Key,
+		}
+		if _, _, _, ok := check.DBValues(); !ok {
 			continue
 		}
-		candidates = append(candidates, providerNotificationCandidate{
-			email: target.Email,
-			state: state,
-			start: start,
-			end:   len(checks),
-		})
-		seen[stableKey] = struct{}{}
+		plan.checks = append(plan.checks, check)
+		plan.reasonsByCheck = append(plan.reasonsByCheck, reason)
 	}
-	if len(checks) == 0 {
-		return
+	if start == len(plan.checks) {
+		return false
 	}
-	dueByCheck, ok := n.notificationsDue(checkCtx, checks)
-	if !ok {
-		return
-	}
-	sent := make([]store.ProviderNotificationCheck, 0, len(checks))
-	for _, candidate := range candidates {
-		if checkCtx.Err() != nil {
-			return
+	plan.candidates = append(plan.candidates, providerNotificationCandidate{
+		email: email,
+		state: state,
+		start: start,
+		end:   len(plan.checks),
+	})
+	return true
+}
+
+func (n *ProviderNotifier) sendDueNotifications(ctx context.Context, plan providerNotificationPlan, dueByCheck store.ProviderNotificationDueSet) []store.ProviderNotificationCheck {
+	sent := make([]store.ProviderNotificationCheck, 0, len(plan.checks))
+	for _, candidate := range plan.candidates {
+		if ctx.Err() != nil {
+			return sent
 		}
-		reasons := reasonsByCheck[candidate.start:candidate.start]
+		reasons := plan.reasonsByCheck[candidate.start:candidate.start]
 		sentStart := len(sent)
 		for i := candidate.start; i < candidate.end; i++ {
-			if dueByCheck.Contains(checks[i]) {
-				reasons = append(reasons, reasonsByCheck[i])
-				sent = append(sent, checks[i])
+			if dueByCheck.Contains(plan.checks[i]) {
+				reasons = append(reasons, plan.reasonsByCheck[i])
+				sent = append(sent, plan.checks[i])
 			}
 		}
 		if len(reasons) == 0 {
 			continue
 		}
-		if !n.sendAlertEmail(checkCtx, candidate.email, candidate.state, reasons) {
+		if !n.sendAlertEmail(ctx, candidate.email, candidate.state, reasons) {
 			sent = sent[:sentStart]
 		}
 	}
-	n.recordNotificationsSent(checkCtx, sent)
+	return sent
 }
 
 type providerNotificationCandidate struct {

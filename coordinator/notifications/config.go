@@ -3,6 +3,7 @@ package notifications
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ const (
 	minResendAPIKeyLength = 24
 	maxResendAPIKeyLength = 128
 )
+
+var resendAPIKeyPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(resendAPIKeyPrefix) + `[A-Za-z0-9_-]+$`)
 
 const (
 	defaultEmailFrom      = "Darkbloom <providers@darkbloom.dev>"
@@ -46,22 +49,10 @@ func validResendAPIKey(key string) bool {
 	if key != strings.TrimSpace(key) ||
 		len(key) < minResendAPIKeyLength ||
 		len(key) > maxResendAPIKeyLength ||
-		!strings.HasPrefix(key, resendAPIKeyPrefix) {
+		!resendAPIKeyPattern.MatchString(key) {
 		return false
 	}
-	for _, r := range key {
-		if !validResendAPIKeyChar(r) {
-			return false
-		}
-	}
 	return true
-}
-
-func validResendAPIKeyChar(r rune) bool {
-	return r >= 'a' && r <= 'z' ||
-		r >= 'A' && r <= 'Z' ||
-		r >= '0' && r <= '9' ||
-		r == '_' || r == '-'
 }
 
 func validatedResendAPIKey(raw string) (string, bool) {
@@ -73,7 +64,7 @@ func validatedResendAPIKey(raw string) (string, bool) {
 }
 
 func ReadConfig() Config {
-	apiKey, ok := resendAPIKeyFromEnv()
+	apiKey, ok := validatedResendAPIKey(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
 	if !ok {
 		return Config{Enabled: false}
 	}
@@ -99,10 +90,6 @@ func ReadConfig() Config {
 		return Config{Enabled: false}
 	}
 	return cfg
-}
-
-func resendAPIKeyFromEnv() (string, bool) {
-	return validatedResendAPIKey(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
 }
 
 func (c Config) WithDefaults() Config {

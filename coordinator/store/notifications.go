@@ -48,11 +48,15 @@ func (k ProviderNotificationReasonKey) DBValue() (string, bool) {
 	return string(k), true
 }
 
-type ProviderNotificationDueSet map[ProviderNotificationCheck]struct{}
+type ProviderNotificationDueSet []ProviderNotificationCheck
 
 func (s ProviderNotificationDueSet) Contains(check ProviderNotificationCheck) bool {
-	_, ok := s[check]
-	return ok
+	for _, due := range s {
+		if due == check {
+			return true
+		}
+	}
+	return false
 }
 
 func ProviderNotificationStableKey(rec ProviderRecord) string {

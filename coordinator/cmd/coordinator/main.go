@@ -509,6 +509,9 @@ func main() {
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
 
+	// Reclaim expired read-cache entries periodically (bounds memory growth).
+	go srv.StartReadCacheJanitor(ctx)
+
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.ServerConfig.Port,

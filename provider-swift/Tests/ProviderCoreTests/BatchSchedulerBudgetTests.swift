@@ -658,7 +658,7 @@ struct BatchSchedulerBudgetTests {
         let kvBudget = GlobalKVCacheBudget(
             reserveBytes: 0,
             safetyFactor: 1.0,
-            memorySnapshot: { (total: 200_000, active: 0, cache: 0) }
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 200_000, active: 0, cache: 0, systemAvailable: .max) }
         )
         let scheduler = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
@@ -713,7 +713,7 @@ struct BatchSchedulerBudgetTests {
         let kvBudget = GlobalKVCacheBudget(
             reserveBytes: 0,
             safetyFactor: 1.0,
-            memorySnapshot: { (total: 1_000_000, active: 0, cache: 0) }
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000_000, active: 0, cache: 0, systemAvailable: .max) }
         )
         let scheduler = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
@@ -746,7 +746,7 @@ struct BatchSchedulerBudgetTests {
     func plainColdRequestOutcomes() async {
         let fits = GlobalKVCacheBudget(
             reserveBytes: 0, safetyFactor: 1.0,
-            memorySnapshot: { (total: 1_000_000, active: 0, cache: 0) })
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000_000, active: 0, cache: 0, systemAvailable: .max) })
         let schedulerFits = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: fits)
         await schedulerFits._setKvBytesPerTokenForTest(1024)
@@ -763,7 +763,7 @@ struct BatchSchedulerBudgetTests {
         // downgrade to). Mirrors the old `false` return.
         let tiny = GlobalKVCacheBudget(
             reserveBytes: 0, safetyFactor: 1.0,
-            memorySnapshot: { (total: 1_000, active: 0, cache: 0) })
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000, active: 0, cache: 0, systemAvailable: .max) })
         let schedulerTiny = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: tiny)
         await schedulerTiny._setKvBytesPerTokenForTest(1024)

@@ -43,7 +43,12 @@ extension BatchScheduler {
         let osReserve = 4 * 1024 * 1024 * 1024
         let safetyMargin = totalMemory / 10
         let globalUsed = Int(MLX.GPU.activeMemory) + Int(MLX.GPU.cacheMemory)
-        let availableHeadroom = max(0, totalMemory - osReserve - safetyMargin - globalUsed)
+        let mlxFree = max(0, totalMemory - globalUsed)
+        // Clamp the MLX-only view to real OS-free RAM (other processes' usage),
+        // same as the load gate / GlobalKVCacheBudget; else we OOM on shared boxes.
+        let osAvailable = SystemMemory.availableBytes().map { Int(min($0, UInt64(Int.max))) } ?? Int.max
+        let realFree = min(mlxFree, osAvailable)
+        let availableHeadroom = max(0, realFree - osReserve - safetyMargin)
         let liveBudget = activeTokenBudgetUsed + (availableHeadroom / kvBytesPerToken)
         return max(1024, min(staticBudget, liveBudget))
     }

@@ -155,11 +155,8 @@ func vlmDecodeImageGarbageThrows() {
 @Test("decodeVideo writes an inline data: URI to a tracked temp file")
 func vlmDecodeVideoDataURIWritesTempFile() async throws {
     var tempFiles: [URL] = []
-    let payload = Data("fake mp4 bytes".utf8).base64EncodedString()
-    let uri = "data:video/mp4;base64,\(payload)"
-    // "fake mp4 bytes" has no readable video track -> enforceVideoLimits is a
-    // no-op (byte cap is the bound), so this still writes + tracks the temp file.
-    let video = try await VLMRequestInference.decodeVideo(uri, tempFiles: &tempFiles)
+    // A real, probeable 64x64 video passes the limits and is written + tracked.
+    let video = try await VLMRequestInference.decodeVideo(tinyMP4DataURI, tempFiles: &tempFiles)
     guard case .url(let url) = video else {
         Issue.record("expected .url, got \(video)")
         return
@@ -167,10 +164,21 @@ func vlmDecodeVideoDataURIWritesTempFile() async throws {
     #expect(tempFiles == [url])
     #expect(FileManager.default.fileExists(atPath: url.path))
     #expect(url.pathExtension == "mp4")
-    let written = try Data(contentsOf: url)
-    #expect(String(data: written, encoding: .utf8) == "fake mp4 bytes")
+    #expect((try Data(contentsOf: url)).count > 0)
     // cleanup (production code removes these when the stream ends)
     try? FileManager.default.removeItem(at: url)
+}
+
+@Test("decodeVideo fails closed when video metadata is unprobeable")
+func vlmDecodeVideoUnreadableMetadataRejected() async {
+    // Bytes that aren't a real video: duration/tracks can't be proven within
+    // cap, so it's rejected — the byte cap doesn't bound decoded frames.
+    var tempFiles: [URL] = []
+    let uri = "data:video/mp4;base64,\(Data("not a real video".utf8).base64EncodedString())"
+    await expectMediaTooLarge {
+        _ = try await VLMRequestInference.decodeVideo(uri, tempFiles: &tempFiles)
+    }
+    #expect(tempFiles.isEmpty)  // rejected -> temp file cleaned up, not tracked
 }
 
 @Test("decodeVideo rejects an http:// URI with invalidURL (no SSRF)")

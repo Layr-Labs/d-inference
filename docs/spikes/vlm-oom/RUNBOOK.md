@@ -54,9 +54,13 @@ the raster is allocated:
   before `CIImage(data:)`: per-image cap (`DARKBLOOM_MAX_IMAGE_MEGAPIXELS`, default
   100) + a post-decode extent backstop, and a request-wide aggregate
   (`DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS`, default 384).
-- **Video** — frame dimensions + duration read from `AVURLAsset` track metadata
-  (no frame decode) before the model rasterizes frames: per-frame cap reuses
-  `maxImagePixels`; duration cap `DARKBLOOM_MAX_VIDEO_SECONDS` (default 600).
+- **Video** — fails **closed**: rejects unless the duration and *every* track's
+  **coded** frame dimensions (`CMVideoFormatDescriptionGetDimensions`, the larger
+  of natural/coded) are readable and within cap, read from `AVURLAsset` metadata
+  with no frame decode. Per-frame reuses `maxImagePixels`; duration cap
+  `DARKBLOOM_MAX_VIDEO_SECONDS` (default 600) bounds the sampled frame count.
+  (The model samples frames from these same properties, so a usable video is
+  always probeable — fail-closed never rejects one.)
 - **Both** — per-part decoded-byte cap (`DARKBLOOM_MAX_MEDIA_MIB`, default 25),
   also bounding the inline-video temp file + RAM.
 

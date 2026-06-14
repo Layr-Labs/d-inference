@@ -464,29 +464,54 @@ public enum VLMRequestInference {
         return .url(tempURL)
     }
 
-    /// Reject a video whose frame dimensions or duration exceed the caps, read
-    /// from track metadata without decoding frames. A file with no readable
-    /// video track is left to the model (still bounded by the byte cap) rather
-    /// than rejected here — mirroring the image header nil-fallthrough.
+    /// Reject a video bomb using track metadata only (no frame decode). Fails
+    /// CLOSED: the byte cap does NOT bound decoded frame pixels or the sampled
+    /// frame count, so a video whose duration or any track's frame dimensions
+    /// can't be read and proven within cap is rejected. The model samples frames
+    /// from these same properties, so a video it can actually use is always
+    /// probeable here — fail-closed never rejects a usable video.
     static func enforceVideoLimits(
         _ url: URL, maxFramePixels: Int, maxDurationSeconds: Double
     ) async throws {
         let asset = AVURLAsset(url: url)
-        guard let track = try? await asset.loadTracks(withMediaType: .video).first else {
-            return
+
+        // Duration bounds the sampled frame count (frames = duration × fps).
+        // Unreadable / non-finite / over-cap → reject.
+        guard let duration = try? await asset.load(.duration), duration.seconds.isFinite else {
+            throw MediaError.mediaTooLarge("video duration is unreadable")
         }
-        if let size = try? await track.load(.naturalSize) {
-            let pixels = safeExtentPixels(CGRect(origin: .zero, size: size))
-            if pixels > maxFramePixels {
-                throw MediaError.mediaTooLarge(
-                    "video frame is \(pixels) px; per-frame cap is \(maxFramePixels) px")
-            }
-        }
-        if let duration = try? await asset.load(.duration),
-            duration.seconds.isFinite, duration.seconds > maxDurationSeconds
-        {
+        guard duration.seconds <= maxDurationSeconds else {
             throw MediaError.mediaTooLarge(
                 "video is \(Int(duration.seconds))s; duration cap is \(Int(maxDurationSeconds))s")
+        }
+
+        guard let tracks = try? await asset.loadTracks(withMediaType: .video), !tracks.isEmpty
+        else {
+            throw MediaError.mediaTooLarge("no readable video track")
+        }
+        // EVERY track's CODED frame dimensions (what the decoder allocates before
+        // AVAssetImageGenerator scales to naturalSize) must be readable and ≤ cap.
+        // A file can understate naturalSize while coding huge frames, so charge
+        // the larger of naturalSize and the format-description dimensions.
+        for track in tracks {
+            guard let formats = try? await track.load(.formatDescriptions), !formats.isEmpty else {
+                throw MediaError.mediaTooLarge("video frame dimensions are unreadable")
+            }
+            var framePixels = 0
+            if let size = try? await track.load(.naturalSize) {
+                framePixels = safeExtentPixels(CGRect(origin: .zero, size: size))
+            }
+            for desc in formats {
+                let dims = CMVideoFormatDescriptionGetDimensions(desc)
+                framePixels = max(
+                    framePixels,
+                    safeExtentPixels(
+                        CGRect(x: 0, y: 0, width: Int(dims.width), height: Int(dims.height))))
+            }
+            if framePixels > maxFramePixels {
+                throw MediaError.mediaTooLarge(
+                    "video frame is \(framePixels) px; per-frame cap is \(maxFramePixels) px")
+            }
         }
     }
 

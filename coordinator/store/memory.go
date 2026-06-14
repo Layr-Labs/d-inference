@@ -2540,6 +2540,32 @@ func (s *MemoryStore) ListProviderRecords(_ context.Context) ([]ProviderRecord, 
 	return records, nil
 }
 
+func (s *MemoryStore) ListProviderNotificationTargets(_ context.Context) ([]ProviderNotificationTarget, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	targets := make([]ProviderNotificationTarget, 0, len(s.providerRecords))
+	for _, p := range s.providerRecords {
+		if p.AccountID == "" {
+			continue
+		}
+		user, ok := s.usersByAccountID[p.AccountID]
+		if !ok || strings.TrimSpace(user.Email) == "" {
+			continue
+		}
+		cp := *p
+		if p.Location != nil {
+			loc := *p.Location
+			cp.Location = &loc
+		}
+		targets = append(targets, ProviderNotificationTarget{
+			Provider: cp,
+			Email:    strings.TrimSpace(user.Email),
+		})
+	}
+	return targets, nil
+}
+
 func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string) ([]ProviderRecord, error) {
 	if accountID == "" {
 		return []ProviderRecord{}, nil
@@ -2824,26 +2850,35 @@ func providerNotificationKey(providerID, reasonKey string) string {
 	return providerID + "\x00" + reasonKey
 }
 
-func (s *MemoryStore) ProviderNotificationDue(_ context.Context, providerID, accountID, reasonKey string, cooldown time.Duration) (bool, error) {
-	if providerID == "" || accountID == "" || reasonKey == "" {
-		return false, nil
+func (s *MemoryStore) ProviderNotificationsDue(_ context.Context, providerID, accountID string, reasonKeys []string, cooldown time.Duration) (map[string]bool, error) {
+	due := make(map[string]bool, len(reasonKeys))
+	if providerID == "" || accountID == "" {
+		return due, nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	lastSent, ok := s.providerNotifications[providerNotificationKey(providerID, reasonKey)]
-	if !ok {
-		return true, nil
+	now := time.Now()
+	for _, reasonKey := range reasonKeys {
+		if reasonKey == "" {
+			continue
+		}
+		lastSent, ok := s.providerNotifications[providerNotificationKey(providerID, reasonKey)]
+		due[reasonKey] = !ok || now.Sub(lastSent) >= cooldown
 	}
-	return time.Since(lastSent) >= cooldown, nil
+	return due, nil
 }
 
-func (s *MemoryStore) RecordProviderNotificationSent(_ context.Context, providerID, accountID, reasonKey string, sentAt time.Time) error {
-	if providerID == "" || accountID == "" || reasonKey == "" {
+func (s *MemoryStore) RecordProviderNotificationsSent(_ context.Context, providerID, accountID string, reasonKeys []string, sentAt time.Time) error {
+	if providerID == "" || accountID == "" {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.providerNotifications[providerNotificationKey(providerID, reasonKey)] = sentAt
+	for _, reasonKey := range reasonKeys {
+		if reasonKey != "" {
+			s.providerNotifications[providerNotificationKey(providerID, reasonKey)] = sentAt
+		}
+	}
 	return nil
 }
 

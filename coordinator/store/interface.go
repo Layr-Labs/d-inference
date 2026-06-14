@@ -481,6 +481,15 @@ type Store interface {
 	// reconcile. Returns the number of sessions closed.
 	CloseOpenProviderSessions(ctx context.Context, staleBefore time.Time) (int, error)
 
+	// --- Provider owner notifications ---
+
+	// ProviderNotificationDue reports whether a provider/account/reason email may
+	// be sent under the configured cooldown.
+	ProviderNotificationDue(ctx context.Context, providerID, accountID, reasonKey string, cooldown time.Duration) (bool, error)
+
+	// RecordProviderNotificationSent records a successful notification send.
+	RecordProviderNotificationSent(ctx context.Context, providerID, accountID, reasonKey string, sentAt time.Time) error
+
 	// --- Provider Reputation Persistence ---
 
 	// UpsertReputation creates or updates a provider's reputation record.

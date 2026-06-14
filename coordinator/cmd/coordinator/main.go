@@ -508,7 +508,7 @@ func main() {
 	reg.StartEvictionLoop(ctx, 90*time.Second)
 
 	// Email provider owners when a linked machine stops earning or needs action.
-	providerNotifier := notifications.NewProviderNotifier(reg, st, cfg.NotificationCfg, logger)
+	providerNotifier := notifications.NewProviderNotifier(reg, st, cfg.NotificationCfg, logger, nil)
 	providerNotifier.Start(ctx)
 
 	// Push gauge values to DogStatsD periodically.

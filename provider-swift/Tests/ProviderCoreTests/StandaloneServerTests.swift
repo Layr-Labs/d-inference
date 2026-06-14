@@ -1,5 +1,7 @@
 import Hummingbird
 import HummingbirdTesting
+import Logging
+import NIOEmbedded
 import Testing
 @testable import ProviderCore
 
@@ -210,6 +212,52 @@ import Testing
             #expect(response.status == .ok)
         }
     }
+}
+
+// MARK: - CORSResponder: VLM media-error mapping (local HTTP path)
+
+/// Inner responder stub that always throws a fixed error, so we can drive
+/// `CORSResponder.respond` directly and assert how it renders that error —
+/// without standing up the whole engine/model stack.
+private struct ThrowingResponder<E: Error>: HTTPResponder {
+    typealias Context = BasicRequestContext
+    let error: E
+    func respond(to request: Request, context: Context) async throws -> Response {
+        throw error
+    }
+}
+
+@Test func corsResponderMapsVLMMediaErrorTo400OnLocalPath() async throws {
+    // Regression: the coordinator WebSocket path maps VLMRequestInference.MediaError
+    // to a 400 (ProviderLoop.mapInferenceErrorToStatus), but the local HTTP path's
+    // CORSResponder previously caught only MultiModelBatchSchedulerEngineError /
+    // MLXOpenAIServiceError, so a MediaError from the VLM media-cap escaped as the
+    // framework's generic 500. CORSResponder now catches it too. Drive the
+    // responder directly with a stub that throws the oversize-media error.
+    let mediaErr = VLMRequestInference.MediaError.mediaTooLarge(
+        "image is 1600000000 px; per-image cap is 100000000 px")
+    let responder = CORSResponder(inner: ThrowingResponder(error: mediaErr))
+
+    let request = Request(
+        head: .init(method: .post, scheme: "http", authority: "localhost", path: "/v1/chat/completions"),
+        body: .init(buffer: ByteBuffer()))
+    let context = BasicRequestContext(
+        source: ApplicationRequestContextSource(
+            channel: EmbeddedChannel(),
+            logger: Logger(label: #function)))
+
+    let response = try await responder.respond(to: request, context: context)
+
+    #expect(response.status == .badRequest,
+        "oversized inline media on the local path must map to 400, not a generic 500")
+    #expect(response.headers[.accessControlAllowOrigin] == "*",
+        "CORS allow-origin must be set on the rendered error response")
+    // Client-fault video write IO failure stays a 500.
+    let writeFail = CORSResponder(
+        inner: ThrowingResponder(error: VLMRequestInference.MediaError.videoWriteFailed("disk full")))
+    let writeResp = try await writeFail.respond(to: request, context: context)
+    #expect(writeResp.status == .internalServerError,
+        "provider-side videoWriteFailed must stay a 500")
 }
 
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {

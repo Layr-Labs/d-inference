@@ -195,6 +195,10 @@ func (n *ProviderNotifier) sendDueNotifications(
 		if ctx.Err() != nil {
 			return sent
 		}
+		if candidate.start < 0 || candidate.start > candidate.end ||
+			candidate.end > len(checks) || candidate.end > len(reasonsByCheck) {
+			continue
+		}
 		reasons := reasonsByCheck[candidate.start:candidate.start]
 		sentStart := len(sent)
 		for i := candidate.start; i < candidate.end; i++ {

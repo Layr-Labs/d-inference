@@ -123,10 +123,10 @@ func (c Config) Check() error {
 		return nil
 	}
 	if strings.TrimSpace(c.Email.APIKey) == "" {
-		return fmt.Errorf("provider email service credentials are not configured")
+		return fmt.Errorf("provider email service is not configured")
 	}
 	if _, ok := validatedResendAPIKey(c.Email.APIKey); !ok {
-		return fmt.Errorf("provider email service credentials have an invalid format")
+		return fmt.Errorf("provider email service configuration is invalid")
 	}
 	if strings.TrimSpace(c.Email.From) == "" {
 		return fmt.Errorf("provider email sender is not configured")

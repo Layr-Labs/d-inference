@@ -292,6 +292,7 @@ func vlmMediaErrorMapsTo400() {
         .base64DecodeFailed,
         .percentDecodeFailed,
         .imageDecodeFailed,
+        .mediaTooLarge("image is 1600000000 px; per-image cap is 100000000 px"),
     ]
     for err in clientFaults {
         #expect(
@@ -320,4 +321,127 @@ func vlmMediaErrorLocalizedDescription() {
     let err = VLMRequestInference.MediaError.invalidURL("file:///etc/passwd")
     #expect(err.localizedDescription == "media must be sent as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\") on this end-to-end-encrypted endpoint; remote http(s):// and file:// URLs are rejected. Got: file:///etc/passwd")
     #expect(!err.localizedDescription.contains("couldn’t be completed"))
+}
+
+// MARK: - Decompression-bomb / media-size caps
+
+/// Assert `body` threw `MediaError.mediaTooLarge`.
+private func expectMediaTooLarge(_ body: () throws -> Void) {
+    do {
+        try body()
+        Issue.record("expected MediaError.mediaTooLarge but no error was thrown")
+    } catch let error as VLMRequestInference.MediaError {
+        guard case .mediaTooLarge = error else {
+            Issue.record("expected .mediaTooLarge, got \(error)")
+            return
+        }
+    } catch {
+        Issue.record("expected MediaError.mediaTooLarge, got \(error)")
+    }
+}
+
+@Test("decodeImage rejects an image whose pixel count exceeds the per-image cap")
+func vlmDecodeImageRejectsOverPixelCap() {
+    // The 1x1 tiny PNG is 1 px; a 0-px cap makes any real image over-cap, so we
+    // hit the header-read reject path without allocating a multi-GB raster. On
+    // hardware a real 40000x40000 bomb (256 Mpx–1.6 Gpx) takes this same branch
+    // — measured peak 1.78 GB at 16000^2 on the real path before this fix.
+    expectMediaTooLarge {
+        _ = try VLMRequestInference.decodeImage(tinyPNGDataURI, maxImagePixels: 0)
+    }
+}
+
+@Test("decodeImage accepts an image within the per-image cap (no regression)")
+func vlmDecodeImageWithinPixelCapPasses() throws {
+    let image = try VLMRequestInference.decodeImage(tinyPNGDataURI, maxImagePixels: 100)
+    guard case .ciImage = image else {
+        Issue.record("expected a decoded .ciImage")
+        return
+    }
+}
+
+@Test("imagePixelCount reads dimensions from the header (no raster decode)")
+func vlmImagePixelCountReadsHeader() throws {
+    let data = try VLMRequestInference.dataFromDataURI(tinyPNGDataURI)
+    #expect(VLMRequestInference.imagePixelCount(data) == 1)  // 1x1
+    // Non-image bytes can't be sized -> nil (decodeImage then fails closed).
+    #expect(VLMRequestInference.imagePixelCount(Data("not an image".utf8)) == nil)
+}
+
+@Test("dataFromDataURI rejects a payload over the decoded-byte cap")
+func vlmDataFromDataURIRejectsOverByteCap() {
+    // 0-byte cap: any non-empty payload is over-cap, rejected from the base64
+    // length before the decoded buffer is ever allocated.
+    expectMediaTooLarge {
+        _ = try VLMRequestInference.dataFromDataURI(tinyPNGDataURI, maxMediaDecodedBytes: 0)
+    }
+}
+
+@Test("buildUserInput rejects images whose aggregate pixels exceed the request cap")
+func vlmBuildUserInputRejectsAggregatePixels() {
+    // Two 1x1 images = 2 px total; a 1-px aggregate cap trips on the second,
+    // bounding the "pack many max-size images into one frame" amplification.
+    let request = OpenAIChatCompletionRequest(
+        model: "vlm",
+        messages: [
+            .init(
+                role: .user,
+                content: .parts([
+                    .imageURL(tinyPNGDataURI),
+                    .imageURL(tinyPNGDataURI),
+                ]))
+        ])
+    expectMediaTooLarge {
+        _ = try VLMRequestInference.buildUserInput(from: request, maxRequestImagePixels: 1)
+    }
+}
+
+@Test("buildUserInput accepts images within the aggregate cap (no regression)")
+func vlmBuildUserInputWithinAggregatePasses() throws {
+    let request = OpenAIChatCompletionRequest(
+        model: "vlm",
+        messages: [
+            .init(
+                role: .user,
+                content: .parts([.imageURL(tinyPNGDataURI), .imageURL(tinyPNGDataURI)]))
+        ])
+    _ = try VLMRequestInference.buildUserInput(from: request, maxRequestImagePixels: 10)
+}
+
+@Test("resolveMaxPixels honors a valid env override and falls back otherwise")
+func vlmResolveMaxPixels() {
+    let key = "DARKBLOOM_MAX_IMAGE_MEGAPIXELS"
+    #expect(
+        VLMRequestInference.resolveMaxPixels(
+            env: key, defaultMegapixels: 100, environment: [key: "8"]) == 8_000_000)
+    #expect(
+        VLMRequestInference.resolveMaxPixels(
+            env: key, defaultMegapixels: 100, environment: [:]) == 100_000_000)
+    #expect(
+        VLMRequestInference.resolveMaxPixels(
+            env: key, defaultMegapixels: 100, environment: [key: "-1"]) == 100_000_000)
+    #expect(
+        VLMRequestInference.resolveMaxPixels(
+            env: key, defaultMegapixels: 100, environment: [key: "abc"]) == 100_000_000)
+}
+
+@Test("resolveMaxBytes honors a valid env override and falls back otherwise")
+func vlmResolveMaxBytes() {
+    let key = "DARKBLOOM_MAX_MEDIA_MIB"
+    #expect(
+        VLMRequestInference.resolveMaxBytes(
+            env: key, defaultMiB: 25, environment: [key: "4"]) == 4 * 1024 * 1024)
+    #expect(
+        VLMRequestInference.resolveMaxBytes(
+            env: key, defaultMiB: 25, environment: [:]) == 25 * 1024 * 1024)
+    #expect(
+        VLMRequestInference.resolveMaxBytes(
+            env: key, defaultMiB: 25, environment: [key: "0"]) == 25 * 1024 * 1024)
+}
+
+@Test("media-limit defaults are the documented values")
+func vlmMediaLimitDefaults() {
+    #expect(VLMRequestInference.maxImagePixels == 100_000_000)
+    #expect(VLMRequestInference.maxRequestImagePixels == 384_000_000)
+    #expect(VLMRequestInference.maxMediaDecodedBytes == 25 * 1024 * 1024)
 }

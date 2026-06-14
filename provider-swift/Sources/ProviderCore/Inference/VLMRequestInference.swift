@@ -17,6 +17,7 @@
 
 import CoreImage
 import Foundation
+import ImageIO
 import MLXLMCommon
 import MLXLMServer
 
@@ -40,6 +41,7 @@ public enum VLMRequestInference {
         case imageDecodeFailed
         case invalidURL(String)
         case videoWriteFailed(String)
+        case mediaTooLarge(String)
 
         public var description: String {
             switch self {
@@ -59,6 +61,8 @@ public enum VLMRequestInference {
                 return "media must be sent as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\") on this end-to-end-encrypted endpoint; remote http(s):// and file:// URLs are rejected. Got: \(shown)"
             case .videoWriteFailed(let detail):
                 return "failed to write inline video to a temp file (\(detail))"
+            case .mediaTooLarge(let detail):
+                return "inline media exceeds a decode limit (\(detail))"
             }
         }
 
@@ -204,12 +208,15 @@ public enum VLMRequestInference {
     /// remove them when the stream ends.
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
-        tempFiles: inout [URL]
+        tempFiles: inout [URL],
+        maxRequestImagePixels: Int = Self.maxRequestImagePixels
     ) throws -> UserInput {
         var chatMessages: [Chat.Message] = []
+        var totalPixels = 0
         for message in request.messages {
             let (text, images, videos) = try parts(
-                from: message.content, tempFiles: &tempFiles)
+                from: message.content, tempFiles: &tempFiles, totalPixels: &totalPixels,
+                maxRequestImagePixels: maxRequestImagePixels)
             switch message.role {
             case .user:
                 chatMessages.append(.user(text, images: images, videos: videos))
@@ -227,10 +234,12 @@ public enum VLMRequestInference {
     /// Convenience overload that discards temp-file tracking. Used by
     /// tests that pass only base64/url images (no inline videos).
     static func buildUserInput(
-        from request: OpenAIChatCompletionRequest
+        from request: OpenAIChatCompletionRequest,
+        maxRequestImagePixels: Int = Self.maxRequestImagePixels
     ) throws -> UserInput {
         var sink: [URL] = []
-        return try buildUserInput(from: request, tempFiles: &sink)
+        return try buildUserInput(
+            from: request, tempFiles: &sink, maxRequestImagePixels: maxRequestImagePixels)
     }
 
     /// Split a message's content into the concatenated text plus decoded
@@ -239,7 +248,9 @@ public enum VLMRequestInference {
     /// rather than being silently ignored.
     private static func parts(
         from content: OpenAIMessageContent,
-        tempFiles: inout [URL]
+        tempFiles: inout [URL],
+        totalPixels: inout Int,
+        maxRequestImagePixels: Int
     ) throws -> (text: String, images: [UserInput.Image], videos: [UserInput.Video]) {
         switch content {
         case .text(let string):
@@ -255,7 +266,18 @@ public enum VLMRequestInference {
                 case .text(let string):
                     text += string
                 case .imageURL(let uri):
-                    images.append(try decodeImage(uri))
+                    let image = try decodeImage(uri)
+                    // Charge the request-wide aggregate (each image is already
+                    // ≤ maxImagePixels, so peak is bounded by aggregate + one image).
+                    if case .ciImage(let ci) = image {
+                        totalPixels += Int(ci.extent.width) * Int(ci.extent.height)
+                        guard totalPixels <= maxRequestImagePixels else {
+                            throw MediaError.mediaTooLarge(
+                                "request images total \(totalPixels) px; aggregate cap is "
+                                    + "\(maxRequestImagePixels) px")
+                        }
+                    }
+                    images.append(image)
                 case .videoURL(let uri):
                     videos.append(try decodeVideo(uri, tempFiles: &tempFiles))
                 case .unsupported:
@@ -264,6 +286,70 @@ public enum VLMRequestInference {
             }
             return (text, images, videos)
         }
+    }
+
+    // MARK: - Media limits (decompression-bomb guard)
+
+    // `CIImage(data:)` eagerly rasterizes (W*H*4 bytes) and has no scaled-decode
+    // for PNG, so a tiny highly-compressed "bomb" (a uniform 40000x40000 PNG is
+    // ~5 MB on the wire — well under the 32 MiB WS frame cap) explodes on decode.
+    // Measured on M-series hardware: even the real resample-to-448 provider path
+    // peaks at 1.78 GB for a 16000^2 input and 5.73 GB at 32000^2, all *before*
+    // any KV/token/load admission runs. These caps reject such inputs from the
+    // format header, before the raster is ever allocated. Defaults are generous
+    // for genuine media (a 100 MP camera frame is 100 Mpx) yet bound the
+    // otherwise-unbounded allocation; all are env-tunable.
+
+    /// Per-image pixel ceiling (width × height). Rejected from the header.
+    public static let maxImagePixels = resolveMaxPixels(
+        env: "DARKBLOOM_MAX_IMAGE_MEGAPIXELS", defaultMegapixels: 100)
+
+    /// Aggregate pixel ceiling across all image parts in one request — bounds
+    /// the "pack many max-size images into one frame" amplification.
+    public static let maxRequestImagePixels = resolveMaxPixels(
+        env: "DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS", defaultMegapixels: 384)
+
+    /// Per-part decoded-byte ceiling for a `data:` payload (image or video).
+    /// Bounds the inline-video temp file + in-RAM buffer too.
+    public static let maxMediaDecodedBytes = resolveMaxBytes(
+        env: "DARKBLOOM_MAX_MEDIA_MIB", defaultMiB: 25)
+
+    /// Resolve a megapixel limit from `env` (a positive megapixel count) or fall
+    /// back to `defaultMegapixels`. Injectable environment for tests.
+    static func resolveMaxPixels(
+        env name: String, defaultMegapixels: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        if let raw = environment[name], let mp = Double(raw), mp > 0, mp.isFinite {
+            return Int(min(mp * 1_000_000, Double(Int.max)))
+        }
+        return defaultMegapixels * 1_000_000
+    }
+
+    /// Resolve a byte limit from `env` (a positive MiB count) or `defaultMiB`.
+    static func resolveMaxBytes(
+        env name: String, defaultMiB: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        if let raw = environment[name], let mib = Int(raw), mib > 0 {
+            return mib * 1024 * 1024
+        }
+        return defaultMiB * 1024 * 1024
+    }
+
+    /// Pixel count (width × height) read from the image's format **header only**
+    /// — no raster decode (proven O(header): ~0 MB RSS even for a gigapixel
+    /// bomb). Returns `nil` if ImageIO can't size the data (truncated/unknown
+    /// format), in which case `CIImage(data:)` fails closed downstream.
+    static func imagePixelCount(_ data: Data) -> Int? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+            let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+            let w = props[kCGImagePropertyPixelWidth] as? Int,
+            let h = props[kCGImagePropertyPixelHeight] as? Int,
+            w > 0, h > 0
+        else { return nil }
+        let (product, overflow) = w.multipliedReportingOverflow(by: h)
+        return overflow ? Int.max : product
     }
 
     // MARK: - Media decode
@@ -276,11 +362,21 @@ public enum VLMRequestInference {
     /// request drive `CIImage(contentsOf:)` into an SSRF / local-file-read
     /// primitive (the provider is the fetcher), so a non-`data:` URI fails
     /// closed with `invalidURL`.
-    static func decodeImage(_ uri: String) throws -> UserInput.Image {
+    static func decodeImage(
+        _ uri: String, maxImagePixels: Int = Self.maxImagePixels
+    ) throws -> UserInput.Image {
         guard uri.hasPrefix("data:") else {
             throw MediaError.invalidURL(uri)
         }
         let data = try dataFromDataURI(uri)
+        // Reject a decompression bomb from the header BEFORE CIImage(data:)
+        // eagerly rasterizes it (the allocation happens at decode, not at first
+        // use — there is no lazy escape, and the model's downscale doesn't help
+        // because CoreImage decodes the full-res source first).
+        if let pixels = imagePixelCount(data), pixels > maxImagePixels {
+            throw MediaError.mediaTooLarge(
+                "image is \(pixels) px; per-image cap is \(maxImagePixels) px")
+        }
         guard let image = CIImage(data: data) else {
             throw MediaError.imageDecodeFailed
         }
@@ -315,7 +411,9 @@ public enum VLMRequestInference {
     /// Extract the raw bytes from a `data:` URI. The header before the
     /// first comma decides the encoding: `;base64` ⇒ base64, otherwise
     /// the payload is percent-encoded UTF-8 text.
-    static func dataFromDataURI(_ uri: String) throws -> Data {
+    static func dataFromDataURI(
+        _ uri: String, maxMediaDecodedBytes: Int = Self.maxMediaDecodedBytes
+    ) throws -> Data {
         guard let commaIndex = uri.firstIndex(of: ",") else {
             throw MediaError.malformedDataURI("missing ','")
         }
@@ -324,6 +422,13 @@ public enum VLMRequestInference {
 
         if header.contains(";base64") {
             let stripped = payload.filter { !$0.isWhitespace }
+            // base64 decodes to ~(len/4)*3 bytes; reject from the length BEFORE
+            // allocating the decoded buffer.
+            let approxDecoded = stripped.utf8.count / 4 * 3
+            guard approxDecoded <= maxMediaDecodedBytes else {
+                throw MediaError.mediaTooLarge(
+                    "payload ~\(approxDecoded) bytes; cap is \(maxMediaDecodedBytes) bytes")
+            }
             guard let data = Data(base64Encoded: stripped) else {
                 throw MediaError.base64DecodeFailed
             }
@@ -334,6 +439,10 @@ public enum VLMRequestInference {
             let data = decoded.data(using: .utf8)
         else {
             throw MediaError.percentDecodeFailed
+        }
+        guard data.count <= maxMediaDecodedBytes else {
+            throw MediaError.mediaTooLarge(
+                "payload \(data.count) bytes; cap is \(maxMediaDecodedBytes) bytes")
         }
         return data
     }

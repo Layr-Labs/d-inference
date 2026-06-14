@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"golang.org/x/mod/semver"
 )
 
 func providerStateFromRecord(rec store.ProviderRecord) providerState {
@@ -76,6 +77,25 @@ func latestProviderRecords(records []store.ProviderRecord) []store.ProviderRecor
 	return out
 }
 
+func latestProviderNotificationTargets(targets []store.ProviderNotificationTarget) []store.ProviderNotificationTarget {
+	byKey := make(map[string]store.ProviderNotificationTarget)
+	for _, target := range targets {
+		key := notificationStableKey(target.Provider)
+		prev, ok := byKey[key]
+		if !ok || target.Provider.LastSeen.After(prev.Provider.LastSeen) {
+			byKey[key] = target
+		}
+	}
+	out := make([]store.ProviderNotificationTarget, 0, len(byKey))
+	for _, target := range byKey {
+		out = append(out, target)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Provider.LastSeen.After(out[j].Provider.LastSeen)
+	})
+	return out
+}
+
 func notificationStableKey(rec store.ProviderRecord) string {
 	if rec.SerialNumber != "" {
 		return "serial:" + rec.SerialNumber
@@ -127,32 +147,18 @@ func trustRank(level string) int {
 }
 
 func semverLess(a, b string) bool {
-	ap := parseSemver(a)
-	bp := parseSemver(b)
-	for i := 0; i < len(ap); i++ {
-		if ap[i] < bp[i] {
-			return true
-		}
-		if ap[i] > bp[i] {
-			return false
-		}
-	}
-	return false
+	a = normalizeSemver(a)
+	b = normalizeSemver(b)
+	return semver.IsValid(a) && semver.IsValid(b) && semver.Compare(a, b) < 0
 }
 
-func parseSemver(v string) [3]int {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
-	parts := strings.Split(v, ".")
-	var out [3]int
-	for i := 0; i < len(parts) && i < 3; i++ {
-		n := 0
-		for _, ch := range parts[i] {
-			if ch < '0' || ch > '9' {
-				break
-			}
-			n = n*10 + int(ch-'0')
-		}
-		out[i] = n
+func normalizeSemver(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
 	}
-	return out
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	return v
 }

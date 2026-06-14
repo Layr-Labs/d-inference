@@ -29,6 +29,9 @@ public enum MDMTrustDiagnosis {
     ///     The coordinator only ever emits `"none"`, `"self_signed"`, or
     ///     `"hardware"` (mda_verified is a separate boolean *proof*, never a trust
     ///     level) — nil when the daemon hasn't received a trust status yet.
+    ///   - status: the coordinator's last reported status (`"online"`,
+    ///     `"untrusted"`, …) — nil when unknown. The MDM-pending hint only applies
+    ///     to a provider that is actually `online`.
     ///   - enrollment: this Mac's MDM enrollment state from `checkMDMEnrollment`.
     /// - Returns: a `.trust` diagnostic to surface, or nil when no MDM-enrollment
     ///   hint is warranted (e.g. already enrolled AND hardware-trusted, where the
@@ -40,6 +43,7 @@ public enum MDMTrustDiagnosis {
     /// short-circuit below is a defensive backstop, not the primary gate.
     public static func diagnose(
         trustLevel: String?,
+        status: String?,
         enrollment: MDMEnrollmentState
     ) -> Diagnostic? {
         // Defensive: a hardware-trusted box never needs an enrollment nag, even
@@ -55,12 +59,13 @@ public enum MDMTrustDiagnosis {
             // the case that previously printed nothing, leaving the operator to
             // think doctor "passed" while they silently earn nothing.
             //
-            // Only flag it when we KNOW trust is self_signed. A nil trustLevel
-            // means the daemon is stopped/stale (no fresh trust status) — doctor's
-            // daemon/trust section already tells the operator to start/fix it, so a
-            // "you're ONLINE but earning nothing" MDM-pending warning here would be
-            // contradictory and point at the wrong fix.
-            guard trustLevel == "self_signed" else { return nil }
+            // Only flag it when we KNOW trust is self_signed AND the provider is
+            // online. A nil trustLevel means the daemon is stopped/stale; a
+            // self_signed/untrusted provider has a different (challenge-failure)
+            // problem the trust-status line already covers. In both cases the
+            // "you're ONLINE but earning nothing, just waiting on MDM" message
+            // would be wrong and point at the wrong fix.
+            guard trustLevel == "self_signed", status == "online" else { return nil }
             return Diagnostic(
                 section: .trust, name: "mdm verification", level: .warn,
                 message: "this Mac IS enrolled in Darkbloom MDM, but the coordinator's live MDM SecurityInfo check hasn't completed — trust is still self_signed, so you're ONLINE but will receive NO traffic until that check passes (this network requires hardware trust). Apple throttles SecurityInfo, so a sleeping or flaky machine can keep this pending.",

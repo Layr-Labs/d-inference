@@ -376,50 +376,13 @@ func main() {
 			})
 		})
 
-		// Register callback for late-arriving SecurityInfo responses.
-		// When APN delivery is slow (device sleeping, Power Nap cycle),
-		// the synchronous 90s wait may time out, but the webhook arrives
-		// later. This callback retroactively upgrades self_signed providers.
-		mdmClient.SetOnLateSecurityInfo(func(udid string, info *mdm.SecurityInfoResponse) {
-			if info == nil || !info.SystemIntegrityProtectionEnabled || info.SecureBootLevel != "full" {
-				return
-			}
-			// Collect self_signed provider candidates under the read lock,
-			// then do HTTP lookups outside the lock to avoid blocking
-			// heartbeats and routing while MicroMDM responds.
-			type candidate struct {
-				provider *registry.Provider
-				serial   string
-			}
-			var candidates []candidate
-			reg.ForEachProvider(func(p *registry.Provider) {
-				p.Mu().Lock()
-				trust := p.TrustLevel
-				serial := ""
-				if p.AttestationResult != nil {
-					serial = p.AttestationResult.SerialNumber
-				}
-				p.Mu().Unlock()
-				if trust == registry.TrustSelfSigned && serial != "" {
-					candidates = append(candidates, candidate{provider: p, serial: serial})
-				}
-			})
-			for _, c := range candidates {
-				dev, _ := mdmClient.LookupDevice(c.serial)
-				if dev == nil || dev.UDID != udid {
-					continue
-				}
-				c.provider.SetAttested(true, registry.TrustHardware)
-				c.provider.SetMDMFailureReason("") // recovered — drop from the stuck-cohort gauge
-				srv.Metrics().IncCounter("mdm_late_securityinfo_upgrade_total")
-				logger.Info("late SecurityInfo arrival — upgraded provider to hardware trust",
-					"provider_id", c.provider.ID,
-					"serial", c.serial,
-					"udid", udid,
-				)
-				reg.PersistProvider(c.provider)
-			}
-		})
+		// Register callback for late-arriving SecurityInfo responses. When APN
+		// delivery is slow (device sleeping, Power Nap cycle), the synchronous 90s
+		// wait may time out but the webhook arrives later. The Server method
+		// retroactively upgrades the matching self_signed provider — mirroring the
+		// synchronous success path (status guard + trust_status notification) so the
+		// two paths can't drift.
+		mdmClient.SetOnLateSecurityInfo(srv.ApplyLateSecurityInfo)
 
 		srv.SetMDMClient(mdmClient)
 		// Optional shared secret for the MicroMDM webhook. Defense-in-depth on

@@ -66,8 +66,9 @@ enum DoctorRunner {
         let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
         if !alreadyHardwareTrusted {
             let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
+            let liveStatus = stateFresh ? state?.trust?.status : nil
             let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
-            if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, enrollment: enrollment) {
+            if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
                 out.append(diag)
             }
         }

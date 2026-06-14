@@ -37,6 +37,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -2458,6 +2459,75 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	// Enterprise Attestation Root CA.
 	s.verifyAppleDeviceAttestation(ctx, providerID, provider, attestResult, mdmResult.UDID)
 	return mdmVerifyGranted
+}
+
+// ApplyLateSecurityInfo retroactively upgrades a self_signed provider to hardware
+// when its SecurityInfo arrives AFTER the synchronous verify timed out (slow APNs
+// / Power Nap). It mirrors verifyProviderViaMDM's success path so the late path
+// doesn't drift from it: confirm posture (SIP on + Secure Boot full), match the
+// device by UDID, require a valid SE attestation, skip a provider that has since
+// become untrusted (granting would leave hardware/untrusted), and on success grant
+// hardware, clear the MDM failure reason, send a fresh hardware/online
+// trust_status (so the provider's daemon + doctor stop reporting MDM-pending), and
+// persist. Wired as the mdm.Client late-SecurityInfo callback.
+func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoResponse) {
+	if s.mdmClient == nil || info == nil {
+		return
+	}
+	// Posture must be good — a late response that reports SIP off / Secure Boot
+	// not full is not a basis for promotion (and the sync path would have hard-
+	// untrusted it; here we simply don't upgrade).
+	if !info.SystemIntegrityProtectionEnabled || info.SecureBootLevel != "full" {
+		return
+	}
+	// Collect self_signed, valid-attestation candidates under the lock, then do
+	// MDM lookups outside it to avoid blocking heartbeats/routing.
+	type candidate struct {
+		provider *registry.Provider
+		serial   string
+	}
+	var candidates []candidate
+	s.registry.ForEachProvider(func(p *registry.Provider) {
+		p.Mu().Lock()
+		trust := p.TrustLevel
+		valid := p.AttestationResult != nil && p.AttestationResult.Valid
+		serial := ""
+		if p.AttestationResult != nil {
+			serial = p.AttestationResult.SerialNumber
+		}
+		p.Mu().Unlock()
+		if trust == registry.TrustSelfSigned && valid && serial != "" {
+			candidates = append(candidates, candidate{provider: p, serial: serial})
+		}
+	})
+	for _, c := range candidates {
+		dev, _ := s.mdmClient.LookupDevice(c.serial)
+		if dev == nil || dev.UDID != udid {
+			continue
+		}
+		// Skip if the provider became untrusted while the response was in flight —
+		// granting hardware would leave hardware/untrusted (routing rejects on
+		// Status) and falsely tell the provider it's online. Recovery flows through
+		// a passing SE challenge. Mirrors the verifyProviderViaMDM guard.
+		if c.provider.GetStatus() == registry.StatusUntrusted {
+			continue
+		}
+		c.provider.SetMDMFailureReason("")
+		c.provider.SetAttested(true, registry.TrustHardware)
+		// Notify the connection, exactly like the synchronous success path —
+		// otherwise the daemon stays self_signed and doctor keeps warning
+		// MDM-pending even though the coordinator now routes it as hardware.
+		s.sendTrustStatus(c.provider, registry.TrustHardware, "online", "MDM verification passed (late SecurityInfo)")
+		if s.metrics != nil {
+			s.metrics.IncCounter("mdm_late_securityinfo_upgrade_total")
+		}
+		s.logger.Info("late SecurityInfo arrival — upgraded provider to hardware trust",
+			"provider_id", c.provider.ID,
+			"serial", c.serial,
+			"udid", udid,
+		)
+		s.registry.PersistProvider(c.provider)
+	}
 }
 
 // mdmVerificationLoop owns MDM SecurityInfo verification for one provider

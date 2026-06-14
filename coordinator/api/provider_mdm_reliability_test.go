@@ -556,3 +556,48 @@ func TestVerifyProviderViaMDM_LookupFailureBucketsAsError(t *testing.T) {
 		t.Errorf("MDMFailureReason = %q, want %q (MDM transport failure is not an enrollment problem)", got, "error")
 	}
 }
+
+// TestApplyLateSecurityInfo_GrantsAndClears: a late SecurityInfo (after the sync
+// wait timed out) for a self_signed, online, valid-attestation provider upgrades
+// it to hardware and clears the failure reason — mirroring the sync success path.
+func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
+	fake := &fakeMDMServer{
+		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+		commandUUID: "unused",
+	}
+	srv, p := mdmReliabilityServer(t, fake)
+	p.SetMDMFailureReason("securityinfo-timeout") // left behind by the timed-out sync attempt
+
+	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
+		SystemIntegrityProtectionEnabled: true,
+		SecureBootLevel:                  "full",
+	})
+
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Errorf("trust = %q, want hardware after late SecurityInfo", lvl)
+	}
+	if got := p.GetMDMFailureReason(); got != "" {
+		t.Errorf("MDMFailureReason = %q, want cleared", got)
+	}
+}
+
+// TestApplyLateSecurityInfo_SkipsUntrusted: if the provider became untrusted while
+// the SecurityInfo response was in flight, the late path must NOT grant hardware
+// (that would leave hardware/untrusted). Mirrors the sync-path status guard.
+func TestApplyLateSecurityInfo_SkipsUntrusted(t *testing.T) {
+	fake := &fakeMDMServer{
+		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+		commandUUID: "unused",
+	}
+	srv, p := mdmReliabilityServer(t, fake)
+	srv.registry.MarkUntrusted("prov-mdm") // hard deroute while MDM was in flight
+
+	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
+		SystemIntegrityProtectionEnabled: true,
+		SecureBootLevel:                  "full",
+	})
+
+	if lvl := p.GetTrustLevel(); lvl == registry.TrustHardware {
+		t.Error("must NOT grant hardware to an untrusted provider via the late path")
+	}
+}

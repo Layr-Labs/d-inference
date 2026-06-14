@@ -601,3 +601,27 @@ func TestApplyLateSecurityInfo_SkipsUntrusted(t *testing.T) {
 		t.Error("must NOT grant hardware to an untrusted provider via the late path")
 	}
 }
+
+// TestVerifyProviderViaMDM_DefersGrantWhenUntrusted covers the atomic
+// GrantHardwareIfNotUntrusted guard: even a fully-passing SecurityInfo must NOT
+// promote a provider that is currently untrusted (a challenge-loop deroute racing
+// the in-flight verify), which would otherwise leave hardware/untrusted.
+func TestVerifyProviderViaMDM_DefersGrantWhenUntrusted(t *testing.T) {
+	fake := &fakeMDMServer{
+		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+		commandUUID:       "cmd-ok",
+		failMDARawCommand: true,
+	}
+	srv, p := mdmReliabilityServer(t, fake)
+	srv.registry.MarkUntrusted("prov-mdm") // deroute lands while MDM verify is in flight
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true, true)
+
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
+
+	if outcome != mdmVerifyTransient {
+		t.Errorf("outcome = %v, want mdmVerifyTransient (must not grant while untrusted)", outcome)
+	}
+	if lvl := p.GetTrustLevel(); lvl == registry.TrustHardware {
+		t.Error("must NOT grant hardware to an untrusted provider (would leave hardware/untrusted)")
+	}
+}

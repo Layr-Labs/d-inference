@@ -399,6 +399,26 @@ func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.mu.Unlock()
 }
 
+// GrantHardwareIfNotUntrusted atomically promotes the provider to hardware trust
+// unless it is currently untrusted, returning whether it granted. The status
+// check and the trust write happen under a SINGLE lock on purpose: a separate
+// GetStatus() check followed by SetAttested(hardware) is a TOCTOU — a concurrent
+// hard untrust from the challenge loop (binary-hash change / SIP disabled /
+// signature failure) landing in the gap would leave the registry in
+// hardware/untrusted and push a false "online" to the provider. Callers must only
+// run the rest of the grant (sendTrustStatus / persist / MDA) when this returns
+// true. Mirrors the SetMDAProofIfHardware single-lock pattern.
+func (p *Provider) GrantHardwareIfNotUntrusted() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Status == StatusUntrusted {
+		return false
+	}
+	p.Attested = true
+	p.TrustLevel = TrustHardware
+	return true
+}
+
 // GetTrustLevel returns the current trust level (thread-safe).
 func (p *Provider) GetTrustLevel() TrustLevel {
 	p.mu.Lock()

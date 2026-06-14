@@ -2424,22 +2424,20 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		return mdmVerifyTransient
 	}
 
-	// Do NOT grant hardware while the provider is currently untrusted. A transient
-	// missed-challenge deroute (StatusUntrusted, recoverable) can race an in-flight
-	// MDM verify; granting here would leave the registry in hardware/untrusted
-	// (routing still rejects it on Status) while telling the provider it is
-	// "online" — cancelling its diagnostics for traffic it won't receive. Defer:
-	// recovery flows through a passing SE challenge that restores Status to online,
-	// after which a later loop iteration grants hardware cleanly. (A hard untrust
-	// already stops the loop via ChallengeShouldStop.)
-	if provider.GetStatus() == registry.StatusUntrusted {
+	// MDM SecurityInfo verification passed — atomically upgrade to hardware trust,
+	// but NOT while the provider is currently untrusted. A missed-challenge deroute
+	// can race this in-flight MDM verify; granting would leave the registry in
+	// hardware/untrusted (routing still rejects it on Status) while telling the
+	// provider it is "online". The atomic check-and-grant closes the TOCTOU between
+	// the status check and the trust write. Recovery from a transient untrust flows
+	// through a passing SE challenge that restores Status, after which a later loop
+	// iteration grants cleanly. (A hard untrust already stops the loop via
+	// ChallengeShouldStop.)
+	if !provider.GrantHardwareIfNotUntrusted() {
 		s.ddIncr("mdm.verification", []string{"outcome:deferred-untrusted"})
 		return mdmVerifyTransient
 	}
-
-	// MDM SecurityInfo verification passed — upgrade to hardware trust.
 	provider.SetMDMFailureReason("")
-	provider.SetAttested(true, registry.TrustHardware)
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "MDM verification passed")
 	s.ddIncr("mdm.verification", []string{"outcome:granted"})
 	s.logger.Info("MDM verification passed — upgraded to hardware trust",
@@ -2505,15 +2503,16 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		if dev == nil || dev.UDID != udid {
 			continue
 		}
-		// Skip if the provider became untrusted while the response was in flight —
-		// granting hardware would leave hardware/untrusted (routing rejects on
-		// Status) and falsely tell the provider it's online. Recovery flows through
-		// a passing SE challenge. Mirrors the verifyProviderViaMDM guard.
-		if c.provider.GetStatus() == registry.StatusUntrusted {
+		// Atomically grant unless the provider became untrusted while the response
+		// was in flight — granting then would leave hardware/untrusted (routing
+		// rejects on Status) and falsely tell the provider it's online. The
+		// check-and-grant is a single lock (closes the TOCTOU); recovery from a
+		// transient untrust flows through a passing SE challenge. Mirrors
+		// verifyProviderViaMDM.
+		if !c.provider.GrantHardwareIfNotUntrusted() {
 			continue
 		}
 		c.provider.SetMDMFailureReason("")
-		c.provider.SetAttested(true, registry.TrustHardware)
 		// Notify the connection, exactly like the synchronous success path —
 		// otherwise the daemon stays self_signed and doctor keeps warning
 		// MDM-pending even though the coordinator now routes it as hardware.
@@ -2521,6 +2520,9 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		if s.metrics != nil {
 			s.metrics.IncCounter("mdm_late_securityinfo_upgrade_total")
 		}
+		// Also emit on the shared Datadog grant-rate metric so the late path is
+		// visible alongside synchronous grants (not just the in-process counter).
+		s.ddIncr("mdm.verification", []string{"outcome:granted-late"})
 		s.logger.Info("late SecurityInfo arrival — upgraded provider to hardware trust",
 			"provider_id", c.provider.ID,
 			"serial", c.serial,

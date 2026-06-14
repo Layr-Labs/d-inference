@@ -4,8 +4,10 @@ import Foundation
 /// completed" diagnosis — the silent stall that `darkbloom doctor` used to miss.
 ///
 /// The operative hardware-trust path is the coordinator's LIVE MDM SecurityInfo
-/// check, re-earned on every reconnect and polled ~every 5 min. Apple throttles
-/// SecurityInfo, so on a flaky/sleeping box that check can keep timing out: the
+/// check, re-earned per connection (the coordinator retries with a bounded
+/// backoff — roughly the first retry within a couple minutes, then ~every 15 min
+/// — not a fixed 5-min poll). Apple throttles SecurityInfo, so on a flaky/sleeping
+/// box that check can keep timing out: the
 /// device is genuinely enrolled in Darkbloom MDM, yet the coordinator never
 /// upgrades it past `self_signed`, so it stays ONLINE but receives NO traffic.
 ///
@@ -69,7 +71,7 @@ public enum MDMTrustDiagnosis {
             return Diagnostic(
                 section: .trust, name: "mdm verification", level: .warn,
                 message: "this Mac IS enrolled in Darkbloom MDM, but the coordinator's live MDM SecurityInfo check hasn't completed — trust is still self_signed, so you're ONLINE but will receive NO traffic until that check passes (this network requires hardware trust). Apple throttles SecurityInfo, so a sleeping or flaky machine can keep this pending.",
-                fix: "keep the Mac awake and APNs reachable (don't let it sleep / drop network), then wait ~5 min for the next SecurityInfo poll. If it's still self_signed after >10 min, open System Settings → General → Device Management (Profiles) and confirm the Darkbloom profile is installed and NOT showing as Pending; if it's pending, approve it, otherwise re-run `darkbloom enroll`.")
+                fix: "keep the Mac awake and APNs reachable (don't let it sleep / drop network), then wait a few minutes for the coordinator's next SecurityInfo check (it retries within ~2 min, then about every 15 min). If it's still self_signed after >15 min, open System Settings → General → Device Management (Profiles) and confirm the Darkbloom profile is installed and NOT showing as Pending; if it's pending, approve it, otherwise re-run `darkbloom enroll`.")
         case .enrolledOtherMDM(let serverURL):
             return Diagnostic(
                 section: .trust, name: "mdm enrollment", level: .warn,

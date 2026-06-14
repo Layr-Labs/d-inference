@@ -450,7 +450,14 @@ func (c *Client) WaitForDeviceAttestation(ctx context.Context, udid string, time
 
 	defer func() {
 		c.waitMu.Lock()
-		delete(c.attestWaiters, udid)
+		// Identity-guarded delete (parity with registerSecurityInfoWaiter): only
+		// remove our own channel. With two overlapping connections for the same
+		// device (same UDID), an unconditional delete could drop a later waiter's
+		// live channel and route its Apple attestation response to the late
+		// callback instead.
+		if cur, ok := c.attestWaiters[udid]; ok && cur == ch {
+			delete(c.attestWaiters, udid)
+		}
 		c.waitMu.Unlock()
 	}()
 

@@ -78,9 +78,9 @@ func (a providerHealthAssessor) reasons(p providerState, now time.Time) []AlertR
 }
 
 func semverCanonical(v string) string {
-	v = "v" + strings.TrimPrefix(strings.TrimSpace(v), "v")
-	if v == "v" || !semver.IsValid(v) {
-		return ""
+	v = strings.TrimSpace(v)
+	if v != "" && !strings.HasPrefix(v, "v") {
+		v = "v" + v
 	}
-	return v
+	return semver.Canonical(v)
 }

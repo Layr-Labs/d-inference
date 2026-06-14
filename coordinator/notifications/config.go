@@ -26,8 +26,6 @@ type Config struct {
 	UnsubscribeURL     string
 	CheckInterval      time.Duration
 	AlertCooldown      time.Duration
-	HeartbeatTimeout   time.Duration
-	ChallengeMaxAge    time.Duration
 	MinProviderVersion string
 }
 
@@ -69,12 +67,6 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.AlertCooldown <= 0 {
 		c.AlertCooldown = defaultAlertCooldown
-	}
-	if c.HeartbeatTimeout <= 0 {
-		c.HeartbeatTimeout = 90 * time.Second
-	}
-	if c.ChallengeMaxAge <= 0 {
-		c.ChallengeMaxAge = 6 * time.Minute
 	}
 	return c
 }

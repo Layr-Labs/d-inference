@@ -3796,21 +3796,27 @@ func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefo
 	return int(tag.RowsAffected()), nil
 }
 
-func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, providerID, accountID string, reasonKeys []string, cooldown time.Duration) (map[string]bool, error) {
-	due := make(map[string]bool, len(reasonKeys))
-	reasonKeys = compactReasonKeys(reasonKeys)
-	if providerID == "" || accountID == "" || len(reasonKeys) == 0 {
+func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (map[ProviderNotificationCheck]bool, error) {
+	checks = compactProviderNotificationChecks(checks)
+	due := make(map[ProviderNotificationCheck]bool, len(checks))
+	if len(checks) == 0 {
 		return due, nil
 	}
-	for _, reasonKey := range reasonKeys {
-		due[reasonKey] = true
+	providerIDs, accountIDs, reasonKeys := providerNotificationCheckColumns(checks)
+	for _, check := range checks {
+		due[check] = true
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT reason_key, last_sent_at
-		   FROM provider_notifications
-		  WHERE provider_id = $1 AND reason_key = ANY($2::text[])`,
-		providerID, reasonKeys,
+		`WITH checks AS (
+			SELECT * FROM unnest($1::text[], $2::text[], $3::text[]) AS c(provider_id, account_id, reason_key)
+		 )
+		 SELECT n.provider_id, c.account_id, n.reason_key, n.last_sent_at
+		   FROM checks c
+		   JOIN provider_notifications n
+		     ON n.provider_id = c.provider_id
+		    AND n.reason_key = c.reason_key`,
+		providerIDs, accountIDs, reasonKeys,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider notification lookup: %w", err)
@@ -3819,30 +3825,32 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, providerID
 
 	cutoff := time.Now().Add(-cooldown)
 	for rows.Next() {
-		var reasonKey string
+		var check ProviderNotificationCheck
 		var lastSent time.Time
-		if err := rows.Scan(&reasonKey, &lastSent); err != nil {
+		if err := rows.Scan(&check.ProviderID, &check.AccountID, &check.ReasonKey, &lastSent); err != nil {
 			return nil, fmt.Errorf("store: scan provider notification: %w", err)
 		}
 		if lastSent.After(cutoff) {
-			due[reasonKey] = false
+			due[check] = false
 		}
 	}
 	return due, nil
 }
 
-func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, providerID, accountID string, reasonKeys []string, sentAt time.Time) error {
-	reasonKeys = compactReasonKeys(reasonKeys)
-	if providerID == "" || accountID == "" || len(reasonKeys) == 0 {
+func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, checks []ProviderNotificationCheck, sentAt time.Time) error {
+	checks = compactProviderNotificationChecks(checks)
+	if len(checks) == 0 {
 		return nil
 	}
+	providerIDs, accountIDs, reasonKeys := providerNotificationCheckColumns(checks)
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO provider_notifications (provider_id, account_id, reason_key, last_sent_at)
-		 SELECT $1, $2, unnest($3::text[]), $4
+		 SELECT provider_id, account_id, reason_key, $4
+		   FROM unnest($1::text[], $2::text[], $3::text[]) AS c(provider_id, account_id, reason_key)
 		 ON CONFLICT (provider_id, reason_key) DO UPDATE
 		    SET account_id = EXCLUDED.account_id,
 		        last_sent_at = EXCLUDED.last_sent_at`,
-		providerID, accountID, reasonKeys, sentAt,
+		providerIDs, accountIDs, reasonKeys, sentAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: record provider notification: %w", err)
@@ -3850,16 +3858,14 @@ func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, pro
 	return nil
 }
 
-func compactReasonKeys(reasonKeys []string) []string {
-	out := make([]string, 0, len(reasonKeys))
-	seen := make(map[string]bool, len(reasonKeys))
-	for _, reasonKey := range reasonKeys {
-		reasonKey = strings.TrimSpace(reasonKey)
-		if reasonKey == "" || seen[reasonKey] {
-			continue
-		}
-		seen[reasonKey] = true
-		out = append(out, reasonKey)
+func providerNotificationCheckColumns(checks []ProviderNotificationCheck) ([]string, []string, []string) {
+	providerIDs := make([]string, 0, len(checks))
+	accountIDs := make([]string, 0, len(checks))
+	reasonKeys := make([]string, 0, len(checks))
+	for _, check := range checks {
+		providerIDs = append(providerIDs, check.ProviderID)
+		accountIDs = append(accountIDs, check.AccountID)
+		reasonKeys = append(reasonKeys, check.ReasonKey)
 	}
-	return out
+	return providerIDs, accountIDs, reasonKeys
 }

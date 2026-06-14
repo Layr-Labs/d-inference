@@ -506,11 +506,23 @@ func (p *Provider) ChallengeShouldStop() bool {
 	return p.Status == StatusUntrusted && !p.untrustedRecoverable
 }
 
-// SetAttestationResult stores the parsed attestation result (thread-safe).
+// SetAttestationResult stores a snapshot of the parsed attestation result
+// (thread-safe). It copies the struct instead of retaining the caller's
+// pointer: the registration path mutates a single local `result` across several
+// validation checks (Valid/Error/...) while `persistProviderNow` asynchronously
+// `json.Marshal`s `p.AttestationResult` under `p.mu`. Aliasing the caller's
+// struct would let those unsynchronized field writes race the marshal (caught by
+// `-race` in coordinator/api). VerificationResult is all value-typed fields, so a
+// shallow copy is a complete, immutable snapshot owned by the Provider.
 func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) {
 	p.mu.Lock()
-	p.AttestationResult = result
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	if result == nil {
+		p.AttestationResult = nil
+		return
+	}
+	snapshot := *result
+	p.AttestationResult = &snapshot
 }
 
 // GetAttestationResult returns the current attestation result (thread-safe).

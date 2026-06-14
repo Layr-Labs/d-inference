@@ -101,7 +101,10 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceCode string `json:"device_code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceCode == "" {
+	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
+		return
+	}
+	if req.DeviceCode == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request", "device_code is required"))
 		return
 	}

@@ -206,6 +206,30 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					)
 				}
 				s.ddIncr("ws.disconnects", []string{"reason:read_error"})
+
+				// An abrupt read_error under high last-known memory pressure with
+				// active inference is very likely a jetsam OOM (the kill leaves no
+				// other trace). Require in-flight > 0: a graceful shutdown/update
+				// drains first (and may surface here as a frame-less EOF rather
+				// than a clean close), so gating on in-flight avoids misreading a
+				// drained going-away close as OOM. Idle-box kills are recovered by
+				// the provider's crash-log scrape instead.
+				if provider != nil {
+					memPressure, inFlight := provider.DisconnectDiagnostics()
+					if inFlight > 0 && registry.ClassifyDisconnectReason(true, memPressure, inFlight) == registry.DisconnectReasonOOMSuspected {
+						if s.metrics != nil {
+							s.metrics.IncCounter("provider_oom_suspected_total")
+						}
+						s.ddIncr("provider.oom_suspected", nil)
+						s.emit(context.Background(), protocol.SeverityError, protocol.KindOOM,
+							"provider disconnected under memory pressure (suspected OOM)",
+							map[string]any{
+								"provider_id":     providerID,
+								"memory_pressure": memPressure,
+								"in_flight":       inFlight,
+							})
+					}
+				}
 			}
 			return
 		}

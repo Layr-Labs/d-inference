@@ -80,6 +80,15 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	// Billing (booleans/enums only — no dollar amounts)
 	"billing_method": {},
 	"payment_failed": {},
+	// OOM / memory pressure (non-sensitive). Mirror of the Swift allowlist.
+	"detect_source":     {},
+	"peak_memory_bytes": {},
+	"report":            {},
+	"pressure":          {},
+	"available_bytes":   {},
+	"mlx_active_bytes":  {},
+	"memory_pressure":   {},
+	"in_flight":         {},
 	// Console UI context
 	"url":        {},
 	"user_agent": {},

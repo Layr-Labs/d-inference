@@ -48,8 +48,11 @@ const (
 	KindInferenceError     TelemetryKind = "inference_error"
 	KindRuntimeMismatch    TelemetryKind = "runtime_mismatch"
 	KindConnectivity       TelemetryKind = "connectivity"
-	KindLog                TelemetryKind = "log"
-	KindCustom             TelemetryKind = "custom"
+	// KindOOM: a provider-detected jetsam/crash-log OOM (surfaced next launch)
+	// or a coordinator-classified oom_suspected disconnect.
+	KindOOM    TelemetryKind = "oom"
+	KindLog    TelemetryKind = "log"
+	KindCustom TelemetryKind = "custom"
 )
 
 // TelemetrySourceCustom is returned when a source value can't be classified
@@ -93,6 +96,7 @@ func KnownKinds() map[TelemetryKind]struct{} {
 		KindInferenceError:     {},
 		KindRuntimeMismatch:    {},
 		KindConnectivity:       {},
+		KindOOM:                {},
 		KindLog:                {},
 		KindCustom:             {},
 	}

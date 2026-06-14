@@ -62,7 +62,7 @@ func TestTelemetryKindsMatch(t *testing.T) {
 		"panic": true, "http_error": true, "protocol_error": true,
 		"backend_crash": true, "attestation_failure": true,
 		"inference_error": true, "runtime_mismatch": true,
-		"connectivity": true, "log": true, "custom": true,
+		"connectivity": true, "oom": true, "log": true, "custom": true,
 	}
 	for k := range KnownKinds() {
 		if !want[string(k)] {

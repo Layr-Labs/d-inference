@@ -71,12 +71,22 @@ func (f *fakeMDMServer) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 
-	// SecurityInfo command (structured endpoint).
+	// SecurityInfo command (structured endpoint). MicroMDM's POST /v1/commands
+	// enqueues AND sends the APNs push itself, so we record a push here to model
+	// that auto-push (the coordinator no longer issues a separate GET /push for
+	// SecurityInfo). pushCount() rising is how deliverWebhookWhenPushed knows the
+	// command went out.
 	mux.HandleFunc("POST /v1/commands", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		var body struct {
+			UDID string `json:"udid"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		uuid := f.commandUUID
 		fail := f.failSecurityInfoCommand
+		if !fail {
+			f.pushedUDIDs = append(f.pushedUDIDs, body.UDID) // MicroMDM auto-push
+		}
 		f.mu.Unlock()
 		if fail {
 			w.WriteHeader(http.StatusInternalServerError)

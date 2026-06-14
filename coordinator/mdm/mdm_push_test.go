@@ -28,8 +28,13 @@ type fakeMicroMDM struct {
 	// commandUUID returned by POST /v1/commands.
 	commandUUID string
 
-	// pushedUDIDs records every GET /push/{udid} the client issued, in order.
+	// pushedUDIDs records every EXPLICIT GET /push/{udid} the client issued, in
+	// order. The structured POST /v1/commands does NOT count here — MicroMDM
+	// auto-pushes on that endpoint, so the coordinator must not add a second push.
 	pushedUDIDs []string
+
+	// commandPosts counts POST /v1/commands (SecurityInfo enqueues).
+	commandPosts int
 }
 
 func (f *fakeMicroMDM) handler() http.Handler {
@@ -54,6 +59,7 @@ func (f *fakeMicroMDM) handler() http.Handler {
 		_, _ = io.Copy(io.Discard, r.Body)
 		f.mu.Lock()
 		uuid := f.commandUUID
+		f.commandPosts++
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"payload":{"command_uuid":"` + uuid + `"}}`))
@@ -79,6 +85,12 @@ func (f *fakeMicroMDM) pushes() []string {
 	return out
 }
 
+func (f *fakeMicroMDM) commandPostCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.commandPosts
+}
+
 func newFakeMDM(t *testing.T, fake *fakeMicroMDM) (*Client, *httptest.Server) {
 	t.Helper()
 	ts := httptest.NewServer(fake.handler())
@@ -87,11 +99,12 @@ func newFakeMDM(t *testing.T, fake *fakeMicroMDM) (*Client, *httptest.Server) {
 	return c, ts
 }
 
-// TestSendSecurityInfoCommandPushesDevice is the core reliability fix: enqueuing
-// a SecurityInfo command must also fire an explicit GET /push/{udid} so a
-// sleeping/Power-Nap'd Mac pulls the command inside our wait window instead of
-// at its next idle wake. It also returns the command_uuid for response tracking.
-func TestSendSecurityInfoCommandPushesDevice(t *testing.T) {
+// TestSendSecurityInfoCommandDoesNotDoublePush: the structured POST /v1/commands
+// already makes MicroMDM send the APNs push, so SendSecurityInfoCommand must NOT
+// issue a second explicit GET /push/{udid} — a double push wastes Apple's MDM push
+// budget (the pressure this whole change reduces). It enqueues exactly one command
+// and returns the command_uuid; zero explicit pushes.
+func TestSendSecurityInfoCommandDoesNotDoublePush(t *testing.T) {
 	fake := &fakeMicroMDM{commandUUID: "cmd-abc-123"}
 	c, _ := newFakeMDM(t, fake)
 
@@ -102,49 +115,11 @@ func TestSendSecurityInfoCommandPushesDevice(t *testing.T) {
 	if gotUUID != "cmd-abc-123" {
 		t.Errorf("command_uuid = %q, want %q", gotUUID, "cmd-abc-123")
 	}
-
-	pushes := fake.pushes()
-	if len(pushes) != 1 {
-		t.Fatalf("push count = %d, want exactly 1 (explicit APNs wake)", len(pushes))
+	if n := fake.commandPostCount(); n != 1 {
+		t.Errorf("command posts = %d, want exactly 1", n)
 	}
-	if pushes[0] != "UDID-PUSH" {
-		t.Errorf("pushed udid = %q, want %q", pushes[0], "UDID-PUSH")
-	}
-}
-
-// TestSendSecurityInfoCommandPushIsBestEffort proves a failed push does NOT fail
-// the command — the command is already enqueued, the push is only a latency
-// optimization. We point the client at a dead push endpoint (the command POST
-// still succeeds) and assert the command_uuid is still returned with no error.
-func TestSendSecurityInfoCommandPushIsBestEffort(t *testing.T) {
-	// A handler that succeeds for /v1/commands but hangs up on /push.
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/commands", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_, _ = w.Write([]byte(`{"payload":{"command_uuid":"cmd-besteffort"}}`))
-	})
-	mux.HandleFunc("GET /push/{udid}", func(w http.ResponseWriter, r *http.Request) {
-		// Hijack and close without a response to simulate a broken push.
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		conn, _, err := hj.Hijack()
-		if err == nil {
-			_ = conn.Close()
-		}
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
-	c := NewClient(ts.URL, "test-key", slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	gotUUID, err := c.SendSecurityInfoCommand("UDID-X")
-	if err != nil {
-		t.Fatalf("a failed push must not fail the command, got err: %v", err)
-	}
-	if gotUUID != "cmd-besteffort" {
-		t.Errorf("command_uuid = %q, want %q", gotUUID, "cmd-besteffort")
+	if pushes := fake.pushes(); len(pushes) != 0 {
+		t.Errorf("explicit GET /push count = %d, want 0 (MicroMDM auto-pushes on /v1/commands)", len(pushes))
 	}
 }
 
@@ -166,11 +141,12 @@ func TestVerifyProviderSuccess(t *testing.T) {
 	// Deliver the SecurityInfo response shortly after the verifier registers its
 	// waiter. buildSecurityInfoWebhook reports SIP=true, SecureBoot=full.
 	go func() {
-		// Wait until the command has been issued (push recorded) so the command
-		// UUID is tracked and a waiter is registered, then deliver the webhook.
+		// Wait until the command has been POSTed (uuid tracked + waiter registered),
+		// then deliver the webhook. (SecurityInfo no longer issues an explicit push,
+		// so gate on the command post, not a push.)
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
-			if len(fake.pushes()) > 0 {
+			if fake.commandPostCount() > 0 {
 				break
 			}
 			time.Sleep(5 * time.Millisecond)

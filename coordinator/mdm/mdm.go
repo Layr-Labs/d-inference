@@ -329,14 +329,14 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 
 	c.trackCommand(result.Payload.CommandUUID, udid, time.Now())
 
-	// Explicitly push to wake the device and trigger an immediate check-in.
-	// MicroMDM's POST /v1/commands enqueues the command, but on a sleeping or
-	// Power-Nap'd Mac the device may not pull it until its next idle wake (up to
-	// ~15 min) — long past our 90s wait. The MDA path (sendDeviceAttestationWithNonce)
-	// already pushes; without parity here the SecurityInfo leg silently relied on
-	// MicroMDM's implicit push and timed out far more often. Best-effort: a failed
-	// push doesn't fail the command (it's queued either way).
-	c.pushDevice(udid)
+	// Do NOT push explicitly here. MicroMDM's structured POST /v1/commands already
+	// schedules the command AND sends the APNs push to wake the device, so an extra
+	// GET /push/{udid} would be a SECOND push per attempt — wasted MDM/APNs push
+	// budget, the pressure this change exists to reduce. (The MDA path uses the raw
+	// POST /v1/commands/{udid} endpoint, which does NOT auto-push, so it pushes
+	// explicitly — that asymmetry is correct, not a bug.) The fast-device webhook
+	// race is handled by registering the SecurityInfo waiter BEFORE this call in
+	// VerifyProvider, so the auto-push's response always finds a waiter.
 	return result.Payload.CommandUUID, nil
 }
 

@@ -61,6 +61,9 @@ func (c AppConfig) Check() error {
 	if err := c.MDMConfig.Check(); err != nil {
 		return fmt.Errorf("mdm: %w", err)
 	}
+	if err := c.NotificationCfg.Check(); err != nil {
+		return fmt.Errorf("notifications: %w", err)
+	}
 	if err := c.DatadogConfig.Check(); err != nil {
 		return fmt.Errorf("datadog: %w", err)
 	}

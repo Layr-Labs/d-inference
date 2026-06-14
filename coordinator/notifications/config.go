@@ -1,6 +1,7 @@
 package notifications
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -55,8 +56,6 @@ func ReadConfig() Config {
 		UnsubscribeURL:     env.EnvOr(env.EnvPrefix+"_EMAIL_UNSUBSCRIBE_URL", defaultUnsubscribeURL),
 		CheckInterval:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHECK_SECONDS", int(defaultCheckInterval.Seconds()))) * time.Second,
 		AlertCooldown:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_COOLDOWN_HOURS", int(defaultAlertCooldown.Hours()))) * time.Hour,
-		HeartbeatTimeout:   time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_HEARTBEAT_TIMEOUT_SECONDS", 90)) * time.Second,
-		ChallengeMaxAge:    time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHALLENGE_MAX_AGE_SECONDS", 360)) * time.Second,
 		MinProviderVersion: strings.TrimSpace(os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION")),
 	}
 }
@@ -78,4 +77,23 @@ func (c Config) WithDefaults() Config {
 		c.ChallengeMaxAge = 6 * time.Minute
 	}
 	return c
+}
+
+func (c Config) Check() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Provider != "resend" {
+		return fmt.Errorf("unsupported provider email service")
+	}
+	if strings.TrimSpace(c.ResendAPIKey) == "" {
+		return fmt.Errorf("provider email service credentials are not configured")
+	}
+	if !strings.HasPrefix(strings.TrimSpace(c.ResendAPIKey), "re_") {
+		return fmt.Errorf("provider email service credentials have an invalid format")
+	}
+	if strings.TrimSpace(c.From) == "" {
+		return fmt.Errorf("provider email sender is not configured")
+	}
+	return nil
 }

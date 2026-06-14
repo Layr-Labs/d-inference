@@ -56,7 +56,7 @@ type resendEmailHeaders struct {
 func NewResendClient(apiKey string) (*ResendClient, error) {
 	apiKey, ok := validatedResendAPIKey(apiKey)
 	if !ok {
-		return nil, fmt.Errorf("resend api key has an invalid format")
+		return nil, fmt.Errorf("email service configuration is invalid")
 	}
 	return &ResendClient{
 		apiKey: apiKey,
@@ -66,7 +66,7 @@ func NewResendClient(apiKey string) (*ResendClient, error) {
 
 func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if c == nil {
-		return fmt.Errorf("resend api key not configured")
+		return fmt.Errorf("email service is not configured")
 	}
 	if err := validateEmail(email); err != nil {
 		return err
@@ -112,11 +112,11 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 func resendAuthorization(apiKey string) (string, error) {
 	apiKey, ok := validatedResendAPIKey(apiKey)
 	if !ok {
-		return "", fmt.Errorf("resend api key has an invalid format")
+		return "", fmt.Errorf("email service configuration is invalid")
 	}
 	authorization := "Bearer " + apiKey
 	if !httpguts.ValidHeaderFieldValue(authorization) {
-		return "", fmt.Errorf("resend api key has an invalid format")
+		return "", fmt.Errorf("email service configuration is invalid")
 	}
 	return authorization, nil
 }

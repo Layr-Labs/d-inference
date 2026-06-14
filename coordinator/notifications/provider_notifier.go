@@ -21,11 +21,9 @@ const (
 	maxProviderAlertTargets  = 1000
 )
 
-const thermalStateCritical = "critical"
+type providerThermalState string
 
-type providerStableKey string
-
-type providerNotificationChecks []store.ProviderNotificationCheck
+const thermalStateCritical providerThermalState = "critical"
 
 type ProviderNotifier struct {
 	registry *registry.Registry
@@ -33,14 +31,6 @@ type ProviderNotifier struct {
 	sender   EmailSender
 	cfg      Config
 	logger   *slog.Logger
-}
-
-type providerAlertCandidate struct {
-	email     string
-	state     providerState
-	stableKey providerStableKey
-	reasons   []AlertReason
-	checks    providerNotificationChecks
 }
 
 type AlertReason struct {
@@ -68,7 +58,7 @@ type providerState struct {
 	status                registry.ProviderStatus
 	trustLevel            registry.TrustLevel
 	runtimeVerified       bool
-	thermalState          string
+	thermalState          providerThermalState
 	lastSeen              time.Time
 	lastChallengeVerified *time.Time
 	failedChallenges      int
@@ -144,9 +134,60 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if len(targets) == 0 {
 		return
 	}
-	candidates := make([]providerAlertCandidate, 0, len(targets))
-	checks := make(providerNotificationChecks, 0, len(targets)*maxProviderAlertReasons)
-	candidates, checks = n.alertCandidates(targets, candidates, checks)
+	candidates := make([]struct {
+		email   string
+		state   providerState
+		reasons []AlertReason
+		checks  []store.ProviderNotificationCheck
+	}, 0, len(targets))
+	checks := make([]store.ProviderNotificationCheck, 0, len(targets)*maxProviderAlertReasons)
+	seen := make(map[string]struct{}, len(targets))
+	assessor := n.healthAssessor()
+	now := time.Now()
+	for _, target := range targets {
+		rec := target.Provider
+		if rec.AccountID == "" || target.Email == "" {
+			continue
+		}
+		stableKey := store.ProviderNotificationStableKey(rec)
+		if _, ok := seen[stableKey]; ok {
+			continue
+		}
+		state := providerStateFrom(rec, n.registry.GetProvider(rec.ID))
+		reasons := assessor.reasons(state, now)
+		if len(reasons) == 0 {
+			continue
+		}
+		candidate := struct {
+			email   string
+			state   providerState
+			reasons []AlertReason
+			checks  []store.ProviderNotificationCheck
+		}{
+			email:   target.Email,
+			state:   state,
+			reasons: reasons[:0],
+			checks:  make([]store.ProviderNotificationCheck, 0, len(reasons)),
+		}
+		for _, reason := range reasons {
+			check := store.ProviderNotificationCheck{
+				ProviderID: stableKey,
+				AccountID:  state.accountID,
+				ReasonKey:  reason.Key,
+			}
+			if _, _, _, ok := check.DBValues(); !ok {
+				continue
+			}
+			candidate.reasons = append(candidate.reasons, reason)
+			candidate.checks = append(candidate.checks, check)
+		}
+		if len(candidate.checks) == 0 {
+			continue
+		}
+		checks = append(checks, candidate.checks...)
+		candidates = append(candidates, candidate)
+		seen[stableKey] = struct{}{}
+	}
 	if len(checks) == 0 {
 		return
 	}
@@ -154,8 +195,13 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if !ok {
 		return
 	}
-	sent := make(providerNotificationChecks, 0, len(checks))
-	sent = n.sendDueBatch(checkCtx, candidates, dueByCheck, sent)
+	sent := make([]store.ProviderNotificationCheck, 0, len(checks))
+	for _, candidate := range candidates {
+		if checkCtx.Err() != nil {
+			return
+		}
+		sent = append(sent, n.sendDue(checkCtx, candidate.email, candidate.state, candidate.reasons, candidate.checks, dueByCheck)...)
+	}
 	n.recordNotificationsSent(checkCtx, sent)
 }
 
@@ -170,10 +216,10 @@ func (n *ProviderNotifier) notificationTargets(ctx context.Context) ([]store.Pro
 	return targets, true
 }
 
-func (n *ProviderNotifier) notificationsDue(ctx context.Context, checks providerNotificationChecks) (store.ProviderNotificationDueSet, bool) {
+func (n *ProviderNotifier) notificationsDue(ctx context.Context, checks []store.ProviderNotificationCheck) (store.ProviderNotificationDueSet, bool) {
 	storeCtx, cancel := context.WithTimeout(ctx, storeOperationTimeout)
 	defer cancel()
-	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks.storeChecks(), n.cfg.Alerts.AlertCooldown)
+	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks, n.cfg.Alerts.AlertCooldown)
 	if err != nil {
 		n.logger.Warn("provider notifications: cooldown lookup failed", "error", err)
 		return nil, false
@@ -181,129 +227,50 @@ func (n *ProviderNotifier) notificationsDue(ctx context.Context, checks provider
 	return dueByCheck, true
 }
 
-func (n *ProviderNotifier) recordNotificationsSent(ctx context.Context, sent providerNotificationChecks) {
+func (n *ProviderNotifier) recordNotificationsSent(ctx context.Context, sent []store.ProviderNotificationCheck) {
 	storeCtx, cancel := context.WithTimeout(ctx, storeOperationTimeout)
 	defer cancel()
-	if err := n.store.RecordProviderNotificationsSent(storeCtx, sent.storeChecks(), time.Now()); err != nil {
+	if err := n.store.RecordProviderNotificationsSent(storeCtx, sent, time.Now()); err != nil {
 		n.logger.Warn("provider notifications: record sends failed", "error", err)
 	}
 }
 
-func (n *ProviderNotifier) alertCandidates(
-	targets []store.ProviderNotificationTarget,
-	candidates []providerAlertCandidate,
-	checks providerNotificationChecks,
-) ([]providerAlertCandidate, providerNotificationChecks) {
-	seen := make(map[providerStableKey]struct{}, len(targets))
-	assessor := n.healthAssessor()
-	now := time.Now()
-	for _, target := range targets {
-		candidate, ok := n.alertCandidate(target, assessor, now)
-		if !ok {
-			continue
-		}
-		if _, ok := seen[candidate.stableKey]; ok {
-			continue
-		}
-		checks = append(checks, candidate.checks...)
-		candidates = append(candidates, candidate)
-		seen[candidate.stableKey] = struct{}{}
-	}
-	return candidates, checks
-}
-
-func (n *ProviderNotifier) alertCandidate(target store.ProviderNotificationTarget, assessor providerHealthAssessor, now time.Time) (providerAlertCandidate, bool) {
-	rec := target.Provider
-	if rec.AccountID == "" || target.Email == "" {
-		return providerAlertCandidate{}, false
-	}
-	stableKey := providerStableKey(store.ProviderNotificationStableKey(rec))
-	state := providerStateFrom(rec, n.registry.GetProvider(rec.ID))
-	reasons := assessor.reasons(state, now)
-	if len(reasons) == 0 {
-		return providerAlertCandidate{}, false
-	}
-	candidate := providerAlertCandidate{
-		email:     target.Email,
-		state:     state,
-		stableKey: stableKey,
-		reasons:   reasons[:0],
-		checks:    make(providerNotificationChecks, 0, len(reasons)),
-	}
-	for _, reason := range reasons {
-		if !reason.Key.Valid() {
-			continue
-		}
-		check := store.ProviderNotificationCheck{
-			ProviderID: string(stableKey),
-			AccountID:  state.accountID,
-			ReasonKey:  reason.Key,
-		}
-		if !validProviderNotificationCheck(check) {
-			continue
-		}
-		candidate.reasons = append(candidate.reasons, reason)
-		candidate.checks = append(candidate.checks, check)
-	}
-	if len(candidate.checks) == 0 {
-		return providerAlertCandidate{}, false
-	}
-	return candidate, true
-}
-
-func (n *ProviderNotifier) sendDueBatch(
+func (n *ProviderNotifier) sendDue(
 	ctx context.Context,
-	candidates []providerAlertCandidate,
+	to string,
+	state providerState,
+	reasons []AlertReason,
+	checks []store.ProviderNotificationCheck,
 	dueByCheck store.ProviderNotificationDueSet,
-	sent providerNotificationChecks,
-) providerNotificationChecks {
-	for _, candidate := range candidates {
-		if ctx.Err() != nil {
-			return sent
-		}
-		sent = append(sent, n.sendDue(ctx, candidate, dueByCheck)...)
-	}
-	return sent
-}
-
-func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertCandidate, dueByCheck store.ProviderNotificationDueSet) providerNotificationChecks {
-	sent := make(providerNotificationChecks, 0, len(candidate.checks))
-	due := candidate.reasons[:0]
-	for i, check := range candidate.checks {
+) []store.ProviderNotificationCheck {
+	sent := make([]store.ProviderNotificationCheck, 0, len(checks))
+	due := reasons[:0]
+	for i, check := range checks {
 		if dueByCheck.Contains(check) {
-			due = append(due, candidate.reasons[i])
+			due = append(due, reasons[i])
 			sent = append(sent, check)
 		}
 	}
 	if len(due) == 0 {
 		return nil
 	}
-	email := n.buildEmail(candidate.email, candidate.state, due)
+	email := n.buildEmail(to, state, due)
 	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
 	if err := n.sender.Send(sendCtx, email); err != nil {
 		n.logger.Warn("provider notifications: email send failed",
-			"provider_id", candidate.state.id,
-			"serial", candidate.state.serial,
+			"provider_id", state.id,
+			"serial", state.serial,
 			"error", err,
 		)
 		return nil
 	}
 	n.logger.Info("sent provider owner notification",
-		"provider_id", candidate.state.id,
-		"account_id", candidate.state.accountID,
+		"provider_id", state.id,
+		"account_id", state.accountID,
 		"reasons", reasonKeys(due),
 	)
 	return sent
-}
-
-func validProviderNotificationCheck(check store.ProviderNotificationCheck) bool {
-	_, _, _, ok := check.DBValues()
-	return ok
-}
-
-func (checks providerNotificationChecks) storeChecks() []store.ProviderNotificationCheck {
-	return []store.ProviderNotificationCheck(checks)
 }
 
 func (n *ProviderNotifier) healthAssessor() providerHealthAssessor {

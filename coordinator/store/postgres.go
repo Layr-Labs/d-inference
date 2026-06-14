@@ -31,6 +31,8 @@ import (
 // Compile-time check that PostgresStore implements Store.
 var _ Store = (*PostgresStore)(nil)
 
+const providerRecordListLimit = 10000
+
 // PostgresStore is a PostgreSQL-backed implementation of Store.
 type PostgresStore struct {
 	pool *pgxpool.Pool
@@ -3383,14 +3385,15 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			registered_at, last_seen
-		 FROM providers ORDER BY last_seen DESC`,
+		 FROM providers ORDER BY last_seen DESC LIMIT $1`,
+		providerRecordListLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list providers: %w", err)
 	}
 	defer rows.Close()
 
-	records := make([]ProviderRecord, 0, 64)
+	records := make([]ProviderRecord, 0, providerRecordListLimit)
 	for rows.Next() {
 		var p ProviderRecord
 		var locationRaw []byte
@@ -3421,6 +3424,7 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	limit := providerNotificationTargetLimit
 	rows, err := s.pool.Query(ctx,
 		`SELECT p.id, p.hardware, p.models, p.backend, p.location, p.trust_level, p.attested,
 			p.attestation_result, p.se_public_key, p.serial_number,
@@ -3436,16 +3440,16 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 		 WHERE p.account_id <> '' AND BTRIM(u.email) <> '' AND p.last_seen >= $1
 		 ORDER BY p.last_seen DESC
 		 LIMIT $2`,
-		time.Now().Add(-providerNotificationTargetLookback), providerNotificationTargetLimit,
+		time.Now().Add(-providerNotificationTargetLookback), limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list provider notification targets: %w", err)
 	}
 	defer rows.Close()
 
-	targets := make([]ProviderNotificationTarget, 0, providerNotificationTargetLimit)
+	targets := make([]ProviderNotificationTarget, 0, limit)
 	for rows.Next() {
-		if len(targets) >= providerNotificationTargetLimit {
+		if len(targets) >= limit {
 			break
 		}
 		var p ProviderRecord

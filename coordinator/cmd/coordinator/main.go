@@ -41,6 +41,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/notifications"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
@@ -505,6 +506,10 @@ func main() {
 
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
+
+	// Email provider owners when a linked machine stops earning or needs action.
+	providerNotifier := notifications.NewProviderNotifier(reg, st, cfg.NotificationCfg, logger)
+	providerNotifier.Start(ctx)
 
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)

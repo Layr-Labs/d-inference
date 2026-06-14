@@ -47,7 +47,9 @@ func TestProviderNotifierSendsOfflineAlertOncePerCooldown(t *testing.T) {
 			Email: EmailConfig{
 				From: "Darkbloom <providers@darkbloom.dev>",
 			},
-			AlertCooldown: 24 * time.Hour,
+			Alerts: AlertConfig{
+				AlertCooldown: 24 * time.Hour,
+			},
 		},
 		testLogger(),
 		WithProviderNotificationSender(email),
@@ -95,9 +97,11 @@ func TestProviderNotifierSendsVersionAndMDMReasons(t *testing.T) {
 		reg,
 		st,
 		Config{
-			Enabled:            true,
-			MinProviderVersion: "0.6.4",
-			AlertCooldown:      24 * time.Hour,
+			Enabled: true,
+			Alerts: AlertConfig{
+				MinProviderVersion: "0.6.4",
+				AlertCooldown:      24 * time.Hour,
+			},
 		},
 		testLogger(),
 		WithProviderNotificationSender(email),

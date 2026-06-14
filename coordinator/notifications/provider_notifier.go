@@ -23,6 +23,8 @@ const (
 	maxConcurrentEmailSends  = 8
 )
 
+const thermalStateCritical = "critical"
+
 type providerStableKey string
 
 type ProviderNotifier struct {
@@ -59,10 +61,6 @@ const (
 	alertReasonUntrusted         = store.ProviderNotificationReasonUntrusted
 	alertReasonTrustBelowMinimum = store.ProviderNotificationReasonTrustBelowMinimum
 )
-
-func validAlertReasonKey(k store.ProviderNotificationReasonKey) bool {
-	return k.Valid()
-}
 
 type providerState struct {
 	id                    string
@@ -155,15 +153,13 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		return
 	}
 	if len(targets) > maxProviderAlertTargets {
-		targets = targets[:maxProviderAlertTargets]
+		targets = targets[:maxProviderAlertTargets:maxProviderAlertTargets]
 	}
 	if len(targets) == 0 {
 		return
 	}
-	candidateCapacity := len(targets)
-	checkCapacity := candidateCapacity * maxProviderAlertReasons
-	candidates := make([]providerAlertCandidate, 0, candidateCapacity)
-	checks := make([]store.ProviderNotificationCheck, 0, checkCapacity)
+	candidates := make([]providerAlertCandidate, 0, len(targets))
+	checks := make([]store.ProviderNotificationCheck, 0, len(targets)*maxProviderAlertReasons)
 	candidates, checks = n.alertCandidates(targets, candidates, checks)
 	if len(checks) == 0 {
 		return
@@ -248,7 +244,7 @@ func (n *ProviderNotifier) alertCandidate(target store.ProviderNotificationTarge
 		checks:    make([]store.ProviderNotificationCheck, 0, len(reasons)),
 	}
 	for _, reason := range reasons {
-		if !validAlertReasonKey(reason.Key) {
+		if !reason.Key.Valid() {
 			continue
 		}
 		check := store.ProviderNotificationCheck{

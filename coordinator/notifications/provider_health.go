@@ -42,7 +42,7 @@ func (a providerHealthAssessor) reasons(p providerState, now time.Time) []AlertR
 			Action: "Reinstall with the latest Darkbloom installer to restore routing eligibility.",
 		})
 	}
-	if p.thermalState == "critical" {
+	if p.thermalState == thermalStateCritical {
 		out = append(out, AlertReason{
 			Key:    alertReasonThermalCritical,
 			Title:  "Machine is thermally throttled",

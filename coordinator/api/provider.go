@@ -724,6 +724,7 @@ func (s *Server) attachProviderLocation(providerID string, provider *registry.Pr
 
 func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, acmeResult *ACMEVerificationResult) {
 	if acmeResult == nil || !acmeResult.Valid {
+		s.ddIncr("acme.trust", []string{"outcome:nil_or_invalid"})
 		return
 	}
 
@@ -741,6 +742,7 @@ func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, 
 	if !providerHasBoundEncryptionAttestation(provider) {
 		// Expected before the first challenge completes; logged at debug so it
 		// doesn't look like a failure. The retry path resolves it.
+		s.ddIncr("acme.trust", []string{"outcome:not_bound"})
 		s.logger.Debug("ACME cert verified but attestation not yet bound — will retry after challenge",
 			"provider_id", providerID,
 			"acme_serial", acmeResult.SerialNumber,
@@ -748,6 +750,7 @@ func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, 
 		return
 	}
 	if !providerAttestationMatchesACMEKey(provider, acmeResult) {
+		s.ddIncr("acme.trust", []string{"outcome:key_mismatch"})
 		s.logger.Warn("ACME client cert key does not match the attested Secure Enclave key",
 			"provider_id", providerID,
 			"acme_serial", acmeResult.SerialNumber,
@@ -760,6 +763,7 @@ func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, 
 	provider.SetAttested(true, registry.TrustHardware)
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "ACME device attestation verified")
 	s.clearPendingACME(providerID)
+	s.ddIncr("acme.trust", []string{"outcome:granted"})
 	s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
 		"provider_id", providerID,
 		"acme_serial", acmeResult.SerialNumber,

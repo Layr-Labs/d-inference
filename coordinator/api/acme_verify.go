@@ -40,6 +40,15 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 	)
 
 	if certEncoded == "" || verifyStatus == "" {
+		// No client cert reached us — either the provider didn't present one or
+		// the ingress isn't forwarding X-Ssl-Client-* headers. Logged (request-
+		// scoped is fine: provider WS connects are infrequent) so "is ACME even
+		// being attempted?" is answerable without a packet capture.
+		s.ddIncr("acme.client_cert", []string{"outcome:missing"})
+		s.logger.Info("no ACME client cert on provider connection",
+			"verify", verifyStatus,
+			"cert_len", len(certEncoded),
+		)
 		return nil // no client cert presented
 	}
 
@@ -47,6 +56,7 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 
 	if verifyStatus != "SUCCESS" {
 		result.Error = "nginx client cert verification failed: " + verifyStatus
+		s.ddIncr("acme.client_cert", []string{"outcome:present_invalid"})
 		return result
 	}
 
@@ -54,6 +64,7 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 	certPEM, err := url.QueryUnescape(certEncoded)
 	if err != nil {
 		result.Error = "failed to decode client cert: " + err.Error()
+		s.ddIncr("acme.client_cert", []string{"outcome:present_invalid"})
 		return result
 	}
 
@@ -61,12 +72,14 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 	block, _ := pem.Decode([]byte(certPEM))
 	if block == nil {
 		result.Error = "invalid PEM in client cert"
+		s.ddIncr("acme.client_cert", []string{"outcome:present_invalid"})
 		return result
 	}
 
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		result.Error = "failed to parse client cert: " + err.Error()
+		s.ddIncr("acme.client_cert", []string{"outcome:present_invalid"})
 		return result
 	}
 
@@ -92,6 +105,7 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 
 	if err != nil {
 		result.Error = "client cert chain verification failed: " + err.Error()
+		s.ddIncr("acme.client_cert", []string{"outcome:present_invalid"})
 		return result
 	}
 
@@ -103,9 +117,11 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 	if err != nil {
 		result.Valid = false
 		result.Error = err.Error()
+		s.ddIncr("acme.client_cert", []string{"outcome:present_invalid"})
 		return result
 	}
 
+	s.ddIncr("acme.client_cert", []string{"outcome:present_valid"})
 	s.logger.Info("ACME client cert verified",
 		"serial", result.SerialNumber,
 		"issuer", result.Issuer,

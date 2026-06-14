@@ -461,6 +461,14 @@ func main() {
 				}
 			}
 		}
+	} else {
+		// ACME is the no-live-command leg of the OR-trust model: a provider that
+		// presents a valid, bound device-attest-01 mTLS client cert earns hardware
+		// trust without any MDM SecurityInfo round-trip. Without the step-ca root
+		// that leg is dormant, so every provider must earn hardware trust via the
+		// live MDM SecurityInfo path (subject to APNs delivery). Surface the
+		// dormancy at startup so activation can be planned + validated.
+		logger.Warn("ACME device-cert verification disabled — EIGENINFERENCE_STEP_CA_ROOT not set; providers earn hardware trust via MDM SecurityInfo only")
 	}
 
 	// Optional profile signing: when a code-signing identity (e.g. Developer ID

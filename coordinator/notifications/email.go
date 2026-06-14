@@ -30,12 +30,17 @@ type ResendClient struct {
 const resendAPIURL = "https://api.resend.com/emails"
 
 type resendEmailPayload struct {
-	From    string            `json:"from"`
-	To      []string          `json:"to"`
-	Subject string            `json:"subject"`
-	Text    string            `json:"text"`
-	HTML    string            `json:"html"`
-	Headers map[string]string `json:"headers,omitempty"`
+	From    string              `json:"from"`
+	To      []string            `json:"to"`
+	Subject string              `json:"subject"`
+	Text    string              `json:"text"`
+	HTML    string              `json:"html"`
+	Headers *resendEmailHeaders `json:"headers,omitempty"`
+}
+
+type resendEmailHeaders struct {
+	ListUnsubscribe     string `json:"List-Unsubscribe,omitempty"`
+	ListUnsubscribePost string `json:"List-Unsubscribe-Post,omitempty"`
 }
 
 func NewResendClient(apiKey string) *ResendClient {
@@ -43,17 +48,21 @@ func NewResendClient(apiKey string) *ResendClient {
 }
 
 func NewResendClientWithHTTPClient(apiKey string, client *http.Client) *ResendClient {
+	apiKey = strings.TrimSpace(apiKey)
+	if !validResendAPIKey(apiKey) {
+		return nil
+	}
 	if client == nil {
 		client = http.DefaultClient
 	}
 	return &ResendClient{
-		apiKey: strings.TrimSpace(apiKey),
+		apiKey: apiKey,
 		client: client,
 	}
 }
 
 func (c *ResendClient) Send(ctx context.Context, email Email) error {
-	if c == nil || !validResendAPIKey(c.apiKey) {
+	if c == nil {
 		return fmt.Errorf("resend api key not configured")
 	}
 	payload := resendEmailPayload{
@@ -64,9 +73,9 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 		HTML:    email.HTML,
 	}
 	if email.UnsubscribeURL != "" {
-		payload.Headers = map[string]string{
-			"List-Unsubscribe":      "<" + email.UnsubscribeURL + ">",
-			"List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+		payload.Headers = &resendEmailHeaders{
+			ListUnsubscribe:     "<" + email.UnsubscribeURL + ">",
+			ListUnsubscribePost: "List-Unsubscribe=One-Click",
 		}
 	}
 	body, err := json.Marshal(payload)

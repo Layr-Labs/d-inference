@@ -41,15 +41,22 @@ func validResendAPIKey(key string) bool {
 	return strings.HasPrefix(key, "re_") && !strings.ContainsAny(key, " \t\r\n")
 }
 
+func validatedResendAPIKeyFromEnv() (string, bool) {
+	key := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
+	if key == "" {
+		return "", false
+	}
+	if !validResendAPIKey(key) {
+		return "", true
+	}
+	return key, true
+}
+
 func ReadConfig() Config {
-	resendRaw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
+	resendKey, hasResendKey := validatedResendAPIKeyFromEnv()
 	var provider EmailProvider
-	var apiKey string
-	if resendRaw != "" {
+	if hasResendKey {
 		provider = emailProviderResend
-		if validResendAPIKey(resendRaw) {
-			apiKey = resendRaw
-		}
 	}
 
 	consoleURL := strings.TrimRight(os.Getenv(env.EnvPrefix+"_CONSOLE_URL"), "/")
@@ -58,10 +65,10 @@ func ReadConfig() Config {
 	}
 
 	cfg := Config{
-		Enabled: resendRaw != "",
+		Enabled: hasResendKey,
 		Email: EmailConfig{
 			Provider: provider,
-			APIKey:   apiKey,
+			APIKey:   resendKey,
 			From:     env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
 		},
 		ConsoleURL:         consoleURL,

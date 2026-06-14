@@ -97,22 +97,24 @@ func displayTrust(level registry.TrustLevel) string {
 	return strings.ReplaceAll(string(level), "_", " ")
 }
 
-var trustRanks = map[registry.TrustLevel]int{
-	registry.TrustNone:       0,
-	registry.TrustSelfSigned: 1,
-	registry.TrustHardware:   2,
-}
-
 func parseTrustLevel(level string) registry.TrustLevel {
 	trust := registry.TrustLevel(strings.TrimSpace(level))
-	if _, ok := trustRanks[trust]; ok {
+	switch trust {
+	case registry.TrustNone, registry.TrustSelfSigned, registry.TrustHardware:
 		return trust
 	}
 	return registry.TrustNone
 }
 
 func trustRank(level registry.TrustLevel) int {
-	return trustRanks[level]
+	switch level {
+	case registry.TrustHardware:
+		return 2
+	case registry.TrustSelfSigned:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func semverLess(a, b string) bool {

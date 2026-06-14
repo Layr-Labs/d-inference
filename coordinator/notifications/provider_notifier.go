@@ -138,14 +138,16 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		return
 	}
 	checkCount := providerNotificationCheckCount(candidates)
-	checks := make([]store.ProviderNotificationCheck, 0, checkCount)
+	checks := make([]store.ProviderNotificationCheck, checkCount)
+	checkIndex := 0
 	for _, candidate := range candidates {
 		for _, reason := range candidate.reasons {
-			checks = append(checks, store.ProviderNotificationCheck{
+			checks[checkIndex] = store.ProviderNotificationCheck{
 				ProviderID: candidate.stableKey,
 				AccountID:  candidate.target.Provider.AccountID,
 				ReasonKey:  string(reason.Key),
-			})
+			}
+			checkIndex++
 		}
 	}
 	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
@@ -210,7 +212,7 @@ func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertC
 			AccountID:  rec.AccountID,
 			ReasonKey:  string(reason.Key),
 		}
-		if dueByCheck[check] {
+		if isDue, exists := dueByCheck[check]; exists && isDue {
 			due = append(due, reason)
 			sent = append(sent, check)
 		}

@@ -33,15 +33,14 @@ import Testing
         #expect(fix.lowercased().contains("profile"))
     }
 
-    @Test func enrolledButTrustLevelUnknownStillWarnsAsPending() throws {
-        // Daemon hasn't reported a trust level yet (nil) but the Mac IS enrolled:
-        // treat as the same pending-MDM signature rather than staying silent.
-        let d = MDMTrustDiagnosis.diagnose(
+    @Test func enrolledButTrustLevelUnknownStaysSilent() {
+        // nil trustLevel means the daemon is stopped/stale (no fresh trust
+        // status). Doctor's daemon/trust section already tells the operator to
+        // start/fix the daemon, so emitting an "ONLINE but earning nothing"
+        // MDM-pending warning here would be contradictory — stay silent.
+        #expect(MDMTrustDiagnosis.diagnose(
             trustLevel: nil,
-            enrollment: .enrolledDarkbloom(serverURL: "https://api.dev.darkbloom.xyz/mdm/connect"))
-        let diag = try #require(d)
-        #expect(diag.level == .warn)
-        #expect(diag.name == "mdm verification")
+            enrollment: .enrolledDarkbloom(serverURL: "https://api.dev.darkbloom.xyz/mdm/connect")) == nil)
     }
 
     @Test func enrolledAndHardwareTrustedEmitsNothing() {

@@ -596,23 +596,31 @@ func (c *Client) HandleWebhook(body []byte) {
 	}
 }
 
-// WaitForSecurityInfo waits for a SecurityInfo response for the given UDID. It
-// returns early if ctx is cancelled (e.g. the provider disconnected), so the
-// per-connection verification goroutine isn't blocked for the full timeout after
-// the connection is gone.
-func (c *Client) WaitForSecurityInfo(ctx context.Context, udid string, timeout time.Duration) (*SecurityInfoResponse, error) {
+// registerSecurityInfoWaiter installs a one-shot waiter for a UDID's SecurityInfo
+// response and returns the channel plus a release func to deregister it. Callers
+// that send the command themselves MUST register the waiter BEFORE sending /
+// pushing — otherwise a fast device can have its webhook arrive (and consume the
+// tracked CommandUUID) before the waiter exists, so the response is dropped to the
+// late-callback path and the in-flight verifier waits the full timeout.
+func (c *Client) registerSecurityInfoWaiter(udid string) (<-chan *SecurityInfoResponse, func()) {
 	ch := make(chan *SecurityInfoResponse, 1)
-
 	c.waitMu.Lock()
 	c.secInfoWaiters[udid] = ch
 	c.waitMu.Unlock()
-
-	defer func() {
+	return ch, func() {
 		c.waitMu.Lock()
-		delete(c.secInfoWaiters, udid)
+		// Only delete our own channel — HandleWebhook may already have delivered
+		// and removed it, and a later waiter could have registered a new one.
+		if cur, ok := c.secInfoWaiters[udid]; ok && cur == ch {
+			delete(c.secInfoWaiters, udid)
+		}
 		c.waitMu.Unlock()
-	}()
+	}
+}
 
+// awaitSecurityInfo blocks on a previously-registered waiter channel until the
+// response arrives, ctx is cancelled, or the timeout elapses.
+func awaitSecurityInfo(ctx context.Context, ch <-chan *SecurityInfoResponse, udid string, timeout time.Duration) (*SecurityInfoResponse, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
@@ -621,6 +629,16 @@ func (c *Client) WaitForSecurityInfo(ctx context.Context, udid string, timeout t
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout waiting for SecurityInfo from %s", udid)
 	}
+}
+
+// WaitForSecurityInfo registers a waiter and blocks for the response. Use this
+// when the SecurityInfo command was (or will be) sent elsewhere. VerifyProvider
+// instead registers the waiter explicitly before sending, to close the
+// fast-device webhook race.
+func (c *Client) WaitForSecurityInfo(ctx context.Context, udid string, timeout time.Duration) (*SecurityInfoResponse, error) {
+	ch, release := c.registerSecurityInfoWaiter(udid)
+	defer release()
+	return awaitSecurityInfo(ctx, ch, udid, timeout)
 }
 
 // VerifyProvider performs the full MDM verification flow for a provider.
@@ -655,17 +673,24 @@ func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attest
 		return result, nil
 	}
 
-	// Step 2: Send SecurityInfo command
-	_, err = c.SendSecurityInfoCommand(device.UDID)
-	if err != nil {
+	// Step 2: Register the response waiter BEFORE sending/pushing. The send path
+	// pushes the device synchronously, so an awake device can answer before we'd
+	// otherwise install the waiter; registering first guarantees the webhook finds
+	// it and the in-flight verifier sees the response (instead of timing out and
+	// relying on the late callback).
+	ch, release := c.registerSecurityInfoWaiter(device.UDID)
+	defer release()
+
+	// Step 3: Send SecurityInfo command (enqueues + pushes the device).
+	if _, err = c.SendSecurityInfoCommand(device.UDID); err != nil {
 		result.Error = fmt.Sprintf("failed to send SecurityInfo command: %v", err)
 		return result, nil
 	}
 
-	// Step 3: Wait for response (via webhook). 90 seconds allows for APN
+	// Step 4: Wait for the response (via webhook). 90 seconds allows for APN
 	// delivery delays during Power Nap cycles (every ~15 minutes on AC). Returns
 	// early if ctx is cancelled (provider disconnected).
-	secInfo, err := c.WaitForSecurityInfo(ctx, device.UDID, 90*time.Second)
+	secInfo, err := awaitSecurityInfo(ctx, ch, device.UDID, 90*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("SecurityInfo response: %v", err)
 		return result, nil

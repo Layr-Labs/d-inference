@@ -2315,6 +2315,19 @@ const (
 // decide whether to retry. It NEVER marks a provider untrusted for a transient
 // failure (not-enrolled / timeout) — only for a genuine posture mismatch.
 func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) mdmVerifyOutcome {
+	// Never let MDM promote a provider whose Secure Enclave attestation is not
+	// valid. verifyProviderAttestation stores an AttestationResult even for an
+	// invalid attestation (and, in Open Mode, leaves the provider connected), so
+	// without this a later SecurityInfo success could grant hardware to a provider
+	// whose SE attestation / encryption-key binding failed. result.Valid==true
+	// implies both passed (verifyProviderAttestation returns early otherwise). The
+	// per-connection loop also gates on this; this is the authoritative backstop.
+	if !attestResult.Valid {
+		s.logger.Warn("refusing MDM verification — SE attestation not valid",
+			"provider_id", providerID, "serial_number", attestResult.SerialNumber)
+		return mdmVerifyTransient
+	}
+
 	s.logger.Info("starting MDM verification",
 		"provider_id", providerID,
 		"serial_number", attestResult.SerialNumber,
@@ -2337,14 +2350,21 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	}
 
 	if !mdmResult.DeviceEnrolled {
-		// Distinguish "MicroMDM has no record of this serial" (profile never
-		// installed / check-in never reached the server) from "record exists but
-		// enrollment didn't complete" — different provider-side fixes.
+		// A MicroMDM lookup/transport failure (500, network error) also returns
+		// DeviceEnrolled=false — but the device may well be enrolled; we just
+		// couldn't ask. Bucket that as "error" (MDM-side outage) so the stuck-cohort
+		// gauge doesn't point operators at provider enrollment during an MDM outage.
+		// Otherwise distinguish "no record of this serial" (profile never installed /
+		// check-in never reached the server) from "record exists but enrollment
+		// didn't complete" — different provider-side fixes.
 		reason := "found-not-enrolled"
-		if strings.Contains(mdmResult.Error, "not found") {
+		switch {
+		case strings.Contains(mdmResult.Error, "lookup failed"):
+			reason = "error"
+		case strings.Contains(mdmResult.Error, "not found"):
 			reason = "device-not-found"
 		}
-		s.logger.Warn("provider device not enrolled in MDM — staying at self_signed trust",
+		s.logger.Warn("provider not MDM-verified — staying at self_signed trust",
 			"provider_id", providerID,
 			"serial_number", attestResult.SerialNumber,
 			"reason", reason,
@@ -2403,6 +2423,19 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		return mdmVerifyTransient
 	}
 
+	// Do NOT grant hardware while the provider is currently untrusted. A transient
+	// missed-challenge deroute (StatusUntrusted, recoverable) can race an in-flight
+	// MDM verify; granting here would leave the registry in hardware/untrusted
+	// (routing still rejects it on Status) while telling the provider it is
+	// "online" — cancelling its diagnostics for traffic it won't receive. Defer:
+	// recovery flows through a passing SE challenge that restores Status to online,
+	// after which a later loop iteration grants hardware cleanly. (A hard untrust
+	// already stops the loop via ChallengeShouldStop.)
+	if provider.GetStatus() == registry.StatusUntrusted {
+		s.ddIncr("mdm.verification", []string{"outcome:deferred-untrusted"})
+		return mdmVerifyTransient
+	}
+
 	// MDM SecurityInfo verification passed — upgrade to hardware trust.
 	provider.SetMDMFailureReason("")
 	provider.SetAttested(true, registry.TrustHardware)
@@ -2454,14 +2487,24 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 		result = &r
 	}
 	provider.Mu().Unlock()
-	if result == nil || result.SerialNumber == "" {
-		return // no serial → cannot verify via MDM (warned at registration)
+	// Require a VALID Secure Enclave attestation before MDM can promote to
+	// hardware. verifyProviderAttestation sets AttestationResult even when the SE
+	// attestation is invalid (and, in Open Mode, leaves the provider connected),
+	// so gating only on a serial would let a later MDM SecurityInfo success
+	// promote a provider whose SE attestation / encryption-key binding FAILED.
+	// result.Valid==true implies both the SE attestation and the X25519↔SE binding
+	// passed (verifyProviderAttestation returns early otherwise).
+	if result == nil || !result.Valid || result.SerialNumber == "" {
+		return
 	}
 
-	// Fast first (catch a briefly-asleep device), then a slow cadence that
-	// respects Apple's MDM/APNs push budget while still catching a provider that
-	// completes enrollment later in the same connection.
-	backoff := []time.Duration{30 * time.Second, 2 * time.Minute, 5 * time.Minute}
+	// One attempt up front, then a gentle cadence. The initial push (with the
+	// SecurityInfo waiter registered first) wakes an awake-or-reachable device and
+	// usually lands; retries exist only for genuine APNs/Power-Nap delivery delay,
+	// so they're spaced to stay within Apple's MDM push budget (the throttling this
+	// change exists to avoid) while still catching a provider that finishes
+	// enrollment later in the same connection.
+	backoff := []time.Duration{2 * time.Minute, 6 * time.Minute}
 	const steadyInterval = 15 * time.Minute
 
 	for attempt := 0; ; attempt++ {

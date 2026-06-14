@@ -41,6 +41,11 @@ type fakeMDMServer struct {
 	// MicroMDM transport failure. This must NOT hard-untrust an enrolled provider.
 	failSecurityInfoCommand bool
 
+	// failDeviceLookup makes POST /v1/devices return 500 so mdm.LookupDevice errors
+	// ("device lookup failed: ...") — simulating a MicroMDM outage. The device may
+	// be enrolled; this must bucket as "error", not an enrollment failure.
+	failDeviceLookup bool
+
 	pushedUDIDs []string
 }
 
@@ -51,7 +56,13 @@ func (f *fakeMDMServer) handler() http.Handler {
 		_, _ = io.Copy(io.Discard, r.Body)
 		f.mu.Lock()
 		dev := f.device
+		failLookup := f.failDeviceLookup
 		f.mu.Unlock()
+		if failLookup {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("micromdm device lookup unavailable"))
+			return
+		}
 		resp := map[string]any{"devices": []mdm.DeviceInfo{}}
 		if dev != nil {
 			resp["devices"] = []mdm.DeviceInfo{*dev}
@@ -162,6 +173,7 @@ func mdmReliabilityServer(t *testing.T, fake *fakeMDMServer) (*Server, *registry
 	p.Mu().Lock()
 	p.TrustLevel = registry.TrustSelfSigned
 	p.AttestationResult = &attestation.VerificationResult{
+		Valid:             true, // a valid SE attestation earned self_signed
 		SerialNumber:      "SERIAL-1",
 		SIPEnabled:        true,
 		SecureBootEnabled: true,
@@ -495,5 +507,52 @@ func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
 					pr.MDAVerified, len(pr.MDACertChain), pr.MDASerial)
 			}
 		}
+	}
+}
+
+// TestVerifyProviderViaMDM_InvalidAttestationNotPromoted is the regression for the
+// P1: a provider whose SE attestation is INVALID (Valid=false) must never be
+// promoted to hardware by a later MDM SecurityInfo success. The verify path
+// refuses up front, so even a fully-passing fake MDM cannot grant hardware.
+func TestVerifyProviderViaMDM_InvalidAttestationNotPromoted(t *testing.T) {
+	fake := &fakeMDMServer{
+		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+		commandUUID:       "cmd-ok",
+		failMDARawCommand: true,
+	}
+	srv, p := mdmReliabilityServer(t, fake)
+	// Force the attestation invalid (e.g. Open Mode connected a bad attestation).
+	p.Mu().Lock()
+	p.AttestationResult.Valid = false
+	p.Mu().Unlock()
+	// Even if SecurityInfo would pass, the invalid attestation must block promotion.
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true, true)
+
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
+
+	if outcome == mdmVerifyGranted {
+		t.Error("invalid attestation must NOT be granted hardware via MDM")
+	}
+	if lvl := p.GetTrustLevel(); lvl == registry.TrustHardware {
+		t.Errorf("trust = %q, must not be hardware for an invalid attestation", lvl)
+	}
+}
+
+// TestVerifyProviderViaMDM_LookupFailureBucketsAsError is the regression for the
+// mis-classification: a MicroMDM lookup/transport failure (500) returns
+// DeviceEnrolled=false with "device lookup failed: ..." — the device may well be
+// enrolled. It must bucket as "error" (MDM outage), not an enrollment failure, so
+// the stuck-cohort gauge doesn't point operators at provider enrollment.
+func TestVerifyProviderViaMDM_LookupFailureBucketsAsError(t *testing.T) {
+	fake := &fakeMDMServer{failDeviceLookup: true}
+	srv, p := mdmReliabilityServer(t, fake)
+
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
+
+	if outcome != mdmVerifyTransient {
+		t.Errorf("outcome = %v, want mdmVerifyTransient", outcome)
+	}
+	if got := p.GetMDMFailureReason(); got != "error" {
+		t.Errorf("MDMFailureReason = %q, want %q (MDM transport failure is not an enrollment problem)", got, "error")
 	}
 }

@@ -43,8 +43,6 @@ type providerAlertCandidate struct {
 	checks    providerNotificationChecks
 }
 
-type ProviderNotifierOption func(*ProviderNotifier)
-
 type AlertReason struct {
 	Key    store.ProviderNotificationReasonKey
 	Title  string
@@ -77,7 +75,7 @@ type providerState struct {
 	online                bool
 }
 
-func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, opts ...ProviderNotifierOption) *ProviderNotifier {
+func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger, sender EmailSender) *ProviderNotifier {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -88,21 +86,16 @@ func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, log
 		cfg:      cfg,
 		logger:   logger,
 	}
-	if cfg.Email.APIKey != "" {
-		if client, err := NewResendClient(cfg.Email.APIKey); err == nil {
+	if sender != nil {
+		notifier.sender = sender
+	} else if cfg.Email.APIKey != "" {
+		if client, err := NewResendClient(cfg.Email.APIKey); err != nil {
+			logger.Warn("provider email notifications enabled but email client configuration is invalid")
+		} else {
 			notifier.sender = client
 		}
 	}
-	for _, opt := range opts {
-		opt(notifier)
-	}
 	return notifier
-}
-
-func WithProviderNotificationSender(sender EmailSender) ProviderNotifierOption {
-	return func(n *ProviderNotifier) {
-		n.sender = sender
-	}
 }
 
 func (n *ProviderNotifier) Start(ctx context.Context) {

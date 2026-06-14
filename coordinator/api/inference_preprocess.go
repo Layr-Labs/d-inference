@@ -24,11 +24,12 @@ import (
 // API-key holder could POST a multi-GB body and OOM the coordinator (the trusted
 // TEE component).
 //
-// Sized to the first-party UI's per-message image limit so legitimate multimodal
-// requests aren't rejected: MAX_IMAGES_PER_MESSAGE (4) × MAX_IMAGE_BYTES (10 MB)
-// = 40 MB raw ≈ 53 MiB after base64 inflation, plus JSON/text overhead — see
-// console-ui/src/lib/image-upload.ts. (The sealed E2E path enforces its own
-// 16 MiB cap in sender_encryption.go; this is the plaintext image path.)
+// Sized to one first-party UI image-bearing turn: MAX_IMAGES_PER_MESSAGE (4) ×
+// MAX_IMAGE_BYTES (10 MB) = 40 MB raw ≈ 53 MiB after base64 inflation, plus
+// JSON/text overhead. The console preserves text history but only resends images
+// from the newest image turn, so normal UI multimodal requests stay below this
+// fixed DoS cap. (The sealed E2E path enforces its own 16 MiB cap in
+// sender_encryption.go; this is the plaintext image path.)
 const maxInferenceBodyBytes = 64 << 20 // 64 MiB
 
 // inferencePrelude carries the parsed request shape produced by the shared

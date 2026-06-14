@@ -78,14 +78,14 @@
 \pagestyle{fancy}
 \fancyhf{}
 \renewcommand{\headrulewidth}{0.4pt}
-\fancyhead[L]{\small\sffamily Private Decentralized Inference on Consumer Hardware}
+\fancyhead[L]{\small\sffamily Private Distributed Inference on Consumer Hardware}
 \fancyhead[R]{\small\sffamily\thepage}
 \fancyfoot{}
 
 % =====================================================================
 \title{%
 \vspace{-0.5cm}
-{\LARGE\sffamily\bfseries Private Decentralized Inference\\on Consumer Hardware}\\[8pt]
+{\LARGE\sffamily\bfseries Private Distributed Inference\\on Consumer Hardware}\\[8pt]
 {\large\sffamily Enabling Confidential Computation on Third-Party Apple Silicon\\via Software Access Path Elimination}
 }
 
@@ -108,7 +108,7 @@
 \begin{@twocolumnfalse}
 \begin{abstract}
 \noindent
-We present a system and method for private machine learning inference on a decentralized network of consumer hardware. The core problem: a user wants to run an AI model on someone else's Mac, but the machine's owner---who has root access and physical custody---should not be able to see the user's prompts or the model's responses. The machines lack hardware Trusted Execution Environments (TEEs) for application-level memory isolation.
+We present a system and method for private machine learning inference on a distributed network of consumer hardware. The core problem: a user wants to run an AI model on someone else's Mac, but the machine's owner---who has root access and physical custody---should not be able to see the user's prompts or the model's responses. The machines lack hardware Trusted Execution Environments (TEEs) for application-level memory isolation.
 
 Our approach eliminates every software path through which inference data could be observed. The inference engine runs directly inside a single hardened Swift process---no subprocess, no local server, no inter-process communication---using \texttt{mlx-swift-lm} on the Apple Silicon GPU. The macOS kernel blocks all external access to this process's memory: debuggers are denied at the system call level (\texttt{PT\_DENY\_ATTACH}), memory-reading APIs are blocked by Hardened Runtime, and these protections cannot be disabled without rebooting, which terminates the process and erases its data. We prove that System Integrity Protection, once verified, is immutable for the process lifetime (Theorem~\ref{thm:sip}).
 
@@ -126,7 +126,7 @@ After eliminating all software access paths, the only remaining attack requires 
 
 When a user sends a prompt to a cloud AI service, that prompt travels to a server owned and operated by someone else. The user's privacy rests on a contractual promise---a privacy policy---not a technical guarantee. Hardware Trusted Execution Environments (TEEs) such as Intel TDX~\cite{intel-tdx}, AMD SEV-SNP~\cite{amd-sev}, and NVIDIA Confidential Computing~\cite{nvidia-cc} can provide cryptographic memory isolation, but these technologies exist only on enterprise server hardware costing \$14,000 or more.
 
-Meanwhile, over 100 million Apple Silicon Macs have been sold since 2020. With 64--256\,GB of unified memory and 273--819\,GB/s memory bandwidth, they can run models with up to 235 billion parameters at interactive speeds. These machines sit idle most of the day. A decentralized network that lets Mac owners contribute their idle compute for AI inference---while guaranteeing that they cannot see the prompts being processed---would make private inference available at a fraction of the cost of cloud TEEs.
+Meanwhile, over 100 million Apple Silicon Macs have been sold since 2020. With 64--256\,GB of unified memory and 273--819\,GB/s memory bandwidth, they can run models with up to 235 billion parameters at interactive speeds. These machines sit idle most of the day. A distributed network that lets Mac owners contribute their idle compute for AI inference---while guaranteeing that they cannot see the prompts being processed---would make private inference available at a fraction of the cost of cloud TEEs.
 
 The challenge is that Apple Silicon provides no hardware TEE accessible to third-party applications:
 
@@ -140,7 +140,7 @@ We present a system that makes this possible. Rather than encrypting memory (whi
 
 \textbf{Contributions.} This paper makes the following contributions:
 \begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=2pt]
-    \item A \textbf{decentralized private inference architecture} that enables confidential AI computation on a network of third-party Apple Silicon machines, where each machine's owner is assumed to be adversarial.
+    \item A \textbf{distributed private inference architecture} that enables confidential AI computation on a network of third-party Apple Silicon machines, where each machine's owner is assumed to be adversarial.
     \item A \textbf{formal security model} for this setting, including a proof that System Integrity Protection provides runtime immutability under standard assumptions (Theorem~\ref{thm:sip}), and a complete enumeration of the software attack surface.
     \item An \textbf{in-process inference design} that embeds the inference engine directly in a hardened Swift process using \texttt{mlx-swift-lm}, eliminating all inter-process communication channels that could be observed, with optional \textbf{hypervisor memory isolation} reported as telemetry for future RDMA hardening.
     \item A \textbf{multi-layer attestation architecture} combining Secure Enclave signatures, MDM-based independent verification, Apple MDA hardware attestation with Apple-signed certificate chains, MDA nonce-based SE key binding, periodic challenge-response with fresh security state, and APNs code-identity attestation proving the running binary is genuine.
@@ -155,17 +155,49 @@ We present a system that makes this possible. Rather than encrypting memory (whi
 
 \textbf{Hardware TEE-based inference.}\quad Intel TDX~\cite{intel-tdx} and AMD SEV-SNP~\cite{amd-sev} encrypt VM memory and provide remote attestation. NVIDIA Confidential Computing~\cite{nvidia-cc} extends this to GPU memory. These approaches provide strong isolation but require enterprise server hardware. Our work achieves comparable privacy guarantees on consumer hardware without memory encryption.
 
-\textbf{Decentralized compute networks.}\quad Akash~\cite{akash} provides general compute with TEE support in development. io.net~\cite{ionet} aggregates GPU resources without hardware security guarantees. Ritual~\cite{ritual} uses zero-knowledge proofs and Intel SGX. Bittensor~\cite{bittensor} employs stake-weighted consensus for result verification. None address inference privacy on consumer hardware lacking TEEs.
+\textbf{Distributed compute networks.}\quad Akash~\cite{akash} provides general compute with TEE support in development. io.net~\cite{ionet} aggregates GPU resources without hardware security guarantees. Ritual~\cite{ritual} uses zero-knowledge proofs and Intel SGX. Bittensor~\cite{bittensor} employs stake-weighted consensus for result verification. None address inference privacy on consumer hardware lacking TEEs.
 
 \textbf{Apple Private Cloud Compute.}\quad PCC~\cite{apple-pcc} achieves inference privacy on Apple Silicon servers (M2~Ultra) without memory encryption through five requirements: stateless computation, enforceable guarantees, no privileged runtime access, non-targetability, and verifiable transparency. Implementation includes: no persistent storage, no SSH or shell access, immutable OS via Signed System Volume, cryptographic erasure on reboot, and OHTTP anonymization. Our work differs in that PCC operates in \emph{Apple-controlled data centers} with physical security (access controls, tamper detection), while our system must defend against the hardware owner as adversary.
 
 \textbf{Cryptographic approaches.}\quad Fully Homomorphic Encryption~\cite{gentry-fhe} introduces $10^4$--$10^6\times$ computational overhead. Secure Multi-Party Computation~\cite{yao-mpc} requires multiple non-colluding servers. zkLLM~\cite{zkllm} and DeepProve-1~\cite{deepprove} verify inference integrity via zero-knowledge proofs but do not protect input privacy during computation. These remain impractical for interactive LLM inference at current performance levels.
 
 % =====================================================================
+\subsection{Comparison with Apple Private Cloud Compute}
+\label{sec:pcc-comparison}
+
+Table~\ref{tab:pcc} compares the system's security properties with Apple PCC.
+
+\begin{table}[h]
+\centering
+\caption{Comparison with Apple Private Cloud Compute~\cite{apple-pcc}.}
+\label{tab:pcc}
+\vspace{4pt}
+\small
+\begin{tabularx}{\linewidth}{@{}l c X@{}}
+\toprule
+\textbf{Property} & \textbf{Apple PCC} & \textbf{This Work} \\
+\midrule
+Hardware owner & Trusted (Apple) & Adversarial \\
+Physical security & Facility controls & Soldered LPDDR5x \\
+Coordinator TEE & N/A (Apple infra) & AMD SEV-SNP \\
+OS immutability & SSV & SIP + ARV + SSV hash \\
+Shell/debug access & Removed entirely & Blocked at kernel level \\
+Memory encryption & None & None \\
+DMA/RDMA isolation & Facility controls & IOMMU default-deny; hypervisor Stage~2 planned \\
+Provider verification & Apple-signed & SE + MDM + MDA + APNs code identity \\
+Hardware provenance & Apple supply chain & Apple MDA certificates \\
+Residual attack & Physical probing & Physical probing \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The key distinction is who owns the hardware. In PCC, Apple owns the servers and controls physical access. In our system, the hardware belongs to an independent provider who may be adversarial. The multi-layer attestation architecture (Section~\ref{sec:attestation}) compensates for the absence of physical security by providing multiple independent verification paths, culminating in Apple-signed hardware provenance certificates. The result is that consumers get the same residual threat model---physical memory probing only---whether they use Apple's private cloud or our distributed network.
+
+% =====================================================================
 \section{Threat Model and Assumptions}
 \label{sec:threat}
 
-The fundamental challenge in decentralized inference is that the person running the computation is not the person who owns the data. A provider contributes their Mac's compute, but should learn nothing about the prompts processed on it. This section formalizes what we assume about each party and what a malicious provider can attempt.
+The fundamental challenge in distributed inference is that the person running the computation is not the person who owns the data. A provider contributes their Mac's compute, but should learn nothing about the prompts processed on it. This section formalizes what we assume about each party and what a malicious provider can attempt.
 
 \subsection{Actors}
 
@@ -228,7 +260,7 @@ where $\lambda$ is the security parameter, under Assumptions 1--3, excluding phy
 \section{System Architecture}
 \label{sec:arch}
 
-The decentralized network comprises three principal components: a \emph{coordinator} that routes consumer requests to providers and verifies their attestations, \emph{provider agents} running on Apple Silicon Macs that execute inference, and a \emph{Secure Enclave module} that gives each provider a hardware-bound cryptographic identity. The provider is a Swift CLI (\texttt{darkbloom}) that runs \texttt{mlx-swift-lm} in-process on the Apple Silicon GPU. Figure~\ref{fig:arch} depicts the complete architecture.
+The distributed network comprises three principal components: a \emph{coordinator} that routes consumer requests to providers and verifies their attestations, \emph{provider agents} running on Apple Silicon Macs that execute inference, and a \emph{Secure Enclave module} that gives each provider a hardware-bound cryptographic identity. The provider is a Swift CLI (\texttt{darkbloom}) that runs \texttt{mlx-swift-lm} in-process on the Apple Silicon GPU. Figure~\ref{fig:arch} depicts the complete architecture.
 
 \begin{figure*}[t]
 \centering
@@ -345,147 +377,28 @@ The coordinator runs in a Confidential VM (AMD SEV-SNP) on cloud infrastructure.
 The coordinator performs request routing, attestation verification, billing, and key management. Consumers may optionally seal requests to the coordinator's long-lived X25519 key; in all cases the coordinator decrypts the request body inside its Confidential-VM memory for routing and billing. Prompt content is never logged or retained, and is immediately re-encrypted with a fresh per-request NaCl Box to the selected provider's attested X25519 key (Section~\ref{sec:e2e}). The coordinator is therefore a trusted plaintext intermediary for routing, not a blind relay.
 
 % =====================================================================
-\section{Formal Security Analysis}
-\label{sec:formal}
+\section{End-to-End Encryption}
+\label{sec:e2e}
 
-\subsection{SIP Runtime Immutability}
-\label{sec:sip}
+Encryption is hop-by-hop rather than strictly end-to-end. The system uses NaCl Box (X25519 key agreement + XSalsa20-Poly1305 authenticated encryption)~\cite{nacl} for both legs.
 
-The security of our architecture depends on the property that SIP, once verified at process startup, cannot be disabled during the process lifetime.
+\subsection{Two-Leg Model}
 
-\begin{lemma}[SIP State Persistence]
-\label{lem:sip-nvram}
-SIP state $S \in \{\textsc{enabled}, \textsc{disabled}\}$ is stored in NVRAM and is immutable to all userspace and kernel code in the normal macOS boot environment.
-\end{lemma}
+\textbf{Consumer $\rightarrow$ coordinator.} By default the consumer sends plaintext over TLS. Optionally, the consumer may seal the request body to the coordinator's long-lived X25519 public key (advertised at \texttt{GET /v1/encryption-key}). The coordinator decrypts the body inside its Confidential-VM memory for routing and billing.
 
-\begin{proof}
-The SIP state variable resides in the machine's NVRAM and is read by the Boot ROM during the secure boot chain. The only utility that modifies this variable is \texttt{csrutil}, which Apple restricts to execution within the Recovery Mode boot environment $\mathcal{R}$. In the normal macOS environment, \texttt{csrutil disable} returns an error. No other userspace or kernel API exposes write access to the SIP NVRAM variable when SIP is enabled, as SIP protects the NVRAM variables that control it---a self-reinforcing property.
-\end{proof}
-
-\begin{theorem}[SIP Runtime Immutability]
-\label{thm:sip}
-Under Assumption~1 (no unpatched kernel vulnerabilities), if SIP is verified as enabled at process startup time $t_0$, then SIP remains enabled at all times $t \in [t_0, t_{\text{end}}]$ during the lifetime of that process.
-\end{theorem}
-
-\begin{proof}
-By Lemma~\ref{lem:sip-nvram}, SIP state is immutable in the normal boot environment. The only mechanism to change SIP state requires:
+\textbf{Coordinator $\rightarrow$ provider.} For every inference request the coordinator:
 \begin{enumerate}[leftmargin=*,itemsep=1pt]
-    \item Reboot into Recovery Mode environment $\mathcal{R}$
-    \item Execute \texttt{csrutil disable} in $\mathcal{R}$
-    \item Reboot back to the normal environment
+    \item Generates an ephemeral X25519 key pair $(sk_e, pk_e)$
+    \item Generates a random 24-byte nonce $n$
+    \item Computes the shared secret and encrypts the request body: $c = \text{Box}(m, n, pk_{\text{provider}}, sk_e)$
+    \item Sends $(pk_e, n \| c)$ to the provider over the outbound WebSocket
 \end{enumerate}
 
-Step 1 requires a hardware reboot. Let $\mathcal{E}(t)$ denote the set of all running processes at time $t$. A reboot at time $t_r$ terminates every process:
-\begin{equation}
-    \forall\, p \in \mathcal{E}(t_r^-):\; \lnot\,\text{alive}(p,\, t_r^+)
-\end{equation}
+The provider decrypts using its in-memory X25519 key $K$ (bound to its Secure Enclave identity via the attestation blob, Section~\ref{sec:se-attest}). Response SSE chunks are encrypted back to the coordinator's ephemeral public key and decrypted by the coordinator before being relayed to the consumer (re-sealed if consumer sealing is enabled).
 
-The provider process $p^* \in \mathcal{E}(t_0)$. For $p^*$ to observe $S = \textsc{disabled}$, a reboot must occur. But a reboot terminates $p^*$. Therefore:
-\begin{equation}
-    S(t_0) = \textsc{enabled} \;\implies\; \forall\, t \in [t_0,\, t_{\text{end}}]:\; S(t) = \textsc{enabled}
-\end{equation}
-\end{proof}
+\subsection{Forward Secrecy}
 
-\begin{corollary}[Single Verification Sufficiency]
-\label{cor:single-check}
-A single SIP verification at process startup provides a security guarantee for the entire process lifetime. Per-request SIP checks serve as defense-in-depth but do not detect state changes, because none can occur under the theorem's conditions.
-\end{corollary}
-
-\subsection{Complete Attack Surface Analysis}
-
-Table~\ref{tab:attacks} enumerates all known software-based attacks against the provider process and their corresponding defenses.
-
-\begin{table*}[t]
-\centering
-\caption{Complete software attack surface on Apple Silicon. All listed attacks are blocked under Assumptions 1--2. The final row represents the residual physical attack.}
-\label{tab:attacks}
-\vspace{4pt}
-\small
-\begin{tabularx}{\textwidth}{@{}lXl@{}}
-\toprule
-\textbf{Attack Vector} & \textbf{Defense Mechanism} & \textbf{Enforced By} \\
-\midrule
-Attach debugger (lldb, dtrace, Instruments) & \texttt{ptrace(PT\_DENY\_ATTACH)} at process startup & Kernel \\
-Read memory via Mach APIs (\texttt{task\_for\_pid}, \texttt{mach\_vm\_read}) & Hardened Runtime without \texttt{get-task-allow} entitlement & Kernel \\
-Intercept IPC between processes & No IPC exists---inference is in-process & Architecture \\
-Modify provider binary to add logging & Code signing + SIP: macOS refuses modified signed binaries & Kernel + SIP \\
-Replace binary with malicious version & APNs code-identity attestation: only the genuine, team-signed app can receive the push challenge & Coordinator + Apple \\
-Inject malicious runtime package & No embedded interpreter; Swift binary links only signed \texttt{mlx-swift-lm} & Process + SIP \\
-Load unsigned kernel extension & SIP blocks all unsigned kexts on Apple Silicon & SIP \\
-Modify kernel code at runtime & Kernel Integrity Protection: hardware denies writes to kernel pages after boot & Hardware \\
-Disable SIP & Requires reboot into Recovery Mode, terminating all processes (Theorem~\ref{thm:sip}) & Hardware \\
-Read physical memory via \texttt{/dev/mem} & Device node does not exist on Apple Silicon & Hardware \\
-DMA-based extraction via Thunderbolt/PCIe & Per-device IOMMU (DART) with default-deny; unauthorized DMA triggers kernel panic & Hardware \\
-RDMA over Thunderbolt~5 (80\,Gb/s) & RDMA status reported in attestation challenge-response; single-node inference is the supported boundary today (Section~\ref{sec:hypervisor}) & Hardware + policy \\
-\midrule
-\textit{Physical memory probing} & \textit{LPDDR5x soldered into SoC package; desoldering is destructive} & \textit{Physical} \\
-\bottomrule
-\end{tabularx}
-\end{table*}
-
-\subsection{Self-Reinforcing Security Properties}
-
-Several verification mechanisms exhibit \emph{circular dependency} that strengthens rather than weakens the security model:
-
-\begin{proposition}[MDM Verification Circularity]
-\label{prop:mdm-circular}
-Spoofing the MDM \texttt{SecurityInfo} response to report SIP as enabled when it is disabled requires modifying system frameworks in \texttt{/System/Library/}, which requires SIP to be disabled. Therefore, a provider cannot simultaneously (a)~have SIP disabled and (b)~cause the MDM framework to report SIP as enabled.
-\end{proposition}
-
-This circularity ensures that the MDM verification is unforgeable precisely in the cases where it matters most. Combined with Authenticated Root Volume verification (Section~\ref{sec:arv}), which proves the entire system volume matches Apple's sealed build, this creates a defense-in-depth where each layer independently validates the others.
-
-\subsection{Provider Verification Requirements}
-
-\begin{definition}[Verified Provider]
-\label{def:verified}
-A provider achieves \emph{verified} status if and only if all of the following conditions hold:
-\begin{enumerate}[leftmargin=*,itemsep=1pt]
-    \item Secure Enclave P-256 attestation signature is valid (Section~\ref{sec:se-attest})
-    \item Device is enrolled via the combined enrollment profile (Section~\ref{sec:enrollment})
-    \item MDM SecurityInfo confirms: SIP enabled, Secure Boot at ``full'' level, Authenticated Root Volume enabled
-    \item Apple MDA certificate chain is valid and serial number matches self-reported attestation (Section~\ref{sec:mda})
-    \item MDM-reported security posture matches self-reported attestation with no discrepancies
-    \item Periodic challenge-response succeeds with fresh SIP and Secure Boot status (Section~\ref{sec:challenge})
-    \item APNs code-identity attestation succeeds, proving the running binary is the genuine team-signed build (Section~\ref{sec:apns-attest})
-\end{enumerate}
-Providers that fail any verification receive no private inference requests. \texttt{binaryHash} is retained as drift telemetry and for transparency-log matching but is not itself a hard trust gate (Section~\ref{sec:se-attest}).
-\end{definition}
-
-% =====================================================================
-\section{Hypervisor Memory Isolation}
-\label{sec:hypervisor}
-
-The software-enforced protections in Section~\ref{sec:arch} defend against observation through operating system interfaces. RDMA over Thunderbolt~5 (available in macOS 26.2+) permits a physically connected Mac to read host memory at 80\,Gb/s via DMA, bypassing \texttt{PT\_DENY\_ATTACH}, Hardened Runtime, and SIP entirely. RDMA is disabled by default and requires a Recovery OS boot to enable. The provider reports \texttt{rdmaDisabled} and \texttt{hypervisorActive} in every attestation challenge response, and the coordinator records these values for telemetry and future policy enforcement.
-
-\subsection{Current Status}
-
-In the current system, \texttt{hypervisorActive} is informational rather than a hard routing gate. Single-node inference is the supported security boundary today: a provider with RDMA disabled relies on the kernel-enforced access-path elimination described in Section~\ref{sec:access-path}. Providers that enable RDMA without hypervisor isolation are not currently routed private text traffic as a matter of operational policy, but the coordinator does not yet enforce a strict hypervisor gate in the production scheduler.
-
-\subsection{Planned Hypervisor Isolation}
-
-When enabled, Apple's Hypervisor.framework creates a lightweight virtual machine with ARM Stage~2 page tables. These page tables insert a hardware-enforced translation layer between the host's virtual addresses and physical memory. Inference memory mapped into the VM would reside at guest physical addresses that are invisible to RDMA, which operates on host physical addresses.
-
-The intended design is:
-\begin{enumerate}[leftmargin=*,itemsep=1pt]
-    \item Create a Hypervisor VM via \texttt{hv\_vm\_create()}
-    \item Allocate a memory pool via \texttt{mmap} sized to the model working set
-    \item Align the pool to 16\,MB boundaries and map it in 16\,MB chunks via \texttt{hv\_vm\_map()}
-    \item Serve Metal buffer allocations from this pool using \texttt{makeBuffer(bytesNoCopy:)}
-\end{enumerate}
-
-A fail-closed policy would refuse inference requests if the VM-mapped pool is exhausted rather than falling back to unprotected memory. Multi-node RDMA sharding (Section~\ref{sec:future}) would require both nodes to have RDMA enabled and hypervisor isolation active, with activations transferred over encrypted RDMA.
-
-\subsection{Experimental Validation}
-
-We validated the hypervisor approach on an Apple M4~Max (128\,GB, macOS~26.3) with the following results:
-\begin{itemize}[leftmargin=*,itemsep=1pt]
-    \item \textbf{Performance overhead}: 0\% on Qwen3.5-27B (50.1\,GB, BF16). Baseline: 8.2\,tok/s; with hypervisor and 100\% memory VM-mapped: 8.0\,tok/s (within measurement noise).
-    \item \textbf{Memory coverage}: 100\% for all tested quantization formats (BF16, FP16, 4-bit, 8-bit, MoE).
-    \item \textbf{Pool mapping latency}: 60\,GB pool mapped in 2.5\,ms (3,840 $\times$ 16\,MB chunks).
-    \item \textbf{Metal GPU compute}: Verified correct on VM-mapped memory---Metal's \texttt{makeBuffer(bytesNoCopy:)} creates GPU-accessible buffers backed by the VM-mapped pool.
-\end{itemize}
-
-These measurements establish that hypervisor isolation can be deployed without performance penalty, but production enforcement is not yet active.
+Each request uses a fresh coordinator ephemeral key pair. Compromise of any single ephemeral key does not enable decryption of past or future requests. The provider's X25519 key $K$ lives only in the hardened process's protected memory; its binding to the Secure Enclave identity is verified by the coordinator.
 
 % =====================================================================
 \section{Five-Layer Attestation Architecture}
@@ -842,17 +755,16 @@ The MDM enrollment requests the minimum permissions necessary for security verif
 Providers can unenroll at any time via System Settings, which removes the profile and all associated certificates immediately and completely.
 
 % =====================================================================
-\section{Consumer-Selectable Trust Tiers}
+\section{Trust Tiers and Routing Policy}
 \label{sec:trust-tiers}
 
-The multi-layer attestation architecture (Section~\ref{sec:attestation}) and the combined enrollment protocol (Section~\ref{sec:enrollment}) establish a spectrum of verifiable trust guarantees. We formalize this spectrum into \emph{trust tiers} that consumers can select at inference time, allowing each request to specify the minimum acceptable level of hardware assurance.
+The multi-layer attestation architecture (Section~\ref{sec:attestation}) and the combined enrollment protocol (Section~\ref{sec:enrollment}) establish a spectrum of verifiable trust guarantees. We formalize this spectrum into \emph{trust tiers} that consumers can select at inference time, allowing each request to specify the minimum acceptable level of hardware assurance. The coordinator's routing algorithm filters the candidate provider set by trust tier before applying the cost-minimization scheduler described below.
 
 \subsection{Tier Definitions}
 
 \begin{table}[h]
 \centering
 \caption{Consumer-selectable trust tiers. Consumers specify a minimum tier; the coordinator routes only to providers meeting that threshold. Private text traffic additionally requires APNs code-identity attestation once enforcement is enabled.}
-\label{tab:trust-tiers}
 \vspace{4pt}
 \scriptsize
 \begin{tabular}{@{}clp{4.2cm}@{}}
@@ -867,52 +779,15 @@ The multi-layer attestation architecture (Section~\ref{sec:attestation}) and the
 \end{tabular}
 \end{table}
 
-\subsection{Cryptographic Guarantees}
-
-The tiers correspond to progressively stronger cryptographic claims about the provider's hardware and the provenance of inference outputs:
-
-\begin{itemize}[leftmargin=*,itemsep=2pt]
-    \item \textbf{Tier~0 (\texttt{none}):} No attestation is provided. The provider's identity is ephemeral and unverified. This tier exists for open testing but is rejected in production routing by default.
-
-    \item \textbf{Tier~1 (\texttt{self\_signed}):} The provider generates a P-256 key in the Secure Enclave and signs an attestation blob containing hardware identifiers, SIP status, Secure Boot state, and Authenticated Root Volume hash. The coordinator verifies the signature but relies on the provider's own claim that the key resides in hardware.
-
-    \item \textbf{Tier~2 (\texttt{hardware}):} Combines four independent verification mechanisms:
-    \begin{enumerate}[leftmargin=*,itemsep=1pt]
-        \item \textbf{MDM SecurityInfo:} Apple's MDM framework independently confirms SIP, Secure Boot, and Authenticated Root Volume status directly from the device firmware, bypassing the provider's software stack entirely.
-        \item \textbf{Apple MDA:} Apple's Enterprise Attestation Root CA signs a certificate chain encoding the device's serial number, UDID, macOS version, and SepOS version. This cryptographically proves the device is genuine Apple hardware with the reported security configuration.
-        \item \textbf{SE key binding via MDA nonce:} The coordinator computes $h = \text{SHA-256}(pk_{\text{SE}})$ where $pk_{\text{SE}}$ is the provider's Secure Enclave public key, and includes $h$ as the \texttt{DeviceAttestationNonce} in a subsequent MDA request. Apple embeds $h$ as the \texttt{FreshnessCode} (OID \texttt{1.2.840.113635.100.8.11.1}) in the signed leaf certificate. This cryptographically binds the provider's signing key to Apple-verified genuine hardware.
-        \item \textbf{Periodic re-verification:} A challenge-response loop (every 5 minutes) verifies fresh SIP and Secure Boot status. If either is disabled after registration---which requires a reboot into Recovery Mode---the provider is immediately marked untrusted and excluded from routing.
-    \end{enumerate}
-    \item \textbf{Code-attested gate (\texttt{code\_attested}):} The effective requirement for private text traffic once code-attestation enforcement is enabled. In addition to Tier~2, the provider must pass the APNs code-identity round-trip (Section~\ref{sec:apns-attest}), proving it runs the genuine Darkbloom binary. The provider signs each inference response with the bound Secure Enclave key: $\sigma = \text{ECDSA-P256}(\text{SHA-256}(\text{request\_id} \| \text{token\_count} \| \text{content}))$, providing per-response integrity that any party can verify.
-\end{itemize}
-
-\subsection{SE Key Binding Protocol}
-
-The MDA nonce mechanism deserves elaboration as it addresses a fundamental gap in macOS attestation. While Apple provides the ACME \texttt{device-attest-01} protocol for generating attested Secure Enclave keys, the resulting keys are stored in a platform-restricted keychain (the \emph{data protection keychain}) that is inaccessible to third-party applications---even with Developer ID signing and Apple notarization. This is a deliberate architectural restriction: \texttt{AllowAllAppsAccess} is silently ignored when \texttt{HardwareBound=true} in the ACME payload.
-
-Our protocol circumvents this limitation by using the MDA attestation nonce as a binding channel:
-
-\begin{enumerate}[leftmargin=*,itemsep=1pt]
-    \item Provider generates a Secure Enclave P-256 key $k$ and sends $pk_k$ to the coordinator
-    \item Coordinator computes nonce $n = \text{SHA-256}(pk_k)$
-    \item Coordinator sends MDM \texttt{DeviceInformation} command with \texttt{DeviceAttestationNonce} = $n$
-    \item Device contacts Apple's attestation servers; Apple generates a fresh MDA certificate chain with $\text{FreshnessCode} = n$
-    \item Coordinator verifies the certificate chain against Apple Enterprise Attestation Root CA
-    \item Coordinator verifies $\text{FreshnessCode} = n$, confirming the binding
-\end{enumerate}
-
-The security argument: Apple's attestation servers will only generate the FreshnessCode for a genuine device that checks in via APNs. A software-only adversary cannot forge the MDA certificate chain (Assumption~3). Combined with SIP enforcement (preventing binary replacement) and Secure Boot (preventing bootloader tampering), this provides strong evidence that the signing key resides in genuine Apple hardware.
-
 \subsection{Consumer-Side Selection}
 
-Consumers specify their minimum trust tier as a query parameter (\texttt{trust\_level}) in the inference request. The coordinator's routing algorithm filters the candidate provider set by trust tier before applying the cost-minimization scheduler (Section~\ref{sec:scoring}). In production deployments, the coordinator enforces \texttt{hardware} as the minimum trust tier, and private text traffic is additionally gated on APNs code-identity attestation once the enforcement deadline passes.
+Consumers specify their minimum trust tier as a query parameter (\texttt{trust\_level}) in the inference request. The coordinator's routing algorithm filters the candidate provider set by trust tier before applying the cost-minimization scheduler below. In production deployments, the coordinator enforces \texttt{hardware} as the minimum trust tier, and private text traffic is additionally gated on APNs code-identity attestation once the enforcement deadline passes.
 
 \subsection{Trust Property Summary}
 
 \begin{table}[h]
 \centering
 \caption{Trust properties by tier. ``Crypto'' = Apple CA-verified; ``OS'' = OS verified via MDM; ``Self'' = self-reported; ``Apple'' = proved via Apple's push infrastructure.}
-\label{tab:tier-comparison}
 \vspace{4pt}
 \scriptsize
 \resizebox{\linewidth}{!}{%
@@ -933,36 +808,26 @@ Periodic security re-check & --- & --- & Every 5 min & Every 5 min \\
 \end{table}
 
 % =====================================================================
-\section{End-to-End Encryption}
-\label{sec:e2e}
+\subsection{Verified Provider Requirements}
+\label{sec:verified-provider}
 
-Encryption is hop-by-hop rather than strictly end-to-end. The system uses NaCl Box (X25519 key agreement + XSalsa20-Poly1305 authenticated encryption)~\cite{nacl} for both legs.
-
-\subsection{Two-Leg Model}
-
-\textbf{Consumer $\rightarrow$ coordinator.} By default the consumer sends plaintext over TLS. Optionally, the consumer may seal the request body to the coordinator's long-lived X25519 public key (advertised at \texttt{GET /v1/encryption-key}). The coordinator decrypts the body inside its Confidential-VM memory for routing and billing.
-
-\textbf{Coordinator $\rightarrow$ provider.} For every inference request the coordinator:
+\begin{definition}[Verified Provider]
+A provider achieves \emph{verified} status if and only if all of the following conditions hold:
 \begin{enumerate}[leftmargin=*,itemsep=1pt]
-    \item Generates an ephemeral X25519 key pair $(sk_e, pk_e)$
-    \item Generates a random 24-byte nonce $n$
-    \item Computes the shared secret and encrypts the request body: $c = \text{Box}(m, n, pk_{\text{provider}}, sk_e)$
-    \item Sends $(pk_e, n \| c)$ to the provider over the outbound WebSocket
+    \item Secure Enclave P-256 attestation signature is valid (Section~\ref{sec:se-attest})
+    \item Device is enrolled via the combined enrollment profile (Section~\ref{sec:enrollment})
+    \item MDM SecurityInfo confirms: SIP enabled, Secure Boot at ``full'' level, Authenticated Root Volume enabled
+    \item Apple MDA certificate chain is valid and serial number matches self-reported attestation (Section~\ref{sec:mda})
+    \item MDM-reported security posture matches self-reported attestation with no discrepancies
+    \item Periodic challenge-response succeeds with fresh SIP and Secure Boot status (Section~\ref{sec:challenge})
+    \item APNs code-identity attestation succeeds, proving the running binary is the genuine team-signed build (Section~\ref{sec:apns-attest})
 \end{enumerate}
-
-The provider decrypts using its in-memory X25519 key $K$ (bound to its Secure Enclave identity via the attestation blob, Section~\ref{sec:se-attest}). Response SSE chunks are encrypted back to the coordinator's ephemeral public key and decrypted by the coordinator before being relayed to the consumer (re-sealed if consumer sealing is enabled).
-
-\subsection{Forward Secrecy}
-
-Each request uses a fresh coordinator ephemeral key pair. Compromise of any single ephemeral key does not enable decryption of past or future requests. The provider's X25519 key $K$ lives only in the hardened process's protected memory; its binding to the Secure Enclave identity is verified by the coordinator.
-
-% =====================================================================
-\section{Provider Scoring and Routing}
-\label{sec:scoring}
+Providers that fail any verification receive no private inference requests. \texttt{binaryHash} is retained as drift telemetry and for transparency-log matching but is not itself a hard trust gate (Section~\ref{sec:se-attest}).
+\end{definition}
 
 The coordinator selects providers using a cost-minimization scheduler. For each request it collects every eligible provider, computes an estimated completion time, and selects the lowest-cost candidate.
 
-\subsection{Structural Gates}
+\subsection{Routing Gates}
 
 Before a provider becomes a candidate it must pass the routing gates applied by \texttt{providerPassesRoutingGatesLocked}:
 \begin{enumerate}[leftmargin=*,itemsep=1pt]
@@ -1004,36 +869,129 @@ Effective decode TPS is resolved in priority order from provider-reported observ
 Provider reputation and health feed into the health term of the cost function rather than a multiplicative score. The health term captures memory pressure, CPU utilization, thermal throttling, and GPU utilization reported in provider heartbeats.
 
 % =====================================================================
-\section{Comparison with Apple Private Cloud Compute}
-\label{sec:pcc-comparison}
+\section{Formal Security Analysis}
+\label{sec:formal}
 
-Table~\ref{tab:pcc} compares the system's security properties with Apple PCC.
+\subsection{SIP Runtime Immutability}
+\label{sec:sip}
 
-\begin{table}[h]
+The security of our architecture depends on the property that SIP, once verified at process startup, cannot be disabled during the process lifetime.
+
+\begin{lemma}[SIP State Persistence]
+\label{lem:sip-nvram}
+SIP state $S \in \{\textsc{enabled}, \textsc{disabled}\}$ is stored in NVRAM and is immutable to all userspace and kernel code in the normal macOS boot environment.
+\end{lemma}
+
+\begin{proof}
+The SIP state variable resides in the machine's NVRAM and is read by the Boot ROM during the secure boot chain. The only utility that modifies this variable is \texttt{csrutil}, which Apple restricts to execution within the Recovery Mode boot environment $\mathcal{R}$. In the normal macOS environment, \texttt{csrutil disable} returns an error. No other userspace or kernel API exposes write access to the SIP NVRAM variable when SIP is enabled, as SIP protects the NVRAM variables that control it---a self-reinforcing property.
+\end{proof}
+
+\begin{theorem}[SIP Runtime Immutability]
+\label{thm:sip}
+Under Assumption~1 (no unpatched kernel vulnerabilities), if SIP is verified as enabled at process startup time $t_0$, then SIP remains enabled at all times $t \in [t_0, t_{\text{end}}]$ during the lifetime of that process.
+\end{theorem}
+
+\begin{proof}
+By Lemma~\ref{lem:sip-nvram}, SIP state is immutable in the normal boot environment. The only mechanism to change SIP state requires:
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+    \item Reboot into Recovery Mode environment $\mathcal{R}$
+    \item Execute \texttt{csrutil disable} in $\mathcal{R}$
+    \item Reboot back to the normal environment
+\end{enumerate}
+
+Step 1 requires a hardware reboot. Let $\mathcal{E}(t)$ denote the set of all running processes at time $t$. A reboot at time $t_r$ terminates every process:
+\begin{equation}
+    \forall\, p \in \mathcal{E}(t_r^-):\; \lnot\,\text{alive}(p,\, t_r^+)
+\end{equation}
+
+The provider process $p^* \in \mathcal{E}(t_0)$. For $p^*$ to observe $S = \textsc{disabled}$, a reboot must occur. But a reboot terminates $p^*$. Therefore:
+\begin{equation}
+    S(t_0) = \textsc{enabled} \;\implies\; \forall\, t \in [t_0,\, t_{\text{end}}]:\; S(t) = \textsc{enabled}
+\end{equation}
+\end{proof}
+
+\begin{corollary}[Single Verification Sufficiency]
+\label{cor:single-check}
+A single SIP verification at process startup provides a security guarantee for the entire process lifetime. Per-request SIP checks serve as defense-in-depth but do not detect state changes, because none can occur under the theorem's conditions.
+\end{corollary}
+
+\subsection{Complete Attack Surface Analysis}
+
+Table~\ref{tab:attacks} enumerates all known software-based attacks against the provider process and their corresponding defenses.
+
+\begin{table*}[t]
 \centering
-\caption{Comparison with Apple Private Cloud Compute~\cite{apple-pcc}.}
-\label{tab:pcc}
+\caption{Complete software attack surface on Apple Silicon. All listed attacks are blocked under Assumptions 1--2. The final row represents the residual physical attack.}
+\label{tab:attacks}
 \vspace{4pt}
 \small
-\begin{tabularx}{\linewidth}{@{}l c X@{}}
+\begin{tabularx}{\textwidth}{@{}lXl@{}}
 \toprule
-\textbf{Property} & \textbf{Apple PCC} & \textbf{This Work} \\
+\textbf{Attack Vector} & \textbf{Defense Mechanism} & \textbf{Enforced By} \\
 \midrule
-Hardware owner & Trusted (Apple) & Adversarial \\
-Physical security & Facility controls & Soldered LPDDR5x \\
-Coordinator TEE & N/A (Apple infra) & AMD SEV-SNP \\
-OS immutability & SSV & SIP + ARV + SSV hash \\
-Shell/debug access & Removed entirely & Blocked at kernel level \\
-Memory encryption & None & None \\
-DMA/RDMA isolation & Facility controls & IOMMU default-deny; hypervisor Stage~2 planned \\
-Provider verification & Apple-signed & SE + MDM + MDA + APNs code identity \\
-Hardware provenance & Apple supply chain & Apple MDA certificates \\
-Residual attack & Physical probing & Physical probing \\
+Attach debugger (lldb, dtrace, Instruments) & \texttt{ptrace(PT\_DENY\_ATTACH)} at process startup & Kernel \\
+Read memory via Mach APIs (\texttt{task\_for\_pid}, \texttt{mach\_vm\_read}) & Hardened Runtime without \texttt{get-task-allow} entitlement & Kernel \\
+Intercept IPC between processes & No IPC exists---inference is in-process & Architecture \\
+Modify provider binary to add logging & Code signing + SIP: macOS refuses modified signed binaries & Kernel + SIP \\
+Replace binary with malicious version & APNs code-identity attestation: only the genuine, team-signed app can receive the push challenge & Coordinator + Apple \\
+Inject malicious runtime package & No embedded interpreter; Swift binary links only signed \texttt{mlx-swift-lm} & Process + SIP \\
+Load unsigned kernel extension & SIP blocks all unsigned kexts on Apple Silicon & SIP \\
+Modify kernel code at runtime & Kernel Integrity Protection: hardware denies writes to kernel pages after boot & Hardware \\
+Disable SIP & Requires reboot into Recovery Mode, terminating all processes (Theorem~\ref{thm:sip}) & Hardware \\
+Read physical memory via \texttt{/dev/mem} & Device node does not exist on Apple Silicon & Hardware \\
+DMA-based extraction via Thunderbolt/PCIe & Per-device IOMMU (DART) with default-deny; unauthorized DMA triggers kernel panic & Hardware \\
+RDMA over Thunderbolt~5 (80\,Gb/s) & RDMA status reported in attestation challenge-response; single-node inference is the supported boundary today (Section~\ref{sec:hypervisor}) & Hardware + policy \\
+\midrule
+\textit{Physical memory probing} & \textit{LPDDR5x soldered into SoC package; desoldering is destructive} & \textit{Physical} \\
 \bottomrule
 \end{tabularx}
-\end{table}
+\end{table*}
 
-The key distinction is who owns the hardware. In PCC, Apple owns the servers and controls physical access. In our system, the hardware belongs to an independent provider who may be adversarial. The multi-layer attestation architecture (Section~\ref{sec:attestation}) compensates for the absence of physical security by providing multiple independent verification paths, culminating in Apple-signed hardware provenance certificates. The result is that consumers get the same residual threat model---physical memory probing only---whether they use Apple's private cloud or our decentralized network.
+\subsection{Self-Reinforcing Security Properties}
+
+Several verification mechanisms exhibit \emph{circular dependency} that strengthens rather than weakens the security model:
+
+\begin{proposition}[MDM Verification Circularity]
+\label{prop:mdm-circular}
+Spoofing the MDM \texttt{SecurityInfo} response to report SIP as enabled when it is disabled requires modifying system frameworks in \texttt{/System/Library/}, which requires SIP to be disabled. Therefore, a provider cannot simultaneously (a)~have SIP disabled and (b)~cause the MDM framework to report SIP as enabled.
+\end{proposition}
+
+This circularity ensures that the MDM verification is unforgeable precisely in the cases where it matters most. Combined with Authenticated Root Volume verification (Section~\ref{sec:arv}), which proves the entire system volume matches Apple's sealed build, this creates a defense-in-depth where each layer independently validates the others.
+
+\section{Hypervisor Memory Isolation}
+\label{sec:hypervisor}
+
+The software-enforced protections in Section~\ref{sec:arch} defend against observation through operating system interfaces. RDMA over Thunderbolt~5 (available in macOS 26.2+) permits a physically connected Mac to read host memory at 80\,Gb/s via DMA, bypassing \texttt{PT\_DENY\_ATTACH}, Hardened Runtime, and SIP entirely. RDMA is disabled by default and requires a Recovery OS boot to enable. The provider reports \texttt{rdmaDisabled} and \texttt{hypervisorActive} in every attestation challenge response, and the coordinator records these values for telemetry and future policy enforcement.
+
+\subsection{Current Status}
+
+In the current system, \texttt{hypervisorActive} is informational rather than a hard routing gate. Single-node inference is the supported security boundary today: a provider with RDMA disabled relies on the kernel-enforced access-path elimination described in Section~\ref{sec:access-path}. Providers that enable RDMA without hypervisor isolation are not currently routed private text traffic as a matter of operational policy, but the coordinator does not yet enforce a strict hypervisor gate in the production scheduler.
+
+\subsection{Planned Hypervisor Isolation}
+
+When enabled, Apple's Hypervisor.framework creates a lightweight virtual machine with ARM Stage~2 page tables. These page tables insert a hardware-enforced translation layer between the host's virtual addresses and physical memory. Inference memory mapped into the VM would reside at guest physical addresses that are invisible to RDMA, which operates on host physical addresses.
+
+The intended design is:
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+    \item Create a Hypervisor VM via \texttt{hv\_vm\_create()}
+    \item Allocate a memory pool via \texttt{mmap} sized to the model working set
+    \item Align the pool to 16\,MB boundaries and map it in 16\,MB chunks via \texttt{hv\_vm\_map()}
+    \item Serve Metal buffer allocations from this pool using \texttt{makeBuffer(bytesNoCopy:)}
+\end{enumerate}
+
+A fail-closed policy would refuse inference requests if the VM-mapped pool is exhausted rather than falling back to unprotected memory. Multi-node RDMA sharding (Section~\ref{sec:future}) would require both nodes to have RDMA enabled and hypervisor isolation active, with activations transferred over encrypted RDMA.
+
+\subsection{Experimental Validation}
+
+We validated the hypervisor approach on an Apple M4~Max (128\,GB, macOS~26.3) with the following results:
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item \textbf{Performance overhead}: 0\% on Qwen3.5-27B (50.1\,GB, BF16). Baseline: 8.2\,tok/s; with hypervisor and 100\% memory VM-mapped: 8.0\,tok/s (within measurement noise).
+    \item \textbf{Memory coverage}: 100\% for all tested quantization formats (BF16, FP16, 4-bit, 8-bit, MoE).
+    \item \textbf{Pool mapping latency}: 60\,GB pool mapped in 2.5\,ms (3,840 $\times$ 16\,MB chunks).
+    \item \textbf{Metal GPU compute}: Verified correct on VM-mapped memory---Metal's \texttt{makeBuffer(bytesNoCopy:)} creates GPU-accessible buffers backed by the VM-mapped pool.
+\end{itemize}
+
+These measurements establish that hypervisor isolation can be deployed without performance penalty, but production enforcement is not yet active.
 
 % =====================================================================
 \section{Implementation}
@@ -1138,7 +1096,7 @@ Security overhead is negligible. The SIP check (12\,ms per request) is the large
 \section{Economic Feasibility Analysis}
 \label{sec:economics}
 
-We analyze the economic properties of the system to establish that decentralized inference on consumer hardware is economically viable at the price points required for adoption.
+We analyze the economic properties of the system to establish that distributed inference on consumer hardware is economically viable at the price points required for adoption.
 
 \subsection{Marginal Cost Model}
 
@@ -1195,7 +1153,7 @@ Llama 3.1 70B & \$0.30 & \$0.49 & 0.6$\times$ \\
 \end{tabular}
 \end{table}
 
-Dense models exceeding 32B parameters favor cloud infrastructure: H100 clusters with 3.35\,TB/s memory bandwidth achieve 6$\times$ higher throughput than M4~Max (546\,GB/s) for bandwidth-bound decoding. The economic sweet spot for decentralized inference is MoE models with small active parameter counts on large unified-memory hardware.
+Dense models exceeding 32B parameters favor cloud infrastructure: H100 clusters with 3.35\,TB/s memory bandwidth achieve 6$\times$ higher throughput than M4~Max (546\,GB/s) for bandwidth-bound decoding. The economic sweet spot for distributed inference is MoE models with small active parameter counts on large unified-memory hardware.
 
 % =====================================================================
 \section{Limitations}
@@ -1225,19 +1183,19 @@ Dense models exceeding 32B parameters favor cloud infrastructure: H100 clusters 
 
 \textbf{Transparency log for binary hashes.}\quad APNs code-identity attestation proves the genuine App ID/Team ID but not the exact binary version. A public transparency log of blessed \texttt{cdhash} values, combined with reproducible builds, would let consumers pin or range-accept specific provider releases while retaining the non-self-reportable APNs gate.
 
-\textbf{General private compute.}\quad The access path elimination technique is not specific to inference. Any computation that can be embedded in a hardened process on Apple Silicon---fine-tuning on private data, evaluation on proprietary datasets, confidential data pipelines---can leverage the same security guarantees. The multi-layer attestation architecture generalizes to any workload where computation must remain confidential from the machine's owner, positioning the decentralized network as a general-purpose private compute layer on consumer hardware.
+\textbf{General private compute.}\quad The access path elimination technique is not specific to inference. Any computation that can be embedded in a hardened process on Apple Silicon---fine-tuning on private data, evaluation on proprietary datasets, confidential data pipelines---can leverage the same security guarantees. The multi-layer attestation architecture generalizes to any workload where computation must remain confidential from the machine's owner, positioning the distributed network as a general-purpose private compute layer on consumer hardware.
 
 % =====================================================================
 \section{Conclusion}
 \label{sec:conclusion}
 
-We have presented a decentralized inference system in which consumers get private AI computation on machines they do not own or control. The machine owners---who have root access and physical custody---cannot observe the prompts or responses processed on their hardware.
+We have presented a distributed inference system in which consumers get private AI computation on machines they do not own or control. The machine owners---who have root access and physical custody---cannot observe the prompts or responses processed on their hardware.
 
 The approach works by systematically eliminating every software path to inference data: in-process Swift execution using \texttt{mlx-swift-lm} removes inter-process communication, kernel-enforced isolation blocks memory inspection, and operating system integrity guarantees are provably immutable at runtime (Theorem~\ref{thm:sip}). Hypervisor Stage~2 page tables have been validated as a future hardware-level isolation mechanism for RDMA-based DMA attacks with zero measured performance overhead. A multi-layer attestation architecture---Secure Enclave signatures, MDM-based independent verification, Apple MDA with Apple-signed certificate chains, MDA nonce-based SE key binding, continuous challenge-response with fresh security state, and APNs code-identity attestation---provides defense-in-depth where each layer independently verifies properties that the others cannot.
 
-The residual attack surface reduces to physical memory probing of LPDDR5x soldered into Apple's System-on-Chip package, even when RDMA is enabled. This is the same threat model accepted by Apple's Private Cloud Compute for Siri and Apple Intelligence queries. Our system achieves equivalent privacy guarantees on a decentralized network of independently owned machines.
+The residual attack surface reduces to physical memory probing of LPDDR5x soldered into Apple's System-on-Chip package, even when RDMA is enabled. This is the same threat model accepted by Apple's Private Cloud Compute for Siri and Apple Intelligence queries. Our system achieves equivalent privacy guarantees on a distributed network of independently owned machines.
 
-The system is validated end-to-end on production hardware with live inference, demonstrating negligible security overhead. The economic analysis establishes that Mixture-of-Experts models create 6--32$\times$ cost advantages on unified-memory hardware, making decentralized private inference economically viable. The access path elimination technique generalizes beyond inference to any computation requiring confidentiality on third-party consumer hardware.
+The system is validated end-to-end on production hardware with live inference, demonstrating negligible security overhead. The economic analysis establishes that Mixture-of-Experts models create 6--32$\times$ cost advantages on unified-memory hardware, making distributed private inference economically viable. The access path elimination technique generalizes beyond inference to any computation requiring confidentiality on third-party consumer hardware.
 
 % =====================================================================
 \bibliographystyle{plain}
@@ -1303,7 +1261,7 @@ MicroMDM Project. MicroMDM: A macOS MDM server. \url{https://micromdm.io/}, 2024
 Apple ML Research. MLX: An array framework for Apple Silicon. \url{https://github.com/ml-explore/mlx}, 2024.
 
 \bibitem{darkbloom-repo}
-Darkbloom: Decentralized Private Inference on Apple Silicon. Open-source implementation. \url{https://github.com/Layr-Labs/d-inference}, 2026.
+Darkbloom: Distributed Private Inference on Apple Silicon. Open-source implementation. \url{https://github.com/Layr-Labs/d-inference}, 2026.
 
 \end{thebibliography}
 

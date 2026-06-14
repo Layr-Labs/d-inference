@@ -43,8 +43,10 @@ func TestProviderNotifierSendsOfflineAlertOncePerCooldown(t *testing.T) {
 		registry.New(testLogger()),
 		st,
 		Config{
-			Enabled:       true,
-			From:          "Darkbloom <providers@darkbloom.dev>",
+			Enabled: true,
+			Email: EmailConfig{
+				From: "Darkbloom <providers@darkbloom.dev>",
+			},
 			AlertCooldown: 24 * time.Hour,
 		},
 		testLogger(),

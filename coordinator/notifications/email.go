@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 type Email struct {
@@ -22,9 +23,11 @@ type EmailClient interface {
 }
 
 type ResendClient struct {
-	apiKey ResendAPIKey
+	apiKey string
 	client *http.Client
 }
+
+const resendAPIURL = "https://api.resend.com/emails"
 
 type resendEmailPayload struct {
 	From    string            `json:"from"`
@@ -40,18 +43,17 @@ func NewResendClient(apiKey string) *ResendClient {
 }
 
 func NewResendClientWithHTTPClient(apiKey string, client *http.Client) *ResendClient {
-	key, _ := newResendAPIKey(apiKey)
 	if client == nil {
 		client = http.DefaultClient
 	}
 	return &ResendClient{
-		apiKey: key,
+		apiKey: strings.TrimSpace(apiKey),
 		client: client,
 	}
 }
 
 func (c *ResendClient) Send(ctx context.Context, email Email) error {
-	if c == nil || !c.apiKey.IsSet() {
+	if c == nil || !validResendAPIKey(c.apiKey) {
 		return fmt.Errorf("resend api key not configured")
 	}
 	payload := resendEmailPayload{
@@ -71,11 +73,11 @@ func (c *ResendClient) Send(ctx context.Context, email Email) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.resend.com/emails", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resendAPIURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey.Value())
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {

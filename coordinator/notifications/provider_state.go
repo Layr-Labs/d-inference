@@ -17,7 +17,7 @@ func providerStateFromRecord(rec store.ProviderRecord) providerState {
 		serial:                rec.SerialNumber,
 		version:               rec.Version,
 		status:                registry.StatusOffline,
-		trustLevel:            rec.TrustLevel,
+		trustLevel:            parseTrustLevel(rec.TrustLevel),
 		runtimeVerified:       rec.RuntimeVerified,
 		lastSeen:              rec.LastSeen,
 		lastChallengeVerified: rec.LastChallengeVerified,
@@ -48,7 +48,7 @@ func providerStateFromLive(p *registry.Provider, rec store.ProviderRecord) provi
 		serial:                serial,
 		version:               p.Version,
 		status:                p.Status,
-		trustLevel:            string(p.TrustLevel),
+		trustLevel:            p.TrustLevel,
 		runtimeVerified:       p.RuntimeVerified,
 		thermalState:          p.SystemMetrics.ThermalState,
 		lastSeen:              p.LastHeartbeat,
@@ -90,22 +90,29 @@ func reasonKeys(reasons []AlertReason) []string {
 	return keys
 }
 
-func displayTrust(level string) string {
+func displayTrust(level registry.TrustLevel) string {
 	if level == "" {
 		return "none"
 	}
-	return strings.ReplaceAll(level, "_", " ")
+	return strings.ReplaceAll(string(level), "_", " ")
 }
 
-func trustRank(level string) int {
-	switch registry.TrustLevel(level) {
-	case registry.TrustHardware:
-		return 2
-	case registry.TrustSelfSigned:
-		return 1
-	default:
-		return 0
+var trustRanks = map[registry.TrustLevel]int{
+	registry.TrustNone:       0,
+	registry.TrustSelfSigned: 1,
+	registry.TrustHardware:   2,
+}
+
+func parseTrustLevel(level string) registry.TrustLevel {
+	trust := registry.TrustLevel(strings.TrimSpace(level))
+	if _, ok := trustRanks[trust]; ok {
+		return trust
 	}
+	return registry.TrustNone
+}
+
+func trustRank(level registry.TrustLevel) int {
+	return trustRanks[level]
 }
 
 func semverLess(a, b string) bool {

@@ -59,7 +59,7 @@ type providerState struct {
 	serial                string
 	version               string
 	status                registry.ProviderStatus
-	trustLevel            string
+	trustLevel            registry.TrustLevel
 	runtimeVerified       bool
 	thermalState          string
 	lastSeen              time.Time
@@ -71,8 +71,8 @@ type providerState struct {
 func NewProviderNotifier(reg *registry.Registry, st store.Store, cfg Config, logger *slog.Logger) *ProviderNotifier {
 	cfg = cfg.WithDefaults()
 	var client EmailClient
-	if cfg.Provider == emailProviderResend && cfg.ResendAPIKey.IsSet() {
-		client = NewResendClient(cfg.ResendAPIKey.Value())
+	if cfg.Email.Provider == emailProviderResend && cfg.Email.APIKey != "" {
+		client = NewResendClient(cfg.Email.APIKey)
 	}
 	return NewProviderNotifierWithEmail(reg, st, cfg, logger, client)
 }
@@ -137,7 +137,17 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	if len(candidates) == 0 {
 		return
 	}
-	checks := providerNotificationChecks(candidates)
+	checkCount := providerNotificationCheckCount(candidates)
+	checks := make([]store.ProviderNotificationCheck, 0, checkCount)
+	for _, candidate := range candidates {
+		for _, reason := range candidate.reasons {
+			checks = append(checks, store.ProviderNotificationCheck{
+				ProviderID: candidate.stableKey,
+				AccountID:  candidate.target.Provider.AccountID,
+				ReasonKey:  string(reason.Key),
+			})
+		}
+	}
 	storeCtx, storeCancel = context.WithTimeout(checkCtx, storeOperationTimeout)
 	dueByCheck, err := n.store.ProviderNotificationsDue(storeCtx, checks, n.cfg.AlertCooldown)
 	storeCancel()
@@ -145,7 +155,7 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		n.logger.Warn("provider notifications: cooldown lookup failed", "error", err)
 		return
 	}
-	sent := make([]store.ProviderNotificationCheck, 0, len(checks))
+	sent := make([]store.ProviderNotificationCheck, 0, checkCount)
 	for _, candidate := range candidates {
 		sent = append(sent, n.sendDue(checkCtx, candidate, dueByCheck)...)
 	}
@@ -157,32 +167,12 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 	}
 }
 
-func providerNotificationChecks(candidates []providerAlertCandidate) []store.ProviderNotificationCheck {
-	checks := make([]store.ProviderNotificationCheck, 0, providerNotificationCheckCount(candidates))
-	for _, candidate := range candidates {
-		checks = append(checks, candidate.checks()...)
-	}
-	return checks
-}
-
 func providerNotificationCheckCount(candidates []providerAlertCandidate) int {
 	n := 0
 	for _, candidate := range candidates {
 		n += len(candidate.reasons)
 	}
 	return n
-}
-
-func (c providerAlertCandidate) checks() []store.ProviderNotificationCheck {
-	checks := make([]store.ProviderNotificationCheck, 0, len(c.reasons))
-	for _, reason := range c.reasons {
-		checks = append(checks, store.ProviderNotificationCheck{
-			ProviderID: c.stableKey,
-			AccountID:  c.target.Provider.AccountID,
-			ReasonKey:  string(reason.Key),
-		})
-	}
-	return checks
 }
 
 func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationTarget) []providerAlertCandidate {
@@ -296,11 +286,11 @@ func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason
 			Detail: fmt.Sprintf("%d consecutive challenge failures; this machine is not receiving requests.", p.failedChallenges),
 			Action: "Restart the provider and run `darkbloom doctor` if it does not recover.",
 		})
-	} else if trustRank(p.trustLevel) < trustRank(string(n.registry.MinTrustLevel)) {
+	} else if trustRank(p.trustLevel) < trustRank(n.registry.MinTrustLevel) {
 		out = append(out, AlertReason{
 			Key:    alertReasonTrustBelowMinimum,
 			Title:  "MDM enrollment or hardware verification required",
-			Detail: fmt.Sprintf("This machine is %s trust; public routing requires %s trust.", displayTrust(p.trustLevel), displayTrust(string(n.registry.MinTrustLevel))),
+			Detail: fmt.Sprintf("This machine is %s trust; public routing requires %s trust.", displayTrust(p.trustLevel), displayTrust(n.registry.MinTrustLevel)),
 			Action: "Run `darkbloom enroll` on the Mac and approve the Darkbloom device-management profile.",
 		})
 	}
@@ -316,7 +306,7 @@ func (n *ProviderNotifier) buildEmail(to string, p providerState, reasons []Aler
 	text := buildTextEmail(name, reasons, n.cfg.ConsoleURL)
 	htmlBody := buildHTMLEmail(name, reasons, n.cfg.ConsoleURL)
 	return Email{
-		From:           n.cfg.From,
+		From:           n.cfg.Email.From,
 		To:             to,
 		Subject:        subject,
 		Text:           text,

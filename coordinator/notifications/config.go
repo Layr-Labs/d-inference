@@ -2,7 +2,6 @@ package notifications
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -20,9 +19,7 @@ const (
 
 type Config struct {
 	Enabled            bool
-	Provider           EmailProvider
-	ResendAPIKey       ResendAPIKey
-	From               string
+	Email              EmailConfig
 	ConsoleURL         string
 	UnsubscribeURL     string
 	CheckInterval      time.Duration
@@ -34,44 +31,25 @@ type EmailProvider string
 
 const emailProviderResend EmailProvider = "resend"
 
-type ResendAPIKey struct {
-	value string
+type EmailConfig struct {
+	Provider EmailProvider
+	APIKey   string
+	From     string
 }
 
-func (k ResendAPIKey) Value() string {
-	return k.value
-}
-
-func (k ResendAPIKey) IsSet() bool {
-	return k.value != ""
-}
-
-func (k ResendAPIKey) String() string {
-	if k.value == "" {
-		return ""
-	}
-	return "[redacted]"
-}
-
-func (k ResendAPIKey) GoString() string {
-	return k.String()
-}
-
-func (k ResendAPIKey) LogValue() slog.Value {
-	return slog.StringValue(k.String())
-}
-
-func (k ResendAPIKey) Valid() bool {
-	v := k.Value()
-	return strings.HasPrefix(v, "re_") && !strings.ContainsAny(v, " \t\r\n")
+func validResendAPIKey(key string) bool {
+	return strings.HasPrefix(key, "re_") && !strings.ContainsAny(key, " \t\r\n")
 }
 
 func ReadConfig() Config {
 	resendRaw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
-	resendKey, validResendKey := newResendAPIKey(resendRaw)
 	var provider EmailProvider
+	var apiKey string
 	if resendRaw != "" {
 		provider = emailProviderResend
+		if validResendAPIKey(resendRaw) {
+			apiKey = resendRaw
+		}
 	}
 
 	consoleURL := strings.TrimRight(os.Getenv(env.EnvPrefix+"_CONSOLE_URL"), "/")
@@ -80,36 +58,24 @@ func ReadConfig() Config {
 	}
 
 	cfg := Config{
-		Enabled:            resendRaw != "",
-		Provider:           provider,
-		ResendAPIKey:       resendKey,
-		From:               env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
+		Enabled: resendRaw != "",
+		Email: EmailConfig{
+			Provider: provider,
+			APIKey:   apiKey,
+			From:     env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
+		},
 		ConsoleURL:         consoleURL,
 		UnsubscribeURL:     env.EnvOr(env.EnvPrefix+"_EMAIL_UNSUBSCRIBE_URL", defaultUnsubscribeURL),
 		CheckInterval:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHECK_SECONDS", int(defaultCheckInterval.Seconds()))) * time.Second,
 		AlertCooldown:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_COOLDOWN_HOURS", int(defaultAlertCooldown.Hours()))) * time.Hour,
 		MinProviderVersion: strings.TrimSpace(os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION")),
 	}
-	if resendRaw != "" && !validResendKey {
-		cfg.ResendAPIKey = ResendAPIKey{}
-	}
 	return cfg
 }
 
-func newResendAPIKey(raw string) (ResendAPIKey, bool) {
-	key := ResendAPIKey{value: strings.TrimSpace(raw)}
-	if key.value == "" {
-		return ResendAPIKey{}, true
-	}
-	if !key.Valid() {
-		return ResendAPIKey{}, false
-	}
-	return key, true
-}
-
 func (c Config) WithDefaults() Config {
-	if c.From == "" {
-		c.From = defaultEmailFrom
+	if c.Email.From == "" {
+		c.Email.From = defaultEmailFrom
 	}
 	if c.CheckInterval <= 0 {
 		c.CheckInterval = defaultCheckInterval
@@ -124,16 +90,16 @@ func (c Config) Check() error {
 	if !c.Enabled {
 		return nil
 	}
-	if c.Provider != emailProviderResend {
+	if c.Email.Provider != emailProviderResend {
 		return fmt.Errorf("unsupported provider email service")
 	}
-	if strings.TrimSpace(c.ResendAPIKey.Value()) == "" {
+	if strings.TrimSpace(c.Email.APIKey) == "" {
 		return fmt.Errorf("provider email service credentials are not configured")
 	}
-	if !c.ResendAPIKey.Valid() {
+	if !validResendAPIKey(c.Email.APIKey) {
 		return fmt.Errorf("provider email service credentials have an invalid format")
 	}
-	if strings.TrimSpace(c.From) == "" {
+	if strings.TrimSpace(c.Email.From) == "" {
 		return fmt.Errorf("provider email sender is not configured")
 	}
 	return nil

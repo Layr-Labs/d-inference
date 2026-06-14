@@ -48,9 +48,17 @@ Extrapolation (NOT executed — would jetsam the co-resident provider): a few-MB
 `~96000²` bomb decodes to ~65 GB; on this 0-swap box it OOM-kills the provider.
 
 ## Fix
-`VLMRequestInference` now reads pixel dimensions from the header and rejects
-`MediaError.mediaTooLarge` (→ HTTP 400) before `CIImage(data:)` runs:
-per-image cap (`DARKBLOOM_MAX_IMAGE_MEGAPIXELS`, default 100), request-wide
-aggregate (`DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS`, default 384), and a per-part
-decoded-byte cap (`DARKBLOOM_MAX_MEDIA_MIB`, default 25). See
-`VLMRequestInferenceTests.swift` for the regression suite.
+`VLMRequestInference` now rejects `MediaError.mediaTooLarge` (→ HTTP 400) before
+the raster is allocated:
+- **Images** — pixel dimensions read from the header (`CGImageSourceCopyProperties…`)
+  before `CIImage(data:)`: per-image cap (`DARKBLOOM_MAX_IMAGE_MEGAPIXELS`, default
+  100) + a post-decode extent backstop, and a request-wide aggregate
+  (`DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS`, default 384).
+- **Video** — frame dimensions + duration read from `AVURLAsset` track metadata
+  (no frame decode) before the model rasterizes frames: per-frame cap reuses
+  `maxImagePixels`; duration cap `DARKBLOOM_MAX_VIDEO_SECONDS` (default 600).
+- **Both** — per-part decoded-byte cap (`DARKBLOOM_MAX_MEDIA_MIB`, default 25),
+  also bounding the inline-video temp file + RAM.
+
+See `VLMRequestInferenceTests.swift` for the regression suite (images, video,
+aggregate, byte caps, header reader, env resolution, defaults).

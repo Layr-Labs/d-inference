@@ -108,7 +108,7 @@ func TestSendSecurityInfoCommandDoesNotDoublePush(t *testing.T) {
 	fake := &fakeMicroMDM{commandUUID: "cmd-abc-123"}
 	c, _ := newFakeMDM(t, fake)
 
-	gotUUID, err := c.SendSecurityInfoCommand("UDID-PUSH")
+	gotUUID, err := c.SendSecurityInfoCommand(context.Background(), "UDID-PUSH")
 	if err != nil {
 		t.Fatalf("SendSecurityInfoCommand: %v", err)
 	}

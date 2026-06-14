@@ -2499,7 +2499,7 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		}
 	})
 	for _, c := range candidates {
-		dev, _ := s.mdmClient.LookupDevice(c.serial)
+		dev, _ := s.mdmClient.LookupDevice(context.Background(), c.serial)
 		if dev == nil || dev.UDID != udid {
 			continue
 		}
@@ -2645,7 +2645,7 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 
 	// Always send the raw plist command so the nonce reaches Apple's servers.
 	// The structured MicroMDM API doesn't support DeviceAttestationNonce.
-	_, err := s.mdmClient.SendDeviceAttestationCommand(udid, seKeyNonce)
+	_, err := s.mdmClient.SendDeviceAttestationCommand(ctx, udid, seKeyNonce)
 	if err != nil {
 		s.logger.Warn("failed to send DeviceInformation attestation command",
 			"provider_id", providerID,

@@ -259,9 +259,9 @@ type VerificationResult struct {
 }
 
 // LookupDevice checks if a device with the given serial number is enrolled.
-func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
+func (c *Client) LookupDevice(ctx context.Context, serialNumber string) (*DeviceInfo, error) {
 	body, _ := json.Marshal(map[string]string{"serial_number": serialNumber})
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/devices", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/devices", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +296,7 @@ func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
 
 // SendSecurityInfoCommand sends a SecurityInfo command to a device by UDID.
 // Returns the command UUID for tracking the response.
-func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
+func (c *Client) SendSecurityInfoCommand(ctx context.Context, udid string) (string, error) {
 	const requestType = "SecurityInfo"
 	if err := assertReadOnlyCommand(requestType); err != nil {
 		return "", err
@@ -305,7 +305,7 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 		"udid":         udid,
 		"request_type": requestType,
 	})
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/commands", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/commands", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -344,8 +344,8 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 // an immediate check-in so a freshly-queued command is pulled promptly rather
 // than at the next idle wake. Errors are intentionally ignored: the command is
 // already enqueued, and the push is only a latency optimization.
-func (c *Client) pushDevice(udid string) {
-	pushReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/push/"+udid, nil)
+func (c *Client) pushDevice(ctx context.Context, udid string) {
+	pushReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/push/"+udid, nil)
 	if err != nil {
 		return
 	}
@@ -367,19 +367,19 @@ func (c *Client) pushDevice(udid string) {
 //
 // When a nonce is provided, we send a raw plist command because MicroMDM's
 // DeviceInformation struct doesn't support DeviceAttestationNonce.
-func (c *Client) SendDeviceAttestationCommand(udid string, nonce ...string) (string, error) {
+func (c *Client) SendDeviceAttestationCommand(ctx context.Context, udid string, nonce ...string) (string, error) {
 	// Always use raw plist to support DeviceAttestationNonce
 	nonceStr := ""
 	if len(nonce) > 0 {
 		nonceStr = nonce[0]
 	}
-	return c.sendDeviceAttestationWithNonce(udid, nonceStr)
+	return c.sendDeviceAttestationWithNonce(ctx, udid, nonceStr)
 }
 
 // sendDeviceAttestationWithNonce sends a raw plist DeviceInformation command
 // with DeviceAttestationNonce. MicroMDM's structured API doesn't support this
 // field, so we bypass it with the raw command endpoint: POST /v1/commands/{udid}.
-func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, error) {
+func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce string) (string, error) {
 	// DevicePropertiesAttestation is requested via a DeviceInformation command.
 	if err := assertReadOnlyCommand("DeviceInformation"); err != nil {
 		return "", err
@@ -412,7 +412,7 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 </dict>
 </plist>`, nonceXML, cmdUUID)
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/commands/"+udid, bytes.NewReader([]byte(plist)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/commands/"+udid, bytes.NewReader([]byte(plist)))
 	if err != nil {
 		return "", err
 	}
@@ -433,7 +433,9 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 	c.trackCommand(cmdUUID, udid, time.Now())
 
 	// Push to trigger device check-in (best-effort; command is already queued).
-	c.pushDevice(udid)
+	// The raw POST /v1/commands/{udid} endpoint does NOT auto-push (unlike the
+	// structured /v1/commands), so the explicit push is required here.
+	c.pushDevice(ctx, udid)
 
 	return cmdUUID, nil
 }
@@ -661,7 +663,7 @@ func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attest
 	}
 
 	// Step 1: Look up device
-	device, err := c.LookupDevice(serialNumber)
+	device, err := c.LookupDevice(ctx, serialNumber)
 	if err != nil {
 		result.Error = fmt.Sprintf("device lookup failed: %v", err)
 		return result, nil
@@ -689,7 +691,7 @@ func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attest
 	defer release()
 
 	// Step 3: Send SecurityInfo command (enqueues + pushes the device).
-	if _, err = c.SendSecurityInfoCommand(device.UDID); err != nil {
+	if _, err = c.SendSecurityInfoCommand(ctx, device.UDID); err != nil {
 		result.Error = fmt.Sprintf("failed to send SecurityInfo command: %v", err)
 		return result, nil
 	}

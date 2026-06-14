@@ -8,22 +8,12 @@ import (
 	"testing"
 )
 
-// Regression for OOM-M1: the plaintext inference path read the request body with
-// an unbounded io.ReadAll, so any API-key holder could POST a multi-GB body and
-// OOM the coordinator (the trusted TEE component). parseInferencePrelude now caps
-// it with http.MaxBytesReader. These exercise the prelude directly — the size
-// check returns before any auth/store access, so a zero-value Server suffices.
-
-// infiniteReader yields 'a' forever; used with io.LimitReader so the oversized
-// test streams cap+1 bytes instead of allocating the whole over-cap body.
-type infiniteReader struct{}
-
-func (infiniteReader) Read(p []byte) (int, error) {
-	for i := range p {
-		p[i] = 'a'
-	}
-	return len(p), nil
-}
+// Regression for the plaintext inference body cap: the path read the request
+// body with an unbounded io.ReadAll, so any API-key holder could POST a multi-GB
+// body and OOM the coordinator (the trusted TEE component). parseInferencePrelude
+// now caps it with http.MaxBytesReader. These exercise the prelude directly — the
+// size check returns before any auth/store access, so a zero-value Server
+// suffices. (infiniteReader is shared from body_cap_test.go in this package.)
 
 // Load-bearing regression: without the cap, io.ReadAll consumes the whole
 // oversized body and the request falls through to a 400 (invalid JSON) — this

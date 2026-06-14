@@ -24,13 +24,21 @@ import (
 // API-key holder could POST a multi-GB body and OOM the coordinator (the trusted
 // TEE component).
 //
-// Sized to one first-party UI image-bearing turn: MAX_IMAGES_PER_MESSAGE (4) ×
-// MAX_IMAGE_BYTES (10 MB) = 40 MB raw ≈ 53 MiB after base64 inflation, plus
-// JSON/text overhead. The console preserves text history but only resends images
-// from the newest image turn, so normal UI multimodal requests stay below this
-// fixed DoS cap. (The sealed E2E path enforces its own 16 MiB cap in
-// sender_encryption.go; this is the plaintext image path.)
-const maxInferenceBodyBytes = 64 << 20 // 64 MiB
+// Sized to the PROVIDER WebSocket frame budget, not just OOM-safety: the
+// coordinator encrypts rawBody and sends the base64 NaCl-box as ONE WS frame
+// (consumer.go), and the Swift provider rejects frames over 32 MiB by tearing
+// down the whole session + cancelling every unrelated in-flight request
+// (CoordinatorClient.maxInboundMessageBytes). base64 adds ×4/3, so a 16 MiB body
+// → ~21.3 MiB frame, comfortably under 32 MiB — the budget that provider cap was
+// sized against, and identical to the sealed path (sender_encryption.go). A
+// larger cap would let a request pass here only to disconnect the provider
+// instead of returning a clean 413.
+//
+// The console already trims image history to the newest image turn
+// (chat-messages.ts), but a single 4×10 MB turn (~53 MiB) still exceeds this and
+// is undeliverable to any provider — aligning the per-turn UI image budget with
+// the frame cap is tracked separately.
+const maxInferenceBodyBytes = 16 << 20 // 16 MiB
 
 // inferencePrelude carries the parsed request shape produced by the shared
 // prelude: the (tool-schema-normalized) raw body and its parsed map, plus the

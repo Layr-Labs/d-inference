@@ -445,6 +445,10 @@ type Store interface {
 	// ListProviders returns all stored provider records.
 	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
 
+	// ListProviderNotificationTargets returns linked provider records with owner
+	// emails for provider-owner alert checks.
+	ListProviderNotificationTargets(ctx context.Context) ([]ProviderNotificationTarget, error)
+
 	// ListProvidersByAccount returns stored provider records linked to an account.
 	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
 
@@ -483,12 +487,12 @@ type Store interface {
 
 	// --- Provider owner notifications ---
 
-	// ProviderNotificationDue reports whether a provider/account/reason email may
+	// ProviderNotificationsDue reports which provider/account/reason emails may
 	// be sent under the configured cooldown.
-	ProviderNotificationDue(ctx context.Context, providerID, accountID, reasonKey string, cooldown time.Duration) (bool, error)
+	ProviderNotificationsDue(ctx context.Context, providerID, accountID string, reasonKeys []string, cooldown time.Duration) (map[string]bool, error)
 
-	// RecordProviderNotificationSent records a successful notification send.
-	RecordProviderNotificationSent(ctx context.Context, providerID, accountID, reasonKey string, sentAt time.Time) error
+	// RecordProviderNotificationsSent records successful notification sends.
+	RecordProviderNotificationsSent(ctx context.Context, providerID, accountID string, reasonKeys []string, sentAt time.Time) error
 
 	// --- Provider Reputation Persistence ---
 
@@ -1086,6 +1090,11 @@ type ProviderRecord struct {
 	LastSessionTokensGenerated int64             `json:"last_session_tokens_generated"`
 	RegisteredAt               time.Time         `json:"registered_at"`
 	LastSeen                   time.Time         `json:"last_seen"`
+}
+
+type ProviderNotificationTarget struct {
+	Provider ProviderRecord `json:"provider"`
+	Email    string         `json:"email"`
 }
 
 // ProviderSession is one connect→disconnect lifecycle of a provider machine.

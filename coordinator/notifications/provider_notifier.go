@@ -11,12 +11,24 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+const (
+	providerHeartbeatTimeout = 90 * time.Second
+	challengeMaxAge          = 6 * time.Minute
+)
+
 type ProviderNotifier struct {
 	registry *registry.Registry
 	store    store.Store
 	email    EmailClient
 	cfg      Config
 	logger   *slog.Logger
+}
+
+type providerAlertCandidate struct {
+	target    store.ProviderNotificationTarget
+	state     providerState
+	stableKey string
+	reasons   []AlertReason
 }
 
 type AlertReason struct {
@@ -95,69 +107,99 @@ func (n *ProviderNotifier) Check(ctx context.Context) {
 		n.logger.Warn("provider notifications: list provider targets failed", "error", err)
 		return
 	}
-	for _, target := range latestProviderNotificationTargets(targets) {
-		if err := n.checkProvider(ctx, target); err != nil {
-			n.logger.Warn("provider notifications: provider check failed",
-				"provider_id", target.Provider.ID,
-				"serial", target.Provider.SerialNumber,
-				"error", err,
-			)
+	candidates := n.alertCandidates(targets)
+	if len(candidates) == 0 {
+		return
+	}
+	checks := make([]store.ProviderNotificationCheck, 0)
+	for _, candidate := range candidates {
+		for _, reason := range candidate.reasons {
+			checks = append(checks, store.ProviderNotificationCheck{
+				ProviderID: candidate.stableKey,
+				AccountID:  candidate.target.Provider.AccountID,
+				ReasonKey:  reason.Key,
+			})
 		}
+	}
+	dueByCheck, err := n.store.ProviderNotificationsDue(ctx, checks, n.cfg.AlertCooldown)
+	if err != nil {
+		n.logger.Warn("provider notifications: cooldown lookup failed", "error", err)
+		return
+	}
+	var sent []store.ProviderNotificationCheck
+	for _, candidate := range candidates {
+		sent = append(sent, n.sendDue(ctx, candidate, dueByCheck)...)
+	}
+	if err := n.store.RecordProviderNotificationsSent(ctx, sent, time.Now()); err != nil {
+		n.logger.Warn("provider notifications: record sends failed", "error", err)
 	}
 }
 
-func (n *ProviderNotifier) checkProvider(ctx context.Context, target store.ProviderNotificationTarget) error {
-	rec := target.Provider
-	if rec.AccountID == "" || target.Email == "" {
-		return nil
+func (n *ProviderNotifier) alertCandidates(targets []store.ProviderNotificationTarget) []providerAlertCandidate {
+	candidates := make([]providerAlertCandidate, 0, len(targets))
+	for _, target := range latestProviderNotificationTargets(targets) {
+		rec := target.Provider
+		if rec.AccountID == "" || target.Email == "" {
+			continue
+		}
+		state := providerStateFromRecord(rec)
+		if live := n.registry.GetProvider(rec.ID); live != nil {
+			state = providerStateFromLive(live, rec)
+		}
+		reasons := n.reasons(state, time.Now())
+		if len(reasons) == 0 {
+			continue
+		}
+		candidates = append(candidates, providerAlertCandidate{
+			target:    target,
+			state:     state,
+			stableKey: notificationStableKey(rec),
+			reasons:   reasons,
+		})
 	}
-	state := providerStateFromRecord(rec)
-	if live := n.registry.GetProvider(rec.ID); live != nil {
-		state = providerStateFromLive(live, rec)
-	}
-	reasons := n.reasons(state, time.Now())
-	if len(reasons) == 0 {
-		return nil
-	}
-	var due []AlertReason
-	stableKey := notificationStableKey(rec)
-	dueByReason, err := n.store.ProviderNotificationsDue(ctx, stableKey, rec.AccountID, reasonKeys(reasons), n.cfg.AlertCooldown)
-	if err != nil {
-		return err
-	}
-	for _, reason := range reasons {
-		if dueByReason[reason.Key] {
+	return candidates
+}
+
+func (n *ProviderNotifier) sendDue(ctx context.Context, candidate providerAlertCandidate, dueByCheck map[store.ProviderNotificationCheck]bool) []store.ProviderNotificationCheck {
+	rec := candidate.target.Provider
+	due := make([]AlertReason, 0, len(candidate.reasons))
+	sent := make([]store.ProviderNotificationCheck, 0, len(candidate.reasons))
+	for _, reason := range candidate.reasons {
+		check := store.ProviderNotificationCheck{
+			ProviderID: candidate.stableKey,
+			AccountID:  rec.AccountID,
+			ReasonKey:  reason.Key,
+		}
+		if dueByCheck[check] {
 			due = append(due, reason)
+			sent = append(sent, check)
 		}
 	}
 	if len(due) == 0 {
 		return nil
 	}
-	email := n.buildEmail(target.Email, state, due)
+	email := n.buildEmail(candidate.target.Email, candidate.state, due)
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err := n.email.Send(sendCtx, email); err != nil {
-		return err
-	}
-	sentAt := time.Now()
-	if err := n.store.RecordProviderNotificationsSent(ctx, stableKey, rec.AccountID, reasonKeys(due), sentAt); err != nil {
-		n.logger.Warn("provider notifications: record send failed",
+		n.logger.Warn("provider notifications: email send failed",
 			"provider_id", rec.ID,
-			"reasons", reasonKeys(due),
+			"serial", rec.SerialNumber,
 			"error", err,
 		)
+		return nil
 	}
 	n.logger.Info("sent provider owner notification",
 		"provider_id", rec.ID,
 		"account_id", rec.AccountID,
 		"reasons", reasonKeys(due),
 	)
-	return nil
+	return sent
 }
 
 func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason {
 	var out []AlertReason
-	if !p.online && now.Sub(p.lastSeen) >= n.cfg.HeartbeatTimeout {
+	if !p.online && now.Sub(p.lastSeen) >= providerHeartbeatTimeout {
 		out = append(out, AlertReason{
 			Key:    "offline",
 			Title:  "Machine offline",
@@ -189,7 +231,7 @@ func (n *ProviderNotifier) reasons(p providerState, now time.Time) []AlertReason
 			Action: "Cool the machine and make sure it has adequate ventilation.",
 		})
 	}
-	if p.online && p.lastChallengeVerified != nil && p.status != string(registry.StatusUntrusted) && now.Sub(*p.lastChallengeVerified) > n.cfg.ChallengeMaxAge {
+	if p.online && p.lastChallengeVerified != nil && p.status != string(registry.StatusUntrusted) && now.Sub(*p.lastChallengeVerified) > challengeMaxAge {
 		out = append(out, AlertReason{
 			Key:    "challenge_stale",
 			Title:  "Attestation challenge stale",

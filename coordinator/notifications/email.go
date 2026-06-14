@@ -122,7 +122,10 @@ func resendAuthorization(apiKey string) (string, error) {
 }
 
 func validateEmail(email Email) error {
-	if !validEmailHeaderValue(email.From) || !validEmailHeaderValue(email.To) || !validEmailHeaderValue(email.Subject) || !validEmailHeaderValue(email.UnsubscribeURL) {
+	if !httpguts.ValidHeaderFieldValue(email.From) ||
+		!httpguts.ValidHeaderFieldValue(email.To) ||
+		!httpguts.ValidHeaderFieldValue(email.Subject) ||
+		!httpguts.ValidHeaderFieldValue(email.UnsubscribeURL) {
 		return fmt.Errorf("email contains invalid header characters")
 	}
 	if strings.TrimSpace(email.Subject) == "" {
@@ -142,11 +145,4 @@ func validateEmail(email Email) error {
 		}
 	}
 	return nil
-}
-
-func validEmailHeaderValue(s string) bool {
-	if strings.Contains(s, "\u2028") || strings.Contains(s, "\u2029") {
-		return false
-	}
-	return httpguts.ValidHeaderFieldValue(s)
 }

@@ -118,6 +118,9 @@ type MemoryStore struct {
 	// Provider sessions (connect→disconnect uptime history)
 	providerSessions   []ProviderSession
 	providerSessionSeq int64
+
+	// Provider owner notification cooldowns
+	providerNotifications map[string]time.Time
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -164,6 +167,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
+		providerNotifications:         make(map[string]time.Time),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{
@@ -2814,6 +2818,33 @@ func (s *MemoryStore) CloseOpenProviderSessions(_ context.Context, staleBefore t
 		}
 	}
 	return n, nil
+}
+
+func providerNotificationKey(providerID, reasonKey string) string {
+	return providerID + "\x00" + reasonKey
+}
+
+func (s *MemoryStore) ProviderNotificationDue(_ context.Context, providerID, accountID, reasonKey string, cooldown time.Duration) (bool, error) {
+	if providerID == "" || accountID == "" || reasonKey == "" {
+		return false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	lastSent, ok := s.providerNotifications[providerNotificationKey(providerID, reasonKey)]
+	if !ok {
+		return true, nil
+	}
+	return time.Since(lastSent) >= cooldown, nil
+}
+
+func (s *MemoryStore) RecordProviderNotificationSent(_ context.Context, providerID, accountID, reasonKey string, sentAt time.Time) error {
+	if providerID == "" || accountID == "" || reasonKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.providerNotifications[providerNotificationKey(providerID, reasonKey)] = sentAt
+	return nil
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.

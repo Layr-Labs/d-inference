@@ -489,10 +489,10 @@ type Store interface {
 
 	// ProviderNotificationsDue reports which provider/account/reason emails may
 	// be sent under the configured cooldown.
-	ProviderNotificationsDue(ctx context.Context, providerID, accountID string, reasonKeys []string, cooldown time.Duration) (map[string]bool, error)
+	ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (map[ProviderNotificationCheck]bool, error)
 
 	// RecordProviderNotificationsSent records successful notification sends.
-	RecordProviderNotificationsSent(ctx context.Context, providerID, accountID string, reasonKeys []string, sentAt time.Time) error
+	RecordProviderNotificationsSent(ctx context.Context, checks []ProviderNotificationCheck, sentAt time.Time) error
 
 	// --- Provider Reputation Persistence ---
 
@@ -1095,6 +1095,12 @@ type ProviderRecord struct {
 type ProviderNotificationTarget struct {
 	Provider ProviderRecord `json:"provider"`
 	Email    string         `json:"email"`
+}
+
+type ProviderNotificationCheck struct {
+	ProviderID string
+	AccountID  string
+	ReasonKey  string
 }
 
 // ProviderSession is one connect→disconnect lifecycle of a provider machine.

@@ -2861,7 +2861,7 @@ func (s *MemoryStore) CloseOpenProviderSessions(_ context.Context, staleBefore t
 
 func (s *MemoryStore) ProviderNotificationsDue(_ context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (ProviderNotificationDueSet, error) {
 	checks = compactProviderNotificationChecks(checks)
-	due := make(ProviderNotificationDueSet, len(checks))
+	due := make(ProviderNotificationDueSet, 0, len(checks))
 	if len(checks) == 0 {
 		return due, nil
 	}
@@ -2871,7 +2871,7 @@ func (s *MemoryStore) ProviderNotificationsDue(_ context.Context, checks []Provi
 	for _, check := range checks {
 		lastSent, ok := s.providerNotifications[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}]
 		if !ok || now.Sub(lastSent) >= cooldown {
-			due[check] = struct{}{}
+			due = append(due, check)
 		}
 	}
 	return due, nil

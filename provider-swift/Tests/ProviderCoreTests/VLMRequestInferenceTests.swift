@@ -27,7 +27,7 @@ private let tinyPNGDataURI = "data:image/png;base64,\(tinyPNGBase64)"
 // A real, round-trip-verified 64x64 H.264 mp4 (3 solid-gray frames, ~955
 // bytes), base64 with no whitespace. naturalSize = 64x64 = 4096 px, so it is
 // rejected by a per-frame cap < 4096 and accepted by one >= 4096. Generated via
-// AVAssetWriter (see docs/spikes/vlm-oom). Used by the video frame-cap tests.
+// AVAssetWriter. Used by the video frame-cap tests.
 private let tinyMP4Base64 =
     "AAAAHGZ0eXBtcDQyAAAAAWlzb21tcDQxbXA0MgAAAAFtZGF0AAAAAAAAAK4AAAA7BgUyR1ZK3FxMQz+U78URPNFDqAEAAAMAAQMAAAMAAQIAAeYACwAAAwAA"
     + "AwAAAwAUDAOJJAEN/////4AAAAAxJbggH4AuSqwRNmYXSACJwyG5akafRwrPDoFqVCtjHBP+QvRWhyAAGk1PzfAEsEedgAAAABEh4QhfAoAvQrFXFN4ACQ7CtgA"
@@ -476,6 +476,28 @@ func vlmResolveMaxPixels() {
             env: key, defaultMegapixels: 100, environment: [key: "abc"]) == 100_000_000)
 }
 
+@Test("resolveMaxPixels clamps a huge env value to Int.max instead of trapping")
+func vlmResolveMaxPixelsClampsHuge() {
+    // A very large finite megapixel value would, naively, do
+    // `Int(min(mp*1e6, Double(Int.max)))` — but `Double(Int.max)` rounds up to
+    // 2^63 (> Int.max), so `Int(...)` traps at the boundary, crashing the
+    // provider at static init. The fix saturates to Int.max.
+    let key = "DARKBLOOM_MAX_IMAGE_MEGAPIXELS"
+    #expect(
+        VLMRequestInference.resolveMaxPixels(
+            env: key, defaultMegapixels: 100, environment: [key: "1e308"]) == Int.max)
+    // A value whose ×1e6 lands exactly at the 2^63 boundary also saturates,
+    // not traps.
+    let boundaryMP = String(VLMRequestInference.intMaxAsDouble / 1_000_000)
+    #expect(
+        VLMRequestInference.resolveMaxPixels(
+            env: key, defaultMegapixels: 100, environment: [key: boundaryMP]) == Int.max)
+    // A normal large-but-representable value still scales correctly.
+    #expect(
+        VLMRequestInference.resolveMaxPixels(
+            env: key, defaultMegapixels: 100, environment: [key: "1000"]) == 1_000_000_000)
+}
+
 @Test("resolveMaxBytes honors a valid env override and falls back otherwise")
 func vlmResolveMaxBytes() {
     let key = "DARKBLOOM_MAX_MEDIA_MIB"
@@ -488,6 +510,37 @@ func vlmResolveMaxBytes() {
     #expect(
         VLMRequestInference.resolveMaxBytes(
             env: key, defaultMiB: 25, environment: [key: "0"]) == 25 * 1024 * 1024)
+}
+
+@Test("resolveMaxBytes clamps an overflowing MiB env value to Int.max instead of trapping")
+func vlmResolveMaxBytesClampsOverflow() {
+    // A MiB value that parses as Int but whose `* 1024 * 1024` overflows would
+    // trap during static init. The fix saturates to Int.max.
+    let key = "DARKBLOOM_MAX_MEDIA_MIB"
+    let hugeMiB = String(Int.max)
+    #expect(
+        VLMRequestInference.resolveMaxBytes(
+            env: key, defaultMiB: 25, environment: [key: hugeMiB]) == Int.max)
+    // Just past the overflow threshold (Int.max / 1 MiB + 1) also saturates.
+    let overThreshold = String((Int.max / (1024 * 1024)) + 1)
+    #expect(
+        VLMRequestInference.resolveMaxBytes(
+            env: key, defaultMiB: 25, environment: [key: overThreshold]) == Int.max)
+}
+
+@Test("secondsString renders extreme/non-finite durations without trapping on Int(_:)")
+func vlmSecondsStringNeverTraps() {
+    // Whole numbers print cleanly (the common "600s" case).
+    #expect(VLMRequestInference.secondsString(600) == "600")
+    #expect(VLMRequestInference.secondsString(0) == "0")
+    // Fractional values keep one decimal.
+    #expect(VLMRequestInference.secondsString(12.5) == "12.5")
+    // A duration far beyond Int.max seconds (untrusted video metadata) must NOT
+    // trap — it would if formatted via `Int(duration.seconds)`. Just assert it
+    // produces some non-empty string without crashing.
+    #expect(!VLMRequestInference.secondsString(1e300).isEmpty)
+    #expect(!VLMRequestInference.secondsString(Double.infinity).isEmpty)
+    #expect(!VLMRequestInference.secondsString(Double.nan).isEmpty)
 }
 
 @Test("media-limit defaults are the documented values")

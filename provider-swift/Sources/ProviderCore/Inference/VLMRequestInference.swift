@@ -210,6 +210,7 @@ public enum VLMRequestInference {
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         tempFiles: inout [URL],
+        maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
@@ -222,6 +223,7 @@ public enum VLMRequestInference {
             let (text, images, videos) = try await parts(
                 from: message.content, tempFiles: &tempFiles, totalPixels: &totalPixels,
                 totalVideoPixels: &totalVideoPixels, videoCount: &videoCount,
+                maxImagePixels: maxImagePixels,
                 maxRequestImagePixels: maxRequestImagePixels,
                 maxVideosPerRequest: maxVideosPerRequest,
                 maxRequestVideoFramePixels: maxRequestVideoFramePixels)
@@ -243,13 +245,15 @@ public enum VLMRequestInference {
     /// tests that pass only base64/url images (no inline videos).
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
+        maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
         var sink: [URL] = []
         return try await buildUserInput(
-            from: request, tempFiles: &sink, maxRequestImagePixels: maxRequestImagePixels,
+            from: request, tempFiles: &sink, maxImagePixels: maxImagePixels,
+            maxRequestImagePixels: maxRequestImagePixels,
             maxVideosPerRequest: maxVideosPerRequest,
             maxRequestVideoFramePixels: maxRequestVideoFramePixels)
     }
@@ -264,6 +268,7 @@ public enum VLMRequestInference {
         totalPixels: inout Int,
         totalVideoPixels: inout Int,
         videoCount: inout Int,
+        maxImagePixels: Int,
         maxRequestImagePixels: Int,
         maxVideosPerRequest: Int,
         maxRequestVideoFramePixels: Int
@@ -282,13 +287,41 @@ public enum VLMRequestInference {
                 case .text(let string):
                     text += string
                 case .imageURL(let uri):
-                    let image = try decodeImage(uri)
-                    // Charge the request-wide aggregate (each image is already
-                    // ≤ maxImagePixels, so peak is bounded by aggregate + one image).
-                    // Overflow-safe to match imagePixelCount's handling.
+                    guard uri.hasPrefix("data:") else {
+                        throw MediaError.invalidURL(uri)
+                    }
+                    let data = try dataFromDataURI(uri)
+                    // Charge the request-wide aggregate from the HEADER pixel count
+                    // BEFORE decoding — CIImage(data:) is the allocation we're
+                    // guarding against, so an over-aggregate request (with prior
+                    // images already retained) must be rejected before this image's
+                    // raster is ever materialized. Overflow-safe (matches
+                    // imagePixelCount). The header read is O(header), ~0 RSS.
+                    //
+                    // When the header is unreadable (imagePixelCount nil), charge
+                    // 0 here and let decodeImageData enforce the per-image cap on
+                    // the realized extent; the post-decode extent is then folded
+                    // into the aggregate below so a nil-header image still counts.
+                    let headerPixels = imagePixelCount(data) ?? 0
+                    let (preSum, preOverflow) =
+                        totalPixels.addingReportingOverflow(headerPixels)
+                    let projectedTotal = preOverflow ? Int.max : preSum
+                    guard projectedTotal <= maxRequestImagePixels else {
+                        throw MediaError.mediaTooLarge(
+                            "request images total \(projectedTotal) px; aggregate cap is "
+                                + "\(maxRequestImagePixels) px")
+                    }
+                    // Within aggregate: now decode (per-image cap + extent backstop).
+                    let image = try decodeImageData(data, maxImagePixels: maxImagePixels)
+                    // Reconcile the aggregate with the REALIZED extent: when the
+                    // header was readable both are equal; when it was nil the
+                    // extent is the real charge. Re-check so a nil-header image
+                    // can't slip an over-aggregate raster through.
                     if case .ciImage(let ci) = image {
+                        let realized = safeExtentPixels(ci.extent)
+                        let charge = max(headerPixels, realized)
                         let (sum, overflow) =
-                            totalPixels.addingReportingOverflow(safeExtentPixels(ci.extent))
+                            totalPixels.addingReportingOverflow(charge)
                         totalPixels = overflow ? Int.max : sum
                         guard totalPixels <= maxRequestImagePixels else {
                             throw MediaError.mediaTooLarge(
@@ -374,10 +407,21 @@ public enum VLMRequestInference {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
         if let raw = environment[name], let mp = Double(raw), mp > 0, mp.isFinite {
-            return Int(min(mp * 1_000_000, Double(Int.max)))
+            // Clamp to Int.max WITHOUT `Int(Double(Int.max))`: that round-trip
+            // rounds 2^63−1 up to 2^63, which is > Int.max, so `Int(...)` traps
+            // (a single huge env override would crash the provider at static
+            // init). `intMaxAsDouble` is exactly 2^63; anything ≥ it saturates.
+            let scaled = mp * 1_000_000
+            return scaled >= intMaxAsDouble ? Int.max : Int(scaled)
         }
         return defaultMegapixels * 1_000_000
     }
+
+    /// `Double(Int.max)` rounded to the nearest representable Double — exactly
+    /// 2^63 (one more than `Int.max`). Used as the saturation threshold for env
+    /// clamps so a comparison `>= intMaxAsDouble` catches every value that would
+    /// trap on `Int(_:)` conversion.
+    static let intMaxAsDouble = Double(Int.max)
 
     /// Resolve a byte limit from `env` (a positive MiB count) or `defaultMiB`.
     static func resolveMaxBytes(
@@ -385,7 +429,11 @@ public enum VLMRequestInference {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
         if let raw = environment[name], let mib = Int(raw), mib > 0 {
-            return mib * 1024 * 1024
+            // Saturate instead of trapping: `mib * 1024 * 1024` overflows for a
+            // large-but-parseable Int, which would crash the provider at static
+            // init from a single bad byte-limit override.
+            let (bytes, overflow) = mib.multipliedReportingOverflow(by: 1024 * 1024)
+            return overflow ? Int.max : bytes
         }
         return defaultMiB * 1024 * 1024
     }
@@ -425,6 +473,17 @@ public enum VLMRequestInference {
         return overflow ? Int.max : product
     }
 
+    /// Render a (possibly extreme/untrusted) seconds value for an error message
+    /// without ever converting to `Int` — `Int(Double)` traps for values beyond
+    /// `Int.max` or non-finite. Whole numbers print without a decimal point so
+    /// the common "600s" case reads cleanly.
+    static func secondsString(_ s: Double) -> String {
+        guard s.isFinite else { return "\(s)" }  // "inf" / "nan"
+        return s == s.rounded() && abs(s) < 1e15
+            ? String(Int64(s))
+            : String(format: "%.1f", s)
+    }
+
     /// Overflow/NaN-safe pixel count of a realized `CIImage`/track extent.
     /// Returns 0 for a non-finite or sub-pixel extent (treated as "no charge").
     static func safeExtentPixels(_ extent: CGRect) -> Int {
@@ -454,10 +513,20 @@ public enum VLMRequestInference {
             throw MediaError.invalidURL(uri)
         }
         let data = try dataFromDataURI(uri)
-        // Reject a decompression bomb from the header BEFORE CIImage(data:)
-        // eagerly rasterizes it (the allocation happens at decode, not at first
-        // use — there is no lazy escape, and the model's downscale doesn't help
-        // because CoreImage decodes the full-res source first).
+        return try decodeImageData(data, maxImagePixels: maxImagePixels)
+    }
+
+    /// Decode already-extracted image bytes into a `CIImage`, enforcing the
+    /// per-image pixel cap from the format header BEFORE `CIImage(data:)` eagerly
+    /// rasterizes (the allocation happens at decode, not at first use — there is
+    /// no lazy escape, and the model's downscale doesn't help because CoreImage
+    /// decodes the full-res source first), plus a post-decode extent backstop.
+    ///
+    /// Split out of `decodeImage` so the request-aggregate path (`parts`) can read
+    /// the header and charge the aggregate BEFORE this allocates the raster.
+    static func decodeImageData(
+        _ data: Data, maxImagePixels: Int = Self.maxImagePixels
+    ) throws -> UserInput.Image {
         if let pixels = imagePixelCount(data), pixels > maxImagePixels {
             throw MediaError.mediaTooLarge(
                 "image is \(pixels) px; per-image cap is \(maxImagePixels) px")
@@ -535,8 +604,12 @@ public enum VLMRequestInference {
             throw MediaError.mediaTooLarge("video duration is unreadable")
         }
         guard duration.seconds <= maxDurationSeconds else {
+            // Format as Double, not Int: this is untrusted metadata, and a
+            // duration > Int.max seconds would trap on `Int(_:)` while building
+            // the rejection message — turning a fail-closed 400 into a crash.
             throw MediaError.mediaTooLarge(
-                "video is \(Int(duration.seconds))s; duration cap is \(Int(maxDurationSeconds))s")
+                "video is \(secondsString(duration.seconds))s; duration cap is "
+                    + "\(secondsString(maxDurationSeconds))s")
         }
 
         guard let tracks = try? await asset.loadTracks(withMediaType: .video), !tracks.isEmpty

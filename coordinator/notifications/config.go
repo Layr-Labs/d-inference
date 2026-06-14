@@ -28,21 +28,26 @@ type Config struct {
 	CheckInterval      time.Duration
 	AlertCooldown      time.Duration
 	MinProviderVersion string
-	validationErr      error
 }
 
 type EmailProvider string
 
 const emailProviderResend EmailProvider = "resend"
 
-type ResendAPIKey string
+type ResendAPIKey struct {
+	value string
+}
 
 func (k ResendAPIKey) Value() string {
-	return string(k)
+	return k.value
+}
+
+func (k ResendAPIKey) IsSet() bool {
+	return k.value != ""
 }
 
 func (k ResendAPIKey) String() string {
-	if k == "" {
+	if k.value == "" {
 		return ""
 	}
 	return "[redacted]"
@@ -62,9 +67,10 @@ func (k ResendAPIKey) Valid() bool {
 }
 
 func ReadConfig() Config {
-	resendKey, validationErr := readResendAPIKeyFromEnv()
+	resendRaw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
+	resendKey, validResendKey := newResendAPIKey(resendRaw)
 	var provider EmailProvider
-	if resendKey != "" {
+	if resendRaw != "" {
 		provider = emailProviderResend
 	}
 
@@ -73,8 +79,8 @@ func ReadConfig() Config {
 		consoleURL += defaultConsolePath
 	}
 
-	return Config{
-		Enabled:            resendKey != "",
+	cfg := Config{
+		Enabled:            resendRaw != "",
 		Provider:           provider,
 		ResendAPIKey:       resendKey,
 		From:               env.EnvOr(env.EnvPrefix+"_EMAIL_FROM", defaultEmailFrom),
@@ -83,19 +89,22 @@ func ReadConfig() Config {
 		CheckInterval:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHECK_SECONDS", int(defaultCheckInterval.Seconds()))) * time.Second,
 		AlertCooldown:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_COOLDOWN_HOURS", int(defaultAlertCooldown.Hours()))) * time.Hour,
 		MinProviderVersion: strings.TrimSpace(os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION")),
-		validationErr:      validationErr,
 	}
+	if resendRaw != "" && !validResendKey {
+		cfg.ResendAPIKey = ResendAPIKey{}
+	}
+	return cfg
 }
 
-func readResendAPIKeyFromEnv() (ResendAPIKey, error) {
-	key := ResendAPIKey(strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY")))
-	if key == "" {
-		return "", nil
+func newResendAPIKey(raw string) (ResendAPIKey, bool) {
+	key := ResendAPIKey{value: strings.TrimSpace(raw)}
+	if key.value == "" {
+		return ResendAPIKey{}, true
 	}
 	if !key.Valid() {
-		return key, fmt.Errorf("provider email service credentials have an invalid format")
+		return ResendAPIKey{}, false
 	}
-	return key, nil
+	return key, true
 }
 
 func (c Config) WithDefaults() Config {
@@ -114,9 +123,6 @@ func (c Config) WithDefaults() Config {
 func (c Config) Check() error {
 	if !c.Enabled {
 		return nil
-	}
-	if c.validationErr != nil {
-		return c.validationErr
 	}
 	if c.Provider != emailProviderResend {
 		return fmt.Errorf("unsupported provider email service")

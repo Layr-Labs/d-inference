@@ -7,13 +7,23 @@ import (
 )
 
 const (
-	providerNotificationTargetLimit    = 10000
+	providerNotificationTargetLimit    = 1000
 	providerNotificationTargetLookback = 30 * 24 * time.Hour
 )
 
 type providerNotificationKey struct {
 	ProviderID string
 	ReasonKey  string
+}
+
+func providerNotificationStableKey(rec ProviderRecord) string {
+	if rec.SerialNumber != "" {
+		return "serial:" + rec.SerialNumber
+	}
+	if rec.SEPublicKey != "" {
+		return "sekey:" + rec.SEPublicKey
+	}
+	return "provider:" + rec.ID
 }
 
 func normalizeNotificationEmail(email string) (string, bool) {

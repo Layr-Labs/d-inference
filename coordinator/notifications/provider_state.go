@@ -58,25 +58,6 @@ func providerStateFromLive(p *registry.Provider, rec store.ProviderRecord) provi
 	}
 }
 
-func latestProviderNotificationTargets(targets []store.ProviderNotificationTarget) []store.ProviderNotificationTarget {
-	byKey := make(map[string]store.ProviderNotificationTarget)
-	for _, target := range targets {
-		key := notificationStableKey(target.Provider)
-		prev, ok := byKey[key]
-		if !ok || target.Provider.LastSeen.After(prev.Provider.LastSeen) {
-			byKey[key] = target
-		}
-	}
-	out := make([]store.ProviderNotificationTarget, 0, len(byKey))
-	for _, target := range byKey {
-		out = append(out, target)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Provider.LastSeen.After(out[j].Provider.LastSeen)
-	})
-	return out
-}
-
 func notificationStableKey(rec store.ProviderRecord) string {
 	if rec.SerialNumber != "" {
 		return "serial:" + rec.SerialNumber
@@ -103,7 +84,7 @@ func providerDisplayName(p providerState) string {
 func reasonKeys(reasons []AlertReason) []string {
 	keys := make([]string, 0, len(reasons))
 	for _, r := range reasons {
-		keys = append(keys, r.Key)
+		keys = append(keys, string(r.Key))
 	}
 	sort.Strings(keys)
 	return keys

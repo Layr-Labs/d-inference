@@ -2544,7 +2544,7 @@ func (s *MemoryStore) ListProviderNotificationTargets(_ context.Context) ([]Prov
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	targets := make([]ProviderNotificationTarget, 0, len(s.providerRecords))
+	byKey := make(map[string]ProviderNotificationTarget, len(s.providerRecords))
 	for _, p := range s.providerRecords {
 		if p.AccountID == "" {
 			continue
@@ -2562,10 +2562,19 @@ func (s *MemoryStore) ListProviderNotificationTargets(_ context.Context) ([]Prov
 		if !ok {
 			continue
 		}
-		targets = append(targets, ProviderNotificationTarget{
+		target := ProviderNotificationTarget{
 			Provider: cp,
 			Email:    email,
-		})
+		}
+		key := providerNotificationStableKey(cp)
+		prev, ok := byKey[key]
+		if !ok || cp.LastSeen.After(prev.Provider.LastSeen) {
+			byKey[key] = target
+		}
+	}
+	targets := make([]ProviderNotificationTarget, 0, len(byKey))
+	for _, target := range byKey {
+		targets = append(targets, target)
 	}
 	return targets, nil
 }

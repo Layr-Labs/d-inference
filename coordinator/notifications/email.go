@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
-	"time"
 )
 
 type Email struct {
@@ -38,17 +36,22 @@ type resendEmailPayload struct {
 }
 
 func NewResendClient(apiKey string) *ResendClient {
+	return NewResendClientWithHTTPClient(apiKey, http.DefaultClient)
+}
+
+func NewResendClientWithHTTPClient(apiKey string, client *http.Client) *ResendClient {
+	key, _ := newResendAPIKey(apiKey)
+	if client == nil {
+		client = http.DefaultClient
+	}
 	return &ResendClient{
-		apiKey: ResendAPIKey(strings.TrimSpace(apiKey)),
-		client: &http.Client{
-			Timeout:       10 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		apiKey: key,
+		client: client,
 	}
 }
 
 func (c *ResendClient) Send(ctx context.Context, email Email) error {
-	if c == nil || c.apiKey == "" {
+	if c == nil || !c.apiKey.IsSet() {
 		return fmt.Errorf("resend api key not configured")
 	}
 	payload := resendEmailPayload{

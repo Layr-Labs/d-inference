@@ -3829,10 +3829,13 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 	cutoff := time.Now().Add(-cooldown)
 	rows, err := s.pool.Query(ctx,
 		`SELECT n.provider_id, n.reason_key, n.last_sent_at
-		   FROM unnest($1::text[], $2::text[]) AS input(provider_id, reason_key)
-		   JOIN provider_notifications n
-		     ON n.provider_id = input.provider_id
-		    AND n.reason_key = input.reason_key`,
+		   FROM provider_notifications n
+		  WHERE EXISTS (
+		        SELECT 1
+		          FROM unnest($1::text[], $2::text[]) AS input(provider_id, reason_key)
+		         WHERE input.provider_id = n.provider_id
+		           AND input.reason_key = n.reason_key
+		  )`,
 		providerIDs, reasonKeys,
 	)
 	if err != nil {

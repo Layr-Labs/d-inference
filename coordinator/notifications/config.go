@@ -10,13 +10,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
-const (
-	resendAPIKeyPrefix    = "re_"
-	minResendAPIKeyLength = 24
-	maxResendAPIKeyLength = 128
-)
-
-var resendAPIKeyPattern = regexp.MustCompile(`^re_[A-Za-z0-9_-]{21,125}$`)
+var resendAPIKeyPattern = regexp.MustCompile(`^re_[A-Za-z0-9]{21,125}$`)
 
 const (
 	defaultEmailFrom      = "Darkbloom <providers@darkbloom.dev>"
@@ -48,8 +42,6 @@ type AlertConfig struct {
 func validatedResendAPIKey(raw string) (string, bool) {
 	key := strings.TrimSpace(raw)
 	if raw != key ||
-		len(key) < minResendAPIKeyLength ||
-		len(key) > maxResendAPIKeyLength ||
 		!resendAPIKeyPattern.MatchString(key) {
 		return "", false
 	}

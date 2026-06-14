@@ -21,6 +21,16 @@ type Email struct {
 	UnsubscribeURL string
 }
 
+type EmailSender interface {
+	Send(context.Context, Email) error
+}
+
+type EmailSenderFunc func(context.Context, Email) error
+
+func (f EmailSenderFunc) Send(ctx context.Context, email Email) error {
+	return f(ctx, email)
+}
+
 type ResendClient struct {
 	apiKey string
 	client *http.Client

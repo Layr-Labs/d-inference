@@ -2566,7 +2566,7 @@ func (s *MemoryStore) ListProviderNotificationTargets(_ context.Context) ([]Prov
 			Provider: cp,
 			Email:    email,
 		}
-		key := providerNotificationStableKey(cp)
+		key := ProviderNotificationStableKey(cp)
 		prev, ok := byKey[key]
 		if !ok || cp.LastSeen.After(prev.Provider.LastSeen) {
 			byKey[key] = target

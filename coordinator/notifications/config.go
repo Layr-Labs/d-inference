@@ -39,23 +39,34 @@ type EmailConfig struct {
 }
 
 func validResendAPIKey(key string) bool {
-	return key == strings.TrimSpace(key) &&
-		len(key) >= minResendAPIKeyLength &&
-		len(key) <= maxResendAPIKeyLength &&
-		strings.HasPrefix(key, resendAPIKeyPrefix)
+	if key != strings.TrimSpace(key) ||
+		len(key) < minResendAPIKeyLength ||
+		len(key) > maxResendAPIKeyLength ||
+		!strings.HasPrefix(key, resendAPIKeyPrefix) {
+		return false
+	}
+	for _, r := range key[len(resendAPIKeyPrefix):] {
+		if !safeResendAPIKeyRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func safeResendAPIKeyRune(r rune) bool {
+	return ('a' <= r && r <= 'z') ||
+		('A' <= r && r <= 'Z') ||
+		('0' <= r && r <= '9') ||
+		r == '_' ||
+		r == '-'
 }
 
 func ReadConfig() Config {
 	resendRaw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_RESEND_API_KEY"))
-	if resendRaw == "" || !validResendAPIKey(resendRaw) {
-		return Config{Enabled: false}
-	}
-
 	consoleURL := strings.TrimRight(os.Getenv(env.EnvPrefix+"_CONSOLE_URL"), "/")
 	if consoleURL != "" {
 		consoleURL += defaultConsolePath
 	}
-
 	cfg := Config{
 		Enabled: true,
 		Email: EmailConfig{
@@ -67,6 +78,9 @@ func ReadConfig() Config {
 		CheckInterval:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_CHECK_SECONDS", int(defaultCheckInterval.Seconds()))) * time.Second,
 		AlertCooldown:      time.Duration(env.EnvInt(env.EnvPrefix+"_PROVIDER_ALERT_COOLDOWN_HOURS", int(defaultAlertCooldown.Hours()))) * time.Hour,
 		MinProviderVersion: strings.TrimSpace(os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION")),
+	}
+	if err := cfg.Check(); err != nil {
+		return Config{Enabled: false}
 	}
 	return cfg
 }

@@ -61,16 +61,6 @@ func providerStateFromLive(rec store.ProviderRecord, p *registry.Provider) provi
 	}
 }
 
-func notificationStableKey(rec store.ProviderRecord) string {
-	if rec.SerialNumber != "" {
-		return "serial:" + rec.SerialNumber
-	}
-	if rec.SEPublicKey != "" {
-		return "sekey:" + rec.SEPublicKey
-	}
-	return "provider:" + rec.ID
-}
-
 func providerDisplayName(p providerState) string {
 	if p.serial != "" {
 		if len(p.serial) > 6 {

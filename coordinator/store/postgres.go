@@ -3443,8 +3443,11 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 	}
 	defer rows.Close()
 
-	targets := make([]ProviderNotificationTarget, 0, 128)
+	targets := make([]ProviderNotificationTarget, 0, providerNotificationTargetLimit)
 	for rows.Next() {
+		if len(targets) >= providerNotificationTargetLimit {
+			break
+		}
 		var p ProviderRecord
 		var locationRaw []byte
 		var email string
@@ -3806,13 +3809,13 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 	providerIDs := make([]string, 0, len(checks))
 	reasonKeys := make([]string, 0, len(checks))
 	for _, check := range checks {
-		reasonKey, ok := check.ReasonKey.DBValue()
+		providerID, _, reasonKey, ok := check.DBValues()
 		if !ok {
 			continue
 		}
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
 		due[check] = struct{}{}
-		providerIDs = append(providerIDs, check.ProviderID)
+		providerIDs = append(providerIDs, providerID)
 		reasonKeys = append(reasonKeys, reasonKey)
 	}
 	if len(providerIDs) == 0 {
@@ -3863,12 +3866,12 @@ func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, che
 	reasonKeys := make([]string, 0, len(checks))
 	sentAtValues := make([]time.Time, 0, len(checks))
 	for _, check := range checks {
-		reasonKey, ok := check.ReasonKey.DBValue()
+		providerID, accountID, reasonKey, ok := check.DBValues()
 		if !ok {
 			continue
 		}
-		providerIDs = append(providerIDs, check.ProviderID)
-		accountIDs = append(accountIDs, check.AccountID)
+		providerIDs = append(providerIDs, providerID)
+		accountIDs = append(accountIDs, accountID)
 		reasonKeys = append(reasonKeys, reasonKey)
 		sentAtValues = append(sentAtValues, sentAt)
 	}

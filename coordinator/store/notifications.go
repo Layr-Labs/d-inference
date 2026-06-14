@@ -54,7 +54,7 @@ func (s ProviderNotificationDueSet) Contains(check ProviderNotificationCheck) bo
 	return ok
 }
 
-func providerNotificationStableKey(rec ProviderRecord) string {
+func ProviderNotificationStableKey(rec ProviderRecord) string {
 	if rec.SerialNumber != "" {
 		return "serial:" + rec.SerialNumber
 	}
@@ -76,14 +76,34 @@ func normalizeNotificationEmail(email string) (string, bool) {
 	return addr.Address, true
 }
 
+func (check ProviderNotificationCheck) Normalized() (ProviderNotificationCheck, bool) {
+	check.ProviderID = strings.TrimSpace(check.ProviderID)
+	check.AccountID = strings.TrimSpace(check.AccountID)
+	check.ReasonKey = ProviderNotificationReasonKey(strings.TrimSpace(string(check.ReasonKey)))
+	if check.ProviderID == "" || check.AccountID == "" || !check.ReasonKey.Valid() {
+		return ProviderNotificationCheck{}, false
+	}
+	return check, true
+}
+
+func (check ProviderNotificationCheck) DBValues() (providerID string, accountID string, reasonKey string, ok bool) {
+	check, ok = check.Normalized()
+	if !ok {
+		return "", "", "", false
+	}
+	reasonKey, ok = check.ReasonKey.DBValue()
+	if !ok {
+		return "", "", "", false
+	}
+	return check.ProviderID, check.AccountID, reasonKey, true
+}
+
 func compactProviderNotificationChecks(checks []ProviderNotificationCheck) []ProviderNotificationCheck {
 	out := make([]ProviderNotificationCheck, 0, len(checks))
 	seen := make(map[ProviderNotificationCheck]struct{}, len(checks))
 	for _, check := range checks {
-		check.ProviderID = strings.TrimSpace(check.ProviderID)
-		check.AccountID = strings.TrimSpace(check.AccountID)
-		check.ReasonKey = ProviderNotificationReasonKey(strings.TrimSpace(string(check.ReasonKey)))
-		if check.ProviderID == "" || check.AccountID == "" || !check.ReasonKey.Valid() {
+		check, ok := check.Normalized()
+		if !ok {
 			continue
 		}
 		if _, ok := seen[check]; ok {

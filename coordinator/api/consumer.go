@@ -279,7 +279,7 @@ func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, re
 		return requested, requested, rawBody, true
 	}
 	parsed["model"] = buildID
-	rb, err := json.Marshal(parsed)
+	rb, err := marshalForwardBody(parsed)
 	if err != nil {
 		rb = rawBody
 	}
@@ -1332,7 +1332,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hasProviderAllowlist && stripProviderRoutingFields(parsed) {
-		rawBody, _ = json.Marshal(parsed)
+		rawBody, _ = marshalForwardBody(parsed)
 	}
 
 	// "Use my own machine, for free" opt-in. The signal is the
@@ -1384,7 +1384,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
 			if rp, ok := rec.RuntimeParameters["reasoning_parser"]; ok {
 				parsed["reasoning_parser"] = rp
-				rawBody, _ = json.Marshal(parsed)
+				rawBody, _ = marshalForwardBody(parsed)
 			}
 		}
 		// Use the registry's max_output_length as the default max_tokens
@@ -1419,20 +1419,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rawBody, _ = marshalForwardBody(providerParsed)
-	}
-
-	// Re-check the cap on the FINAL body we'll seal. The read cap bounded the
-	// input, but the body above was re-marshaled after mutation (max_tokens
-	// injection, Responses→chat lowering); the coordinator seals it and sends it
-	// as ONE WebSocket frame, and a body over the cap produces a frame the
-	// provider rejects by tearing down its session (see maxInferenceBodyBytes /
-	// CoordinatorClient.maxInboundMessageBytes). Fail fast with a clean 413 here —
-	// before the balance reservation, so there's nothing to refund — rather than
-	// disconnecting a provider mid-flight.
-	if len(rawBody) > maxInferenceBodyBytes {
-		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
-			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
-		return
 	}
 
 	// Per-account token rate limiting (ITPM/OTPM) — the industry-standard
@@ -1529,9 +1515,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 						return
 					}
-					rawBody, _ = json.Marshal(providerParsed)
+					rawBody, _ = marshalForwardBody(providerParsed)
 				} else {
-					rawBody, _ = json.Marshal(parsed)
+					rawBody, _ = marshalForwardBody(parsed)
 				}
 				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
 			}
@@ -1596,6 +1582,25 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
 	deadline := ttftDeadline(estimatedPromptTokens)
+
+	// Final cap on the body we'll seal. The read cap (parseInferencePrelude)
+	// bounded the request as received, but rawBody has since been re-marshaled at
+	// several points — alias resolution, allowlist/routing-field stripping,
+	// reasoning_parser + max_tokens injection, Responses→chat lowering, and the
+	// alias-capacity fallback above. The coordinator seals this body and sends it
+	// as ONE WebSocket frame; a body over the cap produces a frame the provider
+	// rejects by tearing down its session and cancelling every unrelated in-flight
+	// request (see maxInferenceBodyBytes / CoordinatorClient.maxInboundMessageBytes).
+	// This is the single point where rawBody is frozen into dispatchState, so the
+	// check here covers every upstream mutation; an oversized request gets a clean
+	// 413 instead of disconnecting a provider mid-flight. The reservation is held
+	// at this point, so refund before returning.
+	if len(rawBody) > maxInferenceBodyBytes {
+		refundReservation()
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
+			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
+		return
+	}
 
 	d := &dispatchState{
 		s:                      s,

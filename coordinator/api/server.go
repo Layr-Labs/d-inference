@@ -912,10 +912,11 @@ func (s *Server) invalidateCatalogCache() {
 	if s.readCache == nil {
 		return
 	}
-	s.readCache.Invalidate("models:catalog")
-	s.readCache.Invalidate("models:catalog:text")
-	s.readCache.Invalidate("models:catalog:aliases")
-	s.readCache.Invalidate("models:catalog:text:aliases")
+	for _, typeFilter := range []string{"", "text"} {
+		for _, includeAliases := range []bool{false, true} {
+			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
+		}
+	}
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.

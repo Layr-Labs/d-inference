@@ -615,12 +615,16 @@ func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store
 // Public endpoint — returns active models for providers and the install script.
 // Cached for 60s — the underlying DB query is fast but this endpoint is hit
 // by every provider heartbeat and install script poll.
+func modelCatalogCacheKey(typeFilter string, includeAliases bool) string {
+	return "models:catalog:type=" + typeFilter + ":include_aliases=" + strconv.FormatBool(includeAliases)
+}
+
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	// Optional filter: ?type=text
 	typeFilter := r.URL.Query().Get("type")
 	includeAliases := r.URL.Query().Get("include_aliases") == "1" || strings.EqualFold(r.URL.Query().Get("include_aliases"), "true")
 
-	cacheKey := "models:catalog:type=" + typeFilter + ":include_aliases=" + strconv.FormatBool(includeAliases)
+	cacheKey := modelCatalogCacheKey(typeFilter, includeAliases)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
 		return

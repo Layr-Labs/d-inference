@@ -620,13 +620,7 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	typeFilter := r.URL.Query().Get("type")
 	includeAliases := r.URL.Query().Get("include_aliases") == "1" || strings.EqualFold(r.URL.Query().Get("include_aliases"), "true")
 
-	cacheKey := "models:catalog"
-	if typeFilter != "" {
-		cacheKey = "models:catalog:" + typeFilter
-	}
-	if includeAliases {
-		cacheKey += ":aliases"
-	}
+	cacheKey := "models:catalog:type=" + typeFilter + ":include_aliases=" + strconv.FormatBool(includeAliases)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
 		return

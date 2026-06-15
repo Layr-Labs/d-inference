@@ -324,12 +324,19 @@ type Server struct {
 	// service accounts bypass rate limiting entirely.
 	serviceRateLimiter *ratelimit.Limiter
 
+	// serviceReservations avoids hot-row pre-router ledger debits for trusted
+	// service accounts when enabled. Normal consumers still use ledger debits.
+	serviceReservations *serviceReservationManager
+
 	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
 	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
 	// the industry-standard token throttle alongside RPM. Nil means no token
 	// limiting for that tier. Service accounts use serviceTokenLimiter.
 	consumerTokenLimiter *ratelimit.TokenLimiter
 	serviceTokenLimiter  *ratelimit.TokenLimiter
+	// outputAdmissionEstimator enables service-account expected-output admission
+	// for OTPM. Nil means disabled and preserves full max_tokens admission.
+	outputAdmissionEstimator *ratelimit.OutputAdmissionEstimator
 
 	// keyRPMLimiter / keyTokenLimiter enforce PER-KEY rate overrides (each key
 	// may carry a different ceiling) on top of the per-account limiters above.
@@ -365,6 +372,10 @@ func (s *Server) SetTokenLimiters(consumer, service *ratelimit.TokenLimiter) {
 	s.serviceTokenLimiter = service
 }
 
+func (s *Server) SetOutputAdmissionEstimator(estimator *ratelimit.OutputAdmissionEstimator) {
+	s.outputAdmissionEstimator = estimator
+}
+
 // SetKeyLimiters configures the per-key (variable-rate) RPM and ITPM/OTPM
 // limiters used for per-key overrides. Pass nil to disable per-key limiting.
 func (s *Server) SetKeyLimiters(rpm *ratelimit.Limiter, tokens *ratelimit.KeyTokenLimiter) {
@@ -379,53 +390,122 @@ func (s *Server) SetKeyLimiters(rpm *ratelimit.Limiter, tokens *ratelimit.KeyTok
 // and returns false. Admin bypasses. Standard x-ratelimit-*-{input,output}-tokens
 // headers are set on both success and rejection.
 func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int) bool {
+	_, ok := s.applyTokenRateLimitWithAdmission(w, r, inputTokens, outputTokens)
+	return ok
+}
+
+func (s *Server) applyTokenRateLimitWithAdmission(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int) (registry.TokenAdmission, bool) {
+	admission := registry.TokenAdmission{AdmittedOutputTokens: outputTokens}
 	accountID := consumerKeyFromContext(r.Context())
 	if accountID == "admin" {
-		return true
+		return admission, true
 	}
 
 	// Resolve the account-tier token limiter (nil = no account-level token limit
 	// for this caller, e.g. a service account with no service token limiter).
 	tl := s.consumerTokenLimiter
 	tier := "consumer"
+	serviceAccount := false
 	if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
+		serviceAccount = true
+		tier = "service"
 		if s.serviceTokenLimiter != nil {
 			tl = s.serviceTokenLimiter
-			tier = "service"
 		} else {
 			tl = nil
 		}
 	}
+	admission.AccountTier = tier
+	if serviceAccount {
+		if estimatedOutput, estimated := s.outputAdmissionEstimator.Estimate(outputTokens); estimated {
+			admission.AdmittedOutputTokens = estimatedOutput
+			admission.EstimatedOutput = true
+		}
+	}
 
 	keyID, inRPS, inBurst, outRPS, outBurst, keyEnforced := s.keyTokenParams(r)
+	admission.AccountOutputLimited = tl != nil && tl.HasOutputLimit()
+	admission.KeyOutputLimited = keyEnforced && outRPS > 0 && outBurst > 0
+	admission.KeyOutputRPS = outRPS
+	admission.KeyOutputBurst = outBurst
+	if admission.TracksOutput() {
+		s.ddHistogram("ratelimit.output_admission.estimated_tokens", float64(admission.AdmittedOutputTokens), outputAdmissionTags(tier, admission.EstimatedOutput))
+	}
 
 	// Peek BOTH the per-key override and the account-level limiter before
 	// consuming either. Only commit when both have capacity, so a rejection in
 	// one limiter never debits the other (a per-key request that the account
 	// bucket rejects must not drain the key's quota, and vice-versa).
 	if keyEnforced {
-		if ok, dim, retry := s.keyTokenLimiter.Peek(keyID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst); !ok {
+		if ok, dim, retry := s.keyTokenLimiter.Peek(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst); !ok {
 			s.writeTokenRateLimited(w, "key", dim, retry)
-			return false
+			return admission, false
 		}
 	}
 	if tl != nil {
-		if ok, dim, retry := tl.Peek(accountID, inputTokens, outputTokens); !ok {
+		if ok, dim, retry := tl.Peek(accountID, inputTokens, admission.AdmittedOutputTokens); !ok {
 			setTokenRateLimitHeaders(w, tl, accountID)
 			s.writeTokenRateLimited(w, tier, dim, retry)
-			return false
+			return admission, false
 		}
 	}
 
 	// Both dimensions have capacity — commit to each.
 	if keyEnforced {
-		s.keyTokenLimiter.Commit(keyID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst)
+		s.keyTokenLimiter.Commit(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst)
 	}
 	if tl != nil {
-		tl.Commit(accountID, inputTokens, outputTokens)
+		tl.Commit(accountID, inputTokens, admission.AdmittedOutputTokens)
 		setTokenRateLimitHeaders(w, tl, accountID)
 	}
-	return true
+	return admission, true
+}
+
+func outputAdmissionTags(tier string, estimated bool) []string {
+	if tier == "" {
+		tier = "none"
+	}
+	return []string{"tier:" + tier, "estimated:" + strconv.FormatBool(estimated)}
+}
+
+func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOutputTokens int) {
+	if pr == nil || !pr.TokenAdmission.TracksOutput() {
+		return
+	}
+	admission := pr.TokenAdmission
+	if actualOutputTokens < 0 {
+		actualOutputTokens = 0
+	}
+	admittedOutputTokens := admission.AdmittedOutputTokens
+	if admittedOutputTokens < 0 {
+		admittedOutputTokens = 0
+	}
+	delta := actualOutputTokens - admittedOutputTokens
+	if delta < 0 {
+		delta = 0
+	}
+	tags := append(outputAdmissionTags(admission.AccountTier, admission.EstimatedOutput), "model:"+pr.Model)
+	s.ddHistogram("ratelimit.output_admission.actual_tokens", float64(actualOutputTokens), tags)
+	s.ddHistogram("ratelimit.output_admission.delta_tokens", float64(delta), tags)
+	if delta == 0 {
+		return
+	}
+	if admission.AccountOutputLimited {
+		var tl *ratelimit.TokenLimiter
+		switch admission.AccountTier {
+		case "service":
+			tl = s.serviceTokenLimiter
+		default:
+			tl = s.consumerTokenLimiter
+		}
+		if tl != nil {
+			tl.DebitOutput(pr.ConsumerKey, delta)
+		}
+	}
+	if admission.KeyOutputLimited && s.keyTokenLimiter != nil {
+		s.keyTokenLimiter.DebitOutput(pr.KeyID, delta, admission.KeyOutputRPS, admission.KeyOutputBurst)
+	}
+	s.ddCount("ratelimit.output_admission.delta_tokens_total", int64(delta), tags)
 }
 
 // writeTokenRateLimited writes a 429 for a token-dimension rejection with a
@@ -548,6 +628,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		settlements:          newSettlementHolder(),
 		zombieCanceller:      newZombieStreamCanceller(),
+		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 	}
 	s.registerDefaultGauges()
 	s.routes()

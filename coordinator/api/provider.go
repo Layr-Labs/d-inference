@@ -453,9 +453,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// the scheduler sees it as a candidate. Without this, the
 				// provider still looks cold until the next heartbeat.
 				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
-				s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
+				duration := s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
+				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, true, duration)
 				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
 			case protocol.LoadModelStatusFailed:
+				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
+				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
 				if statusMsg.Error == protocol.ProviderDrainingForUpdate {
 					// Transient: the provider refused only because it is
 					// draining ahead of an auto-update restart. Shorten the
@@ -1679,6 +1682,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			"prompt_tokens", msg.Usage.PromptTokens,
 		)
 	}
+	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 
 	// Record job success and usage BEFORE closing ChunkCh. Closing
 	// ChunkCh unblocks the consumer response handler, and callers may
@@ -1772,7 +1776,44 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// mutations (overage charge, refund) happen inside the finalization
 	// gate so that a concurrent timeout/error refund path cannot race
 	// with the settlement here.
-	if pr.ReservedMicroUSD > 0 {
+	if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
+		var chargeErr error
+		finalized, _ := pr.FinalizeReservation(func() error {
+			if totalCost > 0 {
+				start := time.Now()
+				chargeErr = s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID)
+				s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:service_reservation_settle"})
+			}
+			s.releaseServiceReservation(pr, "finalize")
+			return nil
+		})
+		if !finalized {
+			billingFinalized = false
+			s.logger.Warn("skipping completion billing for already-finalized service reservation",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+			)
+		} else if chargeErr != nil {
+			if errors.Is(chargeErr, store.ErrInsufficientBalance) {
+				s.logger.Warn("service reservation settlement failed (insufficient balance) — zeroing uncollected charge",
+					"consumer_key", pr.ConsumerKey,
+					"cost_micro_usd", totalCost,
+				)
+			} else {
+				s.logger.Error("service reservation settlement failed (DB error) — zeroing uncollected charge",
+					"consumer_key", pr.ConsumerKey,
+					"cost_micro_usd", totalCost,
+					"error", chargeErr,
+				)
+			}
+			totalCost = 0
+			providerPayout = 0
+			s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model, "mode:service_hold"})
+		} else {
+			s.ddIncr("billing.reservation_finalize", []string{"model:" + pr.Model, "mode:service_hold", "outcome:charged"})
+			s.ddHistogram("billing.service_settlement_micro_usd", float64(totalCost), []string{"model:" + pr.Model})
+		}
+	} else if pr.ReservedMicroUSD > 0 {
 		if !pr.MarkReservationFinalized() {
 			billingFinalized = false
 			s.logger.Warn("skipping completion billing for already-finalized reservation",

@@ -114,6 +114,33 @@ func TestTokenLimiterNoCrossDimensionDrain(t *testing.T) {
 	}
 }
 
+func TestOutputAdmissionEstimatorBounds(t *testing.T) {
+	if est := NewOutputAdmissionEstimator(OutputAdmissionEstimatorConfig{}); est != nil {
+		t.Fatal("disabled estimator should be nil")
+	}
+	est := NewOutputAdmissionEstimator(OutputAdmissionEstimatorConfig{Enabled: true, Fraction: 0.25, Floor: 100, Ceiling: 500})
+	if got, ok := est.Estimate(10); !ok || got != 10 {
+		t.Fatalf("small max should cap floor at max_tokens, got %d ok=%v", got, ok)
+	}
+	if got, _ := est.Estimate(1000); got != 250 {
+		t.Fatalf("fraction estimate = %d, want 250", got)
+	}
+	if got, _ := est.Estimate(10_000); got != 500 {
+		t.Fatalf("ceiling estimate = %d, want 500", got)
+	}
+}
+
+func TestTokenLimiterDebitOutputCreatesFutureDebt(t *testing.T) {
+	tl := NewTokenLimiter(0, 0, 0.000001, 100)
+	if ok, dim, _ := tl.Allow("acct", 0, 80); !ok {
+		t.Fatalf("initial output charge should pass, got dim=%q", dim)
+	}
+	tl.DebitOutput("acct", 30)
+	if ok, dim, _ := tl.Allow("acct", 0, 1); ok || dim != "output_tokens" {
+		t.Fatalf("future debt should reject subsequent output, got ok=%v dim=%q", ok, dim)
+	}
+}
+
 // Concurrent same-account requests must not over-admit past the bucket: with
 // the per-account lock, exactly burst/charge requests succeed. Run with -race.
 func TestTokenLimiterConcurrentNoOverAdmit(t *testing.T) {

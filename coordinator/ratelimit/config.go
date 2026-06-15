@@ -24,15 +24,23 @@ type TokenConfig struct {
 	OutputBurst     int
 }
 
+type OutputAdmissionEstimatorConfig struct {
+	Enabled  bool
+	Fraction float64
+	Floor    int
+	Ceiling  int
+}
+
 // ConfigPair holds the rate-limiter configs for every account tier:
 // inference (consumer), financial, and the elevated service tier, plus the
 // per-tier token-per-minute (ITPM/OTPM) limits.
 type ConfigPair struct {
-	Inference      Config
-	Financial      Config
-	Service        Config
-	ConsumerTokens TokenConfig
-	ServiceTokens  TokenConfig
+	Inference       Config
+	Financial       Config
+	Service         Config
+	ConsumerTokens  TokenConfig
+	ServiceTokens   TokenConfig
+	OutputAdmission OutputAdmissionEstimatorConfig
 }
 
 // ReadConfig reads all rate limiter configs from environment variables.
@@ -66,6 +74,12 @@ func ReadConfig() ConfigPair {
 			InputBurst:      env.EnvInt(env.EnvPrefix+"_SERVICE_RATE_LIMIT_ITPM_BURST", 5_000_000),
 			OutputPerMinute: env.EnvFloat(env.EnvPrefix+"_SERVICE_RATE_LIMIT_OTPM", 5_000_000),
 			OutputBurst:     env.EnvInt(env.EnvPrefix+"_SERVICE_RATE_LIMIT_OTPM_BURST", 512_000),
+		},
+		OutputAdmission: OutputAdmissionEstimatorConfig{
+			Enabled:  env.EnvBool(env.EnvPrefix+"_SERVICE_EXPECTED_OUTPUT_ADMISSION_ENABLED", false),
+			Fraction: env.EnvFloat(env.EnvPrefix+"_SERVICE_EXPECTED_OUTPUT_ADMISSION_FRACTION", 0.25),
+			Floor:    env.EnvInt(env.EnvPrefix+"_SERVICE_EXPECTED_OUTPUT_ADMISSION_FLOOR", 512),
+			Ceiling:  env.EnvInt(env.EnvPrefix+"_SERVICE_EXPECTED_OUTPUT_ADMISSION_CEILING", 8192),
 		},
 	}
 }

@@ -264,8 +264,11 @@ type CreateAPIKeyResponse struct {
 
 // HealthResponse is the GET /health response.
 type HealthResponse struct {
-	Status    string `json:"status"`
-	Providers int    `json:"providers"`
+	Status      string `json:"status"`
+	Providers   int    `json:"providers"`
+	Version     string `json:"version"`
+	BuildCommit string `json:"build_commit"`
+	BuildDate   string `json:"build_date"`
 }
 
 // VersionResponse is the GET /api/version response.

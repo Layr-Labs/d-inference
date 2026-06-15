@@ -139,13 +139,20 @@ type PendingRequest struct {
 	// RequestedMaxTokens is the consumer's requested output budget (or a
 	// sensible default when omitted). It is used for backlog estimation.
 	RequestedMaxTokens int
-	AcceptedCh         chan struct{}           // signalled when provider accepts request
-	ChunkCh            chan string             // SSE data chunks
-	CompleteCh         chan protocol.UsageInfo // closed after usage sent
-	ErrorCh            chan protocol.InferenceErrorMessage
-	SessionPrivKey     *[32]byte // E2E session private key for decrypting responses
-	SESignature        string    // SE signature over response hash
-	ResponseHash       string    // SHA-256 of response data
+	// CacheAffinityKey is SHA256(prompt_cache_key) from the request body. Empty
+	// means no cache-affinity routing. It is scoped again by account and model in
+	// the registry tracker and is never persisted.
+	CacheAffinityKey string
+	// TokenAdmission records the output-token charge admitted at request time so
+	// successful completion can reconcile any positive actual-output delta.
+	TokenAdmission TokenAdmission
+	AcceptedCh     chan struct{}           // signalled when provider accepts request
+	ChunkCh        chan string             // SSE data chunks
+	CompleteCh     chan protocol.UsageInfo // closed after usage sent
+	ErrorCh        chan protocol.InferenceErrorMessage
+	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
+	SESignature    string    // SE signature over response hash
+	ResponseHash   string    // SHA-256 of response data
 
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
@@ -158,11 +165,28 @@ type PendingRequest struct {
 	// timeout). The base itself is refunded once globally or settled by the
 	// winning attempt.
 	BaseReservedMicroUSD int64
+	// ServiceReservation marks a trusted service account request whose pre-router
+	// admission used an in-memory hold instead of a synchronous ledger debit.
+	ServiceReservation   bool
 	reservationMu        sync.Mutex
 	reservationFinalized bool
 
 	// Timing fields for latency decomposition.
 	Timing *RequestTiming
+}
+
+type TokenAdmission struct {
+	AdmittedOutputTokens int
+	EstimatedOutput      bool
+	AccountOutputLimited bool
+	AccountTier          string
+	KeyOutputLimited     bool
+	KeyOutputRPS         float64
+	KeyOutputBurst       int
+}
+
+func (a TokenAdmission) TracksOutput() bool {
+	return a.AccountOutputLimited || a.KeyOutputLimited
 }
 
 // MarkReservationFinalized returns true only for the first settlement or refund
@@ -804,7 +828,8 @@ type Registry struct {
 	// after a failed one. The value is the entry's expiry time. While an
 	// entry lives, the provider is skipped for new load_model sends
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
-	pendingModelLoads map[string]time.Time // key: "providerID:modelID", value: expiry
+	pendingModelLoads       map[string]time.Time // key: "providerID:modelID", value: expiry
+	pendingModelLoadStarted map[string]time.Time
 
 	// dispatchLoadCooldowns: provider-model pairs that rejected a dispatch with a
 	// load failure ("insufficient memory"). Routing skips the pair until expiry —
@@ -839,6 +864,11 @@ type Registry struct {
 	// or one missed heartbeat doesn't mass-reap a live fleet. Guarded by r.mu;
 	// rebuilt each sweep so disconnected providers drop out automatically.
 	evictStrikes map[string]int
+
+	cacheAffinity *cacheAffinityTracker
+	warmPool      *warmPoolController
+	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
+	loadModelSender func(providerID, modelID string) error
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -873,10 +903,12 @@ func New(logger *slog.Logger) *Registry {
 		tpsRegistry:             NewTPSRegistry(),
 		modelProviders:          make(map[string]*atomic.Int64),
 		pendingModelLoads:       make(map[string]time.Time),
+		pendingModelLoadStarted: make(map[string]time.Time),
 		dispatchLoadCooldowns:   make(map[string]time.Time),
 		inferenceErrorStrikes:   make(map[inferenceErrorKey][]time.Time),
 		inferenceErrorCooldowns: make(map[inferenceErrorKey]time.Time),
 		evictStrikes:            make(map[string]int),
+		cacheAffinity:           newCacheAffinityTracker(cacheAffinityTTL),
 		logger:                  logger,
 	}
 }
@@ -2230,6 +2262,14 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 // does not block waiting for the load to complete. The provider replies
 // asynchronously with a load_model_status message.
 func (r *Registry) SendLoadModel(providerID, modelID string) error {
+	if r.loadModelSender != nil {
+		if err := r.loadModelSender(providerID, modelID); err != nil {
+			return err
+		}
+		r.logger.Info("sent load_model to provider", "provider_id", providerID, "model_id", modelID)
+		return nil
+	}
+
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
@@ -2463,6 +2503,7 @@ func (r *Registry) expirePendingModelLoads(now time.Time) {
 	for key, expiresAt := range r.pendingModelLoads {
 		if now.After(expiresAt) {
 			delete(r.pendingModelLoads, key)
+			delete(r.pendingModelLoadStarted, key)
 		}
 	}
 }
@@ -2648,7 +2689,9 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		if r.providerHasPendingLoad(action.providerID) {
 			continue
 		}
-		r.pendingModelLoads[modelLoadKey(action.providerID, action.modelID)] = now.Add(pendingModelLoadTTL)
+		key := modelLoadKey(action.providerID, action.modelID)
+		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
+		r.pendingModelLoadStarted[key] = now
 		reserved = append(reserved, action)
 	}
 	return reserved
@@ -2734,10 +2777,27 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 
 // ClearPendingModelLoad removes a pending model load entry after a terminal
 // load_model_status response.
-func (r *Registry) ClearPendingModelLoad(providerID, modelID string) {
+func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Duration {
 	r.mu.Lock()
-	delete(r.pendingModelLoads, modelLoadKey(providerID, modelID))
+	key := modelLoadKey(providerID, modelID)
+	started := r.pendingModelLoadStarted[key]
+	delete(r.pendingModelLoads, key)
+	delete(r.pendingModelLoadStarted, key)
 	r.mu.Unlock()
+	if started.IsZero() {
+		return 0
+	}
+	return time.Since(started)
+}
+
+func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Duration {
+	r.mu.RLock()
+	started := r.pendingModelLoadStarted[modelLoadKey(providerID, modelID)]
+	r.mu.RUnlock()
+	if started.IsZero() {
+		return 0
+	}
+	return time.Since(started)
 }
 
 // BackoffPendingModelLoadForDrain re-stamps a pending load entry with the
@@ -2749,7 +2809,14 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) {
 // clears the entry anyway via Disconnect.
 func (r *Registry) BackoffPendingModelLoadForDrain(providerID, modelID string) {
 	r.mu.Lock()
-	r.pendingModelLoads[modelLoadKey(providerID, modelID)] = time.Now().Add(pendingModelLoadDrainBackoff)
+	key := modelLoadKey(providerID, modelID)
+	r.pendingModelLoads[key] = time.Now().Add(pendingModelLoadDrainBackoff)
+	if r.pendingModelLoadStarted == nil {
+		r.pendingModelLoadStarted = make(map[string]time.Time)
+	}
+	if r.pendingModelLoadStarted[key].IsZero() {
+		r.pendingModelLoadStarted[key] = time.Now()
+	}
 	r.mu.Unlock()
 }
 
@@ -2821,6 +2888,7 @@ func (r *Registry) Disconnect(id string) {
 		for key := range r.pendingModelLoads {
 			if len(key) > len(id)+1 && key[:len(id)+1] == id+":" {
 				delete(r.pendingModelLoads, key)
+				delete(r.pendingModelLoadStarted, key)
 			}
 		}
 		p.mu.Lock()
@@ -3856,7 +3924,8 @@ type ModelCapacity struct {
 	Ready                bool    `json:"ready"`                  // at least one routable provider with headroom
 	CanAccept            bool    `json:"can_accept"`             // ready AND queue not full
 	RoutableProviders    int     `json:"routable_providers"`     // passed all gates
-	WarmProviders        int     `json:"warm_providers"`         // model loaded (slot state "running")
+	WarmProviders        int     `json:"warm_providers"`         // model loaded (slot state "running" or "idle")
+	RunningProviders     int     `json:"running_providers"`      // model loaded with active requests (slot state "running")
 	ColdProviders        int     `json:"cold_providers"`         // model available but not loaded
 	ActiveRequests       int     `json:"active_requests"`        // in-flight across fleet
 	QueuedRequests       int     `json:"queued_requests"`        // waiting in coordinator queue
@@ -3872,6 +3941,7 @@ type ModelCapacity struct {
 type providerCapSnap struct {
 	model                 string
 	warm                  bool
+	running               bool
 	hasHeadroom           bool // pending < maxConcurrency
 	effectiveTPS          float64
 	prefillTPS            float64
@@ -3957,7 +4027,8 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					if slot.Model != m.ID {
 						continue
 					}
-					snap.warm = slot.State == "running"
+					snap.warm = slotStateModelLoaded(slot.State)
+					snap.running = slot.State == "running"
 					slotActive := int(slot.NumRunning) + int(slot.NumWaiting)
 					if slotActive > snap.activeRequests {
 						snap.activeRequests = slotActive
@@ -3986,6 +4057,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	type modelAgg struct {
 		routable         int
 		warm             int
+		running          int
 		cold             int
 		activeRequests   int
 		aggregateTPS     float64
@@ -4004,6 +4076,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 		if s.warm {
 			a.warm++
+			if s.running {
+				a.running++
+			}
 		} else {
 			a.cold++
 		}
@@ -4077,6 +4152,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			CanAccept:            canAccept,
 			RoutableProviders:    a.routable,
 			WarmProviders:        a.warm,
+			RunningProviders:     a.running,
 			ColdProviders:        a.cold,
 			ActiveRequests:       a.activeRequests,
 			QueuedRequests:       queued,

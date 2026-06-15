@@ -131,3 +131,13 @@ func (t *KeyTokenLimiter) Commit(key string, inputTokens, outputTokens int,
 		t.output.AllowNWithRate(key, outputTokens, outRPS, outBurst)
 	}
 }
+
+func (t *KeyTokenLimiter) DebitOutput(key string, outputTokens int, outRPS float64, outBurst int) {
+	if key == "" || outputTokens <= 0 || outRPS <= 0 || outBurst <= 0 {
+		return
+	}
+	lock := t.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+	t.output.DebitNWithRate(key, outputTokens, outRPS, outBurst)
+}

@@ -355,7 +355,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.lastErr = "failed to generate session keys"
 			return outcomeRetry
 		}
-		encrypted, err := e2e.Encrypt(d.rawBody, providerPubKey, sessionKeys)
+		// Version-gated penalty strip (see bodyForProvider). The queued path seals
+		// here, separately from dispatchOneProvider.
+		sealedBody := bodyForProvider(d.rawBody, d.requiresVision, d.provider)
+		encrypted, err := e2e.Encrypt(sealedBody, providerPubKey, sessionKeys)
 		if err != nil {
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)

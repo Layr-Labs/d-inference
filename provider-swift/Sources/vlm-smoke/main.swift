@@ -81,11 +81,14 @@ struct VLMSmoke {
         let env = ProcessInfo.processInfo.environment
         let temp = Float(env["VLM_TEMP"] ?? "") ?? 0.0
         let repPen: Float? = Float(env["VLM_REPPEN"] ?? "")
+        let presPen: Float? = Float(env["VLM_PRESPEN"] ?? "")
+        let freqPen: Float? = Float(env["VLM_FREQPEN"] ?? "")
         let maxTok = Int(env["VLM_MAXTOK"] ?? "") ?? 220
         let repPenDesc: String = repPen == nil ? "none" : "\(repPen!)"
-        err("[vlm-smoke] sampling: temp=\(temp) repPen=\(repPenDesc) maxTokens=\(maxTok)")
+        err("[vlm-smoke] sampling: temp=\(temp) repPen=\(repPenDesc) presPen=\(presPen.map { "\($0)" } ?? "none") freqPen=\(freqPen.map { "\($0)" } ?? "none") maxTokens=\(maxTok)")
         let params = GenerateParameters(
-            maxTokens: maxTok, temperature: temp, repetitionPenalty: repPen)
+            maxTokens: maxTok, temperature: temp, repetitionPenalty: repPen,
+            presencePenalty: presPen, frequencyPenalty: freqPen)
         let stream = try await container.generate(input: lmInput, parameters: params)
 
         err("---OUTPUT-START---")

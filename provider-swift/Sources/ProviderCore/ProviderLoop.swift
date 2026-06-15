@@ -460,15 +460,19 @@ public actor ProviderLoop {
         return overflow ? UInt64.max : bytes
     }
 
-    private var memoryLimitBytes: UInt64? {
-        ProviderMemoryLimit.limitBytes(limitGB: loopConfig.config.provider.memoryLimitGB)
-    }
-
-    private var effectivePhysicalMemoryBytes: UInt64 {
-        ProviderMemoryLimit.effectiveTotalBytes(
+    private var effectiveMemory: ProviderMemoryLimit.EffectiveBytes {
+        ProviderMemoryLimit.effectiveBytes(
             physicalBytes: ProcessInfo.processInfo.physicalMemory,
             limitGB: loopConfig.config.provider.memoryLimitGB
         )
+    }
+
+    private var memoryLimitBytes: UInt64? {
+        effectiveMemory.limitBytes
+    }
+
+    private var effectivePhysicalMemoryBytes: UInt64 {
+        effectiveMemory.totalBytes
     }
 
     // MARK: - Model Slot

@@ -48,8 +48,15 @@ public enum ModelLoadAdmission {
         outstandingReservationBytes: UInt64 = 0,
         memoryLimitBytes: UInt64? = nil
     ) -> Double {
-        let effectiveTotal = min(totalBytes, memoryLimitBytes ?? totalBytes)
-        let effectiveSystemAvailable = min(systemAvailableBytes, memoryLimitBytes ?? systemAvailableBytes)
+        let effectiveTotal: UInt64
+        let effectiveSystemAvailable: UInt64
+        if let memoryLimitBytes {
+            effectiveTotal = min(totalBytes, memoryLimitBytes)
+            effectiveSystemAvailable = min(systemAvailableBytes, memoryLimitBytes)
+        } else {
+            effectiveTotal = totalBytes
+            effectiveSystemAvailable = systemAvailableBytes
+        }
         let mlxUsed = saturatingAdd(gpuActiveBytes, gpuCacheBytes)
         let mlxFree = effectiveTotal > mlxUsed ? effectiveTotal - mlxUsed : 0
         // The OS view and the MLX view can each be the tighter bound; take the

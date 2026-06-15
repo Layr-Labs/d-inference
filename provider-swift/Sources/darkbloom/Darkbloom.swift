@@ -134,9 +134,7 @@ func loadRuntimeSnapshot(configPath rawPath: String?) throws -> RuntimeSnapshot 
     // Auto-migrate stale config values (idempotent, best-effort).
     config = migrateConfigIfNeeded(configPath: configPath, config: config)
 
-    let effectiveHardware = hardware.map {
-        ProviderMemoryLimit.effectiveHardware($0, settings: config.provider)
-    }
+    let effectiveHardware = hardware.map { effectiveProviderHardware($0, config: config) }
     let models = effectiveHardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
 
     return RuntimeSnapshot(
@@ -155,10 +153,7 @@ func runtimeSnapshot(
     config: ProviderConfig,
     hardware: HardwareInfo
 ) -> RuntimeSnapshot {
-    let effectiveHardware = ProviderMemoryLimit.effectiveHardware(
-        hardware,
-        settings: config.provider
-    )
+    let effectiveHardware = effectiveProviderHardware(hardware, config: config)
     return RuntimeSnapshot(
         configPath: snapshot.configPath,
         configFileExists: snapshot.configFileExists,
@@ -167,6 +162,14 @@ func runtimeSnapshot(
         hardware: effectiveHardware,
         hardwareError: snapshot.hardwareError,
         models: ModelScanner.scanModels(hardwareInfo: effectiveHardware)
+    )
+}
+
+func effectiveProviderHardware(_ hardware: HardwareInfo, config: ProviderConfig) -> HardwareInfo {
+    ProviderMemoryLimit.effectiveHardware(
+        hardware,
+        limitGB: config.provider.memoryLimitGB,
+        reserveGB: config.provider.memoryReserveGB
     )
 }
 

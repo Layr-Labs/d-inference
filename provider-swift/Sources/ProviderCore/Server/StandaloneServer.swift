@@ -123,10 +123,10 @@ public actor StandaloneServer {
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
         MLXMemoryGuard.configureOnce(
-            physicalBytes: ProviderMemoryLimit.effectiveTotalBytes(
+            physicalBytes: ProviderMemoryLimit.effectiveBytes(
                 physicalBytes: ProcessInfo.processInfo.physicalMemory,
                 limitGB: config.memoryLimitGB
-            )
+            ).totalBytes
         )
     }
 

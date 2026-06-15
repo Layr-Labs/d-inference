@@ -52,6 +52,13 @@ struct Start: AsyncParsableCommand {
     /// Public URL of the Darkbloom Terms of Service.
     static let termsURL = "https://darkbloom.dev/terms.html"
 
+    private struct PreparedStartConfiguration {
+        let snapshot: RuntimeSnapshot
+        let config: ProviderConfig
+        let hardware: HardwareInfo
+        let coordinatorURL: String
+    }
+
     /// Prints a one-line terms-of-service notice. Starting the provider is the
     /// act of acceptance — there is no separate yes/no prompt — so this is an
     /// informational notice, not a gate. Shown only for the user-facing
@@ -78,31 +85,7 @@ struct Start: AsyncParsableCommand {
         return persisted
     }
 
-    mutating func run() async throws {
-        Darkbloom.ensureLogging()
-
-        if !foreground {
-            printTermsNotice()
-        }
-
-        // --local (coordinator-less) and --local-endpoint (alongside the
-        // coordinator) are mutually exclusive serve modes; reject the ambiguous
-        // combination rather than silently picking one.
-        if local && localEndpoint {
-            printError("--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less local server, or --local-endpoint to serve a local endpoint alongside the coordinator.")
-            throw ExitCode.failure
-        }
-
-        // GPU is required. Reject CPU fallback up-front so we never
-        // come up reporting healthy and then silently churn at 0.5 tok/s.
-        do {
-            _ = try GPUEnforcement.requireMetal()
-        } catch {
-            printError("\(error)")
-            throw ExitCode.failure
-        }
-
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+    private func prepareStartConfiguration(snapshot: RuntimeSnapshot) throws -> PreparedStartConfiguration {
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         if let idleTimeout {
@@ -133,6 +116,7 @@ struct Start: AsyncParsableCommand {
                 throw ExitCode.failure
             }
         }
+
         let effectiveSnapshot = runtimeSnapshot(
             from: snapshot,
             config: effectiveConfig,
@@ -143,24 +127,59 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        return PreparedStartConfiguration(
+            snapshot: effectiveSnapshot,
+            config: effectiveConfig,
+            hardware: effectiveHardware,
+            coordinatorURL: effectiveCoordinator
+        )
+    }
+
+    mutating func run() async throws {
+        Darkbloom.ensureLogging()
+
+        if !foreground {
+            printTermsNotice()
+        }
+
+        // --local (coordinator-less) and --local-endpoint (alongside the
+        // coordinator) are mutually exclusive serve modes; reject the ambiguous
+        // combination rather than silently picking one.
+        if local && localEndpoint {
+            printError("--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less local server, or --local-endpoint to serve a local endpoint alongside the coordinator.")
+            throw ExitCode.failure
+        }
+
+        // GPU is required. Reject CPU fallback up-front so we never
+        // come up reporting healthy and then silently churn at 0.5 tok/s.
+        do {
+            _ = try GPUEnforcement.requireMetal()
+        } catch {
+            printError("\(error)")
+            throw ExitCode.failure
+        }
+
+        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let prepared = try prepareStartConfiguration(snapshot: snapshot)
+
         if local {
             try await runLocalStandalone(
-                snapshot: effectiveSnapshot,
-                config: effectiveConfig,
-                hardware: effectiveHardware
+                snapshot: prepared.snapshot,
+                config: prepared.config,
+                hardware: prepared.hardware
             )
         } else if foreground {
             try await runForeground(
-                snapshot: effectiveSnapshot,
-                hardware: effectiveHardware,
-                config: effectiveConfig,
-                coordinatorURL: effectiveCoordinator
+                snapshot: prepared.snapshot,
+                hardware: prepared.hardware,
+                config: prepared.config,
+                coordinatorURL: prepared.coordinatorURL
             )
         } else {
             try await launchDaemon(
-                snapshot: effectiveSnapshot,
-                config: effectiveConfig,
-                coordinatorURL: effectiveCoordinator
+                snapshot: prepared.snapshot,
+                config: prepared.config,
+                coordinatorURL: prepared.coordinatorURL
             )
         }
     }

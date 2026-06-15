@@ -2,6 +2,7 @@ package registry
 
 import (
 	"testing"
+	"time"
 )
 
 func setProviderAccount(p *Provider, accountID string) {
@@ -107,6 +108,53 @@ func TestSelfRouteRelaxesHardwareTrust(t *testing.T) {
 	}
 
 	// A different account's self-route must NOT reach this machine.
+	stranger := &PendingRequest{RequestID: "req-stranger", Model: model, RequestedMaxTokens: 128, SelfRouteOnly: true, OwnerAccountID: "acct-B"}
+	if selected := reg.ReserveProvider(model, stranger); selected != nil {
+		t.Fatalf("acct-B self-route reached acct-A's machine %q; ownership filter breached", selected.ID)
+	}
+}
+
+// TestSelfRouteExemptFromMDAGate (issue #302): the MDA SIP gate requires
+// MDM/MDA enrollment, which self-route deliberately doesn't (a personal Mac
+// "will not be MDM/MDA enrolled"). Under MDA enforcement a public request to a
+// provider without a fresh MDA verdict must be rejected, but the OWNER's
+// self-route to that same machine must still succeed — otherwise enforcement
+// would lock owners out of their own un-enrolled Macs.
+func TestSelfRouteExemptFromMDAGate(t *testing.T) {
+	reg := New(testLogger())
+	model := "mda-selfroute-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	mine.mu.Lock()
+	// Hardware-trusted + live SIP, but NO fresh MDA verdict (MDASIPVerified=false)
+	// — exactly the late-SecurityInfo / ACME / not-yet-attested hardware case.
+	mine.TrustLevel = TrustHardware
+	mine.ChallengeVerifiedSIP = true
+	mine.MDASIPVerified = false
+	mine.mu.Unlock()
+	setProviderAccount(mine, "acct-A")
+
+	// Turn MDA enforcement ON (deadline in the past).
+	reg.SetMDAEnforceDeadline(time.Now().Add(-time.Minute))
+
+	// Public (paid) request: no MDA verdict → must NOT route.
+	normal := &PendingRequest{RequestID: "req-normal", Model: model, RequestedMaxTokens: 128}
+	if selected := reg.ReserveProvider(model, normal); selected != nil {
+		t.Fatalf("enforced: public request selected an MDA-less provider %q — the MDA gate must hold for the public fleet", selected.ID)
+	}
+
+	// Owner self-route: MDA gate is exempt (personal Mac isn't MDM-enrolled), so
+	// the owner reaches their own machine even with no MDA verdict.
+	owner := &PendingRequest{RequestID: "req-owner", Model: model, RequestedMaxTokens: 128, SelfRouteOnly: true, OwnerAccountID: "acct-A"}
+	selected := reg.ReserveProvider(model, owner)
+	if selected == nil {
+		t.Fatal("enforced: self-route by owner failed to reach their own MDA-less machine — MDA gate must be exempt for self-route")
+	}
+	if selected.ID != mine.ID {
+		t.Fatalf("selected %q, want %q", selected.ID, mine.ID)
+	}
+
+	// A stranger's self-route still must not reach it (ownership filter intact).
 	stranger := &PendingRequest{RequestID: "req-stranger", Model: model, RequestedMaxTokens: 128, SelfRouteOnly: true, OwnerAccountID: "acct-B"}
 	if selected := reg.ReserveProvider(model, stranger); selected != nil {
 		t.Fatalf("acct-B self-route reached acct-A's machine %q; ownership filter breached", selected.ID)

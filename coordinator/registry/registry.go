@@ -330,7 +330,7 @@ type Provider struct {
 // (codeAttestationEnforcedLocked) rather than a value stamped at registration —
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
-func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
+func (r *Registry) providerSupportsPrivateTextLocked(p *Provider, selfRouteOwner bool) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -345,6 +345,10 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 	// v0.6.0 APNs code-identity gate — the SINGLE chokepoint, no self-route
 	// exemption (gate everyone). Enforced only once configured AND past the grace
 	// deadline, so the fleet keeps routing through the rollout; fail-closed after.
+	// NOTE this gate intentionally has NO self-route exemption (unlike the MDA gate
+	// below): the APNs code-identity challenge needs no MDM enrollment, so a
+	// personal Mac can satisfy it, and gating self-route too keeps a SIP-off owner
+	// box from serving even its own private prompts with un-attested code.
 	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
 		return false
 	}
@@ -354,7 +358,17 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 	// and a SIP-off root owner can forge. Same grace→enforce rollout shape as
 	// the code-attestation gate; the mint-age re-check makes a stale verdict
 	// expire at routing time.
-	if r.mdaEnforcedLocked() && !mdaRoutableLocked(p) {
+	//
+	// EXEMPT self-route: unlike the APNs gate, the MDA verdict REQUIRES MDM/MDA
+	// enrollment, and self-route deliberately drops MDM/MDA-requiring floors — "a
+	// personal Mac will not be MDM/MDA enrolled, so without this it would be
+	// unroutable to its own owner" (see anyEligibleProviderCanRouteLocked /
+	// scheduler.go). Enforcing MDA on an owner's own machine would lock them out of
+	// it under enforcement. The owner serving their OWN prompts on their OWN box is
+	// outside the threat the MDA gate addresses (routing a stranger's private text
+	// to a possibly-SIP-off provider); every privacy-critical gate above still
+	// applies, so plaintext is never exposed.
+	if !selfRouteOwner && r.mdaEnforcedLocked() && !mdaRoutableLocked(p) {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -1579,7 +1593,11 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	if trustRank(p.TrustLevel) < trustRank(minTrust) {
 		return false
 	}
-	if !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
+	// allowPrivate is true exactly when this is the owner's own self-route/prefer
+	// request (set by the caller alongside the minTrust=TrustNone relaxation), so
+	// it is the self-route-owner signal the MDA gate uses to exempt a personal,
+	// not-MDM-enrolled Mac from MDA enforcement.
+	if !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p, allowPrivate) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -2640,7 +2658,7 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !p.RuntimeVerified {
 		return false
 	}
-	if !r.providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextLocked(p, false) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -2720,7 +2738,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	if !p.RuntimeVerified {
 		return 0, false
 	}
-	if !r.providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextLocked(p, false) {
 		return 0, false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -3460,7 +3478,7 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		trust := p.TrustLevel
 		lastChallenge := p.LastChallengeVerified
 		runtimeVerified := p.RuntimeVerified
-		privateReady := r.providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p, false)
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
@@ -3595,7 +3613,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		trust := p.TrustLevel
 		attested := p.Attested
 		attestResult := p.AttestationResult
-		privateReady := r.providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p, false)
 		privateOnly := p.PrivateOnly
 		// p.Models is replaced copy-on-write by UpdateModelWeightHashes (which
 		// holds only p.mu, not r.mu), so snapshot it here under p.mu rather than
@@ -3683,7 +3701,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
-		privateReady := r.providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p, false)
 		var cc string
 		if p.Location != nil {
 			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
@@ -4031,7 +4049,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			p.mu.Unlock()
 			continue
 		}
-		if !r.providerSupportsPrivateTextLocked(p) {
+		if !r.providerSupportsPrivateTextLocked(p, false) {
 			p.mu.Unlock()
 			continue
 		}

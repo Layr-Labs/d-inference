@@ -94,7 +94,7 @@ func TestCodeAttestationGate(t *testing.T) {
 	supports := func(r *Registry, p *Provider) bool {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
-		return r.providerSupportsPrivateTextLocked(p)
+		return r.providerSupportsPrivateTextLocked(p, false)
 	}
 
 	// Not configured: routable regardless of CodeAttested (no fleet regression).
@@ -307,7 +307,7 @@ func TestSwiftProviderPrivateTextWithoutPythonCaps(t *testing.T) {
 	testMakeTextRoutable(p)
 
 	reg.mu.RLock()
-	routable := reg.providerSupportsPrivateTextLocked(p)
+	routable := reg.providerSupportsPrivateTextLocked(p, false)
 	reg.mu.RUnlock()
 	if !routable {
 		t.Fatal("Swift provider should support private text without PythonRuntimeLocked/DangerousModulesBlocked")
@@ -328,7 +328,7 @@ func TestPythonProviderDeprecatedNotRoutable(t *testing.T) {
 	testMakeTextRoutable(p)
 
 	reg.mu.RLock()
-	routable := reg.providerSupportsPrivateTextLocked(p)
+	routable := reg.providerSupportsPrivateTextLocked(p, false)
 	reg.mu.RUnlock()
 	if routable {
 		t.Fatal("Python (inprocess-mlx) provider should NOT support private text — backend is deprecated")
@@ -352,7 +352,7 @@ func TestSwiftProviderMissingBaseCapsExcluded(t *testing.T) {
 	testMakeTextRoutable(p)
 
 	reg.mu.RLock()
-	routable := reg.providerSupportsPrivateTextLocked(p)
+	routable := reg.providerSupportsPrivateTextLocked(p, false)
 	reg.mu.RUnlock()
 	if routable {
 		t.Fatal("Swift provider without AntiDebugEnabled should NOT support private text")

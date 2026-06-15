@@ -4,6 +4,11 @@ const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.da
 
 type JsonRecord = Record<string, unknown>;
 
+const GEMMA_PUBLIC_ID = "gemma-4-26b";
+const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
+const GEMMA_ROLLBACK_ID = "gemma-4-26b-8bit";
+const GEMMA_ROLLOUT_IDS = new Set([GEMMA_PUBLIC_ID, GEMMA_QAT_ID, GEMMA_ROLLBACK_ID]);
+
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
@@ -64,14 +69,6 @@ function toModelEntry(model: JsonRecord, capacity?: JsonRecord) {
       capabilities: model.capabilities ?? metadata.capabilities,
     },
   };
-}
-
-function asString(value: unknown) {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function asStringArray(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function aliasMemberBuilds(alias: JsonRecord, includeRetired = true) {

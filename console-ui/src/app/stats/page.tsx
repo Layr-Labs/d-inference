@@ -200,6 +200,11 @@ type StatsTab = "overview" | "leaderboard";
 type LeaderboardMetric = "earnings" | "tokens" | "jobs";
 type LeaderboardWindow = "24h" | "7d" | "30d" | "all";
 
+const GEMMA_PUBLIC_ID = "gemma-4-26b";
+const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
+const GEMMA_ROLLBACK_ID = "gemma-4-26b-8bit";
+const GEMMA_ROLLOUT_IDS = new Set([GEMMA_PUBLIC_ID, GEMMA_QAT_ID, GEMMA_ROLLBACK_ID]);
+
 interface ModelInventory {
   model: ModelStats;
   providers: ProviderStats[];
@@ -528,7 +533,8 @@ function publicCatalogModels(catalogModels: CatalogModelSummary[], aliases: Cata
   const hidden = hiddenAliasBuilds(aliases);
   const aliasModels: CatalogModelSummary[] = [];
   for (const alias of aliases) {
-    const primary = rawByID.get(alias.primaryBuild ?? alias.desiredBuild) ??
+    const primary = rawByID.get(alias.id) ??
+      rawByID.get(alias.primaryBuild ?? alias.desiredBuild) ??
       (alias.previousBuild ? rawByID.get(alias.previousBuild) : undefined);
     if (!primary) continue;
     aliasModels.push({

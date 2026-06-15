@@ -18,6 +18,9 @@ enum DoctorRunner {
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
 
+        // ---- Startup Security boot policy (local, no daemon needed) ----
+        out.append(BootPolicyDiagnostic.diagnose())
+
         // ---- Attestation key (local, no daemon needed) ----
         let se = SEKeySelfTest.run()
         out.append(Diagnostic(section: .attestationKey, name: "se key sign test",

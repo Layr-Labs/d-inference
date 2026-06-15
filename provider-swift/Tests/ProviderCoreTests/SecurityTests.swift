@@ -51,6 +51,72 @@ import Testing
     #expect(status == .unavailable(reason: "csrutil: failed"))
 }
 
+@Test func bootPolicyDiagnosticFlagsReducedSecurityWithKextsEnabled() throws {
+    let json = """
+    {
+      "SPiBridgeDataType": [
+        {
+          "ibridge_secure_boot": "Reduced Security",
+          "ibridge_sb_sip": "Enabled",
+          "ibridge_sb_ssv": "Enabled",
+          "ibridge_sb_ctrr": "Enabled",
+          "ibridge_sb_boot_args": "Enabled",
+          "ibridge_sb_other_kext": "Yes",
+          "ibridge_sb_manual_mdm": "No",
+          "ibridge_sb_device_mdm": "No"
+        }
+      ]
+    }
+    """
+
+    let policy = try BootPolicyDiagnostic.parseSystemProfilerJSON(json)
+    #expect(policy?.secureBoot == "Reduced Security")
+    #expect(policy?.allowAllKernelExtensions == "Yes")
+
+    let diagnostic = BootPolicyDiagnostic.diagnose(policy: policy)
+    #expect(diagnostic.section == .security)
+    #expect(diagnostic.name == "boot policy")
+    #expect(diagnostic.level == .fail)
+    #expect(diagnostic.message.contains("Reduced Security"))
+    #expect(diagnostic.message.contains("Allow All Kernel Extensions: Yes"))
+    #expect(diagnostic.fix?.contains("Full Security") == true)
+}
+
+@Test func bootPolicyDiagnosticFlagsReducedSecurityWithoutKextsEnabled() {
+    let diagnostic = BootPolicyDiagnostic.diagnose(policy: .init(
+        secureBoot: "Reduced Security",
+        systemIntegrityProtection: "Enabled",
+        signedSystemVolume: "Enabled",
+        kernelCTRR: "Enabled",
+        bootArgumentsFiltering: "Enabled",
+        allowAllKernelExtensions: "No",
+        userApprovedPrivilegedMDMOperations: "No",
+        depApprovedPrivilegedMDMOperations: "No"))
+
+    #expect(diagnostic.level == .fail)
+    #expect(diagnostic.message.contains("Reduced Security"))
+}
+
+@Test func bootPolicyDiagnosticPassesFullSecurity() {
+    let diagnostic = BootPolicyDiagnostic.diagnose(policy: .init(
+        secureBoot: "Full Security",
+        systemIntegrityProtection: "Enabled",
+        signedSystemVolume: "Enabled",
+        kernelCTRR: "Enabled",
+        bootArgumentsFiltering: "Enabled",
+        allowAllKernelExtensions: "No",
+        userApprovedPrivilegedMDMOperations: "No",
+        depApprovedPrivilegedMDMOperations: "No"))
+
+    #expect(diagnostic.level == .pass)
+}
+
+@Test func bootPolicyDiagnosticWarnsWhenPolicyUnavailable() {
+    let diagnostic = BootPolicyDiagnostic.diagnose(policy: nil)
+    #expect(diagnostic.level == .warn)
+    #expect(diagnostic.message.contains("could not inspect Apple Silicon boot policy"))
+}
+
 @Test func binarySHA256HasherHashesDataAndFiles() throws {
     let hasher = BinarySHA256Hasher(chunkSize: 2)
     #expect(

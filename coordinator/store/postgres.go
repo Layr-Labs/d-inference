@@ -3818,7 +3818,7 @@ func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefo
 
 func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (ProviderNotificationDueSet, error) {
 	checks = compactProviderNotificationChecks(checks)
-	dueByCheck := make(map[ProviderNotificationCheck]struct{}, len(checks))
+	dueByCheck := make(ProviderNotificationDueSet, len(checks))
 	if len(checks) == 0 {
 		return ProviderNotificationDueSet{}, nil
 	}
@@ -3873,13 +3873,7 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate provider notifications: %w", err)
 	}
-	due := make(ProviderNotificationDueSet, 0, len(dueByCheck))
-	for _, check := range checks {
-		if _, ok := dueByCheck[check]; ok {
-			due = append(due, check)
-		}
-	}
-	return due, nil
+	return dueByCheck, nil
 }
 
 type providerNotificationLookupKey struct {

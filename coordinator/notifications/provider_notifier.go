@@ -199,7 +199,7 @@ func (n *ProviderNotifier) sendDueNotifications(
 			candidate.end > len(checks) || candidate.end > len(reasonsByCheck) {
 			continue
 		}
-		reasons := reasonsByCheck[candidate.start:candidate.start]
+		reasons := make([]AlertReason, 0, candidate.end-candidate.start)
 		sentStart := len(sent)
 		for i := candidate.start; i < candidate.end; i++ {
 			if dueByCheck.Contains(checks[i]) {

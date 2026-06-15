@@ -118,6 +118,24 @@ func (l *Limiter) AllowN(accountID string, n int) (bool, time.Duration) {
 	return false, retryAfter
 }
 
+func (l *Limiter) DebitN(accountID string, n int) {
+	if accountID == "" || n <= 0 {
+		return
+	}
+	now := time.Now()
+	e := l.bucketFor(accountID, now)
+	for remaining := n; remaining > 0; {
+		chunk := remaining
+		if chunk > l.cfg.Burst {
+			chunk = l.cfg.Burst
+		}
+		if chunk <= 0 || !e.limiter.ReserveN(now, chunk).OK() {
+			return
+		}
+		remaining -= chunk
+	}
+}
+
 // CanN reports whether n units are currently available for the account WITHOUT
 // consuming them. Used for cross-bucket peek-then-consume so a rejection in one
 // dimension doesn't debit another. Empty accountID or n <= 0 is always true.
@@ -205,6 +223,24 @@ func (l *Limiter) AllowNWithRate(key string, n int, rps float64, burst int) (boo
 		retryAfter = maxRetryAfter
 	}
 	return false, retryAfter
+}
+
+func (l *Limiter) DebitNWithRate(key string, n int, rps float64, burst int) {
+	if key == "" || n <= 0 || rps <= 0 || burst <= 0 {
+		return
+	}
+	now := time.Now()
+	e := l.bucketForWithRate(key, rps, burst, now)
+	for remaining := n; remaining > 0; {
+		chunk := remaining
+		if chunk > burst {
+			chunk = burst
+		}
+		if chunk <= 0 || !e.limiter.ReserveN(now, chunk).OK() {
+			return
+		}
+		remaining -= chunk
+	}
 }
 
 // CanNWithRate reports whether n units are currently available against a per-key

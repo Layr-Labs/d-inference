@@ -150,6 +150,14 @@ func main() {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
 	}
+	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
+	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
+	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)
+	stopWarmPool := reg.StartWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
+	defer stopWarmPool()
+	if cfg.RegistryCfg.WarmPool.Enabled {
+		logger.Info("warm-pool controller enabled", "observe_only", cfg.RegistryCfg.WarmPool.ObserveOnly, "interval", cfg.RegistryCfg.WarmPool.Interval.String())
+	}
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
 
@@ -212,6 +220,11 @@ func main() {
 		logger.Info("service token rate limiter enabled", "itpm", serviceTok.InputPerMinute, "otpm", serviceTok.OutputPerMinute)
 	}
 	srv.SetTokenLimiters(consumerTokenLimiter, serviceTokenLimiter)
+	if outputAdmission := ratelimit.NewOutputAdmissionEstimator(cfg.OutputAdmission); outputAdmission != nil {
+		srv.SetOutputAdmissionEstimator(outputAdmission)
+		estCfg := outputAdmission.Config()
+		logger.Info("service expected-output token admission enabled", "fraction", estCfg.Fraction, "floor", estCfg.Floor, "ceiling", estCfg.Ceiling)
+	}
 
 	// Per-key (variable-rate) limiters for per-key RPM and ITPM/OTPM overrides.
 	// Unlike the per-account limiters above, these only act when an individual

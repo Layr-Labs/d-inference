@@ -16,6 +16,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -292,23 +293,23 @@ func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, re
 // immediate capacity, route this request to Previous instead of returning a fast
 // 429. Hard constraints and permanent model-too-large failures are handled by the
 // caller and do not use this fallback.
-func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, allowedProviderSerials []string) (string, bool) {
+func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, bool) {
 	if publicModel == "" || publicModel == currentModel {
-		return currentModel, false
+		return currentModel, 0, 0, 0, false
 	}
 	target, ok := s.registry.AliasTarget(publicModel)
 	if !ok || target.Desired != currentModel || target.Previous == "" {
-		return currentModel, false
+		return currentModel, 0, 0, 0, false
 	}
 	if !s.registry.IsModelInCatalog(target.Previous) {
-		return currentModel, false
+		return currentModel, 0, 0, 0, false
 	}
-	candidates, _, _ := s.registry.QuickCapacityCheck(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, allowedProviderSerials...)
+	candidates, rejections, tooLarge := s.registry.QuickCapacityCheckForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
 	if candidates <= 0 {
-		return currentModel, false
+		return currentModel, candidates, rejections, tooLarge, false
 	}
 	parsed["model"] = target.Previous
-	return target.Previous, true
+	return target.Previous, candidates, rejections, tooLarge, true
 }
 
 // dispatchOneProvider encrypts and sends an inference request to a single
@@ -326,12 +327,15 @@ func (s *Server) dispatchOneProvider(
 	reservedMicroUSD int64,
 	estimatedPromptTokens int,
 	requestedMaxTokens int,
+	tokenAdmission registry.TokenAdmission,
 	requiresVision bool,
 	traits registry.RequestTraits,
 	allowedProviderSerials []string,
 	isResponsesAPI bool,
 	policy selfRoutePolicy,
 	timing *registry.RequestTiming,
+	serviceReservation bool,
+	cacheAffinityKey string,
 	excludeProviders map[string]struct{},
 ) (
 	provider *registry.Provider,
@@ -355,8 +359,11 @@ func (s *Server) dispatchOneProvider(
 		RequiresVision:         requiresVision,
 		Traits:                 traits,
 		RequestedMaxTokens:     requestedMaxTokens,
+		TokenAdmission:         tokenAdmission,
+		CacheAffinityKey:       cacheAffinityKey,
 		ReservedMicroUSD:       reservedMicroUSD,
 		BaseReservedMicroUSD:   reservedMicroUSD,
+		ServiceReservation:     serviceReservation,
 		AllowedProviderSerials: allowedProviderSerials,
 		SelfRouteOnly:          policy.enabled,
 		PreferOwner:            policy.prefer,
@@ -783,6 +790,19 @@ func requestHasTools(parsed map[string]any) bool {
 	return ok && len(tools) > 0
 }
 
+func requestCacheAffinityKey(parsed map[string]any) string {
+	raw, ok := parsed["prompt_cache_key"].(string)
+	if !ok || raw == "" {
+		return ""
+	}
+	const maxPromptCacheKeyBytes = 512
+	if len(raw) > maxPromptCacheKeyBytes {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("%x", sum[:])
+}
+
 func estimateRequestedMaxTokens(parsed map[string]any) int {
 	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
 		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
@@ -896,6 +916,10 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	}
 	start := time.Now()
 	finalized, err := pr.FinalizeReservation(func() error {
+		if pr.ServiceReservation {
+			s.releaseServiceReservation(pr, "refund")
+			return nil
+		}
 		return s.store.Credit(pr.ConsumerKey, pr.ReservedMicroUSD, store.LedgerRefund, reference)
 	})
 	if err != nil {
@@ -910,8 +934,12 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	if !finalized {
 		return false
 	}
-	s.ddIncr("billing.reservation_refunds", []string{"model:" + pr.Model})
-	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+	tags := []string{"model:" + pr.Model, "mode:" + reservationMetricMode(pr.ServiceReservation)}
+	s.ddIncr("billing.reservation_refunds", tags)
+	if !pr.ServiceReservation {
+		s.ddIncr("billing.reservation_releases", append(tags, "reason:refund"))
+		s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+	}
 	return true
 }
 
@@ -1366,6 +1394,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// schemas without crashing (version floor + template_render_ok gate);
 	// detected here, alongside the media gate, while the parsed body is hot.
 	hasTools := requestHasTools(parsed)
+	cacheAffinityKey := requestCacheAffinityKey(parsed)
 	// Shared media/tools fail-fast. Chat completions additionally rejects media
 	// sent via the Responses API surface (input-without-messages), because the
 	// Responses→chat lowering doesn't carry image/video parts through.
@@ -1425,7 +1454,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// token throttle alongside RPM. Charged upfront from the input estimate
 	// and the bounded max_tokens (OpenAI-style). Runs before the balance
 	// reservation so a throttled request never touches billing.
-	if !s.applyTokenRateLimit(w, r, estimatedPromptTokens, requestedMaxTokens) {
+	tokenAdmission, ok := s.applyTokenRateLimitWithAdmission(w, r, estimatedPromptTokens, requestedMaxTokens)
+	if !ok {
 		return
 	}
 
@@ -1436,6 +1466,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// portion. The routing estimate (estimatedPromptTokens, len/4) is kept
 	// separate so scheduler capacity checks aren't over-inflated.
 	var reservedMicroUSD int64
+	serviceReservation := false
 	// Self-route is free: skip the pre-flight balance reservation and the
 	// per-key spend cap entirely. A zero-balance owner must never be blocked
 	// from running on their own machine, and a self_route_only key never spends.
@@ -1448,8 +1479,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
 			return
 		}
-		start := time.Now()
-		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
+		var err error
+		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
+		if err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
 				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
@@ -1459,19 +1491,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		s.ddHistogram("billing.reserved_micro_usd", float64(reservedMicroUSD), []string{"model:" + model})
-		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
 	}
 	timing.ReservedAt = time.Now()
 
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
-			consumerKey := consumerKeyFromContext(r.Context())
-			start := time.Now()
-			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
-			s.ddIncr("billing.reservation_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, serviceReservation)
 		}
 	}
 
@@ -1504,10 +1530,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 503 which counts as downtime. Fast 429s also preserve our TTFT
 		// metrics. Self-route skips this fleet-wide gate — it queues on the
 		// owner's machine instead (handled below).
-		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
+		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheckForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials); switched {
+			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
+				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
 					if err != nil {
@@ -1519,7 +1546,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				} else {
 					rawBody, _ = marshalForwardBody(parsed)
 				}
-				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
 			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
@@ -1533,6 +1559,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if candidateCount == 0 && capacityRejections > 0 {
+			s.registry.RecordWarmPoolCapacityReject(model)
 			// Providers exist for this model but ALL are at capacity.
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -1612,6 +1639,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		consumerKey:            consumerKey,
 		consumerLocation:       consumerLocation,
 		reservedMicroUSD:       reservedMicroUSD,
+		tokenAdmission:         tokenAdmission,
+		serviceReservation:     serviceReservation,
 		estimatedPromptTokens:  estimatedPromptTokens,
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
@@ -1620,6 +1649,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		stream:                 stream,
 		policy:                 policy,
 		allowedProviderSerials: allowedProviderSerials,
+		cacheAffinityKey:       cacheAffinityKey,
 		timing:                 timing,
 		deadline:               deadline,
 		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
@@ -3668,8 +3698,11 @@ func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
 // This endpoint does not require authentication.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, types.HealthResponse{
-		Status:    "ok",
-		Providers: s.registry.ProviderCount(),
+		Status:      "ok",
+		Providers:   s.registry.ProviderCount(),
+		Version:     BuildVersion,
+		BuildCommit: BuildCommit,
+		BuildDate:   BuildDate,
 	})
 }
 
@@ -3899,6 +3932,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	model = buildModel
+	cacheAffinityKey := requestCacheAffinityKey(parsed)
 
 	if !s.registry.IsModelInCatalog(model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
@@ -3934,7 +3968,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	parsed["endpoint"] = endpoint
 
 	// Per-account token rate limiting (ITPM/OTPM), before the reservation.
-	if !s.applyTokenRateLimit(w, r, estimatedPromptTokens, requestedMaxTokens) {
+	tokenAdmission, ok := s.applyTokenRateLimitWithAdmission(w, r, estimatedPromptTokens, requestedMaxTokens)
+	if !ok {
 		return
 	}
 
@@ -3944,6 +3979,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
 	var reservedMicroUSD int64
+	serviceReservation := false
 	// Self-route is free: skip the reservation and per-key spend cap.
 	if s.billing != nil && !policy.enabled {
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
@@ -3952,8 +3988,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
 			return
 		}
-		start := time.Now()
-		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
+		var err error
+		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
+		if err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
 				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
@@ -3963,15 +4000,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			}
 			return
 		}
-		s.ddHistogram("billing.reserved_micro_usd", float64(reservedMicroUSD), []string{"model:" + model})
-		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
 	}
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
-			start := time.Now()
-			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
-			s.ddIncr("billing.reservation_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
 		}
 	}
 
@@ -3986,11 +4018,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// Prefer mode skips the public fleet pre-flight (no owner-trust
 		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
-		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
+		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheckForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials); switched {
+			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
-				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, allowedProviderSerials...)
+				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
@@ -4002,6 +4034,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		if candidateCount == 0 && capacityRejections > 0 {
+			s.registry.RecordWarmPoolCapacityReject(model)
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
@@ -4044,11 +4077,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		FreeSelfRoute:          policy.enabled,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequiresVision:         requiresVision,
+		CacheAffinityKey:       cacheAffinityKey,
 		// Single-attempt path: no retry loop, so no AvoidVersion to thread.
 		Traits:               registry.RequestTraits{HasTools: hasTools},
 		RequestedMaxTokens:   requestedMaxTokens,
+		TokenAdmission:       tokenAdmission,
 		ReservedMicroUSD:     reservedMicroUSD,
 		BaseReservedMicroUSD: reservedMicroUSD,
+		ServiceReservation:   serviceReservation,
 		AcceptedCh:           make(chan struct{}, 1),
 		ChunkCh:              make(chan string, chunkBufferSize),
 		CompleteCh:           make(chan protocol.UsageInfo, 1),
@@ -4150,6 +4186,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			}
 			return
 		}
+		if depth, oldest := s.registry.Queue().QueueStats(model); depth > 0 {
+			s.registry.RecordWarmPoolQueueEnqueued(model, depth, oldest)
+		}
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
@@ -4158,6 +4197,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				return
 			}
 			retryAfter := s.estimateRetryAfter(model)
+			s.registry.RecordWarmPoolQueueTimeout(model, time.Since(queuedReq.EnqueuedAt))
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			if policy.enabled {

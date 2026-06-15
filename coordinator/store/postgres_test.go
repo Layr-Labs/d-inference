@@ -913,68 +913,6 @@ func TestPostgresDeleteProvidersBySerial(t *testing.T) {
 	}
 }
 
-// TestPostgresGetProviderEarningsSummaryForAccount verifies the account-scoped
-// summary aggregates only rows matching BOTH the provider key and the account,
-// so a machine re-linked from a prior owner never exposes that owner's totals.
-func TestPostgresGetProviderEarningsSummaryForAccount(t *testing.T) {
-	s := testPostgresStore(t)
-
-	const key = "key-scope"
-	for _, e := range []ProviderEarning{
-		{AccountID: "acct-A", ProviderKey: key, JobID: "a1", Model: "m", AmountMicroUSD: 500_000, PromptTokens: 10, CompletionTokens: 20, CreatedAt: time.Now()},
-		{AccountID: "acct-A", ProviderKey: key, JobID: "a2", Model: "m", AmountMicroUSD: 250_000, PromptTokens: 5, CompletionTokens: 7, CreatedAt: time.Now()},
-		{AccountID: "acct-B", ProviderKey: key, JobID: "b1", Model: "m", AmountMicroUSD: 999_000, PromptTokens: 99, CompletionTokens: 99, CreatedAt: time.Now()},
-		{AccountID: "acct-A", ProviderKey: "other-key", JobID: "a3", Model: "m", AmountMicroUSD: 111_000, CreatedAt: time.Now()},
-	} {
-		e := e
-		if err := s.RecordProviderEarning(&e); err != nil {
-			t.Fatalf("RecordProviderEarning: %v", err)
-		}
-	}
-
-	got, err := s.GetProviderEarningsSummaryForAccount(key, "acct-A")
-	if err != nil {
-		t.Fatalf("GetProviderEarningsSummaryForAccount: %v", err)
-	}
-	if got.TotalMicroUSD != 750_000 || got.Count != 2 {
-		t.Fatalf("acct-A summary = %d/%d, want 750000/2 (excludes acct-B's 999000 and the other-key row)",
-			got.TotalMicroUSD, got.Count)
-	}
-	if got.PromptTokens != 15 || got.CompletionTokens != 27 {
-		t.Fatalf("acct-A tokens = %d/%d, want 15/27", got.PromptTokens, got.CompletionTokens)
-	}
-}
-
-// TestPostgresGetProviderEarningsForAccount verifies the per-job rows are scoped
-// to BOTH key and account with the account filter applied before the limit, so a
-// re-linked machine's newer prior-owner rows can't crowd out the caller's own.
-func TestPostgresGetProviderEarningsForAccount(t *testing.T) {
-	s := testPostgresStore(t)
-
-	const key = "key-rows"
-	// Current owner's row first (older), then a NEWER row owned by another account.
-	if err := s.RecordProviderEarning(&ProviderEarning{
-		AccountID: "acct-A", ProviderKey: key, JobID: "a1", Model: "m",
-		AmountMicroUSD: 100_000, CreatedAt: time.Now().Add(-time.Minute),
-	}); err != nil {
-		t.Fatalf("record a1: %v", err)
-	}
-	if err := s.RecordProviderEarning(&ProviderEarning{
-		AccountID: "acct-B", ProviderKey: key, JobID: "b1", Model: "m",
-		AmountMicroUSD: 900_000, CreatedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("record b1: %v", err)
-	}
-
-	rows, err := s.GetProviderEarningsForAccount(key, "acct-A", 1)
-	if err != nil {
-		t.Fatalf("GetProviderEarningsForAccount: %v", err)
-	}
-	if len(rows) != 1 || rows[0].AccountID != "acct-A" || rows[0].JobID != "a1" {
-		t.Fatalf("got %+v, want exactly acct-A's a1 row (not acct-B's newer row)", rows)
-	}
-}
-
 // TestPostgresDeleteProvidersBySerial_WrongOwner verifies a non-owner delete is
 // a no-op even when the serial matches.
 func TestPostgresDeleteProvidersBySerial_WrongOwner(t *testing.T) {

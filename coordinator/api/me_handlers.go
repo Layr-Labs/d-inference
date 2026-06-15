@@ -106,10 +106,6 @@ type myProvider struct {
 	LifetimeRequestsServed  int64 `json:"lifetime_requests_served"`
 	LifetimeTokensGenerated int64 `json:"lifetime_tokens_generated"`
 
-	// Per-node earnings (lifetime).
-	EarningsTotalMicroUSD int64 `json:"earnings_total_micro_usd"`
-	EarningsCount         int64 `json:"earnings_count"`
-
 	// Payout configuration (via Stripe Connect Express)
 
 	// Timestamps
@@ -340,7 +336,6 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 
 	for i := range fleet {
 		s.attachStoredReputation(r.Context(), &fleet[i])
-		s.attachEarnings(&fleet[i])
 	}
 
 	resp := myProvidersResponse{
@@ -427,85 +422,6 @@ func emittedIdentity(mp *myProvider) string {
 		return "sekey:" + mp.SEPublicKey
 	}
 	return "id:" + mp.ID
-}
-
-func (s *Server) attachEarnings(mp *myProvider) {
-	if mp.AccountID == "" {
-		return
-	}
-	// Per-node earnings are keyed on the machine's X25519 key, now
-	// persisted on the provider record so offline machines resolve too. If a
-	// machine still has no resolvable key (e.g. a legacy record predating the
-	// persisted column), report $0 rather than the inflated account total — do
-	// NOT fall back to GetAccountEarningsSummary here.
-	if mp.ProviderKey == "" {
-		return
-	}
-	// Account-scoped: a machine re-linked from a prior owner shares the same
-	// X25519 key, so the per-card total must be scoped to this owner or it would
-	// fold in the previous owner's earnings.
-	summary, err := s.store.GetProviderEarningsSummaryForAccount(mp.ProviderKey, mp.AccountID)
-	if err != nil {
-		s.logger.Debug("get provider earnings summary failed",
-			"provider_id", mp.ID, "account_id", mp.AccountID, "error", err)
-		return
-	}
-	mp.EarningsTotalMicroUSD = summary.TotalMicroUSD
-	mp.EarningsCount = summary.Count
-	// Earnings table is the source of truth — every billed request is recorded
-	// here. Live lifetime counters in the providers table can drift
-	// (heartbeat-driven, lost on restart). Use per-node earnings totals when
-	// they exceed the live counter so the dashboard never shows 0/483 for a
-	// machine that's served real work.
-	if summary.Count > mp.LifetimeRequestsServed {
-		mp.LifetimeRequestsServed = summary.Count
-	}
-	totalTokens := summary.PromptTokens + summary.CompletionTokens
-	if totalTokens > mp.LifetimeTokensGenerated {
-		mp.LifetimeTokensGenerated = totalTokens
-	}
-}
-
-// accountOwnsProviderKey reports whether accountID owns the machine identified
-// by the given X25519 public key, checking the live registry (authoritative for
-// connected machines) then the persisted records (covers offline machines —
-// PublicKey is persisted). Used to authorize node-earnings without
-// inferring ownership from an earnings row.
-func (s *Server) accountOwnsProviderKey(ctx context.Context, accountID, providerKey string) (bool, error) {
-	if accountID == "" || providerKey == "" {
-		return false, nil
-	}
-	owned := false
-	s.registry.ForEachProvider(func(p *registry.Provider) {
-		if owned {
-			return
-		}
-		// AccountID/PublicKey are written under provider.Mu() (e.g. device-token
-		// linkage in provider.go), so read them under the same lock — ForEachProvider
-		// only holds the registry lock, not the per-provider one.
-		p.Mu().Lock()
-		match := p.AccountID == accountID && p.PublicKey == providerKey
-		p.Mu().Unlock()
-		if match {
-			owned = true
-		}
-	})
-	if owned {
-		return true, nil
-	}
-	recs, err := s.store.ListProvidersByAccount(ctx, accountID)
-	if err != nil {
-		// A store failure is NOT "not the owner" — propagate it so the caller
-		// returns 500 rather than falsely denying a legitimate owner with 403.
-		s.logger.Error("node-earnings ownership: list providers failed", "account_id", accountID, "error", err)
-		return false, err
-	}
-	for i := range recs {
-		if recs[i].PublicKey == providerKey {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {

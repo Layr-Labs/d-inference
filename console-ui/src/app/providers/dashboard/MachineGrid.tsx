@@ -33,16 +33,13 @@ export function MachineGrid({
   const sorted = useMemo(() => {
     const withState = providers.map((p) => ({ p, state: routingFor(p, ctx) }));
     withState.sort((a, b) => {
-      if (sort === "earnings") {
-        return b.p.earnings_total_micro_usd - a.p.earnings_total_micro_usd;
-      }
       if (sort === "name") {
         return (a.p.hardware.chip_name || "").localeCompare(b.p.hardware.chip_name || "");
       }
-      // attention: worst routing state first, then higher earners.
+      // attention: worst routing state first, then by name for a stable order.
       const rank = STATE_RANK[a.state] - STATE_RANK[b.state];
       if (rank !== 0) return rank;
-      return b.p.earnings_total_micro_usd - a.p.earnings_total_micro_usd;
+      return (a.p.hardware.chip_name || "").localeCompare(b.p.hardware.chip_name || "");
     });
     return withState.map((x) => x.p);
   }, [providers, ctx, sort]);

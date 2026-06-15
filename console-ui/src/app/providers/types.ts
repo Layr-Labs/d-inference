@@ -112,9 +112,6 @@ export interface MyProvider {
   lifetime_requests_served: number;
   lifetime_tokens_generated: number;
 
-  earnings_total_micro_usd: number;
-  earnings_count: number;
-
   wallet_address?: string;
 
   registered_at?: string;

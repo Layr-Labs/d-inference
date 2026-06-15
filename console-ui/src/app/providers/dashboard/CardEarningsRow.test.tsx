@@ -26,21 +26,15 @@ describe("CardEarningsRow", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
-  it("renders the per-box earnings for this machine", () => {
-    render(
-      <CardEarningsRow
-        provider={makeProvider({ earnings_total_micro_usd: 1_250_000, earnings_count: 7 })}
-      />
-    );
-    expect(screen.getByText("$1.25")).toBeInTheDocument();
-    expect(screen.getByText("7 jobs")).toBeInTheDocument();
+  it("keeps the operational per-box stats (Reputation, Tokens, Avg TTFT)", () => {
+    render(<CardEarningsRow provider={makeProvider()} />);
+    expect(screen.getByText("Reputation")).toBeInTheDocument();
+    expect(screen.getByText("Tokens")).toBeInTheDocument();
+    expect(screen.getByText("Avg TTFT")).toBeInTheDocument();
   });
 
-  it("shows $0.00 / 0 jobs for an offline machine with no resolvable earnings", () => {
-    render(
-      <CardEarningsRow provider={makeProvider({ earnings_total_micro_usd: 0, earnings_count: 0 })} />
-    );
-    expect(screen.getByText("$0.00")).toBeInTheDocument();
-    expect(screen.getByText("0 jobs")).toBeInTheDocument();
+  it("no longer shows a per-machine earnings stat (earnings live in the fleet header)", () => {
+    render(<CardEarningsRow provider={makeProvider()} />);
+    expect(screen.queryByText("Earnings")).toBeNull();
   });
 });

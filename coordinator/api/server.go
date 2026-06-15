@@ -1529,10 +1529,6 @@ func (s *Server) routes() {
 	// Provider earnings — no API key auth (providers identify by provider address).
 	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
 
-	// Per-node provider earnings — Privy-auth + ownership-scoped; not public.
-	// The provider_key (X25519) isn't secret, so the handler verifies the
-	// caller's account owns the node before returning earnings.
-	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.requirePrivyAuth(s.handleNodeEarnings))
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.

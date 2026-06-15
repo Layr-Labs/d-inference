@@ -49,8 +49,6 @@ export function makeProvider(overrides: Partial<MyProvider> = {}): MyProvider {
     reputation: makeReputation(reputation),
     lifetime_requests_served: 4200,
     lifetime_tokens_generated: 1_500_000,
-    earnings_total_micro_usd: 300_000,
-    earnings_count: 12,
     ...rest,
   };
 }

@@ -1531,7 +1531,7 @@ func (s *Server) routes() {
 
 	// Per-node provider earnings — Privy-auth + ownership-scoped; not public.
 	// The provider_key (X25519) isn't secret, so the handler verifies the
-	// caller's account owns the node before returning earnings (DAR-290).
+	// caller's account owns the node before returning earnings.
 	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.requirePrivyAuth(s.handleNodeEarnings))
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 

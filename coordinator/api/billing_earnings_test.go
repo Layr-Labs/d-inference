@@ -153,7 +153,7 @@ func TestNodeEarningsUsesLifetimeTotalsInsteadOfLimitedSlice(t *testing.T) {
 			t.Fatalf("record provider earning: %v", err)
 		}
 	}
-	// Ownership is resolved from the persisted record by public key (DAR-290).
+	// Ownership is resolved from the persisted record by public key.
 	if err := st.UpsertProvider(context.Background(), store.ProviderRecord{
 		ID: "node-1", AccountID: "acct-1", PublicKey: "provider-key-1",
 	}); err != nil {
@@ -161,7 +161,7 @@ func TestNodeEarningsUsesLifetimeTotalsInsteadOfLimitedSlice(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/provider/node-earnings?provider_key=provider-key-1&limit=1", nil)
-	// acct-1 owns provider-key-1 — node-earnings is now ownership-scoped (DAR-290).
+	// acct-1 owns provider-key-1 — node-earnings is now ownership-scoped.
 	req = withPrivyUser(req, &store.User{AccountID: "acct-1"})
 	w := httptest.NewRecorder()
 
@@ -202,7 +202,7 @@ func TestNodeEarningsUsesLifetimeTotalsInsteadOfLimitedSlice(t *testing.T) {
 	}
 }
 
-// seedNodeEarning is a small helper for the DAR-290 node-earnings auth tests.
+// seedNodeEarning is a small helper for the node-earnings auth tests.
 // It records an earning AND persists a ProviderRecord linking the account to the
 // X25519 key, since node-earnings ownership is now resolved from the registry /
 // persisted record by public key (not by sampling an earnings row).
@@ -228,7 +228,7 @@ func seedNodeEarning(t *testing.T, st *store.MemoryStore, accountID, providerKey
 	}
 }
 
-// TestNodeEarningsRequiresAuth is the DAR-290 regression: the endpoint must
+// TestNodeEarningsRequiresAuth is the regression: the endpoint must
 // reject an unauthenticated caller (no Privy user in context) with 401, because
 // provider_key is not secret.
 func TestNodeEarningsRequiresAuth(t *testing.T) {
@@ -245,7 +245,7 @@ func TestNodeEarningsRequiresAuth(t *testing.T) {
 }
 
 // TestNodeEarningsRejectsCrossAccount verifies a Privy user cannot read another
-// account's node earnings (the actual cross-account leak fixed by DAR-290).
+// account's node earnings (the actual cross-account leak this fixes).
 func TestNodeEarningsRejectsCrossAccount(t *testing.T) {
 	srv, st := testWithdrawServer(t)
 	seedNodeEarning(t, st, "acct-A", "key-A", "job-1", 777_000)
@@ -287,7 +287,7 @@ func TestNodeEarningsAllowsOwner(t *testing.T) {
 	}
 }
 
-// TestNodeEarningsOwnerWithNoEarningsGets200 is the DAR-290 review regression:
+// TestNodeEarningsOwnerWithNoEarningsGets200 is the review regression:
 // ownership now resolves from the persisted record (not by sampling an earnings
 // row), so a legitimately-owned machine that hasn't earned yet returns 200 with
 // empty totals instead of a false 403. The old earnings-row check 403'd here.
@@ -332,7 +332,7 @@ func TestNodeEarningsUnknownKeyForbidden(t *testing.T) {
 	}
 }
 
-// TestAttachEarningsIsPerNodeNotAccountTotal is the DAR-290 regression for the
+// TestAttachEarningsIsPerNodeNotAccountTotal is the regression for the
 // fleet dashboard: each machine's earnings must reflect its own provider_key,
 // not the account total stamped on every card. Fails on the pre-fix code where
 // both machines would show the account total of 1_000_000.
@@ -363,7 +363,7 @@ func TestAttachEarningsIsPerNodeNotAccountTotal(t *testing.T) {
 
 // TestAttachEarningsOfflineMachineHasNoKeyShowsZero documents the offline
 // limitation: a machine with no resolvable X25519 key reports $0 rather than
-// falling back to the account total (which would reintroduce the DAR-290 bug).
+// falling back to the account total (which would reintroduce the bug).
 func TestAttachEarningsOfflineMachineHasNoKeyShowsZero(t *testing.T) {
 	srv, st := testWithdrawServer(t)
 
@@ -378,7 +378,7 @@ func TestAttachEarningsOfflineMachineHasNoKeyShowsZero(t *testing.T) {
 	}
 }
 
-// TestBuildMyProviderOfflineResolvesEarningsFromPersistedKey is the DAR-290
+// TestBuildMyProviderOfflineResolvesEarningsFromPersistedKey is the
 // review fix: persisting the X25519 key on the record lets an OFFLINE machine
 // (no live provider) still resolve its real per-box earnings, instead of
 // reporting $0. buildMyProvider must copy rec.PublicKey into ProviderKey so the

@@ -1,6 +1,6 @@
 "use client";
 
-// "Remove machine" affordance for an offline/retired card (DAR-291). Confirms,
+// "Remove machine" affordance for an offline/retired card. Confirms,
 // calls the ownership-checked coordinator DELETE via api.deleteProvider, toasts
 // the result, and asks the parent to re-poll so the card disappears. Only shown
 // for offline/never-seen machines — an online box would just re-register, and

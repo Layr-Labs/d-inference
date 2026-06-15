@@ -42,7 +42,7 @@ func TestMemoryListProvidersByAccount(t *testing.T) {
 	}
 }
 
-// TestMemoryDeleteProvidersBySerial verifies the DAR-291 hard delete: all rows
+// TestMemoryDeleteProvidersBySerial verifies the hard delete: all rows
 // sharing a serial for the owner are removed (plus their reputation), other
 // accounts are untouched, and the serial index is cleaned up.
 func TestMemoryDeleteProvidersBySerial(t *testing.T) {

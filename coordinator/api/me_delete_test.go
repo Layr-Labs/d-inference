@@ -13,7 +13,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// seedProviderRecord persists a provider record for the DAR-291 delete tests.
+// seedProviderRecord persists a provider record for the delete tests.
 func seedProviderRecord(t *testing.T, st *store.MemoryStore, id, serial, accountID string) {
 	t.Helper()
 	if err := st.UpsertProvider(context.Background(), store.ProviderRecord{

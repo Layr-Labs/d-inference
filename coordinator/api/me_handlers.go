@@ -433,7 +433,7 @@ func (s *Server) attachEarnings(mp *myProvider) {
 	if mp.AccountID == "" {
 		return
 	}
-	// Per-node earnings are keyed on the machine's X25519 key (DAR-290), now
+	// Per-node earnings are keyed on the machine's X25519 key, now
 	// persisted on the provider record so offline machines resolve too. If a
 	// machine still has no resolvable key (e.g. a legacy record predating the
 	// persisted column), report $0 rather than the inflated account total — do
@@ -441,7 +441,10 @@ func (s *Server) attachEarnings(mp *myProvider) {
 	if mp.ProviderKey == "" {
 		return
 	}
-	summary, err := s.store.GetProviderEarningsSummary(mp.ProviderKey)
+	// Account-scoped: a machine re-linked from a prior owner shares the same
+	// X25519 key, so the per-card total must be scoped to this owner or it would
+	// fold in the previous owner's earnings.
+	summary, err := s.store.GetProviderEarningsSummaryForAccount(mp.ProviderKey, mp.AccountID)
 	if err != nil {
 		s.logger.Debug("get provider earnings summary failed",
 			"provider_id", mp.ID, "account_id", mp.AccountID, "error", err)
@@ -466,32 +469,43 @@ func (s *Server) attachEarnings(mp *myProvider) {
 // accountOwnsProviderKey reports whether accountID owns the machine identified
 // by the given X25519 public key, checking the live registry (authoritative for
 // connected machines) then the persisted records (covers offline machines —
-// PublicKey is persisted per DAR-290). Used to authorize node-earnings without
+// PublicKey is persisted). Used to authorize node-earnings without
 // inferring ownership from an earnings row.
-func (s *Server) accountOwnsProviderKey(ctx context.Context, accountID, providerKey string) bool {
+func (s *Server) accountOwnsProviderKey(ctx context.Context, accountID, providerKey string) (bool, error) {
 	if accountID == "" || providerKey == "" {
-		return false
+		return false, nil
 	}
 	owned := false
 	s.registry.ForEachProvider(func(p *registry.Provider) {
-		if !owned && p.AccountID == accountID && p.PublicKey == providerKey {
+		if owned {
+			return
+		}
+		// AccountID/PublicKey are written under provider.Mu() (e.g. device-token
+		// linkage in provider.go), so read them under the same lock — ForEachProvider
+		// only holds the registry lock, not the per-provider one.
+		p.Mu().Lock()
+		match := p.AccountID == accountID && p.PublicKey == providerKey
+		p.Mu().Unlock()
+		if match {
 			owned = true
 		}
 	})
 	if owned {
-		return true
+		return true, nil
 	}
 	recs, err := s.store.ListProvidersByAccount(ctx, accountID)
 	if err != nil {
+		// A store failure is NOT "not the owner" — propagate it so the caller
+		// returns 500 rather than falsely denying a legitimate owner with 403.
 		s.logger.Error("node-earnings ownership: list providers failed", "account_id", accountID, "error", err)
-		return false
+		return false, err
 	}
 	for i := range recs {
 		if recs[i].PublicKey == providerKey {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {
@@ -541,7 +555,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.ACMEVerified = rec.ACMEVerified
 		mp.SEPublicKey = rec.SEPublicKey
 		// X25519 E2E key from the persisted record so OFFLINE machines still
-		// resolve per-node earnings (DAR-290). The live branch below overrides
+		// resolve per-node earnings. The live branch below overrides
 		// it with live.PublicKey when the machine is currently connected.
 		mp.ProviderKey = rec.PublicKey
 		mp.RuntimeVerified = rec.RuntimeVerified
@@ -629,7 +643,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		}
 		mp.FailedChallenges = live.FailedChallenges
 		// X25519 E2E key — the earnings table is keyed on this. Persisted on the
-		// record too (DAR-290) so offline machines resolve earnings; the live
+		// record too, so offline machines resolve earnings; the live
 		// value is authoritative when connected.
 		if live.PublicKey != "" {
 			mp.ProviderKey = live.PublicKey
@@ -700,7 +714,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 // reappearing in GET /v1/me/providers. Ownership-checked: the caller's account
 // must own the record. A currently-connected machine is refused with 409 (it
 // would just re-register). Billing/uptime history (earnings, usage, sessions)
-// is preserved by the store. (DAR-291)
+// is preserved by the store.
 func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) {
 	user := s.requirePrivyUser(w, r)
 	if user == nil {

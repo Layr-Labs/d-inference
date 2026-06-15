@@ -193,7 +193,7 @@ func TestReputationAllFailures(t *testing.T) {
 
 // TestRecordLatencyEWMA verifies AvgResponseTime is an exponential moving
 // average of real TTFT samples: the first sample seeds it, subsequent samples
-// blend at alpha=0.2, and non-positive samples are ignored (DAR-288).
+// blend at alpha=0.2, and non-positive samples are ignored.
 func TestRecordLatencyEWMA(t *testing.T) {
 	r := NewReputation()
 
@@ -218,7 +218,7 @@ func TestRecordLatencyEWMA(t *testing.T) {
 	}
 }
 
-// TestReputationFullUptimeExceedsLegacyCap is the DAR-289 regression: a flawless
+// TestReputationFullUptimeExceedsLegacyCap is the regression: a flawless
 // always-online provider must beat the old 0.85 cap once uptime accumulates.
 // Before the fix RecordUptime was never called in prod, pinning uptimeRate to
 // the neutral 0.5 and capping a perfect score at 0.4+0.15+0.2+0.1 = 0.85.
@@ -244,7 +244,7 @@ func TestReputationFullUptimeExceedsLegacyCap(t *testing.T) {
 // TestReputationNoUptimeStillNeutral pins the unchanged no-data behavior: a
 // provider with a perfect job/challenge record but ZERO uptime still maxes at
 // the old 0.85 (the uptime component falls back to the neutral 0.5). This guards
-// against accidentally changing the else-branch when wiring DAR-289.
+// against accidentally changing the else-branch when wiring the uptime credit.
 func TestReputationNoUptimeStillNeutral(t *testing.T) {
 	r := NewReputation()
 	for range 10 {
@@ -260,7 +260,7 @@ func TestReputationNoUptimeStillNeutral(t *testing.T) {
 	}
 }
 
-// TestReputationRampUptimeNeverBelowLegacyCap is the DAR-289 ramp-down
+// TestReputationRampUptimeNeverBelowLegacyCap is the ramp-down
 // regression flagged in review: once Heartbeat starts crediting uptime, a
 // freshly-connected (or freshly-restarted, since prod uses the in-memory store
 // that resets TotalUptime) provider has a TINY TotalUptime. Without the neutral
@@ -285,7 +285,7 @@ func TestReputationRampUptimeNeverBelowLegacyCap(t *testing.T) {
 	}
 }
 
-// TestRecordJobSuccessDoesNotSetLatency is the regression guard for DAR-288:
+// TestRecordJobSuccessDoesNotSetLatency is the regression guard:
 // recording job successes WITHOUT a latency sample must leave AvgResponseTime
 // at zero, proving the old synthetic completionTokens*10ms coupling is gone.
 func TestRecordJobSuccessDoesNotSetLatency(t *testing.T) {

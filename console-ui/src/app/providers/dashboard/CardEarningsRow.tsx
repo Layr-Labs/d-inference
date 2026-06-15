@@ -1,7 +1,7 @@
 // Earnings + reputation + lifetime throughput + time-to-first-token for one
 // machine. Money sits first and is always visible (never behind a toggle).
-// Earnings/tokens are per-box (DAR-290); the "Avg TTFT" stat reflects real
-// time-to-first-token, not answer length (DAR-288).
+// Earnings/tokens are per-box; the "Avg TTFT" stat reflects real
+// time-to-first-token, not answer length.
 
 import type { MyProvider } from "../types";
 import { abbreviateNumber, formatUSD, humanizeUptime } from "./format";

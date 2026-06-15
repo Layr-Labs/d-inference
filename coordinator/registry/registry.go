@@ -171,7 +171,11 @@ type PendingRequest struct {
 	reservationMu        sync.Mutex
 	reservationFinalized bool
 
-	// Timing fields for latency decomposition.
+	// Timing fields for latency decomposition. Written and read only by the
+	// consumer/dispatch goroutine that owns the request — never shared. The
+	// reputation latency sample is therefore recorded from that goroutine at
+	// commit (see dispatch.writeCommittedResponse), never from the provider
+	// read-loop goroutine that runs handleComplete.
 	Timing *RequestTiming
 }
 
@@ -224,7 +228,13 @@ type RequestTiming struct {
 	EncryptedAt  time.Time // after E2E encryption
 	QueuedAt     time.Time // set when request enters the queue
 	DispatchedAt time.Time // set when request is sent to provider via WebSocket
-	FirstChunkAt time.Time // set when first inference chunk arrives from provider
+	FirstChunkAt time.Time // set when first inference chunk (incl. held boilerplate) arrives from provider
+	// FirstContentAt is set when the first CONTENT-bearing chunk is committed to
+	// the client — i.e. excluding role-only / lifecycle boilerplate the dispatch
+	// loop holds back. The reputation latency sample uses this so a provider that
+	// emits a fast preamble then stalls can't earn an undeserved score;
+	// FirstChunkAt remains the X-Timing provider-first-byte diagnostic.
+	FirstContentAt time.Time
 }
 
 // Provider represents a connected provider agent.
@@ -2240,8 +2250,16 @@ func (r *Registry) RemoveProviderBySerial(serialOrID string, force bool) (online
 	var matched []string
 	r.mu.RLock()
 	for id, p := range r.providers {
-		if id == serialOrID ||
-			(p.AttestationResult != nil && p.AttestationResult.SerialNumber == serialOrID && serialOrID != "") {
+		match := id == serialOrID
+		if !match {
+			// AttestationResult is written under p.mu (SetAttestationResult), so
+			// read it through the thread-safe accessor — this loop holds only the
+			// registry lock, not the per-provider one.
+			if ar := p.GetAttestationResult(); ar != nil && ar.SerialNumber == serialOrID {
+				match = true
+			}
+		}
+		if match {
 			matched = append(matched, id)
 			// Presence in the map means a live WebSocket connection; treat it as
 			// online regardless of routing status (an untrusted-but-connected box
@@ -2303,7 +2321,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	}
 	// Credit wall-clock time since the previous heartbeat as uptime, so an
 	// always-online provider's uptimeRate reaches 1.0 and its reputation can
-	// exceed the old 0.85 cap (DAR-289 — RecordUptime was never called in prod).
+	// exceed the old 0.85 cap (RecordUptime was never called in prod).
 	// Bound the credit to a window just above the heartbeat interval (30s) and
 	// within the eviction staleness (90s): a larger gap means the provider was
 	// effectively offline (it would have been reaped, or this is an in-process
@@ -3793,11 +3811,11 @@ func trustRank(t TrustLevel) int {
 }
 
 // RecordJobSuccess records a successful job completion for the provider's
-// reputation. ttft is the real time-to-first-token (FirstChunkAt-DispatchedAt)
-// for this request; a non-positive ttft (no first-chunk timestamp) records the
-// success without touching the latency EWMA. Both updates happen under one lock
-// and a single persist.
-func (r *Registry) RecordJobSuccess(providerID string, ttft time.Duration) {
+// reputation. latency is the per-request responsiveness sample (time to first
+// content, with the prompt-size prefill removed); a non-positive value records
+// the success without touching the latency EWMA. Both updates happen under one
+// lock and a single persist.
+func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
@@ -3807,11 +3825,38 @@ func (r *Registry) RecordJobSuccess(providerID string, ttft time.Duration) {
 
 	p.mu.Lock()
 	p.Reputation.RecordJobSuccess()
-	p.Reputation.RecordLatency(ttft)
+	p.Reputation.RecordLatency(latency)
 	p.mu.Unlock()
 
 	// Persist reputation.
 	r.persistReputation(p)
+}
+
+// RecordLatency folds a per-request responsiveness sample into the provider's
+// latency EWMA, independent of job-success counting. It is recorded by the
+// consumer/dispatch goroutine (which owns the request timing) at commit, so the
+// provider read-loop goroutine never has to read that goroutine's timing. A
+// non-positive latency is ignored.
+//
+// It updates the in-memory EWMA only and does NOT persist. The updated
+// AvgResponseTime is persisted by the RecordJobSuccess / RecordJobFailure that
+// follows on completion (which snapshots the whole reputation row). Persisting a
+// full row here would race that terminal write — a pre-terminal snapshot carrying
+// stale TotalJobs/SuccessfulJobs could land after it and clobber the counts.
+func (r *Registry) RecordLatency(providerID string, latency time.Duration) {
+	if latency <= 0 {
+		return
+	}
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	p.mu.Lock()
+	p.Reputation.RecordLatency(latency)
+	p.mu.Unlock()
 }
 
 // RecordJobFailure records a failed job for the provider's reputation.

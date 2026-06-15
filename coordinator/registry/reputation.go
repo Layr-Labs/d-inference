@@ -11,9 +11,10 @@
 //   - 20% challenge pass rate (passed / total challenges)
 //   - 10% response time factor (faster = higher, capped at 1.0)
 //
-// The response time factor grades AvgResponseTime, which is an EWMA of the
-// real per-request time-to-first-token (FirstChunkAt - DispatchedAt) fed via
-// RecordLatency — NOT a synthetic function of answer length. See DAR-288.
+// The response time factor grades AvgResponseTime, an EWMA of a per-request
+// responsiveness sample (time to first content, with the prompt-size-dependent
+// prefill removed) fed via RecordLatency — NOT a synthetic function of answer
+// length, and not penalized by how large a prompt the provider happened to serve.
 //
 // New providers start with a score of 0.5 (neutral). The score is always
 // bounded to [0.0, 1.0].
@@ -36,9 +37,10 @@ type Reputation struct {
 	FailedJobs     int
 	TotalUptime    time.Duration
 	LastOnline     time.Time
-	// AvgResponseTime is an EWMA of real per-request TTFT (time-to-first-token).
-	// It backs the stable wire field avg_response_time_ms. Updated by
-	// RecordLatency; decoupled from job counting (RecordJobSuccess).
+	// AvgResponseTime is an EWMA of a per-request responsiveness sample (time to
+	// first content minus the prompt-size prefill). It backs the stable wire field
+	// avg_response_time_ms. Updated by RecordLatency; decoupled from job counting
+	// (RecordJobSuccess).
 	AvgResponseTime  time.Duration
 	ChallengesPassed int
 	ChallengesFailed int
@@ -61,10 +63,10 @@ func (r *Reputation) RecordJobSuccess() {
 	r.SuccessfulJobs++
 }
 
-// RecordLatency folds a real time-to-first-token sample into the AvgResponseTime
-// EWMA. Non-positive samples (e.g. a completion with no FirstChunkAt) are
-// ignored so a missing timestamp cannot drag the average toward zero. The first
-// valid sample seeds the average directly.
+// RecordLatency folds a per-request responsiveness sample into the
+// AvgResponseTime EWMA. Non-positive samples (e.g. a completion with no
+// first-content timestamp) are ignored so a missing timestamp cannot drag the
+// average toward zero. The first valid sample seeds the average directly.
 func (r *Reputation) RecordLatency(ttft time.Duration) {
 	if ttft <= 0 {
 		return
@@ -107,7 +109,7 @@ func (r *Reputation) RecordChallengeFail() {
 //   - 40% job success rate
 //   - 30% uptime ratio (uses a 24-hour expected uptime baseline)
 //   - 20% challenge pass rate
-//   - 10% response time factor (real TTFT EWMA; sub-second = 1.0, degrades with latency)
+//   - 10% response time factor (responsiveness EWMA; sub-second = 1.0, degrades with latency)
 func (r *Reputation) Score() float64 {
 	// New providers with no history get a neutral score.
 	if r.TotalJobs == 0 && r.ChallengesPassed == 0 && r.ChallengesFailed == 0 {
@@ -129,7 +131,7 @@ func (r *Reputation) Score() float64 {
 	// recently-restarted provider (small TotalUptime → tiny ratio) would score
 	// BELOW the old 0.85 cap for ~12h and be derouted — and because prod uses
 	// the in-memory store, TotalUptime resets on every coordinator restart /
-	// provider reconnect, so that penalty would re-apply fleet-wide (DAR-289).
+	// provider reconnect, so that penalty would re-apply fleet-wide.
 	uptimeRate := 0.5
 	expectedUptime := 24 * time.Hour
 	if r.TotalUptime > 0 {

@@ -78,7 +78,7 @@ export interface MyProvider {
   se_key_bound: boolean;
   se_public_key?: string;
   // X25519 E2E key (same value as /v1/encryption-key); present only for
-  // currently-online machines, omitted for offline ones (DAR-290).
+  // currently-online machines, omitted for offline ones.
   provider_key?: string;
   secure_enclave: boolean;
   sip_enabled: boolean;
@@ -129,7 +129,7 @@ export interface MyProvidersResponse {
   challenge_max_age_seconds: number;
 }
 
-// Response from DELETE /v1/me/providers/{serial} (DAR-291).
+// Response from DELETE /v1/me/providers/{serial}.
 export interface DeleteProviderResponse {
   deleted: boolean;
   serial: string;

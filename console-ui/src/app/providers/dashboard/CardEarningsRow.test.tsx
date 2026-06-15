@@ -5,7 +5,7 @@ import { CardEarningsRow } from "./CardEarningsRow";
 import { makeProvider } from "./testFixtures";
 
 describe("CardEarningsRow", () => {
-  it("labels responsiveness as 'Avg TTFT', not 'Avg latency' (DAR-288)", () => {
+  it("labels responsiveness as 'Avg TTFT', not 'Avg latency'", () => {
     render(<CardEarningsRow provider={makeProvider({ reputation: { avg_response_time_ms: 842 } })} />);
     expect(screen.getByText("Avg TTFT")).toBeInTheDocument();
     expect(screen.queryByText("Avg latency")).toBeNull();
@@ -26,7 +26,7 @@ describe("CardEarningsRow", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
-  it("renders the per-box earnings for this machine (DAR-290)", () => {
+  it("renders the per-box earnings for this machine", () => {
     render(
       <CardEarningsRow
         provider={makeProvider({ earnings_total_micro_usd: 1_250_000, earnings_count: 7 })}

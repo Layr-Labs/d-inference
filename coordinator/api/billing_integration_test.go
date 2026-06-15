@@ -714,94 +714,35 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 	}
 }
 
-// TestHandleCompleteRecordsRealTTFTNotAnswerLength is the cross-layer regression
-// for DAR-288: handleComplete must feed the provider reputation the REAL
-// time-to-first-token (FirstChunkAt - DispatchedAt) from the winning attempt's
-// timing, NOT the old synthetic completionTokens*10ms. With 500 completion
-// tokens the old code would have recorded 5s; the real TTFT here is 250ms.
-func TestHandleCompleteRecordsRealTTFTNotAnswerLength(t *testing.T) {
+// TestHandleCompleteRecordsJobSuccessOnly verifies handleComplete counts a
+// successful job but does NOT itself record the latency EWMA: the responsiveness
+// sample is recorded by the consumer/dispatch goroutine at commit (it owns the
+// request timing), so the provider read-loop goroutine never reads that timing.
+// handleComplete leaving AvgResponseTime untouched is what keeps that path
+// race-free.
+func TestHandleCompleteRecordsJobSuccessOnly(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
 
-	model := "ttft-regression-model"
-	provider := srv.registry.Register("ttft-provider", nil, &protocol.RegisterMessage{
+	model := "job-success-model"
+	provider := srv.registry.Register("job-success-provider", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
 
-	const realTTFT = 250 * time.Millisecond
-	dispatchedAt := time.Now().Add(-realTTFT)
-	firstChunkAt := dispatchedAt.Add(realTTFT)
-
 	consumerID := testConsumerID
-	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
+	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 500}
 	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
 	if err := ledger.Charge(consumerID, cost, "reserve:"+consumerID); err != nil {
 		t.Fatalf("reserve balance: %v", err)
 	}
 
 	pr := &registry.PendingRequest{
-		RequestID:        "ttft-regression",
+		RequestID:        "job-success",
 		Model:            model,
 		ConsumerKey:      consumerID,
 		ReservedMicroUSD: cost,
 		ChunkCh:          make(chan string, 1),
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
-		Timing: &registry.RequestTiming{
-			DispatchedAt: dispatchedAt,
-			FirstChunkAt: firstChunkAt,
-		},
-	}
-	provider.AddPending(pr)
-
-	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
-		Type:      protocol.TypeInferenceComplete,
-		RequestID: pr.RequestID,
-		Usage:     usage,
-	})
-
-	p := srv.registry.GetProvider(provider.ID)
-	if p == nil {
-		t.Fatal("provider missing after complete")
-	}
-	got := p.Reputation.AvgResponseTime
-	// First sample seeds the EWMA, so AvgResponseTime == realTTFT exactly.
-	if got != realTTFT {
-		t.Fatalf("avg_response_time = %v, want real TTFT %v (not completionTokens*10ms=%v)",
-			got, realTTFT, time.Duration(usage.CompletionTokens)*time.Millisecond*10)
-	}
-	// Belt-and-suspenders: it must not be anywhere near the synthetic value.
-	if synthetic := time.Duration(usage.CompletionTokens) * time.Millisecond * 10; got == synthetic {
-		t.Fatalf("avg_response_time matched the deleted synthetic formula %v", synthetic)
-	}
-}
-
-// TestHandleCompleteMissingTimingSkipsLatency verifies that a completion whose
-// winning attempt has no first-chunk timestamp records job success WITHOUT
-// poisoning the latency EWMA (DAR-288 guard).
-func TestHandleCompleteMissingTimingSkipsLatency(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
-
-	model := "ttft-missing-timing-model"
-	provider := srv.registry.Register("ttft-missing-provider", nil, &protocol.RegisterMessage{
-		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
-	})
-
-	consumerID := testConsumerID
-	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50}
-	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
-	if err := ledger.Charge(consumerID, cost, "reserve:"+consumerID); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
-
-	pr := &registry.PendingRequest{
-		RequestID:        "ttft-missing-timing",
-		Model:            model,
-		ConsumerKey:      consumerID,
-		ReservedMicroUSD: cost,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
-		// No Timing — e.g. a parked/disconnect completion.
 	}
 	provider.AddPending(pr)
 
@@ -818,8 +759,10 @@ func TestHandleCompleteMissingTimingSkipsLatency(t *testing.T) {
 	if p.Reputation.SuccessfulJobs != 1 {
 		t.Errorf("successful_jobs = %d, want 1", p.Reputation.SuccessfulJobs)
 	}
+	// handleComplete must not record latency (it has no race-free access to the
+	// timing); and it must never derive latency from answer length.
 	if p.Reputation.AvgResponseTime != 0 {
-		t.Errorf("avg_response_time = %v, want 0 (no timing must not record latency)", p.Reputation.AvgResponseTime)
+		t.Errorf("avg_response_time = %v, want 0 (latency is recorded at dispatch commit, not handleComplete)", p.Reputation.AvgResponseTime)
 	}
 }
 

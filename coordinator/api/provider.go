@@ -1688,16 +1688,12 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// ChunkCh unblocks the consumer response handler, and callers may
 	// check usage immediately after the HTTP response completes.
 	//
-	// Feed the REAL time-to-first-token (FirstChunkAt - DispatchedAt) from the
-	// winning attempt's timing into the reputation latency EWMA. pr is the
-	// winning PendingRequest, so pr.Timing carries the timestamps the X-Timing
-	// header reads. A parked/disconnect completion may lack FirstChunkAt; the
-	// guard yields ttft=0 and RecordJobSuccess no-ops the latency update.
-	var ttft time.Duration
-	if pr.Timing != nil && !pr.Timing.FirstChunkAt.IsZero() && !pr.Timing.DispatchedAt.IsZero() {
-		ttft = pr.Timing.FirstChunkAt.Sub(pr.Timing.DispatchedAt)
-	}
-	s.registry.RecordJobSuccess(providerID, ttft)
+	// Only the success COUNT is recorded here. The responsiveness latency is
+	// recorded separately by the consumer/dispatch goroutine at commit (see
+	// dispatch.writeCommittedResponse), because that goroutine owns pr.Timing;
+	// reading it from this provider read-loop goroutine would race the dispatch
+	// writes. Passing 0 latency counts the success without touching the EWMA.
+	s.registry.RecordJobSuccess(providerID, 0)
 	// Serving this model proves the pair can load — lift any cool-down early.
 	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
 

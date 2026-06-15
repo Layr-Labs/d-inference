@@ -2235,6 +2235,30 @@ func (s *MemoryStore) GetProviderEarnings(providerKey string, limit int) ([]Prov
 	return results, nil
 }
 
+// GetProviderEarningsForAccount returns earnings for a provider node scoped to a
+// single owning account, newest first, with the account filter applied before the
+// limit.
+func (s *MemoryStore) GetProviderEarningsForAccount(providerKey, accountID string, limit int) ([]ProviderEarning, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	results := []ProviderEarning{}
+	if providerKey == "" || accountID == "" {
+		return results, nil
+	}
+	for i := len(s.providerEarnings) - 1; i >= 0; i-- {
+		e := s.providerEarnings[i]
+		if e.ProviderKey != providerKey || e.AccountID != accountID {
+			continue
+		}
+		results = append(results, e)
+		if limit > 0 && len(results) >= limit {
+			break
+		}
+	}
+	return results, nil
+}
+
 // GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error) {
 	s.mu.RLock()
@@ -2263,6 +2287,31 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 	var summary ProviderEarningsSummary
 	for _, earning := range s.providerEarnings {
 		if earning.ProviderKey != providerKey {
+			continue
+		}
+		summary.Count++
+		summary.TotalMicroUSD += earning.AmountMicroUSD
+		summary.PromptTokens += int64(earning.PromptTokens)
+		summary.CompletionTokens += int64(earning.CompletionTokens)
+	}
+
+	return summary, nil
+}
+
+// GetProviderEarningsSummaryForAccount returns lifetime aggregates for a
+// provider node scoped to a single owning account: only rows whose ProviderKey
+// AND AccountID match are counted, so a re-linked machine never exposes a prior
+// owner's totals.
+func (s *MemoryStore) GetProviderEarningsSummaryForAccount(providerKey, accountID string) (ProviderEarningsSummary, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var summary ProviderEarningsSummary
+	if providerKey == "" || accountID == "" {
+		return summary, nil
+	}
+	for _, earning := range s.providerEarnings {
+		if earning.ProviderKey != providerKey || earning.AccountID != accountID {
 			continue
 		}
 		summary.Count++

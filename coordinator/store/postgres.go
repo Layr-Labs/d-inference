@@ -2959,6 +2959,41 @@ func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]Pr
 	return results, nil
 }
 
+// GetProviderEarningsForAccount returns earnings for a provider node scoped to a
+// single owning account, newest first, with the account filter applied in SQL
+// before the limit.
+func (s *PostgresStore) GetProviderEarningsForAccount(providerKey, accountID string, limit int) ([]ProviderEarning, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if providerKey == "" || accountID == "" {
+		return []ProviderEarning{}, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
+		 FROM provider_earnings
+		 WHERE provider_key = $1 AND account_id = $2
+		 ORDER BY created_at DESC
+		 LIMIT $3`,
+		providerKey, accountID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query provider earnings for account: %w", err)
+	}
+	defer rows.Close()
+
+	results := []ProviderEarning{}
+	for rows.Next() {
+		var e ProviderEarning
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
+			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
+			continue
+		}
+		results = append(results, e)
+	}
+	return results, nil
+}
+
 // GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -3009,6 +3044,39 @@ func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (Provider
 	if err != nil {
 		// No rows = no earnings yet, return zeros (not an error).
 		return ProviderEarningsSummary{}, nil
+	}
+
+	return summary, nil
+}
+
+// GetProviderEarningsSummaryForAccount returns lifetime aggregates for a
+// provider node scoped to a single owning account. The materialized
+// earnings_summary table is keyed by a single (key, key_type), so the
+// per-(provider, account) aggregate is computed directly from provider_earnings;
+// the (provider_key, account_id) pair is rare and small.
+func (s *PostgresStore) GetProviderEarningsSummaryForAccount(providerKey, accountID string) (ProviderEarningsSummary, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var summary ProviderEarningsSummary
+	if providerKey == "" || accountID == "" {
+		return summary, nil
+	}
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*),
+		        COALESCE(SUM(amount_micro_usd), 0),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
+		 FROM provider_earnings
+		 WHERE provider_key = $1 AND account_id = $2`,
+		providerKey, accountID,
+	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	if err != nil {
+		// COUNT/COALESCE always return exactly one row even with no matching
+		// earnings, so any error here is a real DB/timeout/scan failure, not
+		// "no earnings". Propagate it so callers surface the failure instead of
+		// silently rendering $0.
+		return ProviderEarningsSummary{}, fmt.Errorf("store: query provider earnings summary for account: %w", err)
 	}
 
 	return summary, nil

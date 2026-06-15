@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Proxy for removing a single machine from the provider portal (DAR-291):
+// Proxy for removing a single machine from the provider portal:
 // DELETE /v1/me/providers/{serial}. Privy-only auth with the same header →
 // cookie fallback as the other /api/me proxies. Next 16 dynamic route params
 // are async. The upstream coordinator enforces ownership + the online guard;

@@ -394,11 +394,26 @@ type Store interface {
 	// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
 	GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error)
 
+	// GetProviderEarningsForAccount returns earnings for a provider node scoped to
+	// a single owning account, newest first. The account filter is applied BEFORE
+	// the limit so a machine re-linked from a prior owner can never crowd the
+	// caller's own rows out of the limited window (or leak the prior owner's rows).
+	GetProviderEarningsForAccount(providerKey, accountID string, limit int) ([]ProviderEarning, error)
+
 	// GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 	GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error)
 
-	// GetProviderEarningsSummary returns lifetime aggregates for a provider node.
+	// GetProviderEarningsSummary returns lifetime aggregates for a provider node
+	// across ALL accounts that have ever owned the key. Callers that surface
+	// earnings to a specific account MUST use GetProviderEarningsSummaryForAccount
+	// instead — the provider key (X25519) is stable across re-links, so the
+	// all-accounts aggregate would leak a prior owner's revenue.
 	GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error)
+
+	// GetProviderEarningsSummaryForAccount returns lifetime aggregates for a
+	// provider node scoped to a single owning account, so a machine re-linked from
+	// a previous owner never exposes that owner's totals.
+	GetProviderEarningsSummaryForAccount(providerKey, accountID string) (ProviderEarningsSummary, error)
 
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
@@ -1070,7 +1085,7 @@ type ProviderRecord struct {
 	// PublicKey is the machine's X25519 E2E public key (non-secret — published
 	// at /v1/encryption-key). Persisted so per-node earnings (keyed on this key)
 	// and node-earnings ownership resolve for OFFLINE machines, not just online
-	// ones (DAR-290).
+	// ones.
 	PublicKey                  string          `json:"public_key,omitempty"`
 	SerialNumber               string          `json:"serial_number,omitempty"`
 	MDAVerified                bool            `json:"mda_verified"`

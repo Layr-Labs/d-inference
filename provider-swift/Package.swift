@@ -13,6 +13,7 @@ let package = Package(
         .executable(name: "darkbloom", targets: ["darkbloom"]),
         .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
+        .executable(name: "kv-quant-gate", targets: ["kv-quant-gate"]),
     ],
     dependencies: [
         .package(path: "../libs/mlx-swift"),
@@ -174,6 +175,15 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/darkbloom-publish"
+        ),
+
+        .executableTarget(
+            name: "kv-quant-gate",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            path: "Sources/kv-quant-gate"
         ),
 
         // ----------------------------------------------------------------

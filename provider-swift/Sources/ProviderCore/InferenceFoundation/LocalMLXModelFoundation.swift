@@ -237,7 +237,7 @@ public struct LocalMLXModelReadiness: Equatable, Sendable {
                 options: [.skipsHiddenFiles]
             )
             .filter { names.contains($0.lastPathComponent) }
-            .compactMap { fileInfo(for: $0) }
+            .compactMap { fileInfo(for: $0.resolvingSymlinksInPath()) }
             .sorted { $0.url.path < $1.url.path }
         } catch {
             onReadError(error)
@@ -267,7 +267,7 @@ public struct LocalMLXModelReadiness: Equatable, Sendable {
         var files: [LocalMLXModelFile] = []
         for case let url as URL in enumerator {
             let ext = url.pathExtension.lowercased()
-            guard extensions.contains(ext), let file = fileInfo(for: url) else {
+            guard extensions.contains(ext), let file = fileInfo(for: url.resolvingSymlinksInPath()) else {
                 continue
             }
             files.append(file)

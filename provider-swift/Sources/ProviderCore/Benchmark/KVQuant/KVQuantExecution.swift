@@ -63,6 +63,20 @@ enum KVQuantExecution {
         case .fp16KV:
             return KVQuantExecutionConfig(parameters: parameters)
 
+        case .bf16KV:
+            guard let startToken = mode.startToken else {
+                throw KVQuantExecutionError.missingStartToken(mode)
+            }
+            let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
+                model.newCache(parameters: nil).map { baseCache in
+                    if baseCache is RotatingKVCache {
+                        return baseCache.copy()
+                    }
+                    return BFloat16KVCache(startToken: startToken)
+                }
+            }
+            return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
+
         case .affine4, .affine8:
             guard let groupSize = mode.groupSize else {
                 throw KVQuantExecutionError.missingGroupSize(mode)
@@ -70,19 +84,14 @@ enum KVQuantExecution {
             guard let startToken = mode.startToken else {
                 throw KVQuantExecutionError.missingStartToken(mode)
             }
-            let spec = KVQuantCacheSpec(
-                bits: mode.bitWidth ?? 4,
-                groupSize: groupSize,
-                startToken: startToken,
-                quantizeKeys: true,
-                quantizeValues: true)
+            // Use mlx-swift-lm's upstream dynamic KV-cache quantization
+            // (GenerateParameters.kvBits / kvGroupSize / quantizedKVStart).
+            parameters.kvBits = mode.bitWidth ?? 4
+            parameters.kvGroupSize = groupSize
+            parameters.quantizedKVStart = startToken
+            let cacheParameters = parameters
             let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
-                model.newCache(parameters: nil).map { baseCache in
-                    if baseCache is RotatingKVCache {
-                        return baseCache.copy()
-                    }
-                    return KVQuantizedCache(spec: spec)
-                }
+                model.newCache(parameters: cacheParameters)
             }
             return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
 

@@ -150,6 +150,10 @@ public struct KVQuantPerformanceRunner {
         config: KVQuantGateConfig,
         cacheFactory: (@Sendable (any LanguageModel) -> [KVCache])?
     ) async throws -> KVQuantPerformanceReport {
+        // Reset the high-water mark so this baseline's peak is measured independently
+        // of any earlier reference/candidate runs in the same process.
+        MLX.Memory.peakMemory = 0
+
         var iterations: [KVQuantIterationReport] = []
         var outputs: [KVQuantOutputSample] = []
         var snapshots: [KVQuantMemorySnapshot] = [Self.captureMemory(label: "\(label).start")]

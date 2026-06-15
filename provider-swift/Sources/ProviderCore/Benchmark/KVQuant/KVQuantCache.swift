@@ -31,7 +31,7 @@ extension KVQuantCandidateMode {
     /// Cache spec for this mode, or `nil` when no quantization is requested.
     public var cacheSpec: KVQuantCacheSpec? {
         switch self {
-        case .fp16KV:
+        case .fp16KV, .bf16KV:
             return nil
         case .affine4:
             return KVQuantCacheSpec(

@@ -105,8 +105,8 @@ struct KVQuantThresholdEvaluator {
                         {
                             values["perf.wall_time_ratio"] = candTotal / refTotal
                         }
-                        if let refPeak = reference.memory.mlxGPUPeakBytes.mean,
-                            let candPeak = candidate.memory.mlxGPUPeakBytes.mean,
+                        if let refPeak = reference.memory.mlxGPUPeakBytes.max,
+                            let candPeak = candidate.memory.mlxGPUPeakBytes.max,
                             refPeak > 0
                         {
                             values["memory.peak_memory_ratio"] = candPeak / refPeak

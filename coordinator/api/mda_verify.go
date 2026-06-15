@@ -103,12 +103,17 @@ func evaluateMDA(mdaResult *attestation.MDAResult, attestSerial, sePublicKey str
 	case !mdaResult.SecureBootEnabled:
 		eval.Definitive = true
 		eval.Reason = "not_full_security"
-	// NOTE: mdaResult.ThirdPartyKexts (.13.3) is parsed but intentionally not a
-	// separate gate. On Apple silicon, loading a third-party kext requires
-	// lowering the boot policy to Reduced Security; a "Full Security" boot
-	// (required just above) cannot have third-party kexts enabled, so the
-	// SecureBootEnabled check already excludes the kext-in-kernel memory-read
-	// vector. The field is retained for the attestation display + telemetry.
+	case mdaResult.ThirdPartyKexts:
+		// SEP-signed proof that third-party kexts are allowed (.13.3 != 0, or
+		// absent/unparseable — both fail closed to true). On Apple silicon a
+		// "Full Security" boot already excludes third-party kexts, so this should
+		// be unreachable after the SecureBootEnabled check above; we gate on it
+		// explicitly anyway (defense-in-depth) so the fail-closed .13.3 parse is
+		// actually load-bearing and a kext-in-kernel memory-read vector can never
+		// reach a routable verdict, even if Apple's boot-policy/OID coupling ever
+		// changes. Definitive: an Apple-signed kexts-enabled sighting, not transient.
+		eval.Definitive = true
+		eval.Reason = "third_party_kexts"
 	case eval.Freshness == attestation.MDAFreshnessLegacy:
 		// Pre-#302 constant nonce: key-bound but replayable forever — exactly
 		// the migration state of certs minted before this deploy. Re-mints with

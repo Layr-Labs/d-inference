@@ -644,6 +644,19 @@ func mdaRoutableLocked(p *Provider) bool {
 	return p.MDASIPVerified && time.Since(p.MDAMintedAt) <= attestation.MDAMaxCertAge
 }
 
+// HasFreshMDAVerdict reports whether this provider currently holds a fresh,
+// in-window MDA SIP verdict (the value the routing gate requires under
+// enforcement). Thread-safe. Used by mdmVerificationLoop to decide whether a
+// hardware-trusted provider still needs an MDA round: a provider promoted to
+// hardware by a path that does NOT issue the MDA command (late SecurityInfo,
+// ACME) has MDASIPVerified=false and would be derouted once enforcement is on
+// unless the loop keeps going until the verdict lands.
+func (p *Provider) HasFreshMDAVerdict() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return mdaRoutableLocked(p)
+}
+
 // Mu returns the provider's mutex for external callers that need to read
 // fields like Status atomically. Prefer dedicated getters where available.
 func (p *Provider) Mu() *sync.Mutex {

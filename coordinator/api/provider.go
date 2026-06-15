@@ -2583,9 +2583,16 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 	const steadyInterval = 15 * time.Minute
 
 	for attempt := 0; ; attempt++ {
-		// Stop if hardware was already earned — by this loop on a prior iteration,
-		// or by the ACME leg (retryACMETrust) concurrently.
-		if provider.GetTrustLevel() == registry.TrustHardware {
+		// Stop once hardware is earned AND a fresh MDA SIP verdict exists. We can
+		// NOT stop on hardware alone (issue #302): a provider promoted to hardware
+		// by a path that doesn't issue the MDA command — late SecurityInfo
+		// (ApplyLateSecurityInfo) or the ACME leg (applyACMETrust) — has
+		// MDASIPVerified=false, so the routing gate would deroute it once MDA
+		// enforcement is on. Keep iterating so verifyProviderViaMDM below (which is
+		// idempotent: it re-confirms SecurityInfo, re-grants atomically, and then
+		// issues the MDA command) populates the verdict. Once the verdict is fresh,
+		// the periodic recheck (maybeRecheckMDA) keeps it rotating across epochs.
+		if provider.GetTrustLevel() == registry.TrustHardware && provider.HasFreshMDAVerdict() {
 			return
 		}
 		// Stop if the provider was HARD-untrusted out-of-band (e.g. the challenge

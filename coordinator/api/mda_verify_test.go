@@ -67,6 +67,12 @@ func TestEvaluateMDA(t *testing.T) {
 			m.SecureBootEnabled = false
 			m.BootState = "Permissive Security"
 		}, false, true, "not_full_security"},
+		{"third-party kexts allowed is definitive — never a routable verdict", func(m *attestation.MDAResult) {
+			// Should be unreachable on a real Full-Security boot, but the .13.3
+			// fail-closed parse must actually gate (defense-in-depth): a cert that
+			// reads SIP-on + Full-Security yet allows kexts must NOT route.
+			m.ThirdPartyKexts = true
+		}, false, true, "third_party_kexts"},
 		{"legacy constant nonce — migration state, transient", func(m *attestation.MDAResult) {
 			m.FreshnessCode = attestation.LegacyMDANonce(seKey)
 		}, false, false, "legacy_nonce"},

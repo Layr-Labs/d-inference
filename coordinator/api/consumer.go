@@ -795,6 +795,10 @@ func requestCacheAffinityKey(parsed map[string]any) string {
 	if !ok || raw == "" {
 		return ""
 	}
+	const maxPromptCacheKeyBytes = 512
+	if len(raw) > maxPromptCacheKeyBytes {
+		return ""
+	}
 	sum := sha256.Sum256([]byte(raw))
 	return fmt.Sprintf("%x", sum[:])
 }

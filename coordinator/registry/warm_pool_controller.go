@@ -232,7 +232,7 @@ func (c *warmPoolController) reserveActions(actions []modelLoadAction, now time.
 func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure, now time.Time) int {
 	target := fleet.warm
 	add := 0
-	if queue.Depth > 0 {
+	if queue.Depth > 0 && queue.OldestAge >= c.config.QueueAgeThreshold {
 		add++
 		if queue.Depth > 1 {
 			add += int(math.Ceil(float64(queue.Depth-1) / 4.0))

@@ -8,6 +8,7 @@ import (
 const (
 	cacheAffinityTTL            = 10 * time.Minute
 	defaultCacheAffinityBonusMs = 1_500.0
+	cacheAffinityMaxEntries     = 10_000
 )
 
 type cacheAffinityKey struct {
@@ -22,16 +23,17 @@ type cacheAffinityEntry struct {
 }
 
 type cacheAffinityTracker struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	entries map[cacheAffinityKey]cacheAffinityEntry
+	mu         sync.Mutex
+	ttl        time.Duration
+	maxEntries int
+	entries    map[cacheAffinityKey]cacheAffinityEntry
 }
 
 func newCacheAffinityTracker(ttl time.Duration) *cacheAffinityTracker {
 	if ttl <= 0 {
 		ttl = cacheAffinityTTL
 	}
-	return &cacheAffinityTracker{ttl: ttl, entries: make(map[cacheAffinityKey]cacheAffinityEntry)}
+	return &cacheAffinityTracker{ttl: ttl, maxEntries: cacheAffinityMaxEntries, entries: make(map[cacheAffinityKey]cacheAffinityEntry)}
 }
 
 func (t *cacheAffinityTracker) lookup(account, model, scope string, now time.Time) string {
@@ -58,9 +60,26 @@ func (t *cacheAffinityTracker) record(account, model, scope, providerID string, 
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if len(t.entries) >= t.maxEntries {
+		t.sweepExpiredLocked(now)
+	}
+	if len(t.entries) >= t.maxEntries {
+		for key := range t.entries {
+			delete(t.entries, key)
+			break
+		}
+	}
 	t.entries[cacheAffinityKey{account: account, model: model, scope: scope}] = cacheAffinityEntry{
 		providerID: providerID,
 		expiresAt:  now.Add(t.ttl),
+	}
+}
+
+func (t *cacheAffinityTracker) sweepExpiredLocked(now time.Time) {
+	for key, entry := range t.entries {
+		if now.After(entry.expiresAt) {
+			delete(t.entries, key)
+		}
 	}
 }
 

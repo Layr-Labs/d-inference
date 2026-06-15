@@ -3455,20 +3455,43 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 
 	limit := providerNotificationTargetLimit
 	rows, err := s.pool.Query(ctx,
-		`SELECT p.id, p.hardware, p.models, p.backend, p.location, p.trust_level, p.attested,
-			p.attestation_result, p.se_public_key, p.serial_number,
-			p.mda_verified, p.mda_cert_chain, p.acme_verified,
-			p.version, p.runtime_verified, p.python_hash, p.runtime_hash,
-			p.last_challenge_verified, p.failed_challenges, p.account_id,
-			p.lifetime_requests_served, p.lifetime_tokens_generated,
-			p.last_session_requests_served, p.last_session_tokens_generated,
-			p.registered_at, p.last_seen,
-			u.email
-		 FROM providers p
-		 JOIN users u ON u.account_id = p.account_id
-		 WHERE p.account_id <> '' AND BTRIM(u.email) <> '' AND p.last_seen >= $1
-		 ORDER BY p.last_seen DESC
-		 LIMIT $2`,
+		`SELECT target.id, target.hardware, target.models, target.backend, target.location, target.trust_level, target.attested,
+			target.attestation_result, target.se_public_key, target.serial_number,
+			target.mda_verified, target.mda_cert_chain, target.acme_verified,
+			target.version, target.runtime_verified, target.python_hash, target.runtime_hash,
+			target.last_challenge_verified, target.failed_challenges, target.account_id,
+			target.lifetime_requests_served, target.lifetime_tokens_generated,
+			target.last_session_requests_served, target.last_session_tokens_generated,
+			target.registered_at, target.last_seen,
+			target.email
+		   FROM (
+			SELECT DISTINCT ON (
+				CASE
+					WHEN p.serial_number <> '' THEN 'serial:' || p.serial_number
+					WHEN p.se_public_key <> '' THEN 'sekey:' || p.se_public_key
+					ELSE 'provider:' || p.id
+				END
+			) p.id, p.hardware, p.models, p.backend, p.location, p.trust_level, p.attested,
+				p.attestation_result, p.se_public_key, p.serial_number,
+				p.mda_verified, p.mda_cert_chain, p.acme_verified,
+				p.version, p.runtime_verified, p.python_hash, p.runtime_hash,
+				p.last_challenge_verified, p.failed_challenges, p.account_id,
+				p.lifetime_requests_served, p.lifetime_tokens_generated,
+				p.last_session_requests_served, p.last_session_tokens_generated,
+				p.registered_at, p.last_seen,
+				u.email,
+				CASE
+					WHEN p.serial_number <> '' THEN 'serial:' || p.serial_number
+					WHEN p.se_public_key <> '' THEN 'sekey:' || p.se_public_key
+					ELSE 'provider:' || p.id
+				END AS notification_stable_key
+			  FROM providers p
+			  JOIN users u ON u.account_id = p.account_id
+			 WHERE p.account_id <> '' AND BTRIM(u.email) <> '' AND p.last_seen >= $1
+			 ORDER BY notification_stable_key, p.last_seen DESC
+		   ) target
+		  ORDER BY target.last_seen DESC
+		  LIMIT $2`,
 		time.Now().Add(-providerNotificationTargetLookback), limit,
 	)
 	if err != nil {

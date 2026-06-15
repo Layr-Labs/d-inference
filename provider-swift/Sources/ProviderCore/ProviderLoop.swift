@@ -460,6 +460,17 @@ public actor ProviderLoop {
         return overflow ? UInt64.max : bytes
     }
 
+    private var memoryLimitBytes: UInt64? {
+        ProviderMemoryLimit.limitBytes(limitGB: loopConfig.config.provider.memoryLimitGB)
+    }
+
+    private var effectivePhysicalMemoryBytes: UInt64 {
+        ProviderMemoryLimit.effectiveTotalBytes(
+            physicalBytes: ProcessInfo.processInfo.physicalMemory,
+            limitGB: loopConfig.config.provider.memoryLimitGB
+        )
+    }
+
     // MARK: - Model Slot
 
     private static let schedulerMaxConcurrent = 24
@@ -2119,7 +2130,7 @@ public actor ProviderLoop {
         // first big allocation happens in ensureModelLoaded → loadModelContainer,
         // which runs after this). Idempotent; the BatchScheduler.loadModel call
         // is a backstop for the standalone path. See MLXMemoryGuard.
-        MLXMemoryGuard.configureOnce(log: { [logger] limits in
+        MLXMemoryGuard.configureOnce(physicalBytes: effectivePhysicalMemoryBytes, log: { [logger] limits in
             logger.info(
                 "MLX memory ceiling: limit=\(limits.memoryLimitBytes / (1024 * 1024 * 1024))GB cache=\(limits.cacheLimitBytes / (1024 * 1024 * 1024))GB")
         })
@@ -2814,7 +2825,8 @@ public actor ProviderLoop {
             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
             reserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB),
-            outstandingReservationBytes: outstanding)
+            outstandingReservationBytes: outstanding,
+            memoryLimitBytes: memoryLimitBytes)
     }
 
     /// Headroom (GB) reserved above the weights at load time for ONE request.
@@ -3098,7 +3110,7 @@ public actor ProviderLoop {
         }
 
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
-        let totalMem = ProcessInfo.processInfo.physicalMemory
+        let totalMem = effectivePhysicalMemoryBytes
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,

@@ -97,6 +97,7 @@ struct RuntimeSnapshot {
     let configPath: URL
     let configFileExists: Bool
     let config: ProviderConfig
+    let physicalHardware: HardwareInfo?
     let hardware: HardwareInfo?
     let hardwareError: Error?
     let models: [ModelInfo]
@@ -133,15 +134,39 @@ func loadRuntimeSnapshot(configPath rawPath: String?) throws -> RuntimeSnapshot 
     // Auto-migrate stale config values (idempotent, best-effort).
     config = migrateConfigIfNeeded(configPath: configPath, config: config)
 
-    let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
+    let effectiveHardware = hardware.map {
+        ProviderMemoryLimit.effectiveHardware($0, settings: config.provider)
+    }
+    let models = effectiveHardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
 
     return RuntimeSnapshot(
         configPath: configPath,
         configFileExists: configFileExists,
         config: config,
-        hardware: hardware,
+        physicalHardware: hardware,
+        hardware: effectiveHardware,
         hardwareError: hardwareError,
         models: models
+    )
+}
+
+func runtimeSnapshot(
+    from snapshot: RuntimeSnapshot,
+    config: ProviderConfig,
+    hardware: HardwareInfo
+) -> RuntimeSnapshot {
+    let effectiveHardware = ProviderMemoryLimit.effectiveHardware(
+        hardware,
+        settings: config.provider
+    )
+    return RuntimeSnapshot(
+        configPath: snapshot.configPath,
+        configFileExists: snapshot.configFileExists,
+        config: config,
+        physicalHardware: snapshot.physicalHardware,
+        hardware: effectiveHardware,
+        hardwareError: snapshot.hardwareError,
+        models: ModelScanner.scanModels(hardwareInfo: effectiveHardware)
     )
 }
 

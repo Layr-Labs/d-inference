@@ -22,14 +22,25 @@ import TOMLKit
 public struct ProviderSettings: Sendable, Equatable, Codable {
     public var name: String
     public var memoryReserveGB: UInt64
+    /// Optional hard cap for provider inference memory. When set, the provider
+    /// advertises and admits work as if the machine had at most this many GiB
+    /// of unified memory. `memoryReserveGB` is still subtracted from the cap.
+    public var memoryLimitGB: UInt64?
     public var autoUpdate: Bool
     /// When true (default), the watchdog relaunches the provider ~5 min after a
     /// crash. `false` opts out while keeping the provider installed.
     public var autoRestart: Bool
 
-    public init(name: String, memoryReserveGB: UInt64 = 4, autoUpdate: Bool = true, autoRestart: Bool = true) {
+    public init(
+        name: String,
+        memoryReserveGB: UInt64 = 4,
+        memoryLimitGB: UInt64? = nil,
+        autoUpdate: Bool = true,
+        autoRestart: Bool = true
+    ) {
         self.name = name
         self.memoryReserveGB = memoryReserveGB
+        self.memoryLimitGB = memoryLimitGB
         self.autoUpdate = autoUpdate
         self.autoRestart = autoRestart
     }
@@ -37,6 +48,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
     enum CodingKeys: String, CodingKey {
         case name
         case memoryReserveGB = "memory_reserve_gb"
+        case memoryLimitGB = "memory_limit_gb"
         case autoUpdate = "auto_update"
         case autoRestart = "auto_restart"
     }
@@ -45,6 +57,9 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "darkbloom"
         self.memoryReserveGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryReserveGB) ?? 4
+        self.memoryLimitGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryLimitGB).flatMap {
+            $0 > 0 ? $0 : nil
+        }
         self.autoUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? true
         self.autoRestart = try container.decodeIfPresent(Bool.self, forKey: .autoRestart) ?? true
     }

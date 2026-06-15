@@ -11,6 +11,43 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(abs(free - 28.0) < 0.001)
 }
 
+@Test func freeForLoadHonorsConfiguredMemoryLimit() {
+    // 64 GB physical box capped to 32 GB should admit like a 32 GB box:
+    // 32 GB cap - 4 GB reserve = 28 GB usable for loading.
+    let free = ModelLoadAdmission.freeForLoadGb(
+        totalBytes: 64 * gib,
+        systemAvailableBytes: .max,
+        gpuActiveBytes: 0,
+        gpuCacheBytes: 0,
+        reserveBytes: 4 * gib,
+        memoryLimitBytes: 32 * gib)
+    #expect(abs(free - 28.0) < 0.001)
+}
+
+@Test func memoryLimitCannotInflatePhysicalMemory() {
+    let free = ModelLoadAdmission.freeForLoadGb(
+        totalBytes: 24 * gib,
+        systemAvailableBytes: .max,
+        gpuActiveBytes: 0,
+        gpuCacheBytes: 0,
+        reserveBytes: 4 * gib,
+        memoryLimitBytes: 64 * gib)
+    #expect(abs(free - 20.0) < 0.001)
+}
+
+@Test func memoryLimitBlocksLoadWhenResidentMemoryAlreadyExceedsCap() {
+    let ok = ModelLoadAdmission.canLoad(
+        weightsGb: 4.0,
+        headroomGb: 2.0,
+        totalBytes: 64 * gib,
+        systemAvailableBytes: .max,
+        gpuActiveBytes: 32 * gib,
+        gpuCacheBytes: 0,
+        reserveBytes: 4 * gib,
+        memoryLimitBytes: 24 * gib)
+    #expect(!ok, "resident MLX memory above the configured cap leaves no load headroom")
+}
+
 @Test func freeForLoadSubtractsResidentAndReserve() {
     // 64 GB, 30 GB already resident (active), 2 GB cache, 4 GB reserve → 28 GB.
     let free = ModelLoadAdmission.freeForLoadGb(

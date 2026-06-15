@@ -28,6 +28,9 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Idle timeout in minutes before unloading the model.")
     var idleTimeout: UInt64?
 
+    @Option(help: "Limit provider inference memory to this many GiB for model selection, registration, and load admission.")
+    var memoryLimitGB: UInt64?
+
     @Flag(inversion: .prefixedNo, help: .hidden)
     var foreground = false
 
@@ -90,28 +93,44 @@ struct Start: AsyncParsableCommand {
         if let idleTimeout {
             effectiveConfig.backend.idleTimeoutMins = idleTimeout
         }
+        if let memoryLimitGB {
+            guard memoryLimitGB > 0 else {
+                printError("--memory-limit-gb must be greater than 0.")
+                throw ExitCode.failure
+            }
+            effectiveConfig.provider.memoryLimitGB = memoryLimitGB
+        }
 
         guard let hardware = snapshot.hardware else {
+            printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
+            throw ExitCode.failure
+        }
+        let effectiveSnapshot = runtimeSnapshot(
+            from: snapshot,
+            config: effectiveConfig,
+            hardware: snapshot.physicalHardware ?? hardware
+        )
+        guard let effectiveHardware = effectiveSnapshot.hardware else {
             printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
             throw ExitCode.failure
         }
 
         if local {
             try await runLocalStandalone(
-                snapshot: snapshot,
+                snapshot: effectiveSnapshot,
                 config: effectiveConfig,
-                hardware: hardware
+                hardware: effectiveHardware
             )
         } else if foreground {
             try await runForeground(
-                snapshot: snapshot,
-                hardware: hardware,
+                snapshot: effectiveSnapshot,
+                hardware: effectiveHardware,
                 config: effectiveConfig,
                 coordinatorURL: effectiveCoordinator
             )
         } else {
             try await launchDaemon(
-                snapshot: snapshot,
+                snapshot: effectiveSnapshot,
                 config: effectiveConfig,
                 coordinatorURL: effectiveCoordinator
             )
@@ -174,7 +193,8 @@ struct Start: AsyncParsableCommand {
                 port: port,
                 host: bind,
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
-                authToken: token
+                authToken: token,
+                memoryLimitGB: config.provider.memoryLimitGB
             ),
             models: advertised
         )
@@ -539,6 +559,7 @@ struct Start: AsyncParsableCommand {
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,
             idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil),
+            memoryLimitGB: config.provider.memoryLimitGB,
             localEndpoint: LaunchAgent.LocalEndpointOptions(
                 enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
             )

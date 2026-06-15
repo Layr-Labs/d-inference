@@ -200,11 +200,6 @@ type StatsTab = "overview" | "leaderboard";
 type LeaderboardMetric = "earnings" | "tokens" | "jobs";
 type LeaderboardWindow = "24h" | "7d" | "30d" | "all";
 
-const GEMMA_PUBLIC_ID = "gemma-4-26b";
-const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
-const GEMMA_ROLLBACK_ID = "gemma-4-26b-8bit";
-const GEMMA_ROLLOUT_IDS = new Set([GEMMA_PUBLIC_ID, GEMMA_QAT_ID, GEMMA_ROLLBACK_ID]);
-
 interface ModelInventory {
   model: ModelStats;
   providers: ProviderStats[];
@@ -481,10 +476,13 @@ function modelProviders(modelID: string, providers: ProviderStats[], providersBy
 }
 
 function aliasMemberBuilds(alias: CatalogAliasSummary, includeRetired = true): string[] {
-  const builds = [alias.desiredBuild];
-  if (alias.previousBuild) builds.push(alias.previousBuild);
-  if (includeRetired) builds.push(...(alias.retiredBuilds ?? []));
-  return [...new Set(builds.filter(Boolean))];
+  const builds = new Set<string>();
+  builds.add(alias.desiredBuild);
+  if (alias.previousBuild) builds.add(alias.previousBuild);
+  if (includeRetired) {
+    for (const retired of alias.retiredBuilds ?? []) builds.add(retired);
+  }
+  return [...builds];
 }
 
 function hiddenAliasBuilds(aliases: CatalogAliasSummary[]): Set<string> {

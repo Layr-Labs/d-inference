@@ -4,15 +4,23 @@ const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.da
 
 type JsonRecord = Record<string, unknown>;
 
-const GEMMA_PUBLIC_ID = "gemma-4-26b";
-const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
-const GEMMA_ROLLBACK_ID = "gemma-4-26b-8bit";
-const GEMMA_ROLLOUT_IDS = new Set([GEMMA_PUBLIC_ID, GEMMA_QAT_ID, GEMMA_ROLLBACK_ID]);
-
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
     : {};
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function asStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const strings: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string") strings.push(item);
+  }
+  return strings;
 }
 
 function toModelEntry(model: JsonRecord, capacity?: JsonRecord) {
@@ -67,16 +75,15 @@ function asStringArray(value: unknown) {
 }
 
 function aliasMemberBuilds(alias: JsonRecord, includeRetired = true) {
-  const builds: string[] = [];
-  const add = (build: string | undefined) => {
-    if (build && !builds.includes(build)) builds.push(build);
-  };
-  add(asString(alias.desired_build));
-  add(asString(alias.previous_build));
+  const builds = new Set<string>();
+  const desired = asString(alias.desired_build);
+  const previous = asString(alias.previous_build);
+  if (desired) builds.add(desired);
+  if (previous) builds.add(previous);
   if (includeRetired) {
-    for (const retired of asStringArray(alias.retired_builds)) add(retired);
+    for (const retired of asStringArray(alias.retired_builds)) builds.add(retired);
   }
-  return builds;
+  return [...builds];
 }
 
 function isHiddenStandaloneModel(model: JsonRecord) {
@@ -91,45 +98,55 @@ function publicModelRows(catalogModels: unknown[], aliases: unknown[]) {
   const rawByID = new Map<string, JsonRecord>();
   for (const item of catalogModels) {
     const model = asRecord(item);
-    if (typeof model.id !== "string") continue;
+    const id = asString(model.id);
+    if (!id) continue;
     rawModels.push(model);
-    rawByID.set(model.id, model);
+    rawByID.set(id, model);
   }
 
-  const aliasRows: JsonRecord[] = [];
   const hiddenBuilds = new Set<string>();
+  const publicAliases: JsonRecord[] = [];
   for (const item of aliases) {
     const alias = asRecord(item);
-    if (typeof alias.id !== "string" || typeof alias.desired_build !== "string") continue;
-    aliasRows.push(alias);
+    const aliasID = asString(alias.id);
+    const desired = asString(alias.desired_build);
+    if (!aliasID || !desired) continue;
     for (const build of aliasMemberBuilds(alias)) hiddenBuilds.add(build);
-  }
 
-  const publicAliases: JsonRecord[] = [];
-  for (const alias of aliasRows) {
-    const primaryID = asString(alias.primary_build) ?? asString(alias.desired_build) ?? asString(alias.previous_build);
+    const primaryID = asString(alias.primary_build) ?? desired ?? asString(alias.previous_build);
     const primary = primaryID ? rawByID.get(primaryID) : undefined;
     if (!primary) continue;
+    const primaryMetadata = asRecord(primary.metadata);
     publicAliases.push({
       ...primary,
-      id: alias.id,
+      id: aliasID,
       display_name: alias.display_name ?? primary.display_name,
       name: alias.display_name ?? primary.name,
       quantization: undefined,
       metadata: {
-        ...asRecord(primary.metadata),
-        display_name: alias.display_name ?? asRecord(primary.metadata).display_name,
+        ...primaryMetadata,
+        display_name: alias.display_name ?? primaryMetadata.display_name,
         quantization: undefined,
       },
     });
   }
-  const visibleRaw = rawModels.filter((model) => !hiddenBuilds.has(model.id as string) && !isHiddenStandaloneModel(model));
+
+  const visibleRaw: JsonRecord[] = [];
+  for (const model of rawModels) {
+    const id = model.id as string;
+    if (!hiddenBuilds.has(id) && !isHiddenStandaloneModel(model)) visibleRaw.push(model);
+  }
   return [...publicAliases, ...visibleRaw];
 }
 
 function aggregateAliasCapacity(alias: JsonRecord, capacityByID: Map<string, JsonRecord>) {
-  const members = aliasMemberBuilds(alias, false).map((build) => capacityByID.get(build)).filter(Boolean) as JsonRecord[];
+  const members: JsonRecord[] = [];
+  for (const build of aliasMemberBuilds(alias, false)) {
+    const capacity = capacityByID.get(build);
+    if (capacity) members.push(capacity);
+  }
   if (members.length === 0) return undefined;
+
   const sum = (key: string) => members.reduce((total, item) => total + (typeof item[key] === "number" ? item[key] as number : 0), 0);
   const ttfts = members
     .map((item) => item.estimated_ttft_ms)
@@ -224,15 +241,13 @@ async function publicCatalogResponse(coordUrl: string) {
     const capacityModels = Array.isArray(capacity.models) ? capacity.models : [];
     for (const model of capacityModels) {
       const entry = asRecord(model);
-      if (typeof entry.id === "string") {
-        capacityByID.set(entry.id, entry);
-      }
+      const id = asString(entry.id);
+      if (id) capacityByID.set(id, entry);
     }
     for (const alias of aliases.map(asRecord)) {
       const aggregate = aggregateAliasCapacity(alias, capacityByID);
-      if (aggregate && typeof aggregate.id === "string") {
-        capacityByID.set(aggregate.id, aggregate);
-      }
+      const id = asString(aggregate?.id);
+      if (aggregate && id) capacityByID.set(id, aggregate);
     }
   }
 
@@ -257,8 +272,10 @@ export async function GET(req: NextRequest) {
       Authorization: `Bearer ${apiKey}`,
     },
   });
-  if (!res.ok) {
-    return NextResponse.json({ error: `Upstream ${res.status}` }, { status: res.status });
-  }
-  return NextResponse.json(await res.json());
+
+  const body = await res.text();
+  return new NextResponse(body, {
+    status: res.status,
+    headers: { "Content-Type": res.headers.get("Content-Type") || "application/json" },
+  });
 }

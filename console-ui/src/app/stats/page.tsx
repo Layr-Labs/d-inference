@@ -198,6 +198,11 @@ type StatsTab = "overview" | "leaderboard";
 type LeaderboardMetric = "earnings" | "tokens" | "jobs";
 type LeaderboardWindow = "24h" | "7d" | "30d" | "all";
 
+const GEMMA_PUBLIC_ID = "gemma-4-26b";
+const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
+const GEMMA_ROLLBACK_ID = "gemma-4-26b-8bit";
+const GEMMA_ROLLOUT_IDS = new Set([GEMMA_PUBLIC_ID, GEMMA_QAT_ID, GEMMA_ROLLBACK_ID]);
+
 interface ModelInventory {
   model: ModelStats;
   providers: ProviderStats[];
@@ -460,16 +465,36 @@ function MiniStat({
 // Network Power -- realistic Apple Silicon draw, auto-scaled units
 // ---------------------------------------------------------------------------
 function modelProviders(modelID: string, providers: ProviderStats[]): ProviderStats[] {
+  if (modelID === GEMMA_PUBLIC_ID) return gemmaRolloutProviders(providers);
   return providers.filter((provider) => {
     if (provider.current_model === modelID) return true;
     return provider.models?.includes(modelID) ?? false;
   });
 }
 
-function buildModelInventory(stats: PlatformStats): ModelInventory[] {
-  const totalSlots = stats.models.reduce((sum, model) => sum + model.providers, 0);
+function providerServesGemmaRollout(provider: ProviderStats): boolean {
+  if (provider.current_model && GEMMA_ROLLOUT_IDS.has(provider.current_model)) return true;
+  return provider.models?.some((model) => GEMMA_ROLLOUT_IDS.has(model)) ?? false;
+}
 
-  return stats.models
+function gemmaRolloutProviders(providers: ProviderStats[]): ProviderStats[] {
+  return providers.filter(providerServesGemmaRollout);
+}
+
+function publicModelStats(stats: PlatformStats): ModelStats[] {
+  // Temporary Gemma 4 rollout shim. Remove after the coordinator alias catalog
+  // contract is deployed and the console consumes alias metadata.
+  const raw = stats.models.filter((model) => !GEMMA_ROLLOUT_IDS.has(model.id));
+  const hasGemma = stats.models.some((model) => GEMMA_ROLLOUT_IDS.has(model.id));
+  if (!hasGemma) return raw;
+  return [{ id: GEMMA_PUBLIC_ID, providers: gemmaRolloutProviders(stats.providers).length }, ...raw];
+}
+
+function buildModelInventory(stats: PlatformStats): ModelInventory[] {
+  const models = publicModelStats(stats);
+  const totalSlots = models.reduce((sum, model) => sum + model.providers, 0);
+
+  return models
     .map((model) => {
       const providers = modelProviders(model.id, stats.providers);
       return {
@@ -687,6 +712,53 @@ function ModelHeaderMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function publicCatalogModels(catalogModels: CatalogModelSummary[] | null): CatalogModelSummary[] | null {
+  if (!catalogModels) return null;
+  const gemma = catalogModels.find((model) => model.id === GEMMA_PUBLIC_ID) ??
+    catalogModels.find((model) => model.id === GEMMA_QAT_ID);
+  const visible = catalogModels.filter((model) => !GEMMA_ROLLOUT_IDS.has(model.id));
+  if (!gemma) return visible;
+  return [{
+    ...gemma,
+    id: GEMMA_PUBLIC_ID,
+    displayName: "Gemma 4 26B",
+    name: "Gemma 4 26B",
+    quantization: undefined,
+  }, ...visible];
+}
+
+function aggregateGemmaCapacity(capacityModels: CapacityModelSummary[]): CapacityModelSummary | null {
+  const members = capacityModels.filter((model) => GEMMA_ROLLOUT_IDS.has(model.id));
+  if (members.length === 0) return null;
+  const sum = (pick: (capacity: CapacityModelSummary) => number | undefined) =>
+    members.reduce((total, capacity) => total + (pick(capacity) ?? 0), 0);
+  const ttfts = members
+    .map((capacity) => capacity.estimatedTTFTMS)
+    .filter((value): value is number => value !== undefined && value > 0);
+  return {
+    id: GEMMA_PUBLIC_ID,
+    ready: members.some((capacity) => capacity.ready),
+    canAccept: members.some((capacity) => capacity.canAccept),
+    routableProviders: sum((capacity) => capacity.routableProviders),
+    warmProviders: sum((capacity) => capacity.warmProviders),
+    coldProviders: sum((capacity) => capacity.coldProviders),
+    activeRequests: sum((capacity) => capacity.activeRequests),
+    queuedRequests: sum((capacity) => capacity.queuedRequests),
+    queueLimit: Math.max(...members.map((capacity) => capacity.queueLimit ?? 0)),
+    aggregateTPS: sum((capacity) => capacity.aggregateTPS),
+    estimatedTTFTMS: ttfts.length > 0 ? Math.min(...ttfts) : undefined,
+    tokenBudgetRemaining: sum((capacity) => capacity.tokenBudgetRemaining),
+    tokenBudgetTotal: sum((capacity) => capacity.tokenBudgetTotal),
+  };
+}
+
+function publicCapacityModels(capacityModels: CapacityModelSummary[] | null): CapacityModelSummary[] | null {
+  if (!capacityModels) return null;
+  const visible = capacityModels.filter((model) => !GEMMA_ROLLOUT_IDS.has(model.id));
+  const gemma = aggregateGemmaCapacity(capacityModels);
+  return gemma ? [gemma, ...visible] : visible;
+}
+
 function ActiveModelsSection({
   stats,
   catalogModels,
@@ -697,9 +769,11 @@ function ActiveModelsSection({
   capacityModels: CapacityModelSummary[] | null;
 }) {
   const [showDeprecatedModels, setShowDeprecatedModels] = useState(false);
+  const visibleCatalogModels = publicCatalogModels(catalogModels);
+  const visibleCapacityModels = publicCapacityModels(capacityModels);
   const inventory = buildModelInventory(stats);
-  const catalogByID = new Map((catalogModels ?? []).map((model) => [model.id, model]));
-  const capacityByID = new Map((capacityModels ?? []).map((model) => [model.id, model]));
+  const catalogByID = new Map((visibleCatalogModels ?? []).map((model) => [model.id, model]));
+  const capacityByID = new Map((visibleCapacityModels ?? []).map((model) => [model.id, model]));
   const servedInventory = inventory.map((item) => ({
     ...item,
     id: item.model.id,
@@ -707,8 +781,8 @@ function ActiveModelsSection({
     catalogModel: catalogByID.get(item.model.id),
     capacity: capacityByID.get(item.model.id),
   }));
-  const filtered = catalogModels
-    ? filterServedCatalogModels(servedInventory, catalogModels, showDeprecatedModels)
+  const filtered = visibleCatalogModels
+    ? filterServedCatalogModels(servedInventory, visibleCatalogModels, showDeprecatedModels)
     : {
       visible: servedInventory.map((item) => ({ ...item, catalogStatus: "active" })),
       catalogServedCount: servedInventory.length,
@@ -2963,7 +3037,7 @@ export default function StatsPage() {
           />
           <MiniStat
             label="Models"
-            value={stats.models.length.toString()}
+            value={publicModelStats(stats).length.toString()}
             sub="serving now"
           />
         </div>

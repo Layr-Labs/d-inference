@@ -112,7 +112,9 @@ public actor StandaloneServer {
     ) {
         self.config = config
         self.models = models
-        self.kvBudget = GlobalKVCacheBudget()
+        self.kvBudget = GlobalKVCacheBudget(
+            memoryLimitBytes: ProviderMemoryLimit.limitBytes(limitGB: config.memoryLimitGB)
+        )
         // Phase 3: construct the global disk accountant (one per host).
         let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("darkbloom/kv", isDirectory: true)
@@ -264,7 +266,11 @@ public actor StandaloneServer {
             pendingTimeout: Self.schedulerPendingTimeout,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
             kvBudget: kvBudget,
-            diskAccountant: diskAccountant
+            diskAccountant: diskAccountant,
+            totalMemoryBytes: ProviderMemoryLimit.effectiveBytes(
+                physicalBytes: ProcessInfo.processInfo.physicalMemory,
+                limitGB: config.memoryLimitGB
+            ).totalBytes
         )
         await scheduler.loadModel(container: container, modelId: modelId)
         let tokenizer: TokenizerHandle = await container.perform { ctx in

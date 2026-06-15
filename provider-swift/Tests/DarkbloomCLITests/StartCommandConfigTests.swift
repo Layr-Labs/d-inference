@@ -54,6 +54,17 @@ struct StartCommandConfigTests {
         #expect(!FileManager.default.fileExists(atPath: configPath.path))
     }
 
+    @Test("model overrides are rejected when absent from capped model list")
+    func modelOverridesRejectedWhenFilteredByCap() throws {
+        let models = [
+            ModelInfo(id: "small", sizeBytes: 1, estimatedMemoryGb: 4)
+        ]
+
+        #expect(throws: Start.ModelSelectionError.self) {
+            _ = try Start.validatedModelOverrideIDs(["too-large"], availableModels: models)
+        }
+    }
+
     private func tempConfigPath() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("start-config-\(UUID().uuidString).toml")

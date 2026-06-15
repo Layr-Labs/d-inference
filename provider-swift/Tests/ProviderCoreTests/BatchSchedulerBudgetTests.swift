@@ -72,6 +72,32 @@ struct BatchSchedulerBudgetTests {
             "P1 gate: third bridge pushing cumulative over tokenBudgetMax must trigger rejection")
     }
 
+    @Test("scheduler stores configured total memory cap")
+    func schedulerStoresConfiguredTotalMemoryCap() async {
+        let cappedBytes = UInt64(8 * 1_073_741_824)
+        let scheduler = BatchScheduler(totalMemoryBytes: cappedBytes)
+
+        #expect(await scheduler.totalMemoryBytes == cappedBytes)
+    }
+
+    @Test("token budget math uses capped total memory")
+    func tokenBudgetMathUsesCappedTotalMemory() {
+        let gib = 1_073_741_824
+        let budget = BatchScheduler.memoryAwareTokenBudgetMax(
+            staticBudget: 1_000_000,
+            modelWeightBytes: 2 * gib,
+            kvBytesPerToken: 1_048_576,
+            totalMemoryBytes: UInt64(8 * gib),
+            activeMemoryBytes: 0,
+            cacheMemoryBytes: 0,
+            systemAvailableBytes: .max,
+            activeTokenBudgetUsed: 0
+        )
+
+        #expect(budget >= 1024)
+        #expect(budget < 4_000)
+    }
+
     /// Restored checkpoint hits can hold more live KV than their prompt+decode
     /// token count because the restored cache is already materialized. The
     /// scheduler's active-budget view must charge the explicit reservation, not

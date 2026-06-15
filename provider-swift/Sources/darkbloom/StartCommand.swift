@@ -59,6 +59,15 @@ struct Start: AsyncParsableCommand {
         let coordinatorURL: String
     }
 
+    struct ModelSelectionError: Error, CustomStringConvertible, Equatable {
+        let missingIDs: [String]
+
+        var description: String {
+            let ids = missingIDs.joined(separator: ", ")
+            return "Selected model(s) are unavailable under the current provider configuration: \(ids)"
+        }
+    }
+
     /// Prints a one-line terms-of-service notice. Starting the provider is the
     /// act of acceptance — there is no separate yes/no prompt — so this is an
     /// informational notice, not a gate. Shown only for the user-facing
@@ -83,6 +92,18 @@ struct Start: AsyncParsableCommand {
         persisted.provider.memoryLimitGB = memoryLimitGB
         try ConfigManager.save(persisted, to: configPath)
         return persisted
+    }
+
+    static func validatedModelOverrideIDs(
+        _ modelIDs: [String],
+        availableModels: [ModelInfo]
+    ) throws -> [String] {
+        let available = Set(availableModels.map(\.id))
+        let missing = modelIDs.filter { !available.contains($0) }
+        guard missing.isEmpty else {
+            throw ModelSelectionError(missingIDs: missing)
+        }
+        return modelIDs
     }
 
     private func prepareStartConfiguration(snapshot: RuntimeSnapshot) throws -> PreparedStartConfiguration {
@@ -593,7 +614,15 @@ struct Start: AsyncParsableCommand {
         let selectedModelIDs: [String]
 
         if !model.isEmpty {
-            selectedModelIDs = model
+            do {
+                selectedModelIDs = try Self.validatedModelOverrideIDs(
+                    model,
+                    availableModels: snapshot.models
+                )
+            } catch {
+                printError("\(error)")
+                throw ExitCode.failure
+            }
         } else if all {
             selectedModelIDs = snapshot.models.map(\.id)
         } else {

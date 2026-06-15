@@ -440,7 +440,10 @@ public actor ProviderLoop {
         self.configuredMaxModelSlots = max(1, Int(config.config.backend.maxModelSlots))
         self.startupModelCount = max(1, advertised.count)
         let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
-        self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
+        self.kvBudget = GlobalKVCacheBudget(
+            reserveBytes: reserveBytes,
+            memoryLimitBytes: ProviderMemoryLimit.limitBytes(limitGB: config.config.provider.memoryLimitGB)
+        )
         // Phase 3: construct the global disk accountant (one per host).
         let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("darkbloom/kv", isDirectory: true)
@@ -2692,7 +2695,8 @@ public actor ProviderLoop {
                 pendingTimeout: Self.schedulerPendingTimeout,
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 kvBudget: kvBudget,
-                diskAccountant: diskAccountant
+                diskAccountant: diskAccountant,
+                totalMemoryBytes: effectivePhysicalMemoryBytes
             )
             await scheduler.loadModel(
                 container: container,

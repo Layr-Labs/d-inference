@@ -16,12 +16,18 @@ public actor GlobalKVCacheBudget {
 
     private let safetyFactor: Double
     private let reserveBytes: UInt64
+    private let memoryLimitBytes: UInt64?
     private let memorySnapshot: @Sendable () -> MemorySnapshot
     private var reservations: [String: UInt64] = [:]
 
-    public init(reserveBytes: UInt64 = 0, safetyFactor: Double = 0.7) {
+    public init(
+        reserveBytes: UInt64 = 0,
+        safetyFactor: Double = 0.7,
+        memoryLimitBytes: UInt64? = nil
+    ) {
         self.reserveBytes = reserveBytes
         self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
+        self.memoryLimitBytes = memoryLimitBytes
         self.memorySnapshot = {
             MemorySnapshot(
                 total: ProcessInfo.processInfo.physicalMemory,
@@ -35,10 +41,12 @@ public actor GlobalKVCacheBudget {
     init(
         reserveBytes: UInt64 = 0,
         safetyFactor: Double = 0.7,
+        memoryLimitBytes: UInt64? = nil,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot
     ) {
         self.reserveBytes = reserveBytes
         self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
+        self.memoryLimitBytes = memoryLimitBytes
         self.memorySnapshot = memorySnapshot
     }
 
@@ -87,12 +95,21 @@ public actor GlobalKVCacheBudget {
 
     private func availableReservationBytes() -> UInt64 {
         let snap = memorySnapshot()
+        let total: UInt64
+        let systemAvailable: UInt64
+        if let memoryLimitBytes {
+            total = min(snap.total, memoryLimitBytes)
+            systemAvailable = min(snap.systemAvailable, memoryLimitBytes)
+        } else {
+            total = snap.total
+            systemAvailable = snap.systemAvailable
+        }
         let mlxUsed = Self.saturatingAdd(snap.active, snap.cache)
-        let mlxFree = snap.total > mlxUsed ? snap.total - mlxUsed : 0
+        let mlxFree = total > mlxUsed ? total - mlxUsed : 0
         // Clamp the MLX-only view (blind to other processes) to real OS-free RAM,
         // mirroring the load gate (ModelLoadAdmission.freeForLoadGb). Without it
         // the runtime admits against memory other apps hold → jetsam OOM.
-        let realFree = min(mlxFree, snap.systemAvailable)
+        let realFree = min(mlxFree, systemAvailable)
         let usable = realFree > reserveBytes ? realFree - reserveBytes : 0
         let capped = Double(usable) * safetyFactor
         let reservationCap = capped >= Double(UInt64.max) ? UInt64.max : UInt64(capped)

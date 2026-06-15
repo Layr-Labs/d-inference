@@ -70,6 +70,25 @@ import Testing
     #expect(await budget.reserve(requestID: "fits", kvBytesPerToken: 1, tokenCount: 400))
 }
 
+@Test func globalKVCacheBudgetHonorsMemoryLimitCap() async {
+    let budget = GlobalKVCacheBudget(
+        reserveBytes: 0,
+        safetyFactor: 1.0,
+        memoryLimitBytes: 100_000,
+        memorySnapshot: {
+            GlobalKVCacheBudget.MemorySnapshot(
+                total: 1_000_000,
+                active: 0,
+                cache: 0,
+                systemAvailable: .max
+            )
+        }
+    )
+
+    #expect(!(await budget.reserve(requestID: "over-cap", kvBytesPerToken: 1, tokenCount: 100_001)))
+    #expect(await budget.reserve(requestID: "fits-cap", kvBytesPerToken: 1, tokenCount: 100_000))
+}
+
 @Test func providerLoopMemoryReserveBytesSaturatesOnOverflow() {
     #expect(ProviderLoop.memoryReserveBytes(forGiB: 4) == 4 * 1024 * 1024 * 1024)
     #expect(ProviderLoop.memoryReserveBytes(forGiB: UInt64.max) == UInt64.max)

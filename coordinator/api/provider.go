@@ -2606,10 +2606,23 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 			return
 		}
 		switch s.verifyProviderViaMDM(ctx, providerID, provider, *result) {
-		case mdmVerifyGranted, mdmVerifyTerminal:
+		case mdmVerifyTerminal:
+			// Posture mismatch / hard untrust — stop; no retry can fix it.
 			return
+		case mdmVerifyGranted:
+			// Hardware granted, BUT verifyProviderViaMDM returns Granted as soon as
+			// SecurityInfo passes — the MDA command it then issues can still time
+			// out, send-fail, parse-fail, or come back legacy/stale-nonce, leaving
+			// MDASIPVerified=false. Only stop once the fresh MDA verdict actually
+			// landed; otherwise fall through to the backoff and retry the MDA round
+			// on the normal cadence (not the 12h periodic recheck), so a provider
+			// is never left hardware-but-unroutable under enforcement (issue #302).
+			if provider.HasFreshMDAVerdict() {
+				return
+			}
 		}
-		// Transient (not-enrolled / not-found / timeout / error) — schedule retry.
+		// Transient (not-enrolled / not-found / timeout / error), or granted-but-no-
+		// MDA-verdict-yet — schedule a retry on the backoff cadence.
 		d := steadyInterval
 		if attempt < len(backoff) {
 			d = backoff[attempt]

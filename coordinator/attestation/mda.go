@@ -166,6 +166,13 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 func parseAppleAttestationExtensions(leaf *x509.Certificate, result *MDAResult) {
 	result.LeafNotBefore = leaf.NotBefore
 
+	// Fail CLOSED on an ABSENT kext OID: a cert that omits .13.3 entirely never
+	// runs the case below, so without this the field would keep Go's zero value
+	// (false = "no kexts, safe") and a kext-allowing cert that simply drops the
+	// OID would slip past the evaluateMDA kext gate. Default to the unsafe value;
+	// the .13.3 case clears it only after parsing an explicit INTEGER 0.
+	result.ThirdPartyKexts = true
+
 	// Serial from subject (standard X.509 field); the .9.1 OID overrides below.
 	if leaf.Subject.SerialNumber != "" {
 		result.DeviceSerial = leaf.Subject.SerialNumber

@@ -260,6 +260,12 @@ func TestMDADecodeAbsentExtensionsFailClosed(t *testing.T) {
 	if result.SecureBootEnabled {
 		t.Error("absent SecureBoot extension must read SecureBootEnabled = false")
 	}
+	// An ABSENT .13.3 kext OID must fail closed to ThirdPartyKexts = true (the
+	// case never runs, so the struct default must be the unsafe value) — otherwise
+	// a cert that drops the OID slips past the evaluateMDA kext gate.
+	if !result.ThirdPartyKexts {
+		t.Error("absent kext extension must fail closed: ThirdPartyKexts = true")
+	}
 }
 
 func TestVerifyMDACertChainWithCA(t *testing.T) {

@@ -140,28 +140,11 @@
       });
     }
 
-    function showConsentBanner(){
-      if (getConsent() !== 'unset' || document.getElementById('analytics-consent')) return;
-      const banner = document.createElement('div');
-      banner.id = 'analytics-consent';
-      banner.setAttribute('role', 'dialog');
-      banner.setAttribute('aria-label', 'Analytics consent');
-      banner.style.cssText = 'position:fixed;left:16px;right:16px;bottom:16px;z-index:9999;max-width:620px;margin:0 auto;padding:16px;border:1px solid var(--grey-01);border-radius:var(--radius-sm);background:rgba(255,255,255,.96);box-shadow:0 16px 60px rgba(0,0,0,.16);font-family:var(--font-sans);color:var(--black);';
-      banner.innerHTML = '<p style="margin:0 0 12px;font-size:14px;line-height:1.45;color:var(--grey-03);">Allow privacy-filtered usage analytics to help improve Darkbloom. Page URLs are sanitized before events are sent.</p><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;"><button id="analytics-allow" type="button" style="border:1px solid var(--black);background:var(--black);color:var(--white);border-radius:4px;padding:9px 14px;font-family:var(--font-mono);font-size:12px;cursor:pointer;">Allow analytics</button><button id="analytics-decline" type="button" style="border:1px solid var(--grey-01);background:var(--white);color:var(--grey-03);border-radius:4px;padding:9px 14px;font-family:var(--font-mono);font-size:12px;cursor:pointer;">Decline</button><a href="privacy.html" target="_blank" style="font-size:12px;color:var(--grey-03);">Privacy</a></div>';
-      document.body.appendChild(banner);
-      document.getElementById('analytics-allow').onclick = function(){
-        setConsent('granted');
-        banner.remove();
-        initAnalytics();
-      };
-      document.getElementById('analytics-decline').onclick = function(){
-        setConsent('denied');
-        banner.remove();
-      };
-    }
-
+    // Analytics is auto-allowed by default (privacy-filtered: page URLs are
+    // sanitized and no PII is sent). No consent prompt is shown; a visitor's
+    // prior explicit "denied" choice is still respected.
+    if (getConsent() === 'unset') setConsent('granted');
     initAnalytics();
-    document.addEventListener('DOMContentLoaded', showConsentBanner);
   })();
   </script>
 
@@ -346,7 +329,7 @@
 
     /* ==================== HERO ==================== */
     .hero {
-      padding: 180px 0 100px;
+      padding: 180px 0 40px;
     }
 
     .hero h1 {
@@ -558,6 +541,50 @@
       color: var(--grey-03);
       margin-top: 8px;
       letter-spacing: 0.02em;
+    }
+
+    /* ==================== LIVE NETWORK STRIP ==================== */
+    /* Live-network strip sits flush under the hero — trim the default
+       section padding so it isn't floating in whitespace. */
+    #network { padding: 8px 0 48px; }
+
+    .netstat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 1px;
+      background: var(--grey-01);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin-top: 0;
+    }
+
+    .netstat-cell {
+      background: var(--white);
+      padding: 28px 24px;
+    }
+
+    .netstat-num {
+      font-size: clamp(28px, 3.4vw, 40px);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      color: var(--eigen-blue);
+    }
+
+    .netstat-label {
+      font-size: 13px;
+      font-weight: 400;
+      color: var(--grey-03);
+      margin-top: 8px;
+      letter-spacing: 0.02em;
+    }
+
+    .netstat-sub {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--grey-02);
+      margin-top: 4px;
+      letter-spacing: 0.01em;
     }
 
     /* ==================== HERO BLOCK (eigen blue bg, like brand book showcase) ==================== */
@@ -1107,6 +1134,34 @@
     </div>
   </section>
 
+  <!-- ============ LIVE NETWORK (flush under hero) ============ -->
+  <!-- Live figures sourced from the coordinator's public /v1/stats endpoint.
+       The Network power tile is hidden when neither active_power_watts nor a
+       providers[] array is available. See network-stats.js. -->
+  <section id="network" data-section="live-network">
+    <div class="container">
+      <div class="netstat-grid rv" aria-live="polite">
+        <div class="netstat-cell">
+          <div class="netstat-num" id="ns-nodes">—</div>
+          <div class="netstat-label">Nodes online</div>
+        </div>
+        <div class="netstat-cell" id="ns-power-cell" style="display:none;">
+          <div class="netstat-num" id="ns-power">—</div>
+          <div class="netstat-label">Network power</div>
+          <div class="netstat-sub">drawn under load</div>
+        </div>
+        <div class="netstat-cell">
+          <div class="netstat-num" id="ns-tokens">—</div>
+          <div class="netstat-label">Tokens served</div>
+        </div>
+        <div class="netstat-cell">
+          <div class="netstat-num" id="ns-requests">—</div>
+          <div class="netstat-label">Requests</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <div class="container"><div class="rule"></div></div>
 
   <!-- ============ WHAT THIS ENABLES ============ -->
@@ -1442,6 +1497,9 @@ response = client.chat.completions.create(
 </footer>
 
 <script src="earn-calculator.js"></script>
+
+<!-- ============ LIVE NETWORK (/v1/stats) ============ -->
+<script src="network-stats.js"></script>
 
 <!-- ============ LIVE MODEL LINEUP + PRICING ============ -->
 <!-- Sources the pricing table from the coordinator's public, registry-backed

@@ -51,6 +51,8 @@ export interface MyReputation {
   successful_jobs: number;
   failed_jobs: number;
   total_uptime_seconds: number;
+  // EWMA of real time-to-first-token in ms (rendered as "Avg TTFT"); the JSON
+  // key is unchanged for wire stability — only its meaning is now real TTFT.
   avg_response_time_ms: number;
   challenges_passed: number;
   challenges_failed: number;
@@ -75,6 +77,9 @@ export interface MyProvider {
   acme_verified: boolean;
   se_key_bound: boolean;
   se_public_key?: string;
+  // X25519 E2E key (same value as /v1/encryption-key); present only for
+  // currently-online machines, omitted for offline ones.
+  provider_key?: string;
   secure_enclave: boolean;
   sip_enabled: boolean;
   secure_boot_enabled: boolean;
@@ -107,9 +112,6 @@ export interface MyProvider {
   lifetime_requests_served: number;
   lifetime_tokens_generated: number;
 
-  earnings_total_micro_usd: number;
-  earnings_count: number;
-
   wallet_address?: string;
 
   registered_at?: string;
@@ -122,6 +124,13 @@ export interface MyProvidersResponse {
   min_provider_version: string;
   heartbeat_timeout_seconds: number;
   challenge_max_age_seconds: number;
+}
+
+// Response from DELETE /v1/me/providers/{serial}.
+export interface DeleteProviderResponse {
+  deleted: boolean;
+  serial: string;
+  rows_removed: number;
 }
 
 export interface MyFleetCounts {

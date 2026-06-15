@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
@@ -57,12 +58,17 @@ type myProvider struct {
 	SerialNumber string               `json:"serial_number,omitempty"`
 
 	// Trust & attestation
-	TrustLevel        string   `json:"trust_level"`
-	Attested          bool     `json:"attested"`
-	MDAVerified       bool     `json:"mda_verified"`
-	ACMEVerified      bool     `json:"acme_verified"`
-	SEKeyBound        bool     `json:"se_key_bound"`
-	SEPublicKey       string   `json:"se_public_key,omitempty"`
+	TrustLevel   string `json:"trust_level"`
+	Attested     bool   `json:"attested"`
+	MDAVerified  bool   `json:"mda_verified"`
+	ACMEVerified bool   `json:"acme_verified"`
+	SEKeyBound   bool   `json:"se_key_bound"`
+	SEPublicKey  string `json:"se_public_key,omitempty"`
+	// ProviderKey is the machine's X25519 E2E public key, used to resolve
+	// per-node earnings. Same value senders fetch from /v1/encryption-key, so
+	// it is not a secret on the owner's own dashboard. Present only for
+	// currently-online machines (it is not persisted on ProviderRecord).
+	ProviderKey       string   `json:"provider_key,omitempty"`
 	SecureEnclave     bool     `json:"secure_enclave"`
 	SIPEnabled        bool     `json:"sip_enabled"`
 	SecureBootEnabled bool     `json:"secure_boot_enabled"`
@@ -99,10 +105,6 @@ type myProvider struct {
 	// Lifetime stats
 	LifetimeRequestsServed  int64 `json:"lifetime_requests_served"`
 	LifetimeTokensGenerated int64 `json:"lifetime_tokens_generated"`
-
-	// Per-node earnings (lifetime).
-	EarningsTotalMicroUSD int64 `json:"earnings_total_micro_usd"`
-	EarningsCount         int64 `json:"earnings_count"`
 
 	// Payout configuration (via Stripe Connect Express)
 
@@ -334,7 +336,6 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 
 	for i := range fleet {
 		s.attachStoredReputation(r.Context(), &fleet[i])
-		s.attachEarnings(&fleet[i])
 	}
 
 	resp := myProvidersResponse{
@@ -423,32 +424,6 @@ func emittedIdentity(mp *myProvider) string {
 	return "id:" + mp.ID
 }
 
-func (s *Server) attachEarnings(mp *myProvider) {
-	if mp.AccountID == "" {
-		return
-	}
-	summary, err := s.store.GetAccountEarningsSummary(mp.AccountID)
-	if err != nil {
-		s.logger.Debug("get account earnings summary failed",
-			"provider_id", mp.ID, "account_id", mp.AccountID, "error", err)
-		return
-	}
-	mp.EarningsTotalMicroUSD = summary.TotalMicroUSD
-	mp.EarningsCount = summary.Count
-	// Earnings table is the source of truth — every billed request is recorded
-	// here. Live lifetime counters in the providers table can drift
-	// (heartbeat-driven, lost on restart). Use earnings totals when they
-	// exceed the live counter so the dashboard never shows 0/483 for a
-	// machine that's served real work.
-	if summary.Count > mp.LifetimeRequestsServed {
-		mp.LifetimeRequestsServed = summary.Count
-	}
-	totalTokens := summary.PromptTokens + summary.CompletionTokens
-	if totalTokens > mp.LifetimeTokensGenerated {
-		mp.LifetimeTokensGenerated = totalTokens
-	}
-}
-
 func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {
 	if mp.ID == "" || mp.Reputation.TotalJobs > 0 || mp.Reputation.ChallengesPassed > 0 || mp.Reputation.ChallengesFailed > 0 {
 		return
@@ -495,6 +470,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.MDAVerified = rec.MDAVerified
 		mp.ACMEVerified = rec.ACMEVerified
 		mp.SEPublicKey = rec.SEPublicKey
+		// X25519 E2E key from the persisted record so OFFLINE machines still
+		// resolve per-node earnings. The live branch below overrides
+		// it with live.PublicKey when the machine is currently connected.
+		mp.ProviderKey = rec.PublicKey
 		mp.RuntimeVerified = rec.RuntimeVerified
 		mp.PythonHash = rec.PythonHash
 		mp.RuntimeHash = rec.RuntimeHash
@@ -579,6 +558,12 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 			mp.LastChallengeVerified = &t
 		}
 		mp.FailedChallenges = live.FailedChallenges
+		// X25519 E2E key — the earnings table is keyed on this. Persisted on the
+		// record too, so offline machines resolve earnings; the live
+		// value is authoritative when connected.
+		if live.PublicKey != "" {
+			mp.ProviderKey = live.PublicKey
+		}
 		mp.LifetimeRequestsServed = live.Stats.RequestsServed
 		mp.LifetimeTokensGenerated = live.Stats.TokensGenerated
 		mp.PrefillTPS = live.PrefillTPS
@@ -637,4 +622,69 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 	}
 
 	return mp
+}
+
+// handleDeleteMyProvider handles DELETE /v1/me/providers/{serial}.
+//
+// Removes an offline/retired machine's persisted record(s) so it stops
+// reappearing in GET /v1/me/providers. Ownership-checked: the caller's account
+// must own the record. A currently-connected machine is refused with 409 (it
+// would just re-register). Billing/uptime history (earnings, usage, sessions)
+// is preserved by the store.
+func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) {
+	user := s.requirePrivyUser(w, r)
+	if user == nil {
+		return // 401 already written
+	}
+
+	serial := strings.TrimSpace(r.PathValue("serial"))
+	if serial == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "missing serial"))
+		return
+	}
+
+	ctx := r.Context()
+
+	// Resolve the record by serial, falling back to treating the token as a
+	// session id (covers never-attested boxes whose card key is the id).
+	rec, err := s.store.GetProviderBySerial(ctx, serial)
+	if err != nil || rec == nil {
+		rec, err = s.store.GetProviderRecord(ctx, serial)
+	}
+	if err != nil || rec == nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "machine not found"))
+		return
+	}
+	if rec.AccountID != user.AccountID {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you do not own this machine"))
+		return
+	}
+
+	// Refuse if the machine is currently connected — it would re-register and
+	// the card would return.
+	if s.registry.RemoveProviderBySerial(serial, false) {
+		writeJSON(w, http.StatusConflict, errorResponse("conflict", "machine is currently online — stop it before removing"))
+		return
+	}
+
+	n, err := s.store.DeleteProvidersBySerial(ctx, user.AccountID, serial)
+	if err != nil {
+		s.logger.Error("delete provider failed", "account_id", user.AccountID, "serial", serial, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to remove machine"))
+		return
+	}
+	if n == 0 {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "machine not found"))
+		return
+	}
+
+	// Best-effort: drop any lingering in-memory entry so an evict-race can't
+	// re-persist the record we just removed.
+	s.registry.RemoveProviderBySerial(serial, true)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted":      true,
+		"serial":       serial,
+		"rows_removed": n,
+	})
 }

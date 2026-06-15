@@ -125,6 +125,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			attested BOOLEAN NOT NULL DEFAULT FALSE,
 			attestation_result JSONB,
 			se_public_key TEXT NOT NULL DEFAULT '',
+			public_key TEXT NOT NULL DEFAULT '',
 			serial_number TEXT NOT NULL DEFAULT '',
 			mda_verified BOOLEAN NOT NULL DEFAULT FALSE,
 			mda_cert_chain JSONB,
@@ -147,6 +148,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS attested BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS attestation_result JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS se_public_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS public_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS serial_number TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS mda_verified BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS mda_cert_chain JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
@@ -3290,7 +3292,7 @@ func providerRecordScanDest(p *ProviderRecord, locationRaw *[]byte) []interface{
 		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-		&p.RegisteredAt, &p.LastSeen,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 	}
 }
 
@@ -3307,7 +3309,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
-			registered_at, last_seen
+			registered_at, last_seen, public_key
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
 			$8, $9, $10,
@@ -3315,7 +3317,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			$14, $15, $16, $17,
 			$18, $19, $20,
 			$21, $22, $23, $24,
-			$25, $26
+			$25, $26, $27
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			hardware = $2, models = $3, backend = $4, location = $5,
@@ -3326,7 +3328,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			last_challenge_verified = $18, failed_challenges = $19, account_id = $20,
 			lifetime_requests_served = $21, lifetime_tokens_generated = $22,
 			last_session_requests_served = $23, last_session_tokens_generated = $24,
-			last_seen = $26`,
+			last_seen = $26, public_key = $27`,
 		p.ID, p.Hardware, p.Models, p.Backend,
 		marshalProviderLocation(p.Location),
 		p.TrustLevel, p.Attested,
@@ -3336,7 +3338,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 		p.LastChallengeVerified, p.FailedChallenges, p.AccountID,
 		p.LifetimeRequestsServed, p.LifetimeTokensGenerated,
 		p.LastSessionRequestsServed, p.LastSessionTokensGenerated,
-		p.RegisteredAt, p.LastSeen,
+		p.RegisteredAt, p.LastSeen, p.PublicKey,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert provider: %w", err)
@@ -3358,7 +3360,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
-			registered_at, last_seen
+			registered_at, last_seen, public_key
 		 FROM providers WHERE id = $1`, id,
 	).Scan(
 		&p.ID, &p.Hardware, &p.Models, &p.Backend,
@@ -3370,7 +3372,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-		&p.RegisteredAt, &p.LastSeen,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider not found: %w", err)
@@ -3393,7 +3395,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
-			registered_at, last_seen
+			registered_at, last_seen, public_key
 		 FROM providers WHERE serial_number = $1 AND serial_number != ''
 		 ORDER BY last_seen DESC LIMIT 1`, serial,
 	).Scan(
@@ -3406,7 +3408,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-		&p.RegisteredAt, &p.LastSeen,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
@@ -3427,7 +3429,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
-			registered_at, last_seen
+			registered_at, last_seen, public_key
 		 FROM providers ORDER BY last_seen DESC LIMIT 10000`,
 	)
 	if err != nil {
@@ -3462,7 +3464,7 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 			target.last_challenge_verified, target.failed_challenges, target.account_id,
 			target.lifetime_requests_served, target.lifetime_tokens_generated,
 			target.last_session_requests_served, target.last_session_tokens_generated,
-			target.registered_at, target.last_seen,
+			target.registered_at, target.last_seen, target.public_key,
 			target.email
 		   FROM (
 			SELECT DISTINCT ON (
@@ -3478,7 +3480,7 @@ func (s *PostgresStore) ListProviderNotificationTargets(ctx context.Context) ([]
 				p.last_challenge_verified, p.failed_challenges, p.account_id,
 				p.lifetime_requests_served, p.lifetime_tokens_generated,
 				p.last_session_requests_served, p.last_session_tokens_generated,
-				p.registered_at, p.last_seen,
+				p.registered_at, p.last_seen, p.public_key,
 				u.email,
 				CASE
 					WHEN p.serial_number <> '' THEN 'serial:' || p.serial_number
@@ -3547,7 +3549,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
-			registered_at, last_seen
+			registered_at, last_seen, public_key
 		 FROM providers
 		 WHERE account_id = $1
 		 ORDER BY COALESCE(NULLIF(serial_number, ''),
@@ -3575,7 +3577,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-			&p.RegisteredAt, &p.LastSeen,
+			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 		); err != nil {
 			continue
 		}
@@ -3583,6 +3585,76 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 		records = append(records, p)
 	}
 	return records, nil
+}
+
+func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccountID, serialOrID string) (int, error) {
+	if ownerAccountID == "" || serialOrID == "" {
+		return 0, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete providers begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Resolve all provider rows for this owner matching the stable identity
+	// (serial OR session id). Postgres keeps one row per session UUID, so a
+	// serial can map to many ids — delete them all.
+	rows, err := tx.Query(ctx,
+		`SELECT id FROM providers
+		 WHERE account_id = $1
+		   AND ((serial_number = $2 AND serial_number <> '') OR id = $2)`,
+		ownerAccountID, serialOrID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete providers select: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("store: delete providers scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("store: delete providers iterate: %w", err)
+	}
+	if len(ids) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("store: delete providers commit: %w", err)
+		}
+		return 0, nil
+	}
+
+	// provider_reputation.provider_id has a FK to providers(id) with NO
+	// ON DELETE CASCADE — delete the reputation rows FIRST or the providers
+	// delete fails. usage / provider_earnings / provider_sessions hold
+	// money/uptime history and have no FK; they are intentionally preserved.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM provider_reputation WHERE provider_id = ANY($1)`, ids,
+	); err != nil {
+		return 0, fmt.Errorf("store: delete provider reputation: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM providers WHERE id = ANY($1) AND account_id = $2`,
+		ids, ownerAccountID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete providers: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("store: delete providers commit: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (s *PostgresStore) UpdateProviderLastSeen(ctx context.Context, id string) error {

@@ -1445,10 +1445,66 @@ exhausted:
 // the park-before-remove settlement defer, and hands off to the streaming /
 // non-streaming response writer. Extracted verbatim from the committed tail of the
 // original handler.
+// contentLatency is the time from dispatch to the first CONTENT chunk delivered
+// to the client (FirstContentAt). It deliberately does NOT fall back to
+// FirstChunkAt — that timestamp is also stamped on held role-only / lifecycle
+// preamble, so using it would let a fast-preamble-then-stall provider (or a
+// preamble-only clean close that produced no content) look artificially
+// responsive. Returns 0 when no content was delivered or the timing is
+// incomplete, which the caller treats as "no sample".
+func contentLatency(t *registry.RequestTiming) time.Duration {
+	if t == nil || t.DispatchedAt.IsZero() || t.FirstContentAt.IsZero() {
+		return 0
+	}
+	if d := t.FirstContentAt.Sub(t.DispatchedAt); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// adjustLatencyForPrefill turns a raw time-to-first-content into the reputation
+// latency sample by removing the prompt-size-dependent prefill. Time-to-first-
+// token grows with the input length, so a provider serving long prompts would
+// otherwise look slow purely because of its workload. Using the provider's own
+// benchmarked prefill rate keeps the correction per-provider and free of
+// hard-coded constants; what remains approximates queueing, scheduling,
+// model-load and first-decode overhead. Returns 0 when there is no usable sample
+// (which RecordLatency ignores), including when the prefill estimate exceeds the
+// measured latency.
+func adjustLatencyForPrefill(raw time.Duration, promptTokens int, prefillTPS float64) time.Duration {
+	if raw <= 0 {
+		return 0
+	}
+	if promptTokens > 0 && prefillTPS > 0 {
+		raw -= time.Duration(float64(promptTokens) / prefillTPS * float64(time.Second))
+	}
+	if raw <= 0 {
+		return 0
+	}
+	return raw
+}
+
 func (d *dispatchState) writeCommittedResponse() {
 	s := d.s
 	w, r := d.w, d.r
 	provider, pr, requestID := d.provider, d.pr, d.requestID
+
+	// Record the provider responsiveness sample here, in the goroutine that OWNS
+	// pr.Timing. handleComplete runs in the provider read-loop goroutine and could
+	// race this goroutine's timing writes, so the latency must be recorded from
+	// here rather than handed across. d.firstChunk is non-empty only when an actual
+	// content chunk was received — a preamble-then-clean-close commits with no
+	// content, so FirstContentAt stays zero and no sample is recorded. The
+	// prompt-size prefill is removed using the coordinator-side prompt estimate
+	// (known up front, adequate for normalization) and the provider's benchmarked
+	// PrefillTPS (set once at registration, read-only thereafter).
+	if pr.Timing != nil && d.firstChunk != "" {
+		if pr.Timing.FirstContentAt.IsZero() {
+			pr.Timing.FirstContentAt = time.Now()
+		}
+		sample := adjustLatencyForPrefill(contentLatency(pr.Timing), pr.EstimatedPromptTokens, provider.PrefillTPS)
+		s.registry.RecordLatency(provider.ID, sample)
+	}
 
 	// Write provider attestation headers now that we're committed.
 	provider.Mu().Lock()

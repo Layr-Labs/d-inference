@@ -784,3 +784,51 @@ func TestBoilerplateThenCleanClose(t *testing.T) {
 		t.Errorf("empty completion took %s — held-chunks-then-clean-close is hanging", elapsed)
 	}
 }
+
+// TestReputationLatencyMeasuredToContentEndToEnd exercises the full dispatch
+// path end to end: a provider that sends the role-only preamble immediately but
+// stalls before real content must have its reputation latency reflect the
+// CONTENT arrival, not the (near-instant) preamble. This is the integration
+// counterpart to the contentLatency / adjustLatencyForPrefill unit tests, and it
+// confirms the dispatch goroutine actually records the sample at commit.
+func TestReputationLatencyMeasuredToContentEndToEnd(t *testing.T) {
+	reg, _, ts := setupFailoverServer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	model := "latency-e2e-model"
+	const contentDelay = 350 * time.Millisecond
+
+	script := func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
+		fp.sendRoleChunk(ctx, req, model)          // held preamble, ~immediate
+		time.Sleep(contentDelay)                   // stall before real content
+		fp.sendContentChunk(ctx, req, model, "hi") // first content commits
+		fp.sendComplete(ctx, req, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 1})
+	}
+	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "lat-e2e", Version: "0.6.4", DecodeTPS: 100,
+		Models: []failoverModelSpec{{ID: model}}, Script: script,
+	})
+
+	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", status, body)
+	}
+
+	p := reg.GetProvider(pA.registryID)
+	if p == nil {
+		t.Fatal("provider missing after request")
+	}
+	// First sample seeds the EWMA. It must reflect the content arrival (>= the
+	// stall), not the ~immediate preamble. A generous lower bound keeps this
+	// non-flaky while still failing the old behavior, which measured the preamble
+	// at a few milliseconds. (No PrefillTPS reported + 5 prompt tokens → prefill
+	// adjustment is negligible.)
+	if got := p.Reputation.AvgResponseTime; got < contentDelay-100*time.Millisecond {
+		t.Fatalf("reputation latency = %v, want >= ~%v (measured to content, not the immediate preamble)", got, contentDelay)
+	}
+}

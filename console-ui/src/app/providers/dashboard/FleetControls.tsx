@@ -4,12 +4,11 @@
 
 import { LayoutGrid, Rows3 } from "lucide-react";
 
-export type SortMode = "attention" | "earnings" | "name";
+export type SortMode = "attention" | "name";
 export type Density = "grid" | "rows";
 
 const SORTS: { id: SortMode; label: string }[] = [
   { id: "attention", label: "Attention" },
-  { id: "earnings", label: "Earnings" },
   { id: "name", label: "Name" },
 ];
 

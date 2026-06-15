@@ -26,6 +26,7 @@ package api
 // succeeds; under enforcement that means "not routed", never "untrusted".
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -132,7 +133,7 @@ func evaluateMDA(mdaResult *attestation.MDAResult, attestSerial, sePublicKey str
 // to the provider (display fields + the MDASIPVerified routing gate). Runs
 // once after MDM verification on every connection and again every
 // mdaRecheckInterval via the challenge loop.
-func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *registry.Provider, serialNumber, sePublicKey, udid string) {
+func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID string, provider *registry.Provider, serialNumber, sePublicKey, udid string) {
 	if udid == "" {
 		s.logger.Warn("no UDID for MDA verification", "provider_id", providerID)
 		return
@@ -158,7 +159,7 @@ func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *regis
 
 	// Always send the raw plist command so the nonce reaches the device.
 	// The structured MicroMDM API doesn't support DeviceAttestationNonce.
-	if _, err := s.mdmClient.SendDeviceAttestationCommand(udid, seKeyNonce); err != nil {
+	if _, err := s.mdmClient.SendDeviceAttestationCommand(ctx, udid, seKeyNonce); err != nil {
 		s.logger.Warn("failed to send DeviceInformation attestation command",
 			"provider_id", providerID, "error", err)
 		s.ddIncr("attestation.mda_check", []string{"result:send_failed"})
@@ -166,7 +167,7 @@ func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *regis
 	}
 
 	// Wait for Apple's response (device contacts Apple's servers — may take longer).
-	attestResp, err := s.mdmClient.WaitForDeviceAttestation(udid, 60*time.Second)
+	attestResp, err := s.mdmClient.WaitForDeviceAttestation(ctx, udid, 60*time.Second)
 	if err != nil {
 		s.logger.Warn("DevicePropertiesAttestation response timeout",
 			"provider_id", providerID, "error", err)
@@ -333,7 +334,7 @@ func (s *Server) attributeAndApplyMDA(mdaResult *attestation.MDAResult, certChai
 // maybeRecheckMDA re-runs MDA verification for a connected provider when the
 // periodic interval has elapsed. Called from the challenge loop ticker; the
 // 60s MDM wait runs in its own goroutine so the loop never blocks.
-func (s *Server) maybeRecheckMDA(providerID string, provider *registry.Provider) {
+func (s *Server) maybeRecheckMDA(ctx context.Context, providerID string, provider *registry.Provider) {
 	if s.mdmClient == nil {
 		return
 	}
@@ -348,6 +349,6 @@ func (s *Server) maybeRecheckMDA(providerID string, provider *registry.Provider)
 	}
 	provider.Mu().Unlock()
 	saferun.Go(s.logger, "mdaRecheck", func() {
-		s.verifyAppleDeviceAttestation(providerID, provider, serial, seKey, udid)
+		s.verifyAppleDeviceAttestation(ctx, providerID, provider, serial, seKey, udid)
 	})
 }

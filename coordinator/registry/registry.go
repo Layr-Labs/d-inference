@@ -228,10 +228,19 @@ type Provider struct {
 	// NotBefore (mint time): the routing chokepoint re-checks it against
 	// attestation.MDAMaxCertAge on every routing decision, so a verdict expires
 	// even if periodic re-attestation stalls.
-	MDASIPVerified   bool
-	MDAMintedAt      time.Time
-	MDAUDID          string    // MDM UDID captured at MDA time (drives periodic re-checks)
-	MDACheckedAt     time.Time // last MDA attempt (rate-limits the periodic re-check)
+	MDASIPVerified bool
+	MDAMintedAt    time.Time
+	MDAUDID        string    // MDM UDID captured at MDA time (drives periodic re-checks)
+	MDACheckedAt   time.Time // last MDA attempt (rate-limits the periodic re-check)
+
+	// MDMFailureReason records the last MDM verification outcome for this
+	// connection, bucketed for observability: "" (verified/none),
+	// "device-not-found", "found-not-enrolled", "securityinfo-timeout",
+	// "posture-mismatch", or "error". In-memory + per-connection — it explains
+	// why a provider is (still) self_signed so the stuck-cohort gauge can
+	// distinguish "never enrolled" from "enrolled but unresponsive".
+	MDMFailureReason string
+
 	Status           ProviderStatus
 	Conn             *websocket.Conn
 	LastHeartbeat    time.Time
@@ -410,6 +419,84 @@ func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.Attested = attested
 	p.TrustLevel = trust
 	p.mu.Unlock()
+}
+
+// GrantHardwareIfNotUntrusted atomically promotes the provider to hardware trust
+// unless it is currently untrusted, returning whether it granted. The status
+// check and the trust write happen under a SINGLE lock on purpose: a separate
+// GetStatus() check followed by SetAttested(hardware) is a TOCTOU — a concurrent
+// hard untrust from the challenge loop (binary-hash change / SIP disabled /
+// signature failure) landing in the gap would leave the registry in
+// hardware/untrusted and push a false "online" to the provider. Callers must only
+// run the rest of the grant (sendTrustStatus / persist / MDA) when this returns
+// true. Mirrors the SetMDAProofIfHardware single-lock pattern.
+func (p *Provider) GrantHardwareIfNotUntrusted() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Status == StatusUntrusted {
+		return false
+	}
+	p.Attested = true
+	p.TrustLevel = TrustHardware
+	return true
+}
+
+// GetTrustLevel returns the current trust level (thread-safe).
+func (p *Provider) GetTrustLevel() TrustLevel {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.TrustLevel
+}
+
+// GetStatus returns the current provider status (thread-safe).
+func (p *Provider) GetStatus() ProviderStatus {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Status
+}
+
+// SetMDMFailureReason records the bucketed reason this connection's MDM
+// verification has not (yet) granted hardware trust (thread-safe). Empty string
+// clears it (verified / no failure).
+func (p *Provider) SetMDMFailureReason(reason string) {
+	p.mu.Lock()
+	p.MDMFailureReason = reason
+	p.mu.Unlock()
+}
+
+// GetMDMFailureReason returns the last bucketed MDM verification reason (thread-safe).
+func (p *Provider) GetMDMFailureReason() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.MDMFailureReason
+}
+
+// SetMDAProofIfHardware atomically attaches a late-arriving Apple Device
+// Attestation proof to the provider IFF it currently holds hardware trust and
+// the MDA serial matches the attested serial. Returns true if attached.
+//
+// The trust check and the field writes happen under a single p.mu acquisition on
+// purpose: doing them separately (read GetTrustLevel, then write the fields) is a
+// TOCTOU — a concurrent SetAttested demotion between the check and the write
+// would attach MDA proof to a now-self_signed connection, re-creating the
+// "mda_verified while self_signed" drift. The single lock also closes the data
+// race with handleProviderAttestation, which reads these fields under p.mu.
+func (p *Provider) SetMDAProofIfHardware(certChain [][]byte, mdaResult *attestation.MDAResult) bool {
+	if mdaResult == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.TrustLevel != TrustHardware {
+		return false
+	}
+	if p.AttestationResult == nil || mdaResult.DeviceSerial != p.AttestationResult.SerialNumber {
+		return false
+	}
+	p.MDAVerified = true
+	p.MDACertChain = certChain
+	p.MDAResult = mdaResult
+	return true
 }
 
 // SetLastChallengeVerified updates the challenge timestamp (thread-safe).
@@ -1015,14 +1102,20 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	if !p.Attested {
 		p.Attested = rec.Attested
 	}
-	// Do NOT restore MDAVerified (issue #302): the stored flag has no cert chain
-	// behind it (the chain is not restored) and would claim "Apple attested this
-	// device" across a reconnect — exactly the window a SIP downgrade needs,
-	// since a downgrade requires the reboot that drops the connection. Like
-	// hardware trust above, the MDA verdict must be re-earned by the fresh MDA
-	// run that follows MDM verification on every (re)connection. The per-
-	// connection gate fields (MDASIPVerified, MDAMintedAt) are never persisted.
-	p.ACMEVerified = rec.ACMEVerified
+	// Never resurrect MDA/ACME proofs from the store (issue #302 + #341). Trust
+	// above self_signed was just capped away (see above), so a restored connection
+	// is always self_signed or lower — and a hardware proof is only meaningful for
+	// the connection that earned it live. The stored MDAVerified flag has no cert
+	// chain behind it (the chain is not restored) and would claim "Apple attested
+	// this device" across a reconnect — exactly the window a SIP downgrade needs,
+	// since a downgrade requires the reboot that drops the connection. Restoring
+	// it also produced the misleading "mda_verified=true while self_signed" drift
+	// on /v1/providers/attestation. Both flags are re-set by the live MDM/ACME legs
+	// (verifyAppleDeviceAttestation / applyACMETrust) once hardware is re-earned
+	// this connection. The per-connection MDA gate fields (MDASIPVerified,
+	// MDAMintedAt) are never persisted, so they need no explicit clear here.
+	p.MDAVerified = false
+	p.ACMEVerified = false
 
 	// Restore challenge state
 	if rec.LastChallengeVerified != nil {
@@ -3756,6 +3849,68 @@ func (r *Registry) ProviderCountByVersion() map[string]int {
 			ver = "unknown"
 		}
 		counts[ver]++
+	}
+	return counts
+}
+
+// TrustStatusCount is one bucket of the fleet trust-state gauge.
+type TrustStatusCount struct {
+	TrustLevel string
+	Status     string
+	Count      int
+}
+
+// ProviderCountByTrustStatus buckets every connected provider by
+// (trust_level, status) so the coordinator can alert on a growing
+// self_signed/untrusted cohort. Offline providers are excluded (they are not a
+// live routability problem). Unlike most gauges this includes untrusted, since
+// the untrusted cohort is exactly what we want visibility into.
+func (r *Registry) ProviderCountByTrustStatus() []TrustStatusCount {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	type key struct{ trust, status string }
+	counts := make(map[key]int)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		p.mu.Unlock()
+		if status == StatusOffline {
+			continue
+		}
+		counts[key{string(trust), string(status)}]++
+	}
+	out := make([]TrustStatusCount, 0, len(counts))
+	for k, n := range counts {
+		out = append(out, TrustStatusCount{TrustLevel: k.trust, Status: k.status, Count: n})
+	}
+	return out
+}
+
+// ProviderCountByMDMFailure buckets connected, non-hardware providers by their
+// last MDM verification failure reason (device-not-found, found-not-enrolled,
+// securityinfo-timeout, posture-mismatch, error). This is the stuck-cohort
+// breakdown: it distinguishes "never enrolled" from "enrolled but the live
+// SecurityInfo check is timing out" so an operator knows whether the problem is
+// provider-side enrollment or APNs/MDM delivery. Hardware providers (reason
+// cleared) are excluded.
+func (r *Registry) ProviderCountByMDMFailure() map[string]int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	counts := make(map[string]int)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		reason := p.MDMFailureReason
+		p.mu.Unlock()
+		if status == StatusOffline || trust == TrustHardware {
+			continue
+		}
+		if reason == "" {
+			reason = "pending"
+		}
+		counts[reason]++
 	}
 	return counts
 }

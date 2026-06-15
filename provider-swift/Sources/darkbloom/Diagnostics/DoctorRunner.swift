@@ -55,21 +55,21 @@ enum DoctorRunner {
         // which needs no MDM profile). Nagging an already-hardware-trusted box to
         // enroll in MDM is a false warning that sends the operator down the wrong
         // flow and contradicts the trust line printed just above.
+        //
+        // Otherwise, delegate the verdict to the pure MDMTrustDiagnosis helper,
+        // which combines the daemon's last trust level with this Mac's actual MDM
+        // enrollment. This is what lets doctor DISTINGUISH "enrolled in Darkbloom
+        // MDM but the coordinator's live SecurityInfo check is still pending /
+        // timing out" (trust stuck at self_signed) from "not enrolled at all" —
+        // the previously-silent stall that left operators thinking they passed
+        // while earning nothing.
         let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
         if !alreadyHardwareTrusted {
-            switch checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url) {
-            case .enrolledDarkbloom, .checkFailed:
-                // checkFailed: unknown state — asserting "not enrolled" here
-                // would send an enrolled operator down the wrong flow.
-                break
-            case .enrolledOtherMDM(let serverURL):
-                out.append(Diagnostic(section: .trust, name: "mdm enrollment", level: .warn,
-                                      message: "this Mac is managed by another MDM (\(serverURL)) — macOS allows one MDM per device, so Darkbloom hardware trust can't be granted here.",
-                                      fix: "remove that profile in System Settings → Device Management (if it's yours to remove), then run `darkbloom enroll`."))
-            case .notEnrolled:
-                out.append(Diagnostic(section: .trust, name: "mdm enrollment", level: .warn,
-                                      message: "this Mac is not enrolled in MDM — hardware trust can't be granted, so you won't receive traffic on a hardware-trust network.",
-                                      fix: "run `darkbloom enroll` and approve the profile in System Settings → Profiles, then wait ~5 min."))
+            let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
+            let liveStatus = stateFresh ? state?.trust?.status : nil
+            let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
+            if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
+                out.append(diag)
             }
         }
 

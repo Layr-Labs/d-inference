@@ -6,6 +6,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
@@ -1825,6 +1827,170 @@ func TestApplyACMETrustRequiresMatchingAttestedSEKey(t *testing.T) {
 	}
 	if p.TrustLevel == registry.TrustHardware {
 		t.Fatal("ACME should not upgrade hardware trust when the ACME cert key mismatches attestation")
+	}
+}
+
+// TestApplyACMETrustEmitsOutcomeMetric verifies that applyACMETrust emits the
+// acme.trust counter with the correct outcome tag at each distinct exit, without
+// changing the trust decision itself.
+func TestApplyACMETrustEmitsOutcomeMetric(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	// boundProvider returns a provider whose attestation is bound + matches the
+	// given ACME key, plus the matching ACME result (the "granted" shape).
+	makeSrv := func(t *testing.T) (*Server, *udpCollector) {
+		t.Helper()
+		collector := newUDPCollector(t)
+		t.Cleanup(collector.Close)
+		st := store.NewMemory(store.Config{AdminKey: "test-key"})
+		reg := registry.New(logger)
+		srv := NewServer(reg, st, ServerConfig{}, logger)
+		ddClient := newTestDD(t, collector)
+		t.Cleanup(func() { ddClient.Close() })
+		srv.SetDatadog(ddClient)
+		return srv, collector
+	}
+
+	registerProvider := func(t *testing.T, srv *Server) (*registry.Provider, *protocol.RegisterMessage) {
+		t.Helper()
+		msg := &protocol.RegisterMessage{
+			Type:                    protocol.TypeRegister,
+			Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+			Models:                  []protocol.ModelInfo{{ID: "acme-model", ModelType: "chat", Quantization: "4bit"}},
+			Backend:                 "mlx-swift",
+			PublicKey:               testPublicKeyB64(),
+			EncryptedResponseChunks: true,
+			PrivacyCapabilities:     testPrivacyCaps(),
+		}
+		return srv.registry.Register("provider-1", nil, msg), msg
+	}
+
+	t.Run("nil_or_invalid", func(t *testing.T) {
+		srv, collector := makeSrv(t)
+		p, _ := registerProvider(t, srv)
+		srv.applyACMETrust("provider-1", p, nil)
+		_ = srv.dd.Statsd.Flush()
+		packets := collector.drain()
+		if !hasMetric(packets, "outcome:nil_or_invalid") {
+			t.Fatalf("expected acme.trust outcome:nil_or_invalid, got %v", findMetrics(packets, "acme.trust"))
+		}
+	})
+
+	t.Run("not_bound", func(t *testing.T) {
+		srv, collector := makeSrv(t)
+		p, _ := registerProvider(t, srv)
+		p.SetAttestationResult(&attestation.VerificationResult{Valid: true}) // no EncryptionPublicKey
+		srv.applyACMETrust("provider-1", p, &ACMEVerificationResult{Valid: true, PublicKey: "k", SerialNumber: "s"})
+		_ = srv.dd.Statsd.Flush()
+		packets := collector.drain()
+		if !hasMetric(packets, "outcome:not_bound") {
+			t.Fatalf("expected acme.trust outcome:not_bound, got %v", findMetrics(packets, "acme.trust"))
+		}
+	})
+
+	t.Run("key_mismatch", func(t *testing.T) {
+		srv, collector := makeSrv(t)
+		p, msg := registerProvider(t, srv)
+		attestationKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey(attestation): %v", err)
+		}
+		acmeKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey(acme): %v", err)
+		}
+		acmeKeyB64, err := encodeP256PublicKey(&acmeKey.PublicKey)
+		if err != nil {
+			t.Fatalf("encodeP256PublicKey: %v", err)
+		}
+		p.SetAttestationResult(&attestation.VerificationResult{
+			Valid:               true,
+			PublicKey:           rawP256PublicKeyB64ForTest(t, &attestationKey.PublicKey),
+			EncryptionPublicKey: msg.PublicKey,
+		})
+		srv.applyACMETrust("provider-1", p, &ACMEVerificationResult{Valid: true, PublicKey: acmeKeyB64, SerialNumber: "s"})
+		_ = srv.dd.Statsd.Flush()
+		packets := collector.drain()
+		if !hasMetric(packets, "outcome:key_mismatch") {
+			t.Fatalf("expected acme.trust outcome:key_mismatch, got %v", findMetrics(packets, "acme.trust"))
+		}
+	})
+
+	t.Run("granted", func(t *testing.T) {
+		srv, collector := makeSrv(t)
+		p, msg := registerProvider(t, srv)
+		attestationKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		acmeKeyB64, err := encodeP256PublicKey(&attestationKey.PublicKey)
+		if err != nil {
+			t.Fatalf("encodeP256PublicKey: %v", err)
+		}
+		p.SetAttestationResult(&attestation.VerificationResult{
+			Valid:               true,
+			PublicKey:           rawP256PublicKeyB64ForTest(t, &attestationKey.PublicKey),
+			EncryptionPublicKey: msg.PublicKey,
+		})
+		srv.applyACMETrust("provider-1", p, &ACMEVerificationResult{Valid: true, PublicKey: acmeKeyB64, SerialNumber: "s"})
+		if p.GetTrustLevel() != registry.TrustHardware {
+			t.Fatal("granted path should upgrade to hardware trust")
+		}
+		_ = srv.dd.Statsd.Flush()
+		packets := collector.drain()
+		if !hasMetric(packets, "outcome:granted") {
+			t.Fatalf("expected acme.trust outcome:granted, got %v", findMetrics(packets, "acme.trust"))
+		}
+	})
+}
+
+// TestExtractAndVerifyClientCertMissingMetric verifies that the no-cert path
+// emits acme.client_cert outcome:missing when ACME verification is configured
+// but the request carries no client-cert headers.
+func TestExtractAndVerifyClientCertMissingMetric(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
+
+	// Configure a (dummy) step-ca root so extractAndVerifyClientCert does not
+	// short-circuit on s.stepCARootCert == nil before reaching the header check.
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	srv.SetStepCACerts(caCert, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/provider", nil)
+	if res := srv.extractAndVerifyClientCert(req); res != nil {
+		t.Fatalf("expected nil result for missing client cert, got %+v", res)
+	}
+	_ = srv.dd.Statsd.Flush()
+	packets := collector.drain()
+	if !hasMetric(packets, "outcome:missing") {
+		t.Fatalf("expected acme.client_cert outcome:missing, got %v", findMetrics(packets, "acme.client_cert"))
 	}
 }
 

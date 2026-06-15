@@ -25,5 +25,11 @@ public enum ProviderCore {
     // routing, graceful download-first auto-update, and the model-alias hot-swap
     // layer. Semver compares numerically per-component, so 0.6.0 > 0.5.17 keeps
     // the desired_models gate satisfied.
-    public static let version = "0.6.8"
+    // 0.6.9 fixes a Gemma 4 batched-attention NaN bug: when continuous batching
+    // co-prefills requests of different lengths, short rows are left-padded and
+    // their fully-masked padding queries softmaxed to NaN, which `0 * NaN`
+    // propagated into every row -> token-salad/repetition under concurrent load.
+    // Fixed in mlx-swift-lm#38 (gemma4AttentionFallback NaN-guard); submodule
+    // pin advanced to ee2a921.
+    public static let version = "0.6.9"
 }

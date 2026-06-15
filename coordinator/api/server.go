@@ -2186,6 +2186,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 var publicCORSPaths = map[string]bool{
 	"/v1/models/catalog": true,
 	"/v1/pricing":        true,
+	"/v1/stats":          true,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are

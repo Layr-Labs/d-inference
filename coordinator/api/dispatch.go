@@ -134,6 +134,16 @@ func (d *dispatchState) traits() registry.RequestTraits {
 	return registry.RequestTraits{HasTools: d.hasTools, AvoidVersion: d.lastFailedVersion}
 }
 
+// queueMaxTTFTMs returns the TTFT ceiling for queued requests. Public routes
+// inherit the OpenRouter 10s target; self-route / prefer-owner paths are not
+// subject to the public SLA ceiling.
+func queueMaxTTFTMs(policy selfRoutePolicy) float64 {
+	if policy.enabled || policy.prefer {
+		return 0
+	}
+	return openRouterTTFT429Threshold.Seconds() * 1000.0
+}
+
 // dispatchPrimary selects (and, when no idle provider exists on the first
 // attempt, queues + dispatches) the primary provider for this attempt. It is the
 // extraction of the original loop's dispatch-primary block (incl. the queue path).
@@ -146,7 +156,8 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	// Dispatch the primary provider.
 	var dispatchErr string
 	var dispatchErrCode int
-	d.provider, d.pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
+	var decision registry.RoutingDecision
+	d.provider, d.pr, decision, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 		r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
 		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
@@ -161,6 +172,23 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.lastErr = dispatchErr
 			d.lastErrCode = dispatchErrCode
 			return outcomeFailFast
+		}
+
+		// Providers are available but all exceed the TTFT ceiling. On the
+		// first attempt, fail fast with a retryable 429 instead of queueing
+		// for a provider that would miss the OpenRouter SLA target. On retry
+		// attempts, fall through to normal retry logic so we don't abort an
+		// in-flight stream mid-way.
+		if dispatchErr == errTTFTTooSlow && attempt == 0 {
+			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
+			retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			d.refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:ttft_429"})
+			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				fmt.Sprintf("all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds", d.publicModel, int(openRouterTTFT429Threshold.Seconds()), bestTTFT.Seconds(), retryAfter),
+				withCode("rate_limit_exceeded")))
+			return outcomeResponseWritten
 		}
 
 		// dispatchOneProvider may have found a provider but rejected it
@@ -213,6 +241,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			PreferOwner:            d.policy.prefer,
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
+			MaxTTFTMs:              queueMaxTTFTMs(d.policy),
 			AcceptedCh:             make(chan struct{}, 1),
 			ChunkCh:                make(chan string, chunkBufferSize),
 			CompleteCh:             make(chan protocol.UsageInfo, 1),

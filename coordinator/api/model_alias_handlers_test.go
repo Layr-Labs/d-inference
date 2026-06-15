@@ -280,7 +280,7 @@ func TestAliasCapacityFallbackUsesPreviousWhenDesiredFull(t *testing.T) {
 		"model":    aliasQAT,
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	}
-	fallback, _, _, _, switched := srv.maybeFallbackAliasCapacity(parsed, "gemma-4-26b", aliasQAT, 10, 128, registry.RequestTraits{}, false, nil)
+	fallback, _, _, _, _, _, switched := srv.maybeFallbackAliasCapacity(parsed, "gemma-4-26b", aliasQAT, 10, 128, registry.RequestTraits{}, false, nil)
 	if !switched || fallback != aliasFP8 {
 		t.Fatalf("fallback = %q switched=%v, want previous %q", fallback, switched, aliasFP8)
 	}

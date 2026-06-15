@@ -163,6 +163,7 @@ type costBreakdown struct {
 	BacklogMs float64
 	ThisReqMs float64
 	HealthMs  float64
+	TTFTMs    float64 // estimated time-to-first-token for this candidate
 	Total     float64
 }
 
@@ -192,8 +193,18 @@ type RoutingDecision struct {
 	// precise "no vision-capable provider for this model" error instead of a
 	// generic capacity/queue signal.
 	VisionRejections int
-	EffectiveTPS     float64 // load-scaled decode TPS used in cost (Phase 4)
-	StaticTPS        float64 // benchmarked decode TPS before load scaling
+	// TTFTRejections counts providers that passed all other gates but exceeded
+	// the per-request MaxTTFTMs ceiling. Lets the caller fail fast with a 429
+	// instead of queueing or routing to a provider that misses the SLA.
+	TTFTRejections int
+	EffectiveTPS   float64 // load-scaled decode TPS used in cost (Phase 4)
+	StaticTPS      float64 // benchmarked decode TPS before load scaling
+	// BestTTFTMs is the lowest TTFT estimate seen during selection, even if it
+	// exceeded MaxTTFTMs. Used to compute an accurate Retry-After when all
+	// candidates are too slow.
+	BestTTFTMs float64
+	// TTFTMs is the estimated time-to-first-token of the selected provider.
+	TTFTMs float64
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -224,7 +235,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	selected, candidateCount, capacityRejections, tooLargeRejections, visionRejections := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	selected, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if selected == nil {
 		return nil, RoutingDecision{
 			Model:                   model,
@@ -232,6 +243,8 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 			CapacityRejections:      capacityRejections,
 			ModelTooLargeRejections: tooLargeRejections,
 			VisionRejections:        visionRejections,
+			TTFTRejections:          ttftRejections,
+			BestTTFTMs:              bestTTFTMs,
 		}
 	}
 
@@ -288,6 +301,9 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		CapacityRejections:      capacityRejections,
 		ModelTooLargeRejections: tooLargeRejections,
 		VisionRejections:        visionRejections,
+		TTFTRejections:          ttftRejections,
+		BestTTFTMs:              bestTTFTMs,
+		TTFTMs:                  bd.TTFTMs,
 		EffectiveTPS:            selected.effectiveTPS,
 		StaticTPS:               selected.snapshot.decodeTPS,
 	}
@@ -301,8 +317,8 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // provider is over-subscribed", which is the difference between the
 // no_provider and over_capacity outcome counters.
 // Returns (winner, candidateCount, capacityRejections, modelTooLargeRejections,
-// visionRejections).
-func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int, int) {
+// visionRejections, ttftRejections, bestTTFTMs).
+func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64) {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -323,6 +339,9 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	capacityRejections := 0
 	tooLargeRejections := 0
 	visionRejections := 0
+	ttftRejections := 0
+	bestTTFTMs := 0.0
+	enforceTTFT := pr.MaxTTFTMs > 0
 	affinityProviderID := ""
 	affinityLookup := pr.CacheAffinityKey != "" && pr.ConsumerKey != ""
 	if affinityLookup && r.cacheAffinityBonusMs > 0 {
@@ -383,6 +402,23 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 			}
 			continue
 		}
+
+		// Track the best TTFT seen among providers that passed all structural
+		// and capacity gates. Even if this candidate is over the ceiling, the
+		// value is used for Retry-After on the TTFT 429 path.
+		if !enforceTTFT || candidate.breakdown.TTFTMs < bestTTFTMs || bestTTFTMs == 0 {
+			bestTTFTMs = candidate.breakdown.TTFTMs
+		}
+
+		// Enforce the per-request TTFT ceiling for public inference routes.
+		// Providers above the threshold are counted as TTFT rejections and
+		// excluded from cost-based selection so the router cannot pick a
+		// provider that misses the OpenRouter SLA target.
+		if enforceTTFT && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
+			ttftRejections++
+			continue
+		}
+
 		if affinityProviderID != "" && p.ID == affinityProviderID {
 			bonus := r.cacheAffinityBonusMs
 			if bonus > candidate.costMs {
@@ -396,7 +432,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	}
 
 	if len(candidates) == 0 {
-		return nil, candidateCount, capacityRejections, tooLargeRejections, visionRejections
+		return nil, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
 	}
 
 	// Prefer-with-fallback: if the caller asked to prefer their own machine and
@@ -482,7 +518,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections
+	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -898,6 +934,18 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
 
+	// Estimated time-to-first-token for this candidate. Used for the
+	// OpenRouter TTFT ceiling: public routes only select providers whose
+	// estimated TTFT is within the per-request threshold.
+	prefillTPS := snap.prefillTPS
+	if prefillTPS <= 0 {
+		prefillTPS = 1.0
+	}
+	ttftMs := statePenalty + backlogMs + float64(reqPrompt)/prefillTPS*1000.0
+	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
+		ttftMs = 0
+	}
+
 	return &routingCandidate{
 		provider:       snap.provider,
 		snapshot:       snap,
@@ -911,6 +959,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 			BacklogMs: backlogMs,
 			ThisReqMs: thisReqMs,
 			HealthMs:  healthMs,
+			TTFTMs:    ttftMs,
 			Total:     cost,
 		},
 	}, rejectNone, true
@@ -1142,6 +1191,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	unknownTTFTCandidate := false
 	now := time.Now()
 	for _, p := range r.providers {
 		// Filter by allowed serials before acquiring the provider lock
@@ -1196,6 +1246,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			snap.pendingForModel++
 			snap.pendingMaxTokens += pendingTokenBudget(pending)
 		}
+		hasBackendCapacity := p.BackendCapacity != nil
 		if p.BackendCapacity != nil {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
 			if p.BackendCapacity.TotalMemoryGB > 0 {
@@ -1244,11 +1295,18 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 
 		candidateCount++
-		ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens, requestedMaxTokens)
-		if !hasTTFT || ttft < bestTTFT {
-			bestTTFT = ttft
-			hasTTFT = true
+		if hasBackendCapacity {
+			ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens, requestedMaxTokens)
+			if !hasTTFT || ttft < bestTTFT {
+				bestTTFT = ttft
+				hasTTFT = true
+			}
+		} else {
+			unknownTTFTCandidate = true
 		}
+	}
+	if unknownTTFTCandidate {
+		return candidateCount, capacityRejections, modelTooLarge, 0, false
 	}
 	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
 }

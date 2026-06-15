@@ -139,6 +139,11 @@ type PendingRequest struct {
 	// RequestedMaxTokens is the consumer's requested output budget (or a
 	// sensible default when omitted). It is used for backlog estimation.
 	RequestedMaxTokens int
+	// MaxTTFTMs is an optional per-request TTFT ceiling in milliseconds.
+	// When > 0, the scheduler only selects providers whose estimated TTFT is
+	// <= MaxTTFTMs. Used by public inference routes to honor the OpenRouter
+	// 10s TTFT target. Self-route / prefer-owner requests leave this at 0.
+	MaxTTFTMs float64
 	// CacheAffinityKey is SHA256(prompt_cache_key) from the request body. Empty
 	// means no cache-affinity routing. It is scoped again by account and model in
 	// the registry tracker and is never persisted.

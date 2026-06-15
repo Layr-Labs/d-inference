@@ -181,6 +181,100 @@ func TestQuickCapacityCheckWithTTFTIncludesBackendRunningFallback(t *testing.T) 
 	}
 }
 
+func TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet(t *testing.T) {
+	reg := New(testLogger())
+	model := "ttft-ceiling-model"
+
+	// slow-but-cheap: moderate backlog keeps its cost below the expensive
+	// provider, but the backlog pushes its TTFT above the 10s target.
+	slow := makeSchedulerProvider(t, reg, "slow", model, 100)
+	slow.mu.Lock()
+	slow.PrefillTPS = 1000
+	// 5_000 tokens / 100 TPS = 50s backlog; TTFT ≈ 50s + 0.1s > 10s.
+	slow.BackendCapacity.Slots[0].MaxTokensPotential = 5_000
+	slow.mu.Unlock()
+
+	// fast-but-expensive: low decode TPS inflates cost, but TTFT stays tiny.
+	fast := makeSchedulerProvider(t, reg, "fast", model, 1)
+	fast.mu.Lock()
+	fast.PrefillTPS = 1000
+	fast.mu.Unlock()
+
+	// Without a TTFT ceiling the router picks the slow (lower-cost) provider.
+	reqNoCeiling := &PendingRequest{
+		RequestID:             "req-no-ceiling",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+	}
+	selected, decision := reg.ReserveProviderEx(model, reqNoCeiling)
+	if selected == nil {
+		t.Fatalf("ReserveProviderEx returned nil: %+v", decision)
+	}
+	if selected.ID != slow.ID {
+		t.Fatalf("without ceiling selected %q, want slow provider", selected.ID)
+	}
+	selected.RemovePending(reqNoCeiling.RequestID)
+	reg.SetProviderIdle(selected.ID)
+
+	// With the TTFT ceiling the router must exclude slow and pick fast.
+	reqWithCeiling := &PendingRequest{
+		RequestID:             "req-with-ceiling",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+		MaxTTFTMs:             10_000, // 10s
+	}
+	selected, decision = reg.ReserveProviderEx(model, reqWithCeiling)
+	if selected == nil {
+		t.Fatalf("ReserveProviderEx returned nil: %+v", decision)
+	}
+	if selected.ID != fast.ID {
+		t.Fatalf("with ceiling selected %q, want fast provider; decision=%+v", selected.ID, decision)
+	}
+	if decision.TTFTRejections != 1 {
+		t.Fatalf("TTFTRejections = %d, want 1", decision.TTFTRejections)
+	}
+	if decision.BestTTFTMs <= 0 {
+		t.Fatalf("BestTTFTMs = %f, want > 0", decision.BestTTFTMs)
+	}
+	if decision.TTFTMs > 10_000 {
+		t.Fatalf("winning TTFTMs = %f, want <= 10000", decision.TTFTMs)
+	}
+}
+
+func TestReserveProviderReturnsTTFTRejectionsWhenAllTooSlow(t *testing.T) {
+	reg := New(testLogger())
+	model := "ttft-all-slow-model"
+
+	p := makeSchedulerProvider(t, reg, "slow", model, 100)
+	p.mu.Lock()
+	p.PrefillTPS = 1000
+	p.BackendCapacity.Slots[0].MaxTokensPotential = 2_000_000
+	p.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:             "req-all-slow",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+		MaxTTFTMs:             10_000,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Fatalf("expected no provider, got %q", selected.ID)
+	}
+	if decision.TTFTRejections != 1 {
+		t.Fatalf("TTFTRejections = %d, want 1", decision.TTFTRejections)
+	}
+	if decision.BestTTFTMs <= 10_000 {
+		t.Fatalf("BestTTFTMs = %f, want > 10000", decision.BestTTFTMs)
+	}
+	if decision.CandidateCount != 0 {
+		t.Fatalf("CandidateCount = %d, want 0", decision.CandidateCount)
+	}
+}
+
 func TestReserveProviderHonorsAllowedProviderSerials(t *testing.T) {
 	reg := New(testLogger())
 	model := "targeted-model"

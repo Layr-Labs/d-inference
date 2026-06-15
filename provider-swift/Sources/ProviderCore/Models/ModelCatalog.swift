@@ -12,7 +12,6 @@
 /// matching what `ModelScanner` already discovers.
 
 import Foundation
-import Crypto
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -1092,16 +1091,7 @@ public struct ModelDownloader: Sendable {
 
                 // SHA-256 verification.
                 let expectedSHA = job.file.sha256.lowercased()
-                let actual: String
-                if let hash = Self.sha256Hex(of: partial) {
-                    actual = hash
-                } else if let data = try? Data(contentsOf: partial) {
-                    var hasher = SHA256()
-                    hasher.update(data: data)
-                    actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-                } else {
-                    actual = "<unreadable>"
-                }
+                let actual = Self.sha256HexForVerification(of: partial)
 
                 let size = fileSize(partial)
                 guard actual == expectedSHA else {
@@ -1286,18 +1276,7 @@ public struct ModelDownloader: Sendable {
                 }
 
                 if let expectedSHA256 {
-                    // Compute SHA-256 using Data(contentsOf:) as a fallback
-                    // if FileHandle-based streaming fails (sandbox/permissions).
-                    let actual: String
-                    if let hash = Self.sha256Hex(of: partial) {
-                        actual = hash
-                    } else if let data = try? Data(contentsOf: partial) {
-                        var hasher = SHA256()
-                        hasher.update(data: data)
-                        actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-                    } else {
-                        actual = "<unreadable>"
-                    }
+                    let actual = Self.sha256HexForVerification(of: partial)
                     let size = fileSize(partial)
                     guard actual == expectedSHA256 else {
                         // The `.part` is corrupt (hash mismatch). Delete it so the
@@ -1513,6 +1492,14 @@ public struct ModelDownloader: Sendable {
         // fallback for files moved from URLSession temp locations.
         guard let digest = WeightHasher.hashSingleFile(at: url) else { return nil }
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func sha256HexForVerification(of url: URL) -> String {
+        sha256HexForVerification(of: url, hasher: sha256Hex)
+    }
+
+    static func sha256HexForVerification(of url: URL, hasher: (URL) -> String?) -> String {
+        hasher(url) ?? "<unreadable>"
     }
 
     /// Bytes still to fetch on a (possibly resumed) prefetch/download. For each

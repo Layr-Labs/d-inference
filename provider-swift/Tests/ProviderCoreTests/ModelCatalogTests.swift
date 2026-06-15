@@ -119,6 +119,16 @@ struct ModelCatalogTests {
         }
     }
 
+    @Test("SHA verification does not bypass WeightHasher fallback limits")
+    func shaVerificationDoesNotFallbackToWholeFileRead() throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("sha-policy-\(UUID().uuidString).safetensors")
+        try Data("hashable data".utf8).write(to: tmp)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        #expect(ModelDownloader.sha256HexForVerification(of: tmp, hasher: { _ in nil }) == "<unreadable>")
+    }
+
     @Test("fetchManifest decodes the registry manifest route")
     func fetchManifestDecodesRegistryRoute() async throws {
         let manifest = ModelManifest(

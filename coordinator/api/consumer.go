@@ -4249,6 +4249,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
 	}
 
+	// Public inference routes (not self-route / prefer-owner) enforce the
+	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
+	// check authoritative: the router cannot select a provider whose estimated
+	// TTFT is above the threshold.
+	if !policy.enabled && !policy.prefer {
+		pr.MaxTTFTMs = openRouterTTFT429Threshold.Seconds() * 1000.0
+	}
+
 	// refundExtra credits back the provider-specific surcharge that
 	// reserveAdditionalForProvider may have added on top of the base
 	// reservation. Without this, failing after the extra charge leaks
@@ -4312,6 +4320,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		break
 	}
 	if provider == nil {
+		// Providers are available but all exceed the TTFT ceiling. Fail fast
+		// with a retryable 429 rather than queueing for a provider that would
+		// miss the OpenRouter SLA target.
+		if decision.TTFTRejections > 0 {
+			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
+			refundReservation()
+			s.writeTTFTTooSlow(w, model, publicModel, bestTTFT)
+			return
+		}
+
 		// No online provider can physically fit this model — queueing/retrying
 		// can't help, so fast-fail with a clear, non-retryable error instead of
 		// blocking for 120s then 503-ing. Mirrors the streaming dispatch path.

@@ -472,4 +472,166 @@ struct ContinuousBatchingLiveTests {
         // engine on the shared `ModelContainer`.
         await engine.stop()
     }
+
+    // MARK: - Resource-count crash probe (diagnostic)
+
+    /// Drives a SUSTAINED high-concurrency, long-generation batched decode on
+    /// Gemma-4-26B to characterise the `[metal::malloc] Resource limit (499000)`
+    /// crash. Set DARKBLOOM_MLX_RESOURCE_DEBUG=1 to log num_resources_ vs cache
+    /// bytes per 50 steps (EngineCore prints them). The byte cache limit is set
+    /// HUGE here to mimic the 128 GB prod box (where the byte-trim never fires),
+    /// isolating pure count behaviour:
+    ///   - count climbs WITH cache bytes  => cached/evictable => a count-aware
+    ///     cache trim (the fork fix) prevents the crash.
+    ///   - count climbs while cache stays small => the buffers are LIVE in the
+    ///     in-flight eval => admission control (cap batch width/tokens) is needed.
+    /// Diagnostic, not an assertion test; gated behind the Gemma live flags.
+    /// Small-model variant of the resource probe (Qwen3-0.6B). The cached-vs-live
+    /// buffer trajectory under continuous batching is model-agnostic — a small
+    /// model has fewer layers (lower absolute count) but the SAME per-step
+    /// distinct-buffer pattern, so it answers "do the accumulating buffers track
+    /// the cache bytes (cached) or not (live)?" without the 26B load. Run locally
+    /// with DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_MLX_RESOURCE_DEBUG=1.
+    @Test(
+        "RESOURCE PROBE (small): batched decode resource-count trajectory (Qwen3-0.6B)",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil
+                && ProcessInfo.processInfo.environment["DARKBLOOM_MLX_RESOURCE_DEBUG"] != nil
+        )
+    )
+    func resourceCountTrajectoryProbeSmall() async throws {
+        try ensureMetallibAvailable()
+        // Mimic the big-RAM box: BOTH the cache-size trim (cacheLimit /
+        // max_pool_size_) AND the byte-pressure reclaim (memoryLimit, which drives
+        // gc_limit_ in MetalAllocator::malloc) must be lifted, or the byte path
+        // still frees cached buffers and flattens the count — a false negative for
+        // the count-limit bug. A prior live test may have left memoryLimit at
+        // 12–16GB via LiveInferenceFixtures.applyMemoryBudget. These are
+        // process-global and Swift Testing shares the process, so snapshot and
+        // restore both on exit.
+        let savedCacheLimit = MLX.Memory.cacheLimit
+        let savedMemoryLimit = MLX.Memory.memoryLimit
+        defer {
+            MLX.Memory.cacheLimit = savedCacheLimit
+            MLX.Memory.memoryLimit = savedMemoryLimit
+        }
+        MLX.Memory.memoryLimit = 80 * 1024 * 1024 * 1024  // byte-pressure reclaim off
+        MLX.Memory.cacheLimit = 80 * 1024 * 1024 * 1024  // cache-size trim off (mimic big box)
+
+        let modelID = "mlx-community/Qwen3-0.6B-8bit"
+        guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
+            Issue.record("model '\(modelID)' is not in the local cache")
+            return
+        }
+        let container = try await LLMModelFactory.shared.loadContainer(
+            from: modelDir, using: LocalTokenizerLoader())
+
+        // CHURN with VARIED prompt LENGTHS (not one fixed batch). Steady decode
+        // keeps the count flat because per-step shapes repeat; the prod crash is
+        // long-uptime churn where each new request length introduces new buffer
+        // shapes. Build a base token stream and slice DISTINCT lengths per wave.
+        let base: [Int] = try await container.perform { ctx in
+            try ctx.tokenizer.applyChatTemplate(
+                messages: [["role": "user", "content": String(
+                    repeating: "Explain in detail, step by step, with examples. ", count: 60)]],
+                tools: nil, additionalContext: nil)
+        }
+        print("[rsrc-probe-small] model=\(modelID) base_tokens=\(base.count) "
+            + "cacheLimit=80GB resourceLimit=\(MLX.Memory.resourceLimit)")
+
+        // Many WAVES; each wave submits a small concurrent batch whose prompt
+        // lengths differ from every other wave (distinct prefill shapes), then
+        // drains it. Mimics churn over uptime. EngineCore [rsrc] log shows the
+        // count trajectory across waves.
+        let waves = 60
+        for w in 0..<waves {
+            // 4 concurrent requests, each a DISTINCT length this wave.
+            let lens = (0..<4).map { 8 + ((w * 7 + $0 * 13) % max(1, base.count - 16)) }
+            let prompts = lens.map { Array(base.prefix($0)) }
+            _ = try await runBatchedEngine(
+                container: container, modelID: modelID, prompts: prompts, maxTokens: 24)
+            if w % 10 == 0 || w == waves - 1 {
+                let r = MLX.Memory.numResources
+                print(String(format: "[rsrc-wave] wave=%d distinct_lens=%@ resources=%d/%d (%.1f%%) cache=%.0fMB",
+                             w, "\(lens)", r, MLX.Memory.resourceLimit,
+                             Double(r) / Double(MLX.Memory.resourceLimit) * 100,
+                             Double(MLX.Memory.cacheMemory) / 1_048_576))
+                fflush(stdout)
+            }
+        }
+        print("[rsrc-probe-small] done — does count climb across distinct-shape waves?")
+    }
+
+    @Test(
+        "RESOURCE PROBE: sustained batched decode resource-count trajectory (Gemma-4-26B)",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil
+                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil
+                && ProcessInfo.processInfo.environment["DARKBLOOM_MLX_RESOURCE_DEBUG"] != nil
+        )
+    )
+    func resourceCountTrajectoryProbe() async throws {
+        try ensureMetallibAvailable()
+
+        // Mimic the 128 GB box: lift BOTH the cache-size trim (cacheLimit) AND the
+        // byte-pressure reclaim (memoryLimit -> gc_limit_ in
+        // MetalAllocator::malloc) so neither byte path fires — otherwise a prior
+        // live test that left memoryLimit at 12–16GB (via
+        // LiveInferenceFixtures.applyMemoryBudget) would let byte pressure free
+        // cached buffers and flatten the count, a false negative for the
+        // count-limit bug. Both are process-global; restore on exit.
+        let savedCacheLimit = MLX.Memory.cacheLimit
+        let savedMemoryLimit = MLX.Memory.memoryLimit
+        defer {
+            MLX.Memory.cacheLimit = savedCacheLimit
+            MLX.Memory.memoryLimit = savedMemoryLimit
+        }
+        MLX.Memory.memoryLimit = 80 * 1024 * 1024 * 1024
+        MLX.Memory.cacheLimit = 80 * 1024 * 1024 * 1024
+
+        // Use whichever Gemma-4-26B quant is on disk (box has 4bit; fixture
+        // default is 8bit); allow an explicit override for portability.
+        let candidates = [
+            ProcessInfo.processInfo.environment["DARKBLOOM_PROBE_MODEL"],
+            LiveInferenceFixtures.gemmaModelID,
+            "mlx-community/gemma-4-26b-a4b-it-4bit",
+            "gemma-4-26b",
+        ].compactMap { $0 }
+        guard let (modelID, modelDir) = candidates.lazy
+            .compactMap({ id in ModelScanner.resolveLocalPath(modelID: id).map { (id, $0) } })
+            .first
+        else {
+            Issue.record("no Gemma-4-26B variant in the local cache (tried \(candidates))")
+            return
+        }
+        let container = try await LLMModelFactory.shared.loadContainer(
+            from: modelDir, using: LocalTokenizerLoader())
+
+        // A handful of distinct prompts so co-batched rows have different
+        // lengths (the realistic continuous-batching shape that grows distinct
+        // buffer sizes each step).
+        let prompts = [
+            "Write a long detailed essay about the history of computing.",
+            "Explain quantum mechanics from first principles, at length.",
+            "Tell a long story about a lighthouse keeper.",
+            "Describe how a CPU executes an instruction, in great detail.",
+            "Summarize the plot of a 10-act epic in full.",
+            "List and explain 50 algorithms with examples.",
+        ]
+        let encoded: [[Int]] = try await container.perform { ctx in
+            try prompts.map {
+                try ctx.tokenizer.applyChatTemplate(
+                    messages: [["role": "user", "content": $0]], tools: nil, additionalContext: nil)
+            }
+        }
+        // Many concurrent rows × long generation = many decode steps.
+        let concurrency = 16
+        let manyPrompts = (0..<concurrency).map { encoded[$0 % encoded.count] }
+
+        print("[rsrc-probe] starting: model=\(modelID) concurrency=\(concurrency) "
+            + "cacheLimit=80GB resourceLimit=\(MLX.Memory.resourceLimit)")
+        _ = try await runBatchedEngine(
+            container: container, modelID: modelID, prompts: manyPrompts, maxTokens: 512)
+        print("[rsrc-probe] done: peak resources observed in the [rsrc] step logs above")
+    }
 }

@@ -587,6 +587,21 @@ struct Start: AsyncParsableCommand {
         let downloaded: Bool
     }
 
+    private static let gemmaPublicID = "gemma-4-26b"
+    private static let gemmaQATID = "gemma-4-26b-qat-4bit"
+    private static let gemmaRollbackID = "gemma-4-26b-8bit"
+
+    private func gemmaRolloutDisplayName(for model: CatalogModel) -> String? {
+        // Temporary Gemma 4 rollout shim. Remove after the coordinator alias
+        // catalog contract is deployed and the picker consumes alias metadata.
+        model.id == Self.gemmaQATID ? "Gemma 4 26B" : nil
+    }
+
+    private func shouldHideGemmaRolloutModel(_ model: CatalogModel, qatAvailable: Bool) -> Bool {
+        guard qatAvailable else { return model.id == Self.gemmaRollbackID }
+        return model.id == Self.gemmaPublicID || model.id == Self.gemmaRollbackID
+    }
+
     /// Fetches the model catalog from the coordinator, shows an interactive
     /// terminal picker, downloads any missing models, and returns the
     /// selected model IDs.
@@ -613,10 +628,14 @@ struct Start: AsyncParsableCommand {
 
         let localByID = Dictionary(uniqueKeysWithValues: snapshot.models.map { ($0.id, $0) })
         let memoryGb: Double = Double(snapshot.hardware?.memoryGb ?? 16)
+        let gemmaQATAvailable = catalog.contains { $0.id == Self.gemmaQATID }
 
         // Build picker entries: filter to models that fit, sort downloaded-first
         // then by size descending.
         var entries: [PickerEntry] = catalog.compactMap { entry in
+            if shouldHideGemmaRolloutModel(entry, qatAvailable: gemmaQATAvailable) {
+                return nil
+            }
             if let minRam = entry.minRamGb, Double(minRam) > memoryGb {
                 return nil
             }
@@ -630,7 +649,7 @@ struct Start: AsyncParsableCommand {
             return PickerEntry(
                 id: entry.id,
                 catalogModel: entry,
-                displayName: entry.displayName,
+                displayName: gemmaRolloutDisplayName(for: entry) ?? entry.displayName,
                 sizeGb: size,
                 minRamGb: entry.minRamGb,
                 downloaded: isDownloaded

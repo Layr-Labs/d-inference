@@ -19,6 +19,10 @@ public struct WeightHasher: Sendable {
 
     /// Buffer size for streaming file reads (64 KB).
     private static let bufferSize = 65536
+    /// Keep each streaming buffer small even if the constant changes later.
+    private static let maxStreamingBufferSize = 1024 * 1024
+    /// Last-resort whole-file reads are only acceptable for small metadata files.
+    static let maxWholeFileFallbackBytes: UInt64 = 64 * 1024 * 1024
 
     // MARK: - Public API
 
@@ -90,10 +94,10 @@ public struct WeightHasher: Sendable {
 
     /// Hash files in sorted filename order, combining per-file digests into a final hash.
     ///
-    /// Each file is hashed independently (in parallel via DispatchQueue), then the
+    /// Each file is hashed independently in sorted order, then the
     /// per-file SHA-256 digests are combined in sorted filename order into a single
     /// final SHA-256 hash. This produces a consistent result regardless of filesystem
-    /// ordering and scales across CPU cores for sharded model weights.
+    /// ordering.
     ///
     /// Sort key is the full absolute path (matches the legacy provider's behaviour
     /// where there is exactly one snapshot directory per call).
@@ -108,38 +112,10 @@ public struct WeightHasher: Sendable {
     public static func hashFilesWithRelativeKey(_ files: [(file: URL, sortKey: String)]) -> String? {
         let sorted = files.sorted { $0.sortKey < $1.sortKey }
 
-        // Hash each file in parallel.
-        let group = DispatchGroup()
-        let queue = DispatchQueue(label: "darkbloom.WeightHasher", attributes: .concurrent)
-
-        // Pre-allocate array for per-file hashes, indexed by position.
-        // Safety: each index is written by exactly one concurrent block, no two
-        // blocks share an index, and group.wait() provides the happens-before
-        // barrier before we read. The nonisolated(unsafe) annotation tells the
-        // compiler we've manually verified the data-race safety.
-        let count = sorted.count
-        let rawBuffer = UnsafeMutablePointer<SHA256Digest?>.allocate(capacity: count)
-        rawBuffer.initialize(repeating: nil, count: count)
-        nonisolated(unsafe) let buffer = rawBuffer
-        defer {
-            rawBuffer.deinitialize(count: count)
-            rawBuffer.deallocate()
-        }
-
-        for (index, entry) in sorted.enumerated() {
-            group.enter()
-            queue.async {
-                buffer[index] = hashSingleFile(at: entry.file)
-                group.leave()
-            }
-        }
-
-        group.wait()
-
         // Combine per-file hashes in sorted order.
         var finalHasher = SHA256()
-        for i in 0..<count {
-            guard let fileDigest = buffer[i] else {
+        for entry in sorted {
+            guard let fileDigest = hashSingleFile(at: entry.file) else {
                 return nil
             }
             // SHA256Digest doesn't conform to DataProtocol; use withUnsafeBytes
@@ -154,21 +130,57 @@ public struct WeightHasher: Sendable {
     /// SHA-256 hash a single file by streaming in chunks. Returns the raw digest
     /// so callers can either hex-encode it or feed it into another hasher.
     ///
-    /// Falls back to `Data(contentsOf:)` when `FileHandle` fails. This happens
-    /// for files moved from URLSession download temp locations — they retain
-    /// NSFileProtectionComplete extended attributes that block raw POSIX open()
-    /// but are handled transparently by NSData's file coordination.
+    /// Falls back through `InputStream` and, as a last resort, `Data(contentsOf:)`
+    /// when `FileHandle` fails. This happens for files moved from URLSession
+    /// download temp locations — they retain NSFileProtectionComplete extended
+    /// attributes that block raw POSIX open() but are handled transparently by
+    /// Foundation URL/file coordination.
     public static func hashSingleFile(at url: URL) -> SHA256Digest? {
         if let digest = hashSingleFileViaHandle(at: url) {
             return digest
         }
-        // Fallback: read the entire file via NSData (handles file protection).
-        guard let data = try? Data(contentsOf: url) else {
+        if let digest = hashSingleFileViaInputStream(at: url) {
+            return digest
+        }
+        // Last-resort compatibility fallback: NSData can handle file-protection
+        // cases that raw POSIX open() rejects. Keep it to small files so a large
+        // shard cannot be copied into memory after both streaming paths fail.
+        guard let size = fileSizeBytes(at: url), isWholeFileFallbackAllowed(fileSizeBytes: size) else {
+            return nil
+        }
+        guard let data = withAutoreleasePool({ try? Data(contentsOf: url) }) else {
             return nil
         }
         var hasher = SHA256()
         hasher.update(data: data)
         return hasher.finalize()
+    }
+
+    static func isWholeFileFallbackAllowed(fileSizeBytes: UInt64) -> Bool {
+        fileSizeBytes <= maxWholeFileFallbackBytes
+    }
+
+    static func isStreamingBufferSizeAllowed(_ bytes: Int) -> Bool {
+        bytes > 0 && bytes <= maxStreamingBufferSize
+    }
+
+    private static func fileSizeBytes(at url: URL) -> UInt64? {
+        let path = url.resolvingSymlinksInPath().path
+        guard let rawSize = try? FileManager.default.attributesOfItem(atPath: path)[.size] else {
+            return nil
+        }
+        guard let size = rawSize as? NSNumber else {
+            return nil
+        }
+        return size.uint64Value
+    }
+
+    private static func withAutoreleasePool<T>(_ body: () -> T) -> T {
+        #if canImport(ObjectiveC)
+        return autoreleasepool(invoking: body)
+        #else
+        return body()
+        #endif
     }
 
     private static func hashSingleFileViaHandle(at url: URL) -> SHA256Digest? {
@@ -180,13 +192,46 @@ public struct WeightHasher: Sendable {
         var hasher = SHA256()
 
         while true {
-            guard let chunk = try? handle.read(upToCount: bufferSize) else {
+            guard let chunk = withAutoreleasePool({ try? handle.read(upToCount: bufferSize) }) else {
                 return nil
             }
             if chunk.isEmpty {
                 break
             }
             hasher.update(data: chunk)
+        }
+
+        return hasher.finalize()
+    }
+
+    private static func hashSingleFileViaInputStream(at url: URL) -> SHA256Digest? {
+        guard isStreamingBufferSizeAllowed(bufferSize) else {
+            return nil
+        }
+        guard let stream = InputStream(url: url) else {
+            return nil
+        }
+        stream.open()
+        defer { stream.close() }
+
+        var hasher = SHA256()
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+
+        while true {
+            let bytesRead = buffer.withUnsafeMutableBufferPointer { ptr -> Int in
+                guard let baseAddress = ptr.baseAddress else { return -1 }
+                return stream.read(baseAddress, maxLength: bufferSize)
+            }
+            if bytesRead < 0 {
+                return nil
+            }
+            if bytesRead == 0 {
+                break
+            }
+            buffer.withUnsafeBufferPointer { ptr in
+                guard let baseAddress = ptr.baseAddress else { return }
+                hasher.update(bufferPointer: UnsafeRawBufferPointer(start: baseAddress, count: bytesRead))
+            }
         }
 
         return hasher.finalize()

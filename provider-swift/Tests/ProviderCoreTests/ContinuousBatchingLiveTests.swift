@@ -501,12 +501,22 @@ struct ContinuousBatchingLiveTests {
     )
     func resourceCountTrajectoryProbeSmall() async throws {
         try ensureMetallibAvailable()
-        // cacheLimit is process-global and Swift Testing shares the process, so
-        // restore the prior value on exit — otherwise this leaks the 80GB
-        // byte-trim-off setting into any other suite/test in the same run.
+        // Mimic the big-RAM box: BOTH the cache-size trim (cacheLimit /
+        // max_pool_size_) AND the byte-pressure reclaim (memoryLimit, which drives
+        // gc_limit_ in MetalAllocator::malloc) must be lifted, or the byte path
+        // still frees cached buffers and flattens the count — a false negative for
+        // the count-limit bug. A prior live test may have left memoryLimit at
+        // 12–16GB via LiveInferenceFixtures.applyMemoryBudget. These are
+        // process-global and Swift Testing shares the process, so snapshot and
+        // restore both on exit.
         let savedCacheLimit = MLX.Memory.cacheLimit
-        defer { MLX.Memory.cacheLimit = savedCacheLimit }
-        MLX.Memory.cacheLimit = 80 * 1024 * 1024 * 1024  // byte-trim off (mimic big box)
+        let savedMemoryLimit = MLX.Memory.memoryLimit
+        defer {
+            MLX.Memory.cacheLimit = savedCacheLimit
+            MLX.Memory.memoryLimit = savedMemoryLimit
+        }
+        MLX.Memory.memoryLimit = 80 * 1024 * 1024 * 1024  // byte-pressure reclaim off
+        MLX.Memory.cacheLimit = 80 * 1024 * 1024 * 1024  // cache-size trim off (mimic big box)
 
         let modelID = "mlx-community/Qwen3-0.6B-8bit"
         guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
@@ -563,12 +573,20 @@ struct ContinuousBatchingLiveTests {
     func resourceCountTrajectoryProbe() async throws {
         try ensureMetallibAvailable()
 
-        // Mimic the 128 GB box: make the byte cache effectively unbounded so the
-        // existing byte-driven trim never fires — exposing pure count growth.
-        // Restore on exit (cacheLimit is process-global; Swift Testing shares the
-        // process, so leaking 80GB would weaken the memory guard for other tests).
+        // Mimic the 128 GB box: lift BOTH the cache-size trim (cacheLimit) AND the
+        // byte-pressure reclaim (memoryLimit -> gc_limit_ in
+        // MetalAllocator::malloc) so neither byte path fires — otherwise a prior
+        // live test that left memoryLimit at 12–16GB (via
+        // LiveInferenceFixtures.applyMemoryBudget) would let byte pressure free
+        // cached buffers and flatten the count, a false negative for the
+        // count-limit bug. Both are process-global; restore on exit.
         let savedCacheLimit = MLX.Memory.cacheLimit
-        defer { MLX.Memory.cacheLimit = savedCacheLimit }
+        let savedMemoryLimit = MLX.Memory.memoryLimit
+        defer {
+            MLX.Memory.cacheLimit = savedCacheLimit
+            MLX.Memory.memoryLimit = savedMemoryLimit
+        }
+        MLX.Memory.memoryLimit = 80 * 1024 * 1024 * 1024
         MLX.Memory.cacheLimit = 80 * 1024 * 1024 * 1024
 
         // Use whichever Gemma-4-26B quant is on disk (box has 4bit; fixture

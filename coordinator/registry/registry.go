@@ -865,8 +865,9 @@ type Registry struct {
 	// rebuilt each sweep so disconnected providers drop out automatically.
 	evictStrikes map[string]int
 
-	cacheAffinity *cacheAffinityTracker
-	warmPool      *warmPoolController
+	cacheAffinity        *cacheAffinityTracker
+	cacheAffinityBonusMs float64
+	warmPool             *warmPoolController
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
 }
@@ -909,8 +910,29 @@ func New(logger *slog.Logger) *Registry {
 		inferenceErrorCooldowns: make(map[inferenceErrorKey]time.Time),
 		evictStrikes:            make(map[string]int),
 		cacheAffinity:           newCacheAffinityTracker(cacheAffinityTTL),
+		cacheAffinityBonusMs:    defaultCacheAffinityBonusMs,
 		logger:                  logger,
 	}
+}
+
+func (r *Registry) ConfigureCacheAffinity(cfg CacheAffinityConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cfg.TTL <= 0 {
+		cfg.TTL = cacheAffinityTTL
+	}
+	r.cacheAffinity = newCacheAffinityTracker(cfg.TTL)
+	r.cacheAffinityBonusMs = cfg.BonusMs
+}
+
+func (r *Registry) CacheAffinityConfigSnapshot() CacheAffinityConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ttl := cacheAffinityTTL
+	if r.cacheAffinity != nil {
+		ttl = r.cacheAffinity.ttl
+	}
+	return CacheAffinityConfig{TTL: ttl, BonusMs: r.cacheAffinityBonusMs}
 }
 
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down

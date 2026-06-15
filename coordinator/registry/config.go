@@ -12,6 +12,12 @@ import (
 type Config struct {
 	MinTrustLevel string
 	WarmPool      WarmPoolConfig
+	CacheAffinity CacheAffinityConfig
+}
+
+type CacheAffinityConfig struct {
+	TTL     time.Duration
+	BonusMs float64
 }
 
 type WarmPoolConfig struct {
@@ -54,6 +60,10 @@ func ReadConfig() Config {
 			MaxLoadsPerTick:           env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_LOADS_PER_TICK", 1),
 			MaxGlobalPendingLoads:     env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_GLOBAL_PENDING_LOADS", 4),
 		},
+		CacheAffinity: CacheAffinityConfig{
+			TTL:     envDuration(env.EnvPrefix+"_CACHE_AFFINITY_TTL", cacheAffinityTTL),
+			BonusMs: env.EnvFloat(env.EnvPrefix+"_CACHE_AFFINITY_BONUS_MS", defaultCacheAffinityBonusMs),
+		},
 	}
 }
 
@@ -70,14 +80,33 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 // An empty MinTrustLevel is valid and means "use the default".
 func (c Config) Check() error {
 	if c.MinTrustLevel == "" {
-		return c.WarmPool.Check()
+		if err := c.WarmPool.Check(); err != nil {
+			return err
+		}
+		return c.CacheAffinity.Check()
 	}
 	// trustRank returns -1 for unrecognized trust levels.
 	if trustRank(TrustLevel(c.MinTrustLevel)) < 0 {
 		return fmt.Errorf("registry: invalid MinTrustLevel %q (valid: %q, %q, %q)",
 			c.MinTrustLevel, TrustNone, TrustSelfSigned, TrustHardware)
 	}
-	return c.WarmPool.Check()
+	if err := c.WarmPool.Check(); err != nil {
+		return err
+	}
+	return c.CacheAffinity.Check()
+}
+
+func (c CacheAffinityConfig) Check() error {
+	if c.TTL < 0 {
+		return fmt.Errorf("registry: cache affinity ttl must be >= 0")
+	}
+	if c.BonusMs < 0 {
+		return fmt.Errorf("registry: cache affinity bonus must be >= 0")
+	}
+	if c.BonusMs > 10_000 {
+		return fmt.Errorf("registry: cache affinity bonus must be <= 10000ms")
+	}
+	return nil
 }
 
 func (c WarmPoolConfig) Check() error {

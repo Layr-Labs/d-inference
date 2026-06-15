@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	cacheAffinityTTL     = 10 * time.Minute
-	cacheAffinityBonusMs = 1_500.0
+	cacheAffinityTTL            = 10 * time.Minute
+	defaultCacheAffinityBonusMs = 1_500.0
 )
 
 type cacheAffinityKey struct {

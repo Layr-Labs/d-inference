@@ -150,6 +150,9 @@ func main() {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
 	}
+	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
+	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
+	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)
 	stopWarmPool := reg.StartWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
 	defer stopWarmPool()
 	if cfg.RegistryCfg.WarmPool.Enabled {

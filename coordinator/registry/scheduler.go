@@ -324,7 +324,8 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	tooLargeRejections := 0
 	visionRejections := 0
 	affinityProviderID := ""
-	if pr.CacheAffinityKey != "" && pr.ConsumerKey != "" {
+	affinityLookup := pr.CacheAffinityKey != "" && pr.ConsumerKey != ""
+	if affinityLookup && r.cacheAffinityBonusMs > 0 {
 		affinityProviderID = r.cacheAffinity.lookup(pr.ConsumerKey, model, pr.CacheAffinityKey, time.Now())
 	}
 	for _, p := range r.providers {
@@ -383,7 +384,11 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 			continue
 		}
 		if affinityProviderID != "" && p.ID == affinityProviderID {
-			candidate.costMs -= cacheAffinityBonusMs
+			bonus := r.cacheAffinityBonusMs
+			if bonus > candidate.costMs {
+				bonus = candidate.costMs
+			}
+			candidate.costMs -= bonus
 			candidate.breakdown.Total = candidate.costMs
 		}
 		candidates = append(candidates, candidate)

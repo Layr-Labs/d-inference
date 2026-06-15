@@ -293,23 +293,23 @@ func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, re
 // immediate capacity, route this request to Previous instead of returning a fast
 // 429. Hard constraints and permanent model-too-large failures are handled by the
 // caller and do not use this fallback.
-func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, bool) {
+func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, bool) {
 	if publicModel == "" || publicModel == currentModel {
-		return currentModel, false
+		return currentModel, 0, 0, 0, false
 	}
 	target, ok := s.registry.AliasTarget(publicModel)
 	if !ok || target.Desired != currentModel || target.Previous == "" {
-		return currentModel, false
+		return currentModel, 0, 0, 0, false
 	}
 	if !s.registry.IsModelInCatalog(target.Previous) {
-		return currentModel, false
+		return currentModel, 0, 0, 0, false
 	}
-	candidates, _, _ := s.registry.QuickCapacityCheckForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
+	candidates, rejections, tooLarge := s.registry.QuickCapacityCheckForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
 	if candidates <= 0 {
-		return currentModel, false
+		return currentModel, candidates, rejections, tooLarge, false
 	}
 	parsed["model"] = target.Previous
-	return target.Previous, true
+	return target.Previous, candidates, rejections, tooLarge, true
 }
 
 // dispatchOneProvider encrypts and sends an inference request to a single
@@ -1528,8 +1528,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// owner's machine instead (handled below).
 		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheckForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
+				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
 					if err != nil {
@@ -1541,7 +1542,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				} else {
 					rawBody, _ = marshalForwardBody(parsed)
 				}
-				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheckForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
@@ -4016,9 +4016,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	} else {
 		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheckForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
-				candidateCount, capacityRejections, modelTooLarge = s.registry.QuickCapacityCheckForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
+				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {

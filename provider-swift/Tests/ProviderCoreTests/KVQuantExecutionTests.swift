@@ -30,23 +30,23 @@ func fp16KVExecutionConfigUsesNoQuantization() throws {
     #expect(config.cacheFactory == nil)
 }
 
-@Test("affine4 full-KV mode uses mlx-swift-lm dynamic KV quantization")
-func affine4FullKVModeUsesDynamicKVQuantization() throws {
+@Test("affine4 full-KV mode supplies a protocol-safe quantized cache factory")
+func affine4FullKVModeSuppliesProtocolSafeQuantizedCacheFactory() throws {
     let config = try KVQuantExecution.config(for: .affine4)
 
-    #expect(config.parameters.kvBits == 4)
+    #expect(config.parameters.kvBits == nil)
     #expect(config.parameters.kvGroupSize == 64)
-    #expect(config.parameters.quantizedKVStart == 1024)
+    #expect(config.parameters.quantizedKVStart == 0)
     #expect(config.cacheFactory != nil)
 }
 
-@Test("affine8 full-KV mode uses mlx-swift-lm dynamic KV quantization")
-func affine8FullKVModeUsesDynamicKVQuantization() throws {
+@Test("affine8 full-KV mode supplies a protocol-safe quantized cache factory")
+func affine8FullKVModeSuppliesProtocolSafeQuantizedCacheFactory() throws {
     let config = try KVQuantExecution.config(for: .affine8)
 
-    #expect(config.parameters.kvBits == 8)
+    #expect(config.parameters.kvBits == nil)
     #expect(config.parameters.kvGroupSize == 64)
-    #expect(config.parameters.quantizedKVStart == 1024)
+    #expect(config.parameters.quantizedKVStart == 0)
     #expect(config.cacheFactory != nil)
 }
 

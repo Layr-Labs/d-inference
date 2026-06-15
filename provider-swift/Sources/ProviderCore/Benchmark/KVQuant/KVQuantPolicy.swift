@@ -74,7 +74,7 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
     ) -> (plan: KVQuantPlan, summary: String, reasons: [String]) {
         switch family {
         case .gemma4:
-            let summary = "Gemma 4: V-only 4-bit KV policy on full/global layers from token 1024; K and rotating/sliding caches stay fp16."
+            let summary = "Gemma 4: validated KV quant candidate is `full-v-affine4:g64:start1024` (V-only 4-bit affine on full/global layers from token 1024; keys and rotating/sliding caches stay fp16)."
             return (
                 KVQuantPlan(
                     enabled: true,
@@ -82,7 +82,7 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
                     tensorTarget: .valuesOnly,
                     keyPrecision: .fp16,
                     valuePrecision: .quantized4Bit,
-                    valueEncoding: .turbo4Placeholder,
+                    valueEncoding: .affine4Placeholder,
                     quantizationStartToken: 1024,
                     sinkAware: .notRequired,
                     rotatingSlidingPrecision: .fp16,
@@ -93,7 +93,7 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
                 [
                     "Gemma 4 should only quantize full/global attention layers; rotating or sliding-window layers remain fp16.",
                     "Value cache only is selected so key cache attention quality remains fp16.",
-                    "turbo4 is a placeholder encoding choice; affine4 can be mapped here when kernels land.",
+                    "The validated benchmark candidate is `full-v-affine4:g64:start1024`, which passes PPL/logits/output/NIAH gates.",
                     "Quantization starts at token 1024 to preserve the short-context prefix in fp16.",
                     "MTP is disabled until a model-specific guarded path is validated.",
                     mode.reportDescription,
@@ -101,7 +101,7 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
             )
 
         case .gptOSS:
-            let summary = "GPT-OSS: V-only 4-bit KV policy on full layers from token 1024 with sink-aware handling required; K and rotating/sliding caches stay fp16."
+            let summary = "GPT-OSS: validated KV quant candidate is `full-v-affine4:g64:start1024` (V-only 4-bit affine on full layers from token 1024; keys and rotating/sliding caches stay fp16)."
             return (
                 KVQuantPlan(
                     enabled: true,
@@ -109,7 +109,7 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
                     tensorTarget: .valuesOnly,
                     keyPrecision: .fp16,
                     valuePrecision: .quantized4Bit,
-                    valueEncoding: .turbo4Placeholder,
+                    valueEncoding: .affine4Placeholder,
                     quantizationStartToken: 1024,
                     sinkAware: .required,
                     rotatingSlidingPrecision: .fp16,
@@ -121,6 +121,7 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
                     "GPT-OSS should only quantize full attention layers; rotating or sliding-window layers remain fp16.",
                     "Sink-aware handling is required before applying this policy.",
                     "Value cache only is selected so key cache attention quality remains fp16.",
+                    "The validated benchmark candidate is `full-v-affine4:g64:start1024`, which passes PPL/logits/output/NIAH gates.",
                     "Quantization starts at token 1024 to preserve the prompt prefix and attention sinks in fp16.",
                     mode.reportDescription,
                 ]

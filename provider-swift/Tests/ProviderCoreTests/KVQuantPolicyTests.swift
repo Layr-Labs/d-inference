@@ -33,7 +33,7 @@ func gemma4KVQuantDefaultsAreConservative() {
     #expect(policy.plan.tensorTarget == .valuesOnly)
     #expect(policy.plan.keyPrecision == .fp16)
     #expect(policy.plan.valuePrecision == .quantized4Bit)
-    #expect(policy.plan.valueEncoding == .turbo4Placeholder)
+    #expect(policy.plan.valueEncoding == .affine4Placeholder)
     #expect(policy.plan.quantizationStartToken == 1024)
     #expect(policy.plan.rotatingSlidingPrecision == .fp16)
     #expect(policy.plan.mtpPolicy == .disabled)

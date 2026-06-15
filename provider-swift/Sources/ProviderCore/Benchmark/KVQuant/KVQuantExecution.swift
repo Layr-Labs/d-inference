@@ -95,17 +95,21 @@ enum KVQuantExecution {
             guard let groupSize = mode.groupSize else {
                 throw KVQuantExecutionError.missingGroupSize(mode)
             }
-            guard let startToken = mode.startToken else {
-                throw KVQuantExecutionError.missingStartToken(mode)
-            }
-            // Use mlx-swift-lm's upstream dynamic KV-cache quantization
-            // (GenerateParameters.kvBits / kvGroupSize / quantizedKVStart).
-            parameters.kvBits = mode.bitWidth ?? 4
-            parameters.kvGroupSize = groupSize
-            parameters.quantizedKVStart = startToken
-            let cacheParameters = parameters
+            let bits = mode.bitWidth ?? 4
+            // Use a protocol-safe quantized cache that can serve both the
+            // native quantized attention path and the plain update(keys:values:)
+            // fallback used by single-forward scoring and Gemma 4 attention.
             let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
-                model.newCache(parameters: cacheParameters)
+                model.newCache(parameters: nil).map { baseCache in
+                    if baseCache is RotatingKVCache {
+                        return baseCache.copy()
+                    }
+                    return ProtocolSafeQuantizedKVCache(
+                        groupSize: groupSize,
+                        bits: bits,
+                        mode: .affine
+                    )
+                }
             }
             return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
 

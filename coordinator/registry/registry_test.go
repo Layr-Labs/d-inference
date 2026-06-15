@@ -401,6 +401,57 @@ func TestHeartbeat(t *testing.T) {
 	}
 }
 
+// TestHeartbeatAccumulatesUptime is the integration regression: the
+// heartbeat handler credits the wall-clock gap since the previous heartbeat as
+// uptime (bounded), so an always-online provider's reputation can exceed 0.85.
+// This test fails without the registry.go Heartbeat change.
+func TestHeartbeatAccumulatesUptime(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	// Simulate ~45s since the last heartbeat (within the 2m credit window).
+	p.mu.Lock()
+	p.LastHeartbeat = time.Now().Add(-45 * time.Second)
+	p.mu.Unlock()
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle"})
+
+	p.mu.Lock()
+	credited := p.Reputation.TotalUptime
+	p.mu.Unlock()
+	if credited < 40*time.Second || credited > 50*time.Second {
+		t.Fatalf("uptime credited = %v, want ~45s", credited)
+	}
+
+	// An oversized gap (provider effectively offline) must NOT be credited.
+	p.mu.Lock()
+	p.LastHeartbeat = time.Now().Add(-30 * time.Minute)
+	before := p.Reputation.TotalUptime
+	p.mu.Unlock()
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle"})
+
+	p.mu.Lock()
+	after := p.Reputation.TotalUptime
+	p.mu.Unlock()
+	if jump := after - before; jump > time.Minute {
+		t.Fatalf("oversized offline gap credited %v of uptime, want it skipped", jump)
+	}
+
+	// After enough accumulated uptime + a perfect record, the score must clear
+	// the old 0.85 cap.
+	p.mu.Lock()
+	p.Reputation.RecordUptime(24 * time.Hour)
+	p.Reputation.RecordJobSuccess()
+	p.Reputation.RecordLatency(300 * time.Millisecond)
+	p.Reputation.RecordChallengePass()
+	score := p.Reputation.Score()
+	p.mu.Unlock()
+	if score <= 0.85 {
+		t.Fatalf("score = %f, want > 0.85 after accumulated uptime", score)
+	}
+}
+
 func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
@@ -1382,6 +1433,38 @@ func TestRecordJobSuccessUpdatesReputation(t *testing.T) {
 	}
 	if p.Reputation.TotalJobs != 2 {
 		t.Errorf("total_jobs = %d, want 2", p.Reputation.TotalJobs)
+	}
+	// Both calls fed a 500ms TTFT: seed 500ms then EWMA stays 500ms.
+	if p.Reputation.AvgResponseTime != 500*time.Millisecond {
+		t.Errorf("avg_response_time = %v, want 500ms", p.Reputation.AvgResponseTime)
+	}
+}
+
+// TestRecordJobSuccessLatencyEWMA exercises the Registry wrapper end-to-end: the
+// real TTFT passed to RecordJobSuccess is folded into the provider's
+// AvgResponseTime EWMA, and a non-positive TTFT records the job without
+// touching latency.
+func TestRecordJobSuccessLatencyEWMA(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	reg.RecordJobSuccess("p1", 100*time.Millisecond) // seed
+	if got := p.Reputation.AvgResponseTime; got != 100*time.Millisecond {
+		t.Fatalf("after seed: avg = %v, want 100ms", got)
+	}
+	reg.RecordJobSuccess("p1", 200*time.Millisecond) // 100*0.8 + 200*0.2 = 120ms
+	if got := p.Reputation.AvgResponseTime; got != 120*time.Millisecond {
+		t.Fatalf("after EWMA: avg = %v, want 120ms", got)
+	}
+
+	// A zero TTFT (no first-chunk timestamp) still counts the job but leaves
+	// the latency average unchanged.
+	reg.RecordJobSuccess("p1", 0)
+	if got := p.Reputation.AvgResponseTime; got != 120*time.Millisecond {
+		t.Fatalf("after zero ttft: avg = %v, want unchanged 120ms", got)
+	}
+	if p.Reputation.SuccessfulJobs != 3 {
+		t.Errorf("successful_jobs = %d, want 3", p.Reputation.SuccessfulJobs)
 	}
 }
 
@@ -3050,4 +3133,32 @@ func TestCodeAttestationCoverage(t *testing.T) {
 	if attested != 1 {
 		t.Fatalf("expected 1 code-attested online provider, got %d", attested)
 	}
+}
+
+// TestRemoveProviderBySerialRaceWithAttestation guards the DAR-291 delete path:
+// RemoveProviderBySerial matches a live machine by its attested serial, reading
+// AttestationResult while holding only the registry lock. Since attestation
+// completion writes that pointer under the provider mutex (SetAttestationResult),
+// the read must go through the thread-safe accessor or it data-races. Run under
+// -race; it fails (DATA RACE) without the GetAttestationResult() fix.
+func TestRemoveProviderBySerialRaceWithAttestation(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p-race", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: "m", ModelType: "chat"}},
+	})
+	const serial = "SER-RACE"
+
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: serial})
+		}()
+		go func() {
+			defer wg.Done()
+			reg.RemoveProviderBySerial(serial, false)
+		}()
+	}
+	wg.Wait()
 }

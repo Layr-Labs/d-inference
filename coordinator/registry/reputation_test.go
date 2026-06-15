@@ -19,7 +19,8 @@ func TestReputationSuccessfulJobsIncreaseScore(t *testing.T) {
 
 	// Record several successful jobs with fast response times.
 	for range 10 {
-		r.RecordJobSuccess(500 * time.Millisecond)
+		r.RecordJobSuccess()
+		r.RecordLatency(500 * time.Millisecond)
 	}
 	r.RecordUptime(24 * time.Hour)
 	r.RecordChallengePass()
@@ -35,7 +36,8 @@ func TestReputationFailedJobsDecreaseScore(t *testing.T) {
 
 	// Record some successes first to establish a baseline.
 	for range 5 {
-		r.RecordJobSuccess(500 * time.Millisecond)
+		r.RecordJobSuccess()
+		r.RecordLatency(500 * time.Millisecond)
 	}
 	r.RecordUptime(24 * time.Hour)
 	scoreAfterSuccess := r.Score()
@@ -70,7 +72,8 @@ func TestReputationScoreBounded(t *testing.T) {
 	// Reset and do all successes — score should not exceed 1.0.
 	r2 := NewReputation()
 	for range 100 {
-		r2.RecordJobSuccess(100 * time.Millisecond)
+		r2.RecordJobSuccess()
+		r2.RecordLatency(100 * time.Millisecond)
 	}
 	r2.RecordUptime(48 * time.Hour) // more than expected
 	for range 100 {
@@ -86,8 +89,10 @@ func TestReputationScoreBounded(t *testing.T) {
 func TestReputationJobSuccessStats(t *testing.T) {
 	r := NewReputation()
 
-	r.RecordJobSuccess(100 * time.Millisecond)
-	r.RecordJobSuccess(200 * time.Millisecond)
+	r.RecordJobSuccess()
+	r.RecordLatency(100 * time.Millisecond)
+	r.RecordJobSuccess()
+	r.RecordLatency(200 * time.Millisecond)
 	r.RecordJobFailure()
 
 	if r.TotalJobs != 3 {
@@ -99,9 +104,10 @@ func TestReputationJobSuccessStats(t *testing.T) {
 	if r.FailedJobs != 1 {
 		t.Errorf("failed_jobs = %d, want 1", r.FailedJobs)
 	}
-	// Average of 100ms and 200ms = 150ms.
-	if r.AvgResponseTime != 150*time.Millisecond {
-		t.Errorf("avg_response_time = %v, want 150ms", r.AvgResponseTime)
+	// EWMA (alpha=0.2): first sample 100ms seeds the average; second sample
+	// 200ms gives 100*0.8 + 200*0.2 = 120ms.
+	if r.AvgResponseTime != 120*time.Millisecond {
+		t.Errorf("avg_response_time = %v, want 120ms (EWMA)", r.AvgResponseTime)
 	}
 }
 
@@ -136,12 +142,14 @@ func TestReputationChallengeTracking(t *testing.T) {
 
 func TestReputationSlowResponseTimeLowersScore(t *testing.T) {
 	fast := NewReputation()
-	fast.RecordJobSuccess(100 * time.Millisecond)
+	fast.RecordJobSuccess()
+	fast.RecordLatency(100 * time.Millisecond)
 	fast.RecordUptime(24 * time.Hour)
 	fast.RecordChallengePass()
 
 	slow := NewReputation()
-	slow.RecordJobSuccess(9 * time.Second)
+	slow.RecordJobSuccess()
+	slow.RecordLatency(9 * time.Second)
 	slow.RecordUptime(24 * time.Hour)
 	slow.RecordChallengePass()
 
@@ -156,7 +164,8 @@ func TestReputationSlowResponseTimeLowersScore(t *testing.T) {
 func TestReputationCompositeWeights(t *testing.T) {
 	// Test with only job success rate active (other components neutral).
 	r := NewReputation()
-	r.RecordJobSuccess(500 * time.Millisecond)
+	r.RecordJobSuccess()
+	r.RecordLatency(500 * time.Millisecond)
 	// No uptime, no challenges — those use neutral 0.5.
 	// Job rate = 1.0, uptime = 0.5, challenge = 0.5, response = ~1.0.
 	// Score = 0.4*1.0 + 0.3*0.5 + 0.2*0.5 + 0.1*1.0 = 0.4 + 0.15 + 0.1 + 0.1 = 0.75.
@@ -179,5 +188,115 @@ func TestReputationAllFailures(t *testing.T) {
 	score := r.Score()
 	if score < 0.15 || score > 0.25 {
 		t.Errorf("score with all failures = %f, expected ~0.2", score)
+	}
+}
+
+// TestRecordLatencyEWMA verifies AvgResponseTime is an exponential moving
+// average of real TTFT samples: the first sample seeds it, subsequent samples
+// blend at alpha=0.2, and non-positive samples are ignored.
+func TestRecordLatencyEWMA(t *testing.T) {
+	r := NewReputation()
+
+	// First sample seeds the average directly.
+	r.RecordLatency(100 * time.Millisecond)
+	if r.AvgResponseTime != 100*time.Millisecond {
+		t.Fatalf("after seed: avg = %v, want 100ms", r.AvgResponseTime)
+	}
+
+	// Second sample: 100*0.8 + 200*0.2 = 120ms.
+	r.RecordLatency(200 * time.Millisecond)
+	if r.AvgResponseTime != 120*time.Millisecond {
+		t.Fatalf("after second sample: avg = %v, want 120ms", r.AvgResponseTime)
+	}
+
+	// Zero and negative samples are no-ops (a missing FirstChunkAt must not
+	// drag the average toward zero).
+	r.RecordLatency(0)
+	r.RecordLatency(-5 * time.Millisecond)
+	if r.AvgResponseTime != 120*time.Millisecond {
+		t.Fatalf("after zero/negative samples: avg = %v, want unchanged 120ms", r.AvgResponseTime)
+	}
+}
+
+// TestReputationFullUptimeExceedsLegacyCap is the regression: a flawless
+// always-online provider must beat the old 0.85 cap once uptime accumulates.
+// Before the fix RecordUptime was never called in prod, pinning uptimeRate to
+// the neutral 0.5 and capping a perfect score at 0.4+0.15+0.2+0.1 = 0.85.
+func TestReputationFullUptimeExceedsLegacyCap(t *testing.T) {
+	r := NewReputation()
+	r.RecordUptime(24 * time.Hour) // full expected-uptime baseline -> uptimeRate 1.0
+	for range 10 {
+		r.RecordJobSuccess()
+		r.RecordLatency(500 * time.Millisecond)
+	}
+	r.RecordChallengePass()
+
+	score := r.Score()
+	if score <= 0.85 {
+		t.Errorf("score = %f, want > 0.85 (legacy cap must be lifted by real uptime)", score)
+	}
+	// Perfect record -> 0.4*1 + 0.3*1 + 0.2*1 + 0.1*1 = 1.0.
+	if score < 0.99 {
+		t.Errorf("score = %f, want ~1.0 for a flawless always-online provider", score)
+	}
+}
+
+// TestReputationNoUptimeStillNeutral pins the unchanged no-data behavior: a
+// provider with a perfect job/challenge record but ZERO uptime still maxes at
+// the old 0.85 (the uptime component falls back to the neutral 0.5). This guards
+// against accidentally changing the else-branch when wiring the uptime credit.
+func TestReputationNoUptimeStillNeutral(t *testing.T) {
+	r := NewReputation()
+	for range 10 {
+		r.RecordJobSuccess()
+		r.RecordLatency(500 * time.Millisecond)
+	}
+	r.RecordChallengePass()
+	// No RecordUptime — uptimeRate uses neutral 0.5.
+	// 0.4*1 + 0.3*0.5 + 0.2*1 + 0.1*1 = 0.85.
+	score := r.Score()
+	if score < 0.84 || score > 0.86 {
+		t.Errorf("score = %f, want ~0.85 (neutral uptime path preserved)", score)
+	}
+}
+
+// TestReputationRampUptimeNeverBelowLegacyCap is the ramp-down
+// regression flagged in review: once Heartbeat starts crediting uptime, a
+// freshly-connected (or freshly-restarted, since prod uses the in-memory store
+// that resets TotalUptime) provider has a TINY TotalUptime. Without the neutral
+// floor, uptimeRate = 30s/24h ≈ 0.0003 would crater a perfect provider from
+// 0.85 to ~0.70 for ~12h and deroute it. The floor must hold the score at or
+// above the legacy 0.85 throughout the ramp, only ever adding above it.
+func TestReputationRampUptimeNeverBelowLegacyCap(t *testing.T) {
+	for _, up := range []time.Duration{
+		1 * time.Second, 30 * time.Second, 1 * time.Minute,
+		30 * time.Minute, 6 * time.Hour, 11 * time.Hour, 13 * time.Hour, 24 * time.Hour,
+	} {
+		r := NewReputation()
+		r.RecordUptime(up)
+		for range 10 {
+			r.RecordJobSuccess()
+			r.RecordLatency(500 * time.Millisecond)
+		}
+		r.RecordChallengePass()
+		if score := r.Score(); score < 0.85 {
+			t.Errorf("uptime=%s: score = %f, want >= 0.85 (ramp must never dip below the legacy cap)", up, score)
+		}
+	}
+}
+
+// TestRecordJobSuccessDoesNotSetLatency is the regression guard:
+// recording job successes WITHOUT a latency sample must leave AvgResponseTime
+// at zero, proving the old synthetic completionTokens*10ms coupling is gone.
+func TestRecordJobSuccessDoesNotSetLatency(t *testing.T) {
+	r := NewReputation()
+	for range 5 {
+		r.RecordJobSuccess()
+	}
+	if r.SuccessfulJobs != 5 {
+		t.Errorf("successful_jobs = %d, want 5", r.SuccessfulJobs)
+	}
+	if r.AvgResponseTime != 0 {
+		t.Errorf("avg_response_time = %v, want 0 (job success must not fabricate latency)", r.AvgResponseTime)
 	}
 }

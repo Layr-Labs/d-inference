@@ -660,3 +660,38 @@ func vlmBuildUserInputRejectsVideoFramePixels() async {
     }
     for u in tempFiles { try? FileManager.default.removeItem(at: u) }
 }
+
+// Sampling-penalty wiring: the VLM path must forward repetition, presence, AND
+// frequency penalties into the engine (previously only repetition was wired, so
+// presence/frequency silently had no effect on image/video requests).
+@Test("generateParameters forwards repetition, presence, and frequency penalties")
+func testGenerateParametersForwardsAllPenalties() {
+    let request = OpenAIChatCompletionRequest(
+        model: "gemma-4-26b",
+        messages: [.init(role: .user, content: .text("describe"))],
+        temperature: 0.8,
+        maxTokens: 64,
+        presencePenalty: 0.5,
+        frequencyPenalty: 0.7,
+        repetitionPenalty: 1.3
+    )
+    let p = VLMRequestInference.generateParameters(for: request, defaultMaxTokens: 100)
+    #expect(p.maxTokens == 64)
+    #expect(p.temperature == 0.8)
+    #expect(p.repetitionPenalty == 1.3)
+    #expect(p.presencePenalty == 0.5)
+    #expect(p.frequencyPenalty == 0.7)
+}
+
+@Test("generateParameters leaves penalties unset and applies default max tokens")
+func testGenerateParametersDefaults() {
+    let request = OpenAIChatCompletionRequest(
+        model: "gemma-4-26b",
+        messages: [.init(role: .user, content: .text("describe"))]
+    )
+    let p = VLMRequestInference.generateParameters(for: request, defaultMaxTokens: 100)
+    #expect(p.maxTokens == 100)
+    #expect(p.repetitionPenalty == nil)
+    #expect(p.presencePenalty == nil)
+    #expect(p.frequencyPenalty == nil)
+}

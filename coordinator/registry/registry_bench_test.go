@@ -47,7 +47,8 @@ func makeProvider(id string, model string, decodeTPS float64) *Provider {
 	}
 	// Seed some reputation history.
 	for range 50 {
-		p.Reputation.RecordJobSuccess(200 * time.Millisecond)
+		p.Reputation.RecordJobSuccess()
+		p.Reputation.RecordLatency(200 * time.Millisecond)
 	}
 	return p
 }
@@ -103,7 +104,8 @@ func populateRegistry(n int, model string) *Registry {
 		p.mu.Unlock()
 		// Build some reputation.
 		for range 20 {
-			p.Reputation.RecordJobSuccess(time.Duration(100+i%50) * time.Millisecond)
+			p.Reputation.RecordJobSuccess()
+			p.Reputation.RecordLatency(time.Duration(100+i%50) * time.Millisecond)
 		}
 	}
 	return reg

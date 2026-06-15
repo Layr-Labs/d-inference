@@ -90,6 +90,25 @@ public enum VLMRequestInference {
         return false
     }
 
+    /// Build the engine sampling parameters from an OpenAI request. Forwards all
+    /// sampling penalties — repetition, presence, and frequency — so they take
+    /// effect on image/video (VLM) requests, matching the text/batched engine.
+    /// The penalty processors apply only for non-identity values (repetition ≠ 1,
+    /// presence/frequency ≠ 0); identities are no-ops.
+    static func generateParameters(
+        for request: OpenAIChatCompletionRequest, defaultMaxTokens: Int
+    ) -> GenerateParameters {
+        GenerateParameters(
+            maxTokens: request.maxTokens ?? defaultMaxTokens,
+            temperature: request.temperature ?? 0,
+            topP: request.topP ?? 1.0,
+            topK: request.topK ?? 0,
+            repetitionPenalty: request.repetitionPenalty,
+            presencePenalty: request.presencePenalty,
+            frequencyPenalty: request.frequencyPenalty
+        )
+    }
+
     // MARK: - Streaming
 
     /// Stream a multimodal completion through the container's
@@ -168,13 +187,8 @@ public enum VLMRequestInference {
                     let startedAt = Date()
                     let lmInput = try await container.prepare(input: userInput)
 
-                    let params = GenerateParameters(
-                        maxTokens: request.maxTokens ?? defaultMaxTokens,
-                        temperature: request.temperature ?? 0,
-                        topP: request.topP ?? 1.0,
-                        topK: request.topK ?? 0,
-                        repetitionPenalty: request.repetitionPenalty
-                    )
+                    let params = generateParameters(
+                        for: request, defaultMaxTokens: defaultMaxTokens)
 
                     let genStream = try await container.generate(
                         input: lmInput, parameters: params)

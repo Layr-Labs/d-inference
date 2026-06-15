@@ -99,15 +99,17 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		totalBandwidthGB float64
 		providers        []map[string]any
 		modelMap         = map[string]int{} // model ID → provider count
+		activePowerWatts float64            // sum of estimated watts over online public providers
 	)
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Private-only providers serve only their owner's self-route traffic and
 		// are not part of the public fleet, so they must not inflate public
-		// totals, provider counts, or per-model provider counts.
+		// totals, provider counts, per-model provider counts, or active power.
 		if p.PrivateOnly {
 			return
 		}
+		activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
 		totalRequests += p.Stats.RequestsServed
 		totalTokensGen += p.Stats.TokensGenerated
 		totalGPUCores += p.Hardware.GPUCores
@@ -235,6 +237,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"total_tokens":              totalTokens,
 		"avg_tokens_per_request":    avgTokens,
 		"active_providers":          len(providers),
+		"active_power_watts":        activePowerWatts,
 		"code_attested_providers":   codeAttestedProviders,
 		"code_attestation_enforced": codeAttestationEnforced,
 		"total_gpu_cores":           totalGPUCores,

@@ -475,7 +475,10 @@ func (s *Server) dispatchOneProvider(
 		return nil, nil, decision, "failed to generate session keys", http.StatusInternalServerError
 	}
 
-	encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
+	// Pre-fix providers crash on a vision request carrying sampling penalties;
+	// strip them for those providers only (see bodyForProvider).
+	sealedBody := bodyForProvider(rawBody, requiresVision, provider)
+	encrypted, err := e2e.Encrypt(sealedBody, providerPubKey, sessionKeys)
 	if err != nil {
 		refundExtra()
 		cleanupPending()
@@ -872,6 +875,48 @@ func stripProviderRoutingFields(parsed map[string]any) bool {
 		}
 	}
 	return changed
+}
+
+// penaltySafeProviderVersion is the first provider release whose VLM penalty
+// path handles repetition/presence/frequency penalties without crashing (the
+// TokenRing 2D-prompt fix). Providers below it crash on a vision request that
+// carries any of these fields, so the coordinator strips them before sealing
+// for such a provider. Keep in sync with the release that ships the fix.
+const penaltySafeProviderVersion = "0.6.7"
+
+// visionPenaltyFields crash the pre-fix VLM penalty path on image requests.
+var visionPenaltyFields = []string{"repetition_penalty", "presence_penalty", "frequency_penalty"}
+
+// bodyForProvider returns the request body to seal for `provider`. It equals
+// rawBody, except a vision request routed to a pre-fix provider has the
+// crash-inducing penalty fields stripped. Fixed providers receive the penalties
+// unchanged. Per-provider (not pre-routing) so a retry on a fixed provider keeps
+// them. Remove once MIN_PROVIDER_VERSION clears all pre-fix builds.
+func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Provider) []byte {
+	if !requiresVision {
+		return rawBody
+	}
+	if provider.Version != "" && !semverLess(provider.Version, penaltySafeProviderVersion) {
+		return rawBody // fixed provider — pass penalties through
+	}
+	var parsed map[string]any
+	if json.Unmarshal(rawBody, &parsed) != nil {
+		return rawBody
+	}
+	changed := false
+	for _, key := range visionPenaltyFields {
+		if _, ok := parsed[key]; ok {
+			delete(parsed, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return rawBody
+	}
+	if stripped, err := marshalForwardBody(parsed); err == nil {
+		return stripped
+	}
+	return rawBody
 }
 
 // defaultMaxOutputTokens is the ceiling injected into requests that don't set
@@ -4300,6 +4345,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// Version-gated penalty strip for vision requests (Anthropic /v1/messages
+	// carries image blocks); this handler seals separately from dispatchOneProvider.
+	inferenceBody = bodyForProvider(inferenceBody, requiresVision, provider)
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
 	if err != nil {
 		cleanupPending()

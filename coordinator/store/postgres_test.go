@@ -854,3 +854,83 @@ func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 		t.Error("orphan row should survive when the cleanup marker is already set (run-once)")
 	}
 }
+
+// TestPostgresDeleteProvidersBySerial is the FK-ordering regression: a
+// raw DELETE FROM providers fails when a provider_reputation row exists (the FK
+// has no ON DELETE CASCADE), so the delete must remove reputation first. It also
+// proves earnings (money history) survive the delete.
+func TestPostgresDeleteProvidersBySerial(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+
+	// Owner rows (two sessions, one serial) + a guard row for another account.
+	for _, rec := range []ProviderRecord{
+		{ID: "a", SerialNumber: "SER", AccountID: "acct-1", RegisteredAt: time.Now(), LastSeen: time.Now()},
+		{ID: "guard", SerialNumber: "SER-G", AccountID: "acct-2", RegisteredAt: time.Now(), LastSeen: time.Now()},
+	} {
+		if err := s.UpsertProvider(ctx, rec); err != nil {
+			t.Fatalf("UpsertProvider(%s): %v", rec.ID, err)
+		}
+	}
+	// A reputation row for "a" — without the FK-ordered delete, removing the
+	// provider would fail.
+	if err := s.UpsertReputation(ctx, "a", ReputationRecord{TotalJobs: 7}); err != nil {
+		t.Fatalf("UpsertReputation: %v", err)
+	}
+	// An earnings row (money history) that MUST survive the delete.
+	if err := s.RecordProviderEarning(&ProviderEarning{
+		AccountID: "acct-1", ProviderID: "a", ProviderKey: "key-a",
+		JobID: "j1", Model: "m", AmountMicroUSD: 123_000, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("RecordProviderEarning: %v", err)
+	}
+
+	n, err := s.DeleteProvidersBySerial(ctx, "acct-1", "SER")
+	if err != nil {
+		t.Fatalf("DeleteProvidersBySerial: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("rows_removed = %d, want 1", n)
+	}
+
+	if rec, _ := s.GetProviderBySerial(ctx, "SER"); rec != nil {
+		t.Fatal("provider row still present after delete")
+	}
+	if rep, _ := s.GetReputation(ctx, "a"); rep != nil {
+		t.Fatal("reputation row still present after delete")
+	}
+	// Earnings (money history) must survive.
+	earnings, err := s.GetProviderEarnings("key-a", 10)
+	if err != nil {
+		t.Fatalf("GetProviderEarnings: %v", err)
+	}
+	if len(earnings) != 1 {
+		t.Fatalf("earnings count = %d, want 1 (money history must survive)", len(earnings))
+	}
+	// Cross-account guard row must survive.
+	if rec, _ := s.GetProviderBySerial(ctx, "SER-G"); rec == nil {
+		t.Fatal("cross-account guard row was deleted")
+	}
+}
+
+// TestPostgresDeleteProvidersBySerial_WrongOwner verifies a non-owner delete is
+// a no-op even when the serial matches.
+func TestPostgresDeleteProvidersBySerial_WrongOwner(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+
+	if err := s.UpsertProvider(ctx, ProviderRecord{ID: "a", SerialNumber: "SER", AccountID: "acct-1", RegisteredAt: time.Now(), LastSeen: time.Now()}); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+
+	n, err := s.DeleteProvidersBySerial(ctx, "acct-2", "SER")
+	if err != nil {
+		t.Fatalf("DeleteProvidersBySerial: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("rows_removed = %d, want 0 for non-owner", n)
+	}
+	if rec, _ := s.GetProviderBySerial(ctx, "SER"); rec == nil {
+		t.Fatal("record deleted by non-owner")
+	}
+}

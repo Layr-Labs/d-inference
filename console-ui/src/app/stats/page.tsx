@@ -38,6 +38,8 @@ import {
   type CertVerificationResult,
   type VerificationStep,
 } from "@/lib/cert-verify";
+import { formatPower } from "@/lib/format-power";
+import { activeNetworkPowerWatts } from "@/lib/network-power";
 
 const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 
@@ -153,6 +155,7 @@ interface PlatformStats {
   total_memory_gb: number;
   total_bandwidth_gbs: number;
   network_capacity_tps: number;
+  active_power_watts?: number;
   providers: ProviderStats[];
   models: ModelStats[];
   provider_locations?: ProviderLocationBucket[];
@@ -453,6 +456,9 @@ function MiniStat({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Network Power -- realistic Apple Silicon draw, auto-scaled units
+// ---------------------------------------------------------------------------
 function modelProviders(modelID: string, providers: ProviderStats[]): ProviderStats[] {
   return providers.filter((provider) => {
     if (provider.current_model === modelID) return true;
@@ -2859,6 +2865,7 @@ export default function StatsPage() {
   }
 
   const hardwareAttested = stats.providers.filter((p) => p.trust_level === "hardware").length;
+  const networkPowerWatts = activeNetworkPowerWatts(stats);
   const tabs: Array<{ value: StatsTab; label: string }> = [
     { value: "overview", label: "Overview" },
     { value: "leaderboard", label: "Leaderboard" },
@@ -2938,8 +2945,15 @@ export default function StatsPage() {
           </div>
         </div>
 
-        {/* Hardware capacity grid */}
+        {/* Hardware capacity grid (+ network power) */}
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+          {networkPowerWatts > 0 && (
+            <MiniStat
+              label="Network Power"
+              value={formatPower(networkPowerWatts)}
+              sub="under load"
+            />
+          )}
           <MiniStat label="GPU Cores" value={stats.total_gpu_cores.toString()} sub="Apple Silicon" />
           <MiniStat label="CPU Cores" value={stats.total_cpu_cores.toString()} sub="P + E cores" />
           <MiniStat label="Unified RAM" value={`${stats.total_memory_gb} GB`} />

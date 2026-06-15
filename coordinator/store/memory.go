@@ -2561,6 +2561,41 @@ func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string
 	return records, nil
 }
 
+func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID, serialOrID string) (int, error) {
+	if ownerAccountID == "" || serialOrID == "" {
+		return 0, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Iterate the full record map (not just the serial index) so historical
+	// duplicate rows sharing a serial are all caught. Match by serial OR id, but
+	// only delete rows owned by the caller — rows owned by another account are
+	// skipped and not counted, leaving the caller to decide 403 vs 404.
+	var matched []string
+	for id, rec := range s.providerRecords {
+		if rec.AccountID != ownerAccountID {
+			continue
+		}
+		if (rec.SerialNumber == serialOrID && rec.SerialNumber != "") || rec.ID == serialOrID {
+			matched = append(matched, id)
+		}
+	}
+
+	for _, id := range matched {
+		rec := s.providerRecords[id]
+		if rec.SerialNumber != "" && s.serialToProviderID[rec.SerialNumber] == id {
+			delete(s.serialToProviderID, rec.SerialNumber)
+		}
+		delete(s.providerRecords, id)
+		delete(s.reputationRecords, id)
+		// usage, provider_earnings and provider_sessions are intentionally
+		// preserved — they hold money/uptime history.
+	}
+	return len(matched), nil
+}
+
 func (s *MemoryStore) UpdateProviderLastSeen(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

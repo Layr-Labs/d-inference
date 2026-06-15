@@ -63,6 +63,21 @@ struct Start: AsyncParsableCommand {
         print()
     }
 
+    static func persistMemoryLimitOverride(
+        memoryLimitGB: UInt64?,
+        baseConfig: ProviderConfig,
+        to configPath: URL
+    ) throws -> ProviderConfig {
+        guard let memoryLimitGB else {
+            return baseConfig
+        }
+
+        var persisted = baseConfig
+        persisted.provider.memoryLimitGB = memoryLimitGB
+        try ConfigManager.save(persisted, to: configPath)
+        return persisted
+    }
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
 
@@ -105,6 +120,19 @@ struct Start: AsyncParsableCommand {
             printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
             throw ExitCode.failure
         }
+        if memoryLimitGB != nil {
+            let configPath = try startConfigPersistencePath(snapshot: snapshot)
+            do {
+                _ = try Self.persistMemoryLimitOverride(
+                    memoryLimitGB: memoryLimitGB,
+                    baseConfig: snapshot.config,
+                    to: configPath
+                )
+            } catch {
+                printError("Could not save --memory-limit-gb to \(configPath.path): \(error)")
+                throw ExitCode.failure
+            }
+        }
         let effectiveSnapshot = runtimeSnapshot(
             from: snapshot,
             config: effectiveConfig,
@@ -135,6 +163,13 @@ struct Start: AsyncParsableCommand {
                 coordinatorURL: effectiveCoordinator
             )
         }
+    }
+
+    private func startConfigPersistencePath(snapshot: RuntimeSnapshot) throws -> URL {
+        guard configOptions.config == nil else {
+            return snapshot.configPath
+        }
+        return try ConfigManager.defaultConfigPath()
     }
 
     // MARK: - Standalone (--local)

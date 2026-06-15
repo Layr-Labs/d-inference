@@ -7,6 +7,7 @@ import Testing
 func kvQuantCandidateModesParseFromRawLabels() throws {
     #expect(try KVQuantCandidateMode.parse("fp16-kv") == .fp16KV)
     #expect(try KVQuantCandidateMode.parse("bf16-kv:start1024") == .bf16KV)
+    #expect(try KVQuantCandidateMode.parse("full-v-bf16:start1024") == .fullVBF16)
     #expect(try KVQuantCandidateMode.parse("affine4:g64:start1024") == .affine4)
     #expect(try KVQuantCandidateMode.parse("affine8:g64:start1024") == .affine8)
     #expect(try KVQuantCandidateMode.parse("full-v-affine4:g64:start1024") == .fullVAffine4)
@@ -52,6 +53,14 @@ func affine8FullKVModeUsesDynamicKVQuantization() throws {
 @Test("bf16-kv mode supplies a bfloat16 cache factory")
 func bf16KVModeSuppliesBFloat16CacheFactory() throws {
     let config = try KVQuantExecution.config(for: .bf16KV)
+
+    #expect(config.parameters.kvBits == nil)
+    #expect(config.cacheFactory != nil)
+}
+
+@Test("full-v-bf16 mode supplies a V-only bfloat16 cache factory")
+func fullVBF16ModeSuppliesVOnlyBFloat16CacheFactory() throws {
+    let config = try KVQuantExecution.config(for: .fullVBF16)
 
     #expect(config.parameters.kvBits == nil)
     #expect(config.cacheFactory != nil)

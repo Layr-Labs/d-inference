@@ -77,6 +77,20 @@ enum KVQuantExecution {
             }
             return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
 
+        case .fullVBF16:
+            guard let startToken = mode.startToken else {
+                throw KVQuantExecutionError.missingStartToken(mode)
+            }
+            let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
+                model.newCache(parameters: nil).map { baseCache in
+                    if baseCache is RotatingKVCache {
+                        return baseCache.copy()
+                    }
+                    return VOnlyBFloat16KVCache(startToken: startToken)
+                }
+            }
+            return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
+
         case .affine4, .affine8:
             guard let groupSize = mode.groupSize else {
                 throw KVQuantExecutionError.missingGroupSize(mode)

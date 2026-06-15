@@ -23,6 +23,7 @@ public enum KVQuantSuite: String, CaseIterable, Codable, Sendable {
 public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, CustomStringConvertible {
     case fp16KV = "fp16-kv"
     case bf16KV = "bf16-kv:start1024"
+    case fullVBF16 = "full-v-bf16:start1024"
     case affine4 = "affine4:g64:start1024"
     case affine8 = "affine8:g64:start1024"
     case fullVAffine4 = "full-v-affine4:g64:start1024"
@@ -38,7 +39,7 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
 
     public var bitWidth: Int? {
         switch self {
-        case .fp16KV, .bf16KV: nil
+        case .fp16KV, .bf16KV, .fullVBF16: nil
         case .affine8: 8
         case .affine4, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: 4
         }
@@ -47,27 +48,27 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
     public var groupSize: Int? {
         switch self {
         case .affine4, .affine8, .fullVAffine4: 64
-        case .fp16KV, .bf16KV, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: nil
+        case .fp16KV, .bf16KV, .fullVBF16, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: nil
         }
     }
 
     public var startToken: Int? {
         switch self {
         case .fp16KV: nil
-        case .bf16KV, .affine4, .affine8, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: 1024
+        case .bf16KV, .fullVBF16, .affine4, .affine8, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: 1024
         }
     }
 
     public var quantizesKeys: Bool {
         switch self {
-        case .fp16KV, .bf16KV, .fullVAffine4, .fullVTurbo4: false
+        case .fp16KV, .bf16KV, .fullVBF16, .fullVAffine4, .fullVTurbo4: false
         case .affine4, .affine8, .fullKVTurbo4, .turbo4v2: true
         }
     }
 
     public var quantizesValues: Bool {
         switch self {
-        case .fp16KV, .bf16KV: false
+        case .fp16KV, .bf16KV, .fullVBF16: false
         case .affine4, .affine8, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: true
         }
     }

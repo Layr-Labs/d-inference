@@ -159,6 +159,7 @@ public actor ProviderLoop {
     private let stats: AtomicProviderStats
     private let state: ProviderState
     private let cancellationRegistry: InferenceCancellationRegistry
+    private let effectiveMemory: ProviderMemoryLimit.EffectiveBytes
     private let kvBudget: GlobalKVCacheBudget
     /// Phase 3: global disk accountant (process-wide, shared across models).
     private let diskAccountant: GlobalDiskAccountant
@@ -432,6 +433,11 @@ public actor ProviderLoop {
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
+        let effectiveMemory = ProviderMemoryLimit.effectiveBytes(
+            physicalBytes: ProcessInfo.processInfo.physicalMemory,
+            limitGB: config.config.provider.memoryLimitGB
+        )
+        self.effectiveMemory = effectiveMemory
         // The effective cap (`maxModelSlots`) is computed from the live
         // advertised set; here we capture the operator hard cap and the
         // de-duplicated startup count it is clamped against. Using the deduped
@@ -442,7 +448,7 @@ public actor ProviderLoop {
         let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
         self.kvBudget = GlobalKVCacheBudget(
             reserveBytes: reserveBytes,
-            memoryLimitBytes: ProviderMemoryLimit.limitBytes(limitGB: config.config.provider.memoryLimitGB)
+            memoryLimitBytes: effectiveMemory.limitBytes
         )
         // Phase 3: construct the global disk accountant (one per host).
         let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
@@ -461,13 +467,6 @@ public actor ProviderLoop {
     static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
         let (bytes, overflow) = gb.multipliedReportingOverflow(by: bytesPerGiB)
         return overflow ? UInt64.max : bytes
-    }
-
-    private var effectiveMemory: ProviderMemoryLimit.EffectiveBytes {
-        ProviderMemoryLimit.effectiveBytes(
-            physicalBytes: ProcessInfo.processInfo.physicalMemory,
-            limitGB: loopConfig.config.provider.memoryLimitGB
-        )
     }
 
     private var memoryLimitBytes: UInt64? {

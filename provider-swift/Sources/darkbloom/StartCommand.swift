@@ -106,9 +106,8 @@ struct Start: AsyncParsableCommand {
         return modelIDs
     }
 
-    private func prepareStartConfiguration(snapshot: RuntimeSnapshot) throws -> PreparedStartConfiguration {
-        let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
-        var effectiveConfig = snapshot.config
+    private func providerConfigApplyingOverrides(_ baseConfig: ProviderConfig) throws -> ProviderConfig {
+        var effectiveConfig = baseConfig
         if let idleTimeout {
             effectiveConfig.backend.idleTimeoutMins = idleTimeout
         }
@@ -119,24 +118,33 @@ struct Start: AsyncParsableCommand {
             }
             effectiveConfig.provider.memoryLimitGB = memoryLimitGB
         }
+        return effectiveConfig
+    }
+
+    private func persistMemoryLimitOverrideIfNeeded(snapshot: RuntimeSnapshot) throws {
+        guard memoryLimitGB != nil else { return }
+        let configPath = try startConfigPersistencePath(snapshot: snapshot)
+        do {
+            _ = try Self.persistMemoryLimitOverride(
+                memoryLimitGB: memoryLimitGB,
+                baseConfig: snapshot.config,
+                to: configPath
+            )
+        } catch {
+            printError("Could not save --memory-limit-gb to \(configPath.path): \(error)")
+            throw ExitCode.failure
+        }
+    }
+
+    private func prepareStartConfiguration(snapshot: RuntimeSnapshot) throws -> PreparedStartConfiguration {
+        let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
+        let effectiveConfig = try providerConfigApplyingOverrides(snapshot.config)
 
         guard let hardware = snapshot.hardware else {
             printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
             throw ExitCode.failure
         }
-        if memoryLimitGB != nil {
-            let configPath = try startConfigPersistencePath(snapshot: snapshot)
-            do {
-                _ = try Self.persistMemoryLimitOverride(
-                    memoryLimitGB: memoryLimitGB,
-                    baseConfig: snapshot.config,
-                    to: configPath
-                )
-            } catch {
-                printError("Could not save --memory-limit-gb to \(configPath.path): \(error)")
-                throw ExitCode.failure
-            }
-        }
+        try persistMemoryLimitOverrideIfNeeded(snapshot: snapshot)
 
         let effectiveSnapshot = runtimeSnapshot(
             from: snapshot,
@@ -153,6 +161,32 @@ struct Start: AsyncParsableCommand {
             config: effectiveConfig,
             hardware: effectiveHardware,
             coordinatorURL: effectiveCoordinator
+        )
+    }
+
+    private mutating func selectedModelIDsForDaemon(
+        snapshot: RuntimeSnapshot,
+        config: ProviderConfig,
+        coordinatorURL: String
+    ) async throws -> [String] {
+        if !model.isEmpty {
+            do {
+                return try Self.validatedModelOverrideIDs(
+                    model,
+                    availableModels: snapshot.models
+                )
+            } catch {
+                printError("\(error)")
+                throw ExitCode.failure
+            }
+        }
+        if all {
+            return snapshot.models.map(\.id)
+        }
+        return try await interactiveCatalogPicker(
+            snapshot: snapshot,
+            config: config,
+            coordinatorURL: coordinatorURL
         )
     }
 
@@ -611,27 +645,11 @@ struct Start: AsyncParsableCommand {
         // Offer account linking before the model picker.
         await offerInlineLogin(coordinatorURL: coordinatorURL)
 
-        let selectedModelIDs: [String]
-
-        if !model.isEmpty {
-            do {
-                selectedModelIDs = try Self.validatedModelOverrideIDs(
-                    model,
-                    availableModels: snapshot.models
-                )
-            } catch {
-                printError("\(error)")
-                throw ExitCode.failure
-            }
-        } else if all {
-            selectedModelIDs = snapshot.models.map(\.id)
-        } else {
-            selectedModelIDs = try await interactiveCatalogPicker(
-                snapshot: snapshot,
-                config: config,
-                coordinatorURL: coordinatorURL
-            )
-        }
+        let selectedModelIDs = try await selectedModelIDsForDaemon(
+            snapshot: snapshot,
+            config: config,
+            coordinatorURL: coordinatorURL
+        )
 
         guard !selectedModelIDs.isEmpty else {
             printError("No models selected.")

@@ -2,6 +2,7 @@ import Foundation
 
 public enum ProviderMemoryLimit {
     private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
+    private static let maxWholeGiBBeforeOverflow = UInt64.max / bytesPerGiB
 
     public struct EffectiveBytes: Sendable, Equatable {
         public let totalBytes: UInt64
@@ -53,7 +54,7 @@ public enum ProviderMemoryLimit {
     }
 
     private static func saturatingGiBToBytes(_ gb: UInt64) -> UInt64 {
-        guard gb <= UInt64.max / bytesPerGiB else {
+        guard gb <= maxWholeGiBBeforeOverflow else {
             return UInt64.max
         }
         return gb * bytesPerGiB

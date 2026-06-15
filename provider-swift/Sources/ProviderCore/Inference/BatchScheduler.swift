@@ -1482,7 +1482,8 @@ public actor BatchScheduler {
         )
         let osReserve = UInt64(4 * 1024 * 1024 * 1024)
         let safetyMargin = totalMemoryBytes / 10
-        let committed = Self.saturatingAdd(UInt64(max(0, snapshot.bytes)), osReserve, safetyMargin)
+        let weightBytes = UInt64(max(0, snapshot.bytes))
+        let committed = Self.saturatingAdd(weightBytes, osReserve, safetyMargin)
         let availableForKV = totalMemoryBytes > committed ? totalMemoryBytes - committed : 0
         if availableForKV > 0 && kvBytesPerToken > 0 {
             let tokens = availableForKV / UInt64(kvBytesPerToken)

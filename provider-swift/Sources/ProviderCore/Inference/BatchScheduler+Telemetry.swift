@@ -38,14 +38,16 @@ extension BatchScheduler {
         guard modelWeightBytes > 0, kvBytesPerToken > 0 else {
             return staticBudget
         }
+        let activeMemoryBytes = UInt64(max(0, MLX.GPU.activeMemory))
+        let cacheMemoryBytes = UInt64(max(0, MLX.GPU.cacheMemory))
 
         return Self.memoryAwareTokenBudgetMax(
             staticBudget: staticBudget,
             modelWeightBytes: modelWeightBytes,
             kvBytesPerToken: kvBytesPerToken,
             totalMemoryBytes: totalMemoryBytes,
-            activeMemoryBytes: UInt64(max(0, MLX.GPU.activeMemory)),
-            cacheMemoryBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+            activeMemoryBytes: activeMemoryBytes,
+            cacheMemoryBytes: cacheMemoryBytes,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             activeTokenBudgetUsed: activeTokenBudgetUsed
         )
@@ -250,13 +252,14 @@ extension BatchScheduler {
         #endif
     }
 
-    static func saturatingAdd(_ values: UInt64...) -> UInt64 {
-        var total: UInt64 = 0
-        for value in values {
-            let (next, overflow) = total.addingReportingOverflow(value)
-            if overflow { return .max }
-            total = next
-        }
-        return total
+    static func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? .max : sum
+    }
+
+    static func saturatingAdd(_ first: UInt64, _ second: UInt64, _ third: UInt64) -> UInt64 {
+        let partial = saturatingAdd(first, second)
+        guard partial < UInt64.max else { return .max }
+        return saturatingAdd(partial, third)
     }
 }

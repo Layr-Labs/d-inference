@@ -3037,18 +3037,43 @@ func (r *Registry) Disconnect(id string) {
 		return
 	}
 
-	// Close all pending request channels so consumers get errors.
+	// Close all pending request channels so consumers get errors. Pending
+	// requests created by tests may leave these channels nil, and consumer
+	// goroutines may have already closed them on a successful/error path. Use
+	// non-nil checks and recover so a single bad request cannot hang or panic
+	// the disconnect cleanup.
 	p.mu.Lock()
 	for reqID, pr := range p.pendingReqs {
-		pr.ErrorCh <- protocol.InferenceErrorMessage{
-			Type:       protocol.TypeInferenceError,
-			RequestID:  reqID,
-			Error:      "provider disconnected",
-			StatusCode: 502,
+		if pr == nil {
+			continue
 		}
-		close(pr.ChunkCh)
-		close(pr.CompleteCh)
-		close(pr.ErrorCh)
+		if pr.ErrorCh != nil {
+			func() {
+				defer func() { recover() }()
+				pr.ErrorCh <- protocol.InferenceErrorMessage{
+					Type:       protocol.TypeInferenceError,
+					RequestID:  reqID,
+					Error:      "provider disconnected",
+					StatusCode: 502,
+				}
+			}()
+			func() {
+				defer func() { recover() }()
+				close(pr.ErrorCh)
+			}()
+		}
+		if pr.ChunkCh != nil {
+			func() {
+				defer func() { recover() }()
+				close(pr.ChunkCh)
+			}()
+		}
+		if pr.CompleteCh != nil {
+			func() {
+				defer func() { recover() }()
+				close(pr.CompleteCh)
+			}()
+		}
 	}
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.mu.Unlock()

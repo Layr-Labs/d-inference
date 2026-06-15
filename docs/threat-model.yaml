@@ -899,6 +899,8 @@ threats:
       - coordinator/internal/registry/registry.go
       - coordinator/internal/api/provider.go
       - provider-swift/Sources/ProviderCore/Inference/**
+      - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
+      - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
     mitigations:
       - description: Weight hash advertised by provider at registration and in heartbeats.
         status: implemented
@@ -1030,7 +1032,8 @@ threats:
     affected_files:
       - coordinator/internal/registry/registry.go
       - coordinator/internal/api/provider.go
-      - provider-swift/Sources/ProviderCore/Models/WeightHasher.swift
+      - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
+      - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
     mitigations:
       - description: Provider computes and advertises weight hash at registration.
         status: implemented
@@ -1415,7 +1418,8 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-004, A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Models/WeightHasher.swift
+      - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
+      - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
       - coordinator/internal/registry/registry.go
     mitigations:
       - description: Weight hash computed by WeightHasher and advertised in registration.

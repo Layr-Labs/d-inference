@@ -1,4 +1,23 @@
-# Handoff: Metal resource-COUNT crash fix — landing the upstream C++
+# Metal resource-COUNT crash fix — how the upstream C++ was landed
+
+> **STATUS (2026-06-15): LANDED.** The fork route (Option A below) was taken.
+> `ml-explore/mlx` and `ml-explore/mlx-c` were forked into the org as
+> `Layr-Labs/mlx` / `Layr-Labs/mlx-c`; the C++ fix was pushed there and pinned by
+> SHA (also tagged `darkbloom-metal-resource-count` for permanence).
+>
+> Merged, bottom-up:
+> - `Layr-Labs/mlx-c#1` → fix on the mlx-c fork
+> - `Layr-Labs/mlx#1` → fix on the mlx fork (re-targeted onto a `darkbloom-base`
+>   branch at the patch's upstream base `ce45c52`, since the fork's `main` was
+>   153 commits ahead of what mlx-swift is built against)
+> - `Layr-Labs/mlx-swift#4` → Swift surface (`Memory.numResources` / `.resourceLimit`)
+> - `Layr-Labs/mlx-swift#5` → repoint `.gitmodules` to the forks + bump the Cmlx
+>   gitlinks → un-breaks `mlx-swift main` (#4 alone left it with an undefined symbol)
+> - `Layr-Labs/mlx-swift-lm#39` → env-gated `[rsrc]` telemetry
+> - `Layr-Labs/d-inference#355` (this PR) → bump `libs/mlx-swift` → `ac67822`,
+>   `libs/mlx-swift-lm` → `404afee`, plus the live probes + this doc
+>
+> The historical "decision" content below is kept for the record.
 
 ## What this fixes
 
@@ -26,7 +45,7 @@ Validated: fork regression test `MemoryTests.testResourceCountStaysUnderLimitUnd
 50,000, never reached the limit, no crash. Pre-fix the same load throws. Dual
 review (Codex gpt-5.5 xhigh + independent Claude) PASSED.
 
-## The blocker (needs a human decision)
+## (historical) The blocker that needed a human decision
 
 The C++ fix lives in **two nested submodules** of `Layr-Labs/mlx-swift` that point
 at upstream Apple repos we can't push to:

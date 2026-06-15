@@ -617,16 +617,18 @@ func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store
 // by every provider heartbeat and install script poll.
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	// Optional filter: ?type=text
-	typeFilter := r.URL.Query().Get("type")
+	typeFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("type")))
+	if typeFilter != "" && typeFilter != "text" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "unsupported catalog type", withParam("type")))
+		return
+	}
 	includeAliases := r.URL.Query().Get("include_aliases") == "1" || strings.EqualFold(r.URL.Query().Get("include_aliases"), "true")
 
-	cacheKey := "models:catalog"
-	if typeFilter != "" {
-		cacheKey = "models:catalog:" + typeFilter
+	cacheType := typeFilter
+	if cacheType == "" {
+		cacheType = "all"
 	}
-	if includeAliases {
-		cacheKey += ":aliases"
-	}
+	cacheKey := "models:catalog:v2:type=" + cacheType + ":include_aliases=" + strconv.FormatBool(includeAliases)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
 		return

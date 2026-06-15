@@ -4,6 +4,11 @@ const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.da
 
 type JsonRecord = Record<string, unknown>;
 
+const GEMMA_PUBLIC_ID = "gemma-4-26b";
+const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
+const GEMMA_ROLLBACK_ID = "gemma-4-26b-8bit";
+const GEMMA_ROLLOUT_IDS = new Set([GEMMA_PUBLIC_ID, GEMMA_QAT_ID, GEMMA_ROLLBACK_ID]);
+
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
@@ -62,9 +67,16 @@ function asStringArray(value: unknown) {
 }
 
 function aliasMemberBuilds(alias: JsonRecord, includeRetired = true) {
-  const builds = [asString(alias.desired_build), asString(alias.previous_build)];
-  if (includeRetired) builds.push(...asStringArray(alias.retired_builds));
-  return [...new Set(builds.filter((build): build is string => Boolean(build)))];
+  const builds: string[] = [];
+  const add = (build: string | undefined) => {
+    if (build && !builds.includes(build)) builds.push(build);
+  };
+  add(asString(alias.desired_build));
+  add(asString(alias.previous_build));
+  if (includeRetired) {
+    for (const retired of asStringArray(alias.retired_builds)) add(retired);
+  }
+  return builds;
 }
 
 function isHiddenStandaloneModel(model: JsonRecord) {
@@ -75,15 +87,30 @@ function isHiddenStandaloneModel(model: JsonRecord) {
 }
 
 function publicModelRows(catalogModels: unknown[], aliases: unknown[]) {
-  const rawModels = catalogModels.map(asRecord).filter((model) => typeof model.id === "string");
-  const aliasRows = aliases.map(asRecord).filter((alias) => typeof alias.id === "string" && typeof alias.desired_build === "string");
-  const rawByID = new Map(rawModels.map((model) => [model.id as string, model]));
-  const hiddenBuilds = new Set(aliasRows.flatMap((alias) => aliasMemberBuilds(alias)));
-  const publicAliases = aliasRows.flatMap((alias): JsonRecord[] => {
+  const rawModels: JsonRecord[] = [];
+  const rawByID = new Map<string, JsonRecord>();
+  for (const item of catalogModels) {
+    const model = asRecord(item);
+    if (typeof model.id !== "string") continue;
+    rawModels.push(model);
+    rawByID.set(model.id, model);
+  }
+
+  const aliasRows: JsonRecord[] = [];
+  const hiddenBuilds = new Set<string>();
+  for (const item of aliases) {
+    const alias = asRecord(item);
+    if (typeof alias.id !== "string" || typeof alias.desired_build !== "string") continue;
+    aliasRows.push(alias);
+    for (const build of aliasMemberBuilds(alias)) hiddenBuilds.add(build);
+  }
+
+  const publicAliases: JsonRecord[] = [];
+  for (const alias of aliasRows) {
     const primaryID = asString(alias.primary_build) ?? asString(alias.desired_build) ?? asString(alias.previous_build);
     const primary = primaryID ? rawByID.get(primaryID) : undefined;
-    if (!primary) return [];
-    return [{
+    if (!primary) continue;
+    publicAliases.push({
       ...primary,
       id: alias.id,
       display_name: alias.display_name ?? primary.display_name,
@@ -94,8 +121,8 @@ function publicModelRows(catalogModels: unknown[], aliases: unknown[]) {
         display_name: alias.display_name ?? asRecord(primary.metadata).display_name,
         quantization: undefined,
       },
-    }];
-  });
+    });
+  }
   const visibleRaw = rawModels.filter((model) => !hiddenBuilds.has(model.id as string) && !isHiddenStandaloneModel(model));
   return [...publicAliases, ...visibleRaw];
 }
@@ -120,6 +147,61 @@ function aggregateAliasCapacity(alias: JsonRecord, capacityByID: Map<string, Jso
     aggregate_tps: sum("aggregate_tps"),
     estimated_ttft_ms: ttfts.length > 0 ? Math.min(...ttfts) : undefined,
   };
+}
+
+function isGemmaRolloutBuild(id: unknown): id is string {
+  return typeof id === "string" && GEMMA_ROLLOUT_IDS.has(id);
+}
+
+function sumGemmaCapacity(capacityModels: JsonRecord[]) {
+  const sum = (key: string) => capacityModels.reduce((total, model) => total + (typeof model[key] === "number" ? model[key] as number : 0), 0);
+  const ttfts = capacityModels
+    .map((model) => model.estimated_ttft_ms)
+    .filter((value): value is number => typeof value === "number" && value > 0);
+  return {
+    id: GEMMA_PUBLIC_ID,
+    ready: capacityModels.some((model) => model.ready === true),
+    can_accept: capacityModels.some((model) => model.can_accept === true),
+    routable_providers: sum("routable_providers"),
+    warm_providers: sum("warm_providers"),
+    cold_providers: sum("cold_providers"),
+    active_requests: sum("active_requests"),
+    queued_requests: sum("queued_requests"),
+    queue_limit: Math.max(...capacityModels.map((model) => typeof model.queue_limit === "number" ? model.queue_limit : 0)),
+    aggregate_tps: sum("aggregate_tps"),
+    estimated_ttft_ms: ttfts.length > 0 ? Math.min(...ttfts) : undefined,
+  };
+}
+
+function applyGemmaRolloutQuickFix(catalogModels: unknown[], capacityByID: Map<string, JsonRecord>) {
+  // Temporary Gemma 4 rollout shim. Remove after the coordinator alias catalog
+  // contract is deployed and the console consumes alias metadata.
+  const rows = catalogModels.map(asRecord).filter((model) => typeof model.id === "string");
+  const publicRow = rows.find((model) => model.id === GEMMA_PUBLIC_ID);
+  const qatRow = rows.find((model) => model.id === GEMMA_QAT_ID);
+  const primary = publicRow ?? qatRow;
+  const visible = rows.filter((model) => !isGemmaRolloutBuild(model.id));
+  const capacities = [...GEMMA_ROLLOUT_IDS]
+    .map((id) => capacityByID.get(id))
+    .filter((capacity): capacity is JsonRecord => Boolean(capacity));
+
+  if (capacities.length > 0) {
+    capacityByID.set(GEMMA_PUBLIC_ID, sumGemmaCapacity(capacities));
+  }
+  if (!primary) return visible;
+
+  return [{
+    ...primary,
+    id: GEMMA_PUBLIC_ID,
+    name: "Gemma 4 26B",
+    display_name: "Gemma 4 26B",
+    quantization: undefined,
+    metadata: {
+      ...asRecord(primary.metadata),
+      display_name: "Gemma 4 26B",
+      quantization: undefined,
+    },
+  }, ...visible];
 }
 
 async function publicCatalogResponse(coordUrl: string) {
@@ -157,7 +239,7 @@ async function publicCatalogResponse(coordUrl: string) {
   return NextResponse.json({
     object: "list",
     aliases,
-    data: publicModelRows(catalogModels, aliases)
+    data: (aliases.length > 0 ? publicModelRows(catalogModels, aliases) : applyGemmaRolloutQuickFix(catalogModels, capacityByID))
       .map((model) => toModelEntry(model, capacityByID.get(model.id as string))),
   });
 }

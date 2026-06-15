@@ -200,6 +200,11 @@ type StatsTab = "overview" | "leaderboard";
 type LeaderboardMetric = "earnings" | "tokens" | "jobs";
 type LeaderboardWindow = "24h" | "7d" | "30d" | "all";
 
+const GEMMA_PUBLIC_ID = "gemma-4-26b";
+const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
+const GEMMA_ROLLBACK_ID = "gemma-4-26b-8bit";
+const GEMMA_ROLLOUT_IDS = new Set([GEMMA_PUBLIC_ID, GEMMA_QAT_ID, GEMMA_ROLLBACK_ID]);
+
 interface ModelInventory {
   model: ModelStats;
   providers: ProviderStats[];
@@ -461,11 +466,18 @@ function MiniStat({
 // ---------------------------------------------------------------------------
 // Network Power -- realistic Apple Silicon draw, auto-scaled units
 // ---------------------------------------------------------------------------
-function modelProviders(modelID: string, providers: ProviderStats[]): ProviderStats[] {
-  return providers.filter((provider) => {
-    if (provider.current_model === modelID) return true;
-    return provider.models?.includes(modelID) ?? false;
-  });
+function providerServesGemmaRollout(provider: ProviderStats): boolean {
+  if (provider.current_model && GEMMA_ROLLOUT_IDS.has(provider.current_model)) return true;
+  return provider.models?.some((model) => GEMMA_ROLLOUT_IDS.has(model)) ?? false;
+}
+
+function gemmaRolloutProviders(providers: ProviderStats[]): ProviderStats[] {
+  return providers.filter(providerServesGemmaRollout);
+}
+
+function modelProviders(modelID: string, providers: ProviderStats[], providersByModel: Map<string, ProviderStats[]>): ProviderStats[] {
+  if (modelID === GEMMA_PUBLIC_ID) return gemmaRolloutProviders(providers);
+  return providersByModel.get(modelID) ?? [];
 }
 
 function aliasMemberBuilds(alias: CatalogAliasSummary, includeRetired = true): string[] {
@@ -476,34 +488,59 @@ function aliasMemberBuilds(alias: CatalogAliasSummary, includeRetired = true): s
 }
 
 function hiddenAliasBuilds(aliases: CatalogAliasSummary[]): Set<string> {
-  return new Set(aliases.flatMap((alias) => aliasMemberBuilds(alias)));
+  const hidden = new Set<string>();
+  for (const alias of aliases) {
+    for (const build of aliasMemberBuilds(alias)) hidden.add(build);
+  }
+  return hidden;
 }
 
-function providerServesAnyBuild(provider: ProviderStats, builds: Set<string>): boolean {
-  if (provider.current_model && builds.has(provider.current_model)) return true;
-  return provider.models?.some((model) => builds.has(model)) ?? false;
+function buildProvidersByModel(providers: ProviderStats[]): Map<string, ProviderStats[]> {
+  const byModel = new Map<string, ProviderStats[]>();
+  for (const provider of providers) {
+    const ids = new Set(provider.models ?? []);
+    if (provider.current_model) ids.add(provider.current_model);
+    for (const id of ids) {
+      const bucket = byModel.get(id);
+      if (bucket) {
+        bucket.push(provider);
+      } else {
+        byModel.set(id, [provider]);
+      }
+    }
+  }
+  return byModel;
 }
 
-function modelProvidersForBuilds(buildIDs: string[], providers: ProviderStats[]): ProviderStats[] {
-  const builds = new Set(buildIDs);
-  return providers.filter((provider) => providerServesAnyBuild(provider, builds));
+function modelProvidersForBuilds(buildIDs: string[], providersByModel: Map<string, ProviderStats[]>): ProviderStats[] {
+  const seen = new Set<string>();
+  const providers: ProviderStats[] = [];
+  for (const build of buildIDs) {
+    for (const provider of providersByModel.get(build) ?? []) {
+      if (seen.has(provider.id)) continue;
+      seen.add(provider.id);
+      providers.push(provider);
+    }
+  }
+  return providers;
 }
 
 function publicCatalogModels(catalogModels: CatalogModelSummary[], aliases: CatalogAliasSummary[]): CatalogModelSummary[] {
   const rawByID = new Map(catalogModels.map((model) => [model.id, model]));
   const hidden = hiddenAliasBuilds(aliases);
-  const aliasModels = aliases.flatMap((alias): CatalogModelSummary[] => {
+  const aliasModels: CatalogModelSummary[] = [];
+  for (const alias of aliases) {
     const primary = rawByID.get(alias.primaryBuild ?? alias.desiredBuild) ??
       (alias.previousBuild ? rawByID.get(alias.previousBuild) : undefined);
-    if (!primary) return [];
-    return [{
+    if (!primary) continue;
+    aliasModels.push({
       ...primary,
       id: alias.id,
       displayName: alias.displayName ?? primary.displayName,
       name: alias.displayName ?? primary.name,
       quantization: undefined,
-    }];
-  });
+    });
+  }
   const visibleRaw = catalogModels.filter((model) => !hidden.has(model.id));
   return [...aliasModels, ...visibleRaw];
 }
@@ -547,23 +584,33 @@ function publicCapacityModels(capacityModels: CapacityModelSummary[] | null, ali
   return visible;
 }
 
+function publicModelStats(stats: PlatformStats): ModelStats[] {
+  // Temporary Gemma 4 rollout fallback for deployments without alias metadata.
+  const raw = stats.models.filter((model) => !GEMMA_ROLLOUT_IDS.has(model.id));
+  const hasGemma = stats.models.some((model) => GEMMA_ROLLOUT_IDS.has(model.id));
+  if (!hasGemma) return raw;
+  return [{ id: GEMMA_PUBLIC_ID, providers: gemmaRolloutProviders(stats.providers).length }, ...raw];
+}
+
 function buildModelInventory(stats: PlatformStats, aliases: CatalogAliasSummary[] = []): ModelInventory[] {
+  const providersByModel = buildProvidersByModel(stats.providers);
+  const aliasByID = new Map(aliases.map((alias) => [alias.id, alias]));
   const hidden = hiddenAliasBuilds(aliases);
   const rawModels = stats.models.filter((model) => !hidden.has(model.id));
-  const aliasModels = aliases.flatMap((alias): ModelStats[] => {
-    const providers = modelProvidersForBuilds(aliasMemberBuilds(alias), stats.providers);
-    if (providers.length === 0) return [];
-    return [{ id: alias.id, providers: providers.length }];
-  });
-  const models = [...rawModels, ...aliasModels];
+  const aliasModels: ModelStats[] = [];
+  for (const alias of aliases) {
+    const providers = modelProvidersForBuilds(aliasMemberBuilds(alias, false), providersByModel);
+    if (providers.length > 0) aliasModels.push({ id: alias.id, providers: providers.length });
+  }
+  const models = aliases.length > 0 ? [...rawModels, ...aliasModels] : publicModelStats(stats);
   const totalSlots = models.reduce((sum, model) => sum + model.providers, 0);
 
   return models
     .map((model) => {
-      const alias = aliases.find((candidate) => candidate.id === model.id);
+      const alias = aliasByID.get(model.id);
       const providers = alias
-        ? modelProvidersForBuilds(aliasMemberBuilds(alias), stats.providers)
-        : modelProviders(model.id, stats.providers);
+        ? modelProvidersForBuilds(aliasMemberBuilds(alias, false), providersByModel)
+        : modelProviders(model.id, stats.providers, providersByModel);
       return {
         model,
         providers,
@@ -2960,6 +3007,7 @@ export default function StatsPage() {
   }
 
   const hardwareAttested = stats.providers.filter((p) => p.trust_level === "hardware").length;
+  const visibleModelCount = buildModelInventory(stats, catalogData?.aliases ?? []).length;
   const networkPowerWatts = activeNetworkPowerWatts(stats);
   const tabs: Array<{ value: StatsTab; label: string }> = [
     { value: "overview", label: "Overview" },
@@ -3058,7 +3106,7 @@ export default function StatsPage() {
           />
           <MiniStat
             label="Models"
-            value={stats.models.length.toString()}
+            value={visibleModelCount.toString()}
             sub="serving now"
           />
         </div>

@@ -56,6 +56,7 @@ func TestModelAliasCreateAndListing(t *testing.T) {
 
 	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B (fp8)")
 	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B (qat-4bit)")
+	seedActiveModel(t, st, "gemma-4-26b-retired", "Gemma 4 26B (retired)")
 	srv.SyncModelCatalog()
 
 	// Create the alias: desired = qat, previous = fp8.
@@ -116,8 +117,8 @@ func TestModelAliasCreateAndListing(t *testing.T) {
 	}
 }
 
-// aliasModelEntries returns the alias entry and the set of builds it covers
-// (desired + previous), aggregating capacity across both.
+// aliasModelEntries returns the alias entry and the set of builds it covers,
+// hiding retired lineage while aggregating active capacity from desired + previous.
 func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
@@ -127,7 +128,7 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B (qat-4bit)")
 	if err := st.UpsertModelAlias(&store.ModelAlias{
 		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
-		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
+		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8, RetiredBuilds: []string{"gemma-4-26b-retired"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,18 +137,24 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}, aliasQAT: {ID: aliasQAT, Active: true, ModelType: "text"}}
+	catalogByID := map[string]store.SupportedModel{
+		aliasFP8:              {ID: aliasFP8, Active: true, ModelType: "text"},
+		aliasQAT:              {ID: aliasQAT, Active: true, ModelType: "text"},
+		"gemma-4-26b-retired": {ID: "gemma-4-26b-retired", Active: true, ModelType: "text"},
+	}
 	capByModel := map[string]*registry.ModelCapacity{
-		aliasQAT: {ModelID: aliasQAT, RoutableProviders: 2, WarmProviders: 1, CanAccept: true},
-		aliasFP8: {ModelID: aliasFP8, RoutableProviders: 1, WarmProviders: 0, CanAccept: false},
+		aliasQAT:              {ModelID: aliasQAT, RoutableProviders: 2, WarmProviders: 1, CanAccept: true},
+		aliasFP8:              {ModelID: aliasFP8, RoutableProviders: 1, WarmProviders: 0, CanAccept: false},
+		"gemma-4-26b-retired": {ModelID: "gemma-4-26b-retired", RoutableProviders: 10, WarmProviders: 10, CanAccept: true},
 	}
 
 	entries, hidden := srv.aliasModelEntries(capByModel, catalogByID, registryByID)
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("expected one alias entry, got %+v", entries)
 	}
-	// Capacity aggregates across desired + previous (2 + 1 = 3 routable).
-	if entries[0].Metadata.RoutableProviders != 3 || !entries[0].Metadata.CanAccept {
+	// Capacity aggregates across desired + previous only (2 + 1 = 3 routable);
+	// retired builds are hide-only and must not count as active alias capacity.
+	if entries[0].Metadata.RoutableProviders != 3 || entries[0].Metadata.WarmProviders != 1 || !entries[0].Metadata.CanAccept {
 		t.Fatalf("alias capacity not aggregated: %+v", entries[0].Metadata)
 	}
 	if _, ok := hidden[aliasFP8]; !ok {
@@ -155,6 +162,9 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 	}
 	if _, ok := hidden[aliasQAT]; !ok {
 		t.Fatalf("qat (desired) build should be hidden: %v", hidden)
+	}
+	if _, ok := hidden["gemma-4-26b-retired"]; !ok {
+		t.Fatalf("retired build should be hidden without counting capacity: %v", hidden)
 	}
 }
 

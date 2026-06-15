@@ -592,7 +592,21 @@ struct Start: AsyncParsableCommand {
         let displayName: String
     }
 
+    private static let gemmaPublicID = "gemma-4-26b"
+    private static let gemmaQATID = "gemma-4-26b-qat-4bit"
+    private static let gemmaRollbackID = "gemma-4-26b-8bit"
+
     private func pickerCatalogRows(models: [CatalogModel], aliases: [CatalogAlias]) -> [PickerCatalogRow] {
+        if aliases.isEmpty {
+            let gemmaQATAvailable = models.contains { $0.id == Self.gemmaQATID }
+            return models.compactMap { model in
+                if shouldHideGemmaRolloutModel(model, qatAvailable: gemmaQATAvailable) || isHiddenPickerModel(model) {
+                    return nil
+                }
+                return PickerCatalogRow(model: model, displayName: gemmaRolloutDisplayName(for: model) ?? model.displayName)
+            }
+        }
+
         var hiddenBuilds = Set<String>()
         var aliasDisplayByBuild: [String: String] = [:]
         for alias in aliases {
@@ -621,6 +635,17 @@ struct Start: AsyncParsableCommand {
             if metadata["hide_standalone"] == .bool(true) { return true }
         }
         return model.displayName.localizedCaseInsensitiveContains("rollback")
+    }
+
+    private func gemmaRolloutDisplayName(for model: CatalogModel) -> String? {
+        // Temporary Gemma 4 rollout shim. Remove after the coordinator alias
+        // catalog contract is deployed and the picker consumes alias metadata.
+        model.id == Self.gemmaQATID ? "Gemma 4 26B" : nil
+    }
+
+    private func shouldHideGemmaRolloutModel(_ model: CatalogModel, qatAvailable: Bool) -> Bool {
+        guard qatAvailable else { return model.id == Self.gemmaRollbackID }
+        return model.id == Self.gemmaPublicID || model.id == Self.gemmaRollbackID
     }
 
     /// Fetches the model catalog from the coordinator, shows an interactive

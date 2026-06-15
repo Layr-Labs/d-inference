@@ -587,6 +587,42 @@ struct Start: AsyncParsableCommand {
         let downloaded: Bool
     }
 
+    private struct PickerCatalogRow {
+        let model: CatalogModel
+        let displayName: String
+    }
+
+    private func pickerCatalogRows(models: [CatalogModel], aliases: [CatalogAlias]) -> [PickerCatalogRow] {
+        var hiddenBuilds = Set<String>()
+        var aliasDisplayByBuild: [String: String] = [:]
+        for alias in aliases {
+            hiddenBuilds.insert(alias.desiredBuild)
+            if let previous = alias.previousBuild { hiddenBuilds.insert(previous) }
+            for retired in alias.retiredBuilds ?? [] { hiddenBuilds.insert(retired) }
+
+            let primary = alias.primaryBuild ?? alias.desiredBuild
+            aliasDisplayByBuild[primary] = alias.displayName
+        }
+
+        return models.compactMap { model in
+            if let displayName = aliasDisplayByBuild[model.id] {
+                return PickerCatalogRow(model: model, displayName: displayName)
+            }
+            if hiddenBuilds.contains(model.id) || isHiddenPickerModel(model) {
+                return nil
+            }
+            return PickerCatalogRow(model: model, displayName: model.displayName)
+        }
+    }
+
+    private func isHiddenPickerModel(_ model: CatalogModel) -> Bool {
+        if let metadata = model.metadata {
+            if metadata["hidden_from_picker"] == .bool(true) { return true }
+            if metadata["hide_standalone"] == .bool(true) { return true }
+        }
+        return model.displayName.localizedCaseInsensitiveContains("rollback")
+    }
+
     /// Fetches the model catalog from the coordinator, shows an interactive
     /// terminal picker, downloads any missing models, and returns the
     /// selected model IDs.
@@ -597,14 +633,16 @@ struct Start: AsyncParsableCommand {
     ) async throws -> [String] {
         let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 
-        let catalog: [CatalogModel]
+        let catalogSnapshot: CatalogSnapshot
         do {
-            catalog = try await client.fetchCatalog(typeFilter: "text")
+            catalogSnapshot = try await client.fetchCatalogSnapshot(typeFilter: "text", includeAliases: true)
         } catch {
             printError("Could not fetch model catalog from coordinator: \(error)")
             printError("hint: check your coordinator URL or use --model to specify models directly")
             throw ExitCode.failure
         }
+
+        let catalog = pickerCatalogRows(models: catalogSnapshot.models, aliases: catalogSnapshot.aliases)
 
         guard !catalog.isEmpty else {
             printError("No models in the coordinator catalog.")
@@ -616,7 +654,8 @@ struct Start: AsyncParsableCommand {
 
         // Build picker entries: filter to models that fit, sort downloaded-first
         // then by size descending.
-        var entries: [PickerEntry] = catalog.compactMap { entry in
+        var entries: [PickerEntry] = catalog.compactMap { row -> PickerEntry? in
+            let entry = row.model
             if let minRam = entry.minRamGb, Double(minRam) > memoryGb {
                 return nil
             }
@@ -630,7 +669,7 @@ struct Start: AsyncParsableCommand {
             return PickerEntry(
                 id: entry.id,
                 catalogModel: entry,
-                displayName: entry.displayName,
+                displayName: row.displayName,
                 sizeGb: size,
                 minRamGb: entry.minRamGb,
                 downloaded: isDownloaded

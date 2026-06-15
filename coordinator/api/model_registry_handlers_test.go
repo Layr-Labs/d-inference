@@ -124,6 +124,43 @@ func TestRegisterValidationAndR2Prefix(t *testing.T) {
 	}
 }
 
+func TestCatalogAliasesForResponse(t *testing.T) {
+	models := []map[string]any{
+		{"id": "gemma-4-26b-qat-4bit"},
+		{"id": "gemma-4-26b"},
+	}
+	aliases := []store.ModelAlias{
+		{
+			AliasID:       "gemma-4-26b",
+			DisplayName:   "Gemma 4 26B",
+			DesiredBuild:  "gemma-4-26b-qat-4bit",
+			PreviousBuild: "gemma-4-26b",
+			RetiredBuilds: []string{"gemma-4-26b-old"},
+			Active:        true,
+		},
+		{AliasID: "inactive", DesiredBuild: "missing", Active: false},
+	}
+
+	got := catalogAliasesForResponse(models, aliases)
+	if len(got) != 1 {
+		t.Fatalf("alias count = %d, want 1", len(got))
+	}
+	alias := got[0]
+	if alias["id"] != "gemma-4-26b" || alias["display_name"] != "Gemma 4 26B" {
+		t.Fatalf("unexpected alias identity: %#v", alias)
+	}
+	if alias["desired_build"] != "gemma-4-26b-qat-4bit" || alias["previous_build"] != "gemma-4-26b" {
+		t.Fatalf("unexpected alias builds: %#v", alias)
+	}
+	if alias["primary_build"] != "gemma-4-26b-qat-4bit" {
+		t.Fatalf("primary_build = %v, want desired", alias["primary_build"])
+	}
+	retired, ok := alias["retired_builds"].([]string)
+	if !ok || len(retired) != 1 || retired[0] != "gemma-4-26b-old" {
+		t.Fatalf("retired_builds = %#v", alias["retired_builds"])
+	}
+}
+
 func TestParseModelCatalogPathsDisambiguatesManifestSuffix(t *testing.T) {
 	modelID, ok := parseModelCatalogPath("/v1/models/catalog/org/manifest")
 	if !ok || modelID != "org/manifest" {

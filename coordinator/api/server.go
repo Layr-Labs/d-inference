@@ -914,6 +914,8 @@ func (s *Server) invalidateCatalogCache() {
 	}
 	s.readCache.Invalidate("models:catalog")
 	s.readCache.Invalidate("models:catalog:text")
+	s.readCache.Invalidate("models:catalog:aliases")
+	s.readCache.Invalidate("models:catalog:text:aliases")
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.

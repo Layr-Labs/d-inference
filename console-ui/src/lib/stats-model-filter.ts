@@ -23,6 +23,20 @@ export interface CatalogModelSummary {
   outputModalities?: string[];
 }
 
+export interface CatalogAliasSummary {
+  id: string;
+  displayName?: string;
+  desiredBuild: string;
+  previousBuild?: string;
+  retiredBuilds?: string[];
+  primaryBuild?: string;
+}
+
+export interface CatalogDataSummary {
+  models: CatalogModelSummary[];
+  aliases: CatalogAliasSummary[];
+}
+
 export interface CapacityModelSummary {
   id: string;
   ready?: boolean;
@@ -89,7 +103,7 @@ function compactObject<T extends Record<string, unknown>>(value: T): T {
   ) as T;
 }
 
-export function catalogModelsFromResponse(payload: unknown): CatalogModelSummary[] {
+export function catalogDataFromResponse(payload: unknown): CatalogDataSummary {
   const body = asRecord(payload);
   let rows: unknown[] = [];
   if (Array.isArray(body.data)) {
@@ -98,7 +112,7 @@ export function catalogModelsFromResponse(payload: unknown): CatalogModelSummary
     rows = body.models;
   }
 
-  return rows
+  const models = rows
     .map(asRecord)
     .filter((model) => typeof model.id === "string" && model.id.trim().length > 0)
     .map((model) => {
@@ -122,6 +136,26 @@ export function catalogModelsFromResponse(payload: unknown): CatalogModelSummary
         outputModalities: asStringArray(model.output_modalities),
       });
     });
+
+  const aliases = Array.isArray(body.aliases)
+    ? body.aliases
+      .map(asRecord)
+      .filter((alias) => typeof alias.id === "string" && typeof alias.desired_build === "string")
+      .map((alias) => compactObject({
+        id: alias.id as string,
+        displayName: asString(alias.display_name),
+        desiredBuild: alias.desired_build as string,
+        previousBuild: asString(alias.previous_build),
+        retiredBuilds: asStringArray(alias.retired_builds),
+        primaryBuild: asString(alias.primary_build),
+      }))
+    : [];
+
+  return { models, aliases };
+}
+
+export function catalogModelsFromResponse(payload: unknown): CatalogModelSummary[] {
+  return catalogDataFromResponse(payload).models;
 }
 
 export function capacityModelsFromResponse(payload: unknown): CapacityModelSummary[] {

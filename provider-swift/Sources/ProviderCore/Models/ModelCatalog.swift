@@ -438,8 +438,32 @@ public struct CatalogModel: Codable, Sendable, Equatable {
     }
 }
 
+public struct CatalogAlias: Codable, Sendable, Equatable {
+    public let id: String
+    public let displayName: String
+    public let desiredBuild: String
+    public let previousBuild: String?
+    public let retiredBuilds: [String]?
+    public let primaryBuild: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case desiredBuild = "desired_build"
+        case previousBuild = "previous_build"
+        case retiredBuilds = "retired_builds"
+        case primaryBuild = "primary_build"
+    }
+}
+
+public struct CatalogSnapshot: Sendable, Equatable {
+    public let models: [CatalogModel]
+    public let aliases: [CatalogAlias]
+}
+
 private struct CatalogResponse: Codable {
     let models: [CatalogModel]
+    let aliases: [CatalogAlias]?
 }
 
 // MARK: - Errors
@@ -479,10 +503,19 @@ public struct ModelCatalogClient: Sendable {
     /// Fetch the active catalog from the coordinator. `typeFilter` mirrors
     /// the coordinator's `?type=` query parameter (e.g. "text").
     public func fetchCatalog(typeFilter: String? = nil) async throws -> [CatalogModel] {
+        try await fetchCatalogSnapshot(typeFilter: typeFilter, includeAliases: false).models
+    }
+
+    public func fetchCatalogSnapshot(typeFilter: String? = nil, includeAliases: Bool = false) async throws -> CatalogSnapshot {
         var components = URLComponents(string: "\(coordinatorURL)/v1/models/catalog")!
+        var queryItems: [URLQueryItem] = []
         if let typeFilter, !typeFilter.isEmpty {
-            components.queryItems = [URLQueryItem(name: "type", value: typeFilter)]
+            queryItems.append(URLQueryItem(name: "type", value: typeFilter))
         }
+        if includeAliases {
+            queryItems.append(URLQueryItem(name: "include_aliases", value: "1"))
+        }
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
         guard let url = components.url else {
             throw ModelCatalogError.unreachable("invalid catalog URL")
         }
@@ -506,7 +539,7 @@ public struct ModelCatalogClient: Sendable {
 
         do {
             let decoded = try JSONDecoder().decode(CatalogResponse.self, from: data)
-            return decoded.models
+            return CatalogSnapshot(models: decoded.models, aliases: decoded.aliases ?? [])
         } catch {
             throw ModelCatalogError.decodeFailed(error.localizedDescription)
         }

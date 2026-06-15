@@ -53,9 +53,78 @@ function toModelEntry(model: JsonRecord, capacity?: JsonRecord) {
   };
 }
 
+function asString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function asStringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function aliasMemberBuilds(alias: JsonRecord, includeRetired = true) {
+  const builds = [asString(alias.desired_build), asString(alias.previous_build)];
+  if (includeRetired) builds.push(...asStringArray(alias.retired_builds));
+  return [...new Set(builds.filter((build): build is string => Boolean(build)))];
+}
+
+function isHiddenStandaloneModel(model: JsonRecord) {
+  const metadata = asRecord(model.metadata);
+  if (metadata.hidden_from_picker === true || metadata.hide_standalone === true) return true;
+  const displayName = asString(model.display_name ?? model.name) ?? "";
+  return displayName.toLowerCase().includes("rollback");
+}
+
+function publicModelRows(catalogModels: unknown[], aliases: unknown[]) {
+  const rawModels = catalogModels.map(asRecord).filter((model) => typeof model.id === "string");
+  const aliasRows = aliases.map(asRecord).filter((alias) => typeof alias.id === "string" && typeof alias.desired_build === "string");
+  const rawByID = new Map(rawModels.map((model) => [model.id as string, model]));
+  const hiddenBuilds = new Set(aliasRows.flatMap((alias) => aliasMemberBuilds(alias)));
+  const publicAliases = aliasRows.flatMap((alias): JsonRecord[] => {
+    const primaryID = asString(alias.primary_build) ?? asString(alias.desired_build) ?? asString(alias.previous_build);
+    const primary = primaryID ? rawByID.get(primaryID) : undefined;
+    if (!primary) return [];
+    return [{
+      ...primary,
+      id: alias.id,
+      display_name: alias.display_name ?? primary.display_name,
+      name: alias.display_name ?? primary.name,
+      quantization: undefined,
+      metadata: {
+        ...asRecord(primary.metadata),
+        display_name: alias.display_name ?? asRecord(primary.metadata).display_name,
+        quantization: undefined,
+      },
+    }];
+  });
+  const visibleRaw = rawModels.filter((model) => !hiddenBuilds.has(model.id as string) && !isHiddenStandaloneModel(model));
+  return [...publicAliases, ...visibleRaw];
+}
+
+function aggregateAliasCapacity(alias: JsonRecord, capacityByID: Map<string, JsonRecord>) {
+  const members = aliasMemberBuilds(alias, false).map((build) => capacityByID.get(build)).filter(Boolean) as JsonRecord[];
+  if (members.length === 0) return undefined;
+  const sum = (key: string) => members.reduce((total, item) => total + (typeof item[key] === "number" ? item[key] as number : 0), 0);
+  const ttfts = members
+    .map((item) => item.estimated_ttft_ms)
+    .filter((value): value is number => typeof value === "number" && value > 0);
+  return {
+    id: alias.id,
+    ready: members.some((item) => item.ready === true),
+    can_accept: members.some((item) => item.can_accept === true),
+    routable_providers: sum("routable_providers"),
+    warm_providers: sum("warm_providers"),
+    cold_providers: sum("cold_providers"),
+    active_requests: sum("active_requests"),
+    queued_requests: sum("queued_requests"),
+    queue_limit: Math.max(...members.map((item) => typeof item.queue_limit === "number" ? item.queue_limit : 0)),
+    aggregate_tps: sum("aggregate_tps"),
+    estimated_ttft_ms: ttfts.length > 0 ? Math.min(...ttfts) : undefined,
+  };
+}
+
 async function publicCatalogResponse(coordUrl: string) {
   const [catalogRes, capacityRes] = await Promise.all([
-    fetch(`${coordUrl}/v1/models/catalog?type=text`),
+    fetch(`${coordUrl}/v1/models/catalog?type=text&include_aliases=1`),
     fetch(`${coordUrl}/v1/models/capacity`).catch(() => null),
   ]);
 
@@ -65,6 +134,7 @@ async function publicCatalogResponse(coordUrl: string) {
 
   const catalog = asRecord(await catalogRes.json());
   const catalogModels = Array.isArray(catalog.models) ? catalog.models : [];
+  const aliases = Array.isArray(catalog.aliases) ? catalog.aliases : [];
 
   const capacityByID = new Map<string, JsonRecord>();
   if (capacityRes?.ok) {
@@ -76,13 +146,18 @@ async function publicCatalogResponse(coordUrl: string) {
         capacityByID.set(entry.id, entry);
       }
     }
+    for (const alias of aliases.map(asRecord)) {
+      const aggregate = aggregateAliasCapacity(alias, capacityByID);
+      if (aggregate && typeof aggregate.id === "string") {
+        capacityByID.set(aggregate.id, aggregate);
+      }
+    }
   }
 
   return NextResponse.json({
     object: "list",
-    data: catalogModels
-      .map(asRecord)
-      .filter((model) => typeof model.id === "string")
+    aliases,
+    data: publicModelRows(catalogModels, aliases)
       .map((model) => toModelEntry(model, capacityByID.get(model.id as string))),
   });
 }

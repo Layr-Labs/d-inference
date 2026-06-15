@@ -618,10 +618,14 @@ func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	// Optional filter: ?type=text
 	typeFilter := r.URL.Query().Get("type")
+	includeAliases := r.URL.Query().Get("include_aliases") == "1" || strings.EqualFold(r.URL.Query().Get("include_aliases"), "true")
 
 	cacheKey := "models:catalog"
 	if typeFilter != "" {
 		cacheKey = "models:catalog:" + typeFilter
+	}
+	if includeAliases {
+		cacheKey += ":aliases"
 	}
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
@@ -642,6 +646,14 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	response := map[string]any{"models": models}
+	if includeAliases {
+		aliases, err := s.store.ListModelAliases()
+		if err != nil {
+			s.logger.Warn("model registry: failed to list aliases for catalog response", "error", err)
+		} else {
+			response["aliases"] = catalogAliasesForResponse(models, aliases)
+		}
+	}
 
 	body, err := json.Marshal(response)
 	if err != nil {

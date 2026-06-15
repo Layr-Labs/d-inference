@@ -27,10 +27,12 @@ import {
 } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 import {
-  catalogModelsFromResponse,
+  catalogDataFromResponse,
   capacityModelsFromResponse,
   filterServedCatalogModels,
   type CapacityModelSummary,
+  type CatalogAliasSummary,
+  type CatalogDataSummary,
   type CatalogModelSummary,
 } from "@/lib/stats-model-filter";
 import {
@@ -290,18 +292,18 @@ function normalizeTimeSeries(data: TimeSeriesBucket[], minutes = 30): TimeSeries
   });
 }
 
-async function fetchModelCatalog(): Promise<CatalogModelSummary[] | null> {
+async function fetchModelCatalog(): Promise<CatalogDataSummary | null> {
   const urls = [
     "/api/models",
-    `${COORDINATOR_URL}/v1/models/catalog?type=text`,
+    `${COORDINATOR_URL}/v1/models/catalog?type=text&include_aliases=1`,
   ];
 
   for (const url of urls) {
     try {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) continue;
-      const catalog = catalogModelsFromResponse(await res.json());
-      if (catalog.length > 0) return catalog;
+      const catalog = catalogDataFromResponse(await res.json());
+      if (catalog.models.length > 0) return catalog;
     } catch {
       // Keep stats usable if catalog lookup fails.
     }
@@ -466,12 +468,102 @@ function modelProviders(modelID: string, providers: ProviderStats[]): ProviderSt
   });
 }
 
-function buildModelInventory(stats: PlatformStats): ModelInventory[] {
-  const totalSlots = stats.models.reduce((sum, model) => sum + model.providers, 0);
+function aliasMemberBuilds(alias: CatalogAliasSummary, includeRetired = true): string[] {
+  const builds = [alias.desiredBuild];
+  if (alias.previousBuild) builds.push(alias.previousBuild);
+  if (includeRetired) builds.push(...(alias.retiredBuilds ?? []));
+  return [...new Set(builds.filter(Boolean))];
+}
 
-  return stats.models
+function hiddenAliasBuilds(aliases: CatalogAliasSummary[]): Set<string> {
+  return new Set(aliases.flatMap((alias) => aliasMemberBuilds(alias)));
+}
+
+function providerServesAnyBuild(provider: ProviderStats, builds: Set<string>): boolean {
+  if (provider.current_model && builds.has(provider.current_model)) return true;
+  return provider.models?.some((model) => builds.has(model)) ?? false;
+}
+
+function modelProvidersForBuilds(buildIDs: string[], providers: ProviderStats[]): ProviderStats[] {
+  const builds = new Set(buildIDs);
+  return providers.filter((provider) => providerServesAnyBuild(provider, builds));
+}
+
+function publicCatalogModels(catalogModels: CatalogModelSummary[], aliases: CatalogAliasSummary[]): CatalogModelSummary[] {
+  const rawByID = new Map(catalogModels.map((model) => [model.id, model]));
+  const hidden = hiddenAliasBuilds(aliases);
+  const aliasModels = aliases.flatMap((alias): CatalogModelSummary[] => {
+    const primary = rawByID.get(alias.primaryBuild ?? alias.desiredBuild) ??
+      (alias.previousBuild ? rawByID.get(alias.previousBuild) : undefined);
+    if (!primary) return [];
+    return [{
+      ...primary,
+      id: alias.id,
+      displayName: alias.displayName ?? primary.displayName,
+      name: alias.displayName ?? primary.name,
+      quantization: undefined,
+    }];
+  });
+  const visibleRaw = catalogModels.filter((model) => !hidden.has(model.id));
+  return [...aliasModels, ...visibleRaw];
+}
+
+function aggregateCapacityForBuilds(alias: CatalogAliasSummary, capacityByID: Map<string, CapacityModelSummary>): CapacityModelSummary | null {
+  const members = aliasMemberBuilds(alias, false)
+    .map((build) => capacityByID.get(build))
+    .filter((capacity): capacity is CapacityModelSummary => Boolean(capacity));
+  if (members.length === 0) return null;
+  const sum = (pick: (capacity: CapacityModelSummary) => number | undefined) =>
+    members.reduce((total, capacity) => total + (pick(capacity) ?? 0), 0);
+  const ttfts = members
+    .map((capacity) => capacity.estimatedTTFTMS)
+    .filter((value): value is number => value !== undefined && value > 0);
+  return {
+    id: alias.id,
+    ready: members.some((capacity) => capacity.ready),
+    canAccept: members.some((capacity) => capacity.canAccept),
+    routableProviders: sum((capacity) => capacity.routableProviders),
+    warmProviders: sum((capacity) => capacity.warmProviders),
+    coldProviders: sum((capacity) => capacity.coldProviders),
+    activeRequests: sum((capacity) => capacity.activeRequests),
+    queuedRequests: sum((capacity) => capacity.queuedRequests),
+    queueLimit: Math.max(...members.map((capacity) => capacity.queueLimit ?? 0)),
+    aggregateTPS: sum((capacity) => capacity.aggregateTPS),
+    estimatedTTFTMS: ttfts.length > 0 ? Math.min(...ttfts) : undefined,
+    tokenBudgetRemaining: sum((capacity) => capacity.tokenBudgetRemaining),
+    tokenBudgetTotal: sum((capacity) => capacity.tokenBudgetTotal),
+  };
+}
+
+function publicCapacityModels(capacityModels: CapacityModelSummary[] | null, aliases: CatalogAliasSummary[]): CapacityModelSummary[] | null {
+  if (!capacityModels) return null;
+  const hidden = hiddenAliasBuilds(aliases);
+  const byID = new Map(capacityModels.map((capacity) => [capacity.id, capacity]));
+  const visible = capacityModels.filter((capacity) => !hidden.has(capacity.id));
+  for (const alias of aliases) {
+    const aggregate = aggregateCapacityForBuilds(alias, byID);
+    if (aggregate) visible.push(aggregate);
+  }
+  return visible;
+}
+
+function buildModelInventory(stats: PlatformStats, aliases: CatalogAliasSummary[] = []): ModelInventory[] {
+  const hidden = hiddenAliasBuilds(aliases);
+  const rawModels = stats.models.filter((model) => !hidden.has(model.id));
+  const aliasModels = aliases.flatMap((alias): ModelStats[] => {
+    const providers = modelProvidersForBuilds(aliasMemberBuilds(alias), stats.providers);
+    if (providers.length === 0) return [];
+    return [{ id: alias.id, providers: providers.length }];
+  });
+  const models = [...rawModels, ...aliasModels];
+  const totalSlots = models.reduce((sum, model) => sum + model.providers, 0);
+
+  return models
     .map((model) => {
-      const providers = modelProviders(model.id, stats.providers);
+      const alias = aliases.find((candidate) => candidate.id === model.id);
+      const providers = alias
+        ? modelProvidersForBuilds(aliasMemberBuilds(alias), stats.providers)
+        : modelProviders(model.id, stats.providers);
       return {
         model,
         providers,
@@ -689,17 +781,20 @@ function ModelHeaderMetric({ label, value }: { label: string; value: string }) {
 
 function ActiveModelsSection({
   stats,
-  catalogModels,
+  catalogData,
   capacityModels,
 }: {
   stats: PlatformStats;
-  catalogModels: CatalogModelSummary[] | null;
+  catalogData: CatalogDataSummary | null;
   capacityModels: CapacityModelSummary[] | null;
 }) {
   const [showDeprecatedModels, setShowDeprecatedModels] = useState(false);
-  const inventory = buildModelInventory(stats);
+  const aliases = catalogData?.aliases ?? [];
+  const catalogModels = catalogData ? publicCatalogModels(catalogData.models, aliases) : null;
+  const publicCapacity = publicCapacityModels(capacityModels, aliases);
+  const inventory = buildModelInventory(stats, aliases);
   const catalogByID = new Map((catalogModels ?? []).map((model) => [model.id, model]));
-  const capacityByID = new Map((capacityModels ?? []).map((model) => [model.id, model]));
+  const capacityByID = new Map((publicCapacity ?? []).map((model) => [model.id, model]));
   const servedInventory = inventory.map((item) => ({
     ...item,
     id: item.model.id,
@@ -2799,7 +2894,7 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
 // ---------------------------------------------------------------------------
 export default function StatsPage() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
-  const [catalogModels, setCatalogModels] = useState<CatalogModelSummary[] | null>(null);
+  const [catalogData, setCatalogData] = useState<CatalogDataSummary | null>(null);
   const [capacityModels, setCapacityModels] = useState<CapacityModelSummary[] | null>(null);
   const [activeTab, setActiveTab] = useState<StatsTab>("overview");
   const [loading, setLoading] = useState(true);
@@ -2817,7 +2912,7 @@ export default function StatsPage() {
       const data = await res.json();
       setStats(data);
       if (catalog) {
-        setCatalogModels(catalog);
+        setCatalogData(catalog);
       }
       if (capacity) {
         setCapacityModels(capacity);
@@ -3019,7 +3114,7 @@ export default function StatsPage() {
         {stats.models.length > 0 && (
           <ActiveModelsSection
             stats={stats}
-            catalogModels={catalogModels}
+            catalogData={catalogData}
             capacityModels={capacityModels}
           />
         )}

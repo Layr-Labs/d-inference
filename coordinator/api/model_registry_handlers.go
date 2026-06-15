@@ -816,6 +816,51 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 	return model
 }
 
+func catalogAliasesForResponse(models []map[string]any, aliases []store.ModelAlias) []map[string]any {
+	catalogIDs := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		id, _ := model["id"].(string)
+		if id != "" {
+			catalogIDs[id] = struct{}{}
+		}
+	}
+	response := make([]map[string]any, 0, len(aliases))
+	for _, alias := range aliases {
+		if !alias.Active || alias.DesiredBuild == "" {
+			continue
+		}
+		displayName := alias.DisplayName
+		if displayName == "" {
+			displayName = alias.AliasID
+		}
+		retiredBuilds := alias.RetiredBuilds
+		if retiredBuilds == nil {
+			retiredBuilds = []string{}
+		}
+		entry := map[string]any{
+			"id":             alias.AliasID,
+			"display_name":   displayName,
+			"desired_build":  alias.DesiredBuild,
+			"retired_builds": retiredBuilds,
+		}
+		if alias.PreviousBuild != "" {
+			entry["previous_build"] = alias.PreviousBuild
+		}
+		if _, ok := catalogIDs[alias.DesiredBuild]; ok {
+			entry["primary_build"] = alias.DesiredBuild
+		} else if alias.PreviousBuild != "" {
+			if _, ok := catalogIDs[alias.PreviousBuild]; ok {
+				entry["primary_build"] = alias.PreviousBuild
+			}
+		}
+		if entry["primary_build"] == nil {
+			continue
+		}
+		response = append(response, entry)
+	}
+	return response
+}
+
 func supportedModelFromRegistryRecord(rec *store.ModelRegistryRecord) store.SupportedModel {
 	active := rec.Status == "active" || rec.Status == "beta"
 	model := store.SupportedModel{

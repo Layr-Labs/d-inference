@@ -150,26 +150,14 @@ func (n *ProviderNotifier) notificationCandidates(targets []store.ProviderNotifi
 		return candidates, checks, reasonsByCheck
 	}
 	seen := make(map[string]struct{}, len(targets))
-	assessor := n.healthAssessor()
 	now := time.Now()
 	for _, target := range targets {
-		state, stableKey, reasons, ok := n.notificationCandidate(target, assessor, now, seen)
+		state, stableKey, reasons, ok := n.notificationCandidate(target, now, seen)
 		if !ok {
 			continue
 		}
 		start := len(checks)
-		for _, reason := range reasons {
-			check := store.ProviderNotificationCheck{
-				ProviderID: stableKey,
-				AccountID:  state.accountID,
-				ReasonKey:  reason.Key,
-			}
-			if _, _, _, ok := check.DBValues(); !ok {
-				continue
-			}
-			checks = append(checks, check)
-			reasonsByCheck = append(reasonsByCheck, reason)
-		}
+		checks, reasonsByCheck = appendNotificationChecks(checks, reasonsByCheck, stableKey, state.accountID, reasons)
 		if start < len(checks) {
 			candidates = append(candidates, providerNotificationCandidate{
 				email: target.Email,
@@ -181,6 +169,28 @@ func (n *ProviderNotifier) notificationCandidates(targets []store.ProviderNotifi
 		}
 	}
 	return candidates, checks, reasonsByCheck
+}
+
+func appendNotificationChecks(
+	checks []store.ProviderNotificationCheck,
+	reasonsByCheck []AlertReason,
+	stableKey string,
+	accountID string,
+	reasons []AlertReason,
+) ([]store.ProviderNotificationCheck, []AlertReason) {
+	for _, reason := range reasons {
+		check := store.ProviderNotificationCheck{
+			ProviderID: stableKey,
+			AccountID:  accountID,
+			ReasonKey:  reason.Key,
+		}
+		if _, _, _, ok := check.DBValues(); !ok {
+			continue
+		}
+		checks = append(checks, check)
+		reasonsByCheck = append(reasonsByCheck, reason)
+	}
+	return checks, reasonsByCheck
 }
 
 func (n *ProviderNotifier) sendDueNotifications(
@@ -226,7 +236,6 @@ type providerNotificationCandidate struct {
 
 func (n *ProviderNotifier) notificationCandidate(
 	target store.ProviderNotificationTarget,
-	assessor providerHealthAssessor,
 	now time.Time,
 	seen map[string]struct{},
 ) (providerState, string, []AlertReason, bool) {
@@ -239,7 +248,7 @@ func (n *ProviderNotifier) notificationCandidate(
 		return providerState{}, "", nil, false
 	}
 	state := providerStateFrom(rec, n.registry.GetProvider(rec.ID))
-	reasons := assessor.reasons(state, now)
+	reasons := assessProviderHealth(state, now, n.cfg.MinProviderVersion, n.registry.MinTrustLevel)
 	if len(reasons) == 0 {
 		return providerState{}, "", nil, false
 	}
@@ -299,11 +308,4 @@ func (n *ProviderNotifier) sendAlertEmail(
 		"reasons", reasonKeys(reasons),
 	)
 	return true
-}
-
-func (n *ProviderNotifier) healthAssessor() providerHealthAssessor {
-	return providerHealthAssessor{
-		minProviderVersion: n.cfg.MinProviderVersion,
-		minTrustLevel:      n.registry.MinTrustLevel,
-	}
 }

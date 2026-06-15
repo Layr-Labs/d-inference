@@ -9,14 +9,9 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-type providerHealthAssessor struct {
-	minProviderVersion string
-	minTrustLevel      registry.TrustLevel
-}
-
-func (a providerHealthAssessor) reasons(p providerState, now time.Time) []AlertReason {
+func assessProviderHealth(p providerState, now time.Time, minProviderVersion string, minTrustLevel registry.TrustLevel) []AlertReason {
 	providerVersion := semverCanonical(p.version)
-	minVersion := semverCanonical(a.minProviderVersion)
+	minVersion := semverCanonical(minProviderVersion)
 	out := make([]AlertReason, 0, maxProviderAlertReasons)
 	if !p.online && now.Sub(p.lastSeen) >= providerHeartbeatTimeout {
 		out = append(out, AlertReason{
@@ -30,7 +25,7 @@ func (a providerHealthAssessor) reasons(p providerState, now time.Time) []AlertR
 		out = append(out, AlertReason{
 			Key:    alertReasonVersionBelowMin,
 			Title:  "Provider update required",
-			Detail: fmt.Sprintf("This machine is on v%s; the coordinator requires v%s or newer.", p.version, a.minProviderVersion),
+			Detail: fmt.Sprintf("This machine is on v%s; the coordinator requires v%s or newer.", p.version, minProviderVersion),
 			Action: "Update with the Darkbloom install script, then restart the provider.",
 		})
 	}
@@ -66,11 +61,11 @@ func (a providerHealthAssessor) reasons(p providerState, now time.Time) []AlertR
 			Action: "Restart the provider and run `darkbloom doctor` if it does not recover.",
 		})
 	}
-	if p.status != registry.StatusUntrusted && p.failedChallenges < registry.MaxFailedChallenges && trustRank(p.trustLevel) < trustRank(a.minTrustLevel) {
+	if p.status != registry.StatusUntrusted && p.failedChallenges < registry.MaxFailedChallenges && trustRank(p.trustLevel) < trustRank(minTrustLevel) {
 		out = append(out, AlertReason{
 			Key:    alertReasonTrustBelowMinimum,
 			Title:  "MDM enrollment or hardware verification required",
-			Detail: fmt.Sprintf("This machine is %s trust; public routing requires %s trust.", displayTrust(p.trustLevel), displayTrust(a.minTrustLevel)),
+			Detail: fmt.Sprintf("This machine is %s trust; public routing requires %s trust.", displayTrust(p.trustLevel), displayTrust(minTrustLevel)),
 			Action: "Run `darkbloom enroll` on the Mac and approve the Darkbloom device-management profile.",
 		})
 	}

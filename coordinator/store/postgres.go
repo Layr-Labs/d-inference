@@ -3823,7 +3823,8 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		return ProviderNotificationDueSet{}, nil
 	}
 	byKey := make(map[providerNotificationKey]ProviderNotificationCheck, len(checks))
-	lookupKeys := make([]providerNotificationLookupKey, 0, len(checks))
+	providerIDs := make([]string, 0, len(checks))
+	reasonKeys := make([]string, 0, len(checks))
 	for _, check := range checks {
 		providerID, _, reasonKey, ok := check.DBValues()
 		if !ok {
@@ -3831,27 +3832,21 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		}
 		byKey[providerNotificationKey{ProviderID: check.ProviderID, ReasonKey: check.ReasonKey}] = check
 		dueByCheck[check] = struct{}{}
-		lookupKeys = append(lookupKeys, providerNotificationLookupKey{
-			ProviderID: providerID,
-			ReasonKey:  reasonKey,
-		})
+		providerIDs = append(providerIDs, providerID)
+		reasonKeys = append(reasonKeys, reasonKey)
 	}
-	if len(lookupKeys) == 0 {
+	if len(providerIDs) == 0 {
 		return ProviderNotificationDueSet{}, nil
-	}
-	lookupJSON, err := json.Marshal(lookupKeys)
-	if err != nil {
-		return nil, fmt.Errorf("store: marshal provider notification lookup: %w", err)
 	}
 
 	cutoff := time.Now().Add(-cooldown)
 	rows, err := s.pool.Query(ctx,
 		`SELECT n.provider_id, n.reason_key, n.last_sent_at
-		   FROM jsonb_to_recordset($1::jsonb) AS input(provider_id text, reason_key text)
+		   FROM unnest($1::text[], $2::text[]) AS input(provider_id, reason_key)
 		   JOIN provider_notifications n
 		     ON n.provider_id = input.provider_id
 		    AND n.reason_key = input.reason_key`,
-		string(lookupJSON),
+		providerIDs, reasonKeys,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider notification lookup: %w", err)
@@ -3874,11 +3869,6 @@ func (s *PostgresStore) ProviderNotificationsDue(ctx context.Context, checks []P
 		return nil, fmt.Errorf("store: iterate provider notifications: %w", err)
 	}
 	return dueByCheck, nil
-}
-
-type providerNotificationLookupKey struct {
-	ProviderID string `json:"provider_id"`
-	ReasonKey  string `json:"reason_key"`
 }
 
 func (s *PostgresStore) RecordProviderNotificationsSent(ctx context.Context, checks []ProviderNotificationCheck, sentAt time.Time) error {

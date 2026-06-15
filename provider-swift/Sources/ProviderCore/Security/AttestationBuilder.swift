@@ -378,6 +378,30 @@ private func detectOSVersion() -> String {
 /// The coordinator uses this to look up the device in MicroMDM and
 /// independently verify its security posture via MDM SecurityInfo.
 private func detectSerialNumber() -> String? {
+    if let serial = detectSerialNumberFromIOReg() {
+        return serial
+    }
+    return detectSerialNumberFromSystemProfiler()
+}
+
+private func detectSerialNumberFromIOReg() -> String? {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
+    process.arguments = ["-c", "IOPlatformExpertDevice", "-d", "2"]
+
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = Pipe()
+
+    guard let _ = try? process.run() else { return nil }
+    process.waitUntilExit()
+
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let output = String(data: data, encoding: .utf8) ?? ""
+    return parseSerialNumberFromIOReg(output)
+}
+
+private func detectSerialNumberFromSystemProfiler() -> String? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
     process.arguments = ["SPHardwareDataType"]
@@ -392,6 +416,24 @@ private func detectSerialNumber() -> String? {
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     let output = String(data: data, encoding: .utf8) ?? ""
 
+    return parseSerialNumberFromSystemProfiler(output)
+}
+
+func parseSerialNumberFromIOReg(_ output: String) -> String? {
+    for line in output.components(separatedBy: "\n") {
+        guard line.contains("IOPlatformSerialNumber") else { continue }
+        let parts = line.split(separator: "\"", omittingEmptySubsequences: false)
+        if parts.count >= 4 {
+            let candidate = String(parts[3]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !candidate.isEmpty {
+                return candidate
+            }
+        }
+    }
+    return nil
+}
+
+func parseSerialNumberFromSystemProfiler(_ output: String) -> String? {
     for line in output.components(separatedBy: "\n") {
         if line.contains("Serial Number") {
             return line.components(separatedBy: ":").last?

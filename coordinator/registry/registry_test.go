@@ -507,6 +507,44 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	}
 }
 
+func TestRestoreProviderStateKeepsFreshChallengeVerification(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+	fresh := time.Now()
+	stale := fresh.Add(-10 * time.Minute)
+	p.SetLastChallengeVerified(fresh)
+
+	reg.RestoreProviderState(p, &store.ProviderRecord{
+		ID:                    "persisted-p1",
+		TrustLevel:            string(TrustHardware),
+		Attested:              true,
+		LastChallengeVerified: &stale,
+	})
+
+	if !p.LastChallengeVerified.Equal(fresh) {
+		t.Fatalf("LastChallengeVerified = %v, want fresh registration value %v", p.LastChallengeVerified, fresh)
+	}
+}
+
+func TestRestoreProviderStateAcceptsNewerChallengeVerification(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+	old := time.Now().Add(-10 * time.Minute)
+	newer := old.Add(5 * time.Minute)
+	p.SetLastChallengeVerified(old)
+
+	reg.RestoreProviderState(p, &store.ProviderRecord{
+		ID:                    "persisted-p1",
+		TrustLevel:            string(TrustSelfSigned),
+		Attested:              true,
+		LastChallengeVerified: &newer,
+	})
+
+	if !p.LastChallengeVerified.Equal(newer) {
+		t.Fatalf("LastChallengeVerified = %v, want newer stored value %v", p.LastChallengeVerified, newer)
+	}
+}
+
 func TestHeartbeatUnknownProvider(t *testing.T) {
 	reg := New(testLogger())
 	hb := &protocol.HeartbeatMessage{

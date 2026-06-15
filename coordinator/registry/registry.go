@@ -1085,8 +1085,12 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	p.MDAVerified = false
 	p.ACMEVerified = false
 
-	// Restore challenge state
-	if rec.LastChallengeVerified != nil {
+	// Restore challenge state, but never move a fresh live verification
+	// backwards. Registration attestation sets LastChallengeVerified=now before
+	// RestoreProviderState runs; clobbering it with an old persisted timestamp
+	// can make a just-reconnected provider fail the freshness gate until the
+	// first challenge response lands.
+	if rec.LastChallengeVerified != nil && rec.LastChallengeVerified.After(p.LastChallengeVerified) {
 		p.LastChallengeVerified = *rec.LastChallengeVerified
 	}
 	p.FailedChallenges = rec.FailedChallenges

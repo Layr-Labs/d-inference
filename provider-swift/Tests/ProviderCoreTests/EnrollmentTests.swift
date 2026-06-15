@@ -19,6 +19,29 @@ struct EnrollmentTests {
         #expect(serial.count >= 8, "serial '\(serial)' looks too short")
     }
 
+    @Test("attestation serial parser reads ioreg output")
+    func attestationSerialParserReadsIOReg() {
+        let output = """
+        +-o IOPlatformExpertDevice  <class IOPlatformExpertDevice, id 0x100000100, registered, matched, active, busy 0 (41 ms), retain 39>
+            "IOPlatformSerialNumber" = "WV0NCDC2TX"
+        """
+        #expect(parseSerialNumberFromIOReg(output) == "WV0NCDC2TX")
+    }
+
+    @Test("attestation serial parser reads system_profiler output")
+    func attestationSerialParserReadsSystemProfiler() {
+        let output = """
+            Hardware:
+
+                Hardware Overview:
+
+                  Model Name: Mac Studio
+                  Chip: Apple M3 Ultra
+                  Serial Number (system): WV0NCDC2TX
+        """
+        #expect(parseSerialNumberFromSystemProfiler(output) == "WV0NCDC2TX")
+    }
+
     @Test("EnrollmentError descriptions are stable")
     func enrollmentErrorDescriptions() {
         let cases: [(EnrollmentError, String)] = [

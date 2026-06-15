@@ -1104,14 +1104,20 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits Requ
 //     a model that will never fit (the client would retry forever) — it should
 //     surface model_too_large / 503 instead.
 func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
-	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, allowedSerials...)
+	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, allowedSerials...)
+	return candidateCount, capacityRejections, modelTooLarge
 }
 
 func (r *Registry) QuickCapacityCheckForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
+	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
+	return candidateCount, capacityRejections, modelTooLarge
+}
+
+func (r *Registry) QuickCapacityCheckWithTTFTForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
 	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
 }
 
-func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
+func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
 	// Use a dummy PendingRequest with the caller's actual token estimates
 	// for the admission gate (freeMemoryAdmits).
 	if estimatedPromptTokens <= 0 {
@@ -1176,6 +1182,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			model:         model,
 			slotState:     "unknown",
 			totalPending:  p.pendingCount(),
+			systemMetrics: p.SystemMetrics,
+			decodeTPS:     resolvedDecodeTPS(p),
+			prefillTPS:    resolvedPrefillTPS(p),
 			totalMemoryGB: float64(p.Hardware.MemoryGB),
 			modelSizeGB:   r.catalogSizeGBLocked(model),
 			minRAMGb:      r.catalogMinRAMGbLocked(model),
@@ -1197,6 +1206,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 					continue
 				}
 				snap.slotState = slot.State
+				snap.backendRunning = int(slot.NumRunning)
+				snap.backendWaiting = int(slot.NumWaiting)
+				snap.observedDecodeTPS = slot.ObservedDecodeTPS
 				snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 				snap.queuedTokenBudget = slot.QueuedTokenBudget
@@ -1206,6 +1218,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
+		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
 		p.mu.Unlock()
 
@@ -1231,8 +1244,58 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 
 		candidateCount++
+		ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens, requestedMaxTokens)
+		if !hasTTFT || ttft < bestTTFT {
+			bestTTFT = ttft
+			hasTTFT = true
+		}
 	}
-	return candidateCount, capacityRejections, modelTooLarge
+	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
+}
+
+func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) time.Duration {
+	statePenalty, _ := slotStatePenalty(snap.slotState)
+	if reqPromptTokens < 0 {
+		reqPromptTokens = 0
+	}
+	if reqMaxTokens <= 0 {
+		reqMaxTokens = defaultRequestedMaxTokens
+	}
+	prefillTPS := snap.prefillTPS
+	if prefillTPS <= 0 {
+		prefillTPS = 1.0
+	}
+	effectiveTPS := resolveEffectiveTPS(snap)
+	if effectiveTPS <= 0 {
+		effectiveTPS = 1.0
+	}
+
+	var backlogMs float64
+	if snap.activeTokenBudgetMax > 0 {
+		tokensAhead := float64(snap.activeTokenBudgetUsed) + float64(snap.queuedTokenBudget)
+		coordinatorExtra := float64(snap.pendingMaxTokens) - float64(committedTokenBudget(snap))
+		if coordinatorExtra > 0 {
+			tokensAhead += coordinatorExtra
+		}
+		backlogMs = tokensAhead / effectiveTPS * 1000.0
+	} else {
+		runningBacklogTokens := float64(snap.maxTokensPotential)
+		if runningBacklogTokens <= 0 && snap.backendRunning > 0 {
+			runningBacklogTokens = float64(snap.backendRunning * reqMaxTokens)
+		}
+		waitingBacklogTokens := float64(snap.backendWaiting * reqMaxTokens)
+		unaccountedPendingTokens := float64(snap.pendingMaxTokens) - runningBacklogTokens - waitingBacklogTokens
+		if unaccountedPendingTokens < 0 {
+			unaccountedPendingTokens = 0
+		}
+		backlogMs = (runningBacklogTokens + waitingBacklogTokens + unaccountedPendingTokens) / effectiveTPS * 1000.0
+	}
+
+	ttftMs := statePenalty + backlogMs + float64(reqPromptTokens)/prefillTPS*1000.0
+	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
+		return 0
+	}
+	return time.Duration(ttftMs * float64(time.Millisecond))
 }
 
 // DrainQueuedRequestsForModel attempts to assign queued requests for a

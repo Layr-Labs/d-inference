@@ -1979,3 +1979,156 @@ func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 		t.Errorf("code = %q, want service_unavailable", body.Error.Code)
 	}
 }
+
+func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
+	srv, _ := testServer(t)
+	if got := srv.estimateTTFTRetryAfter("no-queue", 13*time.Second); got != 3 {
+		t.Fatalf("Retry-After without queue = %d, want 3s over target", got)
+	}
+
+	model := "slow-ttft-model"
+	for i := 0; i < 5; i++ {
+		if err := srv.registry.Queue().Enqueue(&registry.QueuedRequest{RequestID: "queued-" + strconv.Itoa(i), Model: model}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	srv.writeTTFTTooSlow(w, model, model, 11*time.Second)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+	if got := w.Header().Get("Retry-After"); got != "15" {
+		t.Fatalf("Retry-After = %q, want 15 from existing queue-depth estimate", got)
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Error.Code != "rate_limit_exceeded" {
+		t.Fatalf("code = %q, want rate_limit_exceeded", body.Error.Code)
+	}
+	if !strings.Contains(body.Error.Message, "10s TTFT target") {
+		t.Fatalf("message = %q, want TTFT target detail", body.Error.Message)
+	}
+}
+
+func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
+	srv, _ := testServer(t)
+	model := "route-slow-ttft-model"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	p := registerBuildsProvider(srv, "route-slow-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 400
+	p.BackendCapacity.Slots[0].MaxTokensPotential = 2_000
+	p.Mu().Unlock()
+
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "responses-style chat completions",
+			path: "/v1/chat/completions",
+			body: `{"model":"MODEL","input":"hello","max_output_tokens":128}`,
+		},
+		{
+			name: "completions",
+			path: "/v1/completions",
+			body: `{"model":"MODEL","prompt":"hello","max_tokens":128}`,
+		},
+		{
+			name: "anthropic messages",
+			path: "/v1/messages",
+			body: `{"model":"MODEL","messages":[{"role":"user","content":"hello"}],"max_tokens":128}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(strings.ReplaceAll(tc.body, "MODEL", model)))
+			req.Header.Set("Authorization", "Bearer test-key")
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusTooManyRequests {
+				t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusTooManyRequests, w.Body.String())
+			}
+			if got := w.Header().Get("Retry-After"); got == "" {
+				t.Fatal("Retry-After header missing")
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if body.Error.Code != "rate_limit_exceeded" {
+				t.Fatalf("code = %q, want rate_limit_exceeded", body.Error.Code)
+			}
+		})
+	}
+}
+
+func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
+	srv, _ := testServer(t)
+	publicModel := "public-ttft-alias"
+	desired := "desired-ttft-build"
+	previous := "previous-ttft-build"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{
+		{ID: desired, SizeGB: 1, MinRAMGB: 24},
+		{ID: previous, SizeGB: 1, MinRAMGB: 24},
+	})
+	srv.registry.SetModelAliases(map[string]registry.AliasTarget{
+		publicModel: {Desired: desired, Previous: previous},
+	})
+
+	desiredProvider := registerBuildsProvider(srv, "desired-slow", desired)
+	desiredProvider.Mu().Lock()
+	desiredProvider.DecodeTPS = 100
+	desiredProvider.PrefillTPS = 400
+	desiredProvider.BackendCapacity.Slots[0].MaxTokensPotential = 2_000
+	desiredProvider.Mu().Unlock()
+
+	previousProvider := registerBuildsProvider(srv, "previous-fast", previous)
+	previousProvider.Mu().Lock()
+	previousProvider.DecodeTPS = 100
+	previousProvider.PrefillTPS = 400
+	previousProvider.Mu().Unlock()
+
+	parsed := map[string]any{"model": desired}
+	fallbackModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, switched := srv.maybeFallbackAliasTTFT(
+		parsed,
+		publicModel,
+		desired,
+		100,
+		128,
+		registry.RequestTraits{},
+		false,
+		nil,
+	)
+
+	if !switched {
+		t.Fatalf("switched = false, candidates=%d rejections=%d tooLarge=%d bestTTFT=%v has=%v", candidates, rejections, tooLarge, bestTTFT, hasTTFT)
+	}
+	if fallbackModel != previous || parsed["model"] != previous {
+		t.Fatalf("fallback model = %q parsed=%v, want previous %q", fallbackModel, parsed["model"], previous)
+	}
+	if candidates != 1 || rejections != 0 || tooLarge != 0 {
+		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
+	}
+	if !hasTTFT || bestTTFT > openRouterTTFT429Threshold {
+		t.Fatalf("bestTTFT = %v has=%v, want within threshold", bestTTFT, hasTTFT)
+	}
+}

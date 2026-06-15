@@ -13,7 +13,7 @@ import (
 // applies. Used by alias/routing tests that need routable capacity without a live
 // WebSocket. Version is set to the desired_models feature floor so version-gated
 // fan-out includes it (the nil conn just means an actual send is a no-op error).
-func registerBuildsProvider(srv *Server, id string, builds ...string) {
+func registerBuildsProvider(srv *Server, id string, builds ...string) *registry.Provider {
 	models := make([]protocol.ModelInfo, 0, len(builds))
 	slots := make([]protocol.BackendSlotCapacity, 0, len(builds))
 	for _, b := range builds {
@@ -48,4 +48,5 @@ func registerBuildsProvider(srv *Server, id string, builds ...string) {
 	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"}
 	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 64, Slots: slots}
 	p.Mu().Unlock()
+	return p
 }

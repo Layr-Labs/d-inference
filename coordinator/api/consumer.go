@@ -88,6 +88,11 @@ const (
 	// block. Using context.Background() unbounded here risks hanging the HTTP
 	// handler goroutine when a WebSocket is half-dead.
 	cancelWriteTimeout = 2 * time.Second
+
+	// openRouterTTFT429Threshold is the hard admission target for external
+	// routers: if the fastest eligible provider is already estimated to miss a
+	// 10s TTFT, return a retryable 429 instead of letting the caller time out.
+	openRouterTTFT429Threshold = 10 * time.Second
 )
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
@@ -310,6 +315,60 @@ func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, 
 	}
 	parsed["model"] = target.Previous
 	return target.Previous, candidates, rejections, tooLarge, true
+}
+
+func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
+	if publicModel == "" || publicModel == currentModel {
+		return currentModel, 0, 0, 0, 0, false, false
+	}
+	target, ok := s.registry.AliasTarget(publicModel)
+	if !ok || target.Desired != currentModel || target.Previous == "" {
+		return currentModel, 0, 0, 0, 0, false, false
+	}
+	if !s.registry.IsModelInCatalog(target.Previous) {
+		return currentModel, 0, 0, 0, 0, false, false
+	}
+	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
+	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT) {
+		return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
+	}
+	parsed["model"] = target.Previous
+	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
+}
+
+func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool) bool {
+	return hasTTFT && bestTTFT > openRouterTTFT429Threshold
+}
+
+func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateModel string, alternate time.Duration, alternateOK bool) (string, time.Duration) {
+	if alternateOK && alternate < primary {
+		return alternateModel, alternate
+	}
+	return primaryModel, primary
+}
+
+func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT time.Duration) int {
+	overage := bestTTFT - openRouterTTFT429Threshold
+	seconds := int(math.Ceil(overage.Seconds()))
+	if base := s.estimateRetryAfter(model); seconds < base {
+		seconds = base
+	}
+	if seconds < 2 {
+		seconds = 2
+	}
+	if seconds > 30 {
+		seconds = 30
+	}
+	return seconds
+}
+
+func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT time.Duration) {
+	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_429"})
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+		fmt.Sprintf("all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds", publicModel, int(openRouterTTFT429Threshold.Seconds()), bestTTFT.Seconds(), retryAfter),
+		withCode("rate_limit_exceeded")))
 }
 
 // dispatchOneProvider encrypts and sends an inference request to a single
@@ -1575,11 +1634,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 503 which counts as downtime. Fast 429s also preserve our TTFT
 		// metrics. Self-route skips this fleet-wide gate — it queues on the
 		// owner's machine instead (handled below).
-		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheckForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
+		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
 			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
+				_, _, _, bestTTFT, hasTTFT = s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
 					if err != nil {
@@ -1634,6 +1694,29 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
 				withCode("model_unavailable")))
 			return
+		}
+		if ttftTooSlow(bestTTFT, hasTTFT) {
+			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+				model = fallbackModel
+				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
+				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
+				if isResponsesAPI {
+					providerParsed, err := responsesRequestToChatCompletions(parsed)
+					if err != nil {
+						refundReservation()
+						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+						return
+					}
+					rawBody, _ = marshalForwardBody(providerParsed)
+				} else {
+					rawBody, _ = marshalForwardBody(parsed)
+				}
+			} else {
+				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
+				refundReservation()
+				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT)
+				return
+			}
 		}
 	}
 
@@ -4063,11 +4146,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// Prefer mode skips the public fleet pre-flight (no owner-trust
 		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
-		candidateCount, capacityRejections, modelTooLarge := s.registry.QuickCapacityCheckForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
+		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
 			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
+				_, _, _, bestTTFT, hasTTFT = s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
@@ -4102,6 +4186,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
 				withCode("model_unavailable")))
 			return
+		}
+		if ttftTooSlow(bestTTFT, hasTTFT) {
+			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+				model = fallbackModel
+				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
+			} else {
+				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
+				refundReservation()
+				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT)
+				return
+			}
 		}
 	}
 

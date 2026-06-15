@@ -1,0 +1,26 @@
+flowchart TD
+    Start[Consumer request] --> Auth[Auth + rate-limit]
+    Auth --> Decrypt{Optional<br/>sender-seal?}
+    Decrypt -->|Yes| DecryptBox[Decrypt NaCl Box]
+    Decrypt -->|No| Plaintext[Plaintext in CVM]
+    DecryptBox --> Plaintext
+    Plaintext --> Estimate[Estimate tokens + reserve balance]
+    Estimate --> QuickCheck[QuickCapacityCheck]
+    QuickCheck -->|No provider| Return404[404/503/429]
+    QuickCheck -->|Providers exist| Reserve[ReserveProviderEx]
+
+    subgraph gates["Routing gates"]
+        Catalog[Catalog + model fit]
+        Trust[Trust floor + CodeAttested]
+        Runtime[Runtime verified]
+        Challenge[Fresh challenge < 6 min]
+        Traits[Vision / tools / version]
+        Cooldown[Error / memory cooldowns]
+    end
+
+    Reserve --> gates
+    gates --> Cost[Cost-minimization selection]
+    Cost --> Encrypt[Encrypt to provider X25519]
+    Encrypt --> Dispatch[Dispatch inference_request]
+
+    style gates fill:#e3f2fd

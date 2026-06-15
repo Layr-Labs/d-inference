@@ -82,7 +82,7 @@ type routingSnapshot struct {
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
 	minRAMGb           int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
-	modelLoaded        bool    // true when the requested model is the currently-running slot
+	modelLoaded        bool    // true when the requested model is resident (running or idle)
 	availableOnDisk    bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
@@ -268,6 +268,9 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
 		p.Status = StatusServing
 	}
+	if !slotStateModelLoaded(selected.snapshot.slotState) {
+		r.RecordWarmPoolColdDispatch(model)
+	}
 
 	bd := selected.breakdown
 	decision := RoutingDecision{
@@ -320,6 +323,11 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	capacityRejections := 0
 	tooLargeRejections := 0
 	visionRejections := 0
+	affinityProviderID := ""
+	affinityLookup := pr.CacheAffinityKey != "" && pr.ConsumerKey != ""
+	if affinityLookup && r.cacheAffinityBonusMs > 0 {
+		affinityProviderID = r.cacheAffinity.lookup(pr.ConsumerKey, model, pr.CacheAffinityKey, time.Now())
+	}
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		// Exclusive self-route: restrict to the caller's own machines and never
@@ -374,6 +382,14 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 				visionRejections++
 			}
 			continue
+		}
+		if affinityProviderID != "" && p.ID == affinityProviderID {
+			bonus := r.cacheAffinityBonusMs
+			if bonus > candidate.costMs {
+				bonus = candidate.costMs
+			}
+			candidate.costMs -= bonus
+			candidate.breakdown.Total = candidate.costMs
 		}
 		candidates = append(candidates, candidate)
 		candidateCount++
@@ -455,6 +471,14 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 		if len(equivalent) > 1 {
 			winner = equivalent[rand.Intn(len(equivalent))]
+		}
+	}
+	if affinityProviderID != "" {
+		for _, c := range nearTies {
+			if c.provider.ID == affinityProviderID {
+				winner = c
+				break
+			}
 		}
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
@@ -710,7 +734,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 			break
 		}
 	}
-	snap.modelLoaded = snap.slotState == "running"
+	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
@@ -836,8 +860,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// tracks "running", so we check the slot state directly here — otherwise an
 	// idle-but-loaded provider would be wrongly excluded. Reported as
 	// rejectModelTooLarge (permanent, not capacity).
-	modelResident := snap.slotState == "running" || snap.slotState == "idle"
-	if !modelResident && !modelFitsHardware(snap.minRAMGb, snap.modelSizeGB, snap.totalMemoryGB) {
+	if !slotStateModelLoaded(snap.slotState) && !modelFitsHardware(snap.minRAMGb, snap.modelSizeGB, snap.totalMemoryGB) {
 		return nil, rejectModelTooLarge, false
 	}
 
@@ -911,6 +934,10 @@ func slotStatePenalty(state string) (float64, bool) {
 	default:
 		return slotStatePenaltyUnknown, true
 	}
+}
+
+func slotStateModelLoaded(state string) bool {
+	return state == "running" || state == "idle"
 }
 
 func backlogTokenMs(maxTokensPotential int64, waitingTokens, unaccountedPendingTokens, decodeTPS float64) float64 {
@@ -1077,6 +1104,14 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits Requ
 //     a model that will never fit (the client would retry forever) — it should
 //     surface model_too_large / 503 instead.
 func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
+	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, allowedSerials...)
+}
+
+func (r *Registry) QuickCapacityCheckForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
+	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
+}
+
+func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
 	// Use a dummy PendingRequest with the caller's actual token estimates
 	// for the admission gate (freeMemoryAdmits).
 	if estimatedPromptTokens <= 0 {
@@ -1116,6 +1151,14 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 		// (non-self-route) requests, so selfRouteOwner is false — private-only
 		// machines are excluded unconditionally.
 		if !r.providerPassesRoutingGatesLocked(p, model, traits, false, now) {
+			p.mu.Unlock()
+			continue
+		}
+		if p.SystemMetrics.ThermalState == "critical" {
+			p.mu.Unlock()
+			continue
+		}
+		if requiresVision && !r.providerServesVisionModelLocked(p, model) {
 			p.mu.Unlock()
 			continue
 		}
@@ -1161,7 +1204,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 				break
 			}
 		}
-		snap.modelLoaded = snap.slotState == "running"
+		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 
 		p.mu.Unlock()
@@ -1171,8 +1214,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 		// capacity pressure — count it separately so the caller never 429s it.
 		// Skipped for a resident ("running"/"idle") model, which has demonstrably
 		// fit.
-		modelResident := snap.slotState == "running" || snap.slotState == "idle"
-		if !modelResident && !modelFitsHardware(snap.minRAMGb, snap.modelSizeGB, snap.totalMemoryGB) {
+		if !slotStateModelLoaded(snap.slotState) && !modelFitsHardware(snap.minRAMGb, snap.modelSizeGB, snap.totalMemoryGB) {
 			modelTooLarge++
 			continue
 		}

@@ -1,0 +1,47 @@
+flowchart TB
+    subgraph consumer["Consumer"]
+        C[OpenAI SDK / Web UI / curl]
+    end
+
+    subgraph coord["Coordinator — Confidential VM"]
+        direction TB
+        API[HTTP API /auth /rate-limit /sealedTransport]
+        Router[Registry + Scheduler]
+        Attest[Attestation Verifier]
+        Billing[Billing + Ledger]
+        WS[WebSocket handler]
+    end
+
+    subgraph provider["Provider Mac — hardened Swift process"]
+        direction TB
+        WSC[WebSocket client]
+        Crypto[X25519 NodeKeyPair]
+        SE[Secure Enclave P-256]
+        Infer[MLX-Swift inference]
+        GPU[Apple Silicon GPU]
+    end
+
+    subgraph apple["Apple infrastructure"]
+        MDM[MicroMDM + SCEP]
+        APNs[APNs push]
+        MDA[Apple MDA]
+    end
+
+    C -->|HTTPS + optional NaCl Box| API
+    API --> Router
+    Router --> Billing
+    Router --> WS
+    WS -->|WebSocket + per-request NaCl Box| WSC
+    WSC --> Crypto
+    Crypto --> Infer
+    Infer --> GPU
+    SE -.->|signs attestation| Attest
+    Attest --> MDM
+    Attest --> MDA
+    WS -->|code-identity challenge| APNs
+    APNs --> WSC
+
+    style consumer fill:#e8f5e9
+    style coord fill:#e3f2fd
+    style provider fill:#fff3e0
+    style apple fill:#f3e5f5

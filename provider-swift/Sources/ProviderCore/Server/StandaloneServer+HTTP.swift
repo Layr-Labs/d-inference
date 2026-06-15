@@ -147,6 +147,20 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 ),
                 message: error.localizedDescription
             )
+        } catch let error as VLMRequestInference.MediaError {
+            // Local HTTP (`darkbloom start --local`) must give the same
+            // status contract as the coordinator WebSocket path: an
+            // oversized/malformed/non-`data:` inline-media payload is a client
+            // fault (400), not a provider 500. Without this catch a MediaError
+            // raised by the VLM media-cap path escapes as the framework's
+            // generic 500. Mapping reuses mapInferenceErrorToStatus (400 for
+            // every case except the provider-side videoWriteFailed → 500).
+            return Self.openAIErrorResponse(
+                status: HTTPResponse.Status(
+                    code: Int(ProviderLoop.mapInferenceErrorToStatus(error))
+                ),
+                message: error.localizedDescription
+            )
         }
     }
 

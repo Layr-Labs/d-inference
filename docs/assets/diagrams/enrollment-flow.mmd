@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant P as Provider Mac
+    participant S as install.sh
+    participant API as Coordinator
+    participant MDM as MicroMDM + SCEP
+    participant A as Apple MDA
+
+    S->>API: POST /v1/enroll {serial}
+    API-->>S: .mobileconfig (SCEP + MDM + ACME)
+    S->>P: Install profile
+    P->>MDM: Enroll via SCEP identity
+    MDM-->>P: MDM check-in complete
+    API->>MDM: SecurityInfo + DeviceInformation(nonce)
+    MDM->>P: Send commands
+    P->>A: Request MDA cert chain
+    A-->>P: Apple-signed certificate
+    P->>P: Generate SE P-256 key
+    P->>API: Register {attestation blob, X25519 pub}
+    API->>API: Verify SE sig, check MDA chain,<br/>cross-check SecurityInfo
+    API-->>P: Trust level: hardware

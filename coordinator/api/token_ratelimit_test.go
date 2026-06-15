@@ -9,6 +9,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -18,6 +19,12 @@ func tokenReq(accountID string, role string) *http.Request {
 		ctx = context.WithValue(ctx, auth.CtxKeyUser, &store.User{AccountID: accountID, Role: role})
 	}
 	return httptest.NewRequest("POST", "/v1/chat/completions", nil).WithContext(ctx)
+}
+
+func tokenReqWithKey(accountID string, role string, key *store.APIKey) *http.Request {
+	req := tokenReq(accountID, role)
+	ctx := context.WithValue(req.Context(), ctxKeyAPIKey, key)
+	return req.WithContext(ctx)
 }
 
 // Consumer output-token budget trips with the output_tokens dimension and emits
@@ -130,5 +137,87 @@ func TestApplyTokenRateLimitNilLimiter(t *testing.T) {
 	rec := httptest.NewRecorder()
 	if !s.applyTokenRateLimit(rec, tokenReq("acct", ""), 1_000_000, 1_000_000) {
 		t.Fatal("nil limiter should pass through")
+	}
+}
+
+func TestTokenExpectedOutputAdmissionServiceEnabledAvoidsUpfrontBurst(t *testing.T) {
+	s := &Server{
+		serviceTokenLimiter: ratelimit.NewTokenLimiter(1_000_000, 10_000_000, 0.000001, 512_000),
+		outputAdmissionEstimator: ratelimit.NewOutputAdmissionEstimator(ratelimit.OutputAdmissionEstimatorConfig{
+			Enabled:  true,
+			Fraction: 0.25,
+		}),
+	}
+
+	for i := 0; i < 16; i++ {
+		rec := httptest.NewRecorder()
+		if !s.applyTokenRateLimit(rec, tokenReq("openrouter", store.RoleService), 10, 32_768) {
+			t.Fatalf("service request %d should pass with estimated-output admission, got %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestTokenExpectedOutputAdmissionDisabledUnchanged(t *testing.T) {
+	s := &Server{serviceTokenLimiter: ratelimit.NewTokenLimiter(1_000_000, 10_000_000, 0.000001, 512_000)}
+
+	for i := 0; i < 15; i++ {
+		rec := httptest.NewRecorder()
+		if !s.applyTokenRateLimit(rec, tokenReq("openrouter", store.RoleService), 10, 32_768) {
+			t.Fatalf("service request %d should pass before burst is exhausted, got %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	if s.applyTokenRateLimit(rec, tokenReq("openrouter", store.RoleService), 10, 32_768) {
+		t.Fatal("disabled estimator should preserve full max_tokens OTPM admission and reject request 16")
+	}
+	if !strings.Contains(rec.Body.String(), "output_tokens") {
+		t.Fatalf("expected output_tokens rejection, got %s", rec.Body.String())
+	}
+}
+
+func TestTokenExpectedOutputAdmissionDeltaConsumesFutureCapacity(t *testing.T) {
+	s := &Server{
+		serviceTokenLimiter: ratelimit.NewTokenLimiter(1_000_000, 10_000_000, 0.000001, 100),
+		outputAdmissionEstimator: ratelimit.NewOutputAdmissionEstimator(ratelimit.OutputAdmissionEstimatorConfig{
+			Enabled:  true,
+			Fraction: 0.5,
+		}),
+	}
+
+	rec := httptest.NewRecorder()
+	admission, ok := s.applyTokenRateLimitWithAdmission(rec, tokenReq("openrouter", store.RoleService), 10, 80)
+	if !ok {
+		t.Fatalf("request should pass, got %d %s", rec.Code, rec.Body.String())
+	}
+	if admission.AdmittedOutputTokens != 40 {
+		t.Fatalf("admitted output = %d, want 40", admission.AdmittedOutputTokens)
+	}
+	s.reconcileOutputAdmission(&registry.PendingRequest{ConsumerKey: "openrouter", Model: "m", TokenAdmission: admission}, 70)
+	if ok, dim, _ := s.serviceTokenLimiter.Peek("openrouter", 0, 31); ok || dim != "output_tokens" {
+		t.Fatalf("delta should consume future output capacity; peek ok=%v dim=%q", ok, dim)
+	}
+}
+
+func TestTokenExpectedOutputAdmissionPerKeyOverrideStillEnforced(t *testing.T) {
+	otpm := int64(100)
+	s := &Server{
+		serviceTokenLimiter: ratelimit.NewTokenLimiter(1_000_000, 10_000_000, 1_000_000, 10_000_000),
+		keyTokenLimiter:     ratelimit.NewKeyTokenLimiter(),
+		outputAdmissionEstimator: ratelimit.NewOutputAdmissionEstimator(ratelimit.OutputAdmissionEstimatorConfig{
+			Enabled:  true,
+			Fraction: 0.25,
+		}),
+	}
+	key := &store.APIKey{ID: "key_1", OwnerAccountID: "openrouter", OTPMLimit: &otpm}
+
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		if !s.applyTokenRateLimit(rec, tokenReqWithKey("openrouter", store.RoleService, key), 10, 200) {
+			t.Fatalf("per-key request %d should pass using output estimate, got %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	if s.applyTokenRateLimit(rec, tokenReqWithKey("openrouter", store.RoleService, key), 10, 200) {
+		t.Fatal("per-key OTPM override should reject after estimated charges exhaust the key bucket")
 	}
 }

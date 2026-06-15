@@ -143,6 +143,20 @@ func (t *TokenLimiter) Commit(accountID string, inputTokens, outputTokens int) {
 	}
 }
 
+func (t *TokenLimiter) DebitOutput(accountID string, outputTokens int) {
+	if accountID == "" || outputTokens <= 0 || t.output == nil {
+		return
+	}
+	lock := t.lockFor(accountID)
+	lock.Lock()
+	defer lock.Unlock()
+	t.output.DebitN(accountID, outputTokens)
+}
+
+func (t *TokenLimiter) HasOutputLimit() bool {
+	return t != nil && t.output != nil
+}
+
 // InputStat returns the input-token bucket snapshot for header emission and
 // whether the dimension is enforced (false when unlimited).
 func (t *TokenLimiter) InputStat(accountID string) (Stat, bool) {

@@ -197,6 +197,27 @@ func (q *RequestQueue) QueueSize(model string) int {
 	return len(q.queues[model])
 }
 
+func (q *RequestQueue) QueueStats(model string) (depth int, oldestAge time.Duration) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	queue := q.queues[model]
+	depth = len(queue)
+	if depth == 0 {
+		return 0, 0
+	}
+	now := time.Now()
+	oldest := queue[0].EnqueuedAt
+	for _, req := range queue[1:] {
+		if req.EnqueuedAt.Before(oldest) {
+			oldest = req.EnqueuedAt
+		}
+	}
+	if !oldest.IsZero() {
+		oldestAge = now.Sub(oldest)
+	}
+	return depth, oldestAge
+}
+
 // TotalSize returns the total number of queued requests across all models.
 func (q *RequestQueue) TotalSize() int {
 	q.mu.Lock()

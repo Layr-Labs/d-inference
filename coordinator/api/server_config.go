@@ -21,6 +21,7 @@ type ServerConfig struct {
 	AdminKey             string
 	AdminEmails          []string
 	ReleaseKey           string
+	ServiceReservations  bool
 }
 
 // ReadServerConfig reads server configuration from environment variables.
@@ -36,6 +37,7 @@ func ReadServerConfig() ServerConfig {
 		AdminKey:             os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
 		AdminEmails:          ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
 		ReleaseKey:           os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
+		ServiceReservations:  env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
 	}
 }
 

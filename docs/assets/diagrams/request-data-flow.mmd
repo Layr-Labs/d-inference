@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant C as Consumer
+    participant API as Coordinator HTTPS
+    participant R as Registry/Scheduler
+    participant P as Provider
+    participant GPU as Apple GPU
+
+    C->>API: POST /v1/chat/completions<br/>(TLS + optional NaCl Box)
+    API->>API: Auth, rate-limit, optional decrypt
+    API->>API: Estimate tokens, reserve balance
+    API->>R: ReserveProviderEx(model)
+    R->>R: Apply routing gates + cost model
+    R-->>API: Selected provider
+    API->>API: Encrypt body to provider X25519 pub
+    API->>P: inference_request (NaCl Box)
+    P->>P: Decrypt with NodeKeyPair
+    P->>GPU: Run MLX inference
+    GPU-->>P: Generated tokens
+    loop Streaming response
+        P->>API: inference_chunk (NaCl Box to coord ephemeral)
+        API->>API: Decrypt chunk
+        API->>C: SSE data (TLS + optional re-seal)
+    end
+    P->>API: inference_complete + usage
+    API->>API: Settle billing, refund/credit

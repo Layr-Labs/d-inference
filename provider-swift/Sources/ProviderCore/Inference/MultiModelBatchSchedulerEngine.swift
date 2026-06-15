@@ -193,6 +193,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // batched engine. For VLM models, serve them via the container's
         // non-batched prepare/generate vision path.
         if isVLM, let container, VLMRequestInference.hasMedia(request) {
+            // Decode + validate inline media SYNCHRONOUSLY, before returning the
+            // stream. A MediaError (oversized/malformed/non-`data:` payload) thrown
+            // here propagates through this `async throws` to the caller — so both
+            // the buffered (non-streaming) and the SSE (streaming) HTTP paths, and
+            // the coordinator WebSocket path, surface the correct 4xx instead of a
+            // 200 with a truncated/error stream body. (Deferring the decode into
+            // the generation task would let the HTTP layer commit a 200 first.)
+            do {
+                try await VLMRequestInference.validateMedia(request)
+            } catch {
+                await releaseBox.fire()
+                throw error
+            }
             let vlmStream = VLMRequestInference.stream(
                 container: container, request: request, defaultMaxTokens: defaultMaxTokens)
             return AsyncThrowingStream { continuation in

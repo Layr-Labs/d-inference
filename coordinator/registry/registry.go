@@ -139,13 +139,20 @@ type PendingRequest struct {
 	// RequestedMaxTokens is the consumer's requested output budget (or a
 	// sensible default when omitted). It is used for backlog estimation.
 	RequestedMaxTokens int
-	AcceptedCh         chan struct{}           // signalled when provider accepts request
-	ChunkCh            chan string             // SSE data chunks
-	CompleteCh         chan protocol.UsageInfo // closed after usage sent
-	ErrorCh            chan protocol.InferenceErrorMessage
-	SessionPrivKey     *[32]byte // E2E session private key for decrypting responses
-	SESignature        string    // SE signature over response hash
-	ResponseHash       string    // SHA-256 of response data
+	// CacheAffinityKey is SHA256(prompt_cache_key) from the request body. Empty
+	// means no cache-affinity routing. It is scoped again by account and model in
+	// the registry tracker and is never persisted.
+	CacheAffinityKey string
+	// TokenAdmission records the output-token charge admitted at request time so
+	// successful completion can reconcile any positive actual-output delta.
+	TokenAdmission TokenAdmission
+	AcceptedCh     chan struct{}           // signalled when provider accepts request
+	ChunkCh        chan string             // SSE data chunks
+	CompleteCh     chan protocol.UsageInfo // closed after usage sent
+	ErrorCh        chan protocol.InferenceErrorMessage
+	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
+	SESignature    string    // SE signature over response hash
+	ResponseHash   string    // SHA-256 of response data
 
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
@@ -158,11 +165,28 @@ type PendingRequest struct {
 	// timeout). The base itself is refunded once globally or settled by the
 	// winning attempt.
 	BaseReservedMicroUSD int64
+	// ServiceReservation marks a trusted service account request whose pre-router
+	// admission used an in-memory hold instead of a synchronous ledger debit.
+	ServiceReservation   bool
 	reservationMu        sync.Mutex
 	reservationFinalized bool
 
 	// Timing fields for latency decomposition.
 	Timing *RequestTiming
+}
+
+type TokenAdmission struct {
+	AdmittedOutputTokens int
+	EstimatedOutput      bool
+	AccountOutputLimited bool
+	AccountTier          string
+	KeyOutputLimited     bool
+	KeyOutputRPS         float64
+	KeyOutputBurst       int
+}
+
+func (a TokenAdmission) TracksOutput() bool {
+	return a.AccountOutputLimited || a.KeyOutputLimited
 }
 
 // MarkReservationFinalized returns true only for the first settlement or refund
@@ -219,11 +243,20 @@ type Provider struct {
 	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
 	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
-	Status            ProviderStatus
-	Conn              *websocket.Conn
-	LastHeartbeat     time.Time
-	Stats             protocol.HeartbeatStats // lifetime counters shown to users
-	lastSessionStats  protocol.HeartbeatStats // raw counters from the current provider process
+
+	// MDMFailureReason records the last MDM verification outcome for this
+	// connection, bucketed for observability: "" (verified/none),
+	// "device-not-found", "found-not-enrolled", "securityinfo-timeout",
+	// "posture-mismatch", or "error". In-memory + per-connection — it explains
+	// why a provider is (still) self_signed so the stuck-cohort gauge can
+	// distinguish "never enrolled" from "enrolled but unresponsive".
+	MDMFailureReason string
+
+	Status           ProviderStatus
+	Conn             *websocket.Conn
+	LastHeartbeat    time.Time
+	Stats            protocol.HeartbeatStats // lifetime counters shown to users
+	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
 
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
@@ -390,6 +423,84 @@ func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.mu.Unlock()
 }
 
+// GrantHardwareIfNotUntrusted atomically promotes the provider to hardware trust
+// unless it is currently untrusted, returning whether it granted. The status
+// check and the trust write happen under a SINGLE lock on purpose: a separate
+// GetStatus() check followed by SetAttested(hardware) is a TOCTOU — a concurrent
+// hard untrust from the challenge loop (binary-hash change / SIP disabled /
+// signature failure) landing in the gap would leave the registry in
+// hardware/untrusted and push a false "online" to the provider. Callers must only
+// run the rest of the grant (sendTrustStatus / persist / MDA) when this returns
+// true. Mirrors the SetMDAProofIfHardware single-lock pattern.
+func (p *Provider) GrantHardwareIfNotUntrusted() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Status == StatusUntrusted {
+		return false
+	}
+	p.Attested = true
+	p.TrustLevel = TrustHardware
+	return true
+}
+
+// GetTrustLevel returns the current trust level (thread-safe).
+func (p *Provider) GetTrustLevel() TrustLevel {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.TrustLevel
+}
+
+// GetStatus returns the current provider status (thread-safe).
+func (p *Provider) GetStatus() ProviderStatus {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Status
+}
+
+// SetMDMFailureReason records the bucketed reason this connection's MDM
+// verification has not (yet) granted hardware trust (thread-safe). Empty string
+// clears it (verified / no failure).
+func (p *Provider) SetMDMFailureReason(reason string) {
+	p.mu.Lock()
+	p.MDMFailureReason = reason
+	p.mu.Unlock()
+}
+
+// GetMDMFailureReason returns the last bucketed MDM verification reason (thread-safe).
+func (p *Provider) GetMDMFailureReason() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.MDMFailureReason
+}
+
+// SetMDAProofIfHardware atomically attaches a late-arriving Apple Device
+// Attestation proof to the provider IFF it currently holds hardware trust and
+// the MDA serial matches the attested serial. Returns true if attached.
+//
+// The trust check and the field writes happen under a single p.mu acquisition on
+// purpose: doing them separately (read GetTrustLevel, then write the fields) is a
+// TOCTOU — a concurrent SetAttested demotion between the check and the write
+// would attach MDA proof to a now-self_signed connection, re-creating the
+// "mda_verified while self_signed" drift. The single lock also closes the data
+// race with handleProviderAttestation, which reads these fields under p.mu.
+func (p *Provider) SetMDAProofIfHardware(certChain [][]byte, mdaResult *attestation.MDAResult) bool {
+	if mdaResult == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.TrustLevel != TrustHardware {
+		return false
+	}
+	if p.AttestationResult == nil || mdaResult.DeviceSerial != p.AttestationResult.SerialNumber {
+		return false
+	}
+	p.MDAVerified = true
+	p.MDACertChain = certChain
+	p.MDAResult = mdaResult
+	return true
+}
+
 // SetLastChallengeVerified updates the challenge timestamp (thread-safe).
 func (p *Provider) SetLastChallengeVerified(t time.Time) {
 	p.mu.Lock()
@@ -506,11 +617,23 @@ func (p *Provider) ChallengeShouldStop() bool {
 	return p.Status == StatusUntrusted && !p.untrustedRecoverable
 }
 
-// SetAttestationResult stores the parsed attestation result (thread-safe).
+// SetAttestationResult stores a snapshot of the parsed attestation result
+// (thread-safe). It copies the struct instead of retaining the caller's
+// pointer: the registration path mutates a single local `result` across several
+// validation checks (Valid/Error/...) while `persistProviderNow` asynchronously
+// `json.Marshal`s `p.AttestationResult` under `p.mu`. Aliasing the caller's
+// struct would let those unsynchronized field writes race the marshal (caught by
+// `-race` in coordinator/api). VerificationResult is all value-typed fields, so a
+// shallow copy is a complete, immutable snapshot owned by the Provider.
 func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) {
 	p.mu.Lock()
-	p.AttestationResult = result
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	if result == nil {
+		p.AttestationResult = nil
+		return
+	}
+	snapshot := *result
+	p.AttestationResult = &snapshot
 }
 
 // GetAttestationResult returns the current attestation result (thread-safe).
@@ -705,7 +828,8 @@ type Registry struct {
 	// after a failed one. The value is the entry's expiry time. While an
 	// entry lives, the provider is skipped for new load_model sends
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
-	pendingModelLoads map[string]time.Time // key: "providerID:modelID", value: expiry
+	pendingModelLoads       map[string]time.Time // key: "providerID:modelID", value: expiry
+	pendingModelLoadStarted map[string]time.Time
 
 	// dispatchLoadCooldowns: provider-model pairs that rejected a dispatch with a
 	// load failure ("insufficient memory"). Routing skips the pair until expiry —
@@ -740,6 +864,12 @@ type Registry struct {
 	// or one missed heartbeat doesn't mass-reap a live fleet. Guarded by r.mu;
 	// rebuilt each sweep so disconnected providers drop out automatically.
 	evictStrikes map[string]int
+
+	cacheAffinity        *cacheAffinityTracker
+	cacheAffinityBonusMs float64
+	warmPool             *warmPoolController
+	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
+	loadModelSender func(providerID, modelID string) error
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -774,12 +904,35 @@ func New(logger *slog.Logger) *Registry {
 		tpsRegistry:             NewTPSRegistry(),
 		modelProviders:          make(map[string]*atomic.Int64),
 		pendingModelLoads:       make(map[string]time.Time),
+		pendingModelLoadStarted: make(map[string]time.Time),
 		dispatchLoadCooldowns:   make(map[string]time.Time),
 		inferenceErrorStrikes:   make(map[inferenceErrorKey][]time.Time),
 		inferenceErrorCooldowns: make(map[inferenceErrorKey]time.Time),
 		evictStrikes:            make(map[string]int),
+		cacheAffinity:           newCacheAffinityTracker(cacheAffinityTTL),
+		cacheAffinityBonusMs:    defaultCacheAffinityBonusMs,
 		logger:                  logger,
 	}
+}
+
+func (r *Registry) ConfigureCacheAffinity(cfg CacheAffinityConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cfg.TTL <= 0 {
+		cfg.TTL = cacheAffinityTTL
+	}
+	r.cacheAffinity = newCacheAffinityTracker(cfg.TTL)
+	r.cacheAffinityBonusMs = cfg.BonusMs
+}
+
+func (r *Registry) CacheAffinityConfigSnapshot() CacheAffinityConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ttl := cacheAffinityTTL
+	if r.cacheAffinity != nil {
+		ttl = r.cacheAffinity.ttl
+	}
+	return CacheAffinityConfig{TTL: ttl, BonusMs: r.cacheAffinityBonusMs}
 }
 
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
@@ -904,8 +1057,16 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	if !p.Attested {
 		p.Attested = rec.Attested
 	}
-	p.MDAVerified = rec.MDAVerified
-	p.ACMEVerified = rec.ACMEVerified
+	// Never resurrect MDA/ACME proofs from the store. Trust above self_signed was
+	// just capped away (see above), so a restored connection is always
+	// self_signed or lower — and a hardware proof is only meaningful for the
+	// connection that earned it live. Restoring MDAVerified=true here produced the
+	// misleading "mda_verified=true while self_signed" drift on
+	// /v1/providers/attestation. These flags are re-set by the live MDM/ACME legs
+	// (verifyAppleDeviceAttestation / applyACMETrust) once hardware is re-earned
+	// this connection.
+	p.MDAVerified = false
+	p.ACMEVerified = false
 
 	// Restore challenge state
 	if rec.LastChallengeVerified != nil {
@@ -2123,6 +2284,14 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 // does not block waiting for the load to complete. The provider replies
 // asynchronously with a load_model_status message.
 func (r *Registry) SendLoadModel(providerID, modelID string) error {
+	if r.loadModelSender != nil {
+		if err := r.loadModelSender(providerID, modelID); err != nil {
+			return err
+		}
+		r.logger.Info("sent load_model to provider", "provider_id", providerID, "model_id", modelID)
+		return nil
+	}
+
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
@@ -2356,6 +2525,7 @@ func (r *Registry) expirePendingModelLoads(now time.Time) {
 	for key, expiresAt := range r.pendingModelLoads {
 		if now.After(expiresAt) {
 			delete(r.pendingModelLoads, key)
+			delete(r.pendingModelLoadStarted, key)
 		}
 	}
 }
@@ -2541,7 +2711,9 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		if r.providerHasPendingLoad(action.providerID) {
 			continue
 		}
-		r.pendingModelLoads[modelLoadKey(action.providerID, action.modelID)] = now.Add(pendingModelLoadTTL)
+		key := modelLoadKey(action.providerID, action.modelID)
+		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
+		r.pendingModelLoadStarted[key] = now
 		reserved = append(reserved, action)
 	}
 	return reserved
@@ -2627,10 +2799,27 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 
 // ClearPendingModelLoad removes a pending model load entry after a terminal
 // load_model_status response.
-func (r *Registry) ClearPendingModelLoad(providerID, modelID string) {
+func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Duration {
 	r.mu.Lock()
-	delete(r.pendingModelLoads, modelLoadKey(providerID, modelID))
+	key := modelLoadKey(providerID, modelID)
+	started := r.pendingModelLoadStarted[key]
+	delete(r.pendingModelLoads, key)
+	delete(r.pendingModelLoadStarted, key)
 	r.mu.Unlock()
+	if started.IsZero() {
+		return 0
+	}
+	return time.Since(started)
+}
+
+func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Duration {
+	r.mu.RLock()
+	started := r.pendingModelLoadStarted[modelLoadKey(providerID, modelID)]
+	r.mu.RUnlock()
+	if started.IsZero() {
+		return 0
+	}
+	return time.Since(started)
 }
 
 // BackoffPendingModelLoadForDrain re-stamps a pending load entry with the
@@ -2642,7 +2831,14 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) {
 // clears the entry anyway via Disconnect.
 func (r *Registry) BackoffPendingModelLoadForDrain(providerID, modelID string) {
 	r.mu.Lock()
-	r.pendingModelLoads[modelLoadKey(providerID, modelID)] = time.Now().Add(pendingModelLoadDrainBackoff)
+	key := modelLoadKey(providerID, modelID)
+	r.pendingModelLoads[key] = time.Now().Add(pendingModelLoadDrainBackoff)
+	if r.pendingModelLoadStarted == nil {
+		r.pendingModelLoadStarted = make(map[string]time.Time)
+	}
+	if r.pendingModelLoadStarted[key].IsZero() {
+		r.pendingModelLoadStarted[key] = time.Now()
+	}
 	r.mu.Unlock()
 }
 
@@ -2714,6 +2910,7 @@ func (r *Registry) Disconnect(id string) {
 		for key := range r.pendingModelLoads {
 			if len(key) > len(id)+1 && key[:len(id)+1] == id+":" {
 				delete(r.pendingModelLoads, key)
+				delete(r.pendingModelLoadStarted, key)
 			}
 		}
 		p.mu.Lock()
@@ -3643,6 +3840,68 @@ func (r *Registry) ProviderCountByVersion() map[string]int {
 	return counts
 }
 
+// TrustStatusCount is one bucket of the fleet trust-state gauge.
+type TrustStatusCount struct {
+	TrustLevel string
+	Status     string
+	Count      int
+}
+
+// ProviderCountByTrustStatus buckets every connected provider by
+// (trust_level, status) so the coordinator can alert on a growing
+// self_signed/untrusted cohort. Offline providers are excluded (they are not a
+// live routability problem). Unlike most gauges this includes untrusted, since
+// the untrusted cohort is exactly what we want visibility into.
+func (r *Registry) ProviderCountByTrustStatus() []TrustStatusCount {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	type key struct{ trust, status string }
+	counts := make(map[key]int)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		p.mu.Unlock()
+		if status == StatusOffline {
+			continue
+		}
+		counts[key{string(trust), string(status)}]++
+	}
+	out := make([]TrustStatusCount, 0, len(counts))
+	for k, n := range counts {
+		out = append(out, TrustStatusCount{TrustLevel: k.trust, Status: k.status, Count: n})
+	}
+	return out
+}
+
+// ProviderCountByMDMFailure buckets connected, non-hardware providers by their
+// last MDM verification failure reason (device-not-found, found-not-enrolled,
+// securityinfo-timeout, posture-mismatch, error). This is the stuck-cohort
+// breakdown: it distinguishes "never enrolled" from "enrolled but the live
+// SecurityInfo check is timing out" so an operator knows whether the problem is
+// provider-side enrollment or APNs/MDM delivery. Hardware providers (reason
+// cleared) are excluded.
+func (r *Registry) ProviderCountByMDMFailure() map[string]int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	counts := make(map[string]int)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		reason := p.MDMFailureReason
+		p.mu.Unlock()
+		if status == StatusOffline || trust == TrustHardware {
+			continue
+		}
+		if reason == "" {
+			reason = "pending"
+		}
+		counts[reason]++
+	}
+	return counts
+}
+
 // FleetSnapshot is the read-only summary used by metrics polling. We
 // don't lock individual providers — counts may be off-by-one under
 // heavy churn — that's acceptable for gauges.
@@ -3687,7 +3946,8 @@ type ModelCapacity struct {
 	Ready                bool    `json:"ready"`                  // at least one routable provider with headroom
 	CanAccept            bool    `json:"can_accept"`             // ready AND queue not full
 	RoutableProviders    int     `json:"routable_providers"`     // passed all gates
-	WarmProviders        int     `json:"warm_providers"`         // model loaded (slot state "running")
+	WarmProviders        int     `json:"warm_providers"`         // model loaded (slot state "running" or "idle")
+	RunningProviders     int     `json:"running_providers"`      // model loaded with active requests (slot state "running")
 	ColdProviders        int     `json:"cold_providers"`         // model available but not loaded
 	ActiveRequests       int     `json:"active_requests"`        // in-flight across fleet
 	QueuedRequests       int     `json:"queued_requests"`        // waiting in coordinator queue
@@ -3703,6 +3963,7 @@ type ModelCapacity struct {
 type providerCapSnap struct {
 	model                 string
 	warm                  bool
+	running               bool
 	hasHeadroom           bool // pending < maxConcurrency
 	effectiveTPS          float64
 	prefillTPS            float64
@@ -3788,7 +4049,8 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					if slot.Model != m.ID {
 						continue
 					}
-					snap.warm = slot.State == "running"
+					snap.warm = slotStateModelLoaded(slot.State)
+					snap.running = slot.State == "running"
 					slotActive := int(slot.NumRunning) + int(slot.NumWaiting)
 					if slotActive > snap.activeRequests {
 						snap.activeRequests = slotActive
@@ -3817,6 +4079,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	type modelAgg struct {
 		routable         int
 		warm             int
+		running          int
 		cold             int
 		activeRequests   int
 		aggregateTPS     float64
@@ -3835,6 +4098,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 		if s.warm {
 			a.warm++
+			if s.running {
+				a.running++
+			}
 		} else {
 			a.cold++
 		}
@@ -3908,6 +4174,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			CanAccept:            canAccept,
 			RoutableProviders:    a.routable,
 			WarmProviders:        a.warm,
+			RunningProviders:     a.running,
 			ColdProviders:        a.cold,
 			ActiveRequests:       a.activeRequests,
 			QueuedRequests:       queued,

@@ -1443,3 +1443,61 @@ func TestCapabilityChecksHonorAllowedSerials(t *testing.T) {
 		t.Fatal("constrained to its own serial, the capable provider must satisfy the vision check")
 	}
 }
+
+func TestQuickCapacityCheckForRequestRequiresVision(t *testing.T) {
+	reg := New(testLogger())
+	model := "vision-preflight-model"
+	textOnly := makeSchedulerProvider(t, reg, "text-only", model, 100)
+	textOnly.mu.Lock()
+	textOnly.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: false}}
+	textOnly.mu.Unlock()
+
+	if candidates, rejections, tooLarge := reg.QuickCapacityCheckForRequest(model, 100, 128, RequestTraits{}, true); candidates != 0 || rejections != 0 || tooLarge != 0 {
+		t.Fatalf("vision preflight with text-only provider = (%d,%d,%d), want 0/0/0", candidates, rejections, tooLarge)
+	}
+
+	vision := makeSchedulerProvider(t, reg, "vision", model, 100)
+	vision.mu.Lock()
+	vision.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: true}}
+	vision.mu.Unlock()
+
+	if candidates, _, _ := reg.QuickCapacityCheckForRequest(model, 100, 128, RequestTraits{}, true); candidates != 1 {
+		t.Fatalf("vision preflight candidates=%d, want 1", candidates)
+	}
+}
+
+func TestQuickCapacityCheckExcludesCriticalThermal(t *testing.T) {
+	reg := New(testLogger())
+	model := "critical-thermal-preflight"
+	p := makeSchedulerProvider(t, reg, "hot", model, 100)
+	p.mu.Lock()
+	p.SystemMetrics.ThermalState = "critical"
+	p.mu.Unlock()
+
+	if candidates, rejections, tooLarge := reg.QuickCapacityCheckForRequest(model, 100, 128, RequestTraits{}, false); candidates != 0 || rejections != 0 || tooLarge != 0 {
+		t.Fatalf("critical thermal preflight = (%d,%d,%d), want 0/0/0", candidates, rejections, tooLarge)
+	}
+}
+
+func TestIdleResidentAdmittedByFallbackMemoryGate(t *testing.T) {
+	reg := New(testLogger())
+	model := "idle-resident-fallback"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 40}})
+	p := makeSchedulerProvider(t, reg, "idle-resident", model, 100)
+	p.mu.Lock()
+	p.BackendCapacity.GPUMemoryActiveGB = 42
+	p.BackendCapacity.TotalMemoryGB = 64
+	p.BackendCapacity.Slots[0].State = "idle"
+	// Force legacy memory admission path; active token budget path would bypass
+	// the bug this test guards.
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 0
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(model, &PendingRequest{RequestID: "idle-resident", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128})
+	if selected == nil {
+		t.Fatalf("idle resident provider rejected; decision=%+v", decision)
+	}
+	if selected.ID != p.ID {
+		t.Fatalf("selected %q, want %q", selected.ID, p.ID)
+	}
+}

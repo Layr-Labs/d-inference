@@ -151,6 +151,14 @@ func main() {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
 	}
+	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
+	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
+	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)
+	stopWarmPool := reg.StartWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
+	defer stopWarmPool()
+	if cfg.RegistryCfg.WarmPool.Enabled {
+		logger.Info("warm-pool controller enabled", "observe_only", cfg.RegistryCfg.WarmPool.ObserveOnly, "interval", cfg.RegistryCfg.WarmPool.Interval.String())
+	}
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
 
@@ -213,6 +221,11 @@ func main() {
 		logger.Info("service token rate limiter enabled", "itpm", serviceTok.InputPerMinute, "otpm", serviceTok.OutputPerMinute)
 	}
 	srv.SetTokenLimiters(consumerTokenLimiter, serviceTokenLimiter)
+	if outputAdmission := ratelimit.NewOutputAdmissionEstimator(cfg.OutputAdmission); outputAdmission != nil {
+		srv.SetOutputAdmissionEstimator(outputAdmission)
+		estCfg := outputAdmission.Config()
+		logger.Info("service expected-output token admission enabled", "fraction", estCfg.Fraction, "floor", estCfg.Floor, "ceiling", estCfg.Ceiling)
+	}
 
 	// Per-key (variable-rate) limiters for per-key RPM and ITPM/OTPM overrides.
 	// Unlike the per-account limiters above, these only act when an individual
@@ -349,19 +362,24 @@ func main() {
 		mdmClient := mdm.NewClient(mdmCfg.URL, mdmCfg.APIKey, logger)
 
 		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
+			// Parse + verify the Apple cert chain once (not per provider).
+			mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
+			if err != nil {
+				logger.Error("late MDA cert parse error", "udid", udid, "error", err)
+				return
+			}
+			if !mdaResult.Valid {
+				return
+			}
+			// Attach the proof only to a connection that currently holds hardware
+			// trust, atomically (trust check + writes under one lock). A late
+			// DevicePropertiesAttestation can arrive after the device reconnected as
+			// self_signed (RestoreProviderState caps it); attaching MDA to a
+			// self_signed provider is the drift this fix removes — and a separate
+			// check-then-write would be a TOCTOU. MDA is re-earned live once hardware
+			// is re-granted this connection.
 			reg.ForEachProvider(func(p *registry.Provider) {
-				if p.AttestationResult == nil {
-					return
-				}
-				mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-				if err != nil {
-					logger.Error("late MDA cert parse error", "udid", udid, "error", err)
-					return
-				}
-				if mdaResult.Valid && (mdaResult.DeviceSerial == p.AttestationResult.SerialNumber) {
-					p.MDAVerified = true
-					p.MDACertChain = certChain
-					p.MDAResult = mdaResult
+				if p.SetMDAProofIfHardware(certChain, mdaResult) {
 					logger.Info("late MDA cert stored on provider",
 						"provider_id", p.ID,
 						"serial", mdaResult.DeviceSerial,
@@ -372,48 +390,13 @@ func main() {
 			})
 		})
 
-		// Register callback for late-arriving SecurityInfo responses.
-		// When APN delivery is slow (device sleeping, Power Nap cycle),
-		// the synchronous 90s wait may time out, but the webhook arrives
-		// later. This callback retroactively upgrades self_signed providers.
-		mdmClient.SetOnLateSecurityInfo(func(udid string, info *mdm.SecurityInfoResponse) {
-			if info == nil || !info.SystemIntegrityProtectionEnabled || info.SecureBootLevel != "full" {
-				return
-			}
-			// Collect self_signed provider candidates under the read lock,
-			// then do HTTP lookups outside the lock to avoid blocking
-			// heartbeats and routing while MicroMDM responds.
-			type candidate struct {
-				provider *registry.Provider
-				serial   string
-			}
-			var candidates []candidate
-			reg.ForEachProvider(func(p *registry.Provider) {
-				p.Mu().Lock()
-				trust := p.TrustLevel
-				serial := ""
-				if p.AttestationResult != nil {
-					serial = p.AttestationResult.SerialNumber
-				}
-				p.Mu().Unlock()
-				if trust == registry.TrustSelfSigned && serial != "" {
-					candidates = append(candidates, candidate{provider: p, serial: serial})
-				}
-			})
-			for _, c := range candidates {
-				dev, _ := mdmClient.LookupDevice(c.serial)
-				if dev == nil || dev.UDID != udid {
-					continue
-				}
-				c.provider.SetAttested(true, registry.TrustHardware)
-				logger.Info("late SecurityInfo arrival — upgraded provider to hardware trust",
-					"provider_id", c.provider.ID,
-					"serial", c.serial,
-					"udid", udid,
-				)
-				reg.PersistProvider(c.provider)
-			}
-		})
+		// Register callback for late-arriving SecurityInfo responses. When APN
+		// delivery is slow (device sleeping, Power Nap cycle), the synchronous 90s
+		// wait may time out but the webhook arrives later. The Server method
+		// retroactively upgrades the matching self_signed provider — mirroring the
+		// synchronous success path (status guard + trust_status notification) so the
+		// two paths can't drift.
+		mdmClient.SetOnLateSecurityInfo(srv.ApplyLateSecurityInfo)
 
 		srv.SetMDMClient(mdmClient)
 		// Optional shared secret for the MicroMDM webhook. Defense-in-depth on
@@ -460,6 +443,14 @@ func main() {
 				}
 			}
 		}
+	} else {
+		// ACME is the no-live-command leg of the OR-trust model: a provider that
+		// presents a valid, bound device-attest-01 mTLS client cert earns hardware
+		// trust without any MDM SecurityInfo round-trip. Without the step-ca root
+		// that leg is dormant, so every provider must earn hardware trust via the
+		// live MDM SecurityInfo path (subject to APNs delivery). Surface the
+		// dormancy at startup so activation can be planned + validated.
+		logger.Warn("ACME device-cert verification disabled — EIGENINFERENCE_STEP_CA_ROOT not set; providers earn hardware trust via MDM SecurityInfo only")
 	}
 
 	// Optional profile signing: when a code-signing identity (e.g. Developer ID
@@ -513,6 +504,9 @@ func main() {
 
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
+
+	// Reclaim expired read-cache entries periodically (bounds memory growth).
+	go srv.StartReadCacheJanitor(ctx)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

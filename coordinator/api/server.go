@@ -324,12 +324,19 @@ type Server struct {
 	// service accounts bypass rate limiting entirely.
 	serviceRateLimiter *ratelimit.Limiter
 
+	// serviceReservations avoids hot-row pre-router ledger debits for trusted
+	// service accounts when enabled. Normal consumers still use ledger debits.
+	serviceReservations *serviceReservationManager
+
 	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
 	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
 	// the industry-standard token throttle alongside RPM. Nil means no token
 	// limiting for that tier. Service accounts use serviceTokenLimiter.
 	consumerTokenLimiter *ratelimit.TokenLimiter
 	serviceTokenLimiter  *ratelimit.TokenLimiter
+	// outputAdmissionEstimator enables service-account expected-output admission
+	// for OTPM. Nil means disabled and preserves full max_tokens admission.
+	outputAdmissionEstimator *ratelimit.OutputAdmissionEstimator
 
 	// keyRPMLimiter / keyTokenLimiter enforce PER-KEY rate overrides (each key
 	// may carry a different ceiling) on top of the per-account limiters above.
@@ -365,6 +372,10 @@ func (s *Server) SetTokenLimiters(consumer, service *ratelimit.TokenLimiter) {
 	s.serviceTokenLimiter = service
 }
 
+func (s *Server) SetOutputAdmissionEstimator(estimator *ratelimit.OutputAdmissionEstimator) {
+	s.outputAdmissionEstimator = estimator
+}
+
 // SetKeyLimiters configures the per-key (variable-rate) RPM and ITPM/OTPM
 // limiters used for per-key overrides. Pass nil to disable per-key limiting.
 func (s *Server) SetKeyLimiters(rpm *ratelimit.Limiter, tokens *ratelimit.KeyTokenLimiter) {
@@ -379,53 +390,122 @@ func (s *Server) SetKeyLimiters(rpm *ratelimit.Limiter, tokens *ratelimit.KeyTok
 // and returns false. Admin bypasses. Standard x-ratelimit-*-{input,output}-tokens
 // headers are set on both success and rejection.
 func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int) bool {
+	_, ok := s.applyTokenRateLimitWithAdmission(w, r, inputTokens, outputTokens)
+	return ok
+}
+
+func (s *Server) applyTokenRateLimitWithAdmission(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int) (registry.TokenAdmission, bool) {
+	admission := registry.TokenAdmission{AdmittedOutputTokens: outputTokens}
 	accountID := consumerKeyFromContext(r.Context())
 	if accountID == "admin" {
-		return true
+		return admission, true
 	}
 
 	// Resolve the account-tier token limiter (nil = no account-level token limit
 	// for this caller, e.g. a service account with no service token limiter).
 	tl := s.consumerTokenLimiter
 	tier := "consumer"
+	serviceAccount := false
 	if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
+		serviceAccount = true
+		tier = "service"
 		if s.serviceTokenLimiter != nil {
 			tl = s.serviceTokenLimiter
-			tier = "service"
 		} else {
 			tl = nil
 		}
 	}
+	admission.AccountTier = tier
+	if serviceAccount {
+		if estimatedOutput, estimated := s.outputAdmissionEstimator.Estimate(outputTokens); estimated {
+			admission.AdmittedOutputTokens = estimatedOutput
+			admission.EstimatedOutput = true
+		}
+	}
 
 	keyID, inRPS, inBurst, outRPS, outBurst, keyEnforced := s.keyTokenParams(r)
+	admission.AccountOutputLimited = tl != nil && tl.HasOutputLimit()
+	admission.KeyOutputLimited = keyEnforced && outRPS > 0 && outBurst > 0
+	admission.KeyOutputRPS = outRPS
+	admission.KeyOutputBurst = outBurst
+	if admission.TracksOutput() {
+		s.ddHistogram("ratelimit.output_admission.estimated_tokens", float64(admission.AdmittedOutputTokens), outputAdmissionTags(tier, admission.EstimatedOutput))
+	}
 
 	// Peek BOTH the per-key override and the account-level limiter before
 	// consuming either. Only commit when both have capacity, so a rejection in
 	// one limiter never debits the other (a per-key request that the account
 	// bucket rejects must not drain the key's quota, and vice-versa).
 	if keyEnforced {
-		if ok, dim, retry := s.keyTokenLimiter.Peek(keyID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst); !ok {
+		if ok, dim, retry := s.keyTokenLimiter.Peek(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst); !ok {
 			s.writeTokenRateLimited(w, "key", dim, retry)
-			return false
+			return admission, false
 		}
 	}
 	if tl != nil {
-		if ok, dim, retry := tl.Peek(accountID, inputTokens, outputTokens); !ok {
+		if ok, dim, retry := tl.Peek(accountID, inputTokens, admission.AdmittedOutputTokens); !ok {
 			setTokenRateLimitHeaders(w, tl, accountID)
 			s.writeTokenRateLimited(w, tier, dim, retry)
-			return false
+			return admission, false
 		}
 	}
 
 	// Both dimensions have capacity — commit to each.
 	if keyEnforced {
-		s.keyTokenLimiter.Commit(keyID, inputTokens, outputTokens, inRPS, inBurst, outRPS, outBurst)
+		s.keyTokenLimiter.Commit(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst)
 	}
 	if tl != nil {
-		tl.Commit(accountID, inputTokens, outputTokens)
+		tl.Commit(accountID, inputTokens, admission.AdmittedOutputTokens)
 		setTokenRateLimitHeaders(w, tl, accountID)
 	}
-	return true
+	return admission, true
+}
+
+func outputAdmissionTags(tier string, estimated bool) []string {
+	if tier == "" {
+		tier = "none"
+	}
+	return []string{"tier:" + tier, "estimated:" + strconv.FormatBool(estimated)}
+}
+
+func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOutputTokens int) {
+	if pr == nil || !pr.TokenAdmission.TracksOutput() {
+		return
+	}
+	admission := pr.TokenAdmission
+	if actualOutputTokens < 0 {
+		actualOutputTokens = 0
+	}
+	admittedOutputTokens := admission.AdmittedOutputTokens
+	if admittedOutputTokens < 0 {
+		admittedOutputTokens = 0
+	}
+	delta := actualOutputTokens - admittedOutputTokens
+	if delta < 0 {
+		delta = 0
+	}
+	tags := append(outputAdmissionTags(admission.AccountTier, admission.EstimatedOutput), "model:"+pr.Model)
+	s.ddHistogram("ratelimit.output_admission.actual_tokens", float64(actualOutputTokens), tags)
+	s.ddHistogram("ratelimit.output_admission.delta_tokens", float64(delta), tags)
+	if delta == 0 {
+		return
+	}
+	if admission.AccountOutputLimited {
+		var tl *ratelimit.TokenLimiter
+		switch admission.AccountTier {
+		case "service":
+			tl = s.serviceTokenLimiter
+		default:
+			tl = s.consumerTokenLimiter
+		}
+		if tl != nil {
+			tl.DebitOutput(pr.ConsumerKey, delta)
+		}
+	}
+	if admission.KeyOutputLimited && s.keyTokenLimiter != nil {
+		s.keyTokenLimiter.DebitOutput(pr.KeyID, delta, admission.KeyOutputRPS, admission.KeyOutputBurst)
+	}
+	s.ddCount("ratelimit.output_admission.delta_tokens_total", int64(delta), tags)
 }
 
 // writeTokenRateLimited writes a 429 for a token-dimension rejection with a
@@ -548,6 +628,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		settlements:          newSettlementHolder(),
 		zombieCanceller:      newZombieStreamCanceller(),
+		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -1299,6 +1380,18 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 // unbounded body.
 const maxMDMWebhookBodyBytes = 1 << 20 // 1 MiB
 
+// maxRequestBodyBytes is the global ceiling bodyLimitMiddleware applies to every
+// request body so no endpoint can be OOM'd by an unbounded POST. It's a coarse
+// outer bound that clears every legitimate body with headroom; the hot paths
+// self-cap tighter on top (the plaintext-inference path at 16 MiB, sized to the
+// provider WS frame budget — see maxInferenceBodyBytes).
+const maxRequestBodyBytes = 64 << 20 // 64 MiB
+
+// maxControlPlaneBodyBytes is the tight cap for small unauthenticated
+// control-plane JSON (enroll, device token, admin auth) — far below the global
+// ceiling so these exposed endpoints buffer at most a few KiB.
+const maxControlPlaneBodyBytes = 64 << 10 // 64 KiB
+
 // HandleMDMWebhook processes a MicroMDM webhook callback.
 // Mount this on the webhook URL configured in MicroMDM.
 //
@@ -1630,12 +1723,52 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			for ver, count := range s.registry.ProviderCountByVersion() {
 				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
 			}
+			// Trust-state cohort gauges — alert when self_signed/untrusted grows.
+			for _, b := range s.registry.ProviderCountByTrustStatus() {
+				s.ddGauge("providers.by_trust_status", float64(b.Count),
+					[]string{"trust_level:" + b.TrustLevel, "status:" + b.Status})
+			}
+			// Stuck-cohort breakdown — distinguishes never-enrolled from
+			// enrolled-but-SecurityInfo-timing-out so we know if the problem is
+			// provider-side enrollment or APNs/MDM delivery.
+			for reason, count := range s.registry.ProviderCountByMDMFailure() {
+				s.ddGauge("providers.by_mdm_failure", float64(count), []string{"reason:" + reason})
+			}
 			if s.minProviderVersion != "" {
 				s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
 			}
 			if q := s.registry.Queue(); q != nil {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
 			}
+		}
+	}
+}
+
+// readCacheJanitorInterval is how often expired readCache entries are reclaimed.
+// Get already skips expired entries, so this only frees memory — but without it
+// high-cardinality keys (e.g. the per-account "account-earnings:" entries) are
+// written and never re-read, so they linger forever and the cache grows unbounded.
+const readCacheJanitorInterval = time.Minute
+
+// StartReadCacheJanitor periodically purges expired entries from the read cache
+// so it can't grow unbounded. Call as a goroutine; stops when ctx is cancelled.
+func (s *Server) StartReadCacheJanitor(ctx context.Context) {
+	s.runReadCacheJanitor(ctx, readCacheJanitorInterval)
+}
+
+// runReadCacheJanitor is StartReadCacheJanitor with an injectable interval (tests).
+func (s *Server) runReadCacheJanitor(ctx context.Context, interval time.Duration) {
+	if s.readCache == nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.readCache.PurgeExpired()
 		}
 	}
 }
@@ -1673,7 +1806,40 @@ func (s *Server) handleUnimplementedEndpoint(w http.ResponseWriter, r *http.Requ
 //
 // Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.mux)))
+	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.bodyLimitMiddleware(s.mux))))
+}
+
+// bodyLimitMiddleware caps every request body at maxRequestBodyBytes so an
+// unbounded POST can't OOM the coordinator (the trusted TEE component).
+// Per-handler MaxBytesReader caps (tighter) layer on top. The provider
+// WebSocket upgrade is exempt: it hijacks the connection and reads framed
+// messages (bounded separately), not r.Body.
+func (s *Server) bodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.URL.Path != "/ws/provider" {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// decodeCappedJSON JSON-decodes the request body under a hard size cap, writing
+// a 413 (too large) or 400 (bad JSON) and returning false on failure. For small
+// unauthenticated control-plane endpoints that must not buffer an unbounded body.
+func decodeCappedJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge,
+				errorResponse("invalid_request_error", "request body too large"))
+			return false
+		}
+		writeJSON(w, http.StatusBadRequest,
+			errorResponse("invalid_request_error", "invalid JSON"))
+		return false
+	}
+	return true
 }
 
 // recoverMiddleware catches panics in any handler, emits a telemetry event

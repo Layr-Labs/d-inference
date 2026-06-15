@@ -29,6 +29,7 @@ type AppConfig struct {
 	ServiceRL       ratelimit.Config
 	ConsumerTokens  ratelimit.TokenConfig
 	ServiceTokens   ratelimit.TokenConfig
+	OutputAdmission ratelimit.OutputAdmissionEstimatorConfig
 	RegistryCfg     registry.Config
 	MDMConfig       mdm.Config
 	NotificationCfg notifications.Config
@@ -83,6 +84,7 @@ func ReadAppConfig() AppConfig {
 		ServiceRL:       rlCfg.Service,
 		ConsumerTokens:  rlCfg.ConsumerTokens,
 		ServiceTokens:   rlCfg.ServiceTokens,
+		OutputAdmission: rlCfg.OutputAdmission,
 		RegistryCfg:     registry.ReadConfig(),
 		MDMConfig:       mdm.ReadConfig(),
 		NotificationCfg: notifications.ReadConfig(),

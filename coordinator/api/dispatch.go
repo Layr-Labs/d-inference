@@ -93,14 +93,17 @@ type dispatchState struct {
 	consumerKey            string
 	consumerLocation       *store.ProviderLocation
 	reservedMicroUSD       int64
+	serviceReservation     bool
 	estimatedPromptTokens  int
 	requestedMaxTokens     int
+	tokenAdmission         registry.TokenAdmission
 	requiresVision         bool
 	hasTools               bool
 	isResponsesAPI         bool
 	stream                 bool
 	policy                 selfRoutePolicy
 	allowedProviderSerials []string
+	cacheAffinityKey       string
 	timing                 *registry.RequestTiming
 	deadline               time.Duration
 	speculativeAt          time.Duration
@@ -145,9 +148,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	var dispatchErrCode int
 	d.provider, d.pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 		r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-		d.estimatedPromptTokens, d.requestedMaxTokens, d.requiresVision,
+		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
-		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.excludeProviders,
+		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cacheAffinityKey, d.excludeProviders,
 	)
 	if d.provider == nil {
 		// No online provider has enough memory to ever fit this model.
@@ -200,9 +203,12 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			RequiresVision:         d.requiresVision,
 			Traits:                 d.traits(),
 			RequestedMaxTokens:     d.requestedMaxTokens,
+			TokenAdmission:         d.tokenAdmission,
 			ReservedMicroUSD:       d.reservedMicroUSD,
 			BaseReservedMicroUSD:   d.reservedMicroUSD,
+			ServiceReservation:     d.serviceReservation,
 			AllowedProviderSerials: d.allowedProviderSerials,
+			CacheAffinityKey:       d.cacheAffinityKey,
 			SelfRouteOnly:          d.policy.enabled,
 			PreferOwner:            d.policy.prefer,
 			OwnerAccountID:         d.policy.ownerAccountID,
@@ -235,6 +241,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			return outcomeResponseWritten
 		}
+		if depth, oldest := s.registry.Queue().QueueStats(d.model); depth > 0 {
+			s.registry.RecordWarmPoolQueueEnqueued(d.model, depth, oldest)
+		}
 		s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:queued"})
 
 		s.logger.Info("request queued, waiting for provider",
@@ -251,6 +260,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			d.refundReservation()
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
+			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			if d.policy.enabled {
@@ -500,6 +510,7 @@ func (d *dispatchState) waitFirstChunk() dispatchOutcome {
 				return outcomeAccepted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
+			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(provider, pr)
 			d.lastErr = "timeout waiting for first response"
 			d.lastErrCode = http.StatusGatewayTimeout
@@ -545,6 +556,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 
 	// Primary is slow. Attempt speculative backup dispatch.
 	s.ddIncr("inference.speculative_dispatch", []string{"model:" + d.model})
+	s.registry.RecordWarmPoolSpeculativeStarted(d.model)
 
 	var backupProvider *registry.Provider
 	var backupPR *registry.PendingRequest
@@ -573,10 +585,12 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 
 		backupProvider, backupPR, _, _, _ = s.dispatchOneProvider(
 			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-			d.estimatedPromptTokens, d.requestedMaxTokens, d.requiresVision,
+			d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
 			d.allowedProviderSerials, d.isResponsesAPI, d.policy,
 			&registry.RequestTiming{ReceivedAt: d.timing.ReceivedAt},
+			d.serviceReservation,
+			d.cacheAffinityKey,
 			backupExclude,
 		)
 	}
@@ -672,6 +686,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 				return outcomeAccepted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
+			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(provider, pr)
 			d.lastErr = "timeout waiting for first response"
 			d.lastErrCode = http.StatusGatewayTimeout
@@ -775,6 +790,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			raceDeadline.Stop()
 			s.cancelDispatch(provider, pr)
 			s.ddIncr("inference.speculative_win", []string{"model:" + d.model})
+			s.registry.RecordWarmPoolSpeculativeWon(d.model)
 			if ok {
 				d.provider = backupProvider
 				d.pr = backupPR
@@ -866,6 +882,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout)
 			}
 			s.cancelDispatch(provider, pr)
+			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(backupProvider, backupPR)
 			d.excludeProviders[provider.ID] = struct{}{}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
@@ -962,6 +979,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			// is already recorded); report the timeout, not the
 			// backup's stale error text.
 			d.excludeProviders[provider.ID] = struct{}{}
+			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(provider, pr)
 			d.lastErr = "timeout waiting for first response"
 			d.lastErrCode = http.StatusGatewayTimeout
@@ -1063,6 +1081,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 				return outcomeAccepted
 			}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
+			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(backupProvider, backupPR)
 			d.lastErr = "timeout waiting for first response (backup)"
 			d.lastErrCode = http.StatusGatewayTimeout
@@ -1147,6 +1166,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 				return outcomeAccepted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
+			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(provider, pr)
 			d.lastErr = "timeout waiting for first response"
 			d.lastErrCode = http.StatusGatewayTimeout
@@ -1269,6 +1289,7 @@ func (d *dispatchState) waitAccepted() dispatchOutcome {
 			return outcomeRetry
 		case <-chunkTimer.C:
 			d.excludeProviders[provider.ID] = struct{}{}
+			s.registry.RecordWarmPoolTTFTMiss(d.model, firstContentBudget)
 			s.cancelDispatch(provider, pr)
 			// Accepted-then-silent (or preamble-then-stall) is a
 			// provider-at-fault 504 — feed the breaker so a provider
@@ -1380,7 +1401,7 @@ exhausted:
 		if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
-			_, capRej, _ := s.registry.QuickCapacityCheck(d.model, d.estimatedPromptTokens, d.requestedMaxTokens, registry.RequestTraits{HasTools: d.hasTools}, d.allowedProviderSerials...)
+			_, capRej, _ := s.registry.QuickCapacityCheckForRequest(d.model, d.estimatedPromptTokens, d.requestedMaxTokens, registry.RequestTraits{HasTools: d.hasTools}, d.requiresVision, d.allowedProviderSerials...)
 			if capRej > 0 {
 				statusCode = http.StatusTooManyRequests
 			} else {
@@ -1441,6 +1462,7 @@ func (d *dispatchState) writeCommittedResponse() {
 	providerID := provider.ID
 	chipName := provider.Hardware.ChipName
 	machineModel := provider.Hardware.MachineModel
+	s.registry.RecordCacheAffinity(pr.ConsumerKey, pr.Model, pr.CacheAffinityKey, providerID)
 
 	if pubKey != "" {
 		w.Header().Set("X-Provider-Encrypted", "true")

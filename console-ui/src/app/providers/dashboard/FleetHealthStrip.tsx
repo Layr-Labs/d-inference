@@ -67,7 +67,12 @@ export function FleetHealthStrip({
         {/* Right: segmented capacity bar over the money + routable KPIs */}
         <div className="space-y-4">
           <CapacityBar counts={verdict.counts} />
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            <KPI
+              label="Total earned"
+              value={summary ? formatUSD(summary.lifetime_micro_usd) : "—"}
+              sub={summary ? `${summary.lifetime_jobs} jobs` : undefined}
+            />
             <KPI
               label="Last 24h"
               value={summary ? formatUSD(summary.last_24h_micro_usd) : "—"}

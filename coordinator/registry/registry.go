@@ -171,7 +171,11 @@ type PendingRequest struct {
 	reservationMu        sync.Mutex
 	reservationFinalized bool
 
-	// Timing fields for latency decomposition.
+	// Timing fields for latency decomposition. Written and read only by the
+	// consumer/dispatch goroutine that owns the request — never shared. The
+	// reputation latency sample is therefore recorded from that goroutine at
+	// commit (see dispatch.writeCommittedResponse), never from the provider
+	// read-loop goroutine that runs handleComplete.
 	Timing *RequestTiming
 }
 
@@ -224,7 +228,13 @@ type RequestTiming struct {
 	EncryptedAt  time.Time // after E2E encryption
 	QueuedAt     time.Time // set when request enters the queue
 	DispatchedAt time.Time // set when request is sent to provider via WebSocket
-	FirstChunkAt time.Time // set when first inference chunk arrives from provider
+	FirstChunkAt time.Time // set when first inference chunk (incl. held boilerplate) arrives from provider
+	// FirstContentAt is set when the first CONTENT-bearing chunk is committed to
+	// the client — i.e. excluding role-only / lifecycle boilerplate the dispatch
+	// loop holds back. The reputation latency sample uses this so a provider that
+	// emits a fast preamble then stalls can't earn an undeserved score;
+	// FirstChunkAt remains the X-Timing provider-first-byte diagnostic.
+	FirstContentAt time.Time
 }
 
 // Provider represents a connected provider agent.
@@ -311,6 +321,13 @@ type Provider struct {
 	// lastPersisted tracks when this provider was last written to the store.
 	// Used by PersistProviderThrottled to avoid hammering Postgres on every heartbeat.
 	lastPersisted time.Time
+
+	// lastReputationPersisted tracks when this provider's reputation was last
+	// written to the store from the heartbeat path. Used by
+	// persistReputationThrottled so accumulated uptime survives restarts without
+	// a DB write on every 30s heartbeat. Zero value persists on the first
+	// heartbeat. (Challenge/job handlers persist reputation unthrottled.)
+	lastReputationPersisted time.Time
 
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
@@ -1145,6 +1162,24 @@ func (r *Registry) PersistProviderThrottled(p *Provider) {
 	r.persistProviderNow(p)
 }
 
+// persistReputationThrottled persists provider reputation at most once per 30
+// seconds. Used by the heartbeat path so accumulated uptime is durable across
+// coordinator restarts/reconnects (reputation is reloaded from the store on
+// registration) without a DB write on every heartbeat. Skipped writes are not
+// lost — the in-memory TotalUptime keeps accumulating and the next throttle
+// window captures it.
+func (r *Registry) persistReputationThrottled(p *Provider) {
+	const minInterval = 30 * time.Second
+	p.mu.Lock()
+	if time.Since(p.lastReputationPersisted) < minInterval {
+		p.mu.Unlock()
+		return
+	}
+	p.lastReputationPersisted = time.Now()
+	p.mu.Unlock()
+	r.persistReputation(p)
+}
+
 // persistProviderNow saves a provider's current state to the store.
 // Called asynchronously to avoid blocking the hot path.
 func (r *Registry) persistProviderNow(p *Provider) {
@@ -1194,6 +1229,7 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			Attested:                   p.Attested,
 			AttestationResult:          attestJSON,
 			SEPublicKey:                seKey,
+			PublicKey:                  p.PublicKey,
 			SerialNumber:               serial,
 			MDAVerified:                p.MDAVerified,
 			MDACertChain:               mdaCertJSON,
@@ -2200,6 +2236,49 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 	}
 }
 
+// RemoveProviderBySerial reports whether any currently-connected provider
+// matches the identity (serial OR session id) and, if force is set, evicts them
+// from the in-memory map. The DELETE endpoint calls it first with force=false
+// to detect an online box (→409), then after the persisted record is purged it
+// may call with force=true to drop a lingering in-memory entry so an evict-race
+// can't re-persist. Returns true if a matching provider was connected.
+func (r *Registry) RemoveProviderBySerial(serialOrID string, force bool) (online bool) {
+	if serialOrID == "" {
+		return false
+	}
+
+	var matched []string
+	r.mu.RLock()
+	for id, p := range r.providers {
+		match := id == serialOrID
+		if !match {
+			// AttestationResult is written under p.mu (SetAttestationResult), so
+			// read it through the thread-safe accessor — this loop holds only the
+			// registry lock, not the per-provider one.
+			if ar := p.GetAttestationResult(); ar != nil && ar.SerialNumber == serialOrID {
+				match = true
+			}
+		}
+		if match {
+			matched = append(matched, id)
+			// Presence in the map means a live WebSocket connection; treat it as
+			// online regardless of routing status (an untrusted-but-connected box
+			// would still re-register and re-persist).
+			online = true
+		}
+	}
+	r.mu.RUnlock()
+
+	if force {
+		// Disconnect takes r.mu itself — call OUTSIDE the RLock above to avoid a
+		// self-deadlock (same pattern as DisconnectDuplicatesBySerial).
+		for _, id := range matched {
+			r.Disconnect(id)
+		}
+	}
+	return online
+}
+
 // Heartbeat updates the provider's status and stats.
 func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	r.mu.RLock()
@@ -2222,7 +2301,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	}
 
 	p.mu.Lock()
-	p.LastHeartbeat = time.Now()
+	now := time.Now()
+	prevHB := p.LastHeartbeat
+	p.LastHeartbeat = now
 	p.Stats.RequestsServed += cumulativeDelta(p.lastSessionStats.RequestsServed, msg.Stats.RequestsServed)
 	p.Stats.TokensGenerated += cumulativeDelta(p.lastSessionStats.TokensGenerated, msg.Stats.TokensGenerated)
 	p.lastSessionStats = msg.Stats
@@ -2236,6 +2317,22 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			if slot.ObservedDecodeTPS > 0 {
 				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
 			}
+		}
+	}
+	// Credit wall-clock time since the previous heartbeat as uptime, so an
+	// always-online provider's uptimeRate reaches 1.0 and its reputation can
+	// exceed the old 0.85 cap (RecordUptime was never called in prod).
+	// Bound the credit to a window just above the heartbeat interval (30s) and
+	// within the eviction staleness (90s): a larger gap means the provider was
+	// effectively offline (it would have been reaped, or this is an in-process
+	// stall) and must NOT be credited. A fresh registration sets LastHeartbeat
+	// to registration time, so the first real heartbeat credits ~one interval.
+	// Must run under p.mu (held here) — p.Reputation is mutated under p.mu by
+	// the job/challenge handlers.
+	if !prevHB.IsZero() {
+		const maxUptimeCredit = 2 * time.Minute
+		if delta := now.Sub(prevHB); delta > 0 && delta <= maxUptimeCredit {
+			p.Reputation.RecordUptime(delta)
 		}
 	}
 	// Update warm models from heartbeat. Always overwrite -- an empty list
@@ -2267,6 +2364,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.mu.Unlock()
 
 	r.PersistProviderThrottled(p)
+	// Persist accumulated uptime (throttled) so it survives restarts/reconnects;
+	// the heartbeat path is otherwise the only place uptime grows.
+	r.persistReputationThrottled(p)
 
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
@@ -3710,8 +3810,12 @@ func trustRank(t TrustLevel) int {
 	}
 }
 
-// RecordJobSuccess records a successful job completion for the provider's reputation.
-func (r *Registry) RecordJobSuccess(providerID string, responseTime time.Duration) {
+// RecordJobSuccess records a successful job completion for the provider's
+// reputation. latency is the per-request responsiveness sample (time to first
+// content, with the prompt-size prefill removed); a non-positive value records
+// the success without touching the latency EWMA. Both updates happen under one
+// lock and a single persist.
+func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
@@ -3720,11 +3824,39 @@ func (r *Registry) RecordJobSuccess(providerID string, responseTime time.Duratio
 	}
 
 	p.mu.Lock()
-	p.Reputation.RecordJobSuccess(responseTime)
+	p.Reputation.RecordJobSuccess()
+	p.Reputation.RecordLatency(latency)
 	p.mu.Unlock()
 
 	// Persist reputation.
 	r.persistReputation(p)
+}
+
+// RecordLatency folds a per-request responsiveness sample into the provider's
+// latency EWMA, independent of job-success counting. It is recorded by the
+// consumer/dispatch goroutine (which owns the request timing) at commit, so the
+// provider read-loop goroutine never has to read that goroutine's timing. A
+// non-positive latency is ignored.
+//
+// It updates the in-memory EWMA only and does NOT persist. The updated
+// AvgResponseTime is persisted by the RecordJobSuccess / RecordJobFailure that
+// follows on completion (which snapshots the whole reputation row). Persisting a
+// full row here would race that terminal write — a pre-terminal snapshot carrying
+// stale TotalJobs/SuccessfulJobs could land after it and clobber the counts.
+func (r *Registry) RecordLatency(providerID string, latency time.Duration) {
+	if latency <= 0 {
+		return
+	}
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	p.mu.Lock()
+	p.Reputation.RecordLatency(latency)
+	p.mu.Unlock()
 }
 
 // RecordJobFailure records a failed job for the provider's reputation.

@@ -714,6 +714,58 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 	}
 }
 
+// TestHandleCompleteRecordsJobSuccessOnly verifies handleComplete counts a
+// successful job but does NOT itself record the latency EWMA: the responsiveness
+// sample is recorded by the consumer/dispatch goroutine at commit (it owns the
+// request timing), so the provider read-loop goroutine never reads that timing.
+// handleComplete leaving AvgResponseTime untouched is what keeps that path
+// race-free.
+func TestHandleCompleteRecordsJobSuccessOnly(t *testing.T) {
+	srv, _, ledger := billingTestServer(t)
+
+	model := "job-success-model"
+	provider := srv.registry.Register("job-success-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+
+	consumerID := testConsumerID
+	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 500}
+	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	if err := ledger.Charge(consumerID, cost, "reserve:"+consumerID); err != nil {
+		t.Fatalf("reserve balance: %v", err)
+	}
+
+	pr := &registry.PendingRequest{
+		RequestID:        "job-success",
+		Model:            model,
+		ConsumerKey:      consumerID,
+		ReservedMicroUSD: cost,
+		ChunkCh:          make(chan string, 1),
+		CompleteCh:       make(chan protocol.UsageInfo, 1),
+		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: pr.RequestID,
+		Usage:     usage,
+	})
+
+	p := srv.registry.GetProvider(provider.ID)
+	if p == nil {
+		t.Fatal("provider missing after complete")
+	}
+	if p.Reputation.SuccessfulJobs != 1 {
+		t.Errorf("successful_jobs = %d, want 1", p.Reputation.SuccessfulJobs)
+	}
+	// handleComplete must not record latency (it has no race-free access to the
+	// timing); and it must never derive latency from answer length.
+	if p.Reputation.AvgResponseTime != 0 {
+		t.Errorf("avg_response_time = %v, want 0 (latency is recorded at dispatch commit, not handleComplete)", p.Reputation.AvgResponseTime)
+	}
+}
+
 func TestRefundReservedBalanceDoesNotFinalizeWhenCreditFails(t *testing.T) {
 	srv, st, _ := billingTestServer(t)
 	srv.store = failingCreditStore{Store: st}

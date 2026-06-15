@@ -203,3 +203,47 @@ private func tmpStateURL() -> URL {
     #expect(daemonProcessAlive(pid: 0) == false)
     #expect(daemonProcessAlive(pid: 999_999) == false) // almost certainly dead
 }
+
+// MARK: - WarmModelsFormat
+
+@Test func warmModelsLineListsEveryResidentModel() {
+    // The whole point of the fix: a box keeps multiple models warm and the CLI
+    // must show all of them, not just the LRU slot.
+    let line = WarmModelsFormat.warmModelsLine(
+        warmModels: ["gemma-4-26b", "gpt-oss-20b"],
+        currentModel: "gpt-oss-20b")
+    #expect(line == "gemma-4-26b, gpt-oss-20b")
+}
+
+@Test func warmModelsLineFallsBackToCurrentWhenWarmSetEmpty() {
+    // Back-compat: a daemon predating the warm_models field reports only
+    // currentModel; the line must still show that one model, not "none loaded".
+    let line = WarmModelsFormat.warmModelsLine(warmModels: [], currentModel: "qwen")
+    #expect(line == "qwen")
+}
+
+@Test func warmModelsLineEmptyWhenNothingLoaded() {
+    #expect(WarmModelsFormat.warmModelsLine(warmModels: [], currentModel: nil) == "none loaded")
+    // Custom placeholder is honored.
+    #expect(WarmModelsFormat.warmModelsLine(
+        warmModels: [], currentModel: nil, emptyPlaceholder: "—") == "—")
+}
+
+@Test func warmModelsLineDeduplicatesAndDropsBlanks() {
+    let line = WarmModelsFormat.warmModelsLine(
+        warmModels: ["a", "", "a", "b"], currentModel: "a")
+    #expect(line == "a, b")
+}
+
+@Test func mostRecentlyUsedLineReportsLRUSlot() {
+    #expect(WarmModelsFormat.mostRecentlyUsedLine(currentModel: "gpt-oss-20b") == "gpt-oss-20b")
+    #expect(WarmModelsFormat.mostRecentlyUsedLine(currentModel: nil) == "none loaded")
+    #expect(WarmModelsFormat.mostRecentlyUsedLine(currentModel: "") == "none loaded")
+}
+
+@Test func mostRecentlyUsedLabelIsRelabeled() {
+    // Regression guard: the single value must not be labeled "Current model",
+    // which implied the box served only one model.
+    #expect(WarmModelsFormat.mostRecentlyUsedLabel == "Most recently used")
+    #expect(WarmModelsFormat.mostRecentlyUsedLabel != "Current model")
+}

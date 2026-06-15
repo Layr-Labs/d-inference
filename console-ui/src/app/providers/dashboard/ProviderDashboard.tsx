@@ -85,7 +85,7 @@ export function ProviderDashboard() {
       />
       <FleetHealthStrip verdict={verdict} summary={summary} />
       <AttentionFeed groups={groups} />
-      <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} />
+      <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} onRemoved={refetch} />
       <TrustFooter hardwareCount={hardwareCount} total={providers.length} />
     </Shell>
   );

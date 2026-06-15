@@ -145,8 +145,9 @@ Provider-facing earnings endpoints:
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
 | `/v1/provider/earnings` | GET | provider address | Per-provider earnings |
-| `/v1/provider/node-earnings` | GET | provider_key or account | Per-node earnings |
 | `/v1/provider/account-earnings` | GET | API key / JWT | Account-level earnings summary |
+
+> Earnings are reported at the account level; there is no per-machine earnings endpoint.
 
 Routes defined at [`server.go:1433-1441`](../../coordinator/api/server.go) and [`server.go:1437-1441`](../../coordinator/api/server.go).
 

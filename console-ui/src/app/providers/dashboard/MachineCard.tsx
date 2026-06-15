@@ -17,15 +17,18 @@ import { CardEarningsRow } from "./CardEarningsRow";
 import { BackendSlotsPanel } from "./BackendSlotsPanel";
 import { AttestationPanel } from "./AttestationPanel";
 import { ExpandSection } from "./gauges/ExpandSection";
+import { RemoveMachineButton } from "./RemoveMachineButton";
 
 export function MachineCard({
   provider,
   ctx,
   fleetMaxDecodeTps,
+  onRemoved,
 }: {
   provider: MyProvider;
   ctx: RoutingCtx;
   fleetMaxDecodeTps: number;
+  onRemoved?: () => void;
 }) {
   // Compute this machine's warnings once and derive everything (rail color,
   // hero verdict, the top reason to surface) from the shared routing module so
@@ -35,6 +38,10 @@ export function MachineCard({
   const meta = routingMeta(state);
   const topWarning = selectTopWarning(warnings);
   const dimmed = state === "offline"; // desaturate the body, but keep it actionable
+  // Only offer "Remove" for a retired/offline machine — an online box would
+  // just re-register (and the coordinator refuses with 409), so hiding the
+  // affordance there avoids a dead end.
+  const removable = provider.status === "offline" || provider.status === "never_seen";
 
   // Identity subline — drop any piece the machine didn't report.
   const chipName = provider.hardware.chip_name || "Unknown chip";
@@ -71,6 +78,7 @@ export function MachineCard({
         <div className="flex flex-col items-end gap-1.5 shrink-0">
           <StatusPill status={provider.status} />
           <TrustPill trustLevel={provider.trust_level} />
+          {removable && <RemoveMachineButton provider={provider} onRemoved={onRemoved} />}
         </div>
       </div>
 

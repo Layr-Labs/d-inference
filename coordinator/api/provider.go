@@ -1687,8 +1687,13 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Record job success and usage BEFORE closing ChunkCh. Closing
 	// ChunkCh unblocks the consumer response handler, and callers may
 	// check usage immediately after the HTTP response completes.
-	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
-	s.registry.RecordJobSuccess(providerID, responseTime)
+	//
+	// Only the success COUNT is recorded here. The responsiveness latency is
+	// recorded separately by the consumer/dispatch goroutine at commit (see
+	// dispatch.writeCommittedResponse), because that goroutine owns pr.Timing;
+	// reading it from this provider read-loop goroutine would race the dispatch
+	// writes. Passing 0 latency counts the success without touching the EWMA.
+	s.registry.RecordJobSuccess(providerID, 0)
 	// Serving this model proves the pair can load — lift any cool-down early.
 	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
 

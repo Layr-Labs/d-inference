@@ -61,10 +61,13 @@ lands somewhere pushable. The branch `fix/metal-resource-count-trim` on
 `Layr-Labs/mlx-swift` carries only the owned files (umbrella header copy +
 `Memory.swift` + test) and deliberately does **not** bump the submodule pointers.
 
-The work is committed locally on `fix/metal-resource-count-trim` branches inside
-both submodules (commits `mlx d5213411`, `mlx-c bc48a1a` at time of writing).
-Patches are also saved in `/tmp/metal-rsrc-fix/01-ml-explore-mlx.patch` and
-`02-ml-explore-mlx-c.patch`.
+The C++ fix has since been **pushed** (no longer local-only): it lives on the
+Layr-Labs forks at `Layr-Labs/mlx@d5213411` and `Layr-Labs/mlx-c@bc48a1a`, each
+also pinned by the immutable tag `darkbloom-metal-resource-count` and merged via
+`Layr-Labs/mlx#1` / `Layr-Labs/mlx-c#1`. To recreate or inspect the C++ diff,
+fetch those commits/tags from the forks — e.g.
+`git fetch <fork> darkbloom-metal-resource-count && git show <tag>` — rather than
+relying on any local patch file.
 
 ### Option A — fork ml-explore/mlx + ml-explore/mlx-c into Layr-Labs (cleanest)
 
@@ -120,10 +123,14 @@ setup, diverges harder from upstream, every future mlx bump must re-apply.
 - `Layr-Labs/mlx-swift-lm` — `EngineCore` `[rsrc]` env-gated telemetry
 - `Layr-Labs/d-inference` — provider `ContinuousBatchingLiveTests` probes
 
-## Local-only (committed in submodules, awaiting fork/vendor decision)
+## C++ fix — pushed to the org forks (no longer local-only)
 
-- `Source/Cmlx/mlx` @ `fix/metal-resource-count-trim` — the allocator fix
-- `Source/Cmlx/mlx-c` @ `fix/metal-resource-count-trim` — the C wrappers
+- `Layr-Labs/mlx@d5213411` — the allocator fix (count-aware cache trim); merged
+  via `Layr-Labs/mlx#1`, tagged `darkbloom-metal-resource-count`.
+- `Layr-Labs/mlx-c@bc48a1a` — the C wrappers; merged via `Layr-Labs/mlx-c#1`,
+  tagged `darkbloom-metal-resource-count`.
+- `Layr-Labs/mlx-swift@ac67822` repoints `.gitmodules` to these forks and pins
+  the two commits.
 
 ## Operator safety valve (works today, no rebuild beyond the fix)
 

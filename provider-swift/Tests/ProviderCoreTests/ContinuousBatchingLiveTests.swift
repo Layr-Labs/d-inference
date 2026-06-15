@@ -501,7 +501,12 @@ struct ContinuousBatchingLiveTests {
     )
     func resourceCountTrajectoryProbeSmall() async throws {
         try ensureMetallibAvailable()
-        MLX.GPU.set(cacheLimit: 80 * 1024 * 1024 * 1024)  // byte-trim off (mimic big box)
+        // cacheLimit is process-global and Swift Testing shares the process, so
+        // restore the prior value on exit — otherwise this leaks the 80GB
+        // byte-trim-off setting into any other suite/test in the same run.
+        let savedCacheLimit = MLX.Memory.cacheLimit
+        defer { MLX.Memory.cacheLimit = savedCacheLimit }
+        MLX.Memory.cacheLimit = 80 * 1024 * 1024 * 1024  // byte-trim off (mimic big box)
 
         let modelID = "mlx-community/Qwen3-0.6B-8bit"
         guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
@@ -560,7 +565,11 @@ struct ContinuousBatchingLiveTests {
 
         // Mimic the 128 GB box: make the byte cache effectively unbounded so the
         // existing byte-driven trim never fires — exposing pure count growth.
-        MLX.GPU.set(cacheLimit: 80 * 1024 * 1024 * 1024)
+        // Restore on exit (cacheLimit is process-global; Swift Testing shares the
+        // process, so leaking 80GB would weaken the memory guard for other tests).
+        let savedCacheLimit = MLX.Memory.cacheLimit
+        defer { MLX.Memory.cacheLimit = savedCacheLimit }
+        MLX.Memory.cacheLimit = 80 * 1024 * 1024 * 1024
 
         // Use whichever Gemma-4-26B quant is on disk (box has 4bit; fixture
         // default is 8bit); allow an explicit override for portability.

@@ -240,6 +240,48 @@ struct ModelCatalogTests {
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=16-")
     }
 
+    @Test("downloadFile discards an oversized .part on 416 and re-downloads it")
+    func downloadFileDiscardsOversizedPartOn416() async throws {
+        // A stale/oversized `.part` (the full object PLUS extra trailing garbage)
+        // must NOT be promoted on a 416. The 416's `Content-Range: bytes */<total>`
+        // says the object is 16 bytes but the `.part` is larger, so it cannot be
+        // the complete object. The legacy path passes no SHA, so the size check is
+        // the ONLY thing standing between this garbage and being served: we must
+        // delete the `.part` and re-fetch the correct payload from byte 0.
+        let full = Data("0123456789abcdef".utf8)  // 16 bytes
+        RangeURLProtocol.payload = full
+        RangeURLProtocol.lastRangeHeader = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("model.safetensors")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // An oversized `.part`: the full payload plus extra trailing bytes, so its
+        // size (21) exceeds the object total (16) reported by the 416.
+        let oversized = full + Data("EXTRA".utf8)
+        try oversized.write(to: partial)
+        #expect(Int64(oversized.count) > Int64(full.count))
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/model.safetensors",
+            to: final
+        )
+
+        #expect(ok)
+        // The final file is the CORRECT full payload (re-downloaded from scratch),
+        // never the oversized garbage that was sitting in `.part`.
+        #expect(try Data(contentsOf: final) == full)
+        #expect(try Data(contentsOf: final) != oversized)
+        // The untrustworthy `.part` was discarded, not published.
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+    }
+
     @Test("downloadFile assembles a body delivered in many chunks into the final file")
     func downloadFileAssemblesMultiChunk() async throws {
         // Exercises the chunked delegate write path: the body arrives as many

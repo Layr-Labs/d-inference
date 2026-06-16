@@ -23,8 +23,11 @@ import Foundation
 /// - 200 (range ignored) or a mismatched/unverifiable 206 → truncate and rewrite
 ///   THIS file from byte 0.
 /// - 404/403 → `.notFound` (caller removes the `.part`; throws iff required).
-/// - 416 with a prefix → `.completeBeyondRange` (the `.part` already holds the
-///   whole object; caller verifies + promotes it instead of re-downloading).
+/// - 416 with a prefix → size-verify against the 416's `Content-Range: bytes
+///   */<total>`. If the `.part` size equals `<total>` it is the whole object →
+///   `.completeBeyondRange` (caller verifies + promotes it). Otherwise the
+///   `.part` is stale/oversized/undersized → delete it and surface a retryable
+///   error so the caller re-downloads it cleanly from byte 0.
 /// - A mid-stream transport drop leaves every received byte durably in `.part`
 ///   and surfaces as a thrown error so the caller retries with a fresh `Range`.
 /// - Cooperative cancellation (`task.cancel()`) surfaces as `CancellationError`
@@ -110,10 +113,34 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
             completionHandler(.cancel)
             return
         }
-        // 416 Range Not Satisfiable: we asked for bytes past EOF, so the `.part`
-        // already holds the whole file. Let the caller verify + promote it.
+        // 416 Range Not Satisfiable: we asked for bytes past EOF. A 416 carries
+        // `Content-Range: bytes */<total>` (RFC 7233; R2/S3 send it), so use the
+        // total to verify the `.part` is EXACTLY the full object before promoting
+        // it — regardless of whether a SHA is available. This closes the legacy
+        // path gap: `downloadLegacyModelFromCDN` calls `downloadFile` with
+        // `expectedSHA256 == nil`, so without this check a stale/oversized/
+        // undersized `.part` would be promoted and served with NO verification.
         if status == 416, existingBytes > 0 {
-            decided = .completeBeyondRange
+            let total = http.value(forHTTPHeaderField: "Content-Range")
+                .flatMap(Self.parseContentRangeTotal)
+            if let total, UInt64(existingBytes) == total {
+                // The `.part` is precisely the whole object — promote it (the
+                // manifest path additionally SHA-checks before publishing).
+                decided = .completeBeyondRange
+            } else {
+                // Total missing/unknown, or the `.part` size disagrees with the
+                // object size: the `.part` is untrustworthy (stale/oversized/
+                // undersized). Discard it and surface a RETRYABLE error so
+                // `downloadFile`'s loop re-runs `streamDownload` from byte 0
+                // (existingBytes == 0 → no Range → full GET). This must NOT be a
+                // CancellationError, which `downloadFile` special-cases to never
+                // retry.
+                try? fm.removeItem(at: partial)
+                let totalDesc = total.map { "\($0)" } ?? "unknown"
+                setupError = ModelCatalogError.downloadFailed(
+                    "\(label): 416 with untrustworthy .part (size \(existingBytes) != object total "
+                        + "\(totalDesc)); discarded for clean re-download")
+            }
             completionHandler(.cancel)
             return
         }
@@ -203,5 +230,17 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
         let afterBytes = value.dropFirst("bytes ".count)
         guard let dashIndex = afterBytes.firstIndex(of: "-") else { return nil }
         return UInt64(afterBytes[afterBytes.startIndex..<dashIndex])
+    }
+
+    /// Parse the total object length (the value after the "/") from a
+    /// `Content-Range` value, supporting BOTH the unsatisfied-range form a 416
+    /// uses, "bytes */123", and the satisfied form "bytes 0-9/123". Returns nil
+    /// when the total is absent or unknown ("bytes */*").
+    static func parseContentRangeTotal(_ value: String) -> UInt64? {
+        guard value.hasPrefix("bytes ") else { return nil }
+        guard let slashIndex = value.lastIndex(of: "/") else { return nil }
+        let total = value[value.index(after: slashIndex)...]
+            .trimmingCharacters(in: .whitespaces)
+        return UInt64(total)
     }
 }

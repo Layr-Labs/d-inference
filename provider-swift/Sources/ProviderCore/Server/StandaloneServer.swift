@@ -552,6 +552,24 @@ public actor StandaloneServer {
                 MLX.Memory.clearCache()
                 throw CancellationError()
             }
+            // Post-load measured-headroom guard (mirrors ProviderLoop): the load
+            // gate admitted on an estimate; now that weights are resident, reject
+            // a model with no serveable KV headroom under the cap rather than keep
+            // a "loaded but every request rejected" model. Serialized by
+            // isLoadingAny, so the MLX measurement reflects this load.
+            if let cached = schedulers[modelId], !(await cached.scheduler.hasServeableKVHeadroom()) {
+                let headroomGb = String(
+                    format: "%.1f",
+                    Double(await cached.scheduler.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                let minGb = String(
+                    format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
+                schedulers.removeValue(forKey: modelId)
+                await cached.scheduler.unloadModel()
+                MLX.Memory.clearCache()
+                throw StandaloneServerError.capacityUnavailable(
+                    "Model '\(modelId)' loaded but has insufficient KV headroom under the memory cap "
+                    + "(\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded")
+            }
             standaloneLogger.info("Lazy-loaded model: \(modelId)")
 
             modelsLoading.remove(modelId)

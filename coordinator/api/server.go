@@ -1675,6 +1675,15 @@ func (s *Server) routes() {
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
 
+	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
+	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
+	// See docs/architecture/routing-telemetry-and-calibration.md §6. Handlers
+	// enforce admin auth internally via requireAdminKey.
+	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
+	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
+	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
+	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
+
 	// Catch-all for unimplemented OpenAI-compatible endpoints.
 	// Registered last (old-style pattern) so explicit method+path routes
 	// take precedence. Any /v1/* path not handled above gets a structured

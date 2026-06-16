@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -751,5 +752,293 @@ func TestGetLatestReleasePrefersHigherSemverOverNewerTimestamp(t *testing.T) {
 	}
 	if latest.Version != "0.3.9" {
 		t.Fatalf("latest version = %q, want %q", latest.Version, "0.3.9")
+	}
+}
+
+func TestInferenceRoute_Memory(t *testing.T) {
+	s := NewMemory(Config{})
+	testInferenceRouteStore(t, s)
+}
+
+func TestInferenceRoute_Postgres(t *testing.T) {
+	s := testPostgresStore(t)
+	testInferenceRouteStore(t, s)
+}
+
+func testInferenceRouteStore(t *testing.T, s Store) {
+	t.Helper()
+
+	beforeRecord := time.Now().Add(-time.Minute)
+
+	rec := &InferenceRouteRecord{
+		RequestID:               "req-1",
+		Attempt:                 1,
+		ProviderID:              "prov-1",
+		Model:                   "mlx-community/Qwen3.5-9B-MLX-4bit",
+		PublicModel:             "qwen3.5-9b",
+		ConsumerKeyHash:         "abc123hash",
+		KeyID:                   "key_123",
+		Outcome:                 "routed",
+		CostMs:                  12.5,
+		StateMs:                 3.0,
+		QueueMs:                 1.5,
+		PendingMs:               0.5,
+		BacklogMs:               0.25,
+		ThisReqMs:               2.0,
+		HealthMs:                1.0,
+		TTFTMs:                  50.0,
+		BestTTFTMs:              40.0,
+		EffectiveQueue:          2,
+		CandidateCount:          4,
+		CapacityRejections:      1,
+		ModelTooLargeRejections: 0,
+		VisionRejections:        0,
+		TTFTRejections:          0,
+		EffectiveTPS:            45.2,
+		StaticTPS:               38.0,
+		ProviderStatus:          "idle",
+		ProviderTrustLevel:      "attested",
+		ProviderVersion:         "0.5.0",
+		HardwareChip:            "Apple M3 Max",
+		HardwareChipFamily:      "M3",
+		HardwareTier:            "high",
+		MemoryGB:                128,
+		GPUCores:                40,
+		CPUCores:                16,
+		SystemMemoryPressure:    0.2,
+		SystemCPUUsage:          0.15,
+		SystemThermalState:      "Nominal",
+		GPUMemoryActiveGB:       8.5,
+		GPUMemoryPeakGB:         12.0,
+		GPUMemoryCacheGB:        2.0,
+		SlotState:               "idle",
+		BackendRunning:          1,
+		BackendWaiting:          0,
+		ActiveTokenBudgetUsed:   1000,
+		ActiveTokenBudgetMax:    4096,
+		QueuedTokenBudget:       0,
+		EstimatedPromptTokens:   500,
+		RequestedMaxTokens:      1024,
+		RequiresVision:          true,
+		HasTools:                false,
+		SelfRouteOnly:           false,
+		PreferOwner:             true,
+		CacheAffinityKey:        "owner-123",
+	}
+
+	if err := s.RecordInferenceRoute(rec); err != nil {
+		t.Fatalf("RecordInferenceRoute: %v", err)
+	}
+
+	// Lookup by request_id via zero-time since returns all records.
+	all := s.InferenceRouteRecordsSince(time.Time{})
+	if len(all) != 1 {
+		t.Fatalf("InferenceRouteRecordsSince(zero) = %d records, want 1", len(all))
+	}
+	got := all[0]
+	if got.RequestID != "req-1" || got.Attempt != 1 || got.ProviderID != "prov-1" {
+		t.Errorf("record mismatch: got request_id=%q attempt=%d provider_id=%q", got.RequestID, got.Attempt, got.ProviderID)
+	}
+	if got.Model != rec.Model || got.PublicModel != rec.PublicModel {
+		t.Errorf("model/public_model mismatch: got %q/%q want %q/%q", got.Model, got.PublicModel, rec.Model, rec.PublicModel)
+	}
+	if got.Outcome != "routed" {
+		t.Errorf("outcome = %q, want routed", got.Outcome)
+	}
+	if got.CostMs != 12.5 {
+		t.Errorf("cost_ms = %f, want 12.5", got.CostMs)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Error("created_at and updated_at should be set")
+	}
+	if !got.CreatedAt.After(beforeRecord) {
+		t.Error("created_at should be after beforeRecord")
+	}
+
+	// RecordsSince filters out older records.
+	old := s.InferenceRouteRecordsSince(time.Now().Add(time.Hour))
+	if len(old) != 0 {
+		t.Fatalf("InferenceRouteRecordsSince(future) = %d records, want 0", len(old))
+	}
+
+	// Update outcome.
+	beforeUpdate := time.Now()
+	outcome := &InferenceRouteOutcome{
+		FinalStatus:            "success",
+		ErrorCode:              0,
+		ErrorClass:             "",
+		PromptTokens:           50,
+		CompletionTokens:       100,
+		ReasoningTokens:        10,
+		CostMicroUSD:           2500,
+		ActualTTFTMs:           150.0,
+		DispatchToFirstChunkMs: 180.0,
+		TotalDurationMs:        1200.0,
+	}
+	if err := s.UpdateInferenceRouteOutcome("req-1", 1, outcome); err != nil {
+		t.Fatalf("UpdateInferenceRouteOutcome: %v", err)
+	}
+
+	all = s.InferenceRouteRecordsSince(time.Time{})
+	if len(all) != 1 {
+		t.Fatalf("after update: expected 1 record, got %d", len(all))
+	}
+	if all[0].UpdatedAt.IsZero() {
+		t.Error("updated_at should not be zero after update")
+	}
+	if !all[0].UpdatedAt.After(beforeUpdate) {
+		// Allow a small amount of clock skew between process and DB for Postgres.
+		if all[0].UpdatedAt.Sub(beforeUpdate) < -time.Second {
+			t.Errorf("updated_at should be after beforeUpdate, got %v (beforeUpdate %v)", all[0].UpdatedAt, beforeUpdate)
+		}
+	}
+
+	// Record a second attempt for the same request and verify lookup by request_id.
+	rec2 := &InferenceRouteRecord{
+		RequestID:  "req-1",
+		Attempt:    2,
+		ProviderID: "prov-2",
+		Model:      rec.Model,
+		Outcome:    "fallback",
+	}
+	if err := s.RecordInferenceRoute(rec2); err != nil {
+		t.Fatalf("RecordInferenceRoute attempt 2: %v", err)
+	}
+
+	all = s.InferenceRouteRecordsSince(time.Time{})
+	if len(all) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(all))
+	}
+
+	// Records should be newest-first (by created_at).
+	if all[0].Attempt != 2 {
+		t.Errorf("first record attempt = %d, want 2", all[0].Attempt)
+	}
+	if all[1].Attempt != 1 {
+		t.Errorf("second record attempt = %d, want 1", all[1].Attempt)
+	}
+
+	// Updating a non-existent attempt is best-effort and returns no error.
+	if err := s.UpdateInferenceRouteOutcome("req-missing", 99, outcome); err != nil {
+		t.Errorf("UpdateInferenceRouteOutcome missing record: %v", err)
+	}
+}
+
+func TestRejection_Memory(t *testing.T) {
+	s := NewMemory(Config{})
+	testRejectionStore(t, s)
+}
+
+func TestRejection_Postgres(t *testing.T) {
+	s := testPostgresStore(t)
+	testRejectionStore(t, s)
+}
+
+func testRejectionStore(t *testing.T, s Store) {
+	t.Helper()
+
+	beforeRecord := time.Now().Add(-time.Minute)
+
+	rec := &RejectionRecord{
+		RequestID:               "req-rej-1",
+		Endpoint:                "/v1/chat/completions",
+		Stage:                   "preflight_capacity",
+		ReasonCode:              "machine_busy",
+		HTTPStatus:              429,
+		ConsumerKeyHash:         "abc123hash",
+		KeyID:                   "key_123",
+		ClientClass:             "openrouter",
+		RequestedModel:          "mlx-community/Qwen3.5-9B-MLX-4bit",
+		ResolvedModel:           "qwen3.5-9b",
+		Stream:                  true,
+		N:                       1,
+		EstimatedPromptTokens:   500,
+		RequestedMaxTokens:      1024,
+		RequiresVision:          true,
+		HasImage:                true,
+		HasAudio:                false,
+		HasTools:                false,
+		ToolCount:               0,
+		ResponseFormat:          "json_object",
+		SelfRouteOnly:           false,
+		PreferOwner:             true,
+		Params:                  json.RawMessage(`{"temperature":0.7}`),
+		RequestBodyBytes:        2048,
+		RetryAfterMs:            1500,
+		CouldHaveServed:         true,
+		CandidateCount:          4,
+		CapacityRejections:      3,
+		ModelTooLargeRejections: 1,
+		VisionRejections:        0,
+		WarmProviderExisted:     true,
+		BestTTFTMs:              42.5,
+		ShortfallMicroUSD:       0,
+		LimitKind:               "itpm",
+		OverBy:                  120,
+	}
+
+	if err := s.RecordRejection(rec); err != nil {
+		t.Fatalf("RecordRejection: %v", err)
+	}
+
+	// Zero-time since returns all records.
+	all := s.RejectionRecordsSince(time.Time{})
+	if len(all) != 1 {
+		t.Fatalf("RejectionRecordsSince(zero) = %d records, want 1", len(all))
+	}
+	got := all[0]
+	if got.Stage != "preflight_capacity" {
+		t.Errorf("stage = %q, want preflight_capacity", got.Stage)
+	}
+	if got.ReasonCode != "machine_busy" {
+		t.Errorf("reason_code = %q, want machine_busy", got.ReasonCode)
+	}
+	if got.HTTPStatus != 429 {
+		t.Errorf("http_status = %d, want 429", got.HTTPStatus)
+	}
+	if got.RequestedModel != rec.RequestedModel {
+		t.Errorf("requested_model = %q, want %q", got.RequestedModel, rec.RequestedModel)
+	}
+	if !got.CouldHaveServed {
+		t.Error("could_have_served = false, want true")
+	}
+	if got.CandidateCount != 4 {
+		t.Errorf("candidate_count = %d, want 4", got.CandidateCount)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("created_at should be set")
+	}
+	if !got.CreatedAt.After(beforeRecord) {
+		t.Error("created_at should be after beforeRecord")
+	}
+
+	// RecordsSince filters out older records.
+	old := s.RejectionRecordsSince(time.Now().Add(time.Hour))
+	if len(old) != 0 {
+		t.Fatalf("RejectionRecordsSince(future) = %d records, want 0", len(old))
+	}
+
+	// A second rejection at a different stage; records are newest-first.
+	rec2 := &RejectionRecord{
+		RequestID:      "req-rej-2",
+		Endpoint:       "/v1/chat/completions",
+		Stage:          "model_resolution",
+		ReasonCode:     "model_not_found",
+		HTTPStatus:     404,
+		RequestedModel: "no-such-model",
+	}
+	if err := s.RecordRejection(rec2); err != nil {
+		t.Fatalf("RecordRejection attempt 2: %v", err)
+	}
+
+	all = s.RejectionRecordsSince(time.Time{})
+	if len(all) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(all))
+	}
+	if all[0].RequestID != "req-rej-2" {
+		t.Errorf("first record request_id = %q, want req-rej-2 (newest-first)", all[0].RequestID)
+	}
+	if all[1].RequestID != "req-rej-1" {
+		t.Errorf("second record request_id = %q, want req-rej-1", all[1].RequestID)
 	}
 }

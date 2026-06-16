@@ -393,6 +393,38 @@ func (s *Server) recordWarmPoolQueueState(model string) {
 	s.triggerWarmPool()
 }
 
+// ttftMsForRejection converts a pre-flight TTFT estimate to milliseconds for the
+// rejection ledger, returning 0 when the pre-flight produced no estimate.
+func ttftMsForRejection(bestTTFT time.Duration, hasTTFT bool) float64 {
+	if !hasTTFT {
+		return 0
+	}
+	return float64(bestTTFT.Milliseconds())
+}
+
+// rejectionSamplingParams captures only the non-content sampling knobs already
+// parsed from an inbound request body for the rejection ledger. It never
+// includes prompt/message/input content. Returns nil when none are present.
+func rejectionSamplingParams(parsed map[string]any) json.RawMessage {
+	if parsed == nil {
+		return nil
+	}
+	knobs := make(map[string]any, 4)
+	for _, k := range []string{"temperature", "top_p", "presence_penalty", "frequency_penalty"} {
+		if v, ok := parsed[k]; ok {
+			knobs[k] = v
+		}
+	}
+	if len(knobs) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(knobs)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 // dispatchOneProvider encrypts and sends an inference request to a single
 // provider. It returns the pending request and provider on success, or an
 // error string on failure. The excludeProviders set is updated on failure.
@@ -1514,6 +1546,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	messages, _ := parsed["messages"].([]any)
 	input := parsed["input"]
 	if len(messages) == 0 && input == nil {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "validation",
+			reasonCode:      "messages_required",
+			httpStatus:      http.StatusBadRequest,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "messages or input is required"))
 		return
 	}
@@ -1521,6 +1563,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Multiple choices per request are not supported — fail loudly instead of
 	// silently returning a single choice the consumer didn't ask for.
 	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "validation",
+			reasonCode:      "bad_param",
+			httpStatus:      http.StatusBadRequest,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			n:               copies,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
 			"n > 1 is not supported", withParam("n")))
 		return
@@ -1528,6 +1581,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
 	if err != nil {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "validation",
+			reasonCode:      "bad_param",
+			httpStatus:      http.StatusBadRequest,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
@@ -1550,6 +1613,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(
 		parsed, rawBody, model, allowedProviderSerials, policy)
 	if !ok {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "model_resolution",
+			reasonCode:      "model_unavailable",
+			httpStatus:      http.StatusServiceUnavailable,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
 		return
@@ -1617,6 +1690,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if isResponsesAPI {
 		providerParsed, err := responsesRequestToChatCompletions(parsed)
 		if err != nil {
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "validation",
+				reasonCode:            "bad_param",
+				httpStatus:            http.StatusBadRequest,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return
 		}
@@ -1649,6 +1738,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Per-key spend cap (phase 1) — checked before the reservation so a
 		// capped key never debits the account ledger.
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "balance",
+				reasonCode:            "insufficient_quota",
+				httpStatus:            http.StatusPaymentRequired,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
 			return
 		}
@@ -1656,6 +1761,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
 		if err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
+				s.recordRejection(rejectionInfo{
+					r:                     r,
+					stage:                 "balance",
+					reasonCode:            "insufficient_funds",
+					httpStatus:            http.StatusPaymentRequired,
+					keyID:                 keyIDFromContext(r.Context()),
+					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:        publicModel,
+					resolvedModel:         model,
+					stream:                stream,
+					estimatedPromptTokens: estimatedPromptTokens,
+					requestedMaxTokens:    requestedMaxTokens,
+					requiresVision:        requiresVision,
+					hasTools:              hasTools,
+					params:                rejectionSamplingParams(parsed),
+				})
 				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
@@ -1677,6 +1798,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Reject requests for models not in the catalog.
 	if !s.registry.IsModelInCatalog(model) {
 		refundReservation()
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "model_resolution",
+			reasonCode:            "model_not_found",
+			httpStatus:            http.StatusNotFound,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			params:                rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
@@ -1714,6 +1851,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
 					if err != nil {
 						refundReservation()
+						s.recordRejection(rejectionInfo{
+							r:                     r,
+							stage:                 "validation",
+							reasonCode:            "bad_param",
+							httpStatus:            http.StatusBadRequest,
+							keyID:                 keyIDFromContext(r.Context()),
+							consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+							requestedModel:        publicModel,
+							resolvedModel:         model,
+							stream:                stream,
+							estimatedPromptTokens: estimatedPromptTokens,
+							requestedMaxTokens:    requestedMaxTokens,
+							requiresVision:        requiresVision,
+							hasTools:              hasTools,
+							params:                rejectionSamplingParams(parsed),
+						})
 						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 						return
 					}
@@ -1728,6 +1881,27 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Surface a clear 503 instead of a 429 the client would retry forever.
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "model_too_large",
+				httpStatus:              http.StatusServiceUnavailable,
+				keyID:                   keyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  stream,
+				estimatedPromptTokens:   estimatedPromptTokens,
+				requestedMaxTokens:      requestedMaxTokens,
+				requiresVision:          requiresVision,
+				hasTools:                hasTools,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
@@ -1741,6 +1915,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "machine_busy",
+				httpStatus:              http.StatusTooManyRequests,
+				keyID:                   keyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  stream,
+				estimatedPromptTokens:   estimatedPromptTokens,
+				requestedMaxTokens:      requestedMaxTokens,
+				requiresVision:          requiresVision,
+				hasTools:                hasTools,
+				retryAfterMs:            retryAfter * 1000,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
@@ -1761,6 +1957,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "no_provider",
+				httpStatus:              http.StatusServiceUnavailable,
+				keyID:                   keyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  stream,
+				estimatedPromptTokens:   estimatedPromptTokens,
+				requestedMaxTokens:      requestedMaxTokens,
+				requiresVision:          requiresVision,
+				hasTools:                hasTools,
+				retryAfterMs:            retryAfter * 1000,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
 				withCode("model_unavailable")))
@@ -1773,6 +1991,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
 					if err != nil {
 						refundReservation()
+						s.recordRejection(rejectionInfo{
+							r:                     r,
+							stage:                 "validation",
+							reasonCode:            "bad_param",
+							httpStatus:            http.StatusBadRequest,
+							keyID:                 keyIDFromContext(r.Context()),
+							consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+							requestedModel:        publicModel,
+							resolvedModel:         model,
+							stream:                stream,
+							estimatedPromptTokens: estimatedPromptTokens,
+							requestedMaxTokens:    requestedMaxTokens,
+							requiresVision:        requiresVision,
+							hasTools:              hasTools,
+							params:                rejectionSamplingParams(parsed),
+						})
 						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 						return
 					}
@@ -1783,6 +2017,27 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			} else {
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "routing_ttft",
+					reasonCode:              "ttft_too_slow",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              float64(retryTTFT.Milliseconds()),
+				})
 				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
 			}
@@ -1819,6 +2074,23 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// at this point, so refund before returning.
 	if len(rawBody) > maxInferenceBodyBytes {
 		refundReservation()
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "validation",
+			reasonCode:            "payload_too_large",
+			httpStatus:            http.StatusRequestEntityTooLarge,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			requestBodyBytes:      len(rawBody),
+			params:                rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
 			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
 		return
@@ -4106,6 +4378,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
 	if err != nil {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "validation",
+			reasonCode:      "bad_param",
+			httpStatus:      http.StatusBadRequest,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
@@ -4122,6 +4404,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// from `parsed` (inferenceBody below), so rawBody isn't threaded here.
 	buildModel, publicModel, _, ok := s.resolveRequestedModel(parsed, rawBody, model, allowedProviderSerials, policy)
 	if !ok {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "model_resolution",
+			reasonCode:      "model_unavailable",
+			httpStatus:      http.StatusServiceUnavailable,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
 		return
@@ -4130,6 +4422,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	cacheAffinityKey := requestCacheAffinityKey(parsed)
 
 	if !s.registry.IsModelInCatalog(model) {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "model_resolution",
+			reasonCode:      "model_not_found",
+			httpStatus:      http.StatusNotFound,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  publicModel,
+			resolvedModel:   model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
@@ -4181,6 +4484,22 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		// Per-key spend cap (phase 1) — checked before the reservation.
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "balance",
+				reasonCode:            "insufficient_quota",
+				httpStatus:            http.StatusPaymentRequired,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
 			return
 		}
@@ -4188,6 +4507,22 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
 		if err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
+				s.recordRejection(rejectionInfo{
+					r:                     r,
+					stage:                 "balance",
+					reasonCode:            "insufficient_funds",
+					httpStatus:            http.StatusPaymentRequired,
+					keyID:                 keyIDFromContext(r.Context()),
+					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:        publicModel,
+					resolvedModel:         model,
+					stream:                stream,
+					estimatedPromptTokens: estimatedPromptTokens,
+					requestedMaxTokens:    requestedMaxTokens,
+					requiresVision:        requiresVision,
+					hasTools:              hasTools,
+					params:                rejectionSamplingParams(parsed),
+				})
 				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
@@ -4225,6 +4560,27 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "model_too_large",
+				httpStatus:              http.StatusServiceUnavailable,
+				keyID:                   keyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  stream,
+				estimatedPromptTokens:   estimatedPromptTokens,
+				requestedMaxTokens:      requestedMaxTokens,
+				requiresVision:          requiresVision,
+				hasTools:                hasTools,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
@@ -4237,6 +4593,28 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "machine_busy",
+				httpStatus:              http.StatusTooManyRequests,
+				keyID:                   keyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  stream,
+				estimatedPromptTokens:   estimatedPromptTokens,
+				requestedMaxTokens:      requestedMaxTokens,
+				requiresVision:          requiresVision,
+				hasTools:                hasTools,
+				retryAfterMs:            retryAfter * 1000,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
@@ -4251,6 +4629,28 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "no_provider",
+				httpStatus:              http.StatusServiceUnavailable,
+				keyID:                   keyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  stream,
+				estimatedPromptTokens:   estimatedPromptTokens,
+				requestedMaxTokens:      requestedMaxTokens,
+				requiresVision:          requiresVision,
+				hasTools:                hasTools,
+				retryAfterMs:            retryAfter * 1000,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
 				withCode("model_unavailable")))
@@ -4263,6 +4663,27 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			} else {
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "routing_ttft",
+					reasonCode:              "ttft_too_slow",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              float64(retryTTFT.Milliseconds()),
+				})
 				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
 			}
@@ -4474,6 +4895,22 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundExtra()
 			refundReservation()
 			if errors.Is(err, store.ErrInsufficientBalance) {
+				s.recordRejection(rejectionInfo{
+					r:                     r,
+					stage:                 "balance",
+					reasonCode:            "insufficient_funds",
+					httpStatus:            http.StatusPaymentRequired,
+					keyID:                 keyIDFromContext(r.Context()),
+					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:        publicModel,
+					resolvedModel:         model,
+					stream:                stream,
+					estimatedPromptTokens: estimatedPromptTokens,
+					requestedMaxTokens:    requestedMaxTokens,
+					requiresVision:        requiresVision,
+					hasTools:              hasTools,
+					params:                rejectionSamplingParams(parsed),
+				})
 				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 					"your balance is too low for this provider price — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
@@ -4495,6 +4932,23 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		cleanupPending()
 		refundExtra()
 		refundReservation()
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "validation",
+			reasonCode:            "payload_too_large",
+			httpStatus:            http.StatusRequestEntityTooLarge,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			requestBodyBytes:      len(inferenceBody),
+			params:                rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
 			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
 		return

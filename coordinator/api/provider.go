@@ -1945,6 +1945,43 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			})
 		}
 
+		// Update the routing telemetry outcome with final token counts and timing.
+		// handleComplete is the authoritative final writer for a SUCCESSFUL request
+		// (UpdateInferenceRouteOutcome overwrites the whole row), so this outcome
+		// carries the full coordinator-side latency decomposition and the measured
+		// decode throughput in addition to tokens/cost.
+		saferun.Go(s.logger, "updateInferenceRoute", func() {
+			outcome := &store.InferenceRouteOutcome{
+				FinalStatus:      "success",
+				PromptTokens:     msg.Usage.PromptTokens,
+				CompletionTokens: msg.Usage.CompletionTokens,
+				ReasoningTokens:  msg.Usage.ReasoningTokens,
+				CostMicroUSD:     totalCost,
+			}
+			if pr.Timing != nil {
+				t := pr.Timing
+				if !t.FirstChunkAt.IsZero() && !t.DispatchedAt.IsZero() {
+					ms := float64(t.FirstChunkAt.Sub(t.DispatchedAt).Milliseconds())
+					outcome.ActualTTFTMs = ms
+					outcome.DispatchToFirstChunkMs = ms
+				}
+				if !t.ReceivedAt.IsZero() {
+					outcome.TotalDurationMs = float64(time.Since(t.ReceivedAt).Milliseconds())
+				}
+				// Coordinator-side latency decomposition (ParseMs..DispatchMs).
+				applyTimingDecomposition(outcome, t)
+				// Measured decode throughput: completion tokens over the decode
+				// window (first chunk -> completion). Guard zero/negative
+				// durations and zero tokens so unmeasurable requests record 0.
+				if msg.Usage.CompletionTokens > 0 && !t.FirstChunkAt.IsZero() {
+					if decodeSecs := time.Since(t.FirstChunkAt).Seconds(); decodeSecs > 0 {
+						outcome.ActualDecodeTPS = float64(msg.Usage.CompletionTokens) / decodeSecs
+					}
+				}
+			}
+			_ = s.store.UpdateInferenceRouteOutcome(msg.RequestID, pr.Attempt, outcome)
+		})
+
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})

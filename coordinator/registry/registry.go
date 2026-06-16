@@ -69,7 +69,11 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
-	RequestID  string
+	RequestID string
+	// Attempt is the zero-based dispatch attempt number that produced this
+	// pending request. It lets outcome telemetry correlate the final result
+	// with the routing decision record for the same attempt.
+	Attempt    int
 	ProviderID string
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").

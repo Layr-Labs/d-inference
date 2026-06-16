@@ -121,40 +121,52 @@ public struct KVQuantQualityRunner {
     }
 
     private func runLogits(config: KVQuantGateConfig, evaluator: KVQuantEvaluator) async throws -> KVQuantQualityReport {
-        let texts = try fixtureTexts(config: config)
-        var top1Matches: [Double] = []
-        var top5Contains: [Double] = []
-        var referencePositionCount = 0
+        // Generation-fidelity: reference greedy-continues each prompt, candidate is
+        // teacher-forced over that continuation. This is the trustworthy quality gate
+        // (correct gen forward, confident reference tokens, quantization engaged).
+        let prompts = Self.genFidelityPrompts
+        let genTokens = min(max(config.decodeTokens, 32), 128)
+        var candTop1: [Double] = []
+        var candTop5: [Double] = []
+        var refSelf: [Double] = []
 
-        for text in texts.prefix(max(config.iterations, 1)) {
-            let reference = try await evaluator.logitFingerprint(text: text, mode: config.reference, maxTokens: config.contexts.max())
-            let candidate = try await evaluator.logitFingerprint(text: text, mode: config.candidate, maxTokens: config.contexts.max())
-            referencePositionCount = reference.top1.count
-            let count = min(reference.top1.count, candidate.top1.count)
-            guard count > 0 else { continue }
-            let top1 = zip(reference.top1.prefix(count), candidate.top1.prefix(count)).filter(==).count
-            let top5 = (0..<count).filter { idx in
-                candidate.top5.indices.contains(idx) && candidate.top5[idx].contains(reference.top1[idx])
-            }.count
-            top1Matches.append(Double(top1) / Double(count))
-            top5Contains.append(Double(top5) / Double(count))
+        for prompt in prompts.prefix(max(config.iterations, 1) * 2) {
+            let r = try await evaluator.generationAgreement(
+                prompt: prompt,
+                reference: config.reference,
+                candidate: config.candidate,
+                count: genTokens)
+            guard r.generatedTokens > 0 else { continue }
+            candTop1.append(r.candidateTop1)
+            candTop5.append(r.candidateTop5)
+            refSelf.append(r.referenceSelfTop1)
         }
 
         return KVQuantQualityReport(
             suite: .logits,
-            metricName: "logit_agreement",
+            metricName: "generation_fidelity",
             dataDirectory: config.dataDirectory,
             metrics: [
-                "top_token.greedy_match_rate": .init(unit: "rate", samples: top1Matches),
-                "top_token.top5_overlap_rate": .init(unit: "rate", samples: top5Contains),
-                "top_token.reference_positions": .init(unit: "positions", samples: [Double(referencePositionCount)]),
-                "kl.mean": .init(unit: "nats", samples: []),
-                "kl.p95": .init(unit: "nats", samples: []),
+                "top_token.greedy_match_rate": .init(unit: "rate", samples: candTop1),
+                "top_token.top5_overlap_rate": .init(unit: "rate", samples: candTop5),
+                "top_token.reference_self_match_rate": .init(unit: "rate", samples: refSelf),
             ],
             passFail: .passed(),
-            todos: ["Implement distribution KL once the gate collects full logit distributions."]
+            todos: refSelf.allSatisfy { $0 > 0.999 } ? [] : ["reference self-agreement < 1.0 — investigate scorer determinism"]
         )
     }
+
+    /// Short, coherent prompts that elicit confident continuations from instruct
+    /// models, so reference greedy tokens are high-probability and fidelity is
+    /// meaningful (independent of raw-text PPL quirks).
+    static let genFidelityPrompts: [String] = [
+        "Explain step by step how photosynthesis works in plants.",
+        "Write a short paragraph about the history of the Roman Empire.",
+        "List five practical tips for writing clean, maintainable software.",
+        "Describe how a hash map works and why lookups are fast.",
+        "Summarize the plot of a typical detective mystery novel.",
+        "Explain the difference between TCP and UDP networking protocols.",
+    ]
 
     private func runNIAH(config: KVQuantGateConfig, evaluator: KVQuantEvaluator) async throws -> KVQuantQualityReport {
         let cases = try loadNIAHFixtures(config: config)

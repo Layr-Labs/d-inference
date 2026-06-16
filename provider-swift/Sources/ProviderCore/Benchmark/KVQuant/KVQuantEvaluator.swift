@@ -115,6 +115,101 @@ struct KVQuantEvaluator {
         try KVQuantExecution.config(for: mode, base: Self.baseParameters())
     }
 
+    /// Generation-fidelity: the trustworthy quality gate. The reference greedily
+    /// continues `prompt` (producing coherent, high-confidence tokens), then the
+    /// candidate is teacher-forced over prompt+continuation and we measure how
+    /// often the candidate's argmax matches the reference's tokens. This uses the
+    /// correct generation forward, exercises quantization incrementally (start
+    /// delay engages), and avoids the unreliable raw-text PPL gauge.
+    func generationAgreement(
+        prompt: String,
+        reference: KVQuantCandidateMode,
+        candidate: KVQuantCandidateMode,
+        count: Int
+    ) async throws -> KVQuantGenAgreement {
+        let container = try await loadContainer()
+        return try await container.perform { context in
+            let model = context.model
+            let promptTokens = context.tokenizer.encode(text: prompt, addSpecialTokens: true)
+            guard promptTokens.count >= 1 else { throw KVQuantEvaluatorError.tooFewTokens(promptTokens.count) }
+
+            // 1. Reference greedy continuation.
+            let refCache = try Self.makeExecConfig(for: reference).makeCache(using: model)
+            var last = Self.feedTokens(promptTokens, model: model, cache: refCache)
+            var refTokens: [Int] = []
+            for _ in 0..<count {
+                let nt = Self.argmaxToken(last)
+                refTokens.append(nt)
+                last = Self.feedTokens([nt], model: model, cache: refCache)
+            }
+
+            let full = promptTokens + refTokens
+            let promptLen = promptTokens.count
+
+            // 2. Reference self-agreement (sanity; must be ~1.0) and candidate agreement,
+            //    both teacher-forced over the same full sequence.
+            let refTF = Self.teacherForcedTop(full, promptLen: promptLen, model: model,
+                cache: try Self.makeExecConfig(for: reference).makeCache(using: model))
+            let candTF = Self.teacherForcedTop(full, promptLen: promptLen, model: model,
+                cache: try Self.makeExecConfig(for: candidate).makeCache(using: model))
+
+            func agreement(_ tf: (top1: [Int], top5: [[Int]])) -> (Double, Double) {
+                guard !refTokens.isEmpty else { return (0, 0) }
+                var t1 = 0, t5 = 0
+                for j in 0..<refTokens.count where j < tf.top1.count {
+                    if tf.top1[j] == refTokens[j] { t1 += 1 }
+                    if tf.top5[j].contains(refTokens[j]) { t5 += 1 }
+                }
+                return (Double(t1) / Double(refTokens.count), Double(t5) / Double(refTokens.count))
+            }
+
+            let (refSelf, _) = agreement(refTF)
+            let (candTop1, candTop5) = agreement(candTF)
+            return KVQuantGenAgreement(
+                referenceSelfTop1: refSelf,
+                candidateTop1: candTop1,
+                candidateTop5: candTop5,
+                generatedTokens: refTokens.count)
+        }
+    }
+
+    /// Feed tokens incrementally through `cache`; returns last-position fp32 logits [1, vocab].
+    private static func feedTokens(_ tokens: [Int], model: any LanguageModel, cache: [KVCache]) -> MLXArray {
+        var last = MLXArray.zeros([1, 1])
+        for t in tokens {
+            let input = MLXArray([Int32(t)])[.newAxis]
+            last = model(input, cache: cache)
+        }
+        let logits = last[0..., -1, 0...].asType(.float32)
+        eval(logits)
+        return logits
+    }
+
+    private static func argmaxToken(_ logits1xVocab: MLXArray) -> Int {
+        Int(argMax(logits1xVocab, axis: -1).item(Int32.self))
+    }
+
+    /// Teacher-force `tokenIDs`; return top-1 and top-5 predictions for positions that
+    /// predict the continuation (index >= promptLen-1).
+    private static func teacherForcedTop(
+        _ tokenIDs: [Int], promptLen: Int, model: any LanguageModel, cache: [KVCache]
+    ) -> (top1: [Int], top5: [[Int]]) {
+        var top1: [Int] = []
+        var top5: [[Int]] = []
+        for i in 0..<(tokenIDs.count - 1) {
+            let input = MLXArray([Int32(tokenIDs[i])])[.newAxis]
+            let out = model(input, cache: cache)
+            guard i >= promptLen - 1 else { continue }
+            let logits = out[0..., -1, 0...].asType(.float32)
+            top1.append(Int(argMax(logits, axis: -1).item(Int32.self)))
+            let sorted = argSort(logits, axis: -1)
+            let vocab = logits.dim(-1)
+            let k = min(5, vocab)
+            top5.append(sorted[.ellipsis, (vocab - k)..<vocab].asArray(Int32.self).map(Int.init))
+        }
+        return (top1, top5)
+    }
+
     private static func makeCache(for mode: KVQuantCandidateMode, model: any LanguageModel) throws -> [KVCache] {
         try makeExecConfig(for: mode).makeCache(using: model)
     }
@@ -220,6 +315,13 @@ struct KVQuantEvaluator {
 
         return KVQuantLogitFingerprint(top1: top1, top5: top5)
     }
+}
+
+struct KVQuantGenAgreement: Sendable, Equatable {
+    let referenceSelfTop1: Double
+    let candidateTop1: Double
+    let candidateTop5: Double
+    let generatedTokens: Int
 }
 
 struct KVQuantSequenceScore: Sendable, Equatable {

@@ -44,12 +44,18 @@ public enum ModelFitDiagnostic {
         gpuActiveGb: Double = 0,
         gpuCacheGb: Double = 0
     ) -> Double {
-        ModelLoadAdmission.freeForLoadGb(
-            totalBytes: bytes(totalGb),
+        let totalBytes = bytes(totalGb)
+        // Same cap-implied reserve the running gate uses (max(configReserve,
+        // physical − 90% cap)), so the doctor verdict matches what the daemon
+        // actually enforces and never reports "fits" for a model the cap refuses.
+        let reserve = UnifiedMemoryCap.loadReserveBytes(
+            physicalBytes: totalBytes, configReserveBytes: bytes(reserveGb))
+        return ModelLoadAdmission.freeForLoadGb(
+            totalBytes: totalBytes,
             systemAvailableBytes: systemAvailableGb.map(bytes) ?? .max,
             gpuActiveBytes: bytes(gpuActiveGb),
             gpuCacheBytes: bytes(gpuCacheGb),
-            reserveBytes: bytes(reserveGb),
+            reserveBytes: reserve,
             outstandingReservationBytes: 0)
     }
 

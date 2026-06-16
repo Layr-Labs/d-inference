@@ -97,6 +97,19 @@ import Testing
     #expect(ModelFitDiagnostic.usableInferenceGb(totalGb: 8, reserveGb: 16) == 0)
 }
 
+@Test func usableInferenceGbHonorsThe90PercentCapOnBigBoxes() {
+    // On a big box the 90% unified cap holds back MORE than the 4 GB config
+    // reserve, and the doctor verdict must reflect that (matching the runtime
+    // gate's loadReserveBytes). 128 GB box: cap = 115.2 GB → reserve = 12.8 GB,
+    // so usable = 128 − 12.8 = 115.2, NOT 128 − 4 = 124.
+    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 128, reserveGb: 4) - 115.2) < 0.05)
+    // 64 GB box: cap 57.6 → usable 57.6, not 60.
+    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 64, reserveGb: 4) - 57.6) < 0.05)
+    // Small/mid box where config reserve already exceeds the cap's 10%: config
+    // wins, behavior unchanged (32 − 4 = 28, since cap-implied 3.2 < 4).
+    #expect(abs(ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4) - 28.0) < 0.01)
+}
+
 @Test func modelFitMatchesRuntimeGateNotRawAvailable() {
     // Headline parity with #273's runtime gate: gpt-oss (~13.5 GB weights, so
     // needs 15.5 GB) on a 24 GB box with the OS reporting ~20 GB free FITS —

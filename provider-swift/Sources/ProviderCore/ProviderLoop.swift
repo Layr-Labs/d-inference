@@ -2811,12 +2811,17 @@ public actor ProviderLoop {
     /// what this method enforces at load time.
     private func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
+        // Hold back enough to honor the 90% unified cap: max(configured reserve,
+        // physical − cap). Without this the free-memory gate would load models
+        // until only `configReserve` (4 GiB) remained — past the cap on big boxes.
+        let reserve = UnifiedMemoryCap.loadReserveBytes(
+            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
         return ModelLoadAdmission.freeForLoadGb(
             totalBytes: ProcessInfo.processInfo.physicalMemory,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB),
+            reserveBytes: reserve,
             outstandingReservationBytes: outstanding)
     }
 

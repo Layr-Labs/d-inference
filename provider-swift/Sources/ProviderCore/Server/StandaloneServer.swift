@@ -342,12 +342,16 @@ public actor StandaloneServer {
     /// `ModelLoadAdmission` for the rationale.
     private func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
+        // Honor the 90% unified cap here too: with no configured reserve in
+        // standalone mode, the cap-implied reserve (physical − cap) is what holds
+        // memory back so a load can't push past the cap.
+        let reserve = UnifiedMemoryCap.loadReserveBytes(configReserveBytes: 0)
         return ModelLoadAdmission.freeForLoadGb(
             totalBytes: ProcessInfo.processInfo.physicalMemory,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: 0,
+            reserveBytes: reserve,
             outstandingReservationBytes: outstanding)
     }
 

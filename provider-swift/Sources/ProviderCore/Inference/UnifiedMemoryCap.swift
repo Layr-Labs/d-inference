@@ -134,6 +134,26 @@ public enum UnifiedMemoryCap {
         return need <= cap
     }
 
+    /// Effective reserve (bytes) the model-LOAD gate must hold back below total
+    /// physical memory so that loading never pushes usage past the cap.
+    ///
+    /// The load gate works in "free memory" terms (`total − used − reserve`), so
+    /// to honor the cap its reserve must be at least `physical − hardCap` (the
+    /// 10% / 2 GiB-floor the cap leaves the OS). It is also never LESS than the
+    /// operator's configured reserve — whichever is more conservative wins. This
+    /// is what makes the existing free-memory load gate enforce the 90% cap
+    /// without a separate code path: hold back `max(configReserve, physical −
+    /// hardCap)`.
+    public static func loadReserveBytes(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        configReserveBytes: UInt64,
+        capFraction: Double? = nil
+    ) -> UInt64 {
+        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
+        let capImpliedReserve = physicalBytes > cap ? physicalBytes - cap : 0
+        return max(configReserveBytes, capImpliedReserve)
+    }
+
     // MARK: - Resolution (explicit → env → default)
 
     /// Cap fraction from explicit value, env `DARKBLOOM_MEM_CAP_FRACTION`

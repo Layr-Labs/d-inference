@@ -218,6 +218,38 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(constrained == 1 * gib)
 }
 
+// MARK: - loadReserveBytes (cap-aware model-load gate reserve)
+
+@Test func loadReserveIsCapImpliedWhenLargerThanConfig() {
+    // 128 GiB, 90% cap = 115.2 GiB → cap-implied reserve = 12.8 GiB, which
+    // dominates a 4 GiB configured reserve. The load gate must hold back the
+    // bigger one so loads can't push past the cap.
+    let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: 128 * gib)
+    let reserve = UnifiedMemoryCap.loadReserveBytes(
+        physicalBytes: 128 * gib, configReserveBytes: 4 * gib)
+    #expect(reserve == 128 * gib - cap)        // = 12.8 GiB
+    #expect(reserve > 4 * gib)
+}
+
+@Test func loadReserveIsConfigWhenLargerThanCapImplied() {
+    // A box where the operator set a reserve bigger than the cap's 10%: keep the
+    // more conservative configured value. 16 GiB box: cap-implied = 1.6 GiB, but
+    // floor makes cap = 14 GiB → cap-implied = 2 GiB; config 8 GiB wins.
+    let reserve = UnifiedMemoryCap.loadReserveBytes(
+        physicalBytes: 16 * gib, configReserveBytes: 8 * gib)
+    #expect(reserve == 8 * gib)
+}
+
+@Test func loadReserveHonorsCapEvenWithZeroConfig() {
+    // Standalone mode passes configReserve 0 — the cap-implied reserve still
+    // holds memory back so a load can't exceed the cap.
+    let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: 64 * gib)
+    let reserve = UnifiedMemoryCap.loadReserveBytes(
+        physicalBytes: 64 * gib, configReserveBytes: 0)
+    #expect(reserve == 64 * gib - cap)         // = 6.4 GiB, not 0
+    #expect(reserve > 0)
+}
+
 @Test func kvBudgetAndAdmitSaturateOnMaxOperands() {
     // .max weights must clamp the KV budget to 0, not underflow/trap.
     #expect(UnifiedMemoryCap.kvBudgetBytes(

@@ -20,12 +20,21 @@ public actor GlobalKVCacheBudget {
     /// one policy.
     private let capFraction: Double?
     private let activationReserveBytes: UInt64?
+    /// Operator-configured reserve (`memory_reserve_gb`, in bytes). Held back by
+    /// the live KV gate just as the load gate holds it back, so runtime KV can't
+    /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
+    private let configReserveBytes: UInt64
     private let memorySnapshot: @Sendable () -> MemorySnapshot
     private var reservations: [String: UInt64] = [:]
 
-    public init(capFraction: Double? = nil, activationReserveBytes: UInt64? = nil) {
+    public init(
+        capFraction: Double? = nil,
+        activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0
+    ) {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
+        self.configReserveBytes = configReserveBytes
         self.memorySnapshot = {
             MemorySnapshot(
                 total: ProcessInfo.processInfo.physicalMemory,
@@ -39,10 +48,12 @@ public actor GlobalKVCacheBudget {
     init(
         capFraction: Double? = nil,
         activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot
     ) {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
+        self.configReserveBytes = configReserveBytes
         self.memorySnapshot = memorySnapshot
     }
 
@@ -140,6 +151,7 @@ public actor GlobalKVCacheBudget {
             mlxUsedBytes: mlxUsed,
             systemAvailableBytes: snap.systemAvailable,
             activationReserveBytes: activationReserveBytes,
+            configReserveBytes: configReserveBytes,
             capFraction: capFraction)
         let reserved = reservations.values.reduce(UInt64(0)) { partial, value in
             let (sum, overflow) = partial.addingReportingOverflow(value)

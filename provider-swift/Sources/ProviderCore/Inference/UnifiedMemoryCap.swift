@@ -135,10 +135,20 @@ public enum UnifiedMemoryCap {
         mlxUsedBytes: UInt64,
         systemAvailableBytes: UInt64,
         activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0,
         capFraction: Double? = nil
     ) -> UInt64 {
+        // Honor an operator-configured reserve (`memory_reserve_gb`) that is
+        // larger than the cap's own implied OS reserve (`physical − cap`), so the
+        // runtime KV gate holds back the SAME memory the load gate does
+        // (`loadReserveBytes = max(configReserve, physical − cap)`). Without this,
+        // serving could grow KV up to the 90% cap and consume memory the operator
+        // explicitly reserved, reintroducing the OS-pressure/OOM the reserve
+        // exists to prevent. No-op when `configReserve ≤ physical − cap`.
         let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
-        let underCap = cap > mlxUsedBytes ? cap - mlxUsedBytes : 0
+        let reserveFloor = physicalBytes > configReserveBytes ? physicalBytes - configReserveBytes : 0
+        let effectiveCap = min(cap, reserveFloor)
+        let underCap = effectiveCap > mlxUsedBytes ? effectiveCap - mlxUsedBytes : 0
         let realFree = min(underCap, systemAvailableBytes)
         let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
         return realFree > activations ? realFree - activations : 0

@@ -117,6 +117,29 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(await budget.reserveBytes(requestID: "kv-after", bytes: 40 * gib))
 }
 
+/// The live KV gate must honor an operator `memory_reserve_gb` that exceeds the
+/// cap's own implied OS reserve (physical − cap) — otherwise runtime KV grows to
+/// the 90% cap and eats the memory the operator reserved (the load gate already
+/// holds it back via loadReserveBytes; the live gate must match).
+@Test func globalKVCacheBudgetHonorsOperatorReserveAboveCapImplied() async {
+    // 32 GiB box, cap 0.9 → 28.8 GiB (cap-implied reserve = 3.2 GiB). A 6 GiB
+    // operator reserve exceeds that → effective cap 26 GiB.
+    let withReserve = GlobalKVCacheBudget(
+        capFraction: 0.9, activationReserveBytes: 0, configReserveBytes: 6 * gib
+    ) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 32 * gib, active: 0, cache: 0, systemAvailable: .max)
+    }
+    #expect(!(await withReserve.reserveBytes(requestID: "over-reserve", bytes: 27 * gib)))  // > 26 GiB
+    #expect(await withReserve.reserveBytes(requestID: "fits", bytes: 25 * gib))
+
+    // With no operator reserve the same 27 GiB fits under the bare 28.8 GiB cap —
+    // proving the reserve, not some other clamp, is what rejected it above.
+    let noReserve = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 32 * gib, active: 0, cache: 0, systemAvailable: .max)
+    }
+    #expect(await noReserve.reserveBytes(requestID: "fits-bare", bytes: 27 * gib))
+}
+
 @Test func providerLoopMemoryReserveBytesSaturatesOnOverflow() {
     #expect(ProviderLoop.memoryReserveBytes(forGiB: 4) == 4 * 1024 * 1024 * 1024)
     #expect(ProviderLoop.memoryReserveBytes(forGiB: UInt64.max) == UInt64.max)

@@ -147,6 +147,12 @@ func clientClassFromUserAgent(ua string) string {
 	if ua == "" {
 		return "unknown"
 	}
+	// Bound work on this untrusted header: only the prefix is needed to classify
+	// the client, so cap the length before lowercasing to avoid spending effort
+	// on a maliciously long User-Agent.
+	if len(ua) > 256 {
+		ua = ua[:256]
+	}
 	lc := strings.ToLower(ua)
 	switch {
 	case strings.Contains(lc, "openrouter"):

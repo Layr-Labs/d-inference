@@ -1642,6 +1642,14 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 	}
 }
 
+// maxPlausibleDecodeTPS is the sanity ceiling applied to the telemetry-only
+// ActualDecodeTPS before it is persisted. Real decode throughput on the fleet's
+// Apple-silicon hardware is in the tens-to-low-hundreds of tokens/sec; this
+// ceiling is far above any genuine value and exists solely to stop a dishonest
+// or buggy provider's unbounded CompletionTokens from writing an absurd TPS that
+// could skew routing calibration. The value is advisory, never a security gate.
+const maxPlausibleDecodeTPS = 10000.0
+
 func (s *Server) handleComplete(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
 	if provider == nil {
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
@@ -1973,9 +1981,18 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				// Measured decode throughput: completion tokens over the decode
 				// window (first chunk -> completion). Guard zero/negative
 				// durations and zero tokens so unmeasurable requests record 0.
+				// CompletionTokens is provider-supplied and untrusted, so clamp the
+				// derived TPS to a sanity ceiling: a dishonest/buggy provider must
+				// not be able to write an absurd value that would skew routing
+				// calibration (threat-model T-007/T-027). Throughput is advisory,
+				// never a security gate.
 				if msg.Usage.CompletionTokens > 0 && !t.FirstChunkAt.IsZero() {
 					if decodeSecs := time.Since(t.FirstChunkAt).Seconds(); decodeSecs > 0 {
-						outcome.ActualDecodeTPS = float64(msg.Usage.CompletionTokens) / decodeSecs
+						tps := float64(msg.Usage.CompletionTokens) / decodeSecs
+						if tps > maxPlausibleDecodeTPS {
+							tps = maxPlausibleDecodeTPS
+						}
+						outcome.ActualDecodeTPS = tps
 					}
 				}
 			}

@@ -45,8 +45,9 @@ public actor ResidentModelLedger {
     }
 
     /// Total EXCLUDING one model — what would be resident if `modelKey` were not
-    /// loaded. Used by the load gate to evaluate admitting a replacement: the
-    /// candidate is weighed against everything else, not against itself.
+    /// loaded. A convenience for a future replacement-sizing caller (weigh a
+    /// candidate against everything else, not itself). Not used by the current
+    /// load gate, which reads live MLX counters (see the type-level note).
     public func totalResidentWeightBytes(excluding modelKey: String) -> UInt64 {
         weights.reduce(UInt64(0)) { partial, entry in
             guard entry.key != modelKey else { return partial }
@@ -66,8 +67,8 @@ public actor ResidentModelLedger {
     }
 
     /// Snapshot of all resident models and their weight bytes (for telemetry /
-    /// the load-admission decision, which may need per-model figures to choose
-    /// an eviction victim).
+    /// a future per-model footprint breakdown). Not consulted by enforcement —
+    /// the load gate and KV budgets use live MLX counters (see the type note).
     public func snapshot() -> [String: UInt64] {
         weights
     }

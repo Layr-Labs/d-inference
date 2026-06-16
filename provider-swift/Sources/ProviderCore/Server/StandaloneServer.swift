@@ -211,6 +211,9 @@ public actor StandaloneServer {
         for cached in schedulers.values {
             await cached.scheduler.unloadModel()
         }
+        // Return the freed weights to the OS so a later StandaloneServer in the
+        // same process (e.g. across tests) sees real free memory.
+        MLX.Memory.clearCache()
         schedulers.removeAll()
         schedulerReservations.removeAll()
     }
@@ -544,6 +547,9 @@ public actor StandaloneServer {
             await loadModel(modelId, container: container)
             if Task.isCancelled, let cached = schedulers.removeValue(forKey: modelId) {
                 await cached.scheduler.unloadModel()
+                // Reclaim the just-loaded weights so the next load's gate / a
+                // co-resident model's KV budget see the freed memory.
+                MLX.Memory.clearCache()
                 throw CancellationError()
             }
             standaloneLogger.info("Lazy-loaded model: \(modelId)")

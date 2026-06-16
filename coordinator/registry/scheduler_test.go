@@ -119,7 +119,8 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 	model := "ttft-model"
 	slow := makeSchedulerProvider(t, reg, "slow", model, 100)
 	slow.mu.Lock()
-	slow.BackendCapacity.Slots[0].MaxTokensPotential = 2_000
+	slow.BackendCapacity.Slots[0].NumWaiting = 100
+	slow.BackendCapacity.Slots[0].MaxConcurrency = 128
 	slow.mu.Unlock()
 
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
@@ -140,44 +141,41 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 	}
 }
 
-func TestQuickCapacityCheckWithTTFTIncludesTokenBudgetBacklog(t *testing.T) {
+func TestQuickCapacityCheckWithTTFTIncludesWaitingPrefills(t *testing.T) {
 	reg := New(testLogger())
-	model := "ttft-token-budget-model"
-	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 1_000, 20_000, 100)
+	model := "ttft-waiting-prefill-model"
+	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 20_000, 100_000, 100)
 	p.mu.Lock()
-	p.BackendCapacity.Slots[0].QueuedTokenBudget = 2_000
+	p.BackendCapacity.Slots[0].NumWaiting = 3
+	p.BackendCapacity.Slots[0].MaxConcurrency = 8
+	p.BackendCapacity.Slots[0].QueuedTokenBudget = 40_000
 	p.mu.Unlock()
-	p.AddPending(&PendingRequest{
-		RequestID:             "coordinator-pending",
-		Model:                 model,
-		EstimatedPromptTokens: 4_000,
-		RequestedMaxTokens:    1_000,
-	})
 
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
+	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 2_000, 128, RequestTraits{}, false)
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
-	if !hasTTFT || bestTTFT < 50*time.Second || bestTTFT > 51*time.Second {
-		t.Fatalf("bestTTFT = %v has=%v, want about 50s from active+queued+coordinator backlog", bestTTFT, hasTTFT)
+	if !hasTTFT || bestTTFT < 20*time.Second || bestTTFT > 21*time.Second {
+		t.Fatalf("bestTTFT = %v has=%v, want about 20s from waiting prefills plus this prefill", bestTTFT, hasTTFT)
 	}
 }
 
-func TestQuickCapacityCheckWithTTFTIncludesBackendRunningFallback(t *testing.T) {
+func TestQuickCapacityCheckWithTTFTIgnoresActiveReservations(t *testing.T) {
 	reg := New(testLogger())
-	model := "ttft-running-fallback-model"
-	p := makeSchedulerProvider(t, reg, "running", model, 100)
+	model := "ttft-active-reservation-model"
+	p := makeTokenBudgetProvider(t, reg, "running", model, 100, 80_000, 200_000, 100)
 	p.mu.Lock()
 	p.BackendCapacity.Slots[0].NumRunning = 1
-	p.BackendCapacity.Slots[0].MaxTokensPotential = 0
+	p.BackendCapacity.Slots[0].MaxTokensPotential = 100_000
+	p.BackendCapacity.Slots[0].QueuedTokenBudget = 40_000
 	p.mu.Unlock()
 
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 2048, RequestTraits{}, false)
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
-	if !hasTTFT || bestTTFT <= 20*time.Second {
-		t.Fatalf("bestTTFT = %v has=%v, want running request backlog above 20s", bestTTFT, hasTTFT)
+	if !hasTTFT || bestTTFT > time.Second {
+		t.Fatalf("bestTTFT = %v has=%v, want active reservations not to inflate first-token estimate", bestTTFT, hasTTFT)
 	}
 }
 
@@ -185,13 +183,12 @@ func TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet(t *testing.T) {
 	reg := New(testLogger())
 	model := "ttft-ceiling-model"
 
-	// slow-but-cheap: moderate backlog keeps its cost below the expensive
-	// provider, but the backlog pushes its TTFT above the 10s target.
+	// slow-but-cheap: cold state keeps its cost below the expensive provider,
+	// but pushes its TTFT above the 10s target.
 	slow := makeSchedulerProvider(t, reg, "slow", model, 100)
 	slow.mu.Lock()
 	slow.PrefillTPS = 1000
-	// 5_000 tokens / 100 TPS = 50s backlog; TTFT ≈ 50s + 0.1s > 10s.
-	slow.BackendCapacity.Slots[0].MaxTokensPotential = 5_000
+	slow.BackendCapacity.Slots[0].State = "idle_shutdown"
 	slow.mu.Unlock()
 
 	// fast-but-expensive: low decode TPS inflates cost, but TTFT stays tiny.
@@ -250,7 +247,7 @@ func TestReserveProviderReturnsTTFTRejectionsWhenAllTooSlow(t *testing.T) {
 	p := makeSchedulerProvider(t, reg, "slow", model, 100)
 	p.mu.Lock()
 	p.PrefillTPS = 1000
-	p.BackendCapacity.Slots[0].MaxTokensPotential = 2_000_000
+	p.BackendCapacity.Slots[0].State = "idle_shutdown"
 	p.mu.Unlock()
 
 	req := &PendingRequest{

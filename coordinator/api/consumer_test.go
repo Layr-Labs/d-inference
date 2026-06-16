@@ -1982,7 +1982,7 @@ func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 
 func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	srv, _ := testServer(t)
-	if got := srv.estimateTTFTRetryAfter("no-queue", 13*time.Second); got != 3 {
+	if got := srv.estimateTTFTRetryAfter("no-queue", 13*time.Second, openRouterTTFT429Threshold); got != 3 {
 		t.Fatalf("Retry-After without queue = %d, want 3s over target", got)
 	}
 
@@ -1994,7 +1994,7 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	srv.writeTTFTTooSlow(w, model, model, 11*time.Second)
+	srv.writeTTFTTooSlow(w, model, model, 11*time.Second, openRouterTTFT429Threshold)
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
@@ -2027,7 +2027,7 @@ func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 	p.Mu().Lock()
 	p.DecodeTPS = 100
 	p.PrefillTPS = 400
-	p.BackendCapacity.Slots[0].MaxTokensPotential = 2_000
+	p.BackendCapacity.Slots[0].State = "idle_shutdown"
 	p.Mu().Unlock()
 
 	cases := []struct {
@@ -2098,7 +2098,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	desiredProvider.Mu().Lock()
 	desiredProvider.DecodeTPS = 100
 	desiredProvider.PrefillTPS = 400
-	desiredProvider.BackendCapacity.Slots[0].MaxTokensPotential = 2_000
+	desiredProvider.BackendCapacity.Slots[0].State = "idle_shutdown"
 	desiredProvider.Mu().Unlock()
 
 	previousProvider := registerBuildsProvider(srv, "previous-fast", previous)

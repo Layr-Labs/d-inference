@@ -89,9 +89,9 @@ const (
 	// handler goroutine when a WebSocket is half-dead.
 	cancelWriteTimeout = 2 * time.Second
 
-	// openRouterTTFT429Threshold is the hard admission target for external
-	// routers: if the fastest eligible provider is already estimated to miss a
-	// 10s TTFT, return a retryable 429 instead of letting the caller time out.
+	// openRouterTTFT429Threshold is the floor for external-router TTFT admission:
+	// small prompts keep the existing 10s target, while long prompts can use the
+	// same prompt-scaled deadline enforced by the dispatch wait.
 	openRouterTTFT429Threshold = 10 * time.Second
 )
 
@@ -104,6 +104,14 @@ func ttftDeadline(estimatedPromptTokens int) time.Duration {
 	base := 5 * time.Second
 	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond
 	return base + perToken
+}
+
+func ttftAdmissionThreshold(estimatedPromptTokens int) time.Duration {
+	deadline := ttftDeadline(estimatedPromptTokens)
+	if deadline < openRouterTTFT429Threshold {
+		return openRouterTTFT429Threshold
+	}
+	return deadline
 }
 
 // sendProviderCancel sends a Cancel message for the given request to the
@@ -336,15 +344,15 @@ func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, curr
 		return currentModel, 0, 0, 0, 0, false, false
 	}
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
-	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT) {
+	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT, ttftAdmissionThreshold(estimatedPromptTokens)) {
 		return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
 	}
 	parsed["model"] = target.Previous
 	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
 }
 
-func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool) bool {
-	return hasTTFT && bestTTFT > openRouterTTFT429Threshold
+func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) bool {
+	return hasTTFT && bestTTFT > threshold
 }
 
 func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateModel string, alternate time.Duration, alternateOK bool) (string, time.Duration) {
@@ -354,8 +362,8 @@ func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateMod
 	return primaryModel, primary
 }
 
-func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT time.Duration) int {
-	overage := bestTTFT - openRouterTTFT429Threshold
+func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT, threshold time.Duration) int {
+	overage := bestTTFT - threshold
 	seconds := int(math.Ceil(overage.Seconds()))
 	if base := s.estimateRetryAfter(model); seconds < base {
 		seconds = base
@@ -369,12 +377,12 @@ func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT time.Duration) in
 	return seconds
 }
 
-func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT time.Duration) {
-	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT)
+func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT, threshold time.Duration) {
+	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, threshold)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_429"})
 	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-		fmt.Sprintf("all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds", publicModel, int(openRouterTTFT429Threshold.Seconds()), bestTTFT.Seconds(), retryAfter),
+		fmt.Sprintf("all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds", publicModel, int(math.Ceil(threshold.Seconds())), bestTTFT.Seconds(), retryAfter),
 		withCode("rate_limit_exceeded")))
 }
 
@@ -447,7 +455,7 @@ func (s *Server) dispatchOneProvider(
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
 	if !policy.enabled && !policy.prefer {
-		pr.MaxTTFTMs = openRouterTTFT429Threshold.Seconds() * 1000.0
+		pr.MaxTTFTMs = ttftAdmissionThreshold(estimatedPromptTokens).Seconds() * 1000.0
 	}
 
 	excludeList := func() []string {
@@ -1649,6 +1657,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// routing with a paid public fallback and the normal queue, which is the
 		// correct gate for prefer.
 	} else {
+		ttftThreshold := ttftAdmissionThreshold(estimatedPromptTokens)
 		// Pre-flight capacity check: can ANY provider serve this model right
 		// now? If not, return 429 immediately rather than queueing for up to
 		// 120s. OpenRouter treats 429 as "rate limited" (no uptime penalty) vs
@@ -1716,7 +1725,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				withCode("model_unavailable")))
 			return
 		}
-		if ttftTooSlow(bestTTFT, hasTTFT) {
+		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				if isResponsesAPI {
@@ -1733,7 +1742,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			} else {
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
-				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT)
+				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
 			}
 		}
@@ -4206,13 +4215,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				withCode("model_unavailable")))
 			return
 		}
-		if ttftTooSlow(bestTTFT, hasTTFT) {
+		ttftThreshold := ttftAdmissionThreshold(estimatedPromptTokens)
+		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 			} else {
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
-				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT)
+				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
 			}
 		}
@@ -4254,7 +4264,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
 	if !policy.enabled && !policy.prefer {
-		pr.MaxTTFTMs = openRouterTTFT429Threshold.Seconds() * 1000.0
+		pr.MaxTTFTMs = ttftAdmissionThreshold(estimatedPromptTokens).Seconds() * 1000.0
 	}
 
 	// refundExtra credits back the provider-specific surcharge that
@@ -4326,7 +4336,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if decision.TTFTRejections > 0 {
 			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
 			refundReservation()
-			s.writeTTFTTooSlow(w, model, publicModel, bestTTFT)
+			s.writeTTFTTooSlow(w, model, publicModel, bestTTFT, ttftAdmissionThreshold(estimatedPromptTokens))
 			return
 		}
 

@@ -1330,6 +1330,14 @@ func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxToke
 // (QuickCapacityCheckWithTTFTForRequest) and the scheduler
 // (buildCandidateWithReason) so the two paths cannot drift on what "TTFT"
 // means.
+//
+// Token-budget fields are admission/memory reservations, not decode work that
+// must fully drain before this request can emit a first token. Continuous
+// batching lets a newly-admitted request join the decode loop once its prefill
+// completes; existing active max-output reservations only slow the next decode
+// step, which is already reflected by effectiveTPS. Count waiting prefills ahead
+// and this request's own prefill instead of treating active_token_budget_used as
+// a serial decode backlog.
 func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) float64 {
 	if !snap.hasBackendCapacity {
 		return 0
@@ -1350,28 +1358,25 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int)
 		effectiveTPS = 1.0
 	}
 
-	var backlogMs float64
-	if snap.activeTokenBudgetMax > 0 {
-		tokensAhead := float64(snap.activeTokenBudgetUsed) + float64(snap.queuedTokenBudget)
-		coordinatorExtra := float64(snap.pendingMaxTokens) - float64(committedTokenBudget(snap))
-		if coordinatorExtra > 0 {
-			tokensAhead += coordinatorExtra
-		}
-		backlogMs = tokensAhead / effectiveTPS * 1000.0
-	} else {
-		runningBacklogTokens := float64(snap.maxTokensPotential)
-		if runningBacklogTokens <= 0 && snap.backendRunning > 0 {
-			runningBacklogTokens = float64(snap.backendRunning * reqMaxTokens)
-		}
-		waitingBacklogTokens := float64(snap.backendWaiting * reqMaxTokens)
-		unaccountedPendingTokens := float64(snap.pendingMaxTokens) - runningBacklogTokens - waitingBacklogTokens
-		if unaccountedPendingTokens < 0 {
-			unaccountedPendingTokens = 0
-		}
-		backlogMs = (runningBacklogTokens + waitingBacklogTokens + unaccountedPendingTokens) / effectiveTPS * 1000.0
-	}
+	queuedPrefillMs := queuedPrefillTokensAhead(snap, reqPromptTokens) / prefillTPS * 1000.0
+	thisPrefillMs := float64(reqPromptTokens) / prefillTPS * 1000.0
+	firstDecodeMs := 1000.0 / effectiveTPS
+	return statePenalty + queuedPrefillMs + thisPrefillMs + firstDecodeMs
+}
 
-	return statePenalty + backlogMs + float64(reqPromptTokens)/prefillTPS*1000.0
+func queuedPrefillTokensAhead(snap routingSnapshot, reqPromptTokens int) float64 {
+	if reqPromptTokens <= 0 {
+		return 0
+	}
+	waiting := snap.backendWaiting
+	reflected := snap.backendRunning + snap.backendWaiting
+	if extraPending := snap.pendingForModel - reflected; extraPending > 0 {
+		waiting += extraPending
+	}
+	if waiting <= 0 {
+		return 0
+	}
+	return float64(waiting * reqPromptTokens)
 }
 
 // DrainQueuedRequestsForModel attempts to assign queued requests for a

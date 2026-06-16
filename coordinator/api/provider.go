@@ -1968,8 +1968,16 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			}
 			if pr.Timing != nil {
 				t := pr.Timing
-				if !t.FirstChunkAt.IsZero() && !t.DispatchedAt.IsZero() {
-					ms := float64(t.FirstChunkAt.Sub(t.DispatchedAt).Milliseconds())
+				// This runs on the provider read-loop goroutine, not the request
+				// owner. FirstChunkAt is the one Timing field the dispatch goroutine
+				// writes after dispatch (while streaming), so read it via the
+				// mutex-guarded accessor to avoid a data race. The remaining fields
+				// (DispatchedAt, ReceivedAt, and those used by applyTimingDecomposition)
+				// are all stamped before dispatch and are safe to read here via the
+				// provider-registration happens-before edge.
+				firstChunk := pr.FirstChunkAtSafe()
+				if !firstChunk.IsZero() && !t.DispatchedAt.IsZero() {
+					ms := float64(firstChunk.Sub(t.DispatchedAt).Milliseconds())
 					outcome.ActualTTFTMs = ms
 					outcome.DispatchToFirstChunkMs = ms
 				}
@@ -1977,7 +1985,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 					outcome.TotalDurationMs = float64(time.Since(t.ReceivedAt).Milliseconds())
 				}
 				// Coordinator-side latency decomposition (ParseMs..DispatchMs).
-				applyTimingDecomposition(outcome, t)
+				applyTimingDecomposition(outcome, t, firstChunk)
 				// Measured decode throughput: completion tokens over the decode
 				// window (first chunk -> completion). Guard zero/negative
 				// durations and zero tokens so unmeasurable requests record 0.
@@ -1986,8 +1994,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				// not be able to write an absurd value that would skew routing
 				// calibration (threat-model T-007/T-027). Throughput is advisory,
 				// never a security gate.
-				if msg.Usage.CompletionTokens > 0 && !t.FirstChunkAt.IsZero() {
-					if decodeSecs := time.Since(t.FirstChunkAt).Seconds(); decodeSecs > 0 {
+				if msg.Usage.CompletionTokens > 0 && !firstChunk.IsZero() {
+					if decodeSecs := time.Since(firstChunk).Seconds(); decodeSecs > 0 {
 						tps := float64(msg.Usage.CompletionTokens) / decodeSecs
 						if tps > maxPlausibleDecodeTPS {
 							tps = maxPlausibleDecodeTPS

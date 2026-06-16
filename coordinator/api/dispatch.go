@@ -288,7 +288,12 @@ func timingMsBetween(a, b time.Time) float64 {
 // (timingMsBetween returns 0 otherwise), so a partially-instrumented request
 // never records a negative or bogus segment. QueueWaitMs is 0 for requests that
 // were dispatched without queueing (QueuedAt unset).
-func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.RequestTiming) {
+//
+// firstChunk is passed in (not read from t.FirstChunkAt) so this can also be
+// called from the provider read-loop goroutine (handleComplete) with a value
+// obtained via PendingRequest.FirstChunkAtSafe; t.FirstChunkAt itself must only
+// be read directly by the dispatch goroutine that owns the request.
+func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.RequestTiming, firstChunk time.Time) {
 	if out == nil || t == nil {
 		return
 	}
@@ -297,7 +302,7 @@ func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.Requ
 	out.RouteMs = timingMsBetween(t.ReservedAt, t.RoutedAt)
 	out.EncryptMs = timingMsBetween(t.RoutedAt, t.EncryptedAt)
 	out.QueueWaitMs = timingMsBetween(t.QueuedAt, t.DispatchedAt)
-	out.DispatchMs = timingMsBetween(t.DispatchedAt, t.FirstChunkAt)
+	out.DispatchMs = timingMsBetween(t.DispatchedAt, firstChunk)
 }
 
 // successRoutingOutcome builds a success outcome for the committed attempt.
@@ -316,7 +321,8 @@ func (d *dispatchState) successRoutingOutcome() *store.InferenceRouteOutcome {
 			out.TotalDurationMs = float64(time.Since(t.ReceivedAt).Milliseconds())
 		}
 		// Coordinator-side latency decomposition (defensive; zero when unmeasured).
-		applyTimingDecomposition(out, t)
+		// Runs on the dispatch goroutine, so reading t.FirstChunkAt directly is safe.
+		applyTimingDecomposition(out, t, t.FirstChunkAt)
 	}
 	return out
 }
@@ -352,8 +358,11 @@ func (d *dispatchState) updateRoutingOutcome(outcome *store.InferenceRouteOutcom
 	if requestID == "" {
 		return
 	}
+	// Capture attempt on the dispatch goroutine: the closure runs on a telemetry
+	// sink worker, while run()'s retry loop concurrently advances d.attempt.
+	attempt := d.attempt
 	d.s.submitTelemetry("updateInferenceRoute", func() {
-		_ = d.s.store.UpdateInferenceRouteOutcome(requestID, d.attempt, outcome)
+		_ = d.s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome)
 	})
 }
 
@@ -697,18 +706,14 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			speculativeTimer.Stop()
 			deadlineTimer.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -899,17 +904,13 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			remainingDeadline.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1016,9 +1017,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				// Preamble only — the primary hasn't proven it can
 				// generate; keep the backup racing for first content.
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			// Primary wins!
@@ -1026,9 +1025,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.cancelDispatch(backupProvider, backupPR)
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1053,9 +1050,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			if ok && len(backupHeld) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				// Backup preamble doesn't win the race — first CONTENT does.
 				backupHeld = append(backupHeld, chunk)
-				if backupPR.Timing.FirstChunkAt.IsZero() {
-					backupPR.Timing.FirstChunkAt = time.Now()
-				}
+				backupPR.MarkFirstChunkArrived()
 				continue
 			}
 			// Backup wins!
@@ -1069,9 +1064,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				d.requestID = d.pr.RequestID
 				d.heldChunks = backupHeld
 				d.firstChunk = chunk
-				if d.pr.Timing.FirstChunkAt.IsZero() {
-					d.pr.Timing.FirstChunkAt = time.Now()
-				}
+				d.pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1191,17 +1184,13 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			remainingPrimary.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1284,9 +1273,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 		case chunk, ok := <-backupPR.ChunkCh:
 			if ok && len(backupHeld) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				backupHeld = append(backupHeld, chunk)
-				if backupPR.Timing.FirstChunkAt.IsZero() {
-					backupPR.Timing.FirstChunkAt = time.Now()
-				}
+				backupPR.MarkFirstChunkArrived()
 				continue
 			}
 			backupDeadline.Stop()
@@ -1296,9 +1283,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 				d.requestID = d.pr.RequestID
 				d.heldChunks = backupHeld
 				d.firstChunk = chunk
-				if d.pr.Timing.FirstChunkAt.IsZero() {
-					d.pr.Timing.FirstChunkAt = time.Now()
-				}
+				d.pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1385,17 +1370,13 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			primaryDeadline.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1500,17 +1481,13 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			chunkTimer.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				// Closed — check for error. Use a short grace

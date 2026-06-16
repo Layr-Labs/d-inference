@@ -1999,7 +1999,7 @@ func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 	}
 }
 
-func TestTTFTAdmissionThresholdExact(t *testing.T) {
+func TestTTFTDeadlineExact(t *testing.T) {
 	tests := []struct {
 		inputTokens int
 		want        time.Duration
@@ -2011,17 +2011,17 @@ func TestTTFTAdmissionThresholdExact(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := ttftAdmissionThreshold(tt.inputTokens); got != tt.want {
-			t.Fatalf("ttftAdmissionThreshold(%d) = %v, want %v", tt.inputTokens, got, tt.want)
+		if got := ttftDeadline(tt.inputTokens); got != tt.want {
+			t.Fatalf("ttftDeadline(%d) = %v, want %v", tt.inputTokens, got, tt.want)
 		}
 	}
 }
 
 func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	srv, _ := testServer(t)
-	threshold := ttftAdmissionThreshold(0)
+	threshold := ttftDeadline(0)
 	if threshold != 5*time.Second {
-		t.Fatalf("ttftAdmissionThreshold(0) = %v, want 5s", threshold)
+		t.Fatalf("ttftDeadline(0) = %v, want 5s", threshold)
 	}
 	if got := srv.estimateTTFTRetryAfter("no-queue", 8*time.Second, threshold); got != 3 {
 		t.Fatalf("Retry-After without queue = %d, want 3s over target", got)
@@ -2180,6 +2180,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 		desired,
 		100,
 		128,
+		ttftDeadline(100),
 		registry.RequestTraits{},
 		false,
 		nil,
@@ -2194,7 +2195,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
-	if !hasTTFT || bestTTFT > ttftAdmissionThreshold(100) {
+	if !hasTTFT || bestTTFT > ttftDeadline(100) {
 		t.Fatalf("bestTTFT = %v has=%v, want within threshold", bestTTFT, hasTTFT)
 	}
 }

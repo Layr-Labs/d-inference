@@ -101,10 +101,6 @@ func ttftDeadline(estimatedPromptTokens int) time.Duration {
 	return base + perToken
 }
 
-func ttftAdmissionThreshold(estimatedPromptTokens int) time.Duration {
-	return ttftDeadline(estimatedPromptTokens)
-}
-
 // sendProviderCancel sends a Cancel message for the given request to the
 // provider with a bounded timeout so a half-dead WebSocket doesn't hang the
 // caller. Errors are logged at debug level because a disconnect race is the
@@ -323,7 +319,7 @@ func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, 
 	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
 }
 
-func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
+func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
 	if publicModel == "" || publicModel == currentModel {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
@@ -335,7 +331,7 @@ func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, curr
 		return currentModel, 0, 0, 0, 0, false, false
 	}
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
-	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT, ttftAdmissionThreshold(estimatedPromptTokens)) {
+	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 		return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
 	}
 	parsed["model"] = target.Previous
@@ -466,7 +462,7 @@ func (s *Server) dispatchOneProvider(
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
 	if !policy.enabled && !policy.prefer {
-		pr.MaxTTFTMs = float64(ttftAdmissionThreshold(estimatedPromptTokens).Milliseconds())
+		pr.MaxTTFTMs = float64(ttftDeadline(estimatedPromptTokens).Milliseconds())
 	}
 
 	excludeList := func() []string {
@@ -1615,6 +1611,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	deadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 
 	if isResponsesAPI {
@@ -1700,7 +1697,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// routing with a paid public fallback and the normal queue, which is the
 		// correct gate for prefer.
 	} else {
-		ttftThreshold := ttftAdmissionThreshold(estimatedPromptTokens)
+		ttftThreshold := deadline
 		// Pre-flight capacity check: can ANY provider serve this model right
 		// now? If not, return 429 immediately rather than queueing for up to
 		// 120s. OpenRouter treats 429 as "rate limited" (no uptime penalty) vs
@@ -1770,7 +1767,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
@@ -1808,8 +1805,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// commits exactly once, then writes attestation/timing headers and streams.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	deadline := ttftDeadline(estimatedPromptTokens)
-
 	// Final cap on the body we'll seal. The read cap (parseInferencePrelude)
 	// bounded the request as received, but rawBody has since been re-marshaled at
 	// several points — alias resolution, allowlist/routing-field stripping,
@@ -4163,6 +4158,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	genericDeadline := ttftDeadline(estimatedPromptTokens)
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
@@ -4260,9 +4256,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				withCode("model_unavailable")))
 			return
 		}
-		ttftThreshold := ttftAdmissionThreshold(estimatedPromptTokens)
+		ttftThreshold := genericDeadline
 		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 			} else {
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
@@ -4309,7 +4305,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
 	if !policy.enabled && !policy.prefer {
-		pr.MaxTTFTMs = float64(ttftAdmissionThreshold(estimatedPromptTokens).Milliseconds())
+		pr.MaxTTFTMs = float64(genericDeadline.Milliseconds())
 	}
 
 	// refundExtra credits back the provider-specific surcharge that
@@ -4381,7 +4377,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if decision.TTFTRejections > 0 {
 			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
 			refundReservation()
-			s.writeTTFTTooSlow(w, model, publicModel, bestTTFT, ttftAdmissionThreshold(estimatedPromptTokens))
+			s.writeTTFTTooSlow(w, model, publicModel, bestTTFT, genericDeadline)
 			return
 		}
 
@@ -4576,7 +4572,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// before committing. This mirrors the chat completions path but without
 	// speculative dispatch (single attempt). If the provider misses the
 	// TTFT deadline, the request fails instead of streaming forever.
-	genericDeadline := ttftDeadline(estimatedPromptTokens)
 	ttftTimer := time.NewTimer(genericDeadline)
 	var firstChunk string
 	committed := false

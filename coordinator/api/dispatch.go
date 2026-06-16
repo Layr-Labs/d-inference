@@ -137,11 +137,11 @@ func (d *dispatchState) traits() registry.RequestTraits {
 // queueMaxTTFTMs returns the TTFT ceiling for queued requests. Public routes
 // inherit the prompt-scaled admission threshold; self-route / prefer-owner paths
 // are not subject to the public SLA ceiling.
-func queueMaxTTFTMs(policy selfRoutePolicy, estimatedPromptTokens int) float64 {
+func queueMaxTTFTMs(policy selfRoutePolicy, deadline time.Duration) float64 {
 	if policy.enabled || policy.prefer {
 		return 0
 	}
-	return float64(ttftAdmissionThreshold(estimatedPromptTokens).Milliseconds())
+	return float64(deadline.Milliseconds())
 }
 
 // dispatchPrimary selects (and, when no idle provider exists on the first
@@ -182,7 +182,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		if dispatchErr == errTTFTTooSlow && attempt == 0 {
 			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
 			d.refundReservation()
-			s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, ttftAdmissionThreshold(d.estimatedPromptTokens))
+			s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
 			return outcomeResponseWritten
 		}
 
@@ -236,7 +236,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			PreferOwner:            d.policy.prefer,
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
-			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.estimatedPromptTokens),
+			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline),
 			AcceptedCh:             make(chan struct{}, 1),
 			ChunkCh:                make(chan string, chunkBufferSize),
 			CompleteCh:             make(chan protocol.UsageInfo, 1),

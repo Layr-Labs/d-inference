@@ -110,7 +110,8 @@ public actor StandaloneServer {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
         self.diskAccountant = GlobalDiskAccountant(
             kvRoot: kvRoot,
-            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling())
+            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling(),
+            sweepOnInit: true)  // wipe stale KV from a prior crash before any load
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
         MLXMemoryGuard.configureOnce()

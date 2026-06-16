@@ -1934,12 +1934,12 @@ public actor BatchScheduler {
         self.engine = nil
         modelContainer = nil
         tokenizer = nil
-        // Persist any coalesced index writes before dropping the manager, so
-        // checkpoints written since the last coalesced save survive restart.
+        // Purge this model's KV from BOTH RAM and SSD on unload — restart warmth
+        // is intentionally OFF, so no KV (memory or disk) outlives the loaded
+        // model. purgeOnUnload drains in-flight writes, clears the RAM tier,
+        // deletes the kv/<modelKey> dir, and deregisters from the accountant.
         if let mgr = checkpointManager {
-            await mgr.flushIndexNow()
-            // Phase 3: deregister from the accountant before dropping the manager.
-            await mgr.deregisterFromAccountant()
+            await mgr.purgeOnUnload()
         }
         // Drop the checkpoint manager so a stale one can't serve the next
         // model (the new model's loadModel reinstalls its own, or nil).
@@ -1947,13 +1947,11 @@ public actor BatchScheduler {
         checkpointBoundaries = []
         checkpointLayerSignatures = []
 
-        // Close the engine-tier owner FIRST (before deregister) so no disk
-        // mutation slips through between deregistration and the dir being handed
-        // to a reloaded same-modelKey owner: a stale engine step finishing after
-        // `engine.stop()` (which doesn't fence an in-flight engineQueue step) or
-        // a late accountant eviction signal will now no-op. `engine.stop()` was
-        // already awaited above, so the GPU step loop is winding down by here.
-        engineTierOwner?.close()
+        // Purge the engine-tier owner's on-disk dir too (same kv/<modelKey> dir;
+        // whichever tier ran first already removed it, so this no-ops then).
+        // purgeDir latches `closed` first so any in-flight engine-step save that
+        // resumes after `engine.stop()` no-ops at its post-write bail.
+        engineTierOwner?.purgeDir()
         // Deregister the engine-tier owner from the accountant.
         if let accountant = diskAccountant, let token = engineTierAccountantToken {
             await accountant.deregister(token)

@@ -450,7 +450,8 @@ public actor ProviderLoop {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
         self.diskAccountant = GlobalDiskAccountant(
             kvRoot: kvRoot,
-            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling())
+            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling(),
+            sweepOnInit: true)  // wipe stale KV from a prior crash before any load
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

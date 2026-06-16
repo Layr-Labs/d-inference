@@ -462,9 +462,13 @@ public actor ProviderLoop {
 
     // MARK: - Model Slot
 
-    private static let schedulerMaxConcurrent = 24
+    // Production fan-in must match the MLX/Gemma memory envelope. The upstream
+    // scheduler's `maxNumSeqs` uses this value directly, so keeping it at the old
+    // fleet-wide 24 lets real batches grow far beyond the 4-way budget reported
+    // in heartbeats.
+    private static let schedulerMaxConcurrent = 4
     private static let schedulerPendingTimeout: Duration = .seconds(120)
-    private static let schedulerDefaultMaxTokens = 4096
+    private static let schedulerDefaultMaxTokens = 1024
 
     /// Infer the reasoning parser format from the model's `model_type`
     /// (read from config.json at scan time). Used to auto-select the

@@ -79,6 +79,7 @@ type routingSnapshot struct {
 	prefillTPS         float64
 	systemMetrics      protocol.SystemMetrics
 	gpuMemoryActiveGB  float64
+	gpuMemoryCacheGB   float64
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
 	minRAMGb           int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
@@ -133,6 +134,21 @@ const (
 // gemma-4-26b min_ram_gb=36 vs 28*2.x rejecting the whole 64 GB tier).
 const modelMemoryHeadroomFactor = 2.0
 
+const (
+	providerMemoryCapFraction = 0.90
+	// providerMinimumReserveGB mirrors the provider's whole-machine MLX ceiling
+	// (MLXMemoryGuard.defaultReserveGB): the Swift allocator pins
+	// Memory.memoryLimit to physical − 6 GB, so the coordinator must not admit a
+	// cold load above that or it would route work the provider's own ceiling
+	// already rejects. The effective cap is the TIGHTER of the fraction and the
+	// reserve floor, so on small boxes (where total − 6 < 0.9 × total) we honor
+	// the provider's reserve, and on large boxes the 0.9 fraction dominates.
+	providerMinimumReserveGB          = 6.0
+	providerModelMemoryOverheadFactor = 1.2
+	providerActivationReserveGB       = 3.0
+	providerMinimumLoadKVGB           = 1.0
+)
+
 // modelFitsHardware reports whether a model can run on a node with the given
 // total unified memory (GB). It prefers the catalog's authoritative min_ram_gb
 // (the operator-published requirement) and only falls back to a heuristic
@@ -151,6 +167,28 @@ func modelFitsHardware(minRAMGb int, modelSizeGB, totalMemoryGB float64) bool {
 		return modelSizeGB*modelMemoryHeadroomFactor <= totalMemoryGB
 	}
 	return true
+}
+
+func providerHardMemoryCapGB(totalMemoryGB float64) float64 {
+	if totalMemoryGB <= 0 {
+		return 0
+	}
+	byFraction := totalMemoryGB * providerMemoryCapFraction
+	byFloor := 0.0
+	if totalMemoryGB > providerMinimumReserveGB {
+		byFloor = totalMemoryGB - providerMinimumReserveGB
+	}
+	if byFraction < byFloor {
+		return byFraction
+	}
+	return byFloor
+}
+
+func providerEstimatedModelLoadGB(modelSizeGB float64) float64 {
+	if modelSizeGB <= 0 {
+		return 0
+	}
+	return modelSizeGB * providerModelMemoryOverheadFactor
 }
 
 // costBreakdown decomposes the routing cost so callers can log or
@@ -760,6 +798,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 
 	if p.BackendCapacity != nil {
 		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+		snap.gpuMemoryCacheGB = p.BackendCapacity.GPUMemoryCacheGB
 		if p.BackendCapacity.TotalMemoryGB > 0 {
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
@@ -805,7 +844,8 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	if snap.modelSizeGB <= 0 || snap.totalMemoryGB <= 0 {
 		return true
 	}
-	required := snap.modelSizeGB
+	modelLoadGB := providerEstimatedModelLoadGB(snap.modelSizeGB)
+	required := modelLoadGB
 	if snap.modelLoaded {
 		required = 0
 	}
@@ -818,7 +858,15 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		tokens = maxTokensForCalc
 	}
 	kvCacheGB := float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
-	required += kvCacheGB
+
+	// A cold load (model not yet resident) must reserve at least the minimum
+	// serveable KV so we don't admit a model that loads but can serve nothing.
+	// Both cold paths below use this floor; a warm model charges only its real
+	// KV (it is already resident, so the minimum no longer applies).
+	coldKVGB := kvCacheGB
+	if coldKVGB < providerMinimumLoadKVGB {
+		coldKVGB = providerMinimumLoadKVGB
+	}
 
 	// When the model is available on disk but not currently loaded, the
 	// provider will evict idle models to make room (LRU eviction). Check
@@ -831,12 +879,22 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	// through to the standard free-memory check which requires room
 	// alongside active models.
 	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
-		const osReserveGB = 4.0
-		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
+		required := modelLoadGB + providerActivationReserveGB + coldKVGB
+		return required <= providerHardMemoryCapGB(snap.totalMemoryGB)
 	}
 
-	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB
-	return free >= required
+	freeUnderCap := providerHardMemoryCapGB(snap.totalMemoryGB) - snap.gpuMemoryActiveGB - snap.gpuMemoryCacheGB
+	if freeUnderCap < 0 {
+		freeUnderCap = 0
+	}
+	required += providerActivationReserveGB
+	if snap.modelLoaded {
+		required += kvCacheGB
+	} else {
+		// Cold load on a busy provider: same KV floor as the no-pending path.
+		required += coldKVGB
+	}
+	return freeUnderCap >= required
 }
 
 func pendingTokenBudget(pr *PendingRequest) int {
@@ -1255,6 +1313,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 		if snap.hasBackendCapacity {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+			snap.gpuMemoryCacheGB = p.BackendCapacity.GPUMemoryCacheGB
 			if p.BackendCapacity.TotalMemoryGB > 0 {
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}

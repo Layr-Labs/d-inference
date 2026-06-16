@@ -1032,6 +1032,31 @@ func TestResponsesRequestToChatCompletions(t *testing.T) {
 	}
 }
 
+func TestImplicitMaxTokensBoundUsesSafeDefaultBelowModelMaximum(t *testing.T) {
+	if got := implicitMaxTokensBound(8192); got != defaultMaxOutputTokens {
+		t.Fatalf("implicitMaxTokensBound(8192) = %d, want %d", got, defaultMaxOutputTokens)
+	}
+}
+
+func TestImplicitMaxTokensBoundClampsToLowerModelMaximum(t *testing.T) {
+	if got := implicitMaxTokensBound(256); got != 256 {
+		t.Fatalf("implicitMaxTokensBound(256) = %d, want 256", got)
+	}
+}
+
+func TestEnsureMaxTokensBoundInjectsImplicitDefault(t *testing.T) {
+	parsed := map[string]any{
+		"model":    "gemma-4-26b",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	if !ensureMaxTokensBound(parsed, false, implicitMaxTokensBound(8192)) {
+		t.Fatal("ensureMaxTokensBound did not report injection")
+	}
+	if got := parsed["max_tokens"]; got != defaultMaxOutputTokens {
+		t.Fatalf("max_tokens = %v, want %d", got, defaultMaxOutputTokens)
+	}
+}
+
 func TestResponsesInputToolTranscriptToChatMessages(t *testing.T) {
 	input := []any{
 		map[string]any{

@@ -44,6 +44,47 @@ struct BatchSchedulerBudgetTests {
 
     // MARK: - P1: cumulative active-bridge gate
 
+    @Test("sampling params preserve OpenAI repetition penalties")
+    func samplingParamsPreservePenalties() {
+        let params = BatchScheduler.makeSamplingParams(
+            maxTokens: 128,
+            temperature: 0.2,
+            topP: 0.9,
+            topK: 40,
+            repetitionPenalty: 1.15,
+            presencePenalty: 0.3,
+            frequencyPenalty: 0.4,
+            seed: 42
+        )
+
+        #expect(params.maxTokens == 128)
+        #expect(params.temperature == 0.2)
+        #expect(params.topP == 0.9)
+        #expect(params.topK == 40)
+        #expect(params.repetitionPenalty == 1.15)
+        #expect(params.presencePenalty == 0.3)
+        #expect(params.frequencyPenalty == 0.4)
+        #expect(params.seed == 42)
+    }
+
+    @Test("sampling params coerce non-positive repetition penalty to disabled")
+    func samplingParamsCoerceInvalidRepetitionPenalty() {
+        let params = BatchScheduler.makeSamplingParams(
+            maxTokens: 128,
+            temperature: 0.0,
+            topP: nil,
+            topK: nil,
+            repetitionPenalty: 0,
+            presencePenalty: nil,
+            frequencyPenalty: nil,
+            seed: nil
+        )
+
+        #expect(params.repetitionPenalty == 1.0)
+        #expect(params.presencePenalty == 0.0)
+        #expect(params.frequencyPenalty == 0.0)
+    }
+
     /// Pre-fix: planner validated per-request limits + queue size only,
     /// so a burst of large requests each individually within budget
     /// could overcommit KV memory once they all reached the engine.

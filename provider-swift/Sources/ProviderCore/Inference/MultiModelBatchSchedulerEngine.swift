@@ -296,6 +296,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             temperature: temperature,
             topP: request.topP,
             topK: request.topK,
+            repetitionPenalty: request.repetitionPenalty,
+            presencePenalty: request.presencePenalty,
+            frequencyPenalty: request.frequencyPenalty,
             requestId: requestId,
             cacheScope: cacheScope
         )

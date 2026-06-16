@@ -1423,6 +1423,67 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 	}
 }
 
+func TestFreeMemoryAdmitsColdLoadMirrorsProviderMemoryEnvelope(t *testing.T) {
+	// 26 GB of raw weights looks like it fits on a 36 GB laptop under the old
+	// raw-size + 4 GB reserve check (30 <= 36). The provider actually loads with
+	// scanner overhead (1.2x), activation reserve, and minimum KV headroom under
+	// the provider's real MLX ceiling — min(0.9*total, total-6) = min(32.4, 30) =
+	// 30 GB on this box: 31.2 + 3 + 1 = 35.2 > 30, so the coordinator must not
+	// route it cold.
+	publicGemmaOnLaptop := routingSnapshot{
+		modelSizeGB:     26,
+		totalMemoryGB:   36,
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+	}
+	if freeMemoryAdmits(publicGemmaOnLaptop, 100, 256) {
+		t.Fatal("should reject cold load that only fits under raw-size accounting")
+	}
+
+	// The QAT build's smaller raw footprint still fits the same envelope.
+	qatGemmaOnLaptop := publicGemmaOnLaptop
+	qatGemmaOnLaptop.modelSizeGB = 15
+	if !freeMemoryAdmits(qatGemmaOnLaptop, 100, 256) {
+		t.Fatal("should admit smaller QAT build under provider-equivalent accounting")
+	}
+}
+
+func TestProviderHardMemoryCapGBTakesTighterOfFractionAndReserve(t *testing.T) {
+	// Small box: total-6 (30) is tighter than 0.9*total (32.4) -> honor reserve.
+	if got := providerHardMemoryCapGB(36); got != 30 {
+		t.Fatalf("providerHardMemoryCapGB(36) = %v, want 30 (= 36 - 6)", got)
+	}
+	// Large box: 0.9*total (115.2) is tighter than total-6 (122) -> honor fraction.
+	if got := providerHardMemoryCapGB(128); got != 128*0.90 {
+		t.Fatalf("providerHardMemoryCapGB(128) = %v, want %v (= 0.9*128)", got, 128*0.90)
+	}
+	if got := providerHardMemoryCapGB(0); got != 0 {
+		t.Fatalf("providerHardMemoryCapGB(0) = %v, want 0", got)
+	}
+}
+
+func TestFreeMemoryAdmitsBusyColdLoadUsesSameKVFloorAsIdle(t *testing.T) {
+	// A cold load on a BUSY provider (totalPending > 0) must charge the same
+	// minimum-KV floor as the idle cold path — never the full real KV ON TOP of
+	// the floor. With a tiny request (KV well under the 1 GB floor), the model's
+	// footprint must be evaluated against exactly modelLoad + activation + 1 GB
+	// of KV, matching the idle path's envelope rather than over-charging.
+	busy := routingSnapshot{
+		modelSizeGB:       15, // 1.2x -> 18 GB load
+		totalMemoryGB:     36, // cap = min(32.4, 30) = 30
+		availableOnDisk:   true,
+		modelLoaded:       false,
+		totalPending:      1, // busy: cannot evict -> general branch
+		gpuMemoryActiveGB: 0,
+		gpuMemoryCacheGB:  0,
+	}
+	// 18 (load) + 3 (activation) + 1 (min KV floor) = 22 <= 30 -> admit.
+	if !freeMemoryAdmits(busy, 100, 256) {
+		t.Fatal("busy cold load that fits under the min-KV floor must be admitted")
+	}
+}
+
 func TestSlotHeadroomWithExhaustedTokenBudgetRejectsCapacity(t *testing.T) {
 	reg := New(testLogger())
 	model := "budget-headroom-model"

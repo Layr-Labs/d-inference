@@ -999,14 +999,21 @@ func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Pro
 	return rawBody
 }
 
-// defaultMaxOutputTokens is the ceiling injected into requests that don't set
-// max_tokens. It bounds the worst-case cost of a single inference so the
+// defaultMaxOutputTokens is the generation bound injected into requests that
+// don't set max_tokens. It bounds the worst-case cost of a single inference so the
 // pre-flight balance reservation covers the entire generation; without this
 // cap a consumer could stream output exceeding their reservation and the
 // post-inference charge would fail silently (see GitHub issue #33). Consumers
 // who need longer generations must set max_tokens explicitly and carry the
 // balance to cover it.
-const defaultMaxOutputTokens = 8192
+const defaultMaxOutputTokens = 1024
+
+func implicitMaxTokensBound(modelMaxOutputLength int) int {
+	if modelMaxOutputLength > 0 && modelMaxOutputLength < defaultMaxOutputTokens {
+		return modelMaxOutputLength
+	}
+	return defaultMaxOutputTokens
+}
 
 // explicitMaxTokens returns the consumer-specified max output tokens from any
 // of the recognized field names, or 0 if none were set.
@@ -1176,11 +1183,10 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 // ensureMaxTokensBound injects a max-tokens bound into parsed when the
 // consumer didn't specify any max-tokens field, so the outgoing request to
 // the provider is bounded by the amount we reserve upfront. The bound is
-// the model's max_output_length from the registry (or defaultMaxOutputTokens
-// as fallback). The injected field name depends on the API flavor: Responses
-// API uses max_output_tokens, everything else uses max_tokens. Returns true
-// when an injection occurred, so the caller can re-marshal the outgoing body
-// if needed.
+// the platform default clamped by the model's max_output_length when lower.
+// The injected field name depends on the API flavor: Responses API uses
+// max_output_tokens, everything else uses max_tokens. Returns true when an
+// injection occurred, so the caller can re-marshal the outgoing body if needed.
 func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int) bool {
 	if n := explicitMaxTokens(parsed); n > 0 {
 		// Normalize alias fields the provider engine doesn't read: a chat
@@ -1532,7 +1538,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Inject model-specific defaults from the registry: reasoning_parser
 	// and max_tokens bound. Single DB lookup (cached for platform prices).
-	maxOutputBound := defaultMaxOutputTokens
+	maxOutputBound := implicitMaxTokensBound(0)
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		// Reasoning parser from runtime_parameters.
 		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
@@ -1541,18 +1547,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				rawBody, _ = marshalForwardBody(parsed)
 			}
 		}
-		// Use the registry's max_output_length as the default max_tokens
-		// bound instead of the hardcoded 8192. This lets models like
-		// GPT-OSS 20B (32K output) generate longer responses when the
-		// consumer omits max_tokens.
-		if rec.MaxOutputLength > 0 {
-			maxOutputBound = rec.MaxOutputLength
-		}
+		// max_output_length is an advertised maximum, not the implicit default.
+		// Omitted max_tokens stays on the safer platform default; models with a
+		// lower published max still clamp the injected bound to their maximum.
+		maxOutputBound = implicitMaxTokensBound(rec.MaxOutputLength)
 	}
 
 	// Bound the generation so the pre-flight reservation covers it. If the
-	// consumer didn't set max_tokens, inject the model's max_output_length
-	// (or defaultMaxOutputTokens as fallback). Without this bound the
+	// consumer didn't set max_tokens, inject the platform default clamped by
+	// the model's max_output_length when lower. Without this bound the
 	// provider could return more tokens than we reserved for, and the
 	// silent post-inference charge failure would hand the consumer free
 	// inference (GitHub issue #33).
@@ -4100,9 +4103,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Completions and Anthropic messages both use the max_tokens field (never
 	// max_output_tokens, which is Responses API only). Inject a default if
 	// unset so the pre-flight reservation bounds the generation.
-	genericMaxOutput := defaultMaxOutputTokens
+	genericMaxOutput := implicitMaxTokensBound(0)
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec.MaxOutputLength > 0 {
-		genericMaxOutput = rec.MaxOutputLength
+		genericMaxOutput = implicitMaxTokensBound(rec.MaxOutputLength)
 	}
 	ensureMaxTokensBound(parsed, false, genericMaxOutput)
 

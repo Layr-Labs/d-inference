@@ -84,13 +84,16 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// executor as register/deregister, so no race on the accountant itself).
     private var accountantToken: AccountantToken?
 
-    /// Test-only seam: invoked inside `saveBlock` AFTER the entry `closed` guard
-    /// passes but BEFORE `writeSync`, letting a test simulate an unload
-    /// (`purgeDir()` → closed + removeItem(dir)) racing this in-flight write. The
-    /// subsequent writeSync then re-creates the dir and lands the file (the exact
-    /// production race), and the post-write `closed` re-check must clean it up.
-    /// nil in production. Mirrors the checkpoint tier's write-hook seam.
+    #if DEBUG
+    /// Test-only seam (DEBUG builds ONLY — never compiled into the shipped
+    /// release binary, so it exports no production surface): invoked inside
+    /// `saveBlock` AFTER the entry `closed` guard passes but BEFORE `writeSync`,
+    /// letting a test simulate an unload (`purgeDir()` → closed + removeItem(dir))
+    /// racing this in-flight write. The subsequent writeSync then re-creates the
+    /// dir and lands the file (the exact production race), and the post-write
+    /// `closed` re-check must clean it up. Mirrors the checkpoint tier's seam.
     var _beforeWriteHookForTest: (@Sendable () -> Void)?
+    #endif
 
     public init(
         kekKey: SymmetricKey, dir: URL, binding: PrefixCacheModelBinding,
@@ -145,7 +148,9 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
                 chunkPlaintextSizes: chunks.map { $0.count }
             )
             let url = fileURL(blockHash)
-            _beforeWriteHookForTest?()  // test seam: simulate unload (purgeDir) racing this write
+            #if DEBUG
+            _beforeWriteHookForTest?()  // test seam (DEBUG only): simulate unload racing this write
+            #endif
             try EncryptedKVStore.writeSync(to: url, metadata: meta, chunks: chunks, kekKey: kekKey)
             // Post-write closed re-check (Phase 4): the entry guard can pass, then
             // purgeDir() runs on unload (closed=true + removeItem(dir)) while this

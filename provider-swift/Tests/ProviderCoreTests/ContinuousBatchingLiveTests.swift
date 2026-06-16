@@ -3,6 +3,7 @@ import Testing
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import Tokenizers
 @testable import ProviderCore
 
@@ -67,6 +68,110 @@ struct ContinuousBatchingLiveTests {
             maxTokens: 6,
             wiredMemoryGB: 64
         )
+    }
+
+    /// Production reproduction: `gemma-4-26b` ships with `vision_config`, so the
+    /// provider loads it via `VLMModelFactory` and serves text through the VLM
+    /// model's batched path. That path used a scalar `cache.offset` for RoPE
+    /// (wrong per-row positions in a mixed-length batch) and an explicit-mask
+    /// fused kernel (MLX #3384 4-bit drift) — together producing the repetition
+    /// users hit. This test loads via the VLM factory (NOT LLMModelFactory like
+    /// `runDiffTest`), runs a mixed-length B=2 greedy batch on the 4-bit QAT
+    /// build, and asserts the output is coherent (no degenerate repetition) and
+    /// the short row tracks its single-stream reference.
+    @Test(
+        "Gemma 4 VLM qat-4bit mixed-length batch is coherent (no repetition)",
+        .enabled(if:
+            ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil
+                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil
+        )
+    )
+    func gemma4VLMMixedLengthCoherent() async throws {
+        try ensureMetallibAvailable()
+        MLX.GPU.set(memoryLimit: 96 * 1024 * 1024 * 1024)
+
+        let modelID = ProcessInfo.processInfo.environment["DARKBLOOM_GEMMA_MODEL"]
+            ?? "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+        guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
+            Issue.record("model '\(modelID)' is not in the local cache")
+            return
+        }
+
+        // Production loads vision checkpoints through VLMModelFactory.
+        let container = try await VLMModelFactory.shared.loadContainer(
+            from: modelDir, using: LocalTokenizerLoader())
+
+        // Deliberately different lengths so the shorter row carries left-padding
+        // (the case the scalar-offset bug mis-positions). Row 0 is the shorter,
+        // higher-entropy prompt — open-ended continuations have close argmax
+        // calls, so wrong RoPE positions / mask-kernel drift flip the top token
+        // and trap it in a loop (the "One of of of of" failure mode).
+        let prompts = [
+            "Tell me something interesting about machine learning.",
+            "Write a detailed multi-paragraph essay about the history, present state, "
+                + "and likely future of renewable energy technologies across the world.",
+        ]
+        let encoded: [[Int]] = try await container.perform { ctx in
+            try prompts.map {
+                try ctx.tokenizer.applyChatTemplate(
+                    messages: [["role": "user", "content": $0]],
+                    tools: nil, additionalContext: nil)
+            }
+        }
+        let maxTokens = 110
+
+        let batched = try await runBatchedEngine(
+            container: container, modelID: modelID, prompts: encoded, maxTokens: maxTokens)
+        let single = await singleStreamGreedy(
+            container: container, prompts: encoded, maxTokens: maxTokens)
+
+        // The batched engine honors EOS, so coherent rows terminate cleanly.
+        // This is the path under test (per-row offset + manual masked attention);
+        // it must not degenerate into repetition.
+        for (k, toks) in batched.enumerated() {
+            let text = await container.decode(tokenIds: toks)
+            print("[gemma4-vlm-mixed] batched row \(k): \(text)")
+            #expect(
+                !Self.hasDegenerateRepetition(toks),
+                Comment(rawValue: "batched row \(k) degenerates into repetition: \(toks)"))
+        }
+        // The short, low-entropy row 0 is the one mis-positioned by the
+        // scalar-offset bug. Compare batched vs single-stream up to the natural
+        // end-of-turn (the fixed-length single-stream helper force-generates
+        // past EOS, so only the pre-EOS prefix is meaningful). With per-row
+        // offsets the two agree on the opening tokens.
+        let eos = 106
+        let singleHead = Array(single[0].prefix(while: { $0 != eos }))
+        let batchedHead = Array(batched[0].prefix(while: { $0 != eos }))
+        let shortMatch = zip(batchedHead, singleHead).prefix(while: ==).count
+        #expect(
+            shortMatch >= 3,
+            Comment(rawValue:
+                "short row diverges immediately (batched=\(batchedHead) single=\(singleHead))"))
+    }
+
+    /// Detects degenerate generation: an n-gram (n = 1...4) repeated
+    /// consecutively many times — the signature of decode loops like
+    /// "of of of", "you've you've", or "the era of the era of the era of".
+    /// Coherent prose never trips this; the batching bug produces exactly
+    /// these cycles.
+    static func hasDegenerateRepetition(_ tokens: [Int]) -> Bool {
+        for n in 1 ... 4 {
+            let minReps = n == 1 ? 8 : (n == 2 ? 6 : 4)
+            var i = 0
+            while i + n * minReps <= tokens.count {
+                let gram = Array(tokens[i ..< i + n])
+                var reps = 1
+                var j = i + n
+                while j + n <= tokens.count && Array(tokens[j ..< j + n]) == gram {
+                    reps += 1
+                    j += n
+                }
+                if reps >= minReps { return true }
+                i += 1
+            }
+        }
+        return false
     }
 
     @Test(

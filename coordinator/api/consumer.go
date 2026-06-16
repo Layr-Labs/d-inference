@@ -1006,7 +1006,7 @@ func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Pro
 // post-inference charge would fail silently (see GitHub issue #33). Consumers
 // who need longer generations must set max_tokens explicitly and carry the
 // balance to cover it.
-const defaultMaxOutputTokens = 1024
+const defaultMaxOutputTokens = 8192
 
 func implicitMaxTokensBound(modelMaxOutputLength int) int {
 	if modelMaxOutputLength > 0 && modelMaxOutputLength < defaultMaxOutputTokens {

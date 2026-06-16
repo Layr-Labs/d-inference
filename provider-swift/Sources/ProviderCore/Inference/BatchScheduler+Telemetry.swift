@@ -74,7 +74,7 @@ extension BatchScheduler {
     /// unserveable" model). Catches the case where measured residency exceeds the
     /// load gate's `estimatedMemoryGb` estimate.
     func hasServeableKVHeadroom() -> Bool {
-        measuredLiveKVHeadroomBytes >= UnifiedMemoryCap.minimumLoadKVBytes
+        UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes)
     }
 
     /// Sum of `(promptTokens + maxTokens)` across active bridges. This

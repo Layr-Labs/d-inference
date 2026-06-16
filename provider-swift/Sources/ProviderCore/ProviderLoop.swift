@@ -472,7 +472,7 @@ public actor ProviderLoop {
     // in heartbeats.
     private static let schedulerMaxConcurrent = 4
     private static let schedulerPendingTimeout: Duration = .seconds(120)
-    private static let schedulerDefaultMaxTokens = 1024
+    private static let schedulerDefaultMaxTokens = 8192
 
     /// Infer the reasoning parser format from the model's `model_type`
     /// (read from config.json at scan time). Used to auto-select the
@@ -2707,6 +2707,13 @@ public actor ProviderLoop {
             // reroutes, instead of advertising a dead model. Safe to measure here:
             // we're inside the `isLoadingAny` critical section, so MLX usage
             // reflects this load and no concurrent load/unload can race it.
+            //
+            // Trim the cold-load buffer pool FIRST: a fresh load leaves transient
+            // buffers in MLX cacheMemory (no forward pass has trimmed them yet),
+            // which the measurement counts as "used" and would false-reject a
+            // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
+            // clearCache-then-measure self-heal.
+            MLX.Memory.clearCache()
             if !(await scheduler.hasServeableKVHeadroom()) {
                 let headroomGb = String(
                     format: "%.1f",

@@ -267,6 +267,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		}
 		if depth, oldest := s.registry.Queue().QueueStats(d.model); depth > 0 {
 			s.registry.RecordWarmPoolQueueEnqueued(d.model, depth, oldest)
+			s.triggerWarmPoolAsync("queue_enqueued")
 		}
 		s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:queued"})
 

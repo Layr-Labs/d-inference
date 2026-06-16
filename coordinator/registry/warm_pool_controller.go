@@ -13,6 +13,7 @@ type warmPoolController struct {
 	config   WarmPoolConfig
 	state    *warmPoolState
 	queueMu  syncQueuePressure
+	tickMu   sync.Mutex
 }
 
 type syncQueuePressure struct {
@@ -87,6 +88,20 @@ func (r *Registry) StartWarmPoolController(ctx context.Context, cfg WarmPoolConf
 	return cancel
 }
 
+// TriggerWarmPool runs one active warm-pool planning pass immediately. It is a
+// non-periodic kick used by hot request paths after queue/capacity pressure is
+// observed so warming does not wait for the next controller interval. The normal
+// provider eligibility gates and pending-load caps still bound load_model sends.
+func (r *Registry) TriggerWarmPool() []WarmPoolSnapshot {
+	r.mu.RLock()
+	controller := r.warmPool
+	r.mu.RUnlock()
+	if controller == nil || !controller.config.Enabled || controller.config.ObserveOnly {
+		return nil
+	}
+	return controller.tick(time.Now())
+}
+
 func (c *warmPoolController) run(ctx context.Context) {
 	interval := c.config.Interval
 	if interval <= 0 {
@@ -108,6 +123,8 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 	if c == nil || c.registry == nil {
 		return nil
 	}
+	c.tickMu.Lock()
+	defer c.tickMu.Unlock()
 	snapshots := c.plan(now)
 	for _, snap := range snapshots {
 		if c.registry.logger != nil {

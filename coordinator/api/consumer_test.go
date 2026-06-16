@@ -1420,26 +1420,37 @@ func TestEstimatePromptTokens(t *testing.T) {
 	tests := []struct {
 		name  string
 		input map[string]any
+		want  int
 	}{
 		{
 			name:  "messages field",
 			input: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+			want:  5, // 4 framing + 5/4 text tokens.
 		},
 		{
 			name:  "prompt field",
 			input: map[string]any{"prompt": "Tell me a story"},
+			want:  3,
 		},
 		{
 			name:  "input field",
 			input: map[string]any{"input": "Translate this"},
+			want:  3,
+		},
+		{
+			name: "responses structured input",
+			input: map[string]any{"input": []any{map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "input_text", "text": "hello"},
+			}}}},
+			want: 5, // 4 framing + 5/4 text tokens; do not count JSON wrapper bytes.
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			routing := estimatePromptTokens(tt.input)
 			billing := estimateBillingPromptTokens(tt.input)
-			if routing < 1 {
-				t.Errorf("estimatePromptTokens() = %d, want >= 1", routing)
+			if routing != tt.want {
+				t.Errorf("estimatePromptTokens() = %d, want %d", routing, tt.want)
 			}
 			if billing < routing {
 				t.Errorf("billing(%d) < routing(%d)", billing, routing)
@@ -1630,16 +1641,24 @@ func TestDetectMediaRequirementAndTokenEstimate(t *testing.T) {
 // (input[].content parts) is gated too, so a media request there fails fast
 // rather than being silently routed text-blind.
 func TestDetectMediaRequirementResponsesInput(t *testing.T) {
+	bigImage := "data:image/png;base64," + strings.Repeat("A", 200_000)
 	withImage := map[string]any{
 		"input": []any{
 			map[string]any{"role": "user", "content": []any{
 				map[string]any{"type": "input_text", "text": "describe"},
-				map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+				map[string]any{"type": "input_image", "image_url": bigImage},
 			}},
 		},
 	}
 	if !detectMediaRequirement(withImage) {
 		t.Fatal("expected media detected in Responses API input parts")
+	}
+	got := estimatePromptTokens(withImage)
+	if got > 1000 {
+		t.Fatalf("Responses input estimate must ignore base64 length; got %d tokens for a 200KB image", got)
+	}
+	if got < imagePromptTokenCost {
+		t.Fatalf("Responses input estimate should include flat image cost (%d); got %d", imagePromptTokenCost, got)
 	}
 	textOnly := map[string]any{"input": "just a string prompt"}
 	if detectMediaRequirement(textOnly) {
@@ -1980,9 +1999,31 @@ func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 	}
 }
 
+func TestTTFTDeadlineExact(t *testing.T) {
+	tests := []struct {
+		inputTokens int
+		want        time.Duration
+	}{
+		{inputTokens: 0, want: 5 * time.Second},
+		{inputTokens: 1, want: 5*time.Second + time.Millisecond},
+		{inputTokens: 5_000, want: 10 * time.Second},
+		{inputTokens: 5_001, want: 10*time.Second + time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		if got := ttftDeadline(tt.inputTokens); got != tt.want {
+			t.Fatalf("ttftDeadline(%d) = %v, want %v", tt.inputTokens, got, tt.want)
+		}
+	}
+}
+
 func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	srv, _ := testServer(t)
-	if got := srv.estimateTTFTRetryAfter("no-queue", 13*time.Second); got != 3 {
+	threshold := ttftDeadline(0)
+	if threshold != 5*time.Second {
+		t.Fatalf("ttftDeadline(0) = %v, want 5s", threshold)
+	}
+	if got := srv.estimateTTFTRetryAfter("no-queue", 8*time.Second, threshold); got != 3 {
 		t.Fatalf("Retry-After without queue = %d, want 3s over target", got)
 	}
 
@@ -1994,7 +2035,7 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	srv.writeTTFTTooSlow(w, model, model, 11*time.Second)
+	srv.writeTTFTTooSlow(w, model, model, 6*time.Second, threshold)
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
@@ -2014,8 +2055,33 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	if body.Error.Code != "rate_limit_exceeded" {
 		t.Fatalf("code = %q, want rate_limit_exceeded", body.Error.Code)
 	}
-	if !strings.Contains(body.Error.Message, "10s TTFT target") {
+	if !strings.Contains(body.Error.Message, "5s TTFT target") {
 		t.Fatalf("message = %q, want TTFT target detail", body.Error.Message)
+	}
+}
+
+func TestTTFTAdmission429BelowOldTenSecondFloor(t *testing.T) {
+	srv, _ := testServer(t)
+	model := "exact-ttft-floor-model"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	p := registerBuildsProvider(srv, "exact-floor-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 0.2 // 1 input token => ~5s prefill + first decode, above exact 5.001s target but below old 10s floor.
+	p.Mu().Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		strings.ReplaceAll(`{"model":"MODEL","input":"hello","max_output_tokens":128}`, "MODEL", model)))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusTooManyRequests, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got == "" {
+		t.Fatal("Retry-After header missing")
 	}
 }
 
@@ -2027,7 +2093,7 @@ func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 	p.Mu().Lock()
 	p.DecodeTPS = 100
 	p.PrefillTPS = 400
-	p.BackendCapacity.Slots[0].MaxTokensPotential = 2_000
+	p.BackendCapacity.Slots[0].State = "idle_shutdown"
 	p.Mu().Unlock()
 
 	cases := []struct {
@@ -2098,7 +2164,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	desiredProvider.Mu().Lock()
 	desiredProvider.DecodeTPS = 100
 	desiredProvider.PrefillTPS = 400
-	desiredProvider.BackendCapacity.Slots[0].MaxTokensPotential = 2_000
+	desiredProvider.BackendCapacity.Slots[0].State = "idle_shutdown"
 	desiredProvider.Mu().Unlock()
 
 	previousProvider := registerBuildsProvider(srv, "previous-fast", previous)
@@ -2114,6 +2180,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 		desired,
 		100,
 		128,
+		ttftDeadline(100),
 		registry.RequestTraits{},
 		false,
 		nil,
@@ -2128,7 +2195,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
-	if !hasTTFT || bestTTFT > openRouterTTFT429Threshold {
+	if !hasTTFT || bestTTFT > ttftDeadline(100) {
 		t.Fatalf("bestTTFT = %v has=%v, want within threshold", bestTTFT, hasTTFT)
 	}
 }

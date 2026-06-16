@@ -1032,8 +1032,16 @@ public actor ProviderLoop {
         do {
             chatRequest = try Self.decodeOpenAIRequest(decryptedData)
         } catch {
-            logger.error("[\(requestId)] Failed to parse chat request: \(error)")
-            send.send(.inferenceError(requestId: requestId, error: "invalid request body: \(error.localizedDescription)", statusCode: 400))
+            // Privacy: the provider logger renders the whole message `.public`, and
+            // reports collect this subsystem — so never interpolate the raw decode
+            // error, which on a malformed body can carry a fragment of the (now
+            // decrypted) request, i.e. user prompt content. Log only the error TYPE.
+            // The requester-facing string below is likewise kept generic: it transits
+            // the coordinator in plaintext and is logged server-side, so interpolating
+            // the raw error could resurface a prompt fragment in coordinator logs
+            // (defense-in-depth for the "coordinator never sees plaintext" invariant).
+            logger.error("[\(requestId)] Failed to parse chat request (\(type(of: error)))")
+            send.send(.inferenceError(requestId: requestId, error: "invalid request body", statusCode: 400))
             return
         }
 

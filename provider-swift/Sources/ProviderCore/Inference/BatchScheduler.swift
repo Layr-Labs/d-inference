@@ -83,6 +83,12 @@ public actor BatchScheduler {
     var checkpointBoundaries: [Int] = []
     /// Per-layer cache class/window signature for restore validation.
     var checkpointLayerSignatures: [CheckpointLayerSignature] = []
+    /// Bounded, single-consumer pipeline that drains checkpoint KV snapshots
+    /// into `checkpointManager`. Caps the number of live KV snapshots retained
+    /// in flight so a busy manager can't drive the live Metal buffer count to
+    /// the 499000 ceiling (the Gemma-4 leak). Built with the engine; shut down
+    /// in `stopCurrentEngine`. nil ⇒ feature off / no checkpoint manager.
+    var capturePipeline: CheckpointCapturePipeline<CheckpointCapture>?
 
     /// Engine-tier owner (EncryptedPrefixCachePersistence) for pure-
     /// attention models. Non-nil only when the model classifies as `.engine` AND
@@ -240,6 +246,7 @@ public actor BatchScheduler {
         self.checkpointBoundaries = build.checkpointBoundaries
         self.checkpointLayerSignatures = build.checkpointLayerSignatures
         self.engineTierOwner = build.engineTierOwner
+        self.capturePipeline = build.capturePipeline
         await engine.start()
         // Final epoch check after start() — start can suspend too.
         // Identity-checked cleanup — only nil self.engine if it's
@@ -251,6 +258,7 @@ public actor BatchScheduler {
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
             if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
             if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+            if self.capturePipeline === build.capturePipeline { self.capturePipeline?.shutdown(); self.capturePipeline = nil }
             await engine.stop()
             return
         }
@@ -294,6 +302,7 @@ public actor BatchScheduler {
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
             if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
             if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+            if self.capturePipeline === build.capturePipeline { self.capturePipeline?.shutdown(); self.capturePipeline = nil }
             await engine.stop()
             return
         }
@@ -333,6 +342,7 @@ public actor BatchScheduler {
                     if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
                     if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
                     if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+                    if self.capturePipeline === build.capturePipeline { self.capturePipeline?.shutdown(); self.capturePipeline = nil }
                     await engine.stop()
                     return
                 }
@@ -818,11 +828,12 @@ public actor BatchScheduler {
             )
         } ?? []
         engine?.core.scheduler.checkpointBoundaries = boundaries
-        engine?.core.scheduler.onCheckpointCapture = { prefixTokens, length, caches in
-            let box = SendableKVCaches(caches)
-            // TB-016 sub-feature B: test seam also RAM-only (no eager flush).
-            Task { await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box) }
-        }
+        // Same bounded + admission-gated wiring production uses, so the test
+        // seam exercises the real backpressure path (not the old unbounded one).
+        self.capturePipeline?.shutdown()
+        let wiring = Self.makeCheckpointCaptureWiring(manager: mgr)
+        self.capturePipeline = wiring.pipeline
+        engine?.core.scheduler.onCheckpointCapture = wiring.hook
     }
 
     /// TEST SEAM: drive the real `finalizeRestore` fallback path without a live
@@ -956,6 +967,9 @@ public actor BatchScheduler {
         let checkpointBoundaries: [Int]
         let checkpointLayerSignatures: [CheckpointLayerSignature]
         let engineTierOwner: EncryptedPrefixCachePersistence?
+        /// Bounded capture pipeline (non-nil iff `checkpointManager` is). The
+        /// caller stores it on the actor and shuts it down at teardown.
+        let capturePipeline: CheckpointCapturePipeline<CheckpointCapture>?
     }
 
     private static func makeBatchedEngine(
@@ -1001,6 +1015,7 @@ public actor BatchScheduler {
 
             var enginePrefixCache: PrefixCache? = nil
             var checkpointManager: PrefixCacheManager? = nil
+            var capturePipeline: CheckpointCapturePipeline<CheckpointCapture>? = nil
             var boundaries: [Int] = []
             var checkpointLayerSignatures: [CheckpointLayerSignature] = []
             // Capture the engine-tier owner for accountant registration.
@@ -1112,16 +1127,14 @@ public actor BatchScheduler {
             // when a manager exists, so .engine/.none models are untouched.
             if let mgr = checkpointManager {
                 scheduler.checkpointBoundaries = boundaries
-                scheduler.onCheckpointCapture = { prefixTokens, length, caches in
-                    let box = SendableKVCaches(caches)
-                    // TB-016 sub-feature B: capture = RAM-ONLY. Store to RAM
-                    // (fast); 2nd-use promotion handles SSD persistence when the
-                    // prefix is re-accessed (RAM-first admission stops the write
-                    // storm). No eager flushToSSD.
-                    Task {
-                        await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box)
-                    }
-                }
+                // Bound the capture pipeline: at most `max-in-flight` live KV
+                // snapshots retained while the manager actor is busy (crypto +
+                // fsync), dropping the surplus rather than queuing it. This is
+                // the fix for the Gemma-4 Metal live-resource (499000) leak — the
+                // old `Task { await mgr.store(...) }` per boundary was unbounded.
+                let wiring = Self.makeCheckpointCaptureWiring(manager: mgr)
+                capturePipeline = wiring.pipeline
+                scheduler.onCheckpointCapture = wiring.hook
             }
             return EngineBuild(
                 engine: BatchedEngine(
@@ -1139,7 +1152,8 @@ public actor BatchScheduler {
                 checkpointManager: checkpointManager,
                 checkpointBoundaries: boundaries,
                 checkpointLayerSignatures: checkpointLayerSignatures,
-                engineTierOwner: engineTierOwner
+                engineTierOwner: engineTierOwner,
+                capturePipeline: capturePipeline
             )
         }
     }
@@ -1930,6 +1944,13 @@ public actor BatchScheduler {
         self.engine = nil
         modelContainer = nil
         tokenizer = nil
+        // Drain the bounded capture pipeline: the engine is stopped (no more
+        // capture hooks fire), so finish the stream and cancel the consumer.
+        // This releases any retained KV snapshots and stops an in-flight
+        // `mgr.store` from racing the index flush / accountant deregister below,
+        // and guarantees no snapshot (or consumer Task) leaks across a swap.
+        capturePipeline?.shutdown()
+        capturePipeline = nil
         // Persist any coalesced index writes before dropping the manager, so
         // checkpoints written since the last coalesced save survive restart.
         if let mgr = checkpointManager {

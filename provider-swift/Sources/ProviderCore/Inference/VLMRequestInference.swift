@@ -105,6 +105,66 @@ public enum VLMRequestInference {
         request.maxTokens ?? defaultMaxTokens
     }
 
+    /// Conservative per-image soft-token allotment for the KV-token estimate.
+    /// Gemma-4 pools every image to a FIXED `vision_soft_tokens_per_image` (256)
+    /// regardless of resolution; other VLMs run higher. 1024 (4× Gemma) is a
+    /// generous model-agnostic upper bound that is still bounded by the model's
+    /// context window via the clamp in `projectedKVTokens`.
+    static let visionTokensPerImage = 1024
+    /// A video samples multiple frames, each contributing image-like soft tokens.
+    /// Charge a larger fixed allotment per video; still clamped to the context.
+    static let visionTokensPerVideo = 4096
+    /// Conservative chars→tokens divisor for the text prompt estimate. Real
+    /// tokenizers average ~4 chars/token; dividing by 3 OVER-estimates the token
+    /// count (the safe direction for a reservation).
+    static let textCharsPerToken = 3
+
+    /// Conservative upper bound on the number of tokens the vision generation's
+    /// KV cache will hold: prompt text + image/video soft tokens + generated
+    /// output. The vision path bypasses the batched `submitTokenized` reservation
+    /// (which reserves `promptTokenCount + maxTokens`), so without this the cap
+    /// would charge only the output tokens and badly under-count — a single image
+    /// expands to hundreds of vision tokens that all occupy KV.
+    ///
+    /// Prompt + vision is clamped to `contextLength` when known: the model can't
+    /// attend beyond its context window, so the cache never holds more than that
+    /// many input tokens. Output tokens are added on top (the generation extends
+    /// past the prompt up to `maxOutputTokens`), mirroring the batched path's
+    /// `promptTokenCount + maxTokens`. Saturating; never traps.
+    static func projectedKVTokens(
+        _ request: OpenAIChatCompletionRequest,
+        defaultMaxTokens: Int,
+        contextLength: Int
+    ) -> Int {
+        var promptTokens = 0
+        func add(_ n: Int) {
+            let (s, o) = promptTokens.addingReportingOverflow(max(0, n))
+            promptTokens = o ? Int.max : s
+        }
+        for message in request.messages {
+            switch message.content {
+            case .text(let s):
+                add(s.utf8.count / textCharsPerToken)
+            case .parts(let parts):
+                for part in parts {
+                    switch part {
+                    case .text(let s): add(s.utf8.count / textCharsPerToken)
+                    case .imageURL: add(visionTokensPerImage)
+                    case .videoURL: add(visionTokensPerVideo)
+                    case .unsupported: continue
+                    }
+                }
+            case .null:
+                continue
+            }
+        }
+        // The KV cache can't hold more input tokens than the context window.
+        if contextLength > 0 { promptTokens = min(promptTokens, contextLength) }
+        let maxOutput = max(0, resolveMaxOutputTokens(for: request, defaultMaxTokens: defaultMaxTokens))
+        let (total, overflow) = promptTokens.addingReportingOverflow(maxOutput)
+        return overflow ? Int.max : total
+    }
+
     static func generateParameters(
         for request: OpenAIChatCompletionRequest, defaultMaxTokens: Int
     ) -> GenerateParameters {

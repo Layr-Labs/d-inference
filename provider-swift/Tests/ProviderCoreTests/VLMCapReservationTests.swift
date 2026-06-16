@@ -131,3 +131,50 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         model: "m", messages: [.init(role: .user, content: .text("hi"))])
     #expect(VLMRequestInference.resolveMaxOutputTokens(for: noMax, defaultMaxTokens: 1024) == 1024)
 }
+
+// MARK: - projectedKVTokens (full KV span: prompt + vision + output)
+
+@Test func projectedKVTokensIncludesVisionAndOutputNotJustOutput() {
+    // One image + a short prompt + 100 output tokens. The KV span must include
+    // the per-image vision soft tokens — NOT just the output (which would badly
+    // under-reserve, the bug Codex flagged).
+    let uri = PNGBomb.dataURI(width: 64, height: 64)
+    let req = OpenAIChatCompletionRequest(
+        model: "m",
+        messages: [.init(role: .user, content: .parts([.text("hi"), .imageURL(uri)]))],
+        maxTokens: 100)
+    let tokens = VLMRequestInference.projectedKVTokens(
+        req, defaultMaxTokens: 1024, contextLength: 0)
+    // >= vision tokens for the image + the 100 output tokens.
+    #expect(tokens >= VLMRequestInference.visionTokensPerImage + 100)
+    // And strictly greater than output-only (the old, buggy sizing).
+    #expect(tokens > 100)
+}
+
+@Test func projectedKVTokensClampsPromptPlusVisionToContext() {
+    // Many images would project a huge prompt+vision span; it must clamp to the
+    // model's context window (the cache can't hold more input tokens than that),
+    // then add output on top — mirroring the batched path's promptTokens+maxTokens.
+    let uri = PNGBomb.dataURI(width: 64, height: 64)
+    let parts: [OpenAIContentPart] = (0..<64).map { _ in .imageURL(uri) }
+    let req = OpenAIChatCompletionRequest(
+        model: "m", messages: [.init(role: .user, content: .parts(parts))], maxTokens: 50)
+    let ctx = 4096
+    let tokens = VLMRequestInference.projectedKVTokens(
+        req, defaultMaxTokens: 1024, contextLength: ctx)
+    // 64 × 1024 vision tokens = 65536 >> 4096 ctx → clamped to ctx, + 50 output.
+    #expect(tokens == ctx + 50)
+}
+
+@Test func projectedKVTokensTextOnlyHasNoVisionCharge() {
+    // A text-only request (no media) charges only the text estimate + output —
+    // no spurious vision tokens.
+    let req = OpenAIChatCompletionRequest(
+        model: "m", messages: [.init(role: .user, content: .text("hello there"))],
+        maxTokens: 10)
+    let tokens = VLMRequestInference.projectedKVTokens(
+        req, defaultMaxTokens: 1024, contextLength: 0)
+    // "hello there" = 11 utf8 bytes / 3 = 3 text tokens, + 10 output = 13.
+    #expect(tokens == 11 / VLMRequestInference.textCharsPerToken + 10)
+    #expect(tokens < VLMRequestInference.visionTokensPerImage)  // no vision charge
+}

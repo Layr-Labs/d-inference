@@ -126,13 +126,20 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     // junk / empty / non-numeric → default.
     #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: ["DARKBLOOM_MEM_CAP_FRACTION": "abc"]) == def)
     #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: ["DARKBLOOM_MEM_CAP_FRACTION": ""]) == def)
-    // negative → clamped to 0.
-    #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: ["DARKBLOOM_MEM_CAP_FRACTION": "-0.5"]) == 0.0)
-    // > 1 (huge) → clamped to 1.
+    // negative env → UNSET → default (NOT clamped to 0: a 0 cap would reject
+    // every request and silently brick the provider from one bad env var).
+    #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: ["DARKBLOOM_MEM_CAP_FRACTION": "-0.5"]) == def)
+    // zero env → UNSET → default (same reason).
+    #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: ["DARKBLOOM_MEM_CAP_FRACTION": "0"]) == def)
+    // > 1 (huge) → a real positive value → clamped to 1.
     #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: ["DARKBLOOM_MEM_CAP_FRACTION": "9999"]) == 1.0)
     // NaN / inf → not finite → default.
     #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: ["DARKBLOOM_MEM_CAP_FRACTION": "nan"]) == def)
     #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: ["DARKBLOOM_MEM_CAP_FRACTION": "inf"]) == def)
+    // An EXPLICIT programmatic value is still clamped as given (tests pin it):
+    // out-of-range explicit values clamp rather than fall back.
+    #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: -0.2, env: [:]) == 0.0)
+    #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: 1.5, env: [:]) == 1.0)
     // explicit NaN → default (clampFraction finite-guard).
     #expect(UnifiedMemoryCap.resolvedCapFraction(explicit: .nan, env: [:]) == def)
 }
@@ -145,8 +152,11 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "junk"]) == def)
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "-3"]) == def)
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "nan"]) == def)
-    // 0 is accepted (no activation reserve) — distinct from "unset".
-    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "0"]) == 0)
+    // zero env → UNSET → default floor: an operator can RAISE the reserve but not
+    // silently disable the activation headroom the cap exists to guarantee.
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "0"]) == def)
+    // An EXPLICIT 0 (programmatic, used by tests that pin no reserve) is honored.
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: 0, env: [:]) == 0)
     // Absurdly huge finite GB saturates to UInt64.max without trapping.
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "1e308"]) == .max)
 }

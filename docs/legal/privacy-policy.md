@@ -1,6 +1,6 @@
 # Darkbloom Privacy Policy
 
-Updated: April 17, 2026
+Updated: June 16, 2026
 
 This Privacy Policy explains how Eigen Labs, Inc., operating the Darkbloom platform ("Eigen Labs," "Darkbloom," "we," "us," or "our") collects, uses, discloses, and otherwise processes personal information in connection with Darkbloom's websites, console, APIs, software, provider applications, hosted services, and related products and features (collectively, the "Services").
 
@@ -82,6 +82,15 @@ MDM enrollment is configured for security verification. Darkbloom requests only 
 
 **2.7 Communications and support information.** If you contact us, we collect the contents of your message, attachments, and related contact details.
 
+**2.8 Operational and routing telemetry.** To route requests reliably, plan capacity, and improve the accuracy and reliability of our scheduling, we record operational metadata about how each inference request is routed and about requests we decline. This telemetry is metadata only: it never includes prompt text, message or input content, generated responses or completions, tool-call arguments or results, image or audio bytes, or raw client IP addresses. It may include:
+
+- request characteristics: the model requested and the resolved model build, the API endpoint, whether the response is streamed, an estimated prompt token count and the requested maximum output tokens, whether the request uses vision, image, audio, or tool features, a coarse client classification derived from the User-Agent (for example, aggregator versus direct), the size of the request body in bytes (not its contents), and a limited, non-content set of sampling parameters (such as temperature, top_p, presence penalty, and frequency penalty);
+- request identity: a one-way SHA-256 hash of the API or consumer key, together with the associated account and key identifiers — never the raw API key;
+- routing and performance data: which provider was selected, the scheduler's cost breakdown, the number of candidate providers considered and the reasons candidates were not selected, predicted and measured time-to-first-token and decode throughput, queue and latency timings, prompt, completion, and reasoning token counts, and per-request cost in micro-US-dollars;
+- provider and hardware data: the selected provider's chip family and tier, memory, GPU and CPU core counts, system-load signals such as memory pressure, CPU usage, and thermal state, and GPU memory usage;
+- coarse location: a city- or region-level geographic area for the request and the provider, derived using GeoIP rather than from a stored raw IP address;
+- declined-request records: for requests we decline (for example, with an HTTP 4xx response), the HTTP status, the reason for the decline, and a signal indicating whether the request could have been served given fleet capacity at the time.
+
 ## 3. How We Collect Personal Information
 
 We collect personal information:
@@ -102,6 +111,7 @@ We use personal information to:
 - if applicable, collect tax identification information and fulfill tax reporting obligations, including IRS Form 1099-NEC reporting for qualifying US providers;
 - communicate with you about the Services, updates, support issues, and legal or security notices;
 - monitor performance, reliability, and abuse;
+- analyze routing decisions, performance measurements, and declined requests to improve scheduling accuracy, reliability, and capacity planning;
 - investigate and enforce compliance with our Terms of Service and other legal requirements;
 - comply with law, regulation, court order, or lawful government request;
 - create aggregated or de-identified information for analytics, reporting, security, and service improvement, where permitted by law.
@@ -114,7 +124,7 @@ Because Darkbloom is an inference platform, Content handling is central to how t
 
 **5.2 Coordinator access.** The current service architecture requires our coordinator to process request payloads in plaintext on a transient basis for routing, compatibility, metering, and operation of the Services. You should not treat the current architecture as guaranteeing that the coordinator is technically incapable of accessing request payloads in every service path.
 
-**5.3 Logging.** Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, duration, and remote address. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications.
+**5.3 Logging.** Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, duration, and remote address. We also retain operational and routing telemetry about each request and about requests we decline, as described under "Operational and routing telemetry" above; this telemetry is limited to metadata — such as counts, timings, routing decisions, hashed identifiers, machine characteristics, and coarse geographic region — and never includes prompt text, message or input content, generated responses or completions, tool-call arguments or results, image or audio bytes, or raw client IP addresses. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications.
 
 **5.4 Selected providers.** To fulfill inference requests, we disclose relevant Content to the provider selected to process the request. If you operate provider software, that means customer requests may be routed to your device subject to the Services' security and attestation controls.
 
@@ -162,6 +172,7 @@ Retention periods may vary by data type. For example:
 
 - account and billing records may be retained for legal and accounting periods;
 - usage and security logs may be retained for operational, fraud-prevention, and support purposes;
+- operational and routing telemetry may be retained for operational, security, capacity-planning, and service-improvement purposes;
 - tax identification information (W-9/W-8BEN data) is retained for as long as required by IRS regulations;
 - provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;
 - Content may be retained for shorter operational periods unless preserved longer for support, abuse review, legal compliance, or dispute resolution.

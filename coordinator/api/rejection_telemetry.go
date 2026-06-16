@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -121,7 +120,7 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	requiresVision := info.requiresVision
 	hasTools := info.hasTools
 
-	saferun.Go(s.logger, "recordRejection", func() {
+	s.submitTelemetry("recordRejection", func() {
 		if computeServability {
 			traits := registry.RequestTraits{HasTools: hasTools}
 			cc, capRej, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(

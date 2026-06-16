@@ -160,6 +160,11 @@ func main() {
 	}
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
+	// Stop the routing-telemetry sink's worker pool on shutdown. Deferred so it
+	// runs after the HTTP server has drained (no in-flight request can still be
+	// submitting telemetry); Close is idempotent and never blocks on in-flight
+	// writes, so it cannot stall shutdown.
+	defer srv.Close()
 
 	// Per-account rate limiter on consumer (inference) endpoints. The default
 	// is intentionally generous (20 rps / burst 120) — the fleet token-budget

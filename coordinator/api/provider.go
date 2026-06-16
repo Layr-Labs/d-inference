@@ -1950,7 +1950,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// (UpdateInferenceRouteOutcome overwrites the whole row), so this outcome
 		// carries the full coordinator-side latency decomposition and the measured
 		// decode throughput in addition to tokens/cost.
-		saferun.Go(s.logger, "updateInferenceRoute", func() {
+		s.submitTelemetry("updateInferenceRoute", func() {
 			outcome := &store.InferenceRouteOutcome{
 				FinalStatus:      "success",
 				PromptTokens:     msg.Usage.PromptTokens,

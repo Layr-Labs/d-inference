@@ -266,7 +266,7 @@ func (d *dispatchState) recordRoutingDecision(decision registry.RoutingDecision,
 		d.provider.Mu().Unlock()
 	}
 
-	saferun.Go(s.logger, "recordInferenceRoute", func() {
+	s.submitTelemetry("recordInferenceRoute", func() {
 		_ = s.store.RecordInferenceRoute(record)
 	})
 }
@@ -352,7 +352,7 @@ func (d *dispatchState) updateRoutingOutcome(outcome *store.InferenceRouteOutcom
 	if requestID == "" {
 		return
 	}
-	saferun.Go(d.s.logger, "updateInferenceRoute", func() {
+	d.s.submitTelemetry("updateInferenceRoute", func() {
 		_ = d.s.store.UpdateInferenceRouteOutcome(requestID, d.attempt, outcome)
 	})
 }

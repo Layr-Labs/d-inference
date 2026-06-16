@@ -375,6 +375,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
 		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cacheAffinityKey, d.excludeProviders,
+		d.attempt,
 	)
 	d.dispatchErr = dispatchErr
 	d.dispatchErrCode = dispatchErrCode
@@ -862,6 +863,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 			d.serviceReservation,
 			d.cacheAffinityKey,
 			backupExclude,
+			d.attempt,
 		)
 	}
 
@@ -1644,7 +1646,9 @@ func (d *dispatchState) run() {
 		}
 
 		d.requestID = d.pr.RequestID
-		d.pr.Attempt = d.attempt
+		// d.pr.Attempt is already stamped at PendingRequest construction in
+		// dispatchOneProvider (and on the queued path), before the provider send —
+		// so it is never written here, where it would race handleComplete.
 		if d.timing.RoutedAt.IsZero() {
 			d.timing.RoutedAt = time.Now()
 		}

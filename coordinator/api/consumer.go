@@ -450,6 +450,7 @@ func (s *Server) dispatchOneProvider(
 	serviceReservation bool,
 	cacheAffinityKey string,
 	excludeProviders map[string]struct{},
+	attempt int,
 ) (
 	provider *registry.Provider,
 	pr *registry.PendingRequest,
@@ -459,7 +460,13 @@ func (s *Server) dispatchOneProvider(
 ) {
 	requestID := uuid.New().String()
 	pr = &registry.PendingRequest{
-		RequestID:              requestID,
+		RequestID: requestID,
+		// Attempt is stamped at construction — BEFORE the request is encrypted
+		// and sent to the provider — so a fast provider that returns
+		// inference_complete immediately is correlated to the right route row.
+		// Setting it after the send (on the dispatch goroutine) would race the
+		// provider WS reader goroutine's handleComplete read of pr.Attempt.
+		Attempt:                attempt,
 		Model:                  model,
 		PublicModel:            publicModel,
 		ConsumerKey:            consumerKey,

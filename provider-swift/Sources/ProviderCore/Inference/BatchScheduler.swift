@@ -1504,22 +1504,49 @@ public actor BatchScheduler {
         await stopCurrentEngine()
     }
 
-    /// Reserve `bytes` of unified memory against the shared 90% cap for a
-    /// non-KV consumer (VLM media decode), via the process-wide GlobalKVCacheBudget
-    /// this scheduler holds — so those uncounted CIImage/Data buffers share the
-    /// same headroom as weights + KV + activations. Returns true if it fits (and
-    /// was reserved), false if it would exceed the cap (caller surfaces a 429 /
-    /// retry) — or true (no-op) when budgeting is disabled (nil budget), matching
-    /// the scheduler's "always proceed" legacy behavior. Pair with
-    /// `releaseMediaBytes`.
-    public func reserveMediaBytes(requestId: String, bytes: UInt64) async -> Bool {
+    /// Reserve unified memory for a VLM (vision-path) request against the shared
+    /// 90% cap, via the process-wide GlobalKVCacheBudget this scheduler holds. A
+    /// vision request bypasses the batched `submitTokenized` reservation entirely
+    /// — it streams through `container.generate` directly — so without this it
+    /// commits TWO kinds of memory the cap would otherwise track only reactively:
+    ///
+    /// 1. `mediaDecodeBytes` — the transient CIImage rasters + Swift `Data` pixel
+    ///    buffers from media decode. These are NOT MLXArrays, so they are
+    ///    invisible to the cap's live MLX counters (the original blind spot).
+    /// 2. The generation KV cache — `kvBytesPerToken × maxOutputTokens`. This IS
+    ///    MLXArray-backed (eventually visible to the live counters), but the
+    ///    vision path's decode loop runs in a detached task with no per-request
+    ///    reservation, so N concurrent media requests can grow KV simultaneously
+    ///    against headroom none of them reserved — a transient over-commit the
+    ///    cap would otherwise catch only on the NEXT admission. Reserving it up
+    ///    front makes the vision path share the same preemptive 90% gate the
+    ///    batched path gets from `reserveKVForRequest`.
+    ///
+    /// Both are charged to ONE reservation id and released together when the
+    /// stream ends (decode buffers are actually freed after `prepare`, so holding
+    /// them for the whole stream is conservative — never an under-reservation).
+    /// Returns true if it fits (and was reserved) or budgeting is disabled
+    /// (nil budget, legacy "always proceed"); false if it would exceed the cap,
+    /// in which case the caller surfaces a retryable 503. Pair with
+    /// `releaseVisionRequest`. Saturating; never traps.
+    public func reserveVisionRequest(
+        requestId: String, mediaDecodeBytes: UInt64, maxOutputTokens: Int
+    ) async -> Bool {
         guard let kvBudget else { return true }
+        var genKVBytes: UInt64 = 0
+        if kvBytesPerToken > 0, maxOutputTokens > 0 {
+            let (b, overflow) = UInt64(kvBytesPerToken)
+                .multipliedReportingOverflow(by: UInt64(maxOutputTokens))
+            genKVBytes = overflow ? .max : b
+        }
+        let (total, overflow) = mediaDecodeBytes.addingReportingOverflow(genKVBytes)
+        let bytes = overflow ? UInt64.max : total
         return await kvBudget.reserveBytes(requestID: requestId, bytes: bytes)
     }
 
-    /// Release a prior `reserveMediaBytes` reservation. Safe/no-op if unknown or
-    /// budgeting is disabled.
-    public func releaseMediaBytes(requestId: String) async {
+    /// Release a prior `reserveVisionRequest` reservation. Safe/no-op if unknown
+    /// or budgeting is disabled.
+    public func releaseVisionRequest(requestId: String) async {
         await kvBudget?.release(requestID: requestId)
     }
 

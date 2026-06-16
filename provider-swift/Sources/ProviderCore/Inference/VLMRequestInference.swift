@@ -95,11 +95,21 @@ public enum VLMRequestInference {
     /// effect on image/video (VLM) requests, matching the text/batched engine.
     /// The penalty processors apply only for non-identity values (repetition ≠ 1,
     /// presence/frequency ≠ 0); identities are no-ops.
+    /// The max output-token bound this request will actually generate with —
+    /// the consumer's `max_tokens` if set, else the model's default. The KV
+    /// reservation for the vision path sizes the generation cache from this, so
+    /// it must match what `generateParameters` feeds the generator exactly.
+    static func resolveMaxOutputTokens(
+        for request: OpenAIChatCompletionRequest, defaultMaxTokens: Int
+    ) -> Int {
+        request.maxTokens ?? defaultMaxTokens
+    }
+
     static func generateParameters(
         for request: OpenAIChatCompletionRequest, defaultMaxTokens: Int
     ) -> GenerateParameters {
         GenerateParameters(
-            maxTokens: request.maxTokens ?? defaultMaxTokens,
+            maxTokens: resolveMaxOutputTokens(for: request, defaultMaxTokens: defaultMaxTokens),
             temperature: request.temperature ?? 0,
             topP: request.topP ?? 1.0,
             topK: request.topK ?? 0,

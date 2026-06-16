@@ -117,3 +117,17 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(await budget.reserveBytes(requestID: "dup", bytes: gib))
     #expect(!(await budget.reserveBytes(requestID: "dup", bytes: gib)))  // already reserved
 }
+
+// MARK: - Vision-path output-token resolution (sizes the generation-KV reservation)
+
+@Test func resolveMaxOutputTokensPrefersRequestThenDefault() {
+    // Consumer-set max_tokens wins.
+    let withMax = OpenAIChatCompletionRequest(
+        model: "m", messages: [.init(role: .user, content: .text("hi"))], maxTokens: 321)
+    #expect(VLMRequestInference.resolveMaxOutputTokens(for: withMax, defaultMaxTokens: 1024) == 321)
+    // Omitted max_tokens falls back to the model default — the SAME value the
+    // generator uses, so the KV reservation matches actual generation.
+    let noMax = OpenAIChatCompletionRequest(
+        model: "m", messages: [.init(role: .user, content: .text("hi"))])
+    #expect(VLMRequestInference.resolveMaxOutputTokens(for: noMax, defaultMaxTokens: 1024) == 1024)
+}

@@ -1530,19 +1530,31 @@ public actor BatchScheduler {
     /// in which case the caller surfaces a retryable 503. Pair with
     /// `releaseVisionRequest`. Saturating; never traps.
     public func reserveVisionRequest(
-        requestId: String, mediaDecodeBytes: UInt64, maxOutputTokens: Int
+        requestId: String, mediaDecodeBytes: UInt64, kvTokens: Int
     ) async -> Bool {
         guard let kvBudget else { return true }
+        // KV bytes = kvBytesPerToken × the FULL token span the cache will hold:
+        // prompt text + image/video soft tokens + generated output (the caller
+        // computes that conservative total). Reserving only the output tokens
+        // would badly under-count — a single image expands to hundreds of vision
+        // tokens, all of which occupy KV.
         var genKVBytes: UInt64 = 0
-        if kvBytesPerToken > 0, maxOutputTokens > 0 {
+        if kvBytesPerToken > 0, kvTokens > 0 {
             let (b, overflow) = UInt64(kvBytesPerToken)
-                .multipliedReportingOverflow(by: UInt64(maxOutputTokens))
+                .multipliedReportingOverflow(by: UInt64(kvTokens))
             genKVBytes = overflow ? .max : b
         }
         let (total, overflow) = mediaDecodeBytes.addingReportingOverflow(genKVBytes)
         let bytes = overflow ? UInt64.max : total
         return await kvBudget.reserveBytes(requestID: requestId, bytes: bytes)
     }
+
+    /// The model's configured context window (`max_position_embeddings`), or 0 if
+    /// unknown. The KV cache can never hold more than this many prompt+vision
+    /// tokens, so the vision-path reservation clamps its prompt+vision estimate to
+    /// it (output tokens are added on top, matching the batched path's
+    /// `promptTokenCount + maxTokens`).
+    public func contextLength() -> Int { maxContextLength }
 
     /// Release a prior `reserveVisionRequest` reservation. Safe/no-op if unknown
     /// or budgeting is disabled.

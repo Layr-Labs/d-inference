@@ -188,26 +188,36 @@ public enum UnifiedMemoryCap {
     // MARK: - Resolution (explicit → env → default)
 
     /// Cap fraction from explicit value, env `DARKBLOOM_MEM_CAP_FRACTION`
-    /// (0–1), or the 0.90 default. Out-of-range / non-finite inputs are clamped.
+    /// (0–1), or the 0.90 default. A `<= 0` or non-finite env value is treated as
+    /// UNSET (→ default), not clamped to 0: a degenerate `0` fraction would make
+    /// `hardCapBytes == 0` and reject every request, silently bricking the
+    /// provider from a single bad env var. An explicit programmatic value (tests)
+    /// is still clamped as given. Values `> 1` clamp to 1.0.
     static func resolvedCapFraction(
         explicit: Double?,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) -> Double {
         if let explicit { return clampFraction(explicit) }
-        if let raw = env["DARKBLOOM_MEM_CAP_FRACTION"], let v = Double(raw) {
+        if let raw = env["DARKBLOOM_MEM_CAP_FRACTION"], let v = Double(raw),
+            v.isFinite, v > 0 {
             return clampFraction(v)
         }
         return defaultCapFraction
     }
 
     /// Activation reserve from explicit bytes, env
-    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or the default floor.
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or the default floor. A `<= 0` or
+    /// non-finite env value is treated as UNSET (→ the 3 GiB default floor): a
+    /// `0` reserve would remove the activation headroom the cap exists to
+    /// guarantee, so an operator can RAISE the reserve but not silently disable it
+    /// via env. An explicit programmatic value (tests) is honored as given.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) -> UInt64 {
         if let explicit { return explicit }
-        if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw), gb >= 0, gb.isFinite {
+        if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw),
+            gb.isFinite, gb > 0 {
             let scaled = gb * 1_073_741_824
             return scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
         }

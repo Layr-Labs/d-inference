@@ -215,11 +215,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // Released on every exit.
             let mediaReqId = "vlm-\(UUID().uuidString.prefix(12))"
             let projectedBytes = VLMRequestInference.projectedDecodeBytes(request)
-            let maxOutputTokens = VLMRequestInference.resolveMaxOutputTokens(
-                for: request, defaultMaxTokens: defaultMaxTokens)
+            // Full KV-token span the vision cache will hold: prompt text + image/
+            // video soft tokens + generated output (clamped to the context). The
+            // vision path bypasses the batched KV reservation, so charging only the
+            // output tokens would under-count the prompt + vision tokens that also
+            // occupy KV.
+            let kvTokens = VLMRequestInference.projectedKVTokens(
+                request, defaultMaxTokens: defaultMaxTokens,
+                contextLength: await scheduler.contextLength())
             let mediaReserved = await scheduler.reserveVisionRequest(
                 requestId: mediaReqId, mediaDecodeBytes: projectedBytes,
-                maxOutputTokens: maxOutputTokens)
+                kvTokens: kvTokens)
             if !mediaReserved {
                 await releaseBox.fire()
                 let mib = projectedBytes / (1024 * 1024)

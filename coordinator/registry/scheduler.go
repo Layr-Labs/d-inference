@@ -947,7 +947,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// estimated TTFT is within the per-request threshold. Providers without
 	// BackendCapacity get 0 (unreliable estimate) and are not rejected by the
 	// ceiling, matching the preflight behavior.
-	ttftMs := ttftMsFromSnapshot(snap, reqPrompt, reqMax)
+	ttftMs := ttftMsFromSnapshot(snap, reqPrompt)
 	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
 		ttftMs = 0
 	}
@@ -1302,7 +1302,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		candidateCount++
 		if snap.hasBackendCapacity {
-			ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens, requestedMaxTokens)
+			ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens)
 			if !hasTTFT || ttft < bestTTFT {
 				bestTTFT = ttft
 				hasTTFT = true
@@ -1317,8 +1317,8 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
 }
 
-func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) time.Duration {
-	ttftMs := ttftMsFromSnapshot(snap, reqPromptTokens, reqMaxTokens)
+func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.Duration {
+	ttftMs := ttftMsFromSnapshot(snap, reqPromptTokens)
 	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
 		return 0
 	}
@@ -1338,16 +1338,13 @@ func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxToke
 // step, which is already reflected by effectiveTPS. Count waiting prefills ahead
 // and this request's own prefill instead of treating active_token_budget_used as
 // a serial decode backlog.
-func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) float64 {
+func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	if !snap.hasBackendCapacity {
 		return 0
 	}
 	statePenalty, _ := slotStatePenalty(snap.slotState)
 	if reqPromptTokens < 0 {
 		reqPromptTokens = 0
-	}
-	if reqMaxTokens <= 0 {
-		reqMaxTokens = defaultRequestedMaxTokens
 	}
 	prefillTPS := snap.prefillTPS
 	if prefillTPS <= 0 {

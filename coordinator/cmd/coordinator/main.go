@@ -510,11 +510,21 @@ func main() {
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
-		Addr:         ":" + cfg.ServerConfig.Port,
-		Handler:      srv.Handler(),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 0, // SSE streaming requires no write timeout
-		IdleTimeout:  120 * time.Second,
+		Addr:    ":" + cfg.ServerConfig.Port,
+		Handler: srv.Handler(),
+		// ReadHeaderTimeout bounds the request-header read phase independently of
+		// the body, closing the slow-header (Slowloris) DoS window: a client that
+		// trickles or never finishes its header block is dropped at 5s instead of
+		// tying up a connection/goroutine. Kept shorter than ReadTimeout so header
+		// hardening doesn't constrain legitimate (larger) request bodies.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      0, // SSE streaming requires no write timeout
+		IdleTimeout:       120 * time.Second,
+		// MaxHeaderBytes caps per-connection header memory at 64 KB (Go's default
+		// is 1 MB), bounding what an attacker can force the server to buffer for
+		// headers and rejecting abusive oversized-header requests early.
+		MaxHeaderBytes: 64 << 10,
 	}
 
 	// Start listening.

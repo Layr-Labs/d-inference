@@ -1040,6 +1040,20 @@ public struct ModelDownloader: Sendable {
             for try await _ in byteStream {}
             return false
         }
+        // 416 Range Not Satisfiable: we asked for `bytes=N-` and the server says N
+        // is at/beyond the resource length — i.e. the `.part` already holds the
+        // whole file. This happens when a prior run received every byte but the
+        // process died before the file was verified + promoted. Do NOT delete the
+        // prefix and re-download it from zero: drain the (empty) body and return
+        // success so the caller's SHA/size check promotes a complete file (or
+        // deletes + restarts a corrupt/oversized one). Only trust this when we
+        // actually sent a Range (existingBytes > 0); a 416 with no prefix is a
+        // genuine error and falls through to the guard below.
+        if http.statusCode == 416, existingBytes > 0 {
+            for try await _ in byteStream {}
+            onChunk?(existingBytes)
+            return true
+        }
         guard (200..<300).contains(http.statusCode) else {
             try? fm.removeItem(at: partial)
             throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")

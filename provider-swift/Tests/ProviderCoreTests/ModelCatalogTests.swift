@@ -205,6 +205,41 @@ struct ModelCatalogTests {
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=8-")
     }
 
+    @Test("downloadFile promotes a complete .part on 416 instead of re-downloading")
+    func downloadFilePromotesCompletePartOn416() async throws {
+        // A prior run received every byte into `.part` but died before promoting
+        // it. The next run sends `Range: bytes=<full>-`, the store answers 416,
+        // and we must promote the existing complete prefix — NOT delete it and
+        // re-fetch the whole file from byte 0.
+        let full = Data("0123456789abcdef".utf8)
+        RangeURLProtocol.payload = full
+        RangeURLProtocol.lastRangeHeader = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("model.safetensors")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // The complete file already sits in `.part`.
+        try full.write(to: partial)
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/model.safetensors",
+            to: final
+        )
+
+        #expect(ok)
+        #expect(try Data(contentsOf: final) == full)
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+        // We asked to resume past EOF (got 416) rather than re-fetching from 0.
+        #expect(RangeURLProtocol.lastRangeHeader == "bytes=16-")
+    }
+
     @Test("manifest download failure preserves existing local snapshot")
     func manifestDownloadFailurePreservesExistingSnapshot() async throws {
         let modelID = "test-org/staging-preserves-\(UUID().uuidString)"
@@ -295,6 +330,20 @@ private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
             start = Int(range.dropFirst("bytes=".count).dropLast()) ?? 0
         } else {
             start = 0
+        }
+        // A range whose start is at/beyond EOF is unsatisfiable — real object
+        // stores (R2/S3) answer 416, not an empty 206. Model this so the
+        // complete-but-unpromoted `.part` resume path is exercised faithfully.
+        if start >= Self.payload.count, start > 0 {
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 416,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Range": "bytes */\(Self.payload.count)"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
         }
         let body = Self.payload.dropFirst(start)
         let status = start > 0 ? 206 : 200

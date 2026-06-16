@@ -19,11 +19,17 @@ import Foundation
 /// gate cannot cause an OOM (worst case: a loaded model that serves a single
 /// request at a time).
 public enum ModelLoadAdmission {
-    /// Default headroom (GB) reserved above the weights for one request's KV
-    /// cache + activations at load time. Small on purpose: it only needs to
-    /// cover a single in-flight request; the runtime budget grows concurrency
-    /// from whatever is left. Tunable via provider config.
-    public static let defaultLoadHeadroomGb: Double = 2.0
+    /// Default headroom (GB) reserved above the weights at load time. Derived
+    /// from `UnifiedMemoryCap.loadHeadroomBytes()` (activation reserve + minimum
+    /// serveable KV) so it is the SAME ceiling the runtime KV gate enforces — a
+    /// model that passes the load gate can actually serve. Do NOT hardcode a
+    /// smaller flat value here: a default below the activation reserve lets a
+    /// near-cap model load and then have every request rejected at the KV gate
+    /// (the admit-then-reject trap). Callers may still pass an explicit
+    /// `headroomGb` for pure-arithmetic tests.
+    public static var defaultLoadHeadroomGb: Double {
+        Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0)
+    }
 
     /// Physical memory (GB) available to load a model: the real free memory
     /// (clamped to what the OS actually reports available, not just total minus

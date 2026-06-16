@@ -1,6 +1,35 @@
 "use client";
 
 import Link from "next/link";
+import { StatsFlowMetric } from "@/components/stats/StatsFlowMetric";
+import { StatsProviderCapacityTable, StatsRequestGeographyLeaderboard } from "@/components/stats/StatsGeographyPanels";
+import { StatsHeroBento } from "@/components/stats/StatsHeroBento";
+import { StatsHardwareStrip } from "@/components/stats/StatsHardwareStrip";
+import { StatsMasthead } from "@/components/stats/StatsMasthead";
+import { StatsObservatoryShell } from "@/components/stats/StatsObservatoryShell";
+import { StatsSectionHeader } from "@/components/stats/StatsSectionHeader";
+import {
+  statsChartCanvas,
+  statsChartCard,
+  statsFilterPill,
+  statsFilterPillActive,
+  statsFilterPillTrustActive,
+  statsMapLegend,
+  statsMapLegendDemand,
+  statsMapStageDemand,
+  statsMapStageFlow,
+  statsMapTheaterCorners,
+  statsMetricLabel,
+  statsModelCard,
+  statsModelCardLeader,
+  statsPanel,
+  statsPanelDemand,
+  statsReveal2,
+  statsReveal4,
+  statsReveal5,
+  statsReveal6,
+  statsTokenBar,
+} from "@/components/stats/styles";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
@@ -14,7 +43,6 @@ import {
   Shield,
   Layers,
   Loader2,
-  RefreshCw,
   Globe2,
   MapPin,
   Search,
@@ -411,61 +439,6 @@ function TrustBadge({ level }: { level: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Big hero number
-// ---------------------------------------------------------------------------
-function HeroStat({
-  value,
-  label,
-  sub,
-}: {
-  value: string;
-  label: string;
-  sub?: string;
-}) {
-  return (
-    <div className="text-center">
-      <p className="text-2xl sm:text-4xl md:text-5xl font-mono font-bold text-text-primary tracking-tighter">
-        {value}
-      </p>
-      <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest mt-1">
-        {label}
-      </p>
-      {sub && (
-        <p className="text-xs font-mono text-text-tertiary mt-0.5">{sub}</p>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Compact stat
-// ---------------------------------------------------------------------------
-function MiniStat({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-}) {
-  return (
-    <div className="rounded-xl border border-border-dim bg-bg-primary px-4 py-3 shadow-sm">
-      <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-        {label}
-      </p>
-      <p className="mt-1 text-xl font-mono font-bold text-text-primary">{value}</p>
-      {sub && (
-        <p className="text-xs font-mono text-text-tertiary mt-0.5">{sub}</p>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Network Power -- realistic Apple Silicon draw, auto-scaled units
-// ---------------------------------------------------------------------------
 function providerServesGemmaRollout(provider: ProviderStats): boolean {
   if (provider.current_model && GEMMA_ROLLOUT_IDS.has(provider.current_model)) return true;
   return provider.models?.some((model) => GEMMA_ROLLOUT_IDS.has(model)) ?? false;
@@ -663,13 +636,7 @@ function ModelRow({
     : "--";
 
   return (
-    <div
-      className={`relative overflow-hidden rounded-xl border px-4 py-4 shadow-sm transition-colors ${
-        isLeader
-          ? "border-accent-brand/30 bg-[linear-gradient(135deg,var(--accent-brand-dim),var(--bg-secondary)_42%,var(--bg-primary))]"
-          : "border-border-dim bg-bg-secondary"
-      }`}
-    >
+    <div className={`${statsModelCard} ${isLeader ? statsModelCardLeader : ""}`}>
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <div
@@ -819,17 +786,6 @@ function ModelPill({ label }: { label: string }) {
   );
 }
 
-function ModelHeaderMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-lg font-mono font-bold text-text-primary">{value}</p>
-      <p className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
-        {label}
-      </p>
-    </div>
-  );
-}
-
 function ActiveModelsSection({
   stats,
   catalogData,
@@ -870,55 +826,49 @@ function ActiveModelsSection({
   const routableSlots = visibleInventory.reduce((sum, item) => sum + item.routable, 0);
 
   return (
-    <section className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-accent-brand/20 bg-accent-brand/10 text-accent-brand">
-            <Layers size={17} />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-text-primary">
-              Active Models
-            </h3>
-            <p className="mt-1 text-xs text-text-tertiary">
-              Catalog metadata, live capacity, and trusted node coverage
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-col items-start gap-3 sm:items-end">
-          {filtered.deprecatedCount > 0 && (
-            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border-dim bg-bg-secondary px-3 py-2 text-xs font-mono text-text-secondary transition-colors hover:bg-bg-hover">
-              <input
-                type="checkbox"
-                className="sr-only"
-                checked={showDeprecatedModels}
-                onChange={(event) => setShowDeprecatedModels(event.target.checked)}
-                aria-label="Show deprecated models"
-              />
-              <span
-                className={`relative h-5 w-9 rounded-full transition-colors ${
-                  showDeprecatedModels ? "bg-accent-brand" : "bg-bg-elevated"
-                }`}
-                aria-hidden="true"
-              >
-                <span
-                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-bg-primary shadow-sm transition-transform ${
-                    showDeprecatedModels ? "translate-x-4" : "translate-x-0.5"
-                  }`}
-                />
-              </span>
-              <span>Show deprecated ({filtered.deprecatedCount})</span>
-            </label>
-          )}
-          <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[250px]">
-            <ModelHeaderMetric label="Models" value={visibleInventory.length.toString()} />
-            <ModelHeaderMetric label="Slots" value={totalSlots.toString()} />
-            <ModelHeaderMetric label="Routable Slots" value={routableSlots.toString()} />
-          </div>
-        </div>
-      </div>
+    <section className={`${statsPanel} space-y-5 p-5 sm:p-6 ${statsReveal6}`}>
+      <StatsSectionHeader
+        index="08"
+        title="Active Models"
+        description="Catalog metadata, live capacity, and trusted node coverage"
+        icon={<Layers size={16} />}
+        metrics={[
+          { value: visibleInventory.length.toString(), label: "Models" },
+          { value: totalSlots.toString(), label: "Slots" },
+          { value: routableSlots.toString(), label: "Routable slots" },
+        ]}
+      />
 
-      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+      {filtered.deprecatedCount > 0 && (
+        <div className="flex justify-end">
+          <label className="flex cursor-pointer items-center gap-2 rounded-[0.35rem] border border-border-dim bg-bg-secondary px-3 py-2 transition-colors hover:border-accent-brand/25 hover:bg-bg-hover">
+            <input
+              type="checkbox"
+              className="sr-only"
+              checked={showDeprecatedModels}
+              onChange={(event) => setShowDeprecatedModels(event.target.checked)}
+              aria-label="Show deprecated models"
+            />
+            <span
+              className={`relative h-5 w-9 rounded-full transition-colors ${
+                showDeprecatedModels ? "bg-accent-brand" : "bg-bg-elevated"
+              }`}
+              aria-hidden="true"
+            >
+              <span
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-bg-primary shadow-sm transition-transform ${
+                  showDeprecatedModels ? "translate-x-4" : "translate-x-0.5"
+                }`}
+              />
+            </span>
+            <span className="text-xs font-mono text-text-secondary">
+              Show deprecated ({filtered.deprecatedCount})
+            </span>
+          </label>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-3">
           {visibleInventory.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border-dim bg-bg-secondary px-4 py-5 text-sm text-text-tertiary">
@@ -935,9 +885,9 @@ function ActiveModelsSection({
             ))
           )}
         </div>
-        <div className="rounded-xl border border-border-dim bg-bg-secondary p-4">
+        <div className="rounded-[0.35rem] border border-border-dim bg-bg-secondary p-5 shadow-sm">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-mono uppercase tracking-wider text-text-tertiary">
+            <p className="font-mono text-[0.58rem] tracking-[0.18em] uppercase text-text-tertiary">
               Fleet Mix
             </p>
             <p className="text-xs font-mono text-text-tertiary">
@@ -970,7 +920,7 @@ function ActiveModelsSection({
               ))
             )}
           </div>
-          <div className="mt-5 rounded-lg border border-accent-green/20 bg-accent-green/10 px-3 py-2">
+          <div className="mt-5 rounded border border-accent-green/30 bg-accent-green-dim px-3 py-2.5">
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs font-mono text-accent-green">Routable coverage</span>
               <span className="text-sm font-mono font-bold text-accent-green">
@@ -1190,57 +1140,22 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
     : "No resolved provider locations yet";
 
   return (
-    <section className="bg-bg-primary rounded-xl p-5 sm:p-6 shadow-sm space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <Globe2 size={16} className="text-accent-brand" />
-            <h2 className="text-sm font-semibold text-text-primary">
-              Live Network Flow
-            </h2>
-          </div>
-          <p className="text-xs text-text-tertiary mt-1">
-            Privacy-bucketed consumer demand flowing into online provider capacity
-          </p>
-        </div>
-        <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[260px]">
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">
-              {knownProviders}
-            </p>
-            <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-              Providers
-            </p>
-          </div>
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">
-              {formatNumber(demandOnlyRequests)}
-            </p>
-            <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-              Demand-Only
-            </p>
-          </div>
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">
-              {requestFlows.length}
-            </p>
-            <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-              Routes
-            </p>
-          </div>
-        </div>
-      </div>
+    <section className={`${statsPanel} space-y-5 p-5 sm:p-6 ${statsReveal5}`}>
+      <StatsSectionHeader
+        index="06"
+        title="Live Network Flow"
+        description="Privacy-bucketed consumer demand flowing into online provider capacity"
+        icon={<Globe2 size={16} />}
+        metrics={[
+          { value: knownProviders.toString(), label: "Providers" },
+          { value: formatNumber(demandOnlyRequests), label: "Demand-only" },
+          { value: requestFlows.length.toString(), label: "Routes" },
+        ]}
+      />
 
-      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div
-          className="relative aspect-[2/1] min-h-[260px] overflow-hidden rounded-xl border border-border-dim bg-bg-secondary shadow-inner"
-          style={{
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--bg-primary) 64%, transparent), transparent 42%), radial-gradient(ellipse at 50% 36%, color-mix(in srgb, var(--accent-brand) 11%, transparent), transparent 44%), radial-gradient(ellipse at 18% 56%, color-mix(in srgb, var(--accent-green) 9%, transparent), transparent 34%), var(--bg-secondary)",
-            boxShadow:
-              "inset 0 1px 0 color-mix(in srgb, white 55%, transparent), inset 0 -30px 60px color-mix(in srgb, var(--text-primary) 5%, transparent)",
-          }}
-        >
+      <div
+        className={`relative aspect-[2/1] min-h-[260px] overflow-hidden ${statsMapStageFlow} ${statsMapTheaterCorners}`}
+      >
           <div className="absolute inset-0 opacity-[0.18]">
             <div
               className="absolute inset-0"
@@ -1385,7 +1300,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
             </g>
           </svg>
 
-          <div className="pointer-events-none absolute left-4 top-4 z-30 flex flex-wrap items-center gap-2 rounded-lg border border-border-dim bg-bg-primary/90 px-3 py-2 shadow-sm backdrop-blur">
+          <div className={`${statsMapLegend} pointer-events-none absolute left-4 top-4 z-30 flex flex-wrap items-center gap-2`}>
             <span className="flex items-center gap-1.5 text-[11px] font-mono text-text-tertiary">
               <span className="h-2.5 w-2.5 rounded-full bg-accent-green" />
               consumers
@@ -1470,37 +1385,29 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
           )}
         </div>
 
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <FlowMetric label="30m requests" value={formatNumber(recentRequests)} sub={`${formatNumber(peakRequests)} peak/min`} />
-            <FlowMetric label="30m tokens" value={formatNumber(recentTokens)} sub={`${formatNumber(Math.round(recentTokens / recentBuckets.length))}/min avg`} />
-            <FlowMetric label="Routable nodes" value={routableProviders.toString()} sub={`${hardwareProviders} hardware-trusted`} />
-            <FlowMetric
-              label="Model TPS"
-              value={networkTPS > 0 ? formatNumber(Math.round(networkTPS)) : "--"}
-              sub={networkTPS > 0 ? "reported capacity" : "benchmarks pending"}
-            />
-            <FlowMetric label="Certificates" value={certificateProviders.toString()} sub="public proof ready" />
-            <FlowMetric label="Remote demand" value={formatNumber(demandOnlyRequests)} sub={`${requestFlows.length} active routes`} />
-          </div>
+      <div className="grid grid-cols-2 overflow-hidden rounded-[0.35rem] border border-border-dim bg-bg-secondary shadow-sm md:grid-cols-3 lg:grid-cols-6 divide-x divide-y divide-border-dim lg:divide-y-0">
+        <StatsFlowMetric label="30m requests" value={formatNumber(recentRequests)} sub={`${formatNumber(peakRequests)} peak/min`} />
+        <StatsFlowMetric label="30m tokens" value={formatNumber(recentTokens)} sub={`${formatNumber(Math.round(recentTokens / recentBuckets.length))}/min avg`} />
+        <StatsFlowMetric label="Routable nodes" value={routableProviders.toString()} sub={`${hardwareProviders} hardware-trusted`} />
+        <StatsFlowMetric
+          label="Model TPS"
+          value={networkTPS > 0 ? formatNumber(Math.round(networkTPS)) : "--"}
+          sub={networkTPS > 0 ? "reported capacity" : "benchmarks pending"}
+        />
+        <StatsFlowMetric label="Certificates" value={certificateProviders.toString()} sub="public proof ready" />
+        <StatsFlowMetric label="Remote demand" value={formatNumber(demandOnlyRequests)} sub={`${requestFlows.length} active routes`} />
+      </div>
 
-          <div>
-            <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
-              Provider Capacity
-            </h3>
-            <div className="space-y-3">
-              {topCities.length === 0 ? (
-                <p className="text-sm text-text-tertiary">
-                  City buckets need at least {privacyMin} providers.
-                </p>
-              ) : (
-                topCities.map((bucket) => (
-                  <LocationRow key={bucket.key} bucket={bucket} compact />
-                ))
-              )}
-            </div>
-          </div>
-        </div>
+      <div>
+        <h3 className="mb-2.5 font-mono text-[0.58rem] tracking-[0.18em] uppercase text-text-tertiary">
+          Provider capacity by region
+        </h3>
+        <StatsProviderCapacityTable
+          buckets={topCities}
+          formatPlace={formatPlace}
+          formatNumber={formatNumber}
+          emptyMessage={`City buckets need at least ${privacyMin} providers.`}
+        />
       </div>
 
       {(unknown > 0 || suppressed > 0) && (
@@ -1511,71 +1418,6 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
         </p>
       )}
     </section>
-  );
-}
-
-function FlowMetric({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string;
-  sub: string;
-}) {
-  return (
-    <div className="rounded-lg border border-border-dim bg-bg-secondary px-3 py-2.5">
-      <p className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
-        {label}
-      </p>
-      <p className="mt-1 text-lg font-mono font-bold text-text-primary">{value}</p>
-      <p className="mt-0.5 truncate text-[11px] font-mono text-text-tertiary">{sub}</p>
-    </div>
-  );
-}
-
-function LocationRow({
-  bucket,
-  compact,
-}: {
-  bucket: ProviderLocationBucket;
-  compact?: boolean;
-}) {
-  const attestedPct = bucket.providers > 0
-    ? Math.round((bucket.hardware_attested / bucket.providers) * 100)
-    : 0;
-  const model = bucket.models?.[0];
-
-  return (
-    <div className="border-b border-border-dim pb-3 last:border-b-0 last:pb-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-text-primary truncate">
-            {formatPlace(bucket)}
-          </p>
-          {!compact && model && (
-            <p className="text-xs font-mono text-text-tertiary truncate mt-0.5">
-              {shortModelName(model)}
-            </p>
-          )}
-        </div>
-        <div className="text-right shrink-0">
-          <p className="text-sm font-mono font-bold text-text-primary">
-            {bucket.providers}
-          </p>
-          <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-            nodes
-          </p>
-        </div>
-      </div>
-      <div className="mt-2 flex items-center gap-2 text-[11px] font-mono text-text-tertiary">
-        <span>{attestedPct}% attested</span>
-        <span className="text-border-subtle">/</span>
-        <span>{bucket.gpu_cores} GPU</span>
-        <span className="text-border-subtle">/</span>
-        <span>{formatNumber(bucket.memory_gb)} GB RAM</span>
-      </div>
-    </div>
   );
 }
 
@@ -1590,92 +1432,100 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
     ? plotted
     : regionBuckets.filter(hasCoordinates);
   const totalRequests = regionBuckets.reduce((sum, bucket) => sum + bucket.requests, 0);
-  const topCities = cityBuckets.slice(0, 6);
-  const topRegions = regionBuckets.slice(0, 6);
+  const topCities = cityBuckets.slice(0, 5);
+  const topRegions = regionBuckets.slice(0, 5);
+  const maxCityRequests = Math.max(...topCities.map((bucket) => bucket.requests), 1);
+  const maxRegionRequests = Math.max(...topRegions.map((bucket) => bucket.requests), 1);
 
   return (
-    <section className="bg-bg-primary rounded-xl p-5 sm:p-6 shadow-sm space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <MapPin size={16} className="text-accent-brand" />
-            <h2 className="text-sm font-semibold text-text-primary">
-              Request Geography
-            </h2>
-          </div>
-          <p className="text-xs text-text-tertiary mt-1">
-            Privacy-bucketed demand origins from the last 24 hours
-          </p>
-        </div>
-        <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[260px]">
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">
-              {formatNumber(totalRequests)}
-            </p>
-            <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-              Requests
-            </p>
-          </div>
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">
-              {cityBuckets.length}
-            </p>
-            <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-              Cities
-            </p>
-          </div>
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">
-              {regionBuckets.length}
-            </p>
-            <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-              Regions
-            </p>
-          </div>
-        </div>
-      </div>
+    <section className={`${statsPanel} ${statsPanelDemand} space-y-5 p-5 sm:p-6 ${statsReveal6}`}>
+      <StatsSectionHeader
+        index="07"
+        title="Request Geography"
+        description="Privacy-bucketed demand origins from the last 24 hours"
+        icon={<MapPin size={16} />}
+        metrics={[
+          { value: formatNumber(totalRequests), label: "Requests" },
+          { value: cityBuckets.length.toString(), label: "Cities" },
+          { value: regionBuckets.length.toString(), label: "Regions" },
+        ]}
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
-        <div
-          className="relative min-h-[300px] overflow-hidden rounded-lg border border-border-dim bg-bg-secondary shadow-inner"
-          style={{
-            background:
-              "radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--accent-green) 8%, transparent), transparent 46%), var(--bg-secondary)",
-          }}
-        >
-          <div className="absolute inset-0 opacity-[0.16]">
-            <div
-              className="absolute inset-0"
-              style={{
-                backgroundImage:
-                  "linear-gradient(to right, var(--border-subtle) 1px, transparent 1px), linear-gradient(to bottom, var(--border-subtle) 1px, transparent 1px)",
-                backgroundSize: "72px 72px",
-              }}
-            />
-          </div>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-stretch">
+        <div className={`relative aspect-[2/1] min-h-[260px] overflow-hidden ${statsMapStageDemand}`}>
           <svg
             className="absolute inset-0 h-full w-full"
             viewBox="0 0 1000 500"
-            preserveAspectRatio="none"
+            preserveAspectRatio="xMidYMid meet"
             aria-hidden="true"
           >
-            <path
-              d={WORLD_LAND_PATH}
-              fill="color-mix(in srgb, var(--accent-green) 5%, var(--bg-elevated))"
+            <defs>
+              <filter id="request-dot-lift" x="-80%" y="-80%" width="260%" height="260%">
+                <feDropShadow dx="0" dy="2" stdDeviation="2" floodColor="rgba(0,0,0,0.2)" />
+              </filter>
+              <radialGradient id="request-dot-fill" cx="32%" cy="28%" r="78%">
+                <stop offset="0%" stopColor="rgba(255,255,255,0.78)" />
+                <stop offset="38%" stopColor="var(--accent-green)" />
+                <stop offset="100%" stopColor="color-mix(in srgb, black 18%, var(--accent-green))" />
+              </radialGradient>
+            </defs>
+            <g
+              fill="color-mix(in srgb, var(--accent-green) 6%, var(--bg-elevated))"
               stroke="color-mix(in srgb, var(--text-tertiary) 28%, transparent)"
-              strokeWidth="0.85"
+              strokeWidth="0.75"
               vectorEffect="non-scaling-stroke"
-              opacity="0.86"
-            />
-            <path
-              d="M118 207 C259 170 414 167 557 191 C683 213 789 246 899 236"
-              fill="none"
-              stroke="var(--accent-green)"
-              strokeWidth="1"
-              vectorEffect="non-scaling-stroke"
-              opacity="0.14"
-            />
+              opacity="0.92"
+            >
+              <path d={WORLD_LAND_PATH} />
+            </g>
+            {fallbackPlotted.length > 0 && (
+              <g>
+                {fallbackPlotted.map((bucket) => {
+                  const point = projectedPoint(bucket);
+                  const size = Math.min(11, 3.2 + Math.sqrt(bucket.requests) / 26);
+                  return (
+                    <g key={bucket.key} transform={`translate(${point.x * 10} ${point.y * 5})`}>
+                      <circle
+                        r={size + 7}
+                        fill="var(--accent-green)"
+                        opacity="0.1"
+                      />
+                      <circle
+                        r={size + 4}
+                        fill="none"
+                        stroke="var(--accent-green)"
+                        strokeOpacity="0.22"
+                        strokeWidth="1.2"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <circle
+                        r={size}
+                        fill="url(#request-dot-fill)"
+                        stroke="var(--bg-primary)"
+                        strokeWidth="2"
+                        filter="url(#request-dot-lift)"
+                      />
+                      <circle
+                        r={Math.max(1.6, size * 0.28)}
+                        cx={-size * 0.18}
+                        cy={-size * 0.2}
+                        fill="rgba(255,255,255,0.52)"
+                      />
+                    </g>
+                  );
+                })}
+              </g>
+            )}
           </svg>
+
+          {fallbackPlotted.length > 0 && (
+            <div className={`${statsMapLegend} ${statsMapLegendDemand} pointer-events-none absolute left-4 top-4 z-30 flex flex-wrap items-center gap-2`}>
+              <span className="flex items-center gap-1.5 text-[11px] font-mono text-text-tertiary">
+                <span className="h-2.5 w-2.5 rounded-full bg-accent-green" />
+                demand density
+              </span>
+            </div>
+          )}
 
           {fallbackPlotted.length === 0 ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
@@ -1692,28 +1542,27 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
           ) : (
             fallbackPlotted.map((bucket) => {
               const point = projectedPoint(bucket);
-              const size = Math.min(34, 8 + Math.sqrt(bucket.requests) * 4);
+              const tooltipBelow = point.y < 36;
               return (
                 <div
-                  key={bucket.key}
-                  className="group absolute -translate-x-1/2 -translate-y-1/2"
+                  key={`${bucket.key}-tip`}
+                  className="group absolute z-20 -translate-x-1/2 -translate-y-1/2 hover:z-50"
                   style={{ left: `${point.x}%`, top: `${point.y}%` }}
                 >
+                  <span
+                    className="block h-4 w-4 rounded-full opacity-0"
+                    aria-hidden="true"
+                  />
                   <div
-                    className="relative rounded-full border-2 border-bg-primary bg-accent-green shadow-lg shadow-black/10"
-                    style={{
-                      width: `${size}px`,
-                      height: `${size}px`,
-                      boxShadow: `0 0 0 ${Math.max(5, Math.round(size / 3))}px color-mix(in srgb, var(--accent-green) 15%, transparent), 0 10px 28px color-mix(in srgb, var(--accent-green) 22%, transparent)`,
-                    }}
+                    className={`pointer-events-none absolute left-1/2 z-50 hidden -translate-x-1/2 group-hover:block ${
+                      tooltipBelow ? "top-full mt-2" : "bottom-full mb-2"
+                    }`}
                   >
-                    <span className="absolute inset-[22%] rounded-full bg-white/20" />
-                  </div>
-                  <div className="absolute left-1/2 bottom-full mb-3 hidden -translate-x-1/2 group-hover:block z-20">
                     <div className="min-w-[190px] rounded-lg bg-text-primary px-3 py-2 text-bg-primary shadow-lg">
                       <p className="text-xs font-semibold">{formatPlace(bucket)}</p>
                       <p className="text-[11px] font-mono opacity-80 mt-1">
-                        {formatNumber(bucket.requests)} requests / {formatNumber(bucket.prompt_tokens + bucket.completion_tokens)} tokens
+                        {formatNumber(bucket.requests)} requests /{" "}
+                        {formatNumber(bucket.prompt_tokens + bucket.completion_tokens)} tokens
                       </p>
                     </div>
                   </div>
@@ -1723,39 +1572,14 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
           )}
         </div>
 
-        <div className="space-y-5">
-          <div>
-            <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
-              Top Origins
-            </h3>
-            <div className="space-y-3">
-              {topCities.length === 0 ? (
-                <p className="text-sm text-text-tertiary">
-                  No city-level demand buckets yet.
-                </p>
-              ) : (
-                topCities.map((bucket) => (
-                  <RequestLocationRow key={bucket.key} bucket={bucket} />
-                ))
-              )}
-            </div>
-          </div>
-
-          <div>
-            <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
-              Top Regions
-            </h3>
-            <div className="space-y-3">
-              {topRegions.length === 0 ? (
-                <p className="text-sm text-text-tertiary">No demand regions resolved yet.</p>
-              ) : (
-                topRegions.map((bucket) => (
-                  <RequestLocationRow key={bucket.key} bucket={bucket} compact />
-                ))
-              )}
-            </div>
-          </div>
-        </div>
+        <StatsRequestGeographyLeaderboard
+          cityBuckets={topCities}
+          regionBuckets={topRegions}
+          maxCityRequests={maxCityRequests}
+          maxRegionRequests={maxRegionRequests}
+          formatPlace={formatPlace}
+          formatNumber={formatNumber}
+        />
       </div>
 
       {(unknown > 0 || suppressed > 0) && (
@@ -1766,57 +1590,6 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
         </p>
       )}
     </section>
-  );
-}
-
-function RequestLocationRow({
-  bucket,
-  compact,
-  demandOnly,
-}: {
-  bucket: RequestLocationBucket;
-  compact?: boolean;
-  demandOnly?: boolean;
-}) {
-  const tokens = bucket.prompt_tokens + bucket.completion_tokens;
-
-  return (
-    <div className="border-b border-border-dim pb-3 last:border-b-0 last:pb-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
-            <p className="truncate text-sm font-semibold text-text-primary">
-              {formatPlace(bucket)}
-            </p>
-            {demandOnly && (
-              <span className="shrink-0 rounded-full border border-accent-amber/30 bg-accent-amber-dim px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-accent-amber">
-                no local provider
-              </span>
-            )}
-          </div>
-          {!compact && (
-            <p className="text-xs font-mono text-text-tertiary truncate mt-0.5">
-              {formatNumber(tokens)} tokens
-            </p>
-          )}
-        </div>
-        <div className="text-right shrink-0">
-          <p className="text-sm font-mono font-bold text-text-primary">
-            {formatNumber(bucket.requests)}
-          </p>
-          <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-            req
-          </p>
-        </div>
-      </div>
-      <div className="mt-2 flex items-center gap-2 text-[11px] font-mono text-text-tertiary">
-        <span>{formatNumber(bucket.prompt_tokens)} in</span>
-        <span className="text-border-subtle">/</span>
-        <span>{formatNumber(bucket.completion_tokens)} out</span>
-        <span className="text-border-subtle">/</span>
-        <span>{demandOnly ? "routed remote" : `${formatNumber(bucket.providers)} nodes`}</span>
-      </div>
-    </div>
   );
 }
 
@@ -1869,13 +1642,11 @@ function ActivityChart({
   }
 
   return (
-    <div className="bg-bg-primary rounded-xl p-5 space-y-4 shadow-sm">
-      <div className="flex items-center justify-between">
+    <div className={`${statsChartCard} ${statsReveal4}`}>
+      <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
-            {label}
-          </h3>
-          <p className="text-xs text-text-tertiary mt-1">
+          <h3 className={statsMetricLabel}>{label}</h3>
+          <p className="text-xs mt-1 text-text-tertiary">
             {formatNumber(total)} total / {formatNumber(peak)} peak
           </p>
         </div>
@@ -1885,7 +1656,7 @@ function ActivityChart({
       </div>
       <div
         data-chart="requests-per-minute"
-        className="relative h-40 overflow-hidden rounded-lg border border-border-dim bg-bg-secondary"
+        className={statsChartCanvas}
         aria-label={`${label} chart`}
         onMouseMove={(event) => updateHover(event.clientX, event.currentTarget.getBoundingClientRect())}
         onClick={(event) => updateHover(event.clientX, event.currentTarget.getBoundingClientRect())}
@@ -2013,30 +1784,28 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
   }
 
   return (
-    <div className="bg-bg-primary rounded-xl p-5 space-y-4 shadow-sm">
-      <div className="flex items-center justify-between">
+    <div className={`${statsChartCard} ${statsReveal5}`}>
+      <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
-            Tokens / Minute
-          </h3>
-          <p className="text-xs text-text-tertiary mt-1">
+          <h3 className={statsMetricLabel}>Tokens / Minute</h3>
+          <p className="text-xs mt-1 text-text-tertiary">
             {formatNumber(totalInput + totalOutput)} tokens / {chartData.length} min
           </p>
         </div>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1 text-xs font-mono text-text-tertiary">
-            <span className="w-2 h-2 rounded-sm" style={{ background: "var(--accent-brand)" }} />
+            <span className="w-2 h-2 rounded-sm bg-accent-brand" />
             Input
           </span>
           <span className="flex items-center gap-1 text-xs font-mono text-text-tertiary">
-            <span className="w-2 h-2 rounded-sm" style={{ background: "var(--accent-green)" }} />
+            <span className="w-2 h-2 rounded-sm bg-accent-green" />
             Output
           </span>
         </div>
       </div>
       <div
         data-chart="tokens-per-minute"
-        className="relative h-40 overflow-hidden rounded-lg border border-border-dim bg-bg-secondary"
+        className={statsChartCanvas}
         aria-label="Tokens per minute chart"
         onMouseMove={(event) => updateHover(event.clientX, event.currentTarget.getBoundingClientRect())}
         onClick={(event) => updateHover(event.clientX, event.currentTarget.getBoundingClientRect())}
@@ -2235,8 +2004,8 @@ function LeaderboardSection() {
     : "";
 
   return (
-    <section className="space-y-5">
-      <div className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
+    <section className={`space-y-5 ${statsReveal2}`}>
+      <div className={`${statsPanel} p-5 shadow-sm`}>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -2296,7 +2065,7 @@ function LeaderboardSection() {
         </div>
       </div>
 
-      <div className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
+      <div className={`${statsPanel} p-5 shadow-sm`}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-semibold text-text-primary">Rankings</h3>
@@ -2802,34 +2571,20 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
   }
 
   return (
-    <section className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <Server size={16} className="text-accent-brand" />
-            <h2 className="text-sm font-semibold text-text-primary">Provider Dashboard</h2>
-          </div>
-          <p className="mt-1 text-xs text-text-tertiary">
-            Routability, node health, model coverage, and certificate verification
-          </p>
-        </div>
-        <div className="grid grid-cols-3 gap-3 text-right">
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">{providers.length}</p>
-            <p className="text-xs font-medium text-text-tertiary">Nodes</p>
-          </div>
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">{routableCount}</p>
-            <p className="text-xs font-medium text-text-tertiary">Routable</p>
-          </div>
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">{servingCount}</p>
-            <p className="text-xs font-medium text-text-tertiary">Serving</p>
-          </div>
-        </div>
-      </div>
+    <section className={`${statsPanel} space-y-5 p-5 sm:p-6 ${statsReveal6}`}>
+      <StatsSectionHeader
+        index="09"
+        title="Provider Dashboard"
+        description="Routability, node health, model coverage, and certificate verification"
+        icon={<Server size={16} />}
+        metrics={[
+          { value: providers.length.toString(), label: "Nodes" },
+          { value: routableCount.toString(), label: "Routable" },
+          { value: servingCount.toString(), label: "Serving" },
+        ]}
+      />
 
-      <div className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,1fr)_220px_180px]">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,1fr)_220px_180px] [&_input]:rounded-[0.35rem] [&_input]:border [&_input]:border-border-dim [&_input]:bg-bg-secondary [&_input]:font-mono [&_input]:text-[0.78rem] [&_input:focus]:border-accent-brand/40 [&_input:focus]:outline-none [&_select]:rounded-[0.35rem] [&_select]:border [&_select]:border-border-dim [&_select]:bg-bg-secondary [&_select]:font-mono [&_select]:text-[0.78rem] [&_select:focus]:border-accent-brand/40 [&_select:focus]:outline-none">
         <label className="relative block">
           <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
           <input
@@ -2875,10 +2630,8 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
             key={option.value}
             type="button"
             onClick={() => setStatusFilter(option.value)}
-            className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-              statusFilter === option.value
-                ? "border-accent-brand/35 bg-accent-brand/10 text-accent-brand"
-                : "border-border-dim bg-bg-secondary text-text-secondary hover:border-border-subtle hover:bg-bg-hover"
+            className={`${statsFilterPill} ${
+              statusFilter === option.value ? statsFilterPillActive : ""
             }`}
           >
             {option.label}
@@ -2893,10 +2646,8 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
             key={option.value}
             type="button"
             onClick={() => setTrustFilter(option.value)}
-            className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-              trustFilter === option.value
-                ? "border-accent-green/35 bg-accent-green/10 text-accent-green"
-                : "border-border-dim bg-bg-secondary text-text-secondary hover:border-border-subtle hover:bg-bg-hover"
+            className={`${statsFilterPill} ${
+              trustFilter === option.value ? statsFilterPillTrustActive : ""
             }`}
           >
             {option.label}
@@ -2984,10 +2735,11 @@ export default function StatsPage() {
 
   if (loading) {
     return (
-      <div className="flex-1 flex flex-col">
+      <div className="relative isolate flex min-h-full flex-1 flex-col bg-bg-primary">
         <TopBar title="Network Stats" />
-        <div className="flex-1 flex items-center justify-center">
-          <Loader2 size={24} className="animate-spin text-text-tertiary" />
+        <div className="flex min-h-[60vh] flex-1 flex-col items-center justify-center gap-4 text-text-tertiary">
+          <div className="size-10 animate-spin rounded-full border-2 border-border-dim border-t-accent-brand" />
+          <p className="font-mono text-xs tracking-widest uppercase">Syncing network pulse</p>
         </div>
       </div>
     );
@@ -2995,16 +2747,19 @@ export default function StatsPage() {
 
   if (error || !stats) {
     return (
-      <div className="flex-1 flex flex-col">
+      <div className="relative isolate flex min-h-full flex-1 flex-col bg-bg-primary">
         <TopBar title="Network Stats" />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center space-y-2">
-            <p className="text-text-secondary text-sm">Failed to load platform stats</p>
-            <p className="text-text-tertiary text-xs font-mono">{error}</p>
-            <button onClick={fetchStats} className="mt-3 px-3 py-1.5 rounded-lg border border-border-subtle text-text-secondary text-xs hover:bg-bg-hover transition-colors">
-              Retry
-            </button>
-          </div>
+        <div className="flex min-h-[60vh] flex-1 flex-col items-center justify-center gap-4 text-text-tertiary">
+          <p className="text-sm text-text-secondary">Failed to load platform stats</p>
+          <p className="font-mono text-xs text-text-tertiary">{error}</p>
+          <button
+            type="button"
+            onClick={fetchStats}
+            className="relative mt-2 min-h-10 px-4 pb-2.5 font-mono text-[0.72rem] font-medium tracking-widest uppercase text-accent-brand"
+          >
+            Retry
+            <span className="absolute right-4 bottom-[-1px] left-4 h-0.5 bg-linear-to-r from-accent-brand to-accent-green" aria-hidden="true" />
+          </button>
         </div>
       </div>
     );
@@ -3013,175 +2768,118 @@ export default function StatsPage() {
   const hardwareAttested = stats.providers.filter((p) => p.trust_level === "hardware").length;
   const visibleModelCount = buildModelInventory(stats, catalogData?.aliases ?? []).length;
   const networkPowerWatts = activeNetworkPowerWatts(stats);
-  const tabs: Array<{ value: StatsTab; label: string }> = [
-    { value: "overview", label: "Overview" },
-    { value: "leaderboard", label: "Leaderboard" },
+  const hardwareMetrics = [
+    ...(networkPowerWatts > 0
+      ? [{ label: "Network Power", value: formatPower(networkPowerWatts), sub: "under load", power: true }]
+      : []),
+    { label: "GPU Cores", value: stats.total_gpu_cores.toString(), sub: "Apple Silicon" },
+    { label: "CPU Cores", value: stats.total_cpu_cores.toString(), sub: "P + E cores" },
+    { label: "Unified RAM", value: formatNumber(stats.total_memory_gb), unit: "GB" },
+    {
+      label: "Avg Tok/Req",
+      value: stats.avg_tokens_per_request > 0 ? stats.avg_tokens_per_request.toFixed(0) : "--",
+    },
+    { label: "Models", value: visibleModelCount.toString(), sub: "serving now" },
   ];
 
   return (
-    <div className="flex-1 flex flex-col overflow-y-auto">
+    <>
       <TopBar title="Network Stats" />
-      <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-text-primary tracking-tight">
-              Network Statistics
-            </h1>
-            <p className="text-sm text-text-tertiary mt-1">
-              Live metrics from the Darkbloom decentralized inference network
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-green opacity-40" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-green" />
-              </span>
-              <span className="text-xs font-mono text-accent-green uppercase tracking-wider">Live</span>
-            </div>
-            <button onClick={fetchStats} className="p-2 rounded-lg border border-border-dim hover:border-border-subtle hover:bg-bg-hover text-text-tertiary hover:text-text-secondary transition-all">
-              <RefreshCw size={14} />
-            </button>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2 rounded-xl border border-border-dim bg-bg-primary p-1.5 shadow-sm">
-          {tabs.map((tab) => (
-            <button
-              key={tab.value}
-              type="button"
-              onClick={() => setActiveTab(tab.value)}
-              className={`flex min-h-9 flex-1 items-center justify-center rounded-lg px-4 text-sm font-medium transition-colors sm:flex-none ${
-                activeTab === tab.value
-                  ? "bg-accent-brand text-bg-primary shadow-sm"
-                  : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+      <StatsObservatoryShell>
+        <StatsMasthead
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          onRefresh={fetchStats}
+        />
 
         {activeTab === "leaderboard" ? (
-          <LeaderboardSection />
+          <div className={statsReveal2}>
+            <LeaderboardSection />
+          </div>
         ) : (
-          <>
-        {/* Hero section -- big numbers */}
-        <div className="bg-bg-primary rounded-2xl p-8 shadow-sm">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-            <HeroStat
-              value={formatNumber(stats.total_tokens)}
-              label="Tokens Served"
-              sub={`${formatNumber(stats.total_prompt_tokens)} in / ${formatNumber(stats.total_completion_tokens)} out`}
+          <div className="flex flex-col gap-8">
+            <StatsHeroBento
+              totalTokens={formatNumber(stats.total_tokens)}
+              tokenSub={`${formatNumber(stats.total_prompt_tokens)} in / ${formatNumber(stats.total_completion_tokens)} out`}
+              totalRequests={formatNumber(stats.total_requests)}
+              nodesOnline={stats.active_providers.toString()}
+              nodesSub={
+                hardwareAttested === stats.active_providers
+                  ? "all hardware-attested"
+                  : `${hardwareAttested} hardware-attested`
+              }
+              bandwidth={Math.round(stats.total_bandwidth_gbs).toString()}
             />
-            <HeroStat
-              value={formatNumber(stats.total_requests)}
-              label="Requests"
-            />
-            <HeroStat
-              value={stats.active_providers.toString()}
-              label="Nodes Online"
-              sub={hardwareAttested === stats.active_providers ? "all hardware-attested" : `${hardwareAttested} hardware-attested`}
-            />
-            <HeroStat
-              value={`${Math.round(stats.total_bandwidth_gbs)}`}
-              label="GB/s Bandwidth"
-              sub="combined memory throughput"
-            />
-          </div>
-        </div>
 
-        {/* Hardware capacity grid (+ network power) */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-          {networkPowerWatts > 0 && (
-            <MiniStat
-              label="Network Power"
-              value={formatPower(networkPowerWatts)}
-              sub="under load"
-            />
-          )}
-          <MiniStat label="GPU Cores" value={stats.total_gpu_cores.toString()} sub="Apple Silicon" />
-          <MiniStat label="CPU Cores" value={stats.total_cpu_cores.toString()} sub="P + E cores" />
-          <MiniStat label="Unified RAM" value={`${stats.total_memory_gb} GB`} />
-          <MiniStat
-            label="Avg Tok/Req"
-            value={stats.avg_tokens_per_request > 0 ? stats.avg_tokens_per_request.toFixed(0) : "--"}
-          />
-          <MiniStat
-            label="Models"
-            value={visibleModelCount.toString()}
-            sub="serving now"
-          />
-        </div>
+            <StatsHardwareStrip metrics={hardwareMetrics} />
 
-        {/* Charts */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <ActivityChart
-            data={stats.time_series}
-            label="Requests / Minute"
-            color="var(--accent-brand)"
-            getValue={(d) => d.requests}
-          />
-          <TokenChart data={stats.time_series} />
-        </div>
-
-        {/* Token distribution bar (only if there are tokens) */}
-        {stats.total_tokens > 0 && (
-          <div className="bg-bg-primary rounded-xl p-5 space-y-3 shadow-sm">
-            <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
-              Token Distribution
-            </h3>
-            <div className="flex rounded-lg overflow-hidden h-7">
-              <div
-                className="flex items-center justify-center text-xs font-mono text-white font-medium transition-all duration-500"
-                style={{
-                  width: `${(stats.total_prompt_tokens / stats.total_tokens) * 100}%`,
-                  minWidth: stats.total_prompt_tokens > 0 ? "70px" : "0",
-                  background: "var(--accent-brand)",
-                  opacity: 0.75,
-                }}
-              >
-                {formatNumber(stats.total_prompt_tokens)} in ({((stats.total_prompt_tokens / stats.total_tokens) * 100).toFixed(0)}%)
-              </div>
-              <div
-                className="flex items-center justify-center text-xs font-mono text-white font-medium transition-all duration-500"
-                style={{
-                  width: `${(stats.total_completion_tokens / stats.total_tokens) * 100}%`,
-                  minWidth: stats.total_completion_tokens > 0 ? "70px" : "0",
-                  background: "var(--accent-green)",
-                  opacity: 0.75,
-                }}
-              >
-                {formatNumber(stats.total_completion_tokens)} out ({((stats.total_completion_tokens / stats.total_tokens) * 100).toFixed(0)}%)
-              </div>
+            <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+              <ActivityChart
+                data={stats.time_series}
+                label="Requests / Minute"
+                color="var(--accent-brand)"
+                getValue={(d) => d.requests}
+              />
+              <TokenChart data={stats.time_series} />
             </div>
+
+            {stats.total_tokens > 0 && (
+              <div className={`${statsTokenBar} ${statsReveal5}`}>
+                <div className="mb-3.5 flex items-baseline justify-between gap-4">
+                  <h3 className={`${statsMetricLabel} mb-0`}>Token distribution</h3>
+                  <div className="flex gap-4 font-mono text-[0.62rem] text-text-tertiary">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="size-2 rounded-sm bg-accent-brand" />
+                      Input
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="size-2 rounded-sm bg-accent-green" />
+                      Output
+                    </span>
+                  </div>
+                </div>
+                <div className="flex h-9 overflow-hidden rounded border border-border-dim shadow-[inset_0_1px_2px_color-mix(in_srgb,var(--text-primary)_6%,transparent)]">
+                  <div
+                    className="flex items-center justify-center bg-accent-brand font-mono text-[0.62rem] font-semibold text-white transition-all duration-500"
+                    style={{
+                      width: `${(stats.total_prompt_tokens / stats.total_tokens) * 100}%`,
+                      minWidth: stats.total_prompt_tokens > 0 ? "70px" : "0",
+                    }}
+                  >
+                    {formatNumber(stats.total_prompt_tokens)} in ({((stats.total_prompt_tokens / stats.total_tokens) * 100).toFixed(0)}%)
+                  </div>
+                  <div
+                    className="flex items-center justify-center bg-accent-green font-mono text-[0.62rem] font-semibold text-white transition-all duration-500"
+                    style={{
+                      width: `${(stats.total_completion_tokens / stats.total_tokens) * 100}%`,
+                      minWidth: stats.total_completion_tokens > 0 ? "70px" : "0",
+                    }}
+                  >
+                    {formatNumber(stats.total_completion_tokens)} out ({((stats.total_completion_tokens / stats.total_tokens) * 100).toFixed(0)}%)
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <ProviderGeography stats={stats} />
+            <RequestGeography stats={stats} />
+
+            {stats.models.length > 0 && (
+              <ActiveModelsSection
+                stats={stats}
+                catalogData={catalogData}
+                capacityModels={capacityModels}
+              />
+            )}
+
+            <NetworkNodes providers={stats.providers} />
           </div>
         )}
 
-        <ProviderGeography stats={stats} />
-        <RequestGeography stats={stats} />
-
-        {/* Models */}
-        {stats.models.length > 0 && (
-          <ActiveModelsSection
-            stats={stats}
-            catalogData={catalogData}
-            capacityModels={capacityModels}
-          />
-        )}
-
-        <NetworkNodes providers={stats.providers} />
-          </>
-        )}
-
-        {/* Footer */}
-        <div className="text-center pb-8">
-          <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest">
-            Auto-refreshes every 10 seconds
-          </p>
-        </div>
-      </div>
-    </div>
+        <p className={`py-4 pb-8 text-center font-mono text-[0.58rem] tracking-[0.22em] uppercase text-text-tertiary ${statsReveal6}`}>
+          Auto-refreshes every 10 seconds
+        </p>
+      </StatsObservatoryShell>
+    </>
   );
 }

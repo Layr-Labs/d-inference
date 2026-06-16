@@ -50,6 +50,16 @@ public enum UnifiedMemoryCap {
     /// at least a modest request; concurrency beyond that is sized at runtime.
     static let minimumLoadKVBytes: UInt64 = 1 * 1024 * 1024 * 1024  // 1 GiB
 
+    /// The post-load guard decision, as a pure function so it's unit-testable
+    /// (the BatchScheduler accessor that feeds it reads real MLX globals). A
+    /// freshly-loaded model is serveable iff its MEASURED live KV headroom (taken
+    /// AFTER trimming the cold-load buffer cache) is at least the minimum
+    /// serveable KV. Below that, the caller unloads + rejects rather than keep a
+    /// model whose every request the KV gate would reject.
+    public static func loadIsServeable(measuredLiveKVHeadroomBytes: UInt64) -> Bool {
+        measuredLiveKVHeadroomBytes >= minimumLoadKVBytes
+    }
+
     /// Headroom (bytes) the model-LOAD gate must require ABOVE the weights, so a
     /// model that passes the gate can actually serve. The runtime KV path carves
     /// out the activation reserve and then needs some KV room; the load gate must

@@ -2694,6 +2694,36 @@ public actor ProviderLoop {
                 throw CancellationError()
             }
 
+            // Post-load measured-headroom guard: the load gate admitted on an
+            // ESTIMATE (estimatedMemoryGb = on-disk × 1.2). Now that the weights
+            // are actually resident, check the MEASURED live KV headroom under the
+            // cap — if the real footprint exceeded the estimate there may be no
+            // room to serve, and keeping the model would just reject every request
+            // at the KV gate. Unload + reclaim + reject so the coordinator
+            // reroutes, instead of advertising a dead model. Safe to measure here:
+            // we're inside the `isLoadingAny` critical section, so MLX usage
+            // reflects this load and no concurrent load/unload can race it.
+            //
+            // Trim the cold-load buffer pool FIRST: a fresh load leaves transient
+            // buffers in MLX cacheMemory (no forward pass has trimmed them yet),
+            // which the measurement counts as "used" and would false-reject a
+            // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
+            // clearCache-then-measure self-heal.
+            MLX.Memory.clearCache()
+            if !(await scheduler.hasServeableKVHeadroom()) {
+                let headroomGb = String(
+                    format: "%.1f",
+                    Double(await scheduler.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                let minGb = String(
+                    format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
+                await scheduler.unloadModel()
+                MLX.Memory.clearCache()
+                let message = "Model '\(modelId)' loaded but has insufficient KV headroom "
+                    + "under the memory cap (\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded"
+                recordModelLoadError(model: modelId, message: message)
+                throw InferenceError.modelLoadFailed(message)
+            }
+
             let tokenizer: TokenizerHandle = await container.perform { ctx in
                 TokenizerHandle(ctx.tokenizer)
             }

@@ -283,6 +283,42 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         "a model that passes the load gate must have at least minimum serveable KV")
 }
 
+// MARK: - Post-load guard decision (measured headroom vs minimum serveable KV)
+
+@Test func postLoadGuardRejectsWhenMeasuredHeadroomBelowMinimum() {
+    // The post-load guard (BatchScheduler.hasServeableKVHeadroom) is exactly
+    // `measuredLiveKVHeadroomBytes >= minimumLoadKVBytes`, where the measured
+    // headroom is liveKVHeadroomBytes(real MLX usage). Pin that boundary here
+    // (the BatchScheduler accessor reads real MLX globals, not injectable).
+    let phys = 64 * gib                       // cap 57.6
+    let activation = 3 * gib
+    // Estimate said the model fit, but MEASURED residency turned out larger:
+    // 55.5 GiB actually resident → headroom = 57.6 − 55.5 − 3 = clamped to 0.
+    let measuredOverHeadroom = UnifiedMemoryCap.liveKVHeadroomBytes(
+        physicalBytes: phys, mlxUsedBytes: UInt64(55.5 * Double(gib)),
+        systemAvailableBytes: .max, activationReserveBytes: activation)
+    #expect(measuredOverHeadroom < UnifiedMemoryCap.minimumLoadKVBytes,
+        "an over-estimate-residency model must be rejected by the post-load guard")
+
+    // A model whose real residency leaves room keeps serveable KV → admitted.
+    // 50 GiB resident → headroom = 57.6 − 50 − 3 = 4.6 GiB ≥ 1 GiB min.
+    let measuredOkHeadroom = UnifiedMemoryCap.liveKVHeadroomBytes(
+        physicalBytes: phys, mlxUsedBytes: 50 * gib,
+        systemAvailableBytes: .max, activationReserveBytes: activation)
+    #expect(measuredOkHeadroom >= UnifiedMemoryCap.minimumLoadKVBytes,
+        "a model with real serveable KV must pass the post-load guard")
+
+    // The guard's actual decision function (what BatchScheduler.hasServeableKV
+    // Headroom delegates to): reject below the minimum, admit at/above it.
+    #expect(!UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measuredOverHeadroom))
+    #expect(UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measuredOkHeadroom))
+    // Exact boundary: one byte below min rejects; exactly min admits.
+    #expect(!UnifiedMemoryCap.loadIsServeable(
+        measuredLiveKVHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes - 1))
+    #expect(UnifiedMemoryCap.loadIsServeable(
+        measuredLiveKVHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes))
+}
+
 @Test func kvBudgetAndAdmitSaturateOnMaxOperands() {
     // .max weights must clamp the KV budget to 0, not underflow/trap.
     #expect(UnifiedMemoryCap.kvBudgetBytes(

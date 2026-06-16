@@ -174,7 +174,8 @@ struct Start: AsyncParsableCommand {
                 port: port,
                 host: bind,
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
-                authToken: token
+                authToken: token,
+                kvQuant: config.backend.kvQuant
             ),
             models: advertised
         )

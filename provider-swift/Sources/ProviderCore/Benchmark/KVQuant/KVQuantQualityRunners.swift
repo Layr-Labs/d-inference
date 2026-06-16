@@ -167,7 +167,7 @@ public struct KVQuantQualityRunner {
     /// Short, coherent prompts that elicit confident continuations from instruct
     /// models, so reference greedy tokens are high-probability and fidelity is
     /// meaningful (independent of raw-text PPL quirks).
-    static let genFidelityPrompts: [String] = [
+    public static let genFidelityPrompts: [String] = [
         "Explain step by step how photosynthesis works in plants.",
         "Write a short paragraph about the history of the Roman Empire.",
         "List five practical tips for writing clean, maintainable software.",

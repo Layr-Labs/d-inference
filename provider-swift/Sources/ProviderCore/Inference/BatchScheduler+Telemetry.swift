@@ -94,6 +94,19 @@ extension BatchScheduler {
         activeTokenBudgetUsed + queuedTokenBudget
     }
 
+    // MARK: - Demo / diagnostics accessors
+    //
+    // Exposed so standalone harnesses (e.g. `kv-engine-demo`) can read the
+    // exact per-token KV cost and admitted-token budget the scheduler uses
+    // without reimplementing the architecture-aware estimation math.
+
+    /// Per-token KV-cache byte cost for the currently loaded model. This is the
+    /// value admission uses; it changes when KV quantization is enabled.
+    public func resolvedKVBytesPerToken() -> Int { kvBytesPerToken }
+
+    /// Memory-aware maximum token budget for the currently loaded model.
+    public func resolvedTokenBudgetMax() -> Int { tokenBudgetMax }
+
     private var averageReservedTokensForAdmission: Int {
         let requestCount = activeBridges.count + pendingRequestCount
         guard requestCount > 0 else { return defaultMaxTokens }

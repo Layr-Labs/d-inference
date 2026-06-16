@@ -74,7 +74,7 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
     ) -> (plan: KVQuantPlan, summary: String, reasons: [String]) {
         switch family {
         case .gemma4:
-            let summary = "Gemma 4: validated KV quant candidate is `full-v-affine4:g64:start1024` (V-only 4-bit affine on full/global layers from token 1024; keys and rotating/sliding caches stay fp16)."
+            let summary = "Gemma 4: validated KV quant engine scheme is `k8v8:g128` (8-bit affine K+V on full/global layers, group size 128; rotating/sliding caches stay fp16)."
             return (
                 KVQuantPlan(
                     enabled: true,
@@ -92,9 +92,8 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
                 summary,
                 [
                     "Gemma 4 should only quantize full/global attention layers; rotating or sliding-window layers remain fp16.",
-                    "Value cache only is selected so key cache attention quality remains fp16.",
-                    "The validated benchmark candidate is `full-v-affine4:g64:start1024`, which passes PPL/logits/output/NIAH gates.",
-                    "Quantization starts at token 1024 to preserve the short-context prefix in fp16.",
+                    "The live engine scheme is `k8v8:g128` (8-bit affine keys and values, group size 128).",
+                    "This scheme passes the PPL/logits/output/NIAH gates and is wired through `KVQuantEngineScheme.gemma4K8V8G128`.",
                     "MTP is disabled until a model-specific guarded path is validated.",
                     mode.reportDescription,
                 ]

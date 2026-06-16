@@ -1061,19 +1061,17 @@ public actor BatchScheduler {
         // and with drafter-MTP. When enabled for an allow-listed model, disable
         // both so quantized caches never flow through checkpoint restore or MTP
         // capture (Gemma `forwardTrunk` fatals on quantized captured KV).
-        let modelFamily = KVQuantPolicy.classify(modelID: modelId)
-        // v1 gate: Gemma 4 only. GPT-OSS is deliberately excluded because its
-        // quantized attention fatals on attention sinks; it needs a non-protocol-
-        // conforming dequant batched cache before it can use KV-quant.
-        // TODO(DAR-319 follow-up): validate + enable GPT-OSS once that cache exists.
-        let effectiveKVQuant = kvQuantEnabled && modelFamily == .gemma4
+        let kvQuantScheme = Self.resolveKVQuantScheme(
+            modelID: modelId,
+            architecture: architecture,
+            kvQuantEnabled: kvQuantEnabled
+        )
         let blockSize = 256
-        let backing = effectiveKVQuant
+        let backing = kvQuantScheme != nil
             ? nil
             : await makePrefixCacheBackingIfEnabled(
                 modelId: modelId, weightHash: weightHash, architecture: architecture
             )
-        let kvQuantScheme: KVQuantEngineScheme? = effectiveKVQuant ? .gemma4K8V8G128 : nil
         let kvBytesPerToken = resolvedKVBytesPerToken(
             architecture: architecture,
             weightBytes: weightBytes,
@@ -1565,9 +1563,11 @@ public actor BatchScheduler {
     /// memory. Pulled out of `loadModel` so the lifecycle reads as a
     /// short sequence; the arithmetic itself is unchanged.
     private func applyPostLoadBudgets(snapshot: LoadSnapshot) {
-        let effectiveKVQuant = kvQuantEnabled
-            && KVQuantPolicy.classify(modelID: modelId) == .gemma4
-        let quantScheme: KVQuantEngineScheme? = effectiveKVQuant ? .gemma4K8V8G128 : nil
+        let quantScheme = Self.resolveKVQuantScheme(
+            modelID: modelId,
+            architecture: snapshot.architecture,
+            kvQuantEnabled: kvQuantEnabled
+        )
         self.kvBytesPerToken = Self.resolvedKVBytesPerToken(
             architecture: snapshot.architecture,
             weightBytes: snapshot.bytes,

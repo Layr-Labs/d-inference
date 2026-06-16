@@ -611,3 +611,71 @@ if followUpOk {
 } else {
     print("DAR-314 follow-up: FAILED")
 }
+
+// MARK: - DAR-322: DequantBatchKVCache regular-attention path
+
+func runDequantBatchCacheCase(
+    _ name: String,
+    B: Int, nQ: Int, nKV: Int, L: Int, D: Int
+) -> Bool {
+    MLXRandom.seed(322)
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+
+    let dequantCache = DequantBatchKVCache(
+        leftPadding: [Int](repeating: 0, count: B),
+        groupSize: 64,
+        bits: 8,
+        mode: .affine)
+    let (dqK, dqV) = dequantCache.update(keys: k, values: v)
+
+    let fpCache = BatchKVCache(leftPadding: [Int](repeating: 0, count: B))
+    let (fpK, fpV) = fpCache.update(keys: k, values: v)
+
+    let arr = createCausalMask(
+        n: L, offset: 0, windowSize: nil, leftPadding: dequantCache.leftPadding)
+    let additive = MLX.where(
+        arr, MLXArray(Float(0)), MLXArray(-Float.greatestFiniteMagnitude))
+
+    let candidate = MLXFast.scaledDotProductAttention(
+        queries: q, keys: dqK, values: dqV, scale: scale, mask: additive)
+    let reference = MLXFast.scaledDotProductAttention(
+        queries: q, keys: fpK, values: fpV, scale: scale, mask: additive)
+
+    eval(candidate, reference)
+
+    let diff = relL2(candidate, reference)
+    let ok = diff < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] \(name): relL2=\(String(format: "%.5f", diff))"
+    )
+    return ok
+}
+
+print("== DequantBatchKVCache regular-attention path (DAR-322) ==")
+var dar322Ok = true
+dar322Ok = runDequantBatchCacheCase(
+    "dequant g64 D=64", B: 1, nQ: 8, nKV: 2, L: 16, D: 64) && dar322Ok
+
+let dequantAsProtocol = DequantBatchKVCache(
+    leftPadding: [0], groupSize: 64, bits: 8, mode: .affine
+) as? QuantizedKVCacheProtocol
+let kernelAsProtocol = QuantizedBatchKVCache(
+    leftPadding: [0], groupSize: 64, bits: 8, mode: .affine
+) as? QuantizedKVCacheProtocol
+print(
+    "[\(dequantAsProtocol == nil ? "OK  " : "FAIL")] DequantBatchKVCache does NOT conform to QuantizedKVCacheProtocol"
+)
+print(
+    "[\(kernelAsProtocol != nil ? "OK  " : "FAIL")] QuantizedBatchKVCache conforms to QuantizedKVCacheProtocol"
+)
+dar322Ok = (dequantAsProtocol == nil) && (kernelAsProtocol != nil) && dar322Ok
+
+if dar322Ok {
+    print("DAR-322 gate: ALL OK")
+} else {
+    print("DAR-322 gate: FAILED")
+}

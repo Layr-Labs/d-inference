@@ -72,9 +72,14 @@ struct KVEngineDemo: AsyncParsableCommand {
             await cleanup()
         }
 
-        print("\n=== Building K8V8 g128 quantized engine ===")
+        // Label reflects the family-resolved engine scheme (Gemma → kernel g128,
+        // GPT-OSS → dequant g64), not a hardcoded string.
+        let quantLabel = KVQuantPolicy.classify(modelID: modelID) == .gptOSS
+            ? "k8v8:g64 (dequant)"
+            : "k8v8:g128 (kernel)"
+        print("\n=== Building \(quantLabel) quantized engine ===")
         let quant = try await runEngine(
-            label: "k8v8:g128",
+            label: quantLabel,
             container: container,
             kvQuantEnabled: true
         )

@@ -43,6 +43,34 @@ struct KVQuantEngineTests {
         ]
     )
 
+    /// GPT-OSS-like hybrid config: 4 cached layers, 2 sliding + 2 full.
+    /// No separate global dims; full layers use the same `head_dim` as sliding.
+    private typealias GPTOSSLikeConfig = (
+        numLayers: Int,
+        kvHeads: Int,
+        headDim: Int,
+        numKvSharedLayers: Int,
+        globalHeadDim: Int?,
+        numGlobalKvHeads: Int?,
+        slidingWindowPattern: Int?,
+        layerTypes: [String]?
+    )
+    private let gptOSSLike: GPTOSSLikeConfig = (
+        numLayers: 4,
+        kvHeads: 8,
+        headDim: 64,
+        numKvSharedLayers: 0,
+        globalHeadDim: nil,
+        numGlobalKvHeads: nil,
+        slidingWindowPattern: nil,
+        layerTypes: [
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ]
+    )
+
     @Test("computeKVBytesPerToken unchanged when quant scheme is nil")
     func byteAccountingUnchangedWhenDisabled() {
         let bytes = KVEstimation.computeKVBytesPerToken(
@@ -57,7 +85,7 @@ struct KVQuantEngineTests {
             quantScheme: nil
         )
 
-        // Pattern [S,S,S,S,F] over 4 cached layers => one full layer.
+        // Pattern [S,S,S,F] over 4 cached layers => one full layer.
         // Full layer uses global dims: 2 heads * 512 dim * 2 tensors * 2 bytes = 4096.
         #expect(bytes == 4096, "fp16 path must remain unchanged when quant scheme is nil")
     }
@@ -96,6 +124,40 @@ struct KVQuantEngineTests {
             "quantized bytes must be materially smaller than fp16 (~half)")
         #expect(Double(quantBytes) > Double(fp16Bytes) * 0.45,
             "quantized bytes must not be pathologically small")
+    }
+
+    @Test("computeKVBytesPerToken reduces GPT-OSS full layers with K8V8 g64")
+    func byteAccountingReducesForGPTOSSWithK8V8G64() {
+        let fp16Bytes = KVEstimation.computeKVBytesPerToken(
+            numLayers: gptOSSLike.numLayers,
+            kvHeads: gptOSSLike.kvHeads,
+            headDim: gptOSSLike.headDim,
+            numKvSharedLayers: gptOSSLike.numKvSharedLayers,
+            globalHeadDim: gptOSSLike.globalHeadDim,
+            numGlobalKvHeads: gptOSSLike.numGlobalKvHeads,
+            slidingWindowPattern: gptOSSLike.slidingWindowPattern,
+            layerTypes: gptOSSLike.layerTypes,
+            quantScheme: nil
+        )
+        let quantBytes = KVEstimation.computeKVBytesPerToken(
+            numLayers: gptOSSLike.numLayers,
+            kvHeads: gptOSSLike.kvHeads,
+            headDim: gptOSSLike.headDim,
+            numKvSharedLayers: gptOSSLike.numKvSharedLayers,
+            globalHeadDim: gptOSSLike.globalHeadDim,
+            numGlobalKvHeads: gptOSSLike.numGlobalKvHeads,
+            slidingWindowPattern: gptOSSLike.slidingWindowPattern,
+            layerTypes: gptOSSLike.layerTypes,
+            quantScheme: .gptOSSK8V8G64
+        )
+
+        let expectedRatio = KVQuantCandidateMode.k8v8g64Dequant.effectiveKVBytesPerTokenPerElem / 4.0
+        let expected = Int((Double(fp16Bytes) * expectedRatio).rounded())
+
+        #expect(quantBytes == expected,
+            "quantized full-attention bytes must match the K8V8 g64 effective ratio")
+        #expect(Double(fp16Bytes) / Double(quantBytes) > 1.8,
+            "capacity gain must be close to 2x for K8V8 g64")
     }
 
     @Test("resolvedKVBytesPerToken scales down and dynamic budget doubles")
@@ -138,9 +200,9 @@ struct KVQuantEngineTests {
             "sliding-attention layer must use BatchRotatingKVCache")
     }
 
-    @Test("factory on: full layers use QuantizedBatchKVCache, sliding stays BatchRotatingKVCache")
-    func factoryOnUsesQuantizedFullAndFp16Sliding() {
-        let quantConfig = KVQuantizationConfig(groupSize: 128, bits: 8, mode: .affine)
+    @Test("factory on kernel kind: full layers use QuantizedBatchKVCache, sliding stays BatchRotatingKVCache")
+    func factoryOnKernelKindUsesQuantizedBatchKVCache() {
+        let quantConfig = KVQuantizationConfig(groupSize: 128, bits: 8, mode: .affine, cacheKind: .kernel)
         let fullName = Scheduler.cacheFactoryTypeName(
             for: KVCacheSimple(), quantConfig: quantConfig)
         let slidingName = Scheduler.cacheFactoryTypeName(
@@ -148,14 +210,24 @@ struct KVQuantEngineTests {
             quantConfig: quantConfig)
 
         #expect(fullName == "QuantizedBatchKVCache",
-            "full-attention layer must use QuantizedBatchKVCache when quant is on")
+            "full-attention layer must use QuantizedBatchKVCache when quant kind is kernel")
         #expect(slidingName == "BatchRotatingKVCache",
             "sliding-attention layer must stay fp16 (BatchRotatingKVCache)")
     }
 
+    @Test("factory on dequant kind: full layers use DequantBatchKVCache")
+    func factoryOnDequantKindUsesDequantBatchKVCache() {
+        let quantConfig = KVQuantizationConfig(groupSize: 64, bits: 8, mode: .affine, cacheKind: .dequant)
+        let fullName = Scheduler.cacheFactoryTypeName(
+            for: KVCacheSimple(), quantConfig: quantConfig)
+
+        #expect(fullName == "DequantBatchKVCache",
+            "full-attention layer must use DequantBatchKVCache when quant kind is dequant")
+    }
+
     @Test("factory ignores quant config for arrays and mamba-style caches")
     func factoryIgnoresQuantForNonAttentionCaches() {
-        let quantConfig = KVQuantizationConfig(groupSize: 128, bits: 8, mode: .affine)
+        let quantConfig = KVQuantizationConfig(groupSize: 128, bits: 8, mode: .affine, cacheKind: .kernel)
 
         // ArraysCache is used by recurrent/SSM-style layers.
         let arraysName = Scheduler.cacheFactoryTypeName(
@@ -166,11 +238,87 @@ struct KVQuantEngineTests {
 
     // MARK: - KVQuantPolicy gating
 
-    @Test("KVQuantPolicy classifies Gemma 4 and excludes GPT-OSS for v1")
-    func policyGatesGemma4Only() {
+    @Test("KVQuantPolicy classifies Gemma 4 and GPT-OSS as supported families")
+    func policyClassifiesSupportedFamilies() {
         #expect(KVQuantPolicy.classify(modelID: "mlx-community/gemma-4-4b-it") == .gemma4)
         #expect(KVQuantPolicy.classify(modelID: "google/gemma-4-9b-it") == .gemma4)
         #expect(KVQuantPolicy.classify(modelID: "openai/gpt-oss-20b") == .gptOSS)
         #expect(KVQuantPolicy.classify(modelID: "mlx-community/Llama-3.1-8B") == .unknown)
+    }
+
+    // MARK: - Family-specific scheme selection (DAR-322)
+
+    @Test("Gemma 4 resolves to kernel cache scheme K8V8 g128")
+    func gemma4ResolvesToKernelScheme() {
+        let architecture = ModelArchitecture(
+            numLayers: gemmaLike.numLayers,
+            kvHeads: gemmaLike.kvHeads,
+            headDim: gemmaLike.headDim,
+            numKvSharedLayers: gemmaLike.numKvSharedLayers,
+            globalHeadDim: gemmaLike.globalHeadDim,
+            numGlobalKvHeads: gemmaLike.numGlobalKvHeads,
+            slidingWindowPattern: gemmaLike.slidingWindowPattern,
+            layerTypes: gemmaLike.layerTypes,
+            maxContextLength: 8192
+        )
+
+        let scheme = BatchScheduler.resolveKVQuantScheme(
+            modelID: "gemma-4-26b-it",
+            architecture: architecture,
+            kvQuantEnabled: true
+        )
+
+        #expect(scheme == .gemma4K8V8G128)
+        #expect(scheme?.schedulerConfig.cacheKind == .kernel)
+        #expect(scheme?.schedulerConfig.groupSize == 128)
+    }
+
+    @Test("GPT-OSS resolves to dequant cache scheme K8V8 g64")
+    func gptOSSResolvesToDequantScheme() {
+        let architecture = ModelArchitecture(
+            numLayers: gptOSSLike.numLayers,
+            kvHeads: gptOSSLike.kvHeads,
+            headDim: gptOSSLike.headDim,
+            numKvSharedLayers: gptOSSLike.numKvSharedLayers,
+            globalHeadDim: gptOSSLike.globalHeadDim,
+            numGlobalKvHeads: gptOSSLike.numGlobalKvHeads,
+            slidingWindowPattern: gptOSSLike.slidingWindowPattern,
+            layerTypes: gptOSSLike.layerTypes,
+            maxContextLength: 8192
+        )
+
+        let scheme = BatchScheduler.resolveKVQuantScheme(
+            modelID: "openai/gpt-oss-20b",
+            architecture: architecture,
+            kvQuantEnabled: true
+        )
+
+        #expect(scheme == .gptOSSK8V8G64)
+        #expect(scheme?.schedulerConfig.cacheKind == .dequant)
+        #expect(scheme?.schedulerConfig.groupSize == 64)
+    }
+
+    @Test("GPT-OSS scheme is rejected when head_dim cannot accommodate g64")
+    func gptOSSSchemeRejectsIncompatibleHeadDim() {
+        let badArchitecture = ModelArchitecture(
+            numLayers: gptOSSLike.numLayers,
+            kvHeads: gptOSSLike.kvHeads,
+            headDim: 32,  // smaller than the required group size 64
+            numKvSharedLayers: gptOSSLike.numKvSharedLayers,
+            globalHeadDim: gptOSSLike.globalHeadDim,
+            numGlobalKvHeads: gptOSSLike.numGlobalKvHeads,
+            slidingWindowPattern: gptOSSLike.slidingWindowPattern,
+            layerTypes: gptOSSLike.layerTypes,
+            maxContextLength: 8192
+        )
+
+        let scheme = BatchScheduler.resolveKVQuantScheme(
+            modelID: "openai/gpt-oss-20b",
+            architecture: badArchitecture,
+            kvQuantEnabled: true
+        )
+
+        #expect(scheme == nil,
+            "GPT-OSS must not select a quant scheme when head_dim is too small for g64")
     }
 }

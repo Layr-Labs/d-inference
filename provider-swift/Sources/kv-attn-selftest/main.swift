@@ -227,3 +227,387 @@ for s: Float in [1, 20, 100] {
     runKScheme("K4 per-group g32 ", kScheme: { perGroupDequant($0, bits: 4, groupSize: 32) }, scaleOutlier: s)
     runKScheme("K4 per-channel   ", kScheme: { perChannelDequant($0, bits: 4) }, scaleOutlier: s)
 }
+
+// MARK: - DAR-314: QuantizedBatchKVCache kernel + storage gate
+
+func dequantTuple(_ q: (MLXArray, MLXArray, MLXArray?), groupSize: Int, bits: Int) -> MLXArray {
+    dequantized(q.0, scales: q.1, biases: q.2, groupSize: groupSize, bits: bits)
+}
+
+func runQuantizedBatchKernelCase(
+    _ name: String,
+    B: Int, nQ: Int, nKV: Int, L: Int, D: Int,
+    leftPadding: [Int]? = nil,
+    bits: Int, groupSize: Int,
+    incremental: Bool = false
+) -> Bool {
+    let leftPadding = leftPadding ?? [Int](repeating: 0, count: B)
+    MLXRandom.seed(31415)
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+
+    // Zero out left-padded slots so the cache and reference agree on padding.
+    for (b, pad) in leftPadding.enumerated() where pad > 0 {
+        k[b, 0..., 0..<pad, 0...] = MLXArray(Float(0))
+        v[b, 0..., 0..<pad, 0...] = MLXArray(Float(0))
+    }
+
+    let cache = QuantizedBatchKVCache(
+        leftPadding: leftPadding,
+        groupSize: groupSize,
+        bits: bits,
+        mode: .affine)
+
+    // Build the mask *before* updating, matching real model usage.
+    let maskMode = cache.makeMask(n: L, windowSize: nil, returnArray: true)
+    let maskArray: MLXArray
+    switch maskMode {
+    case .array(let m): maskArray = m
+    default:
+        maskArray = createCausalMask(
+            n: L, offset: cache.offset, windowSize: nil, leftPadding: cache.leftPadding)
+    }
+    let additiveMask = MLX.where(
+        maskArray, MLXArray(Float(0)), MLXArray(-Float.greatestFiniteMagnitude))
+
+    let (qk, qv): (
+        (MLXArray, MLXArray, MLXArray?), (MLXArray, MLXArray, MLXArray?)
+    )
+    if incremental {
+        var lastK: (MLXArray, MLXArray, MLXArray?) = (
+            k, k, nil
+        )
+        var lastV: (MLXArray, MLXArray, MLXArray?) = (
+            v, v, nil
+        )
+        for t in 0..<L {
+            let kt = k[0..., 0..., t..<(t + 1), 0...]
+            let vt = v[0..., 0..., t..<(t + 1), 0...]
+            (lastK, lastV) = cache.updateQuantized(keys: kt, values: vt)
+        }
+        (qk, qv) = (lastK, lastV)
+    } else {
+        (qk, qv) = cache.updateQuantized(keys: k, values: v)
+    }
+
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q,
+        quantizedKeys: qk,
+        quantizedValues: qv,
+        scale: scale,
+        mask: maskMode,
+        groupSize: groupSize,
+        bits: bits,
+        mode: .affine)
+
+    let reference = MLXFast.scaledDotProductAttention(
+        queries: q,
+        keys: dequantTuple(qk, groupSize: groupSize, bits: bits),
+        values: dequantTuple(qv, groupSize: groupSize, bits: bits),
+        scale: scale,
+        mask: additiveMask)
+
+    let fp16Reference = MLXFast.scaledDotProductAttention(
+        queries: q, keys: k, values: v, scale: scale, mask: additiveMask)
+
+    eval(candidate, reference, fp16Reference)
+
+    // Mask out left-padded query positions before comparing; the model does
+    // not compute logits for those slots and the causal mask yields NaN there.
+    let qPositions = MLXArray((0..<L).map { Int32($0) }).reshaped([1, 1, L])
+    let validQuery = (qPositions .>= cache.leftPadding.reshaped([B, 1, 1]))
+        .reshaped([B, 1, L, 1])
+    let candidateMasked = MLX.where(validQuery, candidate, MLXArray(Float(0)))
+    let referenceMasked = MLX.where(validQuery, reference, MLXArray(Float(0)))
+    let fp16RefMasked = MLX.where(validQuery, fp16Reference, MLXArray(Float(0)))
+
+    let kernelRel = relL2(candidateMasked, referenceMasked)
+    let quantLossRel = relL2(candidateMasked, fp16RefMasked)
+    let ok = kernelRel < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] \(name) bits=\(bits): kernel_relL2=\(String(format: "%.5f", kernelRel)) quant_loss_relL2=\(String(format: "%.5f", quantLossRel))"
+    )
+    return ok
+}
+
+func runQuantizedBatchStorageCheck(bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(27182)
+    let B = 1, nKV = 2, L = 64, D = 128
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+
+    let qCache = QuantizedBatchKVCache(
+        leftPadding: [0], groupSize: groupSize, bits: bits, mode: .affine)
+    let fpCache = BatchKVCache(leftPadding: [0])
+
+    _ = qCache.update(keys: k, values: v)
+    let (fpK, fpV) = fpCache.update(keys: k, values: v)
+
+    guard let (qk, qv) = qCache.getQuantizedState() else {
+        print("[FAIL] storage bits=\(bits): empty quantized state")
+        return false
+    }
+    let dqK = dequantTuple(qk, groupSize: groupSize, bits: bits)
+    let dqV = dequantTuple(qv, groupSize: groupSize, bits: bits)
+
+    eval(dqK, dqV, fpK, fpV)
+    let kRel = relL2(dqK, fpK)
+    let vRel = relL2(dqV, fpV)
+    let threshold: Float = bits == 8 ? 0.02 : 0.20
+    let ok = max(kRel, vRel) < threshold
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] storage bits=\(bits): K_relL2=\(String(format: "%.5f", kRel)) V_relL2=\(String(format: "%.5f", vRel))"
+    )
+    return ok
+}
+
+print("== QuantizedBatchKVCache kernel correctness (DAR-314) ==")
+var dar314Ok = true
+for bits in [8, 4] {
+    dar314Ok = runQuantizedBatchKernelCase(
+        "case1 single-row", B: 1, nQ: 4, nKV: 4, L: 16, D: 128,
+        bits: bits, groupSize: 64) && dar314Ok
+    dar314Ok = runQuantizedBatchKernelCase(
+        "case2 left-padding", B: 2, nQ: 4, nKV: 4, L: 16, D: 128,
+        leftPadding: [0, 2], bits: bits, groupSize: 64) && dar314Ok
+    dar314Ok = runQuantizedBatchKernelCase(
+        "case3 GQA", B: 1, nQ: 8, nKV: 2, L: 16, D: 128,
+        bits: bits, groupSize: 64) && dar314Ok
+    dar314Ok = runQuantizedBatchKernelCase(
+        "case4 growth >256", B: 1, nQ: 4, nKV: 4, L: 300, D: 128,
+        bits: bits, groupSize: 64, incremental: true) && dar314Ok
+}
+
+print("== QuantizedBatchKVCache storage round-trip (DAR-314) ==")
+for bits in [8, 4] {
+    dar314Ok = runQuantizedBatchStorageCheck(bits: bits, groupSize: 64) && dar314Ok
+}
+
+if dar314Ok {
+    print("DAR-314 gate: ALL OK")
+} else {
+    print("DAR-314 gate: FAILED")
+}
+
+// MARK: - DAR-314 follow-up: batched cache paths not covered by the kernel gate
+
+func maskAndAdditiveMask(for cache: QuantizedBatchKVCache, n: Int)
+    -> (MLXFast.ScaledDotProductAttentionMaskMode, MLXArray)
+{
+    // Build the mask against the already-materialized cache (offset 0 so the
+    // key length equals the cache length). This matches how we compare
+    // post-operation states in the follow-up tests.
+    let arr = createCausalMask(
+        n: n, offset: 0, windowSize: nil, leftPadding: cache.leftPadding)
+    let additive = MLX.where(
+        arr, MLXArray(Float(0)), MLXArray(-Float.greatestFiniteMagnitude))
+    return (.array(arr), additive)
+}
+
+func runFinalizeBatchedCase(_ name: String, bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(314159)
+    let B = 2, nQ = 4, nKV = 4, D = 128
+    let lengths = [3, 5]
+    let maxLength = lengths.max()!
+    let rightPadding = lengths.map { maxLength - $0 }
+    let q = MLXRandom.normal([B, nQ, maxLength, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, maxLength, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, maxLength, D]).asType(.float32)
+    for (b, len) in lengths.enumerated() {
+        k[b, 0..., len..<maxLength, 0...] = MLXArray(Float(0))
+        v[b, 0..., len..<maxLength, 0...] = MLXArray(Float(0))
+    }
+    let scale = 1.0 / Float(D).squareRoot()
+
+    let qCache = QuantizedBatchKVCache(
+        leftPadding: [Int](repeating: 0, count: B),
+        groupSize: groupSize, bits: bits, mode: .affine)
+    qCache.prepareBatched(
+        leftPadding: nil, lengths: lengths, rightPadding: rightPadding)
+    _ = qCache.updateQuantized(keys: k, values: v)
+    qCache.finalizeBatched()
+    guard let (qk, qv) = qCache.getQuantizedState() else {
+        print("[FAIL] \(name): empty quantized state after finalize")
+        return false
+    }
+
+    let fpCache = BatchKVCache(leftPadding: [Int](repeating: 0, count: B))
+    fpCache.prepareBatched(
+        leftPadding: nil, lengths: lengths, rightPadding: rightPadding)
+    _ = fpCache.update(keys: k, values: v)
+    fpCache.finalizeBatched()
+    let fpK = fpCache.keys![.ellipsis, ..<fpCache.offset, 0...]
+    let fpV = fpCache.values![.ellipsis, ..<fpCache.offset, 0...]
+
+    let (maskMode, additiveMask) = maskAndAdditiveMask(for: qCache, n: maxLength)
+
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: qk, quantizedValues: qv,
+        scale: scale, mask: maskMode, groupSize: groupSize,
+        bits: bits, mode: .affine)
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q,
+        keys: dequantTuple(qk, groupSize: groupSize, bits: bits),
+        values: dequantTuple(qv, groupSize: groupSize, bits: bits),
+        scale: scale, mask: additiveMask)
+    let fp16Ref = MLXFast.scaledDotProductAttention(
+        queries: q, keys: fpK, values: fpV,
+        scale: scale, mask: additiveMask)
+
+    eval(candidate, dequantRef, fp16Ref)
+
+    let qPositions = MLXArray((0..<maxLength).map { Int32($0) }).reshaped([1, 1, maxLength])
+    let validQuery = (qPositions .>= qCache.leftPadding.reshaped([B, 1, 1]))
+        .reshaped([B, 1, maxLength, 1])
+    let candM = MLX.where(validQuery, candidate, MLXArray(Float(0)))
+    let deqM = MLX.where(validQuery, dequantRef, MLXArray(Float(0)))
+    let fpM = MLX.where(validQuery, fp16Ref, MLXArray(Float(0)))
+
+    let kernelRel = relL2(candM, deqM)
+    let layoutRel = relL2(candM, fpM)
+    let layoutThreshold: Float = bits == 8 ? 0.02 : 0.20
+    let ok = kernelRel < 0.02 && layoutRel < layoutThreshold
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] \(name): kernel_relL2=\(String(format: "%.5f", kernelRel)) layout_relL2=\(String(format: "%.5f", layoutRel))"
+    )
+    return ok
+}
+
+func runExtendBatchedCase(_ name: String, bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(271828)
+    let nQ = 4, nKV = 4, D = 128, L = 8
+    let totalLength = 2 * L
+    let scale = 1.0 / Float(D).squareRoot()
+
+    let kSrc = MLXRandom.normal([1, nKV, L, D]).asType(.float32)
+    let vSrc = MLXRandom.normal([1, nKV, L, D]).asType(.float32)
+    let kStep = MLXRandom.normal([2, nKV, L, D]).asType(.float32)
+    let vStep = MLXRandom.normal([2, nKV, L, D]).asType(.float32)
+
+    let srcQ = QuantizedBatchKVCache(
+        leftPadding: [0], groupSize: groupSize, bits: bits, mode: .affine)
+    _ = srcQ.updateQuantized(keys: kSrc, values: vSrc)
+
+    // Empty destination cache: this exercises the empty-cache branch of extend().
+    let dstQ = QuantizedBatchKVCache(
+        leftPadding: [0], groupSize: groupSize, bits: bits, mode: .affine)
+    dstQ.extendBatched(srcQ)
+    let (qk, qv) = dstQ.updateQuantized(keys: kStep, values: vStep)
+    let q = MLXRandom.normal([2, nQ, totalLength, D]).asType(.float32)
+
+    let srcFp = BatchKVCache(leftPadding: [0])
+    _ = srcFp.update(keys: kSrc, values: vSrc)
+    let dstFp = BatchKVCache(leftPadding: [0])
+    dstFp.extendBatched(srcFp)
+    _ = dstFp.update(keys: kStep, values: vStep)
+    let fpK = dstFp.keys![.ellipsis, ..<dstFp.offset, 0...]
+    let fpV = dstFp.values![.ellipsis, ..<dstFp.offset, 0...]
+
+    let (maskMode, additiveMask) = maskAndAdditiveMask(for: dstQ, n: totalLength)
+
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: qk, quantizedValues: qv,
+        scale: scale, mask: maskMode, groupSize: groupSize,
+        bits: bits, mode: .affine)
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q,
+        keys: dequantTuple(qk, groupSize: groupSize, bits: bits),
+        values: dequantTuple(qv, groupSize: groupSize, bits: bits),
+        scale: scale, mask: additiveMask)
+    let fp16Ref = MLXFast.scaledDotProductAttention(
+        queries: q, keys: fpK, values: fpV,
+        scale: scale, mask: additiveMask)
+
+    eval(candidate, dequantRef, fp16Ref)
+
+    // The admitted empty row starts with L positions of padding; mask those
+    // query positions out the same way the model skips them.
+    let qPositions = MLXArray((0..<totalLength).map { Int32($0) }).reshaped([1, 1, totalLength])
+    let validQuery = (qPositions .>= dstQ.leftPadding.reshaped([2, 1, 1]))
+        .reshaped([2, 1, totalLength, 1])
+    let candM = MLX.where(validQuery, candidate, MLXArray(Float(0)))
+    let deqM = MLX.where(validQuery, dequantRef, MLXArray(Float(0)))
+    let fpM = MLX.where(validQuery, fp16Ref, MLXArray(Float(0)))
+
+    let kernelRel = relL2(candM, deqM)
+    let layoutRel = relL2(candM, fpM)
+    let layoutThreshold: Float = bits == 8 ? 0.02 : 0.20
+    let ok = kernelRel < 0.02 && layoutRel < layoutThreshold
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] \(name): kernel_relL2=\(String(format: "%.5f", kernelRel)) layout_relL2=\(String(format: "%.5f", layoutRel))"
+    )
+    return ok
+}
+
+func runFilterBatchedCase(_ name: String, bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(123456)
+    let B = 2, nQ = 4, nKV = 4, L = 16, D = 128
+    let scale = 1.0 / Float(D).squareRoot()
+    let q = MLXRandom.normal([1, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+
+    let qCache = QuantizedBatchKVCache(
+        leftPadding: [0, 0], groupSize: groupSize, bits: bits, mode: .affine)
+    _ = qCache.updateQuantized(keys: k, values: v)
+    qCache.filterBatched(batchIndices: MLXArray([Int32(1)]))
+    guard let (qk, qv) = qCache.getQuantizedState() else {
+        print("[FAIL] \(name): empty quantized state after filter")
+        return false
+    }
+
+    let fpCache = BatchKVCache(leftPadding: [0, 0])
+    _ = fpCache.update(keys: k, values: v)
+    fpCache.filterBatched(batchIndices: MLXArray([Int32(1)]))
+    let fpK = fpCache.keys![.ellipsis, ..<fpCache.offset, 0...]
+    let fpV = fpCache.values![.ellipsis, ..<fpCache.offset, 0...]
+
+    let (maskMode, additiveMask) = maskAndAdditiveMask(for: qCache, n: L)
+
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: qk, quantizedValues: qv,
+        scale: scale, mask: maskMode, groupSize: groupSize,
+        bits: bits, mode: .affine)
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q,
+        keys: dequantTuple(qk, groupSize: groupSize, bits: bits),
+        values: dequantTuple(qv, groupSize: groupSize, bits: bits),
+        scale: scale, mask: additiveMask)
+    let fp16Ref = MLXFast.scaledDotProductAttention(
+        queries: q, keys: fpK, values: fpV,
+        scale: scale, mask: additiveMask)
+
+    eval(candidate, dequantRef, fp16Ref)
+
+    let kernelRel = relL2(candidate, dequantRef)
+    let layoutRel = relL2(candidate, fp16Ref)
+    let layoutThreshold: Float = bits == 8 ? 0.02 : 0.20
+    let ok = kernelRel < 0.02 && layoutRel < layoutThreshold
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] \(name): kernel_relL2=\(String(format: "%.5f", kernelRel)) layout_relL2=\(String(format: "%.5f", layoutRel))"
+    )
+    return ok
+}
+
+print("== QuantizedBatchKVCache finalize/extend/filter (DAR-314 follow-up) ==")
+var followUpOk = true
+for bits in [8, 4] {
+    followUpOk = runFinalizeBatchedCase(
+        "finalize ragged bits=\(bits)", bits: bits, groupSize: 64) && followUpOk
+    followUpOk = runExtendBatchedCase(
+        "extend empty bits=\(bits)", bits: bits, groupSize: 64) && followUpOk
+    followUpOk = runFilterBatchedCase(
+        "filter drop-row bits=\(bits)", bits: bits, groupSize: 64) && followUpOk
+}
+if followUpOk {
+    print("DAR-314 follow-up: ALL OK")
+} else {
+    print("DAR-314 follow-up: FAILED")
+}

@@ -141,7 +141,7 @@ func queueMaxTTFTMs(policy selfRoutePolicy, estimatedPromptTokens int) float64 {
 	if policy.enabled || policy.prefer {
 		return 0
 	}
-	return ttftAdmissionThreshold(estimatedPromptTokens).Seconds() * 1000.0
+	return float64(ttftAdmissionThreshold(estimatedPromptTokens).Milliseconds())
 }
 
 // dispatchPrimary selects (and, when no idle provider exists on the first

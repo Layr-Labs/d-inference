@@ -88,11 +88,6 @@ const (
 	// block. Using context.Background() unbounded here risks hanging the HTTP
 	// handler goroutine when a WebSocket is half-dead.
 	cancelWriteTimeout = 2 * time.Second
-
-	// openRouterTTFT429Threshold is the floor for external-router TTFT admission:
-	// small prompts keep the existing 10s target, while long prompts can use the
-	// same prompt-scaled deadline enforced by the dispatch wait.
-	openRouterTTFT429Threshold = 10 * time.Second
 )
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
@@ -107,11 +102,7 @@ func ttftDeadline(estimatedPromptTokens int) time.Duration {
 }
 
 func ttftAdmissionThreshold(estimatedPromptTokens int) time.Duration {
-	deadline := ttftDeadline(estimatedPromptTokens)
-	if deadline < openRouterTTFT429Threshold {
-		return openRouterTTFT429Threshold
-	}
-	return deadline
+	return ttftDeadline(estimatedPromptTokens)
 }
 
 // sendProviderCancel sends a Cancel message for the given request to the
@@ -464,7 +455,7 @@ func (s *Server) dispatchOneProvider(
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
 	if !policy.enabled && !policy.prefer {
-		pr.MaxTTFTMs = ttftAdmissionThreshold(estimatedPromptTokens).Seconds() * 1000.0
+		pr.MaxTTFTMs = float64(ttftAdmissionThreshold(estimatedPromptTokens).Milliseconds())
 	}
 
 	excludeList := func() []string {
@@ -706,7 +697,7 @@ func estimatePromptTokens(parsed map[string]any) int {
 		total += messagesPromptTokens(v)
 	}
 	if v, ok := parsed["input"]; ok {
-		total += approximateTokenCount(v)
+		total += inputPromptTokens(v)
 	}
 	if v, ok := parsed["prompt"]; ok {
 		total += approximateTokenCount(v)
@@ -794,7 +785,7 @@ func messageContentTokens(content any) int {
 			}
 			typ, _ := pm["type"].(string)
 			switch {
-			case typ == "text":
+			case typ == "text" || typ == "input_text":
 				if s, ok := pm["text"].(string); ok {
 					total += textTokens(s)
 				}
@@ -833,6 +824,38 @@ func messagesPromptTokens(messages any) int {
 		total += messageContentTokens(mm["content"])
 	}
 	return total
+}
+
+// inputPromptTokens estimates the Responses API `input` field. A string input
+// is plain text (len/4). Structured input is an array of message-like items with
+// `content` parts, so reuse the same media-aware content estimator as chat
+// messages instead of counting JSON wrapper bytes.
+func inputPromptTokens(input any) int {
+	switch x := input.(type) {
+	case string:
+		return approximateTokenCount(x)
+	case []any:
+		total := 0
+		for _, item := range x {
+			switch m := item.(type) {
+			case string:
+				total += approximateTokenCount(m)
+			case map[string]any:
+				content, ok := m["content"]
+				if !ok {
+					total += approximateTokenCount(m)
+					continue
+				}
+				total += 4 // role/type framing, matching messagesPromptTokens.
+				total += messageContentTokens(content)
+			default:
+				total += approximateTokenCount(item)
+			}
+		}
+		return total
+	default:
+		return approximateTokenCount(input)
+	}
 }
 
 // contentPartsHaveMedia reports whether a `content` value (a content-part array)
@@ -4275,7 +4298,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
 	if !policy.enabled && !policy.prefer {
-		pr.MaxTTFTMs = ttftAdmissionThreshold(estimatedPromptTokens).Seconds() * 1000.0
+		pr.MaxTTFTMs = float64(ttftAdmissionThreshold(estimatedPromptTokens).Milliseconds())
 	}
 
 	// refundExtra credits back the provider-specific surcharge that

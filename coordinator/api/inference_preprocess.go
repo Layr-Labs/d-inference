@@ -128,6 +128,14 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 		return inferencePrelude{}, false
 	}
 
+	// NOTE: remote media resolution (resolveRemoteMedia) is intentionally NOT done
+	// here. It performs network I/O (fetching consumer-supplied URLs), so it must
+	// run AFTER token admission and the balance reservation — otherwise an
+	// authenticated but unfunded/over-quota request could drive coordinator-side
+	// fetches for free. Each handler calls it once post-billing, before the body is
+	// frozen for dispatch (token/routing estimates count media parts flatly, so
+	// they don't need the inlined bytes).
+
 	return inferencePrelude{rawBody: rawBody, parsed: parsed, model: model}, true
 }
 

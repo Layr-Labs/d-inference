@@ -1626,6 +1626,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Resolve remote http(s) image_url/video_url links into inline data: URIs —
+	// AFTER token admission and the balance reservation, so network I/O is gated
+	// behind the cost gates (an authenticated but unfunded/over-quota request can
+	// never drive coordinator-side fetches). Done before the catalog/capacity
+	// availability checks; token & routing estimates above counted media parts
+	// flatly, so they don't need the inlined bytes. The reservation is held here —
+	// refund on any failure.
+	rawBody, ok = s.resolveRemoteMedia(w, r, rawBody, parsed)
+	if !ok {
+		refundReservation()
+		return
+	}
+
 	// Reject requests for models not in the catalog.
 	if !s.registry.IsModelInCatalog(model) {
 		refundReservation()
@@ -4152,6 +4165,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
 		}
+	}
+
+	// Resolve remote http(s) image_url/video_url links into inline data: URIs —
+	// AFTER token admission and the balance reservation, so network I/O is gated
+	// behind the cost gates (no fetches for unfunded/over-quota requests). This
+	// handler rebuilds the provider body from `parsed` below (inferenceBody), so
+	// only the in-place mutation matters; refund the held reservation on failure.
+	if _, mok := s.resolveRemoteMedia(w, r, rawBody, parsed); !mok {
+		refundReservation()
+		return
 	}
 
 	// Self-route pre-flight (precise errors, no paid fallback); otherwise the

@@ -105,6 +105,7 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String] = [],
         idleTimeout: UInt64? = nil,
+        memoryLimitGB: UInt64? = nil,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
         // Determine the binary path (current executable)
@@ -124,6 +125,7 @@ public enum LaunchAgent: Sendable {
             coordinatorURL: coordinatorURL,
             models: models,
             idleTimeout: idleTimeout,
+            memoryLimitGB: memoryLimitGB,
             localEndpoint: localEndpoint
         )
         try loadService()
@@ -264,6 +266,7 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String],
         idleTimeout: UInt64?,
+        memoryLimitGB: UInt64?,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
         let plist = plistPath()
@@ -275,7 +278,38 @@ public enum LaunchAgent: Sendable {
 
         let log = logPath().path
 
-        // Build the ProgramArguments array.
+        let programArguments = Self.programArguments(
+            binaryPath: binaryPath,
+            coordinatorURL: coordinatorURL,
+            models: models,
+            idleTimeout: idleTimeout,
+            memoryLimitGB: memoryLimitGB,
+            localEndpoint: localEndpoint
+        )
+
+        let plistDict = makeServicePlist(
+            label: label,
+            programArguments: programArguments,
+            logPath: log,
+            environment: ProcessInfo.processInfo.environment
+        )
+
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plistDict,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: plist, options: .atomic)
+    }
+
+    static func programArguments(
+        binaryPath: String,
+        coordinatorURL: String,
+        models: [String],
+        idleTimeout: UInt64?,
+        memoryLimitGB: UInt64?,
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+    ) -> [String] {
         var programArguments: [String] = [
             binaryPath,
             "start",
@@ -291,6 +325,10 @@ public enum LaunchAgent: Sendable {
             programArguments.append("--idle-timeout")
             programArguments.append("\(timeout)")
         }
+        if let memoryLimitGB, memoryLimitGB > 0 {
+            programArguments.append("--memory-limit-gb")
+            programArguments.append("\(memoryLimitGB)")
+        }
         if localEndpoint.enabled {
             programArguments.append("--local-endpoint")
             programArguments.append(contentsOf: ["--port", "\(localEndpoint.port)"])
@@ -299,20 +337,7 @@ public enum LaunchAgent: Sendable {
                 programArguments.append("--no-auth")
             }
         }
-
-        let plistDict = makeServicePlist(
-            label: label,
-            programArguments: programArguments,
-            logPath: log,
-            environment: ProcessInfo.processInfo.environment
-        )
-
-        let data = try PropertyListSerialization.data(
-            fromPropertyList: plistDict,
-            format: .xml,
-            options: 0
-        )
-        try data.write(to: plist, options: .atomic)
+        return programArguments
     }
 
     /// Build the launchd plist dictionary for the provider service. Pure (no I/O)

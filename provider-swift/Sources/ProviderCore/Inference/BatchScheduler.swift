@@ -47,6 +47,7 @@ public actor BatchScheduler {
 
     let maxConcurrentRequests: Int
     let pendingTimeout: Duration
+    let totalMemoryBytes: UInt64
     /// Default max output tokens when the consumer omits `max_tokens`.
     /// Starts at the init value (typically 4096) and is raised post-load
     /// when the model's context length is known.
@@ -172,10 +173,12 @@ public actor BatchScheduler {
         pendingTimeout: Duration = .seconds(120),
         defaultMaxTokens: Int = 4096,
         kvBudget: GlobalKVCacheBudget? = nil,
-        diskAccountant: GlobalDiskAccountant? = nil
+        diskAccountant: GlobalDiskAccountant? = nil,
+        totalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
+        self.totalMemoryBytes = totalMemoryBytes
         self.defaultMaxTokens = defaultMaxTokens
         self.initDefaultMaxTokens = defaultMaxTokens
         self.kvBudget = kvBudget
@@ -225,7 +228,8 @@ public actor BatchScheduler {
             maxConcurrentRequests: maxConcurrentRequests,
             eosTokenIds: snapshot.eosTokenIds,
             architecture: snapshot.architecture,
-            diskAccountant: diskAccountant
+            diskAccountant: diskAccountant,
+            totalMemoryBytes: totalMemoryBytes
         )
         let engine = build.engine
         // Re-check epoch after the engine.start suspension. If another
@@ -966,7 +970,8 @@ public actor BatchScheduler {
         maxConcurrentRequests: Int,
         eosTokenIds: Set<Int>,
         architecture: ModelArchitecture,
-        diskAccountant: GlobalDiskAccountant? = nil
+        diskAccountant: GlobalDiskAccountant? = nil,
+        totalMemoryBytes: UInt64
     ) async -> EngineBuild {
         // TB-007: the prefix cache is ON by default (operator decision) with an
         // ENCRYPTED-at-rest backend; opt out with DARKBLOOM_PREFIX_CACHE=0.
@@ -984,9 +989,10 @@ public actor BatchScheduler {
             modelId: modelId, weightHash: weightHash, architecture: architecture
         )
         let kvBytesPerToken = resolvedKVBytesPerToken(architecture: architecture, weightBytes: weightBytes)
+        let prefixBudgetBytes = prefixCacheBudgetBytes(physicalMemory: totalMemoryBytes)
         let maxBlocks = prefixCacheMaxBlocks(
             kvBytesPerToken: kvBytesPerToken,
-            budgetBytes: prefixCacheBudgetBytes(),
+            budgetBytes: prefixBudgetBytes,
             blockSize: blockSize
         )
         // now() for the manager index timestamps — wall clock is fine here.
@@ -1063,7 +1069,7 @@ public actor BatchScheduler {
                         binding: checkpointBinding,
                         // RAM tier respects the same memory budget as the
                         // engine block tier (DARKBLOOM_PREFIX_CACHE_MAX_GB).
-                        ram: PrefixCacheRAM(maxBytes: prefixCacheBudgetBytes()),
+                        ram: PrefixCacheRAM(maxBytes: prefixBudgetBytes),
                         index: PrefixCacheIndex(
                             fileURL: backing.dir.appendingPathComponent("index.json")),
                         kek: backing.kek,
@@ -1340,10 +1346,13 @@ public actor BatchScheduler {
     /// NOTE: this is read UNCONDITIONALLY at every model load (to size
     /// maxBlocks) even when the cache is disabled, so a malformed value must
     /// degrade — never crash. See resolveMemoryBudget.
-    static func prefixCacheBudgetBytes() -> Int {
+    static func prefixCacheBudgetBytes(
+        physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int {
         let envGB: Double? = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_MAX_GB"]
             .flatMap(Double.init)
-        return resolveMemoryBudget(envGB: envGB, physicalMemory: Int(ProcessInfo.processInfo.physicalMemory))
+        let clampedPhysical = Int(min(physicalMemory, UInt64(Int.max)))
+        return resolveMemoryBudget(envGB: envGB, physicalMemory: clampedPhysical)
     }
 
     /// Pure memory-budget policy (testable). A valid positive env override
@@ -1471,12 +1480,14 @@ public actor BatchScheduler {
             architecture: snapshot.architecture,
             weightBytes: snapshot.bytes
         )
-        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
-        let osReserve = 4 * 1024 * 1024 * 1024
-        let safetyMargin = totalMemory / 10
-        let availableForKV = totalMemory - snapshot.bytes - osReserve - safetyMargin
+        let osReserve = UInt64(4 * 1024 * 1024 * 1024)
+        let safetyMargin = totalMemoryBytes / 10
+        let weightBytes = UInt64(max(0, snapshot.bytes))
+        let committed = Self.saturatingAdd(weightBytes, osReserve, safetyMargin)
+        let availableForKV = totalMemoryBytes > committed ? totalMemoryBytes - committed : 0
         if availableForKV > 0 && kvBytesPerToken > 0 {
-            self.dynamicTokenBudgetMax = max(availableForKV / kvBytesPerToken, 1024)
+            let tokens = availableForKV / UInt64(kvBytesPerToken)
+            self.dynamicTokenBudgetMax = max(Int(min(tokens, UInt64(Int.max))), 1024)
         } else {
             self.dynamicTokenBudgetMax = 1024
         }
@@ -1906,7 +1917,7 @@ public actor BatchScheduler {
             gpuMemoryActiveBytes: gpuMemory(.active),
             gpuMemoryPeakBytes: gpuMemory(.peak),
             gpuMemoryCacheBytes: gpuMemory(.cache),
-            totalMemoryBytes: ProcessInfo.processInfo.physicalMemory
+            totalMemoryBytes: totalMemoryBytes
         )
     }
 

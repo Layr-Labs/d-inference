@@ -51,12 +51,21 @@ public struct StandaloneServerConfig: Sendable {
     /// Bearer token required on every inference route (direct/local mode).
     /// nil = no auth (library default / explicit `--no-auth`).
     public let authToken: String?
+    /// Optional hard cap for local inference memory. nil = use physical RAM.
+    public let memoryLimitGB: UInt64?
 
-    public init(port: UInt16 = 8000, host: String = "127.0.0.1", maxCachedModels: Int = 3, authToken: String? = nil) {
+    public init(
+        port: UInt16 = 8000,
+        host: String = "127.0.0.1",
+        maxCachedModels: Int = 3,
+        authToken: String? = nil,
+        memoryLimitGB: UInt64? = nil
+    ) {
         self.port = port
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
+        self.memoryLimitGB = memoryLimitGB
     }
 }
 
@@ -103,7 +112,9 @@ public actor StandaloneServer {
     ) {
         self.config = config
         self.models = models
-        self.kvBudget = GlobalKVCacheBudget()
+        self.kvBudget = GlobalKVCacheBudget(
+            memoryLimitBytes: ProviderMemoryLimit.limitBytes(limitGB: config.memoryLimitGB)
+        )
         // Phase 3: construct the global disk accountant (one per host).
         let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("darkbloom/kv", isDirectory: true)
@@ -113,7 +124,12 @@ public actor StandaloneServer {
             configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling())
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
-        MLXMemoryGuard.configureOnce()
+        MLXMemoryGuard.configureOnce(
+            physicalBytes: ProviderMemoryLimit.effectiveBytes(
+                physicalBytes: ProcessInfo.processInfo.physicalMemory,
+                limitGB: config.memoryLimitGB
+            ).totalBytes
+        )
     }
 
     static let schedulerMaxConcurrent = 24
@@ -250,7 +266,11 @@ public actor StandaloneServer {
             pendingTimeout: Self.schedulerPendingTimeout,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
             kvBudget: kvBudget,
-            diskAccountant: diskAccountant
+            diskAccountant: diskAccountant,
+            totalMemoryBytes: ProviderMemoryLimit.effectiveBytes(
+                physicalBytes: ProcessInfo.processInfo.physicalMemory,
+                limitGB: config.memoryLimitGB
+            ).totalBytes
         )
         await scheduler.loadModel(container: container, modelId: modelId)
         let tokenizer: TokenizerHandle = await container.perform { ctx in
@@ -348,7 +368,8 @@ public actor StandaloneServer {
             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
             reserveBytes: 0,
-            outstandingReservationBytes: outstanding)
+            outstandingReservationBytes: outstanding,
+            memoryLimitBytes: ProviderMemoryLimit.limitBytes(limitGB: config.memoryLimitGB))
     }
 
     /// Touch the cached scheduler's last-used timestamp on access.
@@ -561,4 +582,3 @@ public actor StandaloneServer {
         }
     }
 }
-

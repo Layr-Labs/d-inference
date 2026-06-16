@@ -40,6 +40,37 @@ struct LaunchAgentEnvironmentTests {
 
 @Suite("LaunchAgent service plist")
 struct LaunchAgentServicePlistTests {
+    @Test func programArgumentsIncludeMemoryLimitWhenConfigured() {
+        let args = LaunchAgent.programArguments(
+            binaryPath: "/usr/local/bin/darkbloom",
+            coordinatorURL: "wss://coord/ws/provider",
+            models: ["model-a"],
+            idleTimeout: 30,
+            memoryLimitGB: 24,
+            localEndpoint: LaunchAgent.LocalEndpointOptions(enabled: true, port: 9000, bind: "127.0.0.1", noAuth: true)
+        )
+
+        #expect(args == [
+            "/usr/local/bin/darkbloom",
+            "start",
+            "--foreground",
+            "--coordinator-url",
+            "wss://coord/ws/provider",
+            "--model",
+            "model-a",
+            "--idle-timeout",
+            "30",
+            "--memory-limit-gb",
+            "24",
+            "--local-endpoint",
+            "--port",
+            "9000",
+            "--bind",
+            "127.0.0.1",
+            "--no-auth",
+        ])
+    }
+
     @Test func autoStartsAtLoadAndForwardsAllowlistedEnv() {
         let plist = LaunchAgent.makeServicePlist(
             label: "io.darkbloom.provider",

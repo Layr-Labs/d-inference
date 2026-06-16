@@ -28,6 +28,9 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Idle timeout in minutes before unloading the model.")
     var idleTimeout: UInt64?
 
+    @Option(help: "Limit provider inference memory to this many GiB for model selection, registration, and load admission.")
+    var memoryLimitGB: UInt64?
+
     @Flag(inversion: .prefixedNo, help: .hidden)
     var foreground = false
 
@@ -49,6 +52,22 @@ struct Start: AsyncParsableCommand {
     /// Public URL of the Darkbloom Terms of Service.
     static let termsURL = "https://darkbloom.dev/terms.html"
 
+    private struct PreparedStartConfiguration {
+        let snapshot: RuntimeSnapshot
+        let config: ProviderConfig
+        let hardware: HardwareInfo
+        let coordinatorURL: String
+    }
+
+    struct ModelSelectionError: Error, CustomStringConvertible, Equatable {
+        let missingIDs: [String]
+
+        var description: String {
+            let ids = missingIDs.joined(separator: ", ")
+            return "Selected model(s) are unavailable under the current provider configuration: \(ids)"
+        }
+    }
+
     /// Prints a one-line terms-of-service notice. Starting the provider is the
     /// act of acceptance — there is no separate yes/no prompt — so this is an
     /// informational notice, not a gate. Shown only for the user-facing
@@ -58,6 +77,117 @@ struct Start: AsyncParsableCommand {
         print("By starting the provider, you agree to the Darkbloom Terms of Service:")
         print("  \(Start.termsURL)")
         print()
+    }
+
+    static func persistMemoryLimitOverride(
+        memoryLimitGB: UInt64?,
+        baseConfig: ProviderConfig,
+        to configPath: URL
+    ) throws -> ProviderConfig {
+        guard let memoryLimitGB else {
+            return baseConfig
+        }
+
+        var persisted = baseConfig
+        persisted.provider.memoryLimitGB = memoryLimitGB
+        try ConfigManager.save(persisted, to: configPath)
+        return persisted
+    }
+
+    static func validatedModelOverrideIDs(
+        _ modelIDs: [String],
+        availableModels: [ModelInfo]
+    ) throws -> [String] {
+        let available = Set(availableModels.map(\.id))
+        let missing = modelIDs.filter { !available.contains($0) }
+        guard missing.isEmpty else {
+            throw ModelSelectionError(missingIDs: missing)
+        }
+        return modelIDs
+    }
+
+    private func providerConfigApplyingOverrides(_ baseConfig: ProviderConfig) throws -> ProviderConfig {
+        var effectiveConfig = baseConfig
+        if let idleTimeout {
+            effectiveConfig.backend.idleTimeoutMins = idleTimeout
+        }
+        if let memoryLimitGB {
+            guard memoryLimitGB > 0 else {
+                printError("--memory-limit-gb must be greater than 0.")
+                throw ExitCode.failure
+            }
+            effectiveConfig.provider.memoryLimitGB = memoryLimitGB
+        }
+        return effectiveConfig
+    }
+
+    private func persistMemoryLimitOverrideIfNeeded(snapshot: RuntimeSnapshot) throws {
+        guard memoryLimitGB != nil else { return }
+        let configPath = try startConfigPersistencePath(snapshot: snapshot)
+        do {
+            _ = try Self.persistMemoryLimitOverride(
+                memoryLimitGB: memoryLimitGB,
+                baseConfig: snapshot.config,
+                to: configPath
+            )
+        } catch {
+            printError("Could not save --memory-limit-gb to \(configPath.path): \(error)")
+            throw ExitCode.failure
+        }
+    }
+
+    private func prepareStartConfiguration(snapshot: RuntimeSnapshot) throws -> PreparedStartConfiguration {
+        let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
+        let effectiveConfig = try providerConfigApplyingOverrides(snapshot.config)
+
+        guard let hardware = snapshot.hardware else {
+            printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
+            throw ExitCode.failure
+        }
+        try persistMemoryLimitOverrideIfNeeded(snapshot: snapshot)
+
+        let effectiveSnapshot = runtimeSnapshot(
+            from: snapshot,
+            config: effectiveConfig,
+            hardware: snapshot.physicalHardware ?? hardware
+        )
+        guard let effectiveHardware = effectiveSnapshot.hardware else {
+            printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
+            throw ExitCode.failure
+        }
+
+        return PreparedStartConfiguration(
+            snapshot: effectiveSnapshot,
+            config: effectiveConfig,
+            hardware: effectiveHardware,
+            coordinatorURL: effectiveCoordinator
+        )
+    }
+
+    private mutating func selectedModelIDsForDaemon(
+        snapshot: RuntimeSnapshot,
+        config: ProviderConfig,
+        coordinatorURL: String
+    ) async throws -> [String] {
+        if !model.isEmpty {
+            do {
+                return try Self.validatedModelOverrideIDs(
+                    model,
+                    availableModels: snapshot.models
+                )
+            } catch {
+                printError("\(error)")
+                throw ExitCode.failure
+            }
+        }
+        if all {
+            return snapshot.models.map(\.id)
+        }
+        return try await interactiveCatalogPicker(
+            snapshot: snapshot,
+            config: config,
+            coordinatorURL: coordinatorURL
+        )
     }
 
     mutating func run() async throws {
@@ -85,37 +215,35 @@ struct Start: AsyncParsableCommand {
         }
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-        let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
-        var effectiveConfig = snapshot.config
-        if let idleTimeout {
-            effectiveConfig.backend.idleTimeoutMins = idleTimeout
-        }
-
-        guard let hardware = snapshot.hardware else {
-            printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
-            throw ExitCode.failure
-        }
+        let prepared = try prepareStartConfiguration(snapshot: snapshot)
 
         if local {
             try await runLocalStandalone(
-                snapshot: snapshot,
-                config: effectiveConfig,
-                hardware: hardware
+                snapshot: prepared.snapshot,
+                config: prepared.config,
+                hardware: prepared.hardware
             )
         } else if foreground {
             try await runForeground(
-                snapshot: snapshot,
-                hardware: hardware,
-                config: effectiveConfig,
-                coordinatorURL: effectiveCoordinator
+                snapshot: prepared.snapshot,
+                hardware: prepared.hardware,
+                config: prepared.config,
+                coordinatorURL: prepared.coordinatorURL
             )
         } else {
             try await launchDaemon(
-                snapshot: snapshot,
-                config: effectiveConfig,
-                coordinatorURL: effectiveCoordinator
+                snapshot: prepared.snapshot,
+                config: prepared.config,
+                coordinatorURL: prepared.coordinatorURL
             )
         }
+    }
+
+    private func startConfigPersistencePath(snapshot: RuntimeSnapshot) throws -> URL {
+        guard configOptions.config == nil else {
+            return snapshot.configPath
+        }
+        return try ConfigManager.defaultConfigPath()
     }
 
     // MARK: - Standalone (--local)
@@ -174,7 +302,8 @@ struct Start: AsyncParsableCommand {
                 port: port,
                 host: bind,
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
-                authToken: token
+                authToken: token,
+                memoryLimitGB: config.provider.memoryLimitGB
             ),
             models: advertised
         )
@@ -516,19 +645,11 @@ struct Start: AsyncParsableCommand {
         // Offer account linking before the model picker.
         await offerInlineLogin(coordinatorURL: coordinatorURL)
 
-        let selectedModelIDs: [String]
-
-        if !model.isEmpty {
-            selectedModelIDs = model
-        } else if all {
-            selectedModelIDs = snapshot.models.map(\.id)
-        } else {
-            selectedModelIDs = try await interactiveCatalogPicker(
-                snapshot: snapshot,
-                config: config,
-                coordinatorURL: coordinatorURL
-            )
-        }
+        let selectedModelIDs = try await selectedModelIDsForDaemon(
+            snapshot: snapshot,
+            config: config,
+            coordinatorURL: coordinatorURL
+        )
 
         guard !selectedModelIDs.isEmpty else {
             printError("No models selected.")
@@ -539,6 +660,7 @@ struct Start: AsyncParsableCommand {
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,
             idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil),
+            memoryLimitGB: config.provider.memoryLimitGB,
             localEndpoint: LaunchAgent.LocalEndpointOptions(
                 enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
             )

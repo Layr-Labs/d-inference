@@ -38,18 +38,48 @@ extension BatchScheduler {
         guard modelWeightBytes > 0, kvBytesPerToken > 0 else {
             return staticBudget
         }
+        let activeMemoryBytes = UInt64(max(0, MLX.GPU.activeMemory))
+        let cacheMemoryBytes = UInt64(max(0, MLX.GPU.cacheMemory))
 
-        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
-        let osReserve = 4 * 1024 * 1024 * 1024
-        let safetyMargin = totalMemory / 10
-        let globalUsed = Int(MLX.GPU.activeMemory) + Int(MLX.GPU.cacheMemory)
-        let mlxFree = max(0, totalMemory - globalUsed)
+        return Self.memoryAwareTokenBudgetMax(
+            staticBudget: staticBudget,
+            modelWeightBytes: modelWeightBytes,
+            kvBytesPerToken: kvBytesPerToken,
+            totalMemoryBytes: totalMemoryBytes,
+            activeMemoryBytes: activeMemoryBytes,
+            cacheMemoryBytes: cacheMemoryBytes,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            activeTokenBudgetUsed: activeTokenBudgetUsed
+        )
+    }
+
+    static func memoryAwareTokenBudgetMax(
+        staticBudget: Int,
+        modelWeightBytes: Int,
+        kvBytesPerToken: Int,
+        totalMemoryBytes: UInt64,
+        activeMemoryBytes: UInt64,
+        cacheMemoryBytes: UInt64,
+        systemAvailableBytes: UInt64,
+        activeTokenBudgetUsed: Int
+    ) -> Int {
+        guard modelWeightBytes > 0, kvBytesPerToken > 0 else {
+            return staticBudget
+        }
+
+        let osReserve = UInt64(4 * 1024 * 1024 * 1024)
+        let safetyMargin = totalMemoryBytes / 10
+        let globalUsed = Self.saturatingAdd(activeMemoryBytes, cacheMemoryBytes)
+        let mlxFree = totalMemoryBytes > globalUsed ? totalMemoryBytes - globalUsed : 0
         // Clamp the MLX-only view to real OS-free RAM (other processes' usage),
         // same as the load gate / GlobalKVCacheBudget; else we OOM on shared boxes.
-        let osAvailable = SystemMemory.availableBytes().map { Int(min($0, UInt64(Int.max))) } ?? Int.max
-        let realFree = min(mlxFree, osAvailable)
-        let availableHeadroom = max(0, realFree - osReserve - safetyMargin)
-        let liveBudget = activeTokenBudgetUsed + (availableHeadroom / kvBytesPerToken)
+        let realFree = min(mlxFree, systemAvailableBytes)
+        let committed = Self.saturatingAdd(osReserve, safetyMargin)
+        let availableHeadroom: UInt64 = realFree > committed ? realFree - committed : 0
+        let tokens = availableHeadroom / UInt64(kvBytesPerToken)
+        let availableTokens = Int(min(tokens, UInt64(Int.max)))
+        let (sum, overflow) = activeTokenBudgetUsed.addingReportingOverflow(availableTokens)
+        let liveBudget = overflow ? Int.max : sum
         return max(1024, min(staticBudget, liveBudget))
     }
 
@@ -220,5 +250,16 @@ extension BatchScheduler {
         #else
         return 0
         #endif
+    }
+
+    static func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? .max : sum
+    }
+
+    static func saturatingAdd(_ first: UInt64, _ second: UInt64, _ third: UInt64) -> UInt64 {
+        let partial = saturatingAdd(first, second)
+        guard partial < UInt64.max else { return .max }
+        return saturatingAdd(partial, third)
     }
 }

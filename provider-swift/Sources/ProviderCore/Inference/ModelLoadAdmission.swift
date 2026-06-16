@@ -45,13 +45,23 @@ public enum ModelLoadAdmission {
         gpuActiveBytes: UInt64,
         gpuCacheBytes: UInt64,
         reserveBytes: UInt64,
-        outstandingReservationBytes: UInt64 = 0
+        outstandingReservationBytes: UInt64 = 0,
+        memoryLimitBytes: UInt64? = nil
     ) -> Double {
+        let effectiveTotal: UInt64
+        let effectiveSystemAvailable: UInt64
+        if let memoryLimitBytes {
+            effectiveTotal = min(totalBytes, memoryLimitBytes)
+            effectiveSystemAvailable = min(systemAvailableBytes, memoryLimitBytes)
+        } else {
+            effectiveTotal = totalBytes
+            effectiveSystemAvailable = systemAvailableBytes
+        }
         let mlxUsed = saturatingAdd(gpuActiveBytes, gpuCacheBytes)
-        let mlxFree = totalBytes > mlxUsed ? totalBytes - mlxUsed : 0
+        let mlxFree = effectiveTotal > mlxUsed ? effectiveTotal - mlxUsed : 0
         // The OS view and the MLX view can each be the tighter bound; take the
         // smaller so we never over-count free memory.
-        let realFree = min(mlxFree, systemAvailableBytes)
+        let realFree = min(mlxFree, effectiveSystemAvailable)
         let committed = saturatingAdd(reserveBytes, outstandingReservationBytes)
         let usable = realFree > committed ? realFree - committed : 0
         return Double(usable) / bytesPerGb
@@ -72,7 +82,8 @@ public enum ModelLoadAdmission {
         gpuActiveBytes: UInt64,
         gpuCacheBytes: UInt64,
         reserveBytes: UInt64,
-        outstandingReservationBytes: UInt64 = 0
+        outstandingReservationBytes: UInt64 = 0,
+        memoryLimitBytes: UInt64? = nil
     ) -> Bool {
         let free = freeForLoadGb(
             totalBytes: totalBytes,
@@ -80,7 +91,8 @@ public enum ModelLoadAdmission {
             gpuActiveBytes: gpuActiveBytes,
             gpuCacheBytes: gpuCacheBytes,
             reserveBytes: reserveBytes,
-            outstandingReservationBytes: outstandingReservationBytes)
+            outstandingReservationBytes: outstandingReservationBytes,
+            memoryLimitBytes: memoryLimitBytes)
         return requiredToLoadGb(weightsGb: weightsGb, headroomGb: headroomGb) <= free
     }
 

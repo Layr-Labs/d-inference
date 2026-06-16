@@ -159,6 +159,7 @@ public actor ProviderLoop {
     private let stats: AtomicProviderStats
     private let state: ProviderState
     private let cancellationRegistry: InferenceCancellationRegistry
+    private let effectiveMemory: ProviderMemoryLimit.EffectiveBytes
     private let kvBudget: GlobalKVCacheBudget
     /// Phase 3: global disk accountant (process-wide, shared across models).
     private let diskAccountant: GlobalDiskAccountant
@@ -432,6 +433,11 @@ public actor ProviderLoop {
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
+        let effectiveMemory = ProviderMemoryLimit.effectiveBytes(
+            physicalBytes: ProcessInfo.processInfo.physicalMemory,
+            limitGB: config.config.provider.memoryLimitGB
+        )
+        self.effectiveMemory = effectiveMemory
         // The effective cap (`maxModelSlots`) is computed from the live
         // advertised set; here we capture the operator hard cap and the
         // de-duplicated startup count it is clamped against. Using the deduped
@@ -440,7 +446,10 @@ public actor ProviderLoop {
         self.configuredMaxModelSlots = max(1, Int(config.config.backend.maxModelSlots))
         self.startupModelCount = max(1, advertised.count)
         let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
-        self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
+        self.kvBudget = GlobalKVCacheBudget(
+            reserveBytes: reserveBytes,
+            memoryLimitBytes: effectiveMemory.limitBytes
+        )
         // Phase 3: construct the global disk accountant (one per host).
         let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("darkbloom/kv", isDirectory: true)
@@ -458,6 +467,14 @@ public actor ProviderLoop {
     static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
         let (bytes, overflow) = gb.multipliedReportingOverflow(by: bytesPerGiB)
         return overflow ? UInt64.max : bytes
+    }
+
+    private var memoryLimitBytes: UInt64? {
+        effectiveMemory.limitBytes
+    }
+
+    private var effectivePhysicalMemoryBytes: UInt64 {
+        effectiveMemory.totalBytes
     }
 
     // MARK: - Model Slot
@@ -2119,7 +2136,7 @@ public actor ProviderLoop {
         // first big allocation happens in ensureModelLoaded → loadModelContainer,
         // which runs after this). Idempotent; the BatchScheduler.loadModel call
         // is a backstop for the standalone path. See MLXMemoryGuard.
-        MLXMemoryGuard.configureOnce(log: { [logger] limits in
+        MLXMemoryGuard.configureOnce(physicalBytes: effectivePhysicalMemoryBytes, log: { [logger] limits in
             logger.info(
                 "MLX memory ceiling: limit=\(limits.memoryLimitBytes / (1024 * 1024 * 1024))GB cache=\(limits.cacheLimitBytes / (1024 * 1024 * 1024))GB")
         })
@@ -2677,7 +2694,8 @@ public actor ProviderLoop {
                 pendingTimeout: Self.schedulerPendingTimeout,
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 kvBudget: kvBudget,
-                diskAccountant: diskAccountant
+                diskAccountant: diskAccountant,
+                totalMemoryBytes: effectivePhysicalMemoryBytes
             )
             await scheduler.loadModel(
                 container: container,
@@ -2814,7 +2832,8 @@ public actor ProviderLoop {
             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
             reserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB),
-            outstandingReservationBytes: outstanding)
+            outstandingReservationBytes: outstanding,
+            memoryLimitBytes: memoryLimitBytes)
     }
 
     /// Headroom (GB) reserved above the weights at load time for ONE request.
@@ -3098,7 +3117,7 @@ public actor ProviderLoop {
         }
 
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
-        let totalMem = ProcessInfo.processInfo.physicalMemory
+        let totalMem = effectivePhysicalMemoryBytes
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,

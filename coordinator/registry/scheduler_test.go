@@ -1423,6 +1423,30 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 	}
 }
 
+func TestFreeMemoryAdmitsColdLoadMirrorsProviderMemoryEnvelope(t *testing.T) {
+	// 26 GB of raw weights looks like it fits on a 36 GB laptop under the old
+	// raw-size + 4 GB reserve check (30 <= 36). The provider actually loads with
+	// scanner overhead (1.2x), a 90% hard cap, activation reserve, and minimum KV
+	// headroom: 31.2 + 3 + 1 > 32.4, so the coordinator must not route it cold.
+	publicGemmaOnLaptop := routingSnapshot{
+		modelSizeGB:     26,
+		totalMemoryGB:   36,
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+	}
+	if freeMemoryAdmits(publicGemmaOnLaptop, 100, 256) {
+		t.Fatal("should reject cold load that only fits under raw-size accounting")
+	}
+
+	// The QAT build's smaller raw footprint still fits the same envelope.
+	qatGemmaOnLaptop := publicGemmaOnLaptop
+	qatGemmaOnLaptop.modelSizeGB = 15
+	if !freeMemoryAdmits(qatGemmaOnLaptop, 100, 256) {
+		t.Fatal("should admit smaller QAT build under provider-equivalent accounting")
+	}
+}
+
 func TestSlotHeadroomWithExhaustedTokenBudgetRejectsCapacity(t *testing.T) {
 	reg := New(testLogger())
 	model := "budget-headroom-model"

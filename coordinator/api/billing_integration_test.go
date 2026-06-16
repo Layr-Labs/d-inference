@@ -435,7 +435,7 @@ func TestIntegration_ReservationRefundedOnCompletion(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Short generation — completion_tokens (10) is far below the reservation
-	// based on default max_tokens=8192.
+	// based on the implicit default max_tokens bound.
 	usage := protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 10}
 	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
 

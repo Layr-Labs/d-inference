@@ -1463,6 +1463,32 @@ public actor BatchScheduler {
         return n  // 0 ⇒ disabled
     }
 
+    static func makeSamplingParams(
+        maxTokens: Int,
+        temperature: Float,
+        topP: Float?,
+        topK: Int?,
+        repetitionPenalty: Float?,
+        presencePenalty: Float?,
+        frequencyPenalty: Float?,
+        seed: UInt64?
+    ) -> SamplingParams {
+        let requestedRepetitionPenalty = repetitionPenalty ?? 1.0
+        let safeRepetitionPenalty =
+            requestedRepetitionPenalty <= 0 ? Float(1.0) : requestedRepetitionPenalty
+        var sp = SamplingParams(
+            maxTokens: maxTokens,
+            temperature: temperature,
+            repetitionPenalty: safeRepetitionPenalty,
+            presencePenalty: presencePenalty ?? 0.0,
+            frequencyPenalty: frequencyPenalty ?? 0.0
+        )
+        if let topP { sp.topP = topP }
+        if let topK { sp.topK = topK }
+        if let seed { sp.seed = seed }
+        return sp
+    }
+
     /// Set the post-load budgets driven by architecture + physical
     /// memory. Pulled out of `loadModel` so the lifecycle reads as a
     /// short sequence; the arithmetic itself is unchanged.
@@ -1488,11 +1514,12 @@ public actor BatchScheduler {
         // Derive context-aware limits from config.json.
         self.maxContextLength = snapshot.architecture.maxContextLength ?? 0
         if maxContextLength > 0 {
-            // Raise the default max output tokens so consumers that omit
-            // `max_tokens` get a reasonable budget for the model's class.
-            // Cap at 8192 so we don't over-reserve with very-long-context
-            // models (e.g. 131K Qwen).
-            self.defaultMaxTokens = min(maxContextLength, 8192)
+            // Do not auto-raise omitted `max_tokens` after model load. Runaway
+            // loops then run to an unexpectedly large cap and over-reserve KV.
+            // Only clamp downward for unusually short-context models.
+            self.defaultMaxTokens = min(initDefaultMaxTokens, maxContextLength)
+        } else {
+            self.defaultMaxTokens = initDefaultMaxTokens
         }
 
         self.dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
@@ -1518,6 +1545,9 @@ public actor BatchScheduler {
         temperature: Float = 0.0,
         topP: Float? = nil,
         topK: Int? = nil,
+        repetitionPenalty: Float? = nil,
+        presencePenalty: Float? = nil,
+        frequencyPenalty: Float? = nil,
         seed: UInt64? = nil,
         requestId: String? = nil,
         cacheScope: String = ""
@@ -1575,10 +1605,16 @@ public actor BatchScheduler {
             await refreshPendingSummaryCache()
         }
 
-        var sp = SamplingParams(maxTokens: maxTokens, temperature: temperature)
-        if let topP { sp.topP = topP }
-        if let topK { sp.topK = topK }
-        if let seed { sp.seed = seed }
+        let sp = Self.makeSamplingParams(
+            maxTokens: maxTokens,
+            temperature: temperature,
+            topP: topP,
+            topK: topK,
+            repetitionPenalty: repetitionPenalty,
+            presencePenalty: presencePenalty,
+            frequencyPenalty: frequencyPenalty,
+            seed: seed
+        )
 
         let req = Request(
             requestId: id,
@@ -1752,13 +1788,17 @@ public actor BatchScheduler {
             await refreshPendingSummaryCache()
         }
 
-        // Greedy (temperature == 0) hits the engine's vectorized argmax
-        // fast path automatically; just pass the requested value through.
         let temperature = request.temperature ?? 0.0
-        var sp = SamplingParams(maxTokens: maxTokens, temperature: temperature)
-        if let topP = request.top_p { sp.topP = topP }
-        if let topK = request.top_k { sp.topK = topK }
-        if let seed = request.seed { sp.seed = seed }
+        let sp = Self.makeSamplingParams(
+            maxTokens: maxTokens,
+            temperature: temperature,
+            topP: request.top_p,
+            topK: request.top_k,
+            repetitionPenalty: request.repetition_penalty,
+            presencePenalty: request.presence_penalty,
+            frequencyPenalty: request.frequency_penalty,
+            seed: request.seed
+        )
 
         let req = Request(
             requestId: id,

@@ -79,6 +79,7 @@ type routingSnapshot struct {
 	prefillTPS         float64
 	systemMetrics      protocol.SystemMetrics
 	gpuMemoryActiveGB  float64
+	gpuMemoryCacheGB   float64
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
 	minRAMGb           int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
@@ -133,6 +134,14 @@ const (
 // gemma-4-26b min_ram_gb=36 vs 28*2.x rejecting the whole 64 GB tier).
 const modelMemoryHeadroomFactor = 2.0
 
+const (
+	providerMemoryCapFraction         = 0.90
+	providerMinimumReserveGB          = 2.0
+	providerModelMemoryOverheadFactor = 1.2
+	providerActivationReserveGB       = 3.0
+	providerMinimumLoadKVGB           = 1.0
+)
+
 // modelFitsHardware reports whether a model can run on a node with the given
 // total unified memory (GB). It prefers the catalog's authoritative min_ram_gb
 // (the operator-published requirement) and only falls back to a heuristic
@@ -151,6 +160,28 @@ func modelFitsHardware(minRAMGb int, modelSizeGB, totalMemoryGB float64) bool {
 		return modelSizeGB*modelMemoryHeadroomFactor <= totalMemoryGB
 	}
 	return true
+}
+
+func providerHardMemoryCapGB(totalMemoryGB float64) float64 {
+	if totalMemoryGB <= 0 {
+		return 0
+	}
+	byFraction := totalMemoryGB * providerMemoryCapFraction
+	byFloor := 0.0
+	if totalMemoryGB > providerMinimumReserveGB {
+		byFloor = totalMemoryGB - providerMinimumReserveGB
+	}
+	if byFraction < byFloor {
+		return byFraction
+	}
+	return byFloor
+}
+
+func providerEstimatedModelLoadGB(modelSizeGB float64) float64 {
+	if modelSizeGB <= 0 {
+		return 0
+	}
+	return modelSizeGB * providerModelMemoryOverheadFactor
 }
 
 // costBreakdown decomposes the routing cost so callers can log or
@@ -760,6 +791,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 
 	if p.BackendCapacity != nil {
 		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+		snap.gpuMemoryCacheGB = p.BackendCapacity.GPUMemoryCacheGB
 		if p.BackendCapacity.TotalMemoryGB > 0 {
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
@@ -805,7 +837,8 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	if snap.modelSizeGB <= 0 || snap.totalMemoryGB <= 0 {
 		return true
 	}
-	required := snap.modelSizeGB
+	modelLoadGB := providerEstimatedModelLoadGB(snap.modelSizeGB)
+	required := modelLoadGB
 	if snap.modelLoaded {
 		required = 0
 	}
@@ -818,7 +851,6 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		tokens = maxTokensForCalc
 	}
 	kvCacheGB := float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
-	required += kvCacheGB
 
 	// When the model is available on disk but not currently loaded, the
 	// provider will evict idle models to make room (LRU eviction). Check
@@ -831,12 +863,23 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	// through to the standard free-memory check which requires room
 	// alongside active models.
 	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
-		const osReserveGB = 4.0
-		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
+		requiredKVGB := kvCacheGB
+		if requiredKVGB < providerMinimumLoadKVGB {
+			requiredKVGB = providerMinimumLoadKVGB
+		}
+		required := modelLoadGB + providerActivationReserveGB + requiredKVGB
+		return required <= providerHardMemoryCapGB(snap.totalMemoryGB)
 	}
 
-	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB
-	return free >= required
+	freeUnderCap := providerHardMemoryCapGB(snap.totalMemoryGB) - snap.gpuMemoryActiveGB - snap.gpuMemoryCacheGB
+	if freeUnderCap < 0 {
+		freeUnderCap = 0
+	}
+	required += kvCacheGB + providerActivationReserveGB
+	if !snap.modelLoaded {
+		required += providerMinimumLoadKVGB
+	}
+	return freeUnderCap >= required
 }
 
 func pendingTokenBudget(pr *PendingRequest) int {
@@ -1255,6 +1298,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 		if snap.hasBackendCapacity {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+			snap.gpuMemoryCacheGB = p.BackendCapacity.GPUMemoryCacheGB
 			if p.BackendCapacity.TotalMemoryGB > 0 {
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}

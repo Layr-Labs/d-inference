@@ -117,11 +117,12 @@ public actor StandaloneServer {
         MLXMemoryGuard.configureOnce()
     }
 
-    static let schedulerMaxConcurrent = 24
+    // Keep local serving on the same memory-safe envelope as provider mode.
+    static let schedulerMaxConcurrent = 4
     static let schedulerPendingTimeout: Duration = .seconds(120)
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
-    static let schedulerDefaultMaxTokens = 4096
+    static let schedulerDefaultMaxTokens = 1024
 
     /// Map a scheduler-side admission error message to an HTTP status. Used
     /// by tests and by any custom error-mapping middleware. Retained here
@@ -597,4 +598,3 @@ public actor StandaloneServer {
         }
     }
 }
-

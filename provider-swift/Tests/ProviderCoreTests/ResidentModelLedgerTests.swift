@@ -33,8 +33,9 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 @Test func ledgerExcludingGivesReplacementHeadroom() async {
-    // The load gate weighs a candidate against everything EXCEPT the model it
-    // would replace.
+    // `excluding:` reports Σweights as if one model weren't loaded — a
+    // replacement-sizing convenience (NOT used by the current load gate, which
+    // reads live MLX counters; see the ResidentModelLedger type note).
     let ledger = ResidentModelLedger()
     await ledger.record(modelKey: "victim", weightBytes: 26 * gib)
     await ledger.record(modelKey: "keep", weightBytes: 11 * gib)

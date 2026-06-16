@@ -200,14 +200,37 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // the coordinator WebSocket path, surface the correct 4xx instead of a
             // 200 with a truncated/error stream body. (Deferring the decode into
             // the generation task would let the HTTP layer commit a 200 first.)
+            // Reserve the projected media-decode RAM against the 90% unified cap
+            // BEFORE rasterizing. CIImage rasters + the Swift Data pixel buffers in
+            // MediaProcessing are NOT MLX arrays, so they are invisible to the cap's
+            // live MLX counters — without this, N concurrent VLM requests each
+            // rasterize hundreds of MB–GB uncounted and can drive the box past the
+            // cap toward jetsam. Reserving here makes the decode share the same
+            // headroom as weights + KV + activations; if it won't fit we reject with
+            // a retryable error instead of OOMing. Released on every exit.
+            let mediaReqId = "vlm-\(UUID().uuidString.prefix(12))"
+            let projectedBytes = VLMRequestInference.projectedDecodeBytes(request)
+            let mediaReserved = await scheduler.reserveMediaBytes(
+                requestId: mediaReqId, bytes: projectedBytes)
+            if !mediaReserved {
+                await releaseBox.fire()
+                let mib = projectedBytes / (1024 * 1024)
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                    "insufficient global kv cache headroom for media decode "
+                    + "(needs ~\(mib) MiB) — retry after capacity frees")
+            }
             do {
                 try await VLMRequestInference.validateMedia(request)
             } catch {
+                await scheduler.releaseMediaBytes(requestId: mediaReqId)
                 await releaseBox.fire()
                 throw error
             }
             let vlmStream = VLMRequestInference.stream(
                 container: container, request: request, defaultMaxTokens: defaultMaxTokens)
+            // Capture the scheduler so the stream task can release the media
+            // reservation; `scheduler` is Sendable (an actor reference).
+            let mediaReleaseScheduler = scheduler
             return AsyncThrowingStream { continuation in
                 let task = Task {
                     do {
@@ -215,16 +238,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             if Task.isCancelled { break }
                             continuation.yield(event)
                         }
+                        await mediaReleaseScheduler.releaseMediaBytes(requestId: mediaReqId)
                         await releaseBox.fire()
                         continuation.finish()
                     } catch {
+                        await mediaReleaseScheduler.releaseMediaBytes(requestId: mediaReqId)
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
                     }
                 }
                 continuation.onTermination = { @Sendable _ in
                     task.cancel()
-                    Task { await releaseBox.fire() }
+                    Task {
+                        await mediaReleaseScheduler.releaseMediaBytes(requestId: mediaReqId)
+                        await releaseBox.fire()
+                    }
                 }
             }
         }

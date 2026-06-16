@@ -61,6 +61,22 @@ public actor GlobalKVCacheBudget {
         reservations.removeValue(forKey: requestID)
     }
 
+    /// Reserve an arbitrary BYTE amount against the same live cap headroom KV
+    /// uses. For non-KV unified-memory consumers that the cap would otherwise be
+    /// blind to — notably VLM media decode (CIImage rasters + Swift Data pixel
+    /// buffers live in the same unified RAM as MLX arrays but are NOT counted by
+    /// MLX.GPU.active/cache). Reserving here makes those bytes share the 90% cap:
+    /// the decode is admitted only if it fits alongside resident weights + KV +
+    /// activations, and rejected (caller surfaces 429/retry) otherwise. Returns
+    /// false if it won't fit or the id is already reserved. Pair with `release`.
+    public func reserveBytes(requestID: String, bytes: UInt64) -> Bool {
+        guard bytes > 0 else { return false }
+        guard reservations[requestID] == nil else { return false }
+        if bytes > availableReservationBytes() { return false }
+        reservations[requestID] = bytes
+        return true
+    }
+
     /// Atomically shrink an existing reservation to a smaller byte count,
     /// freeing the difference. `reserve`/`release` cannot express a shrink:
     /// `reserve` refuses when an entry already exists for the id, and a

@@ -511,6 +511,82 @@ public enum VLMRequestInference {
     /// — no raster decode (proven O(header): ~0 MB RSS even for a gigapixel
     /// bomb). Returns `nil` if ImageIO can't size the data (truncated/unknown
     /// format), in which case `CIImage(data:)` fails closed downstream.
+    /// Decode-overhead multiplier over the raw RGBA raster (W*H*4). `CIImage`
+    /// rasterization + the intermediate Swift `Data` in `MediaProcessing
+    /// .asMLXArray` + the resampled MLX pixel-values tensor coexist briefly, so
+    /// peak transient RAM is a few times the final raster. 4x is a conservative
+    /// upper bound measured against the decode-bomb repro (16000^2 -> ~1.78 GB
+    /// peak for a 256 MP = 1 GB raster ~= 1.7x; 4x leaves generous margin).
+    static let decodeOverheadFactor = 4
+
+    /// Projected PEAK unified-memory bytes the media decode of `request` will
+    /// transiently consume, so the caller can RESERVE it against the 90% cap
+    /// (GlobalKVCacheBudget) before rasterizing — these CIImage/Data buffers are
+    /// NOT MLX arrays and are otherwise invisible to the cap. Estimated from
+    /// HEADER pixel counts (no decode); when a header is unreadable the per-image
+    /// cap is used as the worst case the media caps still admit.
+    ///
+    /// The estimate is clamped to the SAME ceilings `validateMedia` enforces, so
+    /// it can never exceed what a maximally-large *valid* request consumes:
+    ///   • image pixels are summed but clamped to the aggregate image cap
+    ///     (`maxRequestImagePixels`) — a single oversized image, or many
+    ///     unreadable-header images, can't project past the request-wide image
+    ///     ceiling validation guarantees;
+    ///   • videos are charged the aggregate per-request video-frame cap ONCE if
+    ///     any video is present — NOT per video. `validateMedia` bounds the SUM
+    ///     of all videos' frame pixels by `maxRequestVideoFramePixels`, so
+    ///     charging it per-video would over-reserve by the video count and could
+    ///     falsely 503 a valid multi-video request.
+    /// Consequently an oversized/invalid request projects no more than a max
+    /// valid one: on a saturated box both get a retryable 503 (and the invalid
+    /// one resolves to its deterministic 400 once capacity frees), rather than
+    /// the invalid request being singled out for a permanent 503.
+    /// Saturating; never traps. Returns 0 for a request with no media.
+    public static func projectedDecodeBytes(
+        _ request: OpenAIChatCompletionRequest,
+        maxImagePixels: Int = Self.maxImagePixels,
+        maxRequestImagePixels: Int = Self.maxRequestImagePixels,
+        maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
+    ) -> UInt64 {
+        var imagePixels: UInt64 = 0
+        var hasVideo = false
+        func addImagePixels(_ p: Int) {
+            let (s, o) = imagePixels.addingReportingOverflow(UInt64(max(0, p)))
+            imagePixels = o ? .max : s
+        }
+        for message in request.messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                switch part {
+                case .imageURL(let uri):
+                    // Header read is O(header), ~0 RSS; fall back to the per-image
+                    // cap (the worst case the existing caps admit) if unreadable.
+                    if let data = try? dataFromDataURI(uri) {
+                        addImagePixels(imagePixelCount(data) ?? maxImagePixels)
+                    } else {
+                        addImagePixels(maxImagePixels)
+                    }
+                case .videoURL:
+                    hasVideo = true
+                case .text, .unsupported:
+                    continue
+                }
+            }
+        }
+        // Clamp images to the request-wide aggregate cap, then add the video
+        // aggregate once. Both mirror validateMedia's ceilings exactly.
+        var pixels = min(imagePixels, UInt64(max(0, maxRequestImagePixels)))
+        if hasVideo {
+            let (s, o) = pixels.addingReportingOverflow(UInt64(max(0, maxRequestVideoFramePixels)))
+            pixels = o ? .max : s
+        }
+        // RGBA (4 bytes/px) x decode overhead. Saturating.
+        let (rgba, o1) = pixels.multipliedReportingOverflow(by: 4)
+        let bytes = o1 ? UInt64.max : rgba
+        let (total, o2) = bytes.multipliedReportingOverflow(by: UInt64(decodeOverheadFactor))
+        return o2 ? UInt64.max : total
+    }
+
     static func imagePixelCount(_ data: Data) -> Int? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil),
             let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],

@@ -1504,6 +1504,25 @@ public actor BatchScheduler {
         await stopCurrentEngine()
     }
 
+    /// Reserve `bytes` of unified memory against the shared 90% cap for a
+    /// non-KV consumer (VLM media decode), via the process-wide GlobalKVCacheBudget
+    /// this scheduler holds — so those uncounted CIImage/Data buffers share the
+    /// same headroom as weights + KV + activations. Returns true if it fits (and
+    /// was reserved), false if it would exceed the cap (caller surfaces a 429 /
+    /// retry) — or true (no-op) when budgeting is disabled (nil budget), matching
+    /// the scheduler's "always proceed" legacy behavior. Pair with
+    /// `releaseMediaBytes`.
+    public func reserveMediaBytes(requestId: String, bytes: UInt64) async -> Bool {
+        guard let kvBudget else { return true }
+        return await kvBudget.reserveBytes(requestID: requestId, bytes: bytes)
+    }
+
+    /// Release a prior `reserveMediaBytes` reservation. Safe/no-op if unknown or
+    /// budgeting is disabled.
+    public func releaseMediaBytes(requestId: String) async {
+        await kvBudget?.release(requestID: requestId)
+    }
+
     // MARK: - Submit / cancel
 
     /// Submit a pre-tokenized prompt. Used by `MultiModelBatchSchedulerEngine`

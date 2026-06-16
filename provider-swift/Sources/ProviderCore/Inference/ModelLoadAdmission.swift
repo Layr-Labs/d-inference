@@ -13,9 +13,11 @@ import Foundation
 /// Correct model: load whenever the weights plus enough headroom for ONE
 /// request physically fit alongside the OS reserve. Concurrency BEYOND one
 /// request is then sized dynamically at runtime by the live token budget +
-/// `GlobalKVCacheBudget`, which strictly rejects any request whose KV won't fit
-/// real free memory (so this looser load gate cannot cause an OOM — the worst
-/// case is a loaded model that serves a single request at a time).
+/// `GlobalKVCacheBudget`, which (since the unified-cap rework) strictly rejects
+/// any request whose KV would push past the 90% unified-memory cap — net of the
+/// activation reserve and clamped to real OS-free memory — so this looser load
+/// gate cannot cause an OOM (worst case: a loaded model that serves a single
+/// request at a time).
 public enum ModelLoadAdmission {
     /// Default headroom (GB) reserved above the weights for one request's KV
     /// cache + activations at load time. Small on purpose: it only needs to
@@ -26,10 +28,11 @@ public enum ModelLoadAdmission {
     /// Physical memory (GB) available to load a model: the real free memory
     /// (clamped to what the OS actually reports available, not just total minus
     /// MLX's resident set) minus the OS reserve and any KV already promised to
-    /// in-flight requests. NOTE: deliberately NO 0.7 safety discount — weights
-    /// are a known allocation, and the 0.7 runtime safety is already applied
-    /// per-request by GlobalKVCacheBudget. Discounting here too is the
-    /// double-count that kept capable machines idle.
+    /// in-flight requests. NOTE: deliberately NO multiplicative safety discount
+    /// here — weights are a known allocation, and runtime KV safety (the 90%
+    /// unified cap + activation reserve) is applied per-request by
+    /// GlobalKVCacheBudget. Discounting here too is the double-count that kept
+    /// capable machines idle.
     /// - Parameters:
     ///   - systemAvailableBytes: real OS-reported available memory (free +
     ///     reclaimable). Pass `.max` when unavailable to fall back to the

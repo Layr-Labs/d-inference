@@ -199,14 +199,23 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(headroom == 0)
 }
 
-@Test func liveHeadroomHasNoAbsoluteFloorUnlikeHardCap() {
-    // liveKVHeadroom uses capFraction×physical WITHOUT the 2 GiB OS floor that
-    // hardCapBytes applies (the floor is a load-time concern). So at fraction 1.0
-    // with no MLX usage and infinite OS, headroom = full physical − activations.
+@Test func liveHeadroomHonorsTheHardCapFloorAsKVGrows() {
+    // liveKVHeadroom uses the SAME hardCapBytes ceiling (incl. the 2 GiB OS
+    // floor) as the load gate, so on a small box the floor binds even at
+    // fraction 1.0 — KV growing during serving can't push past physical − 2 GiB.
+    // 8 GiB box, fraction 1.0, no MLX usage, infinite OS, 0 activations:
+    // cap = min(8, 8−2) = 6 GiB → headroom 6 GiB, NOT the full 8.
     let headroom = UnifiedMemoryCap.liveKVHeadroomBytes(
         physicalBytes: 8 * gib, mlxUsedBytes: 0, systemAvailableBytes: .max,
         activationReserveBytes: 0, capFraction: 1.0)
-    #expect(headroom == 8 * gib)  // not 6 GiB (which hardCapBytes would give)
+    #expect(headroom == 6 * gib)
+    // The exact over-admission Codex flagged: 8 GiB host, 2 GiB resident weights,
+    // 3 GiB activations. Pre-fix headroom was 7.2−2−3 = 2.2 GiB (→ 2+2.2+3 = 7.2,
+    // OS < 1 GiB). With the floor it's 6−2−3 = 1 GiB, keeping ≥2 GiB for the OS.
+    let constrained = UnifiedMemoryCap.liveKVHeadroomBytes(
+        physicalBytes: 8 * gib, mlxUsedBytes: 2 * gib, systemAvailableBytes: .max,
+        activationReserveBytes: 3 * gib)
+    #expect(constrained == 1 * gib)
 }
 
 @Test func kvBudgetAndAdmitSaturateOnMaxOperands() {

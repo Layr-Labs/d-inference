@@ -93,12 +93,12 @@ public enum UnifiedMemoryCap {
     /// live token budget both derive from this, which is what keeps them
     /// consistent (no competing reserve constants).
     ///
-    /// Unlike ``hardCapBytes`` this uses `capFraction × physical` WITHOUT the
-    /// 2 GiB absolute OS floor: that floor is an absolute-cap concern enforced at
-    /// model-load time, whereas this is an *incremental* "bytes until the cap"
-    /// figure. Cross-process safety here comes from the `systemAvailableBytes`
-    /// clamp, and the load gate has already guaranteed the floor before any model
-    /// (hence any KV) exists.
+    /// Uses the same ``hardCapBytes`` ceiling — including its 2 GiB absolute OS
+    /// floor — as the load gate, so the floor is honored as KV GROWS during
+    /// serving (the load gate only guarantees it at load time; KV expands after).
+    /// On boxes above ~20 GiB the floor never binds and this equals
+    /// `capFraction × physical − mlxUsed`. Cross-process safety additionally
+    /// comes from the `systemAvailableBytes` clamp.
     public static func liveKVHeadroomBytes(
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         mlxUsedBytes: UInt64,
@@ -106,7 +106,7 @@ public enum UnifiedMemoryCap {
         activationReserveBytes: UInt64? = nil,
         capFraction: Double? = nil
     ) -> UInt64 {
-        let cap = scale(physicalBytes, by: resolvedCapFraction(explicit: capFraction))
+        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
         let underCap = cap > mlxUsedBytes ? cap - mlxUsedBytes : 0
         let realFree = min(underCap, systemAvailableBytes)
         let activations = activationReserveBytes ?? resolvedActivationReserveBytes()

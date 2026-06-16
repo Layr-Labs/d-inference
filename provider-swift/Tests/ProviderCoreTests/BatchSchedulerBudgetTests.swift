@@ -652,13 +652,15 @@ struct BatchSchedulerBudgetTests {
     /// and the outcome can no longer distinguish restore from cold → fails.
     @Test("a reserve downgrade reports .coldReserved and holds only the cold footprint")
     func reserveDowngradeReportsColdReservedAndHoldsColdBytes() async {
-        // total memory fits the cold reservation (120 * 1024 = 122_880 B) but not
-        // the restore-sized one (500 * 1024 = 512_000 B). capFraction 1.0,
-        // activationReserve 0, active/cache 0 → availableReservationBytes() == total.
+        // Headroom fits the cold reservation (120 * 1024 = 122_880 B) but not the
+        // restore-sized one (500 * 1024 = 512_000 B). `total` clears the 2 GiB
+        // hardCap floor; the binding headroom is the 200_000 B `systemAvailable`
+        // (with capFraction 1.0 / activationReserve 0, availableReservationBytes
+        // == min(cap − 0, systemAvailable) == 200_000).
         let kvBudget = GlobalKVCacheBudget(
             capFraction: 1.0,
             activationReserveBytes: 0,
-            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 200_000, active: 0, cache: 0, systemAvailable: .max) }
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 8 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: 200_000) }
         )
         let scheduler = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
@@ -710,10 +712,12 @@ struct BatchSchedulerBudgetTests {
     /// over-eager downgrade that would turn every restore into a cold prefill.
     @Test("a restore that fits reports .restoreReserved and holds the restore footprint")
     func reserveThatFitsReportsRestoreReserved() async {
+        // `total` clears the 2 GiB hardCap floor; 1_000_000 B `systemAvailable` is
+        // the binding headroom, ample for the 500-token (512_000 B) restore.
         let kvBudget = GlobalKVCacheBudget(
             capFraction: 1.0,
             activationReserveBytes: 0,
-            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000_000, active: 0, cache: 0, systemAvailable: .max) }
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 8 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: 1_000_000) }
         )
         let scheduler = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
@@ -744,9 +748,11 @@ struct BatchSchedulerBudgetTests {
     /// reserve reports `.failed`.
     @Test("a plain cold request reports .coldReserved on success and .failed on overflow")
     func plainColdRequestOutcomes() async {
+        // `total` clears the 2 GiB hardCap floor; 1_000_000 B `systemAvailable` is
+        // the binding headroom, ample for the 120-token (122_880 B) cold reserve.
         let fits = GlobalKVCacheBudget(
             capFraction: 1.0, activationReserveBytes: 0,
-            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000_000, active: 0, cache: 0, systemAvailable: .max) })
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 8 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: 1_000_000) })
         let schedulerFits = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: fits)
         await schedulerFits._setKvBytesPerTokenForTest(1024)
@@ -760,10 +766,11 @@ struct BatchSchedulerBudgetTests {
             "the cold reservation must be exactly the request footprint")
 
         // Tiny budget → even the cold reservation fails → .failed (no restore to
-        // downgrade to). Mirrors the old `false` return.
+        // downgrade to). Mirrors the old `false` return. 1 KB `systemAvailable`
+        // is far below the 122_880 B cold footprint, so the reserve is rejected.
         let tiny = GlobalKVCacheBudget(
             capFraction: 1.0, activationReserveBytes: 0,
-            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000, active: 0, cache: 0, systemAvailable: .max) })
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 8 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: 1_000) })
         let schedulerTiny = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: tiny)
         await schedulerTiny._setKvBytesPerTokenForTest(1024)

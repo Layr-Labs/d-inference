@@ -50,6 +50,22 @@ extension KVQuantCandidateMode {
             return KVQuantCacheSpec(
                 bits: 4, groupSize: 64, startToken: 1024,
                 quantizeKeys: false, quantizeValues: true)
+        case .k8v8g128:
+            return KVQuantCacheSpec(
+                bits: 8, groupSize: 128, startToken: 0,
+                quantizeKeys: true, quantizeValues: true)
+        case .k8v8g64Dequant:
+            return KVQuantCacheSpec(
+                bits: 8, groupSize: 64, startToken: 0,
+                quantizeKeys: true, quantizeValues: true)
+        case .k6v6g64:
+            return KVQuantCacheSpec(
+                bits: 6, groupSize: 64, startToken: 0,
+                quantizeKeys: true, quantizeValues: true)
+        case .k6v6g64Dequant:
+            return KVQuantCacheSpec(
+                bits: 6, groupSize: 64, startToken: 0,
+                quantizeKeys: true, quantizeValues: true)
         }
     }
 }

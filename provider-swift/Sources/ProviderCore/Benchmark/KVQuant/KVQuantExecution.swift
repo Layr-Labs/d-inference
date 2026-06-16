@@ -95,33 +95,68 @@ enum KVQuantExecution {
             guard let groupSize = mode.groupSize else {
                 throw KVQuantExecutionError.missingGroupSize(mode)
             }
-            let bits = mode.bitWidth ?? 4
+            guard let bits = mode.bitWidth else {
+                throw KVQuantExecutionError.unsupportedMode(mode.rawValue)
+            }
             // Use a protocol-safe quantized cache that can serve both the
             // native quantized attention path and the plain update(keys:values:)
             // fallback used by single-forward scoring and Gemma 4 attention.
-            // Smaller group sizes trade a little overhead for better accuracy.
-            // g32 is used for 8-bit full-KV to give it a stronger chance of
-            // passing the quality gate while still halving KV-cache memory.
-            // Experiment knobs (Pareto sweep): override bits/group-size without new modes.
-            let env = ProcessInfo.processInfo.environment
-            let effBits = env["KVQ_BITS"].flatMap { Int($0) } ?? bits
-            let effGroup = env["KVQ_GROUP"].flatMap { Int($0) } ?? (bits == 8 ? 32 : groupSize)
-            // Path selection: kernel (ProtocolSafe, quantized attention) is fastest but
-            // unusable for models whose quantized attention rejects sinks (GPT-OSS).
-            // The dequant path (KVQuantizedCache) stores quantized (capacity gain) but
-            // returns fp16 to the normal sink-aware attention — sink-safe everywhere.
-            let useDequant = env["KVQ_DEQUANT"] == "1"
+            let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
+                model.newCache(parameters: nil).map { baseCache in
+                    if baseCache is RotatingKVCache {
+                        return baseCache.copy()
+                    }
+                    return ProtocolSafeQuantizedKVCache(groupSize: groupSize, bits: bits, mode: .affine)
+                }
+            }
+            return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
+
+        case .k8v8g128:
+            let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
+                model.newCache(parameters: nil).map { baseCache in
+                    if baseCache is RotatingKVCache {
+                        return baseCache.copy()
+                    }
+                    return ProtocolSafeQuantizedKVCache(groupSize: 128, bits: 8, mode: .affine)
+                }
+            }
+            return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
+
+        case .k8v8g64Dequant:
             let spec = KVQuantCacheSpec(
-                bits: effBits, groupSize: effGroup, startToken: 0,
+                bits: 8, groupSize: 64, startToken: 0,
                 quantizeKeys: true, quantizeValues: true)
             let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
                 model.newCache(parameters: nil).map { baseCache in
                     if baseCache is RotatingKVCache {
                         return baseCache.copy()
                     }
-                    return useDequant
-                        ? KVQuantizedCache(spec: spec)
-                        : ProtocolSafeQuantizedKVCache(groupSize: effGroup, bits: effBits, mode: .affine)
+                    return KVQuantizedCache(spec: spec)
+                }
+            }
+            return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
+
+        case .k6v6g64:
+            let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
+                model.newCache(parameters: nil).map { baseCache in
+                    if baseCache is RotatingKVCache {
+                        return baseCache.copy()
+                    }
+                    return ProtocolSafeQuantizedKVCache(groupSize: 64, bits: 6, mode: .affine)
+                }
+            }
+            return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
+
+        case .k6v6g64Dequant:
+            let spec = KVQuantCacheSpec(
+                bits: 6, groupSize: 64, startToken: 0,
+                quantizeKeys: true, quantizeValues: true)
+            let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
+                model.newCache(parameters: nil).map { baseCache in
+                    if baseCache is RotatingKVCache {
+                        return baseCache.copy()
+                    }
+                    return KVQuantizedCache(spec: spec)
                 }
             }
             return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)

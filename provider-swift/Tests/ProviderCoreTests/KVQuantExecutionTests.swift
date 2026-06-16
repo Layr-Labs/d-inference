@@ -11,6 +11,10 @@ func kvQuantCandidateModesParseFromRawLabels() throws {
     #expect(try KVQuantCandidateMode.parse("affine4:g64:start1024") == .affine4)
     #expect(try KVQuantCandidateMode.parse("affine8:g64:start1024") == .affine8)
     #expect(try KVQuantCandidateMode.parse("full-v-affine4:g64:start1024") == .fullVAffine4)
+    #expect(try KVQuantCandidateMode.parse("k8v8:g128") == .k8v8g128)
+    #expect(try KVQuantCandidateMode.parse("k8v8:g64:dequant") == .k8v8g64Dequant)
+    #expect(try KVQuantCandidateMode.parse("k6v6:g64") == .k6v6g64)
+    #expect(try KVQuantCandidateMode.parse("k6v6:g64:dequant") == .k6v6g64Dequant)
 }
 
 @Test("KV quant mode parsing rejects unknown labels")
@@ -53,6 +57,38 @@ func affine8FullKVModeSuppliesProtocolSafeQuantizedCacheFactory() throws {
 @Test("bf16-kv mode supplies a bfloat16 cache factory")
 func bf16KVModeSuppliesBFloat16CacheFactory() throws {
     let config = try KVQuantExecution.config(for: .bf16KV)
+
+    #expect(config.parameters.kvBits == nil)
+    #expect(config.cacheFactory != nil)
+}
+
+@Test("k8v8:g128 mode supplies a protocol-safe quantized cache factory")
+func k8v8g128ModeSuppliesProtocolSafeQuantizedCacheFactory() throws {
+    let config = try KVQuantExecution.config(for: .k8v8g128)
+
+    #expect(config.parameters.kvBits == nil)
+    #expect(config.cacheFactory != nil)
+}
+
+@Test("k8v8:g64:dequant mode supplies a dequantizing quantized cache factory")
+func k8v8g64DequantModeSuppliesDequantizingQuantizedCacheFactory() throws {
+    let config = try KVQuantExecution.config(for: .k8v8g64Dequant)
+
+    #expect(config.parameters.kvBits == nil)
+    #expect(config.cacheFactory != nil)
+}
+
+@Test("k6v6:g64 mode supplies a protocol-safe quantized cache factory")
+func k6v6g64ModeSuppliesProtocolSafeQuantizedCacheFactory() throws {
+    let config = try KVQuantExecution.config(for: .k6v6g64)
+
+    #expect(config.parameters.kvBits == nil)
+    #expect(config.cacheFactory != nil)
+}
+
+@Test("k6v6:g64:dequant mode supplies a dequantizing quantized cache factory")
+func k6v6g64DequantModeSuppliesDequantizingQuantizedCacheFactory() throws {
+    let config = try KVQuantExecution.config(for: .k6v6g64Dequant)
 
     #expect(config.parameters.kvBits == nil)
     #expect(config.cacheFactory != nil)

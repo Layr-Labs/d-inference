@@ -1533,8 +1533,8 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT * FROM inference_routes WHERE created_at >= $1 ORDER BY created_at DESC`,
-		since)
+		`SELECT * FROM inference_routes WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2`,
+		since, maxTelemetryReadRows)
 	if err != nil {
 		return nil
 	}
@@ -1662,8 +1662,8 @@ func (s *PostgresStore) RejectionRecordsSince(since time.Time) []RejectionRecord
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT * FROM request_rejections WHERE created_at >= $1 ORDER BY created_at DESC`,
-		since)
+		`SELECT * FROM request_rejections WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2`,
+		since, maxTelemetryReadRows)
 	if err != nil {
 		return nil
 	}

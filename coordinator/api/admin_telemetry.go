@@ -139,8 +139,14 @@ func parseSince(r *http.Request) time.Time {
 	return time.Now().Add(-24 * time.Hour)
 }
 
-// parseLimit reads ?limit= as a non-negative row cap. A missing or invalid
-// value falls back to def; a value of 0 (or def == 0) means "no limit".
+// maxBrowseLimit bounds the caller-supplied ?limit= so a single browse response
+// can't be asked to materialize an unreasonable number of rows. It matches the
+// store-side read cap; the store never returns more than that regardless.
+const maxBrowseLimit = 50000
+
+// parseLimit reads ?limit= as a non-negative row cap, clamped to maxBrowseLimit.
+// A missing or invalid value falls back to def; a value of 0 (or def == 0) means
+// "no in-memory cap" (the store still hard-caps the underlying read).
 func parseLimit(r *http.Request, def int) int {
 	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
 	if raw == "" {
@@ -149,6 +155,9 @@ func parseLimit(r *http.Request, def int) int {
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
 		return def
+	}
+	if n > maxBrowseLimit {
+		return maxBrowseLimit
 	}
 	return n
 }

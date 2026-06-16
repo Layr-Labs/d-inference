@@ -571,6 +571,13 @@ type UsageRecord struct {
 	CreatedAt        time.Time         `json:"created_at,omitempty"`
 }
 
+// maxTelemetryReadRows is the hard upper bound on rows returned by the routing
+// telemetry readers (InferenceRouteRecordsSince / RejectionRecordsSince). These
+// tables grow unbounded over time, so the readers always cap the result set
+// (newest-first) to keep an admin query — or a wide `since` window — from
+// loading the whole table into memory. Narrow the time window to see older rows.
+const maxTelemetryReadRows = 50000
+
 // InferenceRouteRecord captures a single routing decision and the provider
 // snapshot at the moment the scheduler made the choice. It contains no user
 // prompt or response content.

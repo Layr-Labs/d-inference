@@ -857,6 +857,9 @@ func (s *MemoryStore) InferenceRouteRecordsSince(since time.Time) []InferenceRou
 			continue
 		}
 		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
 	}
 	if out == nil {
 		return []InferenceRouteRecord{}
@@ -896,6 +899,9 @@ func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
 			continue
 		}
 		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
 	}
 	if out == nil {
 		return []RejectionRecord{}

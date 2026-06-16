@@ -44,7 +44,7 @@ extension BatchScheduler {
         // OS-free RAM and net of the activation reserve. Same helper as
         // GlobalKVCacheBudget, so the per-scheduler budget and the shared
         // reservation gate share one ceiling instead of competing reserves.
-        let mlxUsed = UInt64(MLX.GPU.activeMemory) + UInt64(MLX.GPU.cacheMemory)
+        let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
         let headroomBytes = UnifiedMemoryCap.liveKVHeadroomBytes(
             mlxUsedBytes: mlxUsed,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max)

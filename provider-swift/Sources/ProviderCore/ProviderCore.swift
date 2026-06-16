@@ -34,5 +34,8 @@ public enum ProviderCore {
     // 0.6.10 ships the resource-count-safe MLX allocator pins, bounded model
     // weight hashing, attestation reconnect stability, alias-aware catalog UX,
     // and coordinator-side TTFT 429 admission for overloaded OpenRouter traffic.
-    public static let version = "0.6.10"
+    // 0.6.11 keeps unpadded single-token continuous-batch decode on the same
+    // unmasked attention path as regular KVCache, avoiding 4-bit Gemma 4
+    // repetition from explicit all-true batch masks.
+    public static let version = "0.6.11"
 }

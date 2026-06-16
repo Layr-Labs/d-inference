@@ -240,6 +240,61 @@ struct ModelCatalogTests {
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=16-")
     }
 
+    @Test("downloadFile assembles a body delivered in many chunks into the final file")
+    func downloadFileAssemblesMultiChunk() async throws {
+        // Exercises the chunked delegate write path: the body arrives as many
+        // separate didReceive(data:) callbacks that must append in order.
+        let full = Data((0..<1000).map { UInt8($0 % 251) })
+        ChunkedURLProtocol.payload = full
+        ChunkedURLProtocol.chunkSize = 7  // force ~143 separate chunks
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ChunkedURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("model.safetensors")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/model.safetensors",
+            to: final
+        )
+
+        #expect(ok)
+        #expect(try Data(contentsOf: final) == full)
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+    }
+
+    @Test("downloadFile returns false and clears a stale .part for an optional 404")
+    func downloadFileOptional404ClearsPart() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [NotFoundURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("optional.bin")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("stale prefix".utf8).write(to: partial)
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/optional.bin",
+            to: final,
+            required: false
+        )
+
+        #expect(!ok)
+        #expect(!FileManager.default.fileExists(atPath: partial.path), "a 404 must clear the stale .part")
+        #expect(!FileManager.default.fileExists(atPath: final.path))
+    }
+
     @Test("manifest download failure preserves existing local snapshot")
     func manifestDownloadFailurePreservesExistingSnapshot() async throws {
         let modelID = "test-org/staging-preserves-\(UUID().uuidString)"
@@ -359,6 +414,55 @@ private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// Delivers the payload as many small `didLoad` chunks (multiple
+/// `didReceive(data:)` delegate callbacks) to exercise chunked assembly.
+private final class ChunkedURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var payload = Data()
+    nonisolated(unsafe) static var chunkSize = 8
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": "\(Self.payload.count)"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        var offset = 0
+        let size = max(1, Self.chunkSize)
+        while offset < Self.payload.count {
+            let end = min(offset + size, Self.payload.count)
+            client?.urlProtocol(self, didLoad: Self.payload.subdata(in: offset..<end))
+            offset = end
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// Always answers 404 (optional-file miss path).
+private final class NotFoundURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 404,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocolDidFinishLoading(self)
     }
 

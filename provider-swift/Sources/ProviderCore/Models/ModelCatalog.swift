@@ -983,27 +983,17 @@ public struct ModelDownloader: Sendable {
         return false
     }
 
-    /// Stream an HTTP GET body incrementally into `partial`, appending to any
-    /// bytes already present (true byte-level resume).
+    /// Stream an HTTP GET body to `partial` in OS-sized chunks, appending to any
+    /// bytes already present (true byte-level resume). Delegates the transfer to
+    /// `StreamingFileDownloadDelegate`, which writes each chunk synchronously to
+    /// disk so the socket is throttled to disk speed (backpressure) with nothing
+    /// buffered in memory — replacing the old per-byte `URLSession.AsyncBytes`
+    /// loop that issued one async step per byte.
     ///
-    /// Behavior:
-    /// - If `partial` already has N bytes, sends `Range: bytes=N-`.
-    /// - 206 with a `Content-Range` whose start == N → append to `partial`.
-    /// - 200 (server ignored the Range / no range support) → truncate `partial`
-    ///   and write from byte 0 (restart THIS file only).
-    /// - 206 whose start != N (server resumed at the wrong offset) → truncate and
-    ///   restart this file rather than append onto a mismatched stream.
-    /// - 404/403 → remove `partial`; throw if `required`, else return false.
-    /// - On a mid-stream transport drop, the bytes received so far stay in
-    ///   `partial` and the error propagates (the caller retries with a fresh
-    ///   `Range` request that appends the remainder).
-    ///
-    /// `Task.checkCancellation()` is checked between chunks so cancellation stops
-    /// promptly and leaves a resumable `.part`.
-    ///
-    /// `onChunk(bytesOnDisk)` is invoked as each buffer flushes (and at the end)
-    /// with the cumulative size of `partial` on disk, so callers can render live
-    /// per-file progress. It is NOT called on the 404/403 drain path.
+    /// Resume/restart/404/416 semantics and the `onChunk(bytesOnDisk)` progress
+    /// contract are documented on the delegate. Cancellation propagates promptly
+    /// (`task.cancel()` via the cancellation handler) and leaves a resumable
+    /// `.part`.
     private func streamDownload(
         from url: URL,
         to partial: URL,
@@ -1011,151 +1001,53 @@ public struct ModelDownloader: Sendable {
         required: Bool,
         onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
-        let fm = FileManager.default
         let existingBytes = fileSize(partial)
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         // Model shards are multi-GB files. A short request timeout causes
-        // legitimate downloads to fail; the streaming byte sequence keeps the
-        // connection alive across the whole transfer.
+        // legitimate downloads to fail; the streamed transfer keeps the
+        // connection alive across the whole download.
         request.timeoutInterval = 6 * 60 * 60
         if existingBytes > 0 {
             request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
         }
 
-        let (byteStream, response) = try await urlSession.bytes(for: request)
+        let delegate = StreamingFileDownloadDelegate(
+            partial: partial,
+            existingBytes: existingBytes,
+            label: label,
+            onChunk: onChunk
+        )
+        let task = urlSession.dataTask(with: request)
+        task.delegate = delegate
 
-        guard let http = response as? HTTPURLResponse else {
-            try? fm.removeItem(at: partial)
-            throw ModelCatalogError.downloadFailed("\(label): unexpected response type")
-        }
-
-        if http.statusCode == 404 || http.statusCode == 403 {
-            try? fm.removeItem(at: partial)
-            if required {
-                throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
+        let outcome = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (cont: CheckedContinuation<StreamingFileDownloadDelegate.Outcome, Error>) in
+                delegate.attach(cont)
+                task.resume()
             }
-            // Drain so the connection can be reused; ignore the bytes.
-            for try await _ in byteStream {}
-            return false
+        } onCancel: {
+            // Leaves the bytes already written durably in `.part` for resume.
+            task.cancel()
         }
-        // 416 Range Not Satisfiable: we asked for `bytes=N-` and the server says N
-        // is at/beyond the resource length — i.e. the `.part` already holds the
-        // whole file. This happens when a prior run received every byte but the
-        // process died before the file was verified + promoted. Do NOT delete the
-        // prefix and re-download it from zero: drain the (empty) body and return
-        // success so the caller's SHA/size check promotes a complete file (or
-        // deletes + restarts a corrupt/oversized one). Only trust this when we
-        // actually sent a Range (existingBytes > 0); a 416 with no prefix is a
-        // genuine error and falls through to the guard below.
-        if http.statusCode == 416, existingBytes > 0 {
-            for try await _ in byteStream {}
+
+        switch outcome {
+        case .notFound(let status):
+            try? FileManager.default.removeItem(at: partial)
+            if required {
+                throw ModelCatalogError.downloadFailed("\(label): HTTP \(status)")
+            }
+            return false
+        case .completeBeyondRange:
+            // The `.part` already holds the whole object; the caller's SHA/size
+            // check promotes it (or deletes + restarts a corrupt/oversized one).
             onChunk?(existingBytes)
             return true
+        case .success:
+            return true
         }
-        guard (200..<300).contains(http.statusCode) else {
-            try? fm.removeItem(at: partial)
-            throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
-        }
-
-        // Decide whether we append to the existing prefix or restart this file.
-        var append = false
-        if existingBytes > 0, http.statusCode == 206 {
-            // Validate the server resumed at our offset before appending.
-            if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
-               let rangeStart = Self.parseContentRangeStart(contentRange),
-               rangeStart == UInt64(existingBytes) {
-                append = true
-            }
-        }
-        // 200 (no range support) or an unverifiable/mismatched 206 → restart
-        // THIS file only: truncate the stale prefix and write from byte 0.
-        if !append {
-            try? fm.removeItem(at: partial)
-        }
-
-        if !fm.fileExists(atPath: partial.path) {
-            fm.createFile(atPath: partial.path, contents: nil)
-        }
-
-        let writer: FileHandle
-        do {
-            writer = try FileHandle(forWritingTo: partial)
-        } catch {
-            throw ModelCatalogError.downloadFailed("\(label): could not open .part for writing (\(error.localizedDescription))")
-        }
-        defer { try? writer.close() }
-        if append {
-            try writer.seekToEnd()
-        } else {
-            try writer.truncate(atOffset: 0)
-        }
-
-        // Buffer chunks so we don't issue a write() syscall per byte. Flush as
-        // each buffer fills (and at the end) so the bytes are durable on disk —
-        // a mid-stream drop leaves a resumable prefix. CRITICAL: if the stream
-        // errors mid-transfer (connection drop), flush whatever was buffered
-        // before rethrowing so EVERY received byte lands in `.part` and the
-        // retry resumes from exactly where the drop happened (never from zero).
-        // Cumulative bytes durably written this run; added to the resumed prefix
-        // (`baseline`) when reporting on-disk progress to `onChunk`.
-        let baseline = append ? existingBytes : 0
-        var written: Int64 = 0
-        var buffer = Data()
-        buffer.reserveCapacity(Self.streamFlushThreshold)
-        var sinceCancelCheck = 0
-        do {
-            for try await byte in byteStream {
-                buffer.append(byte)
-                sinceCancelCheck += 1
-                if buffer.count >= Self.streamFlushThreshold {
-                    try writer.write(contentsOf: buffer)
-                    written += Int64(buffer.count)
-                    buffer.removeAll(keepingCapacity: true)
-                    onChunk?(baseline + written)
-                }
-                // Check cancellation periodically (every ~64KB) without paying
-                // the cost on every single byte. The partial flush above means a
-                // cancelled transfer still leaves a resumable .part.
-                if sinceCancelCheck >= Self.streamFlushThreshold {
-                    sinceCancelCheck = 0
-                    if Task.isCancelled {
-                        if !buffer.isEmpty {
-                            try writer.write(contentsOf: buffer)
-                            written += Int64(buffer.count)
-                            buffer.removeAll(keepingCapacity: true)
-                        }
-                        throw CancellationError()
-                    }
-                }
-            }
-        } catch {
-            // Persist the prefix received before the drop, then propagate so the
-            // caller retries with a `Range` request that appends the remainder.
-            if !buffer.isEmpty { try? writer.write(contentsOf: buffer) }
-            throw error
-        }
-        if !buffer.isEmpty {
-            try writer.write(contentsOf: buffer)
-            written += Int64(buffer.count)
-            buffer.removeAll(keepingCapacity: true)
-        }
-        onChunk?(baseline + written)
-        return true
-    }
-
-    /// Flush the streaming download buffer to disk every 64 KB. Also the
-    /// cadence at which cancellation is checked during streaming.
-    private static let streamFlushThreshold = 65536
-
-    /// Parse the start offset from a Content-Range header value.
-    /// Expected format: "bytes 12345-67890/123456".
-    private static func parseContentRangeStart(_ value: String) -> UInt64? {
-        guard value.hasPrefix("bytes ") else { return nil }
-        let afterBytes = value.dropFirst("bytes ".count)
-        guard let dashIndex = afterBytes.firstIndex(of: "-") else { return nil }
-        return UInt64(afterBytes[afterBytes.startIndex..<dashIndex])
     }
 
     private static func downloadFailureMessage(label: String, error: Error?) -> String {

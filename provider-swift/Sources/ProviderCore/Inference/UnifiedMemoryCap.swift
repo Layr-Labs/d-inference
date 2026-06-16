@@ -81,6 +81,38 @@ public enum UnifiedMemoryCap {
         return cap > claimed ? cap - claimed : 0
     }
 
+    /// Live KV headroom in bytes: how many more bytes may be committed to KV
+    /// *right now* without crossing the cap, given current MLX usage, clamped to
+    /// real OS-free RAM and net of the activation reserve.
+    ///
+    /// This is the runtime counterpart to ``kvBudgetBytes``: instead of
+    /// subtracting a known Σweights, it subtracts `mlxUsedBytes` (MLX active +
+    /// cache), which already reflects every co-resident model's weights AND its
+    /// live/cached KV — so it is inherently multi-model with no per-model
+    /// bookkeeping. The single per-request reservation gate and the per-scheduler
+    /// live token budget both derive from this, which is what keeps them
+    /// consistent (no competing reserve constants).
+    ///
+    /// Unlike ``hardCapBytes`` this uses `capFraction × physical` WITHOUT the
+    /// 2 GiB absolute OS floor: that floor is an absolute-cap concern enforced at
+    /// model-load time, whereas this is an *incremental* "bytes until the cap"
+    /// figure. Cross-process safety here comes from the `systemAvailableBytes`
+    /// clamp, and the load gate has already guaranteed the floor before any model
+    /// (hence any KV) exists.
+    public static func liveKVHeadroomBytes(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        mlxUsedBytes: UInt64,
+        systemAvailableBytes: UInt64,
+        activationReserveBytes: UInt64? = nil,
+        capFraction: Double? = nil
+    ) -> UInt64 {
+        let cap = scale(physicalBytes, by: resolvedCapFraction(explicit: capFraction))
+        let underCap = cap > mlxUsedBytes ? cap - mlxUsedBytes : 0
+        let realFree = min(underCap, systemAvailableBytes)
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        return realFree > activations ? realFree - activations : 0
+    }
+
     /// Whether a new model of `candidateWeightBytes` may be admitted while
     /// `currentResidentWeightBytes` are already resident, leaving at least
     /// `minimumKVBytes` of KV headroom under the cap (a model that loads with no

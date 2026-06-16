@@ -14,14 +14,18 @@ public actor GlobalKVCacheBudget {
         public var systemAvailable: UInt64
     }
 
-    private let safetyFactor: Double
-    private let reserveBytes: UInt64
+    /// Cap fraction and activation reserve are nil → ``UnifiedMemoryCap``
+    /// defaults (0.90 / env / 3 GiB floor). Held as overrides so tests can pin
+    /// them; production uses the defaults so this budget and the load gate share
+    /// one policy.
+    private let capFraction: Double?
+    private let activationReserveBytes: UInt64?
     private let memorySnapshot: @Sendable () -> MemorySnapshot
     private var reservations: [String: UInt64] = [:]
 
-    public init(reserveBytes: UInt64 = 0, safetyFactor: Double = 0.7) {
-        self.reserveBytes = reserveBytes
-        self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
+    public init(capFraction: Double? = nil, activationReserveBytes: UInt64? = nil) {
+        self.capFraction = capFraction
+        self.activationReserveBytes = activationReserveBytes
         self.memorySnapshot = {
             MemorySnapshot(
                 total: ProcessInfo.processInfo.physicalMemory,
@@ -33,12 +37,12 @@ public actor GlobalKVCacheBudget {
     }
 
     init(
-        reserveBytes: UInt64 = 0,
-        safetyFactor: Double = 0.7,
+        capFraction: Double? = nil,
+        activationReserveBytes: UInt64? = nil,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot
     ) {
-        self.reserveBytes = reserveBytes
-        self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
+        self.capFraction = capFraction
+        self.activationReserveBytes = activationReserveBytes
         self.memorySnapshot = memorySnapshot
     }
 
@@ -88,14 +92,19 @@ public actor GlobalKVCacheBudget {
     private func availableReservationBytes() -> UInt64 {
         let snap = memorySnapshot()
         let mlxUsed = Self.saturatingAdd(snap.active, snap.cache)
-        let mlxFree = snap.total > mlxUsed ? snap.total - mlxUsed : 0
-        // Clamp the MLX-only view (blind to other processes) to real OS-free RAM,
-        // mirroring the load gate (ModelLoadAdmission.freeForLoadGb). Without it
-        // the runtime admits against memory other apps hold → jetsam OOM.
-        let realFree = min(mlxFree, snap.systemAvailable)
-        let usable = realFree > reserveBytes ? realFree - reserveBytes : 0
-        let capped = Double(usable) * safetyFactor
-        let reservationCap = capped >= Double(UInt64.max) ? UInt64.max : UInt64(capped)
+        // Bytes still committable to KV under the 90% unified-memory cap, given
+        // current MLX usage (which already reflects ALL co-resident models'
+        // weights + KV), clamped to real OS-free RAM and net of the activation
+        // reserve. This replaces the old `(free − reserve) × 0.7` formula: the
+        // single cap + activation reserve are the only knobs, so this gate, the
+        // per-scheduler live token budget, and the load gate no longer apply
+        // three different, competing discounts.
+        let reservationCap = UnifiedMemoryCap.liveKVHeadroomBytes(
+            physicalBytes: snap.total,
+            mlxUsedBytes: mlxUsed,
+            systemAvailableBytes: snap.systemAvailable,
+            activationReserveBytes: activationReserveBytes,
+            capFraction: capFraction)
         let reserved = reservations.values.reduce(UInt64(0)) { partial, value in
             let (sum, overflow) = partial.addingReportingOverflow(value)
             return overflow ? UInt64.max : sum
@@ -113,8 +122,4 @@ public actor GlobalKVCacheBudget {
         return total
     }
 
-    private static func clampedSafetyFactor(_ value: Double) -> Double {
-        guard value.isFinite else { return 0.7 }
-        return min(1.0, max(0.0, value))
-    }
 }

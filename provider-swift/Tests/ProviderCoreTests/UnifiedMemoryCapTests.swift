@@ -165,6 +165,50 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(UnifiedMemoryCap.hardCapBytes(physicalBytes: 128 * gib, capFraction: 0.0) == 0)
 }
 
+// MARK: - liveKVHeadroomBytes (the runtime gate's ceiling)
+
+@Test func liveHeadroomIsCapMinusMlxUsedMinusActivations() {
+    // 128 GiB, 0.90 cap = 115.2 GiB. MLX already holds 30 GiB (weights+KV).
+    // OS not the binding view. 3 GiB activations. Headroom = 115.2 − 30 − 3.
+    let cap = UInt64(Double(128 * gib) * 0.90)
+    let headroom = UnifiedMemoryCap.liveKVHeadroomBytes(
+        physicalBytes: 128 * gib,
+        mlxUsedBytes: 30 * gib,
+        systemAvailableBytes: .max,
+        activationReserveBytes: 3 * gib)
+    #expect(headroom == cap - 30 * gib - 3 * gib)
+}
+
+@Test func liveHeadroomClampsToOSAvailableWhenTighter() {
+    // Under-cap says lots free, but the OS only has 5 GiB → bind to 5 − 3 = 2.
+    let headroom = UnifiedMemoryCap.liveKVHeadroomBytes(
+        physicalBytes: 128 * gib,
+        mlxUsedBytes: 30 * gib,
+        systemAvailableBytes: 5 * gib,
+        activationReserveBytes: 3 * gib)
+    #expect(headroom == 2 * gib)
+}
+
+@Test func liveHeadroomIsZeroWhenMlxUsageAlreadyAtCap() {
+    // MLX holds more than the cap (over-committed) → no further KV, never negative.
+    let headroom = UnifiedMemoryCap.liveKVHeadroomBytes(
+        physicalBytes: 64 * gib,
+        mlxUsedBytes: 60 * gib,  // > 0.90×64 = 57.6
+        systemAvailableBytes: .max,
+        activationReserveBytes: 3 * gib)
+    #expect(headroom == 0)
+}
+
+@Test func liveHeadroomHasNoAbsoluteFloorUnlikeHardCap() {
+    // liveKVHeadroom uses capFraction×physical WITHOUT the 2 GiB OS floor that
+    // hardCapBytes applies (the floor is a load-time concern). So at fraction 1.0
+    // with no MLX usage and infinite OS, headroom = full physical − activations.
+    let headroom = UnifiedMemoryCap.liveKVHeadroomBytes(
+        physicalBytes: 8 * gib, mlxUsedBytes: 0, systemAvailableBytes: .max,
+        activationReserveBytes: 0, capFraction: 1.0)
+    #expect(headroom == 8 * gib)  // not 6 GiB (which hardCapBytes would give)
+}
+
 @Test func kvBudgetAndAdmitSaturateOnMaxOperands() {
     // .max weights must clamp the KV budget to 0, not underflow/trap.
     #expect(UnifiedMemoryCap.kvBudgetBytes(

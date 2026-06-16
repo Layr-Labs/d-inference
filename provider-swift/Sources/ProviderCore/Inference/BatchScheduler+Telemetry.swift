@@ -39,16 +39,16 @@ extension BatchScheduler {
             return staticBudget
         }
 
-        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
-        let osReserve = 4 * 1024 * 1024 * 1024
-        let safetyMargin = totalMemory / 10
-        let globalUsed = Int(MLX.GPU.activeMemory) + Int(MLX.GPU.cacheMemory)
-        let mlxFree = max(0, totalMemory - globalUsed)
-        // Clamp the MLX-only view to real OS-free RAM (other processes' usage),
-        // same as the load gate / GlobalKVCacheBudget; else we OOM on shared boxes.
-        let osAvailable = SystemMemory.availableBytes().map { Int(min($0, UInt64(Int.max))) } ?? Int.max
-        let realFree = min(mlxFree, osAvailable)
-        let availableHeadroom = max(0, realFree - osReserve - safetyMargin)
+        // Live KV headroom under the unified 90% cap, given current MLX usage
+        // (which reflects every co-resident model's weights + KV) clamped to real
+        // OS-free RAM and net of the activation reserve. Same helper as
+        // GlobalKVCacheBudget, so the per-scheduler budget and the shared
+        // reservation gate share one ceiling instead of competing reserves.
+        let mlxUsed = UInt64(MLX.GPU.activeMemory) + UInt64(MLX.GPU.cacheMemory)
+        let headroomBytes = UnifiedMemoryCap.liveKVHeadroomBytes(
+            mlxUsedBytes: mlxUsed,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max)
+        let availableHeadroom = Int(min(headroomBytes, UInt64(Int.max)))
         let liveBudget = activeTokenBudgetUsed + (availableHeadroom / kvBytesPerToken)
         return max(1024, min(staticBudget, liveBudget))
     }

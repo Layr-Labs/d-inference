@@ -653,11 +653,11 @@ struct BatchSchedulerBudgetTests {
     @Test("a reserve downgrade reports .coldReserved and holds only the cold footprint")
     func reserveDowngradeReportsColdReservedAndHoldsColdBytes() async {
         // total memory fits the cold reservation (120 * 1024 = 122_880 B) but not
-        // the restore-sized one (500 * 1024 = 512_000 B). safetyFactor 1.0,
-        // reserveBytes 0, active/cache 0 → availableReservationBytes() == total.
+        // the restore-sized one (500 * 1024 = 512_000 B). capFraction 1.0,
+        // activationReserve 0, active/cache 0 → availableReservationBytes() == total.
         let kvBudget = GlobalKVCacheBudget(
-            reserveBytes: 0,
-            safetyFactor: 1.0,
+            capFraction: 1.0,
+            activationReserveBytes: 0,
             memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 200_000, active: 0, cache: 0, systemAvailable: .max) }
         )
         let scheduler = BatchScheduler(
@@ -711,8 +711,8 @@ struct BatchSchedulerBudgetTests {
     @Test("a restore that fits reports .restoreReserved and holds the restore footprint")
     func reserveThatFitsReportsRestoreReserved() async {
         let kvBudget = GlobalKVCacheBudget(
-            reserveBytes: 0,
-            safetyFactor: 1.0,
+            capFraction: 1.0,
+            activationReserveBytes: 0,
             memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000_000, active: 0, cache: 0, systemAvailable: .max) }
         )
         let scheduler = BatchScheduler(
@@ -745,7 +745,7 @@ struct BatchSchedulerBudgetTests {
     @Test("a plain cold request reports .coldReserved on success and .failed on overflow")
     func plainColdRequestOutcomes() async {
         let fits = GlobalKVCacheBudget(
-            reserveBytes: 0, safetyFactor: 1.0,
+            capFraction: 1.0, activationReserveBytes: 0,
             memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000_000, active: 0, cache: 0, systemAvailable: .max) })
         let schedulerFits = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: fits)
@@ -762,7 +762,7 @@ struct BatchSchedulerBudgetTests {
         // Tiny budget → even the cold reservation fails → .failed (no restore to
         // downgrade to). Mirrors the old `false` return.
         let tiny = GlobalKVCacheBudget(
-            reserveBytes: 0, safetyFactor: 1.0,
+            capFraction: 1.0, activationReserveBytes: 0,
             memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000, active: 0, cache: 0, systemAvailable: .max) })
         let schedulerTiny = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: tiny)

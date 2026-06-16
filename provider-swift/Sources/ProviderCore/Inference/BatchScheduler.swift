@@ -1471,12 +1471,16 @@ public actor BatchScheduler {
             architecture: snapshot.architecture,
             weightBytes: snapshot.bytes
         )
-        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
-        let osReserve = 4 * 1024 * 1024 * 1024
-        let safetyMargin = totalMemory / 10
-        let availableForKV = totalMemory - snapshot.bytes - osReserve - safetyMargin
+        // Static upper-bound budget from the unified 90% cap minus THIS model's
+        // measured resident weights (snapshot.bytes) and the activation reserve.
+        // Only the per-model clamp; cross-model headroom (other resident models'
+        // weights/KV) is handled live by tokenBudgetMax / the shared
+        // GlobalKVCacheBudget, which read process-global MLX usage.
+        let availableForKV = UnifiedMemoryCap.kvBudgetBytes(
+            residentWeightBytes: UInt64(max(0, snapshot.bytes)))
         if availableForKV > 0 && kvBytesPerToken > 0 {
-            self.dynamicTokenBudgetMax = max(availableForKV / kvBytesPerToken, 1024)
+            let availInt = Int(min(availableForKV, UInt64(Int.max)))
+            self.dynamicTokenBudgetMax = max(availInt / kvBytesPerToken, 1024)
         } else {
             self.dynamicTokenBudgetMax = 1024
         }

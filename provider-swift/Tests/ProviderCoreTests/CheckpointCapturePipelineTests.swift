@@ -113,6 +113,47 @@ func capturePipelineBoundsInFlightSnapshots() async {
 }
 
 @Test
+func capturePipelineDropsBufferedCapturesOnShutdown() async {
+    // `shutdown()` calls `finish()` + `cancel()`. `finish()` alone still lets the
+    // stream deliver already-buffered payloads, and an AsyncStream `for await`
+    // does NOT observe Task cancellation on its own — so without the in-loop
+    // `Task.isCancelled` guard the consumer would keep `consume`-ing the buffered
+    // remainder after a model swap began, storing old-model KV snapshots that pin
+    // live Metal buffers. This proves the buffered surplus is DROPPED on
+    // teardown: only the single in-flight capture runs.
+    let cap = 4
+    let total = 64
+    let counter = LiveCounter()
+    let firstEntered = Latch()   // fires once the consumer is inside consume #1
+    let release = Latch()        // unblocks that in-flight consume
+    let consumeCalls = LiveCounter()  // peak == number of consume invocations
+
+    let pipeline = CheckpointCapturePipeline<TrackedPayload>(capacity: cap) { _ in
+        consumeCalls.enter()
+        await firstEntered.release()
+        await release.wait()
+    }
+
+    for _ in 0..<total { pipeline.submit(TrackedPayload(counter)) }
+
+    // Wait until the consumer is actually blocked inside consume() for payload #1,
+    // then let the buffer fill behind it.
+    await firstEntered.wait()
+    for _ in 0..<50 { await Task.yield() }
+
+    // Tear down while the buffer is full and the consumer is mid-consume, then
+    // let the in-flight consume return. The loop must observe cancellation and
+    // break BEFORE consuming any buffered payload.
+    pipeline.shutdown()
+    await release.release()
+    await pipeline.waitUntilDrained()
+
+    let calls = consumeCalls.snapshot.peak
+    #expect(calls == 1, "expected only the in-flight capture to run after shutdown, got \(calls)")
+    #expect(counter.snapshot.live == 0, "buffered snapshots leaked after shutdown")
+}
+
+@Test
 func capturePipelineCapacityFloorIsOne() async {
     // A non-positive capacity must clamp to ≥ 1, never 0 (a 0-buffer stream
     // would drop everything and never warm the cache).

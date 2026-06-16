@@ -89,6 +89,21 @@ final class CheckpointCapturePipeline<Payload: Sendable>: @unchecked Sendable {
         self.continuation = continuation
         self.consumer = Task {
             for await payload in stream {
+                // Honor shutdown before consuming. `shutdown()` calls
+                // `finish()` + `cancel()`, but `finish()` still delivers
+                // already-buffered payloads to this loop and an AsyncStream
+                // `for await` does NOT observe Task cancellation on its own.
+                // Without this guard we would `store(...)` old-model KV
+                // snapshots after a model swap has begun — pinning large live
+                // Metal buffers that must not overlap the next engine.
+                //
+                // We `continue` rather than `break`: the buffered remainder must
+                // still be pulled so each payload is released as it drains (the
+                // retained `continuation` keeps the stream's internal buffer —
+                // and anything stranded in it — alive). Skipping `consume` drops
+                // the captures (best-effort) without storing them; the finished
+                // stream then terminates the loop once its buffer empties.
+                if Task.isCancelled { continue }
                 await consume(payload)
             }
         }

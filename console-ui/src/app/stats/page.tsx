@@ -2244,7 +2244,18 @@ function LeaderboardSection() {
               <h2 className="text-sm font-semibold text-text-primary">Provider Earnings Leaderboard</h2>
             </div>
             <p className="mt-1 max-w-2xl text-xs text-text-tertiary">
-              Pseudonymized provider accounts ranked from the coordinator leaderboard.
+              Pseudonymized provider accounts ranked from the coordinator leaderboard. Each
+              window is a <span className="text-text-secondary">rolling lookback</span> ending now
+              (e.g. 24h = the last 24 hours), not a fixed calendar day.
+            </p>
+            <p className="mt-2 max-w-2xl rounded-lg border border-border-dim bg-bg-secondary px-3 py-2 text-xs text-text-tertiary">
+              These are <span className="text-text-secondary">actual earnings during early network ramp-up</span>,
+              not steady-state figures. Request acceptance is intentionally conservative today and is being
+              scaled up as we validate the data, so live numbers run well below the{" "}
+              <Link href="/earn" className="text-accent-brand hover:underline">
+                earnings calculator
+              </Link>{" "}
+              projection, which estimates potential at full utilization.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

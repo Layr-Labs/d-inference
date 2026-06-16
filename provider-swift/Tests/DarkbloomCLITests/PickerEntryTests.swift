@@ -28,6 +28,71 @@ struct PickerEntryTests {
         Start.PickerCatalogRow(model: m, displayName: m.displayName)
     }
 
+    private func entry(_ id: String, sizeGb: Double, downloaded: Bool = true) -> Start.PickerEntry {
+        Start.PickerEntry(
+            id: id,
+            catalogModel: model(id, sizeGb: sizeGb),
+            displayName: id,
+            sizeGb: sizeGb,
+            minRamGb: nil,
+            downloaded: downloaded
+        )
+    }
+
+    // MARK: - resolveFallbackSelection (non-TTY picker won't-fit guard)
+
+    @Test("fallback 'all' selects only models that fit in RAM")
+    func fallbackAllExcludesWontFit() {
+        let small = entry("org/small", sizeGb: 8)
+        let huge = entry("org/huge", sizeGb: 200)
+        // 18 GB box → 14 GB budget: small fits, huge does not.
+        let r = Start.resolveFallbackSelection(input: "all", entries: [small, huge], memoryGb: 18)
+        #expect(r == .selected(["org/small"]))
+    }
+
+    @Test("fallback rejects an explicit won't-fit pick instead of serving it")
+    func fallbackRejectsWontFitIndex() {
+        let small = entry("org/small", sizeGb: 8)
+        let huge = entry("org/huge", sizeGb: 200)
+        guard case .rejected = Start.resolveFallbackSelection(input: "2", entries: [small, huge], memoryGb: 18) else {
+            Issue.record("expected a won't-fit explicit selection to be rejected")
+            return
+        }
+    }
+
+    @Test("fallback selects explicit fitting models in order")
+    func fallbackSelectsFitting() {
+        let small = entry("org/small", sizeGb: 8)
+        let mid = entry("org/mid", sizeGb: 12)
+        #expect(
+            Start.resolveFallbackSelection(input: "1,2", entries: [small, mid], memoryGb: 18)
+                == .selected(["org/small", "org/mid"]))
+    }
+
+    @Test("fallback rejects 'all' when nothing fits")
+    func fallbackRejectsAllTooBig() {
+        let huge = entry("org/huge", sizeGb: 200)
+        guard case .rejected = Start.resolveFallbackSelection(input: "all", entries: [huge], memoryGb: 18) else {
+            Issue.record("expected rejection when no model fits")
+            return
+        }
+    }
+
+    @Test("fallback empty input cancels, out-of-range and non-numeric are rejected")
+    func fallbackEmptyAndRange() {
+        let small = entry("org/small", sizeGb: 8)
+        #expect(Start.resolveFallbackSelection(input: "", entries: [small], memoryGb: 18) == .cancelled)
+        #expect(Start.resolveFallbackSelection(input: "   ", entries: [small], memoryGb: 18) == .cancelled)
+        guard case .rejected = Start.resolveFallbackSelection(input: "5", entries: [small], memoryGb: 18) else {
+            Issue.record("expected out-of-range rejection")
+            return
+        }
+        guard case .rejected = Start.resolveFallbackSelection(input: "x", entries: [small], memoryGb: 18) else {
+            Issue.record("expected non-numeric rejection")
+            return
+        }
+    }
+
     @Test("a downloaded-but-too-big model still shows downloaded (never hidden by RAM)")
     func tooBigDownloadedShowsDownloaded() {
         let big = model("org/too-big", sizeGb: 200, minRamGb: 256)  // far over an 18 GB box

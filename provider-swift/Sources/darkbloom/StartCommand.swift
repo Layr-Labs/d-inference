@@ -642,6 +642,69 @@ struct Start: AsyncParsableCommand {
         return entries
     }
 
+    /// Memory held back for the OS before the per-model serving budget. Shared by
+    /// the interactive TUI picker and the non-TTY fallback so both agree on what
+    /// "fits".
+    static let pickerOSReserveGb = 4.0
+
+    /// Whether a single model of `sizeGb` can be served on a box with `memoryGb`
+    /// RAM. One model is warm at a time, so this is an individual-fit check with
+    /// the OS reserve held back.
+    static func modelFitsBudget(sizeGb: Double, memoryGb: Double) -> Bool {
+        sizeGb <= memoryGb - pickerOSReserveGb
+    }
+
+    /// Outcome of resolving a non-TTY fallback-picker input line.
+    enum FallbackSelection: Equatable {
+        case cancelled
+        case selected([String])
+        case rejected(String)
+    }
+
+    /// Resolve a fallback-picker input ("all" or comma-separated 1-based indices)
+    /// into model IDs, rejecting any pick that can't fit in RAM — the non-TTY
+    /// equivalent of the TUI refusing to toggle a won't-fit row. Pure + testable.
+    /// Without this guard a scripted/piped `darkbloom start` could select a model
+    /// that is on disk but too large for this box and always OOMs on load.
+    static func resolveFallbackSelection(
+        input rawInput: String,
+        entries: [PickerEntry],
+        memoryGb: Double
+    ) -> FallbackSelection {
+        let input = rawInput.trimmingCharacters(in: .whitespaces)
+        guard !input.isEmpty else { return .cancelled }
+        let budget = memoryGb - pickerOSReserveGb
+        func fits(_ e: PickerEntry) -> Bool { modelFitsBudget(sizeGb: e.sizeGb, memoryGb: memoryGb) }
+
+        if input.lowercased() == "all" {
+            let fitting = entries.filter(fits)
+            guard !fitting.isEmpty else {
+                return .rejected(
+                    "No model fits in \(Int(memoryGb)) GB RAM (need ≤ \(String(format: "%.1f", budget)) GB per model).")
+            }
+            return .selected(fitting.map(\.id))
+        }
+
+        var picked: [PickerEntry] = []
+        for token in input.split(separator: ",") {
+            let t = token.trimmingCharacters(in: .whitespaces)
+            guard let n = Int(t) else {
+                return .rejected("Invalid selection: '\(t)' is not a number.")
+            }
+            guard n >= 1, n <= entries.count else {
+                return .rejected("Invalid selection: \(n) (must be 1-\(entries.count)).")
+            }
+            let entry = entries[n - 1]
+            guard fits(entry) else {
+                return .rejected(
+                    "\(entry.displayName) (\(String(format: "%.1f", entry.sizeGb)) GB) needs more memory than this Mac has "
+                        + "(\(Int(memoryGb)) GB RAM, ~\(String(format: "%.1f", budget)) GB usable). Choose a smaller model.")
+            }
+            picked.append(entry)
+        }
+        return .selected(picked.map(\.id))
+    }
+
     private static let gemmaPublicID = "gemma-4-26b"
     private static let gemmaQATID = "gemma-4-26b-qat-4bit"
     private static let gemmaRollbackID = "gemma-4-26b-8bit"
@@ -756,7 +819,7 @@ struct Start: AsyncParsableCommand {
 
         // Fall back to simple numbered picker if stdin is not a TTY.
         guard isatty(STDIN_FILENO) != 0 else {
-            return try await fallbackPicker(entries: entries, client: client)
+            return try await fallbackPicker(entries: entries, memoryGb: memoryGb, client: client)
         }
 
         // Run the interactive TUI picker.
@@ -803,6 +866,7 @@ struct Start: AsyncParsableCommand {
     /// Simple numbered fallback picker for non-TTY environments.
     private func fallbackPicker(
         entries: [PickerEntry],
+        memoryGb: Double,
         client: ModelCatalogClient
     ) async throws -> [String] {
         print()
@@ -819,32 +883,25 @@ struct Start: AsyncParsableCommand {
             }
             let sizeStr = String(format: "%.1f GB", entry.sizeGb)
             let ramStr = entry.minRamGb.map { " (>= \($0) GB RAM)" } ?? ""
-            print("    [\(i + 1)] \(entry.displayName)  \(sizeStr)\(ramStr)  [\(status)]")
+            // Parity with the TUI: a downloaded-but-too-big model is shown but
+            // flagged so a non-interactive caller knows it can't be served here.
+            let fitStr = Start.modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb) ? "" : "  [won't fit]"
+            print("    [\(i + 1)] \(entry.displayName)  \(sizeStr)\(ramStr)  [\(status)]\(fitStr)")
         }
         print()
         print("  Select models (comma-separated numbers, or 'all'): ", terminator: "")
 
-        guard let input = readLine()?.trimmingCharacters(in: .whitespaces), !input.isEmpty else {
-            return []
-        }
-
         let selected: [PickerEntry]
-        if input.lowercased() == "all" {
-            selected = entries
-        } else {
-            let indices = input.split(separator: ",").compactMap { token -> Int? in
-                guard let n = Int(token.trimmingCharacters(in: .whitespaces)) else { return nil }
-                return n
-            }
-            var picked: [PickerEntry] = []
-            for idx in indices {
-                guard idx >= 1, idx <= entries.count else {
-                    printError("Invalid selection: \(idx) (must be 1-\(entries.count))")
-                    throw ExitCode.failure
-                }
-                picked.append(entries[idx - 1])
-            }
-            selected = picked
+        switch Start.resolveFallbackSelection(input: readLine() ?? "", entries: entries, memoryGb: memoryGb) {
+        case .cancelled:
+            return []
+        case .rejected(let message):
+            printError(message)
+            printError("hint: pick a model that fits, or run on a Mac with more RAM")
+            throw ExitCode.failure
+        case .selected(let ids):
+            let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            selected = ids.compactMap { byID[$0] }
         }
 
         let localIDs = Set(entries.filter(\.downloaded).map(\.id))
@@ -880,8 +937,7 @@ struct Start: AsyncParsableCommand {
     /// Arrow keys navigate, Space toggles selection, Enter confirms, Esc/q cancels.
     /// Enforces memory budget and shows two sections: downloaded and available.
     private func runModelPicker(entries: [PickerEntry], memoryGb: Double) throws -> [Int] {
-        let osReserve = 4.0
-        let budget = memoryGb - osReserve
+        let budget = memoryGb - Start.pickerOSReserveGb
 
         var cursorPos = 0
         var selected = [Bool](repeating: false, count: entries.count)
@@ -919,7 +975,7 @@ struct Start: AsyncParsableCommand {
         }
 
         func canFitIndividually(_ entry: PickerEntry) -> Bool {
-            entry.sizeGb <= budget
+            Start.modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb)
         }
 
         // Pre-select the largest downloaded model that can fit on this machine.

@@ -108,6 +108,94 @@ func TestWarmPoolQueueAgePressureRaisesTarget(t *testing.T) {
 	}
 }
 
+func TestTriggerWarmPoolRespondsToQueuePressureImmediately(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-immediate-queue"
+	makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold", model, 80, 64, 8)
+	cfg := testWarmPoolConfig()
+	cfg.QueueAgeThreshold = 0
+	reg.ConfigureWarmPool(cfg)
+	sent := captureWarmPoolLoads(reg)
+
+	reg.RecordWarmPoolQueueEnqueued(model, 1, 0)
+	snaps := reg.TriggerWarmPool()
+
+	if len(*sent) != 1 {
+		t.Fatalf("sent loads = %d, want 1", len(*sent))
+	}
+	if len(snaps) == 0 || snaps[0].QueueDepth != 1 || len(snaps[0].Actions) != 1 {
+		t.Fatalf("snapshot = %+v, want immediate queue-pressure action", snaps)
+	}
+}
+
+func TestRequestWarmPoolTriggerCoalescesBursts(t *testing.T) {
+	reg := New(testLogger())
+	reg.ConfigureWarmPool(testWarmPoolConfig())
+
+	if !reg.RequestWarmPoolTrigger() {
+		t.Fatal("first trigger should enqueue a warm-pool tick")
+	}
+	for i := 0; i < 10; i++ {
+		if reg.RequestWarmPoolTrigger() {
+			t.Fatalf("trigger %d was accepted despite an already pending tick", i+2)
+		}
+	}
+	if got := len(reg.warmPool.triggerC); got != 1 {
+		t.Fatalf("pending triggers = %d, want 1", got)
+	}
+}
+
+func TestWarmPoolQueueClearStopsStaleQueueLoads(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-clear-queue"
+	makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold-a", model, 80, 64, 8)
+	makeWarmPoolColdProvider(t, reg, "cold-b", model, 80, 64, 8)
+	cfg := testWarmPoolConfig()
+	cfg.QueueAgeThreshold = 0
+	cfg.MaxGlobalPendingLoads = 10
+	reg.ConfigureWarmPool(cfg)
+	sent := captureWarmPoolLoads(reg)
+
+	reg.RecordWarmPoolQueueEnqueued(model, 1, 0)
+	reg.TriggerWarmPool()
+	if len(*sent) != 1 {
+		t.Fatalf("sent loads after queue pressure = %d, want 1", len(*sent))
+	}
+
+	reg.RecordWarmPoolQueueCleared(model)
+	snaps := reg.TriggerWarmPool()
+	if len(*sent) != 1 {
+		t.Fatalf("sent loads after clearing queue = %d, want still 1", len(*sent))
+	}
+	if len(snaps) == 0 || snaps[0].QueueDepth != 0 || len(snaps[0].Actions) != 0 {
+		t.Fatalf("snapshot after clear = %+v, want no queue-driven action", snaps)
+	}
+}
+
+func TestTriggerWarmPoolObserveOnlyDoesNotSendLoads(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-observe-only"
+	makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold", model, 80, 64, 8)
+	cfg := testWarmPoolConfig()
+	cfg.QueueAgeThreshold = 0
+	cfg.ObserveOnly = true
+	reg.ConfigureWarmPool(cfg)
+	sent := captureWarmPoolLoads(reg)
+
+	reg.RecordWarmPoolQueueEnqueued(model, 1, 0)
+	snaps := reg.TriggerWarmPool()
+
+	if len(*sent) != 0 {
+		t.Fatalf("sent loads = %d, want 0 in observe-only mode", len(*sent))
+	}
+	if len(snaps) != 0 {
+		t.Fatalf("snapshots = %+v, want no active trigger in observe-only mode", snaps)
+	}
+}
+
 func TestWarmPoolNoPressureForLongActiveDecodeAlone(t *testing.T) {
 	reg := New(testLogger())
 	model := "warm-pool-active-only"

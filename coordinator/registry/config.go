@@ -45,11 +45,11 @@ func ReadConfig() Config {
 	return Config{
 		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
 		WarmPool: WarmPoolConfig{
-			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", false),
-			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", true),
-			Interval:                  envDuration(env.EnvPrefix+"_WARM_POOL_INTERVAL", 30*time.Second),
+			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
+			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", false),
+			Interval:                  envDuration(env.EnvPrefix+"_WARM_POOL_INTERVAL", 10*time.Second),
 			MinDwell:                  envDuration(env.EnvPrefix+"_WARM_POOL_MIN_DWELL", 5*time.Minute),
-			QueueAgeThreshold:         envDuration(env.EnvPrefix+"_WARM_POOL_QUEUE_AGE_THRESHOLD", 5*time.Second),
+			QueueAgeThreshold:         envDuration(env.EnvPrefix+"_WARM_POOL_QUEUE_AGE_THRESHOLD", 0),
 			CapacityRejectThreshold:   env.EnvInt(env.EnvPrefix+"_WARM_POOL_CAPACITY_REJECT_THRESHOLD", 1),
 			WarmSaturationThreshold:   env.EnvFloat(env.EnvPrefix+"_WARM_POOL_WARM_SATURATION_THRESHOLD", 0.8),
 			TTFTMissThreshold:         env.EnvInt(env.EnvPrefix+"_WARM_POOL_TTFT_MISS_THRESHOLD", 1),
@@ -57,8 +57,8 @@ func ReadConfig() Config {
 			SpeculativeWinThreshold:   env.EnvInt(env.EnvPrefix+"_WARM_POOL_SPECULATIVE_WIN_THRESHOLD", 1),
 			ColdDispatchThreshold:     env.EnvInt(env.EnvPrefix+"_WARM_POOL_COLD_DISPATCH_THRESHOLD", 1),
 			LoadDurationThreshold:     envDuration(env.EnvPrefix+"_WARM_POOL_LOAD_DURATION_THRESHOLD", 20*time.Second),
-			MaxLoadsPerTick:           env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_LOADS_PER_TICK", 1),
-			MaxGlobalPendingLoads:     env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_GLOBAL_PENDING_LOADS", 4),
+			MaxLoadsPerTick:           env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_LOADS_PER_TICK", 4),
+			MaxGlobalPendingLoads:     env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_GLOBAL_PENDING_LOADS", 16),
 		},
 		CacheAffinity: CacheAffinityConfig{
 			TTL:     envDuration(env.EnvPrefix+"_CACHE_AFFINITY_TTL", cacheAffinityTTL),

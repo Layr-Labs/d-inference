@@ -126,14 +126,6 @@ func (t *telemetrySink) close() {
 	})
 }
 
-// droppedCount returns the cumulative number of dropped telemetry writes.
-func (t *telemetrySink) droppedCount() int64 {
-	if t == nil {
-		return 0
-	}
-	return t.dropped.Load()
-}
-
 // maybeLogDrop emits a throttled warning so operators notice sustained drops
 // without flooding logs: it logs only when the cumulative drop count crosses a
 // power of ten (1, 10, 100, 1000, …).

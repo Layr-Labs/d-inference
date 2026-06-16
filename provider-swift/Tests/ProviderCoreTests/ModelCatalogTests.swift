@@ -205,6 +205,138 @@ struct ModelCatalogTests {
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=8-")
     }
 
+    @Test("downloadFile promotes a complete .part on 416 instead of re-downloading")
+    func downloadFilePromotesCompletePartOn416() async throws {
+        // A prior run received every byte into `.part` but died before promoting
+        // it. The next run sends `Range: bytes=<full>-`, the store answers 416,
+        // and we must promote the existing complete prefix — NOT delete it and
+        // re-fetch the whole file from byte 0.
+        let full = Data("0123456789abcdef".utf8)
+        RangeURLProtocol.payload = full
+        RangeURLProtocol.lastRangeHeader = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("model.safetensors")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // The complete file already sits in `.part`.
+        try full.write(to: partial)
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/model.safetensors",
+            to: final
+        )
+
+        #expect(ok)
+        #expect(try Data(contentsOf: final) == full)
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+        // We asked to resume past EOF (got 416) rather than re-fetching from 0.
+        #expect(RangeURLProtocol.lastRangeHeader == "bytes=16-")
+    }
+
+    @Test("downloadFile discards an oversized .part on 416 and re-downloads it")
+    func downloadFileDiscardsOversizedPartOn416() async throws {
+        // A stale/oversized `.part` (the full object PLUS extra trailing garbage)
+        // must NOT be promoted on a 416. The 416's `Content-Range: bytes */<total>`
+        // says the object is 16 bytes but the `.part` is larger, so it cannot be
+        // the complete object. The legacy path passes no SHA, so the size check is
+        // the ONLY thing standing between this garbage and being served: we must
+        // delete the `.part` and re-fetch the correct payload from byte 0.
+        let full = Data("0123456789abcdef".utf8)  // 16 bytes
+        RangeURLProtocol.payload = full
+        RangeURLProtocol.lastRangeHeader = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("model.safetensors")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // An oversized `.part`: the full payload plus extra trailing bytes, so its
+        // size (21) exceeds the object total (16) reported by the 416.
+        let oversized = full + Data("EXTRA".utf8)
+        try oversized.write(to: partial)
+        #expect(Int64(oversized.count) > Int64(full.count))
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/model.safetensors",
+            to: final
+        )
+
+        #expect(ok)
+        // The final file is the CORRECT full payload (re-downloaded from scratch),
+        // never the oversized garbage that was sitting in `.part`.
+        #expect(try Data(contentsOf: final) == full)
+        #expect(try Data(contentsOf: final) != oversized)
+        // The untrustworthy `.part` was discarded, not published.
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+    }
+
+    @Test("downloadFile assembles a body delivered in many chunks into the final file")
+    func downloadFileAssemblesMultiChunk() async throws {
+        // Exercises the chunked delegate write path: the body arrives as many
+        // separate didReceive(data:) callbacks that must append in order.
+        let full = Data((0..<1000).map { UInt8($0 % 251) })
+        ChunkedURLProtocol.payload = full
+        ChunkedURLProtocol.chunkSize = 7  // force ~143 separate chunks
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ChunkedURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("model.safetensors")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/model.safetensors",
+            to: final
+        )
+
+        #expect(ok)
+        #expect(try Data(contentsOf: final) == full)
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+    }
+
+    @Test("downloadFile returns false and clears a stale .part for an optional 404")
+    func downloadFileOptional404ClearsPart() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [NotFoundURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("optional.bin")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("stale prefix".utf8).write(to: partial)
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/optional.bin",
+            to: final,
+            required: false
+        )
+
+        #expect(!ok)
+        #expect(!FileManager.default.fileExists(atPath: partial.path), "a 404 must clear the stale .part")
+        #expect(!FileManager.default.fileExists(atPath: final.path))
+    }
+
     @Test("manifest download failure preserves existing local snapshot")
     func manifestDownloadFailurePreservesExistingSnapshot() async throws {
         let modelID = "test-org/staging-preserves-\(UUID().uuidString)"
@@ -296,6 +428,20 @@ private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
         } else {
             start = 0
         }
+        // A range whose start is at/beyond EOF is unsatisfiable — real object
+        // stores (R2/S3) answer 416, not an empty 206. Model this so the
+        // complete-but-unpromoted `.part` resume path is exercised faithfully.
+        if start >= Self.payload.count, start > 0 {
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 416,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Range": "bytes */\(Self.payload.count)"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let body = Self.payload.dropFirst(start)
         let status = start > 0 ? 206 : 200
         var headers = ["Content-Length": "\(body.count)"]
@@ -310,6 +456,55 @@ private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// Delivers the payload as many small `didLoad` chunks (multiple
+/// `didReceive(data:)` delegate callbacks) to exercise chunked assembly.
+private final class ChunkedURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var payload = Data()
+    nonisolated(unsafe) static var chunkSize = 8
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": "\(Self.payload.count)"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        var offset = 0
+        let size = max(1, Self.chunkSize)
+        while offset < Self.payload.count {
+            let end = min(offset + size, Self.payload.count)
+            client?.urlProtocol(self, didLoad: Self.payload.subdata(in: offset..<end))
+            offset = end
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// Always answers 404 (optional-file miss path).
+private final class NotFoundURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 404,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocolDidFinishLoading(self)
     }
 

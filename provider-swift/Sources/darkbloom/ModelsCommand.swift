@@ -122,9 +122,14 @@ extension Models {
                 return
             }
 
+            // UNFILTERED on-disk scan: a downloaded model that exceeds available
+            // RAM is still on disk, so it must show the "downloaded" checkmark
+            // (and appear under "Local only" when off-catalog) rather than reading
+            // as not-downloaded on a marginal-RAM box. The memory filter only
+            // governs loadability, not presence.
             let localModels: [ModelInfo]
             if let hardware = snapshot.hardware {
-                localModels = ModelScanner.scanModels(hardwareInfo: hardware)
+                localModels = ModelScanner.scanAllModels(hardwareInfo: hardware)
             } else {
                 localModels = []
             }

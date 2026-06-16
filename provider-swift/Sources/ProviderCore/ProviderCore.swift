@@ -34,5 +34,12 @@ public enum ProviderCore {
     // 0.6.10 ships the resource-count-safe MLX allocator pins, bounded model
     // weight hashing, attestation reconnect stability, alias-aware catalog UX,
     // and coordinator-side TTFT 429 admission for overloaded OpenRouter traffic.
-    public static let version = "0.6.10"
+    // 0.6.11 fixes Gemma 4 VLM continuous-batched repetition: the VLM model's
+    // batched decode used a scalar RoPE offset (wrong per-row positions in
+    // mixed-length batches) and an explicit-mask fused-attention kernel that
+    // diverges on 4-bit Gemma 4 (MLX #3384). Fixed via per-row RoPE offsets, a
+    // manual masked-attention fallback for padded decode, and .none decode masks
+    // for unpadded single-token steps; submodule pin advanced to f2f40e5
+    // (mlx-swift-lm#41).
+    public static let version = "0.6.11"
 }

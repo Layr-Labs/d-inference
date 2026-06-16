@@ -56,6 +56,9 @@ public actor BatchScheduler {
     /// nil ⇒ today's per-model disk budget behavior.
     let diskAccountant: GlobalDiskAccountant?
     let adaptiveCapPolicy = AdaptiveBatchCapPolicy.default
+    /// Opt-in KV-cache quantization flag from provider config. Only takes effect
+    /// for model families explicitly allow-listed by ``KVQuantPolicy``.
+    let kvQuantEnabled: Bool
 
     // MARK: - Model-specific state (set by `loadModel`)
 
@@ -212,7 +215,8 @@ public actor BatchScheduler {
         pendingTimeout: Duration = .seconds(120),
         defaultMaxTokens: Int = 4096,
         kvBudget: GlobalKVCacheBudget? = nil,
-        diskAccountant: GlobalDiskAccountant? = nil
+        diskAccountant: GlobalDiskAccountant? = nil,
+        kvQuantEnabled: Bool = false
     ) {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
@@ -220,6 +224,7 @@ public actor BatchScheduler {
         self.initDefaultMaxTokens = defaultMaxTokens
         self.kvBudget = kvBudget
         self.diskAccountant = diskAccountant
+        self.kvQuantEnabled = kvQuantEnabled
         self.dynamicMaxConcurrentRequests = min(4, max(1, maxConcurrentRequests))
     }
 
@@ -270,7 +275,8 @@ public actor BatchScheduler {
             maxConcurrentRequests: maxConcurrentRequests,
             eosTokenIds: snapshot.eosTokenIds,
             architecture: snapshot.architecture,
-            diskAccountant: diskAccountant
+            diskAccountant: diskAccountant,
+            kvQuantEnabled: kvQuantEnabled
         )
         let engine = build.engine
         // Re-check epoch after the engine.start suspension. If another
@@ -1036,7 +1042,8 @@ public actor BatchScheduler {
         maxConcurrentRequests: Int,
         eosTokenIds: Set<Int>,
         architecture: ModelArchitecture,
-        diskAccountant: GlobalDiskAccountant? = nil
+        diskAccountant: GlobalDiskAccountant? = nil,
+        kvQuantEnabled: Bool = false
     ) async -> EngineBuild {
         // TB-007: the prefix cache is ON by default (operator decision) with an
         // ENCRYPTED-at-rest backend; opt out with DARKBLOOM_PREFIX_CACHE=0.
@@ -1049,11 +1056,29 @@ public actor BatchScheduler {
         // in-GPU block PrefixCache; hybrid sliding-window (.checkpoint) models
         // (Gemma-4, GPT-OSS) use the whole-cache exact-checkpoint
         // PrefixCacheManager. Recurrent (.none) models get neither.
+        //
+        // DAR-319 v1: KV-quant is mutually exclusive with the prefix-cache tiers
+        // and with drafter-MTP. When enabled for an allow-listed model, disable
+        // both so quantized caches never flow through checkpoint restore or MTP
+        // capture (Gemma `forwardTrunk` fatals on quantized captured KV).
+        let modelFamily = KVQuantPolicy.classify(modelID: modelId)
+        // v1 gate: Gemma 4 only. GPT-OSS is deliberately excluded because its
+        // quantized attention fatals on attention sinks; it needs a non-protocol-
+        // conforming dequant batched cache before it can use KV-quant.
+        // TODO(DAR-319 follow-up): validate + enable GPT-OSS once that cache exists.
+        let effectiveKVQuant = kvQuantEnabled && modelFamily == .gemma4
         let blockSize = 256
-        let backing = await makePrefixCacheBackingIfEnabled(
-            modelId: modelId, weightHash: weightHash, architecture: architecture
+        let backing = effectiveKVQuant
+            ? nil
+            : await makePrefixCacheBackingIfEnabled(
+                modelId: modelId, weightHash: weightHash, architecture: architecture
+            )
+        let kvQuantScheme: KVQuantEngineScheme? = effectiveKVQuant ? .gemma4K8V8G128 : nil
+        let kvBytesPerToken = resolvedKVBytesPerToken(
+            architecture: architecture,
+            weightBytes: weightBytes,
+            quantScheme: kvQuantScheme
         )
-        let kvBytesPerToken = resolvedKVBytesPerToken(architecture: architecture, weightBytes: weightBytes)
         let maxBlocks = prefixCacheMaxBlocks(
             kvBytesPerToken: kvBytesPerToken,
             budgetBytes: prefixCacheBudgetBytes(),
@@ -1172,7 +1197,8 @@ public actor BatchScheduler {
                     maxNumBatchedTokens: 8192,
                     prefillStepSize: 512,
                     streamInterval: 1,
-                    maxKVCacheTokens: 0  // unlimited — our kvBudget gates by bytes
+                    maxKVCacheTokens: 0,  // unlimited — our kvBudget gates by bytes
+                    kvQuantization: kvQuantScheme?.schedulerConfig
                 ),
                 eosTokenIds: eosTokenIds,
                 prefixCache: enginePrefixCache  // nil unless .engine + flag (TB-007)
@@ -1201,6 +1227,8 @@ public actor BatchScheduler {
                         schedulerConfig: scheduler.config,
                         stepInterval: 0.001,
                         prefixCacheConfig: nil,
+                        // DAR-319 v1: MTP/drafter capture requires non-quantized KV;
+                        // keep disabled when KV-quant is on (and off by default).
                         mtpEnabled: false
                     ),
                     externalChatTemplate: nil
@@ -1537,9 +1565,13 @@ public actor BatchScheduler {
     /// memory. Pulled out of `loadModel` so the lifecycle reads as a
     /// short sequence; the arithmetic itself is unchanged.
     private func applyPostLoadBudgets(snapshot: LoadSnapshot) {
+        let effectiveKVQuant = kvQuantEnabled
+            && KVQuantPolicy.classify(modelID: modelId) == .gemma4
+        let quantScheme: KVQuantEngineScheme? = effectiveKVQuant ? .gemma4K8V8G128 : nil
         self.kvBytesPerToken = Self.resolvedKVBytesPerToken(
             architecture: snapshot.architecture,
-            weightBytes: snapshot.bytes
+            weightBytes: snapshot.bytes,
+            quantScheme: quantScheme
         )
         // Static upper-bound budget from the unified 90% cap minus THIS model's
         // measured resident weights (snapshot.bytes) and the activation reserve.

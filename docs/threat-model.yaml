@@ -181,16 +181,15 @@ trust_boundaries:
       inference endpoints (chat/completions, completions, messages) call io.ReadAll on
       r.Body with no MaxBytesReader wrapper.
 
-      HTTP server config (cmd/coordinator/main.go): ReadTimeout=10s, WriteTimeout=0
-      (streaming), IdleTimeout=120s. No ReadHeaderTimeout and no MaxHeaderBytes are set.
+      HTTP server config (cmd/coordinator/main.go): ReadHeaderTimeout=5s,
+      ReadTimeout=10s, WriteTimeout=0 (streaming), IdleTimeout=120s,
+      MaxHeaderBytes=64 KB.
     current_limitations:
       - "API key validation uses a simple store lookup — not constant-time comparison.
         Allows timing attacks to enumerate valid key prefixes (server.go:1216)."
       - "No body size limit on plaintext inference endpoints (consumer.go:526, 2359).
         An authenticated consumer can send arbitrarily large bodies to exhaust coordinator
         memory."
-      - "ReadHeaderTimeout and MaxHeaderBytes are absent from the HTTP server config,
-        leaving the server exposed to slow-header attacks (cmd/coordinator/main.go:496)."
       - "WriteTimeout=0 combined with unbounded body reads enables slow-read DoS on
         inference endpoints."
       - "Consumer rate limiter defaults to nil (unlimited) unless explicitly configured
@@ -1809,9 +1808,12 @@ threats:
     mitigations:
       - description: ReadTimeout and IdleTimeout are set.
         status: implemented
-      - description: ReadHeaderTimeout and MaxHeaderBytes are absent.
-        status: open
-    open_findings: [SEC-027]
+      - description: >
+          ReadHeaderTimeout (5s) and MaxHeaderBytes (64 KB) are set in
+          cmd/coordinator/main.go, bounding the slow-header window and
+          per-connection header memory.
+        status: implemented
+    open_findings: []
     severity: medium
     detection_hint: >
       Changes to the http.Server configuration in main.go should verify

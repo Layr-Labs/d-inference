@@ -126,6 +126,11 @@ type dispatchState struct {
 	attempt          int
 	accepted         bool
 	preambleLiveness bool
+	// dispatchErr captures the non-empty error string from dispatchOneProvider
+	// for this attempt so outcome telemetry can classify the routing decision.
+	dispatchErr string
+	// dispatchErrCode captures the HTTP status code associated with dispatchErr.
+	dispatchErrCode int
 }
 
 // traits builds the routing traits for the current attempt, steering away from
@@ -135,13 +140,230 @@ func (d *dispatchState) traits() registry.RequestTraits {
 }
 
 // queueMaxTTFTMs returns the TTFT ceiling for queued requests. Public routes
-// inherit the OpenRouter 10s target; self-route / prefer-owner paths are not
-// subject to the public SLA ceiling.
-func queueMaxTTFTMs(policy selfRoutePolicy) float64 {
+// inherit the prompt-scaled admission threshold; self-route / prefer-owner paths
+// are not subject to the public SLA ceiling.
+func queueMaxTTFTMs(policy selfRoutePolicy, deadline time.Duration) float64 {
 	if policy.enabled || policy.prefer {
 		return 0
 	}
-	return openRouterTTFT429Threshold.Seconds() * 1000.0
+	return float64(deadline.Milliseconds())
+}
+
+// routingOutcomeKey returns a stable requestID + attempt identifier used for
+// telemetry updates. It prefers the explicit dispatch requestID, falling back
+// to the pending request's ID when the dispatch requestID has not been set yet.
+func (d *dispatchState) routingOutcomeKey() string {
+	if d.requestID != "" {
+		return d.requestID
+	}
+	if d.pr != nil {
+		return d.pr.RequestID
+	}
+	return ""
+}
+
+// recordRoutingDecision writes a best-effort snapshot of the scheduler decision
+// for the current attempt. It never blocks inference.
+func (d *dispatchState) recordRoutingDecision(decision registry.RoutingDecision, dispatchErr, outcomeOverride string) {
+	s := d.s
+	requestID := d.routingOutcomeKey()
+
+	providerID := ""
+	if d.provider != nil {
+		providerID = d.provider.ID
+	} else if decision.ProviderID != "" {
+		providerID = decision.ProviderID
+	}
+
+	outcome := outcomeOverride
+	if outcome == "" {
+		switch {
+		case providerID != "":
+			outcome = "selected"
+		case dispatchErr == errModelTooLarge:
+			outcome = "model_too_large"
+		case dispatchErr == errTTFTTooSlow:
+			outcome = "ttft_429"
+		case dispatchErr == "no provider available":
+			outcome = "no_provider"
+		default:
+			outcome = "error"
+		}
+	}
+
+	keyID := ""
+	if d.pr != nil {
+		keyID = d.pr.KeyID
+	}
+
+	record := &store.InferenceRouteRecord{
+		RequestID:               requestID,
+		Attempt:                 d.attempt,
+		ProviderID:              providerID,
+		Model:                   d.model,
+		PublicModel:             d.publicModel,
+		ConsumerKeyHash:         store.HashKey(d.consumerKey),
+		KeyID:                   keyID,
+		Outcome:                 outcome,
+		CostMs:                  decision.CostMs,
+		StateMs:                 decision.StateMs,
+		QueueMs:                 decision.QueueMs,
+		PendingMs:               decision.PendingMs,
+		BacklogMs:               decision.BacklogMs,
+		ThisReqMs:               decision.ThisReqMs,
+		HealthMs:                decision.HealthMs,
+		TTFTMs:                  decision.TTFTMs,
+		BestTTFTMs:              decision.BestTTFTMs,
+		EffectiveQueue:          decision.EffectiveQueue,
+		CandidateCount:          decision.CandidateCount,
+		CapacityRejections:      decision.CapacityRejections,
+		ModelTooLargeRejections: decision.ModelTooLargeRejections,
+		VisionRejections:        decision.VisionRejections,
+		TTFTRejections:          decision.TTFTRejections,
+		EffectiveTPS:            decision.EffectiveTPS,
+		StaticTPS:               decision.StaticTPS,
+		EstimatedPromptTokens:   d.estimatedPromptTokens,
+		RequestedMaxTokens:      d.requestedMaxTokens,
+		RequiresVision:          d.requiresVision,
+		HasTools:                d.hasTools,
+		SelfRouteOnly:           d.policy.enabled,
+		PreferOwner:             d.policy.prefer,
+		CacheAffinityKey:        d.cacheAffinityKey,
+		CreatedAt:               time.Now(),
+		UpdatedAt:               time.Now(),
+	}
+
+	if d.provider != nil {
+		d.provider.Mu().Lock()
+		record.ProviderStatus = string(d.provider.Status)
+		record.ProviderTrustLevel = string(d.provider.TrustLevel)
+		record.ProviderVersion = d.provider.Version
+		record.HardwareChip = d.provider.Hardware.ChipName
+		record.HardwareChipFamily = d.provider.Hardware.ChipFamily
+		record.HardwareTier = d.provider.Hardware.ChipTier
+		record.MemoryGB = d.provider.Hardware.MemoryGB
+		record.GPUCores = d.provider.Hardware.GPUCores
+		record.CPUCores = d.provider.Hardware.CPUCores.Total
+		record.SystemMemoryPressure = d.provider.SystemMetrics.MemoryPressure
+		record.SystemCPUUsage = d.provider.SystemMetrics.CPUUsage
+		record.SystemThermalState = d.provider.SystemMetrics.ThermalState
+		if cap := d.provider.BackendCapacity; cap != nil {
+			record.GPUMemoryActiveGB = cap.GPUMemoryActiveGB
+			record.GPUMemoryPeakGB = cap.GPUMemoryPeakGB
+			record.GPUMemoryCacheGB = cap.GPUMemoryCacheGB
+			for _, slot := range cap.Slots {
+				if slot.Model == d.model {
+					record.SlotState = slot.State
+					record.BackendRunning = slot.NumRunning
+					record.BackendWaiting = slot.NumWaiting
+					record.ActiveTokenBudgetUsed = slot.ActiveTokenBudgetUsed
+					record.ActiveTokenBudgetMax = slot.ActiveTokenBudgetMax
+					record.QueuedTokenBudget = slot.QueuedTokenBudget
+					break
+				}
+			}
+		}
+		d.provider.Mu().Unlock()
+	}
+
+	s.submitTelemetry("recordInferenceRoute", func() {
+		_ = s.store.RecordInferenceRoute(record)
+	})
+}
+
+// timingMsBetween returns the elapsed milliseconds between two request-lifecycle
+// timestamps, or 0 when either endpoint is unset or the interval is non-positive.
+// It keeps the latency-decomposition fields defensive: never a negative value,
+// never a panic on a zero timestamp.
+func timingMsBetween(a, b time.Time) float64 {
+	if a.IsZero() || b.IsZero() || !b.After(a) {
+		return 0
+	}
+	return float64(b.Sub(a).Milliseconds())
+}
+
+// applyTimingDecomposition fills the coordinator-side latency-decomposition
+// fields (ParseMs..DispatchMs) on a routing outcome from the per-request timing
+// stamps. Each segment is populated only when both of its endpoints are set
+// (timingMsBetween returns 0 otherwise), so a partially-instrumented request
+// never records a negative or bogus segment. QueueWaitMs is 0 for requests that
+// were dispatched without queueing (QueuedAt unset).
+//
+// firstChunk is passed in (not read from t.FirstChunkAt) so this can also be
+// called from the provider read-loop goroutine (handleComplete) with a value
+// obtained via PendingRequest.FirstChunkAtSafe; t.FirstChunkAt itself must only
+// be read directly by the dispatch goroutine that owns the request.
+func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.RequestTiming, firstChunk time.Time) {
+	if out == nil || t == nil {
+		return
+	}
+	out.ParseMs = timingMsBetween(t.ReceivedAt, t.ParsedAt)
+	out.ReserveMs = timingMsBetween(t.ParsedAt, t.ReservedAt)
+	out.RouteMs = timingMsBetween(t.ReservedAt, t.RoutedAt)
+	out.EncryptMs = timingMsBetween(t.RoutedAt, t.EncryptedAt)
+	out.QueueWaitMs = timingMsBetween(t.QueuedAt, t.DispatchedAt)
+	out.DispatchMs = timingMsBetween(t.DispatchedAt, firstChunk)
+}
+
+// successRoutingOutcome builds a success outcome for the committed attempt.
+// Token counts are left at zero because the final usage is only available when
+// the provider later sends the completion message; handleComplete updates them.
+func (d *dispatchState) successRoutingOutcome() *store.InferenceRouteOutcome {
+	out := &store.InferenceRouteOutcome{FinalStatus: "success"}
+	if d.pr != nil && d.pr.Timing != nil {
+		t := d.pr.Timing
+		if !t.FirstChunkAt.IsZero() && !t.DispatchedAt.IsZero() {
+			ms := float64(t.FirstChunkAt.Sub(t.DispatchedAt).Milliseconds())
+			out.ActualTTFTMs = ms
+			out.DispatchToFirstChunkMs = ms
+		}
+		if !t.ReceivedAt.IsZero() {
+			out.TotalDurationMs = float64(time.Since(t.ReceivedAt).Milliseconds())
+		}
+		// Coordinator-side latency decomposition (defensive; zero when unmeasured).
+		// Runs on the dispatch goroutine, so reading t.FirstChunkAt directly is safe.
+		applyTimingDecomposition(out, t, t.FirstChunkAt)
+	}
+	return out
+}
+
+// errorRoutingOutcome builds an error / timeout / cancelled outcome.
+func (d *dispatchState) errorRoutingOutcome(status, class string, code int) *store.InferenceRouteOutcome {
+	return &store.InferenceRouteOutcome{
+		FinalStatus: status,
+		ErrorCode:   code,
+		ErrorClass:  class,
+	}
+}
+
+// providerFailedRoutingOutcome builds the outcome for a POST-DISPATCH provider
+// failure: the request had already been admitted to a specific provider (passed
+// the admission gate and was dispatched over the WebSocket) and that provider
+// then reported an error — including provider-reported OOM / model-load failures
+// that surface on pr.ErrorCh. It flags AdmittedButFailed to expose the
+// admission-gate mismatch (coordinator said "this provider can serve" but it
+// could not). It is intentionally only used from the post-dispatch wait loops;
+// pre-dispatch failures (queue reservation DB error, invalid key, keygen, send
+// failure) and coordinator-side timeouts are NOT flagged.
+func (d *dispatchState) providerFailedRoutingOutcome() *store.InferenceRouteOutcome {
+	out := d.errorRoutingOutcome("error", "provider_error", d.lastErrCode)
+	out.AdmittedButFailed = true
+	return out
+}
+
+// updateRoutingOutcome writes a final outcome update for the current attempt
+// asynchronously. It is a no-op when there is no request ID to correlate.
+func (d *dispatchState) updateRoutingOutcome(outcome *store.InferenceRouteOutcome) {
+	requestID := d.routingOutcomeKey()
+	if requestID == "" {
+		return
+	}
+	// Capture attempt on the dispatch goroutine: the closure runs on a telemetry
+	// sink worker, while run()'s retry loop concurrently advances d.attempt.
+	attempt := d.attempt
+	d.s.submitTelemetry("updateInferenceRoute", func() {
+		_ = d.s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome)
+	})
 }
 
 // dispatchPrimary selects (and, when no idle provider exists on the first
@@ -162,7 +384,11 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
 		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cacheAffinityKey, d.excludeProviders,
+		d.attempt,
 	)
+	d.dispatchErr = dispatchErr
+	d.dispatchErrCode = dispatchErrCode
+	d.recordRoutingDecision(decision, dispatchErr, "")
 	if d.provider == nil {
 		// No online provider has enough memory to ever fit this model.
 		// Retrying and queueing are both pointless — reject immediately
@@ -181,13 +407,8 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// in-flight stream mid-way.
 		if dispatchErr == errTTFTTooSlow && attempt == 0 {
 			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
-			retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			d.refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:ttft_429"})
-			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds", d.publicModel, int(openRouterTTFT429Threshold.Seconds()), bestTTFT.Seconds(), retryAfter),
-				withCode("rate_limit_exceeded")))
+			s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
 			return outcomeResponseWritten
 		}
 
@@ -219,6 +440,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
 			RequestID:              d.requestID,
+			Attempt:                d.attempt,
 			Model:                  d.model,
 			PublicModel:            d.publicModel,
 			ConsumerKey:            d.consumerKey,
@@ -241,7 +463,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			PreferOwner:            d.policy.prefer,
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
-			MaxTTFTMs:              queueMaxTTFTMs(d.policy),
+			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline),
 			AcceptedCh:             make(chan struct{}, 1),
 			ChunkCh:                make(chan string, chunkBufferSize),
 			CompleteCh:             make(chan protocol.UsageInfo, 1),
@@ -270,10 +492,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			return outcomeResponseWritten
 		}
-		if depth, oldest := s.registry.Queue().QueueStats(d.model); depth > 0 {
-			s.registry.RecordWarmPoolQueueEnqueued(d.model, depth, oldest)
-		}
+		s.recordWarmPoolQueueState(d.model)
 		s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:queued"})
+		d.recordRoutingDecision(decision, "", "queued")
 
 		s.logger.Info("request queued, waiting for provider",
 			"model", d.model,
@@ -284,9 +505,12 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
+				s.recordWarmPoolQueueState(d.model)
+				d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
 				d.refundReservation()
 				return outcomeClientGone
 			}
+			d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
 			d.refundReservation()
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
@@ -302,6 +526,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			return outcomeResponseWritten
 		}
+		s.recordWarmPoolQueueState(d.model)
 		// Queue assigned a provider; still need to dispatch.
 		// Use the queue PR's channels.
 		d.pr = queuePR
@@ -346,6 +571,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					)
 					d.lastErr = "insufficient funds for provider price"
 					d.lastErrCode = http.StatusPaymentRequired
+					d.updateRoutingOutcome(d.errorRoutingOutcome("error", "insufficient_funds", d.lastErrCode))
 				} else {
 					s.logger.Error("queued provider reservation failed (DB error)",
 						"request_id", d.requestID,
@@ -354,6 +580,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					)
 					d.lastErr = "service temporarily unavailable — please retry"
 					d.lastErrCode = http.StatusServiceUnavailable
+					d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", d.lastErrCode))
 				}
 				return outcomeRetry
 			}
@@ -365,6 +592,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.refundProviderExtra(d.pr)
 			d.excludeProviders[d.provider.ID] = struct{}{}
 			d.lastErr = "no provider with E2E encryption"
+			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "encryption_missing", 0))
 			return outcomeRetry
 		}
 		providerPubKey, err := e2e.ParsePublicKey(d.provider.PublicKey)
@@ -374,6 +602,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.refundProviderExtra(d.pr)
 			d.excludeProviders[d.provider.ID] = struct{}{}
 			d.lastErr = "provider public key invalid"
+			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
 			return outcomeRetry
 		}
 		sessionKeys, err := e2e.GenerateSessionKeys()
@@ -382,6 +611,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.registry.SetProviderIdle(d.provider.ID)
 			s.refundProviderExtra(d.pr)
 			d.lastErr = "failed to generate session keys"
+			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
 			return outcomeRetry
 		}
 		// Version-gated penalty strip (see bodyForProvider). The queued path seals
@@ -393,6 +623,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.registry.SetProviderIdle(d.provider.ID)
 			s.refundProviderExtra(d.pr)
 			d.lastErr = "failed to encrypt request"
+			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "encryption_missing", 0))
 			return outcomeRetry
 		}
 		d.timing.EncryptedAt = time.Now()
@@ -414,6 +645,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.refundProviderExtra(d.pr)
 			d.excludeProviders[d.provider.ID] = struct{}{}
 			d.lastErr = "failed to send request to provider"
+			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
 			return outcomeRetry
 		}
 		d.pr.Timing.DispatchedAt = time.Now()
@@ -438,10 +670,26 @@ func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *regis
 // primary is slow. Returns outcomeCommitted (content / clean close), outcomeAccepted
 // (cold-load or preamble liveness — proceed to waitAccepted), outcomeRetry
 // (advance to the next attempt), or outcomeClientGone (context cancelled, refunded).
-func (d *dispatchState) waitFirstChunk() dispatchOutcome {
+func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 	s := d.s
 	r := d.r
 	provider, pr := d.provider, d.pr
+
+	defer func() {
+		switch outcome {
+		case outcomeCommitted:
+			d.updateRoutingOutcome(d.successRoutingOutcome())
+		case outcomeRetry:
+			if d.lastErrCode == http.StatusGatewayTimeout {
+				d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "first_chunk_timeout", d.lastErrCode))
+			} else {
+				// Post-dispatch provider failure (incl. OOM/model-load): admitted but failed.
+				d.updateRoutingOutcome(d.providerFailedRoutingOutcome())
+			}
+		case outcomeClientGone:
+			d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+		}
+	}()
 
 	speculativeTimer := time.NewTimer(d.speculativeAt)
 	deadlineTimer := time.NewTimer(d.deadline)
@@ -458,18 +706,14 @@ func (d *dispatchState) waitFirstChunk() dispatchOutcome {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			speculativeTimer.Stop()
 			deadlineTimer.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -624,6 +868,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 			d.serviceReservation,
 			d.cacheAffinityKey,
 			backupExclude,
+			d.attempt,
 		)
 	}
 
@@ -659,17 +904,13 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			remainingDeadline.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -776,9 +1017,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				// Preamble only — the primary hasn't proven it can
 				// generate; keep the backup racing for first content.
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			// Primary wins!
@@ -786,9 +1025,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.cancelDispatch(backupProvider, backupPR)
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -813,9 +1050,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			if ok && len(backupHeld) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				// Backup preamble doesn't win the race — first CONTENT does.
 				backupHeld = append(backupHeld, chunk)
-				if backupPR.Timing.FirstChunkAt.IsZero() {
-					backupPR.Timing.FirstChunkAt = time.Now()
-				}
+				backupPR.MarkFirstChunkArrived()
 				continue
 			}
 			// Backup wins!
@@ -829,9 +1064,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				d.requestID = d.pr.RequestID
 				d.heldChunks = backupHeld
 				d.firstChunk = chunk
-				if d.pr.Timing.FirstChunkAt.IsZero() {
-					d.pr.Timing.FirstChunkAt = time.Now()
-				}
+				d.pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -951,17 +1184,13 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			remainingPrimary.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1044,9 +1273,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 		case chunk, ok := <-backupPR.ChunkCh:
 			if ok && len(backupHeld) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				backupHeld = append(backupHeld, chunk)
-				if backupPR.Timing.FirstChunkAt.IsZero() {
-					backupPR.Timing.FirstChunkAt = time.Now()
-				}
+				backupPR.MarkFirstChunkArrived()
 				continue
 			}
 			backupDeadline.Stop()
@@ -1056,9 +1283,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 				d.requestID = d.pr.RequestID
 				d.heldChunks = backupHeld
 				d.firstChunk = chunk
-				if d.pr.Timing.FirstChunkAt.IsZero() {
-					d.pr.Timing.FirstChunkAt = time.Now()
-				}
+				d.pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1145,17 +1370,13 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			primaryDeadline.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				select {
@@ -1225,10 +1446,30 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 // inferenceTimeout; a boilerplate-liveness extension past an expired TTFT deadline
 // gets only preambleContentTimeout (zero bytes written to the client, so a
 // preamble-then-stall provider must fail over instead of pinning for 10 minutes).
-func (d *dispatchState) waitAccepted() dispatchOutcome {
+func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 	s := d.s
 	r := d.r
 	provider, pr := d.provider, d.pr
+
+	defer func() {
+		switch outcome {
+		case outcomeCommitted:
+			d.updateRoutingOutcome(d.successRoutingOutcome())
+		case outcomeRetry:
+			if d.lastErrCode == http.StatusGatewayTimeout {
+				if d.preambleLiveness {
+					d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "preamble_liveness_timeout", d.lastErrCode))
+				} else {
+					d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "accepted_timeout", d.lastErrCode))
+				}
+			} else {
+				// Post-dispatch provider failure (incl. OOM/model-load): admitted but failed.
+				d.updateRoutingOutcome(d.providerFailedRoutingOutcome())
+			}
+		case outcomeClientGone:
+			d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+		}
+	}()
 
 	firstContentBudget := inferenceTimeout
 	if d.preambleLiveness {
@@ -1240,17 +1481,13 @@ func (d *dispatchState) waitAccepted() dispatchOutcome {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && len(d.heldChunks) < maxHeldBoilerplate && isBoilerplateChunk(chunk) {
 				d.heldChunks = append(d.heldChunks, chunk)
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				continue
 			}
 			chunkTimer.Stop()
 			if ok {
 				d.firstChunk = chunk
-				if pr.Timing.FirstChunkAt.IsZero() {
-					pr.Timing.FirstChunkAt = time.Now()
-				}
+				pr.MarkFirstChunkArrived()
 				d.committed = true
 			} else {
 				// Closed — check for error. Use a short grace
@@ -1386,6 +1623,9 @@ func (d *dispatchState) run() {
 		}
 
 		d.requestID = d.pr.RequestID
+		// d.pr.Attempt is already stamped at PendingRequest construction in
+		// dispatchOneProvider (and on the queued path), before the provider send —
+		// so it is never written here, where it would race handleComplete.
 		if d.timing.RoutedAt.IsZero() {
 			d.timing.RoutedAt = time.Now()
 		}

@@ -265,10 +265,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			return outcomeResponseWritten
 		}
-		if depth, oldest := s.registry.Queue().QueueStats(d.model); depth > 0 {
-			s.registry.RecordWarmPoolQueueEnqueued(d.model, depth, oldest)
-			s.triggerWarmPoolAsync("queue_enqueued")
-		}
+		s.recordWarmPoolQueueState(d.model)
 		s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:queued"})
 
 		s.logger.Info("request queued, waiting for provider",
@@ -280,6 +277,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
+				s.recordWarmPoolQueueState(d.model)
 				d.refundReservation()
 				return outcomeClientGone
 			}
@@ -298,6 +296,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			return outcomeResponseWritten
 		}
+		s.recordWarmPoolQueueState(d.model)
 		// Queue assigned a provider; still need to dispatch.
 		// Use the queue PR's channels.
 		d.pr = queuePR

@@ -377,13 +377,24 @@ func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel stri
 		withCode("rate_limit_exceeded")))
 }
 
-func (s *Server) triggerWarmPoolAsync(reason string) {
+func (s *Server) triggerWarmPool() {
 	if s == nil || s.registry == nil {
 		return
 	}
-	saferun.Go(s.logger, "warm_pool."+reason, func() {
-		s.registry.TriggerWarmPool()
-	})
+	s.registry.RequestWarmPoolTrigger()
+}
+
+func (s *Server) recordWarmPoolQueueState(model string) {
+	if s == nil || s.registry == nil || s.registry.Queue() == nil {
+		return
+	}
+	depth, oldest := s.registry.Queue().QueueStats(model)
+	if depth <= 0 {
+		s.registry.RecordWarmPoolQueueCleared(model)
+		return
+	}
+	s.registry.RecordWarmPoolQueueEnqueued(model, depth, oldest)
+	s.triggerWarmPool()
 }
 
 // dispatchOneProvider encrypts and sends an inference request to a single
@@ -1727,7 +1738,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if candidateCount == 0 && capacityRejections > 0 {
 			s.registry.RecordWarmPoolCapacityReject(model)
-			s.triggerWarmPoolAsync("capacity_reject")
+			s.triggerWarmPool()
 			// Providers exist for this model but ALL are at capacity.
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -4225,7 +4236,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		if candidateCount == 0 && capacityRejections > 0 {
 			s.registry.RecordWarmPoolCapacityReject(model)
-			s.triggerWarmPoolAsync("capacity_reject")
+			s.triggerWarmPool()
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
@@ -4406,14 +4417,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			}
 			return
 		}
-		if depth, oldest := s.registry.Queue().QueueStats(model); depth > 0 {
-			s.registry.RecordWarmPoolQueueEnqueued(model, depth, oldest)
-			s.triggerWarmPoolAsync("queue_enqueued")
-		}
+		s.recordWarmPoolQueueState(model)
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
+				s.recordWarmPoolQueueState(model)
 				refundReservation()
 				return
 			}
@@ -4431,6 +4440,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			}
 			return
 		}
+		s.recordWarmPoolQueueState(model)
 		decision = queuedReq.Decision
 	}
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:selected"})

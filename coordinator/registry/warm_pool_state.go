@@ -166,6 +166,13 @@ func (r *Registry) RecordWarmPoolQueueEnqueued(model string, depth int, oldestAg
 	r.warmPool.recordQueuePressure(model, depth, oldestAge, time.Now())
 }
 
+func (r *Registry) RecordWarmPoolQueueCleared(model string) {
+	if r.warmPool == nil || model == "" {
+		return
+	}
+	r.warmPool.recordQueuePressure(model, 0, 0, time.Now())
+}
+
 func (r *Registry) RecordWarmPoolQueueTimeout(model string, age time.Duration) {
 	if r.warmPool == nil || model == "" {
 		return

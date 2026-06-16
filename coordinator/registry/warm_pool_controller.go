@@ -14,6 +14,7 @@ type warmPoolController struct {
 	state    *warmPoolState
 	queueMu  syncQueuePressure
 	tickMu   sync.Mutex
+	triggerC chan struct{}
 }
 
 type syncQueuePressure struct {
@@ -62,6 +63,7 @@ func newWarmPoolController(r *Registry, cfg WarmPoolConfig) *warmPoolController 
 		config:   cfg,
 		state:    newWarmPoolState(),
 		queueMu:  syncQueuePressure{models: make(map[string]warmPoolQueuePressure)},
+		triggerC: make(chan struct{}, 1),
 	}
 }
 
@@ -88,10 +90,28 @@ func (r *Registry) StartWarmPoolController(ctx context.Context, cfg WarmPoolConf
 	return cancel
 }
 
+// RequestWarmPoolTrigger coalesces a hot-path warm-pool kick into the
+// controller's single run goroutine. It never blocks callers: if a trigger is
+// already queued or a tick is in progress, that pending pass is enough to observe
+// the latest queue/capacity pressure.
+func (r *Registry) RequestWarmPoolTrigger() bool {
+	r.mu.RLock()
+	controller := r.warmPool
+	r.mu.RUnlock()
+	if controller == nil || !controller.config.Enabled || controller.config.ObserveOnly {
+		return false
+	}
+	select {
+	case controller.triggerC <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 // TriggerWarmPool runs one active warm-pool planning pass immediately. It is a
-// non-periodic kick used by hot request paths after queue/capacity pressure is
-// observed so warming does not wait for the next controller interval. The normal
-// provider eligibility gates and pending-load caps still bound load_model sends.
+// used by tests and administrative callers that need the resulting snapshots.
+// Hot request paths should use RequestWarmPoolTrigger so bursts are coalesced.
 func (r *Registry) TriggerWarmPool() []WarmPoolSnapshot {
 	r.mu.RLock()
 	controller := r.warmPool
@@ -113,6 +133,8 @@ func (c *warmPoolController) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.triggerC:
+			c.tick(time.Now())
 		case <-ticker.C:
 			c.tick(time.Now())
 		}
@@ -291,14 +313,15 @@ func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure wa
 }
 
 func (c *warmPoolController) recordQueuePressure(model string, depth int, oldestAge time.Duration, now time.Time) {
-	if depth < 0 {
-		depth = 0
+	c.queueMu.mu.Lock()
+	defer c.queueMu.mu.Unlock()
+	if depth <= 0 {
+		delete(c.queueMu.models, model)
+		return
 	}
 	if oldestAge < 0 {
 		oldestAge = 0
 	}
-	c.queueMu.mu.Lock()
-	defer c.queueMu.mu.Unlock()
 	c.queueMu.models[model] = warmPoolQueuePressure{Depth: depth, OldestAge: oldestAge, UpdatedAt: now}
 }
 

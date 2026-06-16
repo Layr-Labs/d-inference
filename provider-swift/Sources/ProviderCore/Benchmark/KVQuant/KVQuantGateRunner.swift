@@ -75,6 +75,47 @@ public struct KVQuantGateRunner {
         }
     }
 
+    /// Model-free analytic capacity report: the headline KV-bytes-per-token and
+    /// the resulting max-admitted-tokens multiplier vs fp16. This is the metric the
+    /// whole effort optimizes (capacity = (RAM - weights)/kv_bytes_per_token).
+    static func capacityReport(config: KVQuantGateConfig, modelDirectory: URL?) -> KVQuantSuiteReport {
+        let now = Date()
+        let cand = config.candidate
+        let ref = config.reference
+        let metrics: [String: KVQuantMetricSummary] = [
+            "capacity.kv_bytes_per_token_per_elem": .init(unit: "bytes", samples: [cand.effectiveKVBytesPerTokenPerElem]),
+            "capacity.reference_kv_bytes_per_token_per_elem": .init(unit: "bytes", samples: [ref.effectiveKVBytesPerTokenPerElem]),
+            "capacity.kv_token_ratio_vs_fp16": .init(unit: "x", samples: [cand.capacityRatioVsFP16]),
+            "capacity.stored_bits_k": .init(unit: "bits", samples: [Double(cand.storedBitsK)]),
+            "capacity.stored_bits_v": .init(unit: "bits", samples: [Double(cand.storedBitsV)]),
+        ]
+        let quality = KVQuantQualityReport(
+            suite: .capacity,
+            metricName: "capacity",
+            dataDirectory: config.dataDirectory,
+            metrics: metrics,
+            passFail: .passed(),
+            todos: []
+        )
+        return KVQuantSuiteReport(
+            suite: .capacity,
+            modelID: config.modelID,
+            modelPath: modelDirectory?.path,
+            reference: ref,
+            candidate: cand,
+            contexts: config.contexts,
+            iterationCount: config.iterations,
+            startedAt: now,
+            endedAt: Date(),
+            performance: nil,
+            quality: quality,
+            passFail: .passed(),
+            failures: [],
+            skipped: [],
+            todos: []
+        )
+    }
+
     private func runSuites(hardware: HardwareInfo, modelDirectory: URL?) async -> [KVQuantSuiteReport] {
         var reports: [KVQuantSuiteReport] = []
         for suite in config.suites {
@@ -100,6 +141,8 @@ public struct KVQuantGateRunner {
                     hardware: hardware,
                     modelDirectory: modelDirectory
                 )
+            case .capacity:
+                report = Self.capacityReport(config: config, modelDirectory: modelDirectory)
             }
             reports.append(report)
         }

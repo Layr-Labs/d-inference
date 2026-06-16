@@ -32,7 +32,7 @@ public struct KVQuantQualityRunner {
                 quality = try await runLogits(config: config, evaluator: evaluator)
             case .niah:
                 quality = try await runNIAH(config: config, evaluator: evaluator)
-            case .performance, .memory, .output:
+            case .performance, .memory, .output, .capacity:
                 quality = KVQuantQualityReport(
                     suite: suite,
                     metricName: suite.displayName,

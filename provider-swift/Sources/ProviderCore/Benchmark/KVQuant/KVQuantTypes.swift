@@ -7,6 +7,7 @@ public enum KVQuantSuite: String, CaseIterable, Codable, Sendable {
     case perplexity = "ppl"
     case logits
     case niah
+    case capacity
 
     public var displayName: String {
         switch self {
@@ -16,6 +17,7 @@ public enum KVQuantSuite: String, CaseIterable, Codable, Sendable {
         case .perplexity: "perplexity"
         case .logits: "logits"
         case .niah: "needle_in_a_haystack"
+        case .capacity: "capacity"
         }
     }
 }
@@ -71,6 +73,51 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
         case .fp16KV, .bf16KV, .fullVBF16: false
         case .affine4, .affine8, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: true
         }
+    }
+
+    /// Stored bits-per-element for KEYS on the context-growing (full/global)
+    /// attention layers. bf16 is 16 bits — same bytes as fp16 — so it yields NO
+    /// capacity gain; this metric makes that explicit.
+    public var storedBitsK: Int {
+        switch self {
+        case .fp16KV, .bf16KV, .fullVBF16, .fullVAffine4, .fullVTurbo4: 16
+        case .affine8: 8
+        case .affine4, .fullKVTurbo4, .turbo4v2: 4
+        }
+    }
+
+    /// Stored bits-per-element for VALUES on the context-growing layers.
+    /// Note: bf16 is 16 bits (2 bytes) — same as fp16 — so `fullVBF16` yields no
+    /// capacity gain, which the capacity metric must reflect honestly.
+    public var storedBitsV: Int {
+        switch self {
+        case .fp16KV, .bf16KV, .fullVBF16: 16
+        case .affine8: 8
+        case .affine4, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: 4
+        }
+    }
+
+    /// Effective stored bits-per-element including affine scale+bias overhead
+    /// (two fp16 values per quantization group). 16-bit (fp16/bf16) has no group
+    /// overhead. 8-bit uses group size 32, sub-8-bit uses 64 (matching execution).
+    private func effectiveBits(_ bits: Int) -> Double {
+        guard bits < 16 else { return 16.0 }
+        let group = bits == 8 ? 32.0 : 64.0
+        return Double(bits) + 32.0 / group  // + fp16 scale + fp16 bias per group
+    }
+
+    /// Effective KV bytes per token-per-(growing)-layer for the context-growing
+    /// (full/global) attention layers, expressed per element of n_kv_heads*head_dim
+    /// (so it's model-shape independent). Baseline fp16 K+V = 4.0 bytes/elem.
+    public var effectiveKVBytesPerTokenPerElem: Double {
+        (effectiveBits(storedBitsK) + effectiveBits(storedBitsV)) / 8.0
+    }
+
+    /// Headline capacity multiplier: how many more tokens can be admitted at fixed
+    /// RAM vs fp16 (max-admitted-tokens scales ~linearly with this, weights aside).
+    public var capacityRatioVsFP16: Double {
+        let fp16Bytes = (16.0 + 16.0) / 8.0
+        return fp16Bytes / max(effectiveKVBytesPerTokenPerElem, 1e-9)
     }
 
     public init?(parsing rawValue: String) {

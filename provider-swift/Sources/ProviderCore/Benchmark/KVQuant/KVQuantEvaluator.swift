@@ -27,12 +27,15 @@ struct KVQuantEvaluator {
             let tokenIDs = context.tokenizer.encode(text: text, addSpecialTokens: true)
             let cappedTokenIDs = maxTokens.map { Array(tokenIDs.prefix(max($0, 2))) } ?? tokenIDs
             let execConfig = try Self.makeExecConfig(for: mode)
-            if let kvBits = execConfig.parameters.kvBits, kvBits > 0 {
-                return try Self.scoreTokenIDsIncremental(cappedTokenIDs, context: context, parameters: execConfig.parameters)
-            } else {
-                let cache = execConfig.makeCache(using: context.model)
+            let cache = execConfig.makeCache(using: context.model)
+            if mode.isReference {
+                // fp16 reference: single-forward is exact and fast.
                 return try Self.scoreTokenIDs(cappedTokenIDs, context: context, cache: cache)
             }
+            // Candidate: incremental token-by-token so the cache's own start-delay
+            // and quantization actually engage (single-forward would silently
+            // return fp16 for start-delayed caches).
+            return try Self.scoreTokenIDsIncrementalCache(cappedTokenIDs, context: context, cache: cache)
         }
     }
 
@@ -42,12 +45,11 @@ struct KVQuantEvaluator {
             let tokenIDs = context.tokenizer.encode(text: text, addSpecialTokens: true)
             let cappedTokenIDs = maxTokens.map { Array(tokenIDs.prefix(max($0, 2))) } ?? tokenIDs
             let execConfig = try Self.makeExecConfig(for: mode)
-            if let kvBits = execConfig.parameters.kvBits, kvBits > 0 {
-                return try Self.logitFingerprintIncremental(cappedTokenIDs, context: context, parameters: execConfig.parameters)
-            } else {
-                let cache = execConfig.makeCache(using: context.model)
+            let cache = execConfig.makeCache(using: context.model)
+            if mode.isReference {
                 return try Self.logitFingerprint(cappedTokenIDs, context: context, cache: cache)
             }
+            return try Self.logitFingerprintIncrementalCache(cappedTokenIDs, context: context, cache: cache)
         }
     }
 
@@ -155,33 +157,24 @@ struct KVQuantEvaluator {
         return KVQuantLogitFingerprint(top1: top1, top5: groupedTop5)
     }
 
-    /// Teacher-forced scorer that processes one token at a time so that
-    /// mlx-swift-lm's dynamic KV-cache quantization (``GenerateParameters.kvBits``)
-    /// is exercised. This is required for full-KV affine modes because the upstream
-    /// ``QuantizedKVCache`` does not support the single-pass ``update(keys:values:)``
-    /// path used by ``scoreTokenIDs(_:context:cache:)``.
-    private static func scoreTokenIDsIncremental(
+    /// Teacher-forced scorer that feeds one token at a time through the candidate's
+    /// OWN cache, so the cache's start-delay and quantization actually engage. A
+    /// single-forward pass would let start-delayed caches silently return fp16 for
+    /// the whole sequence, hiding all quantization loss.
+    private static func scoreTokenIDsIncrementalCache(
         _ tokenIDs: [Int],
         context: ModelContext,
-        parameters: GenerateParameters
+        cache: [KVCache]
     ) throws -> KVQuantSequenceScore {
         guard tokenIDs.count >= 2 else { throw KVQuantEvaluatorError.tooFewTokens(tokenIDs.count) }
 
-        var cache = context.model.newCache(parameters: parameters)
         let tokenArray = MLXArray(tokenIDs.map(Int32.init))[.newAxis]
         var negativeLogLikelihoods: [Float] = []
 
         for i in 0..<(tokenIDs.count - 1) {
-            let input = LMInput.Text(tokens: tokenArray[0..., i...i])
-            let output = context.model(input, cache: cache, state: nil)
-            maybeQuantizeKVCache(
-                cache: &cache,
-                kvBits: parameters.kvBits,
-                kvGroupSize: parameters.kvGroupSize,
-                quantizedKVStart: parameters.quantizedKVStart
-            )
-
-            let logits = output.logits[0..., -1, 0...].asType(.float32)
+            let input = tokenArray[0..., i..<(i + 1)]
+            var logits = context.model(input, cache: cache)
+            logits = logits[0..., -1, 0...].asType(.float32)
             let logProbs = logSoftmax(logits, axis: -1)
             let target = MLXArray(Int32(tokenIDs[i + 1])).reshaped([1, 1])
             let targetLogProb = takeAlong(logProbs, target, axis: -1)
@@ -198,31 +191,23 @@ struct KVQuantEvaluator {
         )
     }
 
-    /// Incremental logit fingerprint matching ``scoreTokenIDsIncremental`` so that
-    /// full-KV affine modes are evaluated through the same quantized generation path.
-    private static func logitFingerprintIncremental(
+    /// Incremental logit fingerprint through the candidate's own cache (see
+    /// ``scoreTokenIDsIncrementalCache`` for why incremental is required).
+    private static func logitFingerprintIncrementalCache(
         _ tokenIDs: [Int],
         context: ModelContext,
-        parameters: GenerateParameters
+        cache: [KVCache]
     ) throws -> KVQuantLogitFingerprint {
         guard tokenIDs.count >= 2 else { throw KVQuantEvaluatorError.tooFewTokens(tokenIDs.count) }
 
-        var cache = context.model.newCache(parameters: parameters)
         let tokenArray = MLXArray(tokenIDs.map(Int32.init))[.newAxis]
         var top1: [Int] = []
         var top5: [[Int]] = []
 
         for i in 0..<(tokenIDs.count - 1) {
-            let input = LMInput.Text(tokens: tokenArray[0..., i...i])
-            let output = context.model(input, cache: cache, state: nil)
-            maybeQuantizeKVCache(
-                cache: &cache,
-                kvBits: parameters.kvBits,
-                kvGroupSize: parameters.kvGroupSize,
-                quantizedKVStart: parameters.quantizedKVStart
-            )
-
-            let logits = output.logits[0..., -1, 0...].asType(.float32)
+            let input = tokenArray[0..., i..<(i + 1)]
+            var logits = context.model(input, cache: cache)
+            logits = logits[0..., -1, 0...].asType(.float32)
             let logProbs = logSoftmax(logits, axis: -1)
             top1.append(Int(argMax(logProbs, axis: -1).asArray(Int32.self)[0]))
 

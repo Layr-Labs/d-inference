@@ -99,13 +99,17 @@ enum KVQuantExecution {
             // Use a protocol-safe quantized cache that can serve both the
             // native quantized attention path and the plain update(keys:values:)
             // fallback used by single-forward scoring and Gemma 4 attention.
+            // Smaller group sizes trade a little overhead for better accuracy.
+            // g32 is used for 8-bit full-KV to give it a stronger chance of
+            // passing the quality gate while still halving KV-cache memory.
+            let effectiveGroupSize = bits == 8 ? 32 : groupSize
             let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
                 model.newCache(parameters: nil).map { baseCache in
                     if baseCache is RotatingKVCache {
                         return baseCache.copy()
                     }
                     return ProtocolSafeQuantizedKVCache(
-                        groupSize: groupSize,
+                        groupSize: effectiveGroupSize,
                         bits: bits,
                         mode: .affine
                     )

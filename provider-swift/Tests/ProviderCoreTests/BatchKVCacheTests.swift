@@ -326,6 +326,29 @@ struct BatchKVCacheTests {
         }
     }
 
+    @Test("rotating decode stays unmasked after trimming past the window (negative padding)")
+    func rotatingUnmaskedAfterWindowTrim() {
+        // A rotating cache that generates past its window trims slots and
+        // subtracts the trim from leftPadding, so unpadded rows go NEGATIVE.
+        // The decode-mask fast path must treat negative padding as unpadded
+        // (<= 0), or every long (> window) Gemma 4 decode falls back to the
+        // explicit-mask path on each sliding layer (the mlx#3384 slow/divergent
+        // path the repetition fix avoids).
+        let cache = BatchRotatingKVCache(maxSize: 3, leftPadding: [0, 0])
+        _ = cache.update(  // prefill 4 > window 3 -> trims, leftPadding goes negative
+            keys: MLXArray.zeros([2, 1, 4, 1]), values: MLXArray.zeros([2, 1, 4, 1]))
+        _ = cache.update(  // one decode step
+            keys: MLXArray.zeros([2, 1, 1, 1]), values: MLXArray.zeros([2, 1, 1, 1]))
+        // Precondition that makes this a real regression test: rows are now
+        // negatively padded, so a `== 0` guard would (wrongly) mask.
+        #expect(cache.leftPadding.max().item(Int32.self) < 0)
+        let mask = cache.makeMask(n: 1, windowSize: 3, returnArray: true)
+        guard case .none = mask else {
+            Issue.record("expected .none for unpadded rotating decode past window, got \(mask)")
+            return
+        }
+    }
+
     // MARK: - dynamicRoll helper
 
     @Test("dynamicRoll shifts each row by its own amount along axis")

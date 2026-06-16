@@ -2620,6 +2620,10 @@ public actor ProviderLoop {
             }
         }
 
+        // Q6 (serve-while-load): id for the pending-load reservation placed in
+        // kvBudget once the gate passes and released once the weights are
+        // resident. Declared out here so the catch can release it on any path.
+        let pendingLoadID = "pending-load:\(modelId)"
         modelsLoading.insert(modelId)
         do {
             try Task.checkCancellation()
@@ -2649,6 +2653,17 @@ public actor ProviderLoop {
             }
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+
+            // Q6: reserve this load's weight footprint in the shared KV budget so
+            // a concurrent KV reservation on an already-loaded model can't grant
+            // headroom that, plus these incoming (not-yet-in-mlxUsed) weights,
+            // blows the unified-memory cap. Released once the weights are resident.
+            let pendingLoadGiB = modelInfo.estimatedMemoryGb * 1_073_741_824
+            let pendingLoadBytes: UInt64 =
+                pendingLoadGiB.isFinite && pendingLoadGiB > 0
+                ? (pendingLoadGiB >= Double(UInt64.max) ? .max : UInt64(pendingLoadGiB))
+                : 0
+            await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
 
@@ -2696,6 +2711,11 @@ public actor ProviderLoop {
                 modelId: modelId,
                 weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash
             )
+            // Weights are resident now (reflected in MLX active/cache), so hand
+            // off from the pending-load reservation to the live mlxUsed view —
+            // concurrent KV reservations see the weights from here on. (Also
+            // released in catch for the error paths above.)
+            await kvBudget.release(requestID: pendingLoadID)
             if isShuttingDown || Task.isCancelled {
                 await scheduler.unloadModel()
                 MLX.Memory.clearCache()
@@ -2757,6 +2777,9 @@ public actor ProviderLoop {
         } catch {
             modelsLoading.remove(modelId)
             isLoadingAny = false
+            // Release the pending-load reservation on every failure path (no-op
+            // if it was never placed, or already released on the success path).
+            await kvBudget.release(requestID: pendingLoadID)
             // Release pool buffers a failed load left behind (same wedge as unload).
             MLX.Memory.clearCache()
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {

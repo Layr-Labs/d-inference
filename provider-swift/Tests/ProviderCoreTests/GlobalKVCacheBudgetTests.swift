@@ -86,6 +86,37 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(await budget.reserve(requestID: "fits", kvBytesPerToken: 1, tokenCount: Int(2 * gib)))
 }
 
+/// Q6 (serve-while-load): a loading model's weights are not in MLX active/cache
+/// until `loadModelContainer` finishes allocating them. `reservePendingLoad`
+/// makes that footprint visible to KV reservations on ALREADY-loaded models, so
+/// a concurrent request can't grant KV headroom that, plus the incoming weights,
+/// blows the cap. It reserves only the weights (so KV that still fits underneath
+/// is admitted) and is released once the weights are resident.
+@Test func pendingLoadReservationBlocksConcurrentKVOverCommit() async {
+    // 64 GiB box, cap 0.9 → 57.6 GiB, minus 3 GiB activation = ~54.6 GiB for KV.
+    let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 3 * gib) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 64 * gib, active: 0, cache: 0, systemAvailable: .max)
+    }
+    // Baseline: a 40 GiB KV reservation fits with nothing else outstanding.
+    #expect(await budget.reserveBytes(requestID: "kv-baseline", bytes: 40 * gib))
+    await budget.release(requestID: "kv-baseline")
+
+    // A 30 GiB model begins loading; its weights aren't in mlxUsed yet, so we
+    // reserve them. Only ~24.6 GiB is now left for KV.
+    await budget.reservePendingLoad(requestID: "pending-load:B", bytes: 30 * gib)
+    // Without the fix this 40 GiB reservation would be granted (54.6 free) and,
+    // plus the 30 GiB load, blow the cap. It must be rejected now.
+    #expect(!(await budget.reserveBytes(requestID: "kv-too-big", bytes: 40 * gib)))
+    // KV that still fits underneath the pending load is still admitted.
+    #expect(await budget.reserveBytes(requestID: "kv-fits", bytes: 20 * gib))
+    await budget.release(requestID: "kv-fits")
+
+    // Once the load completes (weights now in mlxUsed), releasing restores the
+    // full headroom.
+    await budget.release(requestID: "pending-load:B")
+    #expect(await budget.reserveBytes(requestID: "kv-after", bytes: 40 * gib))
+}
+
 @Test func providerLoopMemoryReserveBytesSaturatesOnOverflow() {
     #expect(ProviderLoop.memoryReserveBytes(forGiB: 4) == 4 * 1024 * 1024 * 1024)
     #expect(ProviderLoop.memoryReserveBytes(forGiB: UInt64.max) == UInt64.max)

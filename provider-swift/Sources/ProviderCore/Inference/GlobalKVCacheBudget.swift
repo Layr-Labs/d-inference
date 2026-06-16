@@ -77,6 +77,26 @@ public actor GlobalKVCacheBudget {
         return true
     }
 
+    /// Reserve a loading model's WEIGHT footprint for the duration of its load,
+    /// unconditionally. A model's weights are not yet visible in MLX active/cache
+    /// while `loadModelContainer` is still allocating them, so a KV reservation
+    /// granted on an ALREADY-loaded model during that window would compute its
+    /// headroom blind to the incoming weights and could push total usage past the
+    /// cap — a transient OOM on the normal serve-while-load path. Reserving the
+    /// footprint here makes those in-flight weights visible to `reserve` /
+    /// `reserveBytes`, so concurrent KV can only claim `headroom − weights`.
+    ///
+    /// Unconditional (never fails): the load gate has already admitted the model,
+    /// so this is bookkeeping for the load that WILL happen, not a second gate.
+    /// It reserves only the weight estimate, so concurrent KV that still fits
+    /// underneath is admitted; only reservations that would over-commit are
+    /// rejected (caller surfaces 429/retry). Released once the weights are
+    /// resident (and thus reflected in `mlxUsed`). Pair with `release`.
+    public func reservePendingLoad(requestID: String, bytes: UInt64) {
+        guard bytes > 0 else { return }
+        reservations[requestID] = bytes
+    }
+
     /// Atomically shrink an existing reservation to a smaller byte count,
     /// freeing the difference. `reserve`/`release` cannot express a shrink:
     /// `reserve` refuses when an entry already exists for the id, and a

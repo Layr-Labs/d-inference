@@ -174,7 +174,16 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         maxTokens: 10)
     let tokens = VLMRequestInference.projectedKVTokens(
         req, defaultMaxTokens: 1024, contextLength: 0)
-    // "hello there" = 11 utf8 bytes / 3 = 3 text tokens, + 10 output = 13.
-    #expect(tokens == 11 / VLMRequestInference.textCharsPerToken + 10)
+    // "hello there" = 11 utf8 bytes, CEIL(11/3) = 4 text tokens, + 10 output = 14.
+    #expect(tokens == VLMRequestInference.textTokenEstimate("hello there") + 10)
     #expect(tokens < VLMRequestInference.visionTokensPerImage)  // no vision charge
+}
+
+@Test func textTokenEstimateNeverRoundsNonEmptyToZero() {
+    // Floor division charged 0 for 1–2 byte text; ceil + min-1 charges >= 1.
+    #expect(VLMRequestInference.textTokenEstimate("") == 0)
+    #expect(VLMRequestInference.textTokenEstimate("a") == 1)   // 1 byte, was 0 under floor
+    #expect(VLMRequestInference.textTokenEstimate("ab") == 1)  // 2 bytes, was 0 under floor
+    #expect(VLMRequestInference.textTokenEstimate("abc") == 1)
+    #expect(VLMRequestInference.textTokenEstimate("abcd") == 2)  // CEIL(4/3) = 2
 }

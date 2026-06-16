@@ -329,6 +329,31 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         measuredLiveKVHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes))
 }
 
+@Test func postLoadGuardRequiresHeadroomAboveOutstandingReservations() {
+    // The guard must leave the minimum serveable KV ON TOP of KV already promised
+    // to in-flight requests (which aren't yet in the measured MLX counters). A
+    // model that measures 3 GiB free passes on its own, but if 2.5 GiB is already
+    // reserved it leaves only 0.5 GiB < 1 GiB min → reject (else it would steal
+    // headroom an in-flight request is counting on and push past the cap when that
+    // request materializes its KV).
+    let measured = 3 * gib
+    #expect(UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measured))
+    #expect(!UnifiedMemoryCap.loadIsServeable(
+        measuredLiveKVHeadroomBytes: measured,
+        outstandingReservedBytes: UInt64(2.5 * Double(gib))))
+    // With only 1 GiB outstanding, 3 − 1 = 2 GiB ≥ 1 GiB min → still admit.
+    #expect(UnifiedMemoryCap.loadIsServeable(
+        measuredLiveKVHeadroomBytes: measured, outstandingReservedBytes: gib))
+    // Exact boundary: min + outstanding admits; one byte below rejects.
+    let outstanding = 2 * gib
+    #expect(UnifiedMemoryCap.loadIsServeable(
+        measuredLiveKVHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes + outstanding,
+        outstandingReservedBytes: outstanding))
+    #expect(!UnifiedMemoryCap.loadIsServeable(
+        measuredLiveKVHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes + outstanding - 1,
+        outstandingReservedBytes: outstanding))
+}
+
 @Test func kvBudgetAndAdmitSaturateOnMaxOperands() {
     // .max weights must clamp the KV budget to 0, not underflow/trap.
     #expect(UnifiedMemoryCap.kvBudgetBytes(

@@ -247,6 +247,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let mediaReleaseScheduler = scheduler
             return AsyncThrowingStream { continuation in
                 let task = Task {
+                    // Release the reservation ONLY from the producer task, after the
+                    // generation loop has fully unwound — that is the moment the KV /
+                    // decode memory is actually freed. Releasing from `onTermination`
+                    // (which fires synchronously on the consumer's thread the instant
+                    // the stream is dropped) would return the headroom to the budget
+                    // while the cancelled decode task is still tearing down its
+                    // MLXArrays, briefly letting a concurrent request reserve memory
+                    // that is not physically free yet. A cancelled `for try await`
+                    // either breaks (normal path) or throws CancellationError (catch
+                    // path); both release here, so cancellation is covered without an
+                    // early release in onTermination.
                     do {
                         for try await event in vlmStream {
                             if Task.isCancelled { break }
@@ -262,11 +273,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                 }
                 continuation.onTermination = { @Sendable _ in
+                    // Just cancel; the producer task releases on its way out (above).
                     task.cancel()
-                    Task {
-                        await mediaReleaseScheduler.releaseVisionRequest(requestId: mediaReqId)
-                        await releaseBox.fire()
-                    }
                 }
             }
         }

@@ -53,11 +53,25 @@ public enum UnifiedMemoryCap {
     /// The post-load guard decision, as a pure function so it's unit-testable
     /// (the BatchScheduler accessor that feeds it reads real MLX globals). A
     /// freshly-loaded model is serveable iff its MEASURED live KV headroom (taken
-    /// AFTER trimming the cold-load buffer cache) is at least the minimum
-    /// serveable KV. Below that, the caller unloads + rejects rather than keep a
-    /// model whose every request the KV gate would reject.
-    public static func loadIsServeable(measuredLiveKVHeadroomBytes: UInt64) -> Bool {
-        measuredLiveKVHeadroomBytes >= minimumLoadKVBytes
+    /// AFTER trimming the cold-load buffer cache) leaves at least the minimum
+    /// serveable KV ON TOP OF whatever is already reserved for in-flight requests.
+    ///
+    /// `outstandingReservedBytes` is KV promised to requests already admitted on a
+    /// co-resident model but not yet materialized in the MLX counters this
+    /// headroom is measured from — so it is NOT reflected in
+    /// `measuredLiveKVHeadroomBytes`. If the freshly-loaded model's real residency
+    /// exceeded the load gate's estimate, charging it against the headroom WITHOUT
+    /// subtracting those promises would let it pass the guard while quietly eating
+    /// memory another request is counting on. Require the minimum to survive
+    /// alongside the outstanding promises; below that, the caller unloads + rejects
+    /// rather than keep a model that would push the box past the cap once the
+    /// in-flight requests materialize their KV.
+    public static func loadIsServeable(
+        measuredLiveKVHeadroomBytes: UInt64,
+        outstandingReservedBytes: UInt64 = 0
+    ) -> Bool {
+        let needed = saturatingAdd(minimumLoadKVBytes, outstandingReservedBytes)
+        return measuredLiveKVHeadroomBytes >= needed
     }
 
     /// Headroom (bytes) the model-LOAD gate must require ABOVE the weights, so a

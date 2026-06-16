@@ -119,6 +119,16 @@ public enum VLMRequestInference {
     /// count (the safe direction for a reservation).
     static let textCharsPerToken = 3
 
+    /// Conservative token count for a text fragment: CEIL division (so a short
+    /// fragment never rounds down to 0) and at least 1 token for any non-empty
+    /// text. Floor division would charge 0 for a 1–2 byte part, and many short
+    /// parts would then under-count the KV the prompt actually occupies.
+    static func textTokenEstimate(_ s: String) -> Int {
+        let bytes = s.utf8.count
+        guard bytes > 0 else { return 0 }
+        return max(1, (bytes + textCharsPerToken - 1) / textCharsPerToken)
+    }
+
     /// Conservative upper bound on the number of tokens the vision generation's
     /// KV cache will hold: prompt text + image/video soft tokens + generated
     /// output. The vision path bypasses the batched `submitTokenized` reservation
@@ -144,11 +154,11 @@ public enum VLMRequestInference {
         for message in request.messages {
             switch message.content {
             case .text(let s):
-                add(s.utf8.count / textCharsPerToken)
+                add(Self.textTokenEstimate(s))
             case .parts(let parts):
                 for part in parts {
                     switch part {
-                    case .text(let s): add(s.utf8.count / textCharsPerToken)
+                    case .text(let s): add(Self.textTokenEstimate(s))
                     case .imageURL: add(visionTokensPerImage)
                     case .videoURL: add(visionTokensPerVideo)
                     case .unsupported: continue

@@ -73,8 +73,15 @@ extension BatchScheduler {
     /// reject every request at the KV-reservation gate (a "loaded but
     /// unserveable" model). Catches the case where measured residency exceeds the
     /// load gate's `estimatedMemoryGb` estimate.
-    func hasServeableKVHeadroom() -> Bool {
-        UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes)
+    func hasServeableKVHeadroom() async -> Bool {
+        // Subtract KV already promised to in-flight requests (on this or a
+        // co-resident model): those bytes are not yet in the MLX counters the
+        // headroom is measured from, so the freshly-loaded model must leave the
+        // minimum serveable KV ON TOP of them, not steal from them.
+        let outstanding = await kvBudget?.outstandingReservedBytes() ?? 0
+        return UnifiedMemoryCap.loadIsServeable(
+            measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes,
+            outstandingReservedBytes: outstanding)
     }
 
     /// Sum of `(promptTokens + maxTokens)` across active bridges. This

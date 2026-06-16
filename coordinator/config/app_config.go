@@ -9,6 +9,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/notifications"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -31,6 +32,7 @@ type AppConfig struct {
 	OutputAdmission ratelimit.OutputAdmissionEstimatorConfig
 	RegistryCfg     registry.Config
 	MDMConfig       mdm.Config
+	NotificationCfg notifications.Config
 	DatadogConfig   datadog.Config
 	AdminKey        string
 	AdminEmails     []string
@@ -60,6 +62,9 @@ func (c AppConfig) Check() error {
 	if err := c.MDMConfig.Check(); err != nil {
 		return fmt.Errorf("mdm: %w", err)
 	}
+	if err := c.NotificationCfg.Check(); err != nil {
+		return fmt.Errorf("notifications: %w", err)
+	}
 	if err := c.DatadogConfig.Check(); err != nil {
 		return fmt.Errorf("datadog: %w", err)
 	}
@@ -82,6 +87,7 @@ func ReadAppConfig() AppConfig {
 		OutputAdmission: rlCfg.OutputAdmission,
 		RegistryCfg:     registry.ReadConfig(),
 		MDMConfig:       mdm.ReadConfig(),
+		NotificationCfg: notifications.ReadConfig(),
 		DatadogConfig:   datadog.ConfigFromEnv(),
 		AdminKey:        EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
 		AdminEmails:     api.ParseCommaList(EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),

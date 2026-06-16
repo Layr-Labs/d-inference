@@ -446,6 +446,10 @@ type Store interface {
 	// ListProviders returns all stored provider records.
 	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
 
+	// ListProviderNotificationTargets returns linked provider records with owner
+	// emails for provider-owner alert checks.
+	ListProviderNotificationTargets(ctx context.Context) ([]ProviderNotificationTarget, error)
+
 	// ListProvidersByAccount returns stored provider records linked to an account.
 	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
 
@@ -488,6 +492,15 @@ type Store interface {
 	// its last_seen stays fresh and is NOT closed by the NEW instance's startup
 	// reconcile. Returns the number of sessions closed.
 	CloseOpenProviderSessions(ctx context.Context, staleBefore time.Time) (int, error)
+
+	// --- Provider owner notifications ---
+
+	// ProviderNotificationsDue reports which provider/account/reason emails may
+	// be sent under the configured cooldown.
+	ProviderNotificationsDue(ctx context.Context, checks []ProviderNotificationCheck, cooldown time.Duration) (ProviderNotificationDueSet, error)
+
+	// RecordProviderNotificationsSent records successful notification sends.
+	RecordProviderNotificationsSent(ctx context.Context, checks []ProviderNotificationCheck, sentAt time.Time) error
 
 	// --- Provider Reputation Persistence ---
 
@@ -1089,6 +1102,19 @@ type ProviderRecord struct {
 	LastSessionTokensGenerated int64           `json:"last_session_tokens_generated"`
 	RegisteredAt               time.Time       `json:"registered_at"`
 	LastSeen                   time.Time       `json:"last_seen"`
+}
+
+type ProviderNotificationTarget struct {
+	Provider ProviderRecord `json:"provider"`
+	Email    string         `json:"email"`
+}
+
+type ProviderNotificationReasonKey string
+
+type ProviderNotificationCheck struct {
+	ProviderID string
+	AccountID  string
+	ReasonKey  ProviderNotificationReasonKey
 }
 
 // ProviderSession is one connect→disconnect lifecycle of a provider machine.

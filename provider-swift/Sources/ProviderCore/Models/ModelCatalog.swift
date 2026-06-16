@@ -12,330 +12,12 @@
 /// matching what `ModelScanner` already discovers.
 
 import Foundation
-#if canImport(Darwin)
-import Darwin
-#endif
 
 // MARK: - Download progress tracking & rendering
-
-/// Per-file progress state used by `DownloadProgressTracker`.
-private struct FileProgress: Sendable {
-    let label: String
-    let expectedBytes: Int64
-    var downloadedBytes: Int64 = 0
-    var startTime: Date = Date()
-    var completed: Bool = false
-    var completionTime: Date?
-    var destinationURL: URL?
-
-    /// Bytes/second using elapsed wall time.
-    var speed: Double {
-        let elapsed = (completionTime ?? Date()).timeIntervalSince(startTime)
-        guard elapsed > 0.1 else { return 0 }
-        return Double(downloadedBytes) / elapsed
-    }
-
-    /// Estimated seconds remaining.
-    var eta: Double? {
-        guard speed > 0, expectedBytes > 0 else { return nil }
-        let remaining = Double(expectedBytes - downloadedBytes)
-        guard remaining > 0 else { return nil }
-        return remaining / speed
-    }
-
-    var fraction: Double {
-        guard expectedBytes > 0 else { return 0 }
-        return min(1.0, Double(downloadedBytes) / Double(expectedBytes))
-    }
-}
-
-/// Delegate-based download tracker that provides incremental progress.
-///
-/// Each download task is registered with `register(taskID:label:expectedBytes:)`.
-/// The delegate callbacks update shared state that `ProgressRenderer` reads.
-/// Completed downloads are signalled via per-task continuations.
-private final class DownloadProgressTracker: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-
-    /// Result of a single file download: the temporary location where
-    /// URLSession wrote the file (must be moved before the delegate returns).
-    struct DownloadResult {
-        let location: URL
-        let response: URLResponse
-    }
-
-    private let lock = NSLock()
-    private var progressMap: [Int: FileProgress] = [:]  // taskIdentifier -> progress
-    private var continuations: [Int: CheckedContinuation<DownloadResult, Error>] = [:]
-    private var _allProgress: [FileProgress] = []
-
-    /// Register a task so we can track its progress.
-    func register(taskID: Int, label: String, expectedBytes: Int64) {
-        lock.lock()
-        progressMap[taskID] = FileProgress(label: label, expectedBytes: expectedBytes)
-        rebuildSnapshot()
-        lock.unlock()
-    }
-
-    /// Store the continuation that will be resumed when the download finishes.
-    func setContinuation(_ cont: CheckedContinuation<DownloadResult, Error>, forTaskID taskID: Int) {
-        lock.lock()
-        continuations[taskID] = cont
-        lock.unlock()
-    }
-
-    /// Thread-safe snapshot of all tracked file progress, ordered by
-    /// registration time.
-    var allProgress: [FileProgress] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _allProgress
-    }
-
-    /// Whether all registered downloads have completed (or errored).
-    var isComplete: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return !progressMap.isEmpty && progressMap.values.allSatisfy(\.completed)
-    }
-
-    private func rebuildSnapshot() {
-        _allProgress = progressMap.keys.sorted().map { progressMap[$0]! }
-    }
-
-    // MARK: URLSessionDownloadDelegate
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        lock.lock()
-        let id = downloadTask.taskIdentifier
-        if var p = progressMap[id] {
-            p.downloadedBytes = totalBytesWritten
-            if totalBytesExpectedToWrite > 0 {
-                // Update expected if the server tells us (e.g. after resume
-                // partial content).  Keep original manifest value if server
-                // returns -1.
-            }
-            progressMap[id] = p
-            rebuildSnapshot()
-        }
-        lock.unlock()
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        // URLSession deletes the temp file when this callback returns.
-        // Move it to a stable location so the continuation consumer can
-        // process it.
-        let stableLocation = FileManager.default.temporaryDirectory
-            .appendingPathComponent("darkbloom-dl-\(downloadTask.taskIdentifier)-\(UUID().uuidString)")
-        try? FileManager.default.moveItem(at: location, to: stableLocation)
-
-        lock.lock()
-        let id = downloadTask.taskIdentifier
-        if var p = progressMap[id] {
-            p.downloadedBytes = p.expectedBytes > 0 ? p.expectedBytes : p.downloadedBytes
-            p.completed = true
-            p.completionTime = Date()
-            p.destinationURL = stableLocation
-            progressMap[id] = p
-            rebuildSnapshot()
-        }
-        let cont = continuations.removeValue(forKey: id)
-        lock.unlock()
-
-        let response = downloadTask.response ?? HTTPURLResponse(
-            url: downloadTask.originalRequest?.url ?? URL(string: "about:blank")!,
-            statusCode: 200,
-            httpVersion: nil,
-            headerFields: nil
-        )!
-        cont?.resume(returning: DownloadResult(location: stableLocation, response: response))
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didCompleteWithError error: (any Error)?
-    ) {
-        guard let error else { return }
-        lock.lock()
-        let id = task.taskIdentifier
-        if var p = progressMap[id] {
-            p.completed = true
-            p.completionTime = Date()
-            progressMap[id] = p
-            rebuildSnapshot()
-        }
-        let cont = continuations.removeValue(forKey: id)
-        lock.unlock()
-        cont?.resume(throwing: error)
-    }
-}
-
-/// Renders a multi-line progress display to the terminal using ANSI escape
-/// codes. Falls back to simple per-file messages when stdout is not a TTY.
-private final class ProgressRenderer: @unchecked Sendable {
-
-    private let isTTY: Bool
-    private var linesPrinted: Int = 0
-    private let lock = NSLock()
-    /// Set of labels already printed in non-TTY mode.
-    private var printedLabels: Set<String> = []
-
-    init() {
-        self.isTTY = isatty(STDOUT_FILENO) != 0
-    }
-
-    /// Render a frame given the current file progress snapshot.
-    func render(_ files: [FileProgress]) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        if !isTTY {
-            renderPlain(files)
-            return
-        }
-        renderANSI(files)
-    }
-
-    /// Final render: clear the progress area and print completion summary.
-    func finish(_ files: [FileProgress]) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        if isTTY {
-            // Move up and clear all lines.
-            if linesPrinted > 0 {
-                print("\u{1B}[\(linesPrinted)A", terminator: "")
-                for _ in 0..<linesPrinted {
-                    print("\u{1B}[2K")
-                }
-                print("\u{1B}[\(linesPrinted)A", terminator: "")
-                linesPrinted = 0
-            }
-        }
-
-        // Print final summary lines.
-        for f in files {
-            let totalStr = Self.formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            let elapsed = (f.completionTime ?? Date()).timeIntervalSince(f.startTime)
-            let avgSpeed = elapsed > 0.1 ? Double(f.downloadedBytes) / elapsed : 0
-            let speedStr = Self.formatSpeed(avgSpeed)
-            let timeStr = Self.formatDuration(elapsed)
-            print("  \u{2713} \(f.label)  \(totalStr)  \(speedStr)  \(timeStr)")
-        }
-    }
-
-    // MARK: - ANSI rendering
-
-    private func renderANSI(_ files: [FileProgress]) {
-        // Move cursor up to overwrite previous render.
-        if linesPrinted > 0 {
-            print("\u{1B}[\(linesPrinted)A", terminator: "")
-        }
-
-        let termWidth = Self.terminalWidth()
-        var lines = 0
-        for f in files {
-            print("\u{1B}[2K", terminator: "")  // Clear the line
-            let line = Self.formatLine(f, termWidth: termWidth)
-            print(line)
-            lines += 1
-        }
-        linesPrinted = lines
-        fflush(stdout)
-    }
-
-    private func renderPlain(_ files: [FileProgress]) {
-        for f in files where f.completed && !printedLabels.contains(f.label) {
-            printedLabels.insert(f.label)
-            let totalStr = Self.formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            print("  \u{2713} \(f.label)  \(totalStr)")
-        }
-    }
-
-    // MARK: - Line formatting
-
-    private static func formatLine(_ f: FileProgress, termWidth: Int) -> String {
-        if f.completed {
-            let totalStr = formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            let elapsed = (f.completionTime ?? Date()).timeIntervalSince(f.startTime)
-            let avgSpeed = elapsed > 0.1 ? Double(f.downloadedBytes) / elapsed : 0
-            return "  \u{2713} \(f.label)  \(totalStr)  \(formatSpeed(avgSpeed))  done"
-        }
-
-        let pct = Int(f.fraction * 100)
-        let dlStr = formatBytes(f.downloadedBytes)
-        let totStr = formatBytes(f.expectedBytes)
-        let speedStr = formatSpeed(f.speed)
-        let etaStr: String
-        if let eta = f.eta {
-            etaStr = "ETA \(formatDuration(eta))"
-        } else {
-            etaStr = "---"
-        }
-
-        // Assemble the suffix: "  62%  2.1/4.8 GB  113 MB/s  ETA 24s"
-        let suffix = "  \(String(format: "%3d", pct))%  \(dlStr)/\(totStr)  \(speedStr)  \(etaStr)"
-
-        // Calculate bar width: total - label - prefix - suffix - brackets - spaces
-        let labelMaxWidth = min(f.label.count, 45)
-        let label = f.label.count > labelMaxWidth
-            ? String(f.label.suffix(labelMaxWidth - 1)).padding(toLength: labelMaxWidth, withPad: " ", startingAt: 0)
-            : f.label
-        let prefix = "  \(label)  ["
-        let postfix = "]\(suffix)"
-        let barWidth = max(10, termWidth - prefix.count - postfix.count)
-
-        let filled = Int(f.fraction * Double(barWidth))
-        let empty = barWidth - filled
-        let bar = String(repeating: "\u{2588}", count: filled) + String(repeating: "\u{2591}", count: empty)
-
-        return "\(prefix)\(bar)\(postfix)"
-    }
-
-    // MARK: - Formatting helpers
-
-    static func formatBytes(_ bytes: Int64) -> String {
-        let b = Double(bytes)
-        if b < 1024 { return "\(bytes) B" }
-        if b < 1_048_576 { return String(format: "%.1f KB", b / 1024) }
-        if b < 1_073_741_824 { return String(format: "%.1f MB", b / 1_048_576) }
-        return String(format: "%.1f GB", b / 1_073_741_824)
-    }
-
-    static func formatSpeed(_ bytesPerSec: Double) -> String {
-        if bytesPerSec < 1024 { return String(format: "%.0f B/s", bytesPerSec) }
-        if bytesPerSec < 1_048_576 { return String(format: "%.0f KB/s", bytesPerSec / 1024) }
-        if bytesPerSec < 1_073_741_824 { return String(format: "%.0f MB/s", bytesPerSec / 1_048_576) }
-        return String(format: "%.1f GB/s", bytesPerSec / 1_073_741_824)
-    }
-
-    static func formatDuration(_ seconds: Double) -> String {
-        let s = Int(seconds)
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
-        return "\(s / 3600)h \(s / 60 % 60)m"
-    }
-
-    static func terminalWidth() -> Int {
-        #if canImport(Darwin)
-        var w = winsize()
-        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0, w.ws_col > 0 {
-            return Int(w.ws_col)
-        }
-        #endif
-        return 80
-    }
-}
+//
+// Progress state (`FileProgress`, `ManifestDownloadProgress`) and terminal
+// rendering (`ProgressRenderer`) live in `ModelDownloadProgress.swift` so this
+// file stays focused on catalog + download orchestration.
 
 // MARK: - Catalog model
 
@@ -811,8 +493,13 @@ public struct ModelDownloader: Sendable {
     /// from a `.part` file when present, verifying size + SHA-256 before
     /// promoting to the final staged path. Reuses the resume-capable
     /// `downloadFile` helper (Range requests, Content-Range validation, retries).
+    ///
+    /// `onChunk(bytesOnDisk)` reports cumulative bytes-on-disk for this file as
+    /// it streams, so the foreground path can render a live per-shard bar; the
+    /// background prefetch passes nil and accounts progress per whole file.
     private func downloadManifestFileWithResume(
-        _ job: (file: ManifestFile, destination: URL, url: String)
+        _ job: (file: ManifestFile, destination: URL, url: String),
+        onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws {
         let ok = try await downloadFile(
             from: job.url,
@@ -820,7 +507,8 @@ public struct ModelDownloader: Sendable {
             label: job.file.path,
             onProgress: nil,
             required: true,
-            expectedSHA256: job.file.sha256.lowercased()
+            expectedSHA256: job.file.sha256.lowercased(),
+            onChunk: onChunk
         )
         guard ok else {
             throw ModelCatalogError.downloadFailed("\(job.file.path): required file could not be fetched")
@@ -953,14 +641,13 @@ public struct ModelDownloader: Sendable {
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
 
         // STABLE staging dir keyed by the manifest prefix (NOT a random UUID) so an
-        // interrupted foreground download resumes — already-completed files are
-        // skipped instead of re-fetching the whole model. Same resume contract as
-        // the background `prefetch` path: staging is kept on a transient failure
-        // and cleared only on an aggregate-hash mismatch (poison) below.
-        let stagingName = ".local-staging-" + manifest.r2Prefix
-            .replacingOccurrences(of: "/", with: "__")
-            .replacingOccurrences(of: "\\", with: "__")
-        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
+        // interrupted foreground download resumes: already-completed files are
+        // skipped and partially-fetched shards continue from their `.part` instead
+        // of re-fetching the whole model. Same resume contract as the background
+        // `prefetch` path: staging is kept on a transient failure and cleared only
+        // on an aggregate-hash mismatch (poison) below.
+        let stagingDir = snapshotsDir.appendingPathComponent(
+            Self.localStagingDirName(r2Prefix: manifest.r2Prefix), isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
         let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
@@ -972,52 +659,66 @@ public struct ModelDownloader: Sendable {
             )
         }
 
-        // Resume: skip files already staged + valid, and size the capacity
-        // pre-check to only the bytes that remain (less anything already saved in a
-        // `.part`) so a near-complete resume isn't rejected for lacking room equal
-        // to the whole model. Only the not-yet-valid files are enqueued below.
+        // Resume: skip files already staged + valid; only the not-yet-valid files
+        // are enqueued below.
         let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
-        // The foreground per-file downloader does a full GET (it does NOT byte-
-        // resume — it deletes any stale `.part`), so only fully-valid files are
-        // creditable here; every not-yet-valid file needs its full size. (Only the
-        // background `prefetch` path byte-resumes and may credit `.part` bytes.)
+        // The foreground per-file downloader now byte-resumes (streams to a stable
+        // `.part` and appends via HTTP `Range`), so credit any bytes already saved
+        // in each `.part`: a near-complete resume of a big shard must not be charged
+        // disk room equal to the whole shard.
+        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
         try Self.ensureAvailableCapacity(
             at: snapshotsDir,
             requiredBytes: Self.remainingBytesToFetch(
-                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid
+                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid, partBytes: partBytes
             )
         )
         let pending = zip(jobs, alreadyValid).filter { !$0.1 }.map(\.0)
 
-        // Set up delegate-based session for progress tracking.
-        let tracker = DownloadProgressTracker()
-        let delegateSession = URLSession(
-            configuration: urlSession.configuration,
-            delegate: tracker,
-            delegateQueue: nil
-        )
-        defer { delegateSession.finishTasksAndInvalidate() }
+        // FINISH-ON-RESTART: a prior run already staged every shard size+SHA-valid
+        // but was killed before publishing (the hidden staging dir is invisible to
+        // the scanner, so the picker showed "not downloaded"). Don't re-download —
+        // verify the aggregate and publish.
+        if pending.isEmpty {
+            try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
+            onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
+            return
+        }
+
+        // Live per-shard progress. Seed each pending file's bar with any bytes
+        // already saved in its `.part` (a resumed prefix) so the display reflects
+        // real on-disk progress instead of restarting the bar at 0%.
+        let progress = ManifestDownloadProgress()
+        for job in pending {
+            progress.register(
+                label: job.file.path,
+                expectedBytes: job.file.sizeBytes,
+                initialBytes: fileSize(job.destination.appendingPathExtension("part"))
+            )
+        }
 
         let renderer = ProgressRenderer()
-
         // Start the render loop as a detached task.
-        let renderTask = Task.detached { [renderer, tracker] in
+        let renderTask = Task.detached { [renderer, progress] in
             while !Task.isCancelled {
-                renderer.render(tracker.allProgress)
+                renderer.render(progress.allProgress)
                 try? await Task.sleep(nanoseconds: 250_000_000)  // 250ms
             }
         }
 
         do {
+            // 4-way concurrent download; each shard streams to its own `.part` and
+            // resumes from it via a `Range` request after an interruption.
             try await withThrowingTaskGroup(of: Void.self) { group in
                 var next = 0
                 for _ in 0..<min(concurrency, pending.count) {
                     let job = pending[next]
                     next += 1
                     group.addTask {
-                        try await self.downloadManifestFileWithProgress(
-                            job, tracker: tracker, session: delegateSession
-                        )
+                        try await self.downloadManifestFileWithResume(job, onChunk: { bytes in
+                            progress.update(label: job.file.path, downloadedBytes: bytes)
+                        })
+                        progress.complete(label: job.file.path)
                     }
                 }
 
@@ -1026,28 +727,26 @@ public struct ModelDownloader: Sendable {
                         let job = pending[next]
                         next += 1
                         group.addTask {
-                            try await self.downloadManifestFileWithProgress(
-                                job, tracker: tracker, session: delegateSession
-                            )
+                            try await self.downloadManifestFileWithResume(job, onChunk: { bytes in
+                                progress.update(label: job.file.path, downloadedBytes: bytes)
+                            })
+                            progress.complete(label: job.file.path)
                         }
                     }
                 }
             }
 
-            // Stop the render loop and print final summary.
+            // Stop the render loop and print the final summary.
             renderTask.cancel()
-            renderer.finish(tracker.allProgress)
-
-            onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
+            renderer.finish(progress.allProgress)
         } catch {
             renderTask.cancel()
             // One last render so the user sees where things stopped.
-            renderer.render(tracker.allProgress)
+            renderer.render(progress.allProgress)
             // Keep staging ONLY if it holds resumable content (a completed file or
-            // a `.part`); otherwise remove the empty husk so a first-file failure
-            // doesn't leave a stray staging dir behind. (Size check only — a
-            // promoted file is full-size + SHA-verified; size/SHA failures are
-            // removed before this point.)
+            // a `.part` prefix); otherwise remove the empty husk so a first-file
+            // failure doesn't leave a stray staging dir behind. (A promoted file is
+            // full-size + SHA-verified; size/SHA failures delete the `.part` first.)
             let hasResumable = jobs.contains {
                 fileSize($0.destination) == $0.file.sizeBytes
                     || fileSize($0.destination.appendingPathExtension("part")) > 0
@@ -1058,125 +757,35 @@ public struct ModelDownloader: Sendable {
             throw error
         }
 
+        try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
+        onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
+    }
+
+    /// Verify the aggregate hash over the staged files, then publish the snapshot
+    /// (`snapshots/local` + `refs/main`) so `ModelScanner` discovers it. Shared by
+    /// the normal completion path and the finish-on-restart short-circuit.
+    ///
+    /// On an aggregate mismatch over internally-valid files (a poisoned manifest:
+    /// every per-file SHA passed but the claimed aggregate is wrong) staging is
+    /// cleared so a corrected manifest re-downloads cleanly — otherwise skip-valid
+    /// would re-fail the aggregate forever. Transient per-file/network failures
+    /// throw earlier and deliberately KEEP staging so the next attempt resumes.
+    private func finalizeStagedManifest(
+        model: CatalogModel,
+        manifest: ModelManifest,
+        jobs: [(file: ManifestFile, destination: URL, url: String)],
+        stagingDir: URL,
+        cacheDir: URL
+    ) throws {
         let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
         guard aggregate == manifest.aggregateSHA256 else {
-            // Internally-valid files that don't match the claimed aggregate = a
-            // poisoned manifest; clear staging so a corrected manifest re-downloads
-            // (otherwise skip-valid would re-fail the aggregate forever). Transient
-            // per-file/network failures throw earlier and deliberately KEEP staging
-            // so the next attempt resumes.
             try? FileManager.default.removeItem(at: stagingDir)
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
         }
-
         try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
         try writeMainRef(for: model.id)
         // Staging was consumed by publishStagedSnapshot; best-effort husk cleanup.
         try? FileManager.default.removeItem(at: stagingDir)
-    }
-
-    /// Download a single manifest file using delegate-based URLSession for
-    /// incremental progress reporting.
-    private func downloadManifestFileWithProgress(
-        _ job: (file: ManifestFile, destination: URL, url: String),
-        tracker: DownloadProgressTracker,
-        session: URLSession
-    ) async throws {
-        let fm = FileManager.default
-        try fm.createDirectory(at: job.destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-
-        var lastError: Error?
-        for attempt in 1...3 {
-            guard let url = URL(string: job.url) else {
-                throw ModelCatalogError.downloadFailed("invalid URL: \(job.url)")
-            }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            request.timeoutInterval = 6 * 60 * 60
-
-            let task = session.downloadTask(with: request)
-            tracker.register(
-                taskID: task.taskIdentifier,
-                label: job.file.path,
-                expectedBytes: job.file.sizeBytes
-            )
-
-            do {
-                let result = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<DownloadProgressTracker.DownloadResult, Error>) in
-                    tracker.setContinuation(cont, forTaskID: task.taskIdentifier)
-                    task.resume()
-                }
-
-                guard let http = result.response as? HTTPURLResponse else {
-                    try? fm.removeItem(at: result.location)
-                    throw ModelCatalogError.downloadFailed("\(job.file.path): unexpected response type")
-                }
-                guard (200..<300).contains(http.statusCode) else {
-                    try? fm.removeItem(at: result.location)
-                    throw ModelCatalogError.downloadFailed("\(job.file.path): HTTP \(http.statusCode)")
-                }
-
-                // Move temp file to .part for SHA verification.
-                let partial = job.destination.appendingPathExtension("part")
-                try? fm.removeItem(at: partial)
-                try fm.moveItem(at: result.location, to: partial)
-
-                // SHA-256 verification.
-                let expectedSHA = job.file.sha256.lowercased()
-                let actual = Self.sha256HexForVerification(of: partial)
-
-                let size = fileSize(partial)
-                guard actual == expectedSHA else {
-                    try? fm.removeItem(at: partial)
-                    throw ModelCatalogError.downloadFailed(
-                        "\(job.file.path): SHA-256 mismatch (size=\(size), expected=\(expectedSHA.prefix(16))..., got=\(actual.prefix(16))...)"
-                    )
-                }
-
-                guard size == job.file.sizeBytes else {
-                    try? fm.removeItem(at: partial)
-                    throw ModelCatalogError.downloadFailed(
-                        "\(job.file.path): size \(size) != manifest size \(job.file.sizeBytes)"
-                    )
-                }
-
-                // Promote .part to final destination.
-                try? fm.removeItem(at: job.destination)
-                try fm.moveItem(at: partial, to: job.destination)
-                return
-
-            } catch {
-                lastError = error
-                if attempt < 3 {
-                    try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
-                    continue
-                }
-            }
-        }
-
-        throw ModelCatalogError.downloadFailed(
-            Self.downloadFailureMessage(label: job.file.path, error: lastError)
-        )
-    }
-
-    private func downloadManifestFile(
-        _ job: (file: ManifestFile, destination: URL, url: String),
-        onProgress: (@Sendable (ProgressEvent) -> Void)?
-    ) async throws {
-        onProgress?(ProgressEvent(file: job.file.path, bytesDownloaded: 0, bytesTotal: job.file.sizeBytes))
-        try await downloadFile(
-            from: job.url,
-            to: job.destination,
-            label: job.file.path,
-            onProgress: onProgress,
-            required: true,
-            expectedSHA256: job.file.sha256.lowercased()
-        )
-        let size = fileSize(job.destination)
-        guard size == job.file.sizeBytes else {
-            throw ModelCatalogError.downloadFailed("\(job.file.path): size \(size) != manifest size \(job.file.sizeBytes)")
-        }
     }
 
     /// Remove a downloaded model from the cache. Returns true if anything was
@@ -1202,6 +811,33 @@ public struct ModelDownloader: Sendable {
         cacheModelDirectory(for: modelID)
             .appendingPathComponent("snapshots", isDirectory: true)
             .appendingPathComponent("local", isDirectory: true)
+    }
+
+    /// Stable foreground-download staging dir name, keyed by the manifest's
+    /// `r2Prefix` so an interrupted download resumes into the SAME dir instead of
+    /// a throwaway UUID. `r2Prefix` is path-like (e.g. "v2/org__name/version");
+    /// flatten it to a single safe component.
+    static func localStagingDirName(r2Prefix: String) -> String {
+        ".local-staging-" + r2Prefix
+            .replacingOccurrences(of: "/", with: "__")
+            .replacingOccurrences(of: "\\", with: "__")
+    }
+
+    /// Whether an interrupted foreground download left resumable content staged on
+    /// disk for this model build (keyed by `r2Prefix`): a completed shard or a
+    /// `.part` prefix in the stable `.local-staging-…` dir. Lets the picker show
+    /// "resuming" instead of "not downloaded" for a partially-downloaded model so
+    /// re-selecting it FINISHES the download rather than appearing to start over.
+    public static func hasResumableStaging(modelID: String, r2Prefix: String) -> Bool {
+        let stagingDir = cacheModelDirectory(for: modelID)
+            .appendingPathComponent("snapshots", isDirectory: true)
+            .appendingPathComponent(localStagingDirName(r2Prefix: r2Prefix), isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: stagingDir.path) else {
+            return false
+        }
+        // Any non-hidden staged entry (a finished file, a `.part`, or a nested
+        // subdir like `adapters/`) is resumable content worth finishing.
+        return entries.contains { !$0.hasPrefix(".") }
     }
 
     static func parseShardNames(indexPath: URL) throws -> [String] {
@@ -1277,7 +913,8 @@ public struct ModelDownloader: Sendable {
         label: String,
         onProgress: (@Sendable (ProgressEvent) -> Void)?,
         required: Bool,
-        expectedSHA256: String? = nil
+        expectedSHA256: String? = nil,
+        onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
         guard let url = URL(string: urlString) else {
             if required { throw ModelCatalogError.downloadFailed("invalid URL: \(urlString)") }
@@ -1300,7 +937,8 @@ public struct ModelDownloader: Sendable {
                     from: url,
                     to: partial,
                     label: label,
-                    required: required
+                    required: required,
+                    onChunk: onChunk
                 )
                 guard ok else {
                     // Optional file that does not exist (404/403). `streamDownload`
@@ -1362,11 +1000,16 @@ public struct ModelDownloader: Sendable {
     ///
     /// `Task.checkCancellation()` is checked between chunks so cancellation stops
     /// promptly and leaves a resumable `.part`.
+    ///
+    /// `onChunk(bytesOnDisk)` is invoked as each buffer flushes (and at the end)
+    /// with the cumulative size of `partial` on disk, so callers can render live
+    /// per-file progress. It is NOT called on the 404/403 drain path.
     private func streamDownload(
         from url: URL,
         to partial: URL,
         label: String,
-        required: Bool
+        required: Bool,
+        onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
         let fm = FileManager.default
         let existingBytes = fileSize(partial)
@@ -1441,6 +1084,10 @@ public struct ModelDownloader: Sendable {
         // errors mid-transfer (connection drop), flush whatever was buffered
         // before rethrowing so EVERY received byte lands in `.part` and the
         // retry resumes from exactly where the drop happened (never from zero).
+        // Cumulative bytes durably written this run; added to the resumed prefix
+        // (`baseline`) when reporting on-disk progress to `onChunk`.
+        let baseline = append ? existingBytes : 0
+        var written: Int64 = 0
         var buffer = Data()
         buffer.reserveCapacity(Self.streamFlushThreshold)
         var sinceCancelCheck = 0
@@ -1450,7 +1097,9 @@ public struct ModelDownloader: Sendable {
                 sinceCancelCheck += 1
                 if buffer.count >= Self.streamFlushThreshold {
                     try writer.write(contentsOf: buffer)
+                    written += Int64(buffer.count)
                     buffer.removeAll(keepingCapacity: true)
+                    onChunk?(baseline + written)
                 }
                 // Check cancellation periodically (every ~64KB) without paying
                 // the cost on every single byte. The partial flush above means a
@@ -1458,7 +1107,11 @@ public struct ModelDownloader: Sendable {
                 if sinceCancelCheck >= Self.streamFlushThreshold {
                     sinceCancelCheck = 0
                     if Task.isCancelled {
-                        if !buffer.isEmpty { try writer.write(contentsOf: buffer) }
+                        if !buffer.isEmpty {
+                            try writer.write(contentsOf: buffer)
+                            written += Int64(buffer.count)
+                            buffer.removeAll(keepingCapacity: true)
+                        }
                         throw CancellationError()
                     }
                 }
@@ -1471,7 +1124,10 @@ public struct ModelDownloader: Sendable {
         }
         if !buffer.isEmpty {
             try writer.write(contentsOf: buffer)
+            written += Int64(buffer.count)
+            buffer.removeAll(keepingCapacity: true)
         }
+        onChunk?(baseline + written)
         return true
     }
 

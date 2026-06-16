@@ -831,6 +831,156 @@ struct ModelPrefetchDownloaderTests {
         #expect(try Data(contentsOf: cacheDir.appendingPathComponent("config.json")) == smallBytes)
     }
 
+    @Test("foreground download byte-resumes a mid-stream-dropped shard via Range and never re-fetches from zero")
+    func foregroundDownloadByteResumesAcrossRestart() async throws {
+        // The core fix: the FOREGROUND (CLI / serve-time) download path must
+        // byte-resume like the background prefetch. A shard whose connection drops
+        // mid-stream must leave its received prefix in `<dest>.part` and, on the
+        // next `download()` call, resume with `Range: bytes=<prefix>-` instead of
+        // re-GETting the shard from byte 0. (Previously it used
+        // `URLSession.downloadTask` with no Range and lost the partial entirely.)
+        PrefetchURLProtocol.reset()
+        let modelID = "test-org/fg-byteresume-\(UUID().uuidString)"
+        let prefix = "v2/fg-byteresume/v1"
+        let shardName = "model-00001-of-00002.safetensors"
+        let shardPath = "/\(prefix)/\(shardName)"
+        // Large enough that a 1500-byte prefix is a meaningful fraction (so a
+        // restart-from-zero would be obviously wrong) and 3 partial appends can't
+        // finish it within one call.
+        let shardBytes = Data((0..<32768).map { UInt8(($0 &* 131 &+ 7) & 0xFF) })
+        let dropAt = 1500
+        let files = [
+            ManifestFile(path: shardName, sizeBytes: Int64(shardBytes.count), sha256: sha256Hex(shardBytes), role: "weight"),
+        ]
+        let aggregate = aggregateHash(files: [(shardName, shardBytes)])
+        let manifest = ModelManifest(
+            schemaVersion: 1, modelID: modelID, version: "v1", r2Prefix: prefix,
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(shardBytes.count),
+            fileCount: 1, files: files, createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        PrefetchURLProtocol.files = [
+            "/\(prefix)/manifest.json": try enc.encode(manifest),
+            shardPath: shardBytes,
+        ]
+
+        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        let stagingName = ".local-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
+        let partFile = stagingDir.appendingPathComponent(shardName).appendingPathExtension("part")
+
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "FGByteResume", sizeGb: 0.001,
+                                 r2Prefix: prefix, aggregateSHA256: aggregate)
+
+        // ---- Attempt 1: the shard drops ~1500 bytes into EVERY response, so the 3
+        // in-call retries exhaust and download() throws — but each dropped retry
+        // APPENDS its prefix to `.part`, making real on-disk progress. ----
+        PrefetchURLProtocol.dropAfterBytes = [shardPath: dropAt]
+        var threw = false
+        do { try await downloader.download(model: model) } catch { threw = true }
+        #expect(threw)
+        let part1 = (try? Data(contentsOf: partFile))?.count ?? 0
+        #expect(part1 >= dropAt, "`.part` must retain the appended prefix, got \(part1)")
+        #expect(part1 < shardBytes.count, "shard must not be complete yet, got \(part1)/\(shardBytes.count)")
+        #expect(!FileManager.default.fileExists(atPath: cacheDir.path), "nothing must be published mid-resume")
+
+        // ---- Attempt 2 (a process restart = a fresh download() call): the network
+        // is healthy. The shard MUST resume from its `.part` via a Range request
+        // and complete — never restarting from byte 0. ----
+        PrefetchURLProtocol.dropAfterBytes = [:]
+        PrefetchURLProtocol.clearRequested()
+        try await downloader.download(model: model)
+
+        let shardRanges = PrefetchURLProtocol.rangeHeaders(for: shardPath)
+        #expect(!shardRanges.isEmpty, "the shard must be requested on resume")
+        // Every resume request carried a Range (never a bare from-zero GET)...
+        #expect(shardRanges.allSatisfy { ($0 ?? "").hasPrefix("bytes=") },
+                "restart must resume via Range, not re-fetch from 0; got \(shardRanges)")
+        // ...continuing from exactly the bytes already on disk.
+        #expect(shardRanges.contains("bytes=\(part1)-"),
+                "resume must continue from the saved prefix; got \(shardRanges)")
+        #expect(!shardRanges.contains("bytes=0-"), "must never restart the shard from byte 0")
+        // The published snapshot has the complete, correct shard + refs/main.
+        #expect(try Data(contentsOf: cacheDir.appendingPathComponent(shardName)) == shardBytes)
+        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == "local")
+        #expect(!FileManager.default.fileExists(atPath: partFile.path), "`.part` must be consumed on success")
+    }
+
+    @Test("a complete staging dir publishes on restart without re-downloading any shard")
+    func foregroundDownloadFinishesCompleteStagingWithoutRefetch() async throws {
+        // Finish-on-restart: a prior foreground download staged EVERY shard
+        // size+SHA-valid but was killed before the aggregate-verify + publish step
+        // (the hidden staging dir is invisible to the scanner, so the picker showed
+        // "not downloaded"). The next download() must verify + publish WITHOUT
+        // re-fetching a single shard.
+        PrefetchURLProtocol.reset()
+        let modelID = "test-org/fg-finish-\(UUID().uuidString)"
+        let prefix = "v2/fg-finish/v1"
+        let names = ["config.json", "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+        var files: [ManifestFile] = []
+        var served: [String: Data] = [:]
+        var pairs: [(String, Data)] = []
+        for (i, name) in names.enumerated() {
+            let bytes = Data("complete-staging-\(i)-\(name)-payload".utf8)
+            files.append(ManifestFile(path: name, sizeBytes: Int64(bytes.count), sha256: sha256Hex(bytes),
+                                      role: name.hasSuffix(".json") ? "config" : "weight"))
+            served["/\(prefix)/\(name)"] = bytes
+            pairs.append((name, bytes))
+        }
+        let aggregate = aggregateHash(files: pairs)
+        let manifest = ModelManifest(
+            schemaVersion: 1, modelID: modelID, version: "v1", r2Prefix: prefix,
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(pairs.reduce(0) { $0 + $1.1.count }),
+            fileCount: files.count, files: files, createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        var serveFiles = served
+        serveFiles["/\(prefix)/manifest.json"] = try enc.encode(manifest)
+        PrefetchURLProtocol.files = serveFiles
+
+        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        // Pre-seed the foreground staging dir with ALL files complete + valid.
+        let stagingName = ".local-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
+        let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        for (name, bytes) in pairs {
+            try bytes.write(to: stagingDir.appendingPathComponent(name))
+        }
+        // The build is "resumable" on disk before publishing (drives the picker's
+        // "resuming" surfacing).
+        #expect(ModelDownloader.hasResumableStaging(modelID: modelID, r2Prefix: prefix))
+
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "FGFinish", sizeGb: 0.001,
+                                 r2Prefix: prefix, aggregateSHA256: aggregate)
+
+        try await downloader.download(model: model)
+
+        // Only the manifest was fetched; NOT one shard/config was re-downloaded.
+        let fetched = PrefetchURLProtocol.fetchedPaths()
+        #expect(fetched.contains("/\(prefix)/manifest.json"))
+        #expect(fetched.allSatisfy { $0.hasSuffix("/manifest.json") },
+                "a complete staging dir must publish without re-downloading; fetched \(fetched)")
+        // The snapshot was published from staging (+ refs/main) and staging cleaned.
+        for (name, bytes) in pairs {
+            #expect(try Data(contentsOf: cacheDir.appendingPathComponent(name)) == bytes)
+        }
+        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == "local")
+        #expect(!FileManager.default.fileExists(atPath: stagingDir.path), "staging removed after publish")
+        #expect(!ModelDownloader.hasResumableStaging(modelID: modelID, r2Prefix: prefix))
+    }
+
     @Test("prefetch fails on aggregate hash mismatch and does not publish")
     func prefetchAggregateMismatchFails() async throws {
         PrefetchURLProtocol.reset()

@@ -294,6 +294,38 @@ struct BatchKVCacheTests {
         #expect(row1 == [true, true, true, true])
     }
 
+    @Test("single-token decode with no left padding emits no explicit mask")
+    func decodeNoPaddingReturnsNoneMask() {
+        // MLX #3384 workaround: a decode step (n=1) over a batch with zero
+        // left padding must NOT inject an explicit boolean mask, because the
+        // fast-attention kernel's explicit-mask path numerically diverges on
+        // 4-bit Gemma 4 and traps generation in repetition loops. Every stored
+        // key is a real token here, so the unmasked causal path is correct.
+        let cache = BatchKVCache(leftPadding: [0, 0])
+        _ = cache.update(
+            keys: MLXArray.zeros([2, 1, 5, 4]),
+            values: MLXArray.zeros([2, 1, 5, 4])
+        )
+
+        let mask = cache.makeMask(n: 1, windowSize: nil, returnArray: true)
+        guard case .none = mask else {
+            Issue.record("expected .none mask for unpadded n=1 decode, got \(mask)")
+            return
+        }
+
+        // But a padded row at n=1 still needs the explicit mask to block its
+        // padding slots — the workaround must not weaken correctness there.
+        let padded = BatchKVCache(leftPadding: [1, 0])
+        _ = padded.update(
+            keys: MLXArray.zeros([2, 1, 5, 4]),
+            values: MLXArray.zeros([2, 1, 5, 4])
+        )
+        guard case .array = padded.makeMask(n: 1, windowSize: nil, returnArray: true) else {
+            Issue.record("expected .array mask when any row is left-padded")
+            return
+        }
+    }
+
     // MARK: - dynamicRoll helper
 
     @Test("dynamicRoll shifts each row by its own amount along axis")

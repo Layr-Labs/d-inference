@@ -250,6 +250,39 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(reserve > 0)
 }
 
+// MARK: - loadHeadroomBytes (load gate must not under-reserve vs runtime KV)
+
+@Test func loadHeadroomCoversActivationReservePlusMinKV() {
+    // Regression for the cross-phase bug: the load gate's old flat 2 GiB headroom
+    // was LESS than the 3 GiB activation reserve, so a near-cap model could load
+    // but GlobalKVCacheBudget rejected every request. loadHeadroomBytes must be
+    // activationReserve + minimumLoadKV, so a model that passes the gate can
+    // actually serve.
+    let headroom = UnifiedMemoryCap.loadHeadroomBytes(activationReserveBytes: 3 * gib)
+    #expect(headroom == 3 * gib + UnifiedMemoryCap.minimumLoadKVBytes)
+    #expect(headroom >= 3 * gib, "load headroom must cover at least the activation reserve")
+    // Honors the env-resolved activation reserve by default.
+    #expect(UnifiedMemoryCap.loadHeadroomBytes()
+        == UnifiedMemoryCap.defaultActivationReserveBytes + UnifiedMemoryCap.minimumLoadKVBytes)
+}
+
+@Test func aModelThatPassesTheLoadGateHasServeableKV() {
+    // End-to-end invariant: if canAdmit-style load room exists (weights + load
+    // headroom ≤ cap), then kvBudget after load is ≥ the minimum KV. 64 GiB box,
+    // cap 57.6. A 50 GiB model: load needs 50 + (3+1)=54 ≤ 57.6 → admit. Post-load
+    // KV budget = 57.6 − 50 − 3 = 4.6 GiB ≥ 1 GiB min. Good.
+    let phys = 64 * gib
+    let weights = 50 * gib
+    let loadHeadroom = UnifiedMemoryCap.loadHeadroomBytes(activationReserveBytes: 3 * gib)
+    let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: phys)
+    let admits = weights + loadHeadroom <= cap
+    #expect(admits)
+    let kv = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys, residentWeightBytes: weights, activationReserveBytes: 3 * gib)
+    #expect(kv >= UnifiedMemoryCap.minimumLoadKVBytes,
+        "a model that passes the load gate must have at least minimum serveable KV")
+}
+
 @Test func kvBudgetAndAdmitSaturateOnMaxOperands() {
     // .max weights must clamp the KV budget to 0, not underflow/trap.
     #expect(UnifiedMemoryCap.kvBudgetBytes(

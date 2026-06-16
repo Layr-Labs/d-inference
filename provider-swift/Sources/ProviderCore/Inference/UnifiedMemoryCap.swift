@@ -44,6 +44,27 @@ public enum UnifiedMemoryCap {
     /// practice; this is a conservative SAFETY FLOOR, not a per-batch estimate.
     static let defaultActivationReserveBytes: UInt64 = 3 * 1024 * 1024 * 1024  // 3 GiB
 
+    /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap
+    /// to be worth loading — a model that loads but can serve no KV is useless.
+    /// Small (1 GiB): the load gate only needs to guarantee the model can serve
+    /// at least a modest request; concurrency beyond that is sized at runtime.
+    static let minimumLoadKVBytes: UInt64 = 1 * 1024 * 1024 * 1024  // 1 GiB
+
+    /// Headroom (bytes) the model-LOAD gate must require ABOVE the weights, so a
+    /// model that passes the gate can actually serve. The runtime KV path carves
+    /// out the activation reserve and then needs some KV room; the load gate must
+    /// reserve at least that much too, or it admits a model `GlobalKVCacheBudget`
+    /// then rejects every request for (the load gate's old flat 2 GiB one-request
+    /// headroom was LESS than the 3 GiB activation reserve, so a near-cap model
+    /// loaded with zero serveable KV). Returns
+    /// `activationReserve + minimumLoadKV`.
+    public static func loadHeadroomBytes(
+        activationReserveBytes: UInt64? = nil
+    ) -> UInt64 {
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        return saturatingAdd(activations, minimumLoadKVBytes)
+    }
+
     // MARK: - Cap
 
     /// The hard cap in bytes: `min(fraction × physical, physical − minReserve)`.

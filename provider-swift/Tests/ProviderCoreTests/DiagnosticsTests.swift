@@ -70,15 +70,15 @@ import Testing
 // MARK: - ModelFitDiagnostic
 
 @Test func modelFitFailsWhenTooLarge() {
-    // New gate (ModelLoadAdmission): required = weights + 2 GB headroom.
-    // 25 GB weights needs 27 GB > 21 usable → fail.
+    // Cap-aware gate: required = weights + loadHeadroom (activation reserve 3 GB
+    // + min serveable KV 1 GB = 4 GB). 25 GB weights needs 29 GB > 21 usable → fail.
     let d = ModelFitDiagnostic.diagnose(modelID: "big", weightGb: 25.0, usableGb: 21.0)
     #expect(d.level == .fail)
-    #expect(d.message.contains("27"))
+    #expect(d.message.contains("29"))
 }
 
 @Test func modelFitPassesWhenItFits() {
-    // 5 GB weights needs 5 + 2 = 7 GB ≤ 21 usable → pass.
+    // 5 GB weights needs 5 + 4 = 9 GB ≤ 21 usable → pass.
     let d = ModelFitDiagnostic.diagnose(modelID: "small", weightGb: 5.0, usableGb: 21.0)
     #expect(d.level == .pass)
 }
@@ -111,15 +111,17 @@ import Testing
 }
 
 @Test func modelFitMatchesRuntimeGateNotRawAvailable() {
-    // Headline parity with #273's runtime gate: gpt-oss (~13.5 GB weights, so
-    // needs 15.5 GB) on a 24 GB box with the OS reporting ~20 GB free FITS —
-    // usable 20 − 4 = 16 ≥ 15.5 — matching ProviderLoop, which now loads it.
-    let usable = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4, systemAvailableGb: 20)
+    // Parity with the runtime gate, cap-aware: gpt-oss (~13.5 GB weights) now
+    // needs 13.5 + 4 (activation 3 + min-KV 1) = 17.5 GB. On a 24 GB box with the
+    // OS reporting ~22 GB free it FITS — usable 22 − 4 = 18 ≥ 17.5 — matching
+    // ProviderLoop, which would load it with serveable KV headroom.
+    let usable = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4, systemAvailableGb: 22)
     let ok = ModelFitDiagnostic.diagnose(modelID: "gpt-oss", weightGb: 13.5, usableGb: usable)
-    #expect(ok.level == .pass, "doctor must agree with the runtime gate that gpt-oss fits 24 GB")
-    // But a genuinely over-capacity case (OS only 12 GB free) must FAIL, not
-    // mislead the operator: usable 12 − 4 = 8 < 15.5.
-    let tight = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4, systemAvailableGb: 12)
+    #expect(ok.level == .pass, "doctor must agree with the runtime gate that gpt-oss fits with serveable KV")
+    // But a tighter box (OS only 18 GB free → usable 14) must FAIL: 14 < 17.5.
+    // Pre-cap-aware this wrongly "passed" at 15.5, then the runtime KV gate would
+    // have rejected every request — the bug this stricter headroom fixes.
+    let tight = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4, systemAvailableGb: 18)
     let bad = ModelFitDiagnostic.diagnose(modelID: "gpt-oss", weightGb: 13.5, usableGb: tight)
     #expect(bad.level == .fail)
 }

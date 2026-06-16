@@ -2,12 +2,17 @@ import Foundation
 
 /// Process-wide ledger of MEASURED resident weight bytes, keyed by model.
 ///
-/// The unified-memory policy (``UnifiedMemoryCap``) budgets KV cache as
-/// `cap − Σ(resident weights) − activations`. That Σ must cover EVERY currently
-/// loaded model, but each model's `BatchScheduler` only knows its own weights —
-/// so this single shared actor holds the per-model figures and sums them. It is
-/// the one place that answers "how much weight memory is resident right now?"
-/// across all co-resident models, with no assumption about how many there are.
+/// ⚠️ NOT WIRED INTO ENFORCEMENT (by design). The unified-memory policy enforces
+/// the 90% cap using LIVE MLX counters (`MLX.GPU.activeMemory + cacheMemory`),
+/// which already reflect every co-resident model's weights AND KV in real time —
+/// see ``UnifiedMemoryCap/liveKVHeadroomBytes(...)`` and the load gate. Because
+/// model loads are serialized (each completes, and its weights land in the MLX
+/// counters, before the next begins), those live counters are an accurate Σ with
+/// no separate bookkeeping, so this ledger is redundant for the cap and nothing
+/// in the enforcement path calls it. It is retained as a ready-made, measured
+/// per-model weight accounting for TELEMETRY / future use (e.g. reporting a
+/// per-model footprint breakdown). Do not assume it gates anything — wire it in
+/// explicitly if a future change actually needs an out-of-band Σ.
 ///
 /// "Measured" means the bytes are recorded AFTER a model is in memory (the
 /// caller passes the post-load residency it observed), not an a-priori

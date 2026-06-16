@@ -25,7 +25,11 @@ public enum ModelFitDiagnostic {
     /// requirement. `estimatedMemoryGb` is the scanner's overhead-included size
     /// (the same value the runtime passes), not the raw on-disk bytes.
     public static func requiredGb(estimatedMemoryGb: Double) -> Double {
-        ModelLoadAdmission.requiredToLoadGb(weightsGb: estimatedMemoryGb)
+        // Cap-aware headroom (activation reserve + min serveable KV) so the
+        // doctor's "needs ~X GB" matches what the runtime load gate requires.
+        ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: estimatedMemoryGb,
+            headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
     }
 
     /// The memory (GB) the provider would actually have free to load a model,

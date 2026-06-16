@@ -311,6 +311,11 @@ public actor StandaloneServer {
         if schedulers[evictKey]?.scheduler === evicted.scheduler {
             schedulers.removeValue(forKey: evictKey)
         }
+        // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
+        // availableMemoryGb / GlobalKVCacheBudget now count as used — without this
+        // the next load's gate and the surviving model's KV budget don't see the
+        // freed memory. Mirrors ProviderLoop.unloadModel.
+        MLX.Memory.clearCache()
         standaloneLogger.info("Evicted LRU model: \(evictKey)")
         return true
     }
@@ -526,7 +531,9 @@ public actor StandaloneServer {
             try await ensureMemoryHeadroomForLoad(
                 requiredGb: ModelLoadAdmission.requiredToLoadGb(
                     weightsGb: modelInfo.estimatedMemoryGb,
-                    headroomGb: ModelLoadAdmission.defaultLoadHeadroomGb)
+                    // Cap-aware: activation reserve + min serveable KV, so a model
+                    // that loads can actually serve (matches the runtime KV gate).
+                    headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
             )
             try Task.checkCancellation()
             let container = try await LLMModelFactory.shared.loadContainer(

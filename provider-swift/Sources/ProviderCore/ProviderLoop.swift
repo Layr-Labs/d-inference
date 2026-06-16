@@ -2826,9 +2826,13 @@ public actor ProviderLoop {
             outstandingReservationBytes: outstanding)
     }
 
-    /// Headroom (GB) reserved above the weights at load time for ONE request.
-    /// Concurrency beyond that is grown dynamically by the runtime token budget.
-    static let loadHeadroomGb = ModelLoadAdmission.defaultLoadHeadroomGb
+    /// Headroom (GB) reserved above the weights at load time. Must be at least
+    /// the runtime activation reserve + a minimum serveable KV, or the gate would
+    /// admit a near-cap model that GlobalKVCacheBudget then rejects every request
+    /// for (the old flat 2 GiB was LESS than the 3 GiB activation reserve). Sized
+    /// from UnifiedMemoryCap so the load gate and the runtime KV path agree.
+    static let loadHeadroomGb =
+        Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0)
 
     private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
         var total: UInt64 = 0

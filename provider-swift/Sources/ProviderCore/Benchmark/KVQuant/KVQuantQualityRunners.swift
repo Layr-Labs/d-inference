@@ -124,7 +124,15 @@ public struct KVQuantQualityRunner {
         // Generation-fidelity: reference greedy-continues each prompt, candidate is
         // teacher-forced over that continuation. This is the trustworthy quality gate
         // (correct gen forward, confident reference tokens, quantization engaged).
-        let prompts = Self.genFidelityPrompts
+        //
+        // Use LONG coherent prompts (truncated to the target context) so most of the
+        // KV is quantized — the capacity regime the objective targets. Short prompts
+        // are also included for breadth.
+        let targetCtx = config.contexts.max() ?? 2048
+        let longPrompts = ((try? fixtureTexts(config: config)) ?? [])
+            .map { String($0.prefix(targetCtx * 4)) }  // ~4 chars/token
+            .filter { $0.count > 200 }
+        let prompts = longPrompts + Self.genFidelityPrompts
         let genTokens = min(max(config.decodeTokens, 32), 128)
         var candTop1: [Double] = []
         var candTop5: [Double] = []

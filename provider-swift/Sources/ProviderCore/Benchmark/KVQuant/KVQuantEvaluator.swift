@@ -133,9 +133,10 @@ struct KVQuantEvaluator {
             let promptTokens = context.tokenizer.encode(text: prompt, addSpecialTokens: true)
             guard promptTokens.count >= 1 else { throw KVQuantEvaluatorError.tooFewTokens(promptTokens.count) }
 
-            // 1. Reference greedy continuation.
+            // 1. Reference greedy continuation. Prime the (possibly long) prompt in a
+            //    single batched forward, then decode token-by-token.
             let refCache = try Self.makeExecConfig(for: reference).makeCache(using: model)
-            var last = Self.feedTokens(promptTokens, model: model, cache: refCache)
+            var last = Self.primePrompt(promptTokens, model: model, cache: refCache)
             var refTokens: [Int] = []
             for _ in 0..<count {
                 let nt = Self.argmaxToken(last)
@@ -173,6 +174,18 @@ struct KVQuantEvaluator {
         }
     }
 
+    /// Prime a (possibly long) prompt in ONE batched forward; returns last-position
+    /// fp32 logits [1, vocab]. For ProtocolSafe this quantizes all prompt tokens at
+    /// once; for start-delayed caches it stores fp16 then converts past the start.
+    private static func primePrompt(_ tokens: [Int], model: any LanguageModel, cache: [KVCache]) -> MLXArray {
+        precondition(!tokens.isEmpty)
+        let input = MLXArray(tokens.map(Int32.init))[.newAxis]
+        let out = model(input, cache: cache)
+        let logits = out[0..., -1, 0...].asType(.float32)
+        eval(logits)
+        return logits
+    }
+
     /// Feed tokens incrementally through `cache`; returns last-position fp32 logits [1, vocab].
     private static func feedTokens(_ tokens: [Int], model: any LanguageModel, cache: [KVCache]) -> MLXArray {
         var last = MLXArray.zeros([1, 1])
@@ -189,23 +202,31 @@ struct KVQuantEvaluator {
         Int(argMax(logits1xVocab, axis: -1).item(Int32.self))
     }
 
-    /// Teacher-force `tokenIDs`; return top-1 and top-5 predictions for positions that
-    /// predict the continuation (index >= promptLen-1).
+    /// Teacher-force `tokenIDs`; return top-1/top-5 predictions for the continuation
+    /// (the positions predicting tokenIDs[promptLen...]). Primes the prompt in one
+    /// batched forward, then steps token-by-token over the continuation.
     private static func teacherForcedTop(
         _ tokenIDs: [Int], promptLen: Int, model: any LanguageModel, cache: [KVCache]
     ) -> (top1: [Int], top5: [[Int]]) {
         var top1: [Int] = []
         var top5: [[Int]] = []
-        for i in 0..<(tokenIDs.count - 1) {
-            let input = MLXArray([Int32(tokenIDs[i])])[.newAxis]
-            let out = model(input, cache: cache)
-            guard i >= promptLen - 1 else { continue }
+
+        func record(_ out: MLXArray) {
             let logits = out[0..., -1, 0...].asType(.float32)
             top1.append(Int(argMax(logits, axis: -1).item(Int32.self)))
             let sorted = argSort(logits, axis: -1)
             let vocab = logits.dim(-1)
             let k = min(5, vocab)
             top5.append(sorted[.ellipsis, (vocab - k)..<vocab].asArray(Int32.self).map(Int.init))
+        }
+
+        // Prime prompt[0..<promptLen]; last position predicts the first continuation token.
+        let promptInput = MLXArray(tokenIDs[0..<promptLen].map(Int32.init))[.newAxis]
+        record(model(promptInput, cache: cache))
+        // Step over continuation tokens (each predicts the next).
+        for i in promptLen..<(tokenIDs.count - 1) {
+            let input = MLXArray([Int32(tokenIDs[i])])[.newAxis]
+            record(model(input, cache: cache))
         }
         return (top1, top5)
     }

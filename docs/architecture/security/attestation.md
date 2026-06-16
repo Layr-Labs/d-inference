@@ -97,13 +97,14 @@ Limits and honest residuals:
 `GET /v1/providers/attestation` (no auth required) returns, per provider:
 
 - Secure Enclave P-256 public key,
-- hardware info (chip, model, serial, system volume hash),
+- hardware info (chip, model, system volume hash),
 - security state (SIP, SecureBoot, ARV, SE),
 - MDM verification status,
-- Apple MDA certificate chain (base64 DER, leaf + intermediate),
-- MDA-extracted properties (serial, UDID, OS version, SepOS version).
+- `mda_verified` boolean,
+- MDA-extracted properties (UDID, OS version, SepOS version).
 
-Users can independently verify the MDA chain against Apple's public Enterprise Attestation Root CA.
+The coordinator verifies the MDA chain internally; the raw chain is not exposed
+publicly because the leaf certificate contains the device serial number.
 
 ## See also
 

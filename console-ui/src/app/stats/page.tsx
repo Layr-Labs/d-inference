@@ -5,9 +5,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   BarChart3,
-  CheckCircle2,
   CircleDollarSign,
-  Clock,
   Cpu,
   HardDrive,
   ShieldCheck,
@@ -22,7 +20,6 @@ import {
   SlidersHorizontal,
   Trophy,
   Users,
-  XCircle,
   Zap,
 } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
@@ -35,11 +32,6 @@ import {
   type CatalogDataSummary,
   type CatalogModelSummary,
 } from "@/lib/stats-model-filter";
-import {
-  verifyCertificateChain,
-  type CertVerificationResult,
-  type VerificationStep,
-} from "@/lib/cert-verify";
 import { formatPower } from "@/lib/format-power";
 import { activeNetworkPowerWatts } from "@/lib/network-power";
 
@@ -172,25 +164,6 @@ interface PlatformStats {
   suppressed_request_city_requests?: number;
   request_location_privacy_min_requests?: number;
   time_series: TimeSeriesBucket[];
-}
-
-interface ProviderAttestation {
-  provider_id: string;
-  trust_level: string;
-  status: string;
-  serial_number?: string;
-  se_public_key?: string;
-  mda_verified?: boolean;
-  acme_verified?: boolean;
-  secure_enclave?: boolean;
-  sip_enabled?: boolean;
-  secure_boot_enabled?: boolean;
-  authenticated_root_enabled?: boolean;
-  system_volume_hash?: string;
-  mda_cert_chain_b64?: string[];
-  mda_serial?: string;
-  mda_os_version?: string;
-  mda_sepos_version?: string;
 }
 
 type NodeStatusFilter = "all" | "routable" | "serving" | "online" | "attention";
@@ -1038,12 +1011,6 @@ function compareProviders(a: ProviderStats, b: ProviderStats, sortKey: NodeSortK
 function compactId(id: string): string {
   if (id.length <= 14) return id;
   return `${id.slice(0, 8)}...${id.slice(-4)}`;
-}
-
-function maskSerial(serial?: string): string {
-  if (!serial) return "";
-  if (serial.length <= 7) return serial;
-  return `${serial.slice(0, 4)}...${serial.slice(-3)}`;
 }
 
 function verificationLabel(provider: ProviderStats): string {
@@ -2153,33 +2120,6 @@ function NodeMetric({
   );
 }
 
-function VerifyStepLine({ step }: { step: VerificationStep }) {
-  let icon = <Clock size={12} className="text-text-tertiary" />;
-  if (step.status === "success") {
-    icon = <CheckCircle2 size={12} className="text-accent-green" />;
-  }
-  if (step.status === "error") {
-    icon = <XCircle size={12} className="text-accent-red" />;
-  }
-  if (step.status === "running") {
-    icon = <Loader2 size={12} className="animate-spin text-accent-brand" />;
-  }
-
-  return (
-    <div className="flex gap-2 py-1.5">
-      <div className="mt-0.5 shrink-0">{icon}</div>
-      <div className="min-w-0">
-        <p className="text-xs text-text-secondary">{step.label}</p>
-        {step.detail && (
-          <p className="mt-0.5 break-words text-[11px] font-mono text-text-tertiary">
-            {step.detail}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function LeaderboardSection() {
   const [metric, setMetric] = useState<LeaderboardMetric>("earnings");
   const [window, setWindow] = useState<LeaderboardWindow>("7d");
@@ -2529,44 +2469,16 @@ function NodeRow({
   );
 }
 
-function NodeDetail({
-  provider,
-  verifying,
-  verifySteps,
-  verifyResult,
-  attestation,
-  onVerify,
-}: {
-  provider: ProviderStats | null;
-  verifying: boolean;
-  verifySteps: VerificationStep[];
-  verifyResult: CertVerificationResult | null;
-  attestation: ProviderAttestation | null;
-  onVerify: (provider: ProviderStats) => void;
-}) {
+function NodeDetail({ provider }: { provider: ProviderStats | null }) {
   if (!provider) {
     return (
       <div className="rounded-xl border border-border-dim bg-bg-secondary p-5 text-sm text-text-tertiary">
-        Select a node to inspect its capacity and verification state.
+        Select a node to inspect its capacity and attestation state.
       </div>
     );
   }
 
-  const certCount = attestation?.mda_cert_chain_b64?.length ?? 0;
-  const verifiedSerial = maskSerial(
-    verifyResult?.deviceInfo?.serial || attestation?.mda_serial || attestation?.serial_number
-  );
   const modelList = provider.models ?? [];
-  let verificationState = "Certificate not checked";
-  let verificationColor = "text-text-tertiary";
-  if (verifyResult?.success) {
-    verificationState = "Apple certificate verified";
-    verificationColor = "text-accent-green";
-  }
-  if (verifyResult && !verifyResult.success) {
-    verificationState = "Certificate check failed";
-    verificationColor = "text-accent-red";
-  }
 
   return (
     <div className="rounded-xl border border-border-dim bg-bg-secondary p-5 shadow-sm">
@@ -2593,24 +2505,7 @@ function NodeDetail({
       </div>
 
       <div className="mt-4 rounded-lg border border-border-dim bg-bg-primary p-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold text-text-primary">Certificate verification</p>
-            <p className={`mt-0.5 text-[11px] font-mono ${verificationColor}`}>
-              {verificationState}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => onVerify(provider)}
-            disabled={verifying}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle px-2.5 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {verifying ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
-            Verify
-          </button>
-        </div>
-
+        <p className="text-xs font-semibold text-text-primary">Attestation metadata</p>
         <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-mono">
           <div className="rounded-md bg-bg-secondary px-2 py-1.5">
             <p className="text-text-tertiary">Trust</p>
@@ -2621,27 +2516,14 @@ function NodeDetail({
             <p className="text-text-primary">{relativeChallengeLabel(provider.last_challenge_verified)}</p>
           </div>
           <div className="rounded-md bg-bg-secondary px-2 py-1.5">
-            <p className="text-text-tertiary">Certificates</p>
-            <p className="text-text-primary">{certCount > 0 ? certCount : provider.certificate_available ? "available" : "none"}</p>
+            <p className="text-text-tertiary">MDA verified</p>
+            <p className="text-text-primary">{provider.mda_verified ? "Yes" : "No"}</p>
           </div>
           <div className="rounded-md bg-bg-secondary px-2 py-1.5">
-            <p className="text-text-tertiary">Serial</p>
-            <p className="text-text-primary">{verifiedSerial || "hidden"}</p>
+            <p className="text-text-tertiary">ACME bound</p>
+            <p className="text-text-primary">{provider.acme_verified ? "Yes" : "No"}</p>
           </div>
         </div>
-
-        {(verifySteps.length > 0 || verifyResult?.error) && (
-          <div className="mt-3 border-t border-border-dim pt-2">
-            {verifySteps.map((step) => (
-              <VerifyStepLine key={step.label} step={step} />
-            ))}
-            {verifyResult?.error && (
-              <p className="mt-2 rounded-md bg-accent-red/5 px-2 py-1.5 text-[11px] text-accent-red">
-                {verifyResult.error}
-              </p>
-            )}
-          </div>
-        )}
       </div>
 
       <div className="mt-4">
@@ -2678,10 +2560,6 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
   const [trustFilter, setTrustFilter] = useState<NodeTrustFilter>("all");
   const [modelFilter, setModelFilter] = useState("all");
   const [sortKey, setSortKey] = useState<NodeSortKey>("capacity");
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
-  const [verifySteps, setVerifySteps] = useState<VerificationStep[]>([]);
-  const [verifyResult, setVerifyResult] = useState<CertVerificationResult | null>(null);
-  const [attestation, setAttestation] = useState<ProviderAttestation | null>(null);
   const statusOptions: Array<{ value: NodeStatusFilter; label: string }> = [
     { value: "all", label: "All" },
     { value: "routable", label: "Routable" },
@@ -2747,71 +2625,6 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
     }
   }, [selectedProvider, selectedProviderId]);
 
-  useEffect(() => {
-    setVerifySteps([]);
-    setVerifyResult(null);
-    setAttestation(null);
-  }, [selectedProviderId]);
-
-  async function handleVerify(provider: ProviderStats) {
-    setVerifyingId(provider.id);
-    setVerifySteps([]);
-    setVerifyResult(null);
-    setAttestation(null);
-
-    try {
-      const response = await fetch("/api/attestation");
-      if (!response.ok) {
-        throw new Error(`Attestation API returned HTTP ${response.status}`);
-      }
-      const data = await response.json();
-      const attestedProviders: ProviderAttestation[] = data.providers ?? [];
-      const matched =
-        attestedProviders.find((entry) => entry.provider_id === provider.id) ??
-        attestedProviders.find((entry) => entry.provider_id?.startsWith(provider.id)) ??
-        null;
-
-      if (!matched) {
-        setVerifyResult({
-          success: false,
-          steps: [],
-          error: "Node was not present in the public attestation feed.",
-        });
-        return;
-      }
-
-      setAttestation(matched);
-      const certs = matched.mda_cert_chain_b64 ?? [];
-      if (certs.length < 2) {
-        setVerifyResult({
-          success: false,
-          steps: [
-            {
-              status: "error",
-              label: "Insufficient certificate chain",
-              detail: `Got ${certs.length}, need at least 2 certificates.`,
-            },
-          ],
-          error: "This node has no Apple MDA certificate chain available yet.",
-        });
-        return;
-      }
-
-      const result = await verifyCertificateChain(certs, (steps) => {
-        setVerifySteps(steps);
-      });
-      setVerifyResult(result);
-    } catch (error) {
-      setVerifyResult({
-        success: false,
-        steps: [],
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setVerifyingId(null);
-    }
-  }
-
   return (
     <section className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -2821,7 +2634,7 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
             <h2 className="text-sm font-semibold text-text-primary">Provider Dashboard</h2>
           </div>
           <p className="mt-1 text-xs text-text-tertiary">
-            Routability, node health, model coverage, and certificate verification
+            Routability, node health, model coverage, and attestation metadata
           </p>
         </div>
         <div className="grid grid-cols-3 gap-3 text-right">
@@ -2932,14 +2745,7 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
                 />
                 {provider.id === selectedProvider?.id && (
                   <div className="pl-0 sm:pl-8">
-                    <NodeDetail
-                      provider={provider}
-                      verifying={verifyingId === provider.id}
-                      verifySteps={verifySteps}
-                      verifyResult={verifyResult}
-                      attestation={attestation}
-                      onVerify={handleVerify}
-                    />
+                    <NodeDetail provider={provider} />
                   </div>
                 )}
               </div>

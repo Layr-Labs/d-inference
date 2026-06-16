@@ -1,6 +1,6 @@
 # Verifying Provider Attestation
 
-Consumers and operators can independently verify provider attestation state.
+Consumers and operators can inspect provider attestation state through the public API.
 
 ## Public attestation endpoint
 
@@ -11,20 +11,18 @@ curl https://api.darkbloom.dev/v1/providers/attestation
 Returns, per provider:
 
 - Secure Enclave P-256 public key,
-- hardware info (chip, model, serial, system volume hash),
+- hardware info (chip, model, system volume hash),
 - security state (SIP, SecureBoot, ARV, SE),
 - MDM verification status,
-- Apple MDA certificate chain (base64 DER),
-- MDA-extracted properties (serial, UDID, OS version, SepOS version).
+- `mda_verified` boolean,
+- MDA-extracted properties (UDID, OS version, SepOS version).
 
-## Verify the MDA chain yourself
+## MDA verification
 
-1. Download Apple's Enterprise Attestation Root CA from
-   [apple.com/certificateauthority](https://www.apple.com/certificateauthority/).
-2. Decode the `mda_cert_chain_b64` certificates from base64 to DER.
-3. Verify the cert chain against Apple's root CA using any x509 library.
-4. Check that the serial number in the Apple cert matches the provider's
-   self-reported attestation.
+The coordinator verifies the Apple MDA certificate chain internally against the
+embedded Apple Enterprise Attestation Root CA. The raw MDA certificate chain is
+not exposed publicly because the leaf certificate contains the device serial
+number. Consumers see only the `mda_verified` boolean result.
 
 ## What verification tells you
 

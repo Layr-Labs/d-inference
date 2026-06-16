@@ -5,11 +5,6 @@ import type { TrustMetadata } from "@/lib/api";
 import { useVerificationMode } from "@/lib/verification-mode";
 import { TrustExplainerModal } from "./TrustExplainerModal";
 import {
-  verifyCertificateChain,
-  type VerificationStep,
-  type CertVerificationResult,
-} from "@/lib/cert-verify";
-import {
   ShieldCheck,
   Shield,
   ChevronDown,
@@ -19,21 +14,10 @@ import {
   Lock,
   HardDrive,
   Fingerprint,
-  Loader2,
-  ExternalLink,
   Code,
   Eye,
   Info,
 } from "lucide-react";
-
-const ATTESTATION_API = "https://api.darkbloom.dev";
-
-/** Mask a serial number for normal mode: show first 4 + last 2, mask the rest. */
-function maskSerial(serial: string): string {
-  if (serial.length <= 6) return serial;
-  const masked = serial.slice(0, 4) + "\u2022".repeat(serial.length - 6) + serial.slice(-2);
-  return masked;
-}
 
 function StatusLine({
   ok,
@@ -61,46 +45,13 @@ function StatusLine({
   );
 }
 
-function VerifyStepLine({ step }: { step: VerificationStep }) {
-  return (
-    <div className="flex items-center gap-2 py-0.5">
-      {step.status === "success" && (
-        <Check size={12} className="text-accent-green shrink-0" />
-      )}
-      {step.status === "error" && (
-        <X size={12} className="text-accent-red shrink-0" />
-      )}
-      {step.status === "running" && (
-        <Loader2 size={12} className="text-accent-brand animate-spin shrink-0" />
-      )}
-      {step.status === "pending" && (
-        <div className="w-3 h-3 rounded-full border border-border-dim shrink-0" />
-      )}
-      <span className="text-xs text-text-primary">{step.label}</span>
-      {step.detail && (
-        <span className="text-xs text-text-tertiary ml-auto font-mono truncate max-w-[180px]">
-          {step.detail}
-        </span>
-      )}
-    </div>
-  );
-}
-
-/** Normal mode: human-readable trust guarantees with one-click verification. */
+/** Normal mode: human-readable trust guarantees. */
 function NormalModeContent({
   trust,
   onOpenExplainer,
-  verifySteps,
-  verifyResult,
-  verifying,
-  onVerify,
 }: {
   trust: TrustMetadata;
   onOpenExplainer: () => void;
-  verifySteps: VerificationStep[];
-  verifyResult: CertVerificationResult | null;
-  verifying: boolean;
-  onVerify: () => void;
 }) {
   const isHardware = trust.trustLevel === "hardware";
 
@@ -168,50 +119,6 @@ function NormalModeContent({
         </div>
       ))}
 
-      {/* One-click verification for normal users */}
-      {isHardware && (
-        <div className="pt-2 border-t border-border-dim/50">
-          <button
-            onClick={onVerify}
-            disabled={verifying}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-teal-light/50 border-2 border-teal/30 text-teal text-xs font-semibold hover:bg-teal-light/70 transition-colors disabled:opacity-50 w-full justify-center"
-          >
-            {verifying ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <ShieldCheck size={14} />
-            )}
-            {verifying
-              ? "Verifying..."
-              : verifyResult?.success
-                ? "Apple-verified hardware"
-                : "Verify device"}
-          </button>
-
-          {/* Step-by-step progress */}
-          {verifySteps.length > 0 && (
-            <div className="mt-2 space-y-0.5">
-              {verifySteps.map((step, i) => (
-                <VerifyStepLine key={i} step={step} />
-              ))}
-            </div>
-          )}
-
-          {/* Result message */}
-          {verifyResult && (
-            <p
-              className={`mt-2 text-xs font-semibold text-center ${
-                verifyResult.success ? "text-accent-green" : "text-accent-red"
-              }`}
-            >
-              {verifyResult.success
-                ? `Genuine Apple device ${verifyResult.deviceInfo?.serial ? `(${verifyResult.deviceInfo.serial})` : ""}`
-                : verifyResult.error || "Verification failed"}
-            </p>
-          )}
-        </div>
-      )}
-
       <button
         onClick={onOpenExplainer}
         className="flex items-center gap-1.5 text-xs text-teal font-semibold hover:underline mt-2"
@@ -226,18 +133,8 @@ function NormalModeContent({
 /** Technical mode: detailed checks with raw values. */
 function TechnicalModeContent({
   trust,
-  verifySteps,
-  verifyResult,
-  verifying,
-  onVerify,
-  providerDetail,
 }: {
   trust: TrustMetadata;
-  verifySteps: VerificationStep[];
-  verifyResult: CertVerificationResult | null;
-  verifying: boolean;
-  onVerify: () => void;
-  providerDetail: ProviderDetail | null;
 }) {
   const isHardware = trust.trustLevel === "hardware";
 
@@ -346,111 +243,6 @@ function TechnicalModeContent({
         </div>
       )}
 
-      {isHardware && (
-        <div className="mt-3 pt-2 border-t border-border-dim/50">
-          <button
-            onClick={onVerify}
-            disabled={verifying}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-brand/10 text-accent-brand text-xs font-medium hover:bg-accent-brand/20 transition-colors disabled:opacity-50"
-          >
-            {verifying ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <ShieldCheck size={12} />
-            )}
-            Verify Apple Attestation
-          </button>
-
-          {/* Live verification steps */}
-          {verifySteps.length > 0 && (
-            <div className="mt-2 space-y-0.5">
-              {verifySteps.map((step, i) => (
-                <VerifyStepLine key={i} step={step} />
-              ))}
-            </div>
-          )}
-
-          {/* Final result */}
-          {verifyResult && (
-            <p
-              className={`mt-2 text-xs font-semibold leading-relaxed ${
-                verifyResult.success ? "text-accent-green" : "text-accent-red"
-              }`}
-            >
-              {verifyResult.success
-                ? "Genuine Apple device — certificate chain verified against Apple Root CA."
-                : verifyResult.error || "Verification failed"}
-            </p>
-          )}
-
-          {/* Provider details from API */}
-          {providerDetail && (
-            <div className="mt-2 space-y-1.5 text-xs text-text-tertiary">
-              {providerDetail.mdaSerial && (
-                <p>
-                  <span className="font-mono">MDA Serial:</span>{" "}
-                  {providerDetail.mdaSerial}
-                </p>
-              )}
-              {providerDetail.mdaOsVersion && (
-                <p>
-                  <span className="font-mono">macOS:</span>{" "}
-                  {providerDetail.mdaOsVersion}
-                  {providerDetail.mdaSepVersion &&
-                    ` · SepOS: ${providerDetail.mdaSepVersion}`}
-                </p>
-              )}
-              {providerDetail.mdaCertCount !== undefined &&
-                providerDetail.mdaCertCount > 0 && (
-                  <p>
-                    <span className="font-mono">Apple Certs:</span>{" "}
-                    {providerDetail.mdaCertCount} (leaf + intermediate)
-                  </p>
-                )}
-              {providerDetail.systemVolumeHash && (
-                <div>
-                  <p className="font-mono">Volume Hash:</p>
-                  <p className="text-xs font-mono break-all bg-bg-tertiary rounded px-2 py-1 mt-0.5">
-                    {providerDetail.systemVolumeHash}
-                  </p>
-                </div>
-              )}
-              {providerDetail.sePublicKey && (
-                <div>
-                  <p className="font-mono">SE Public Key:</p>
-                  <p className="text-xs font-mono break-all bg-bg-tertiary rounded px-2 py-1 mt-0.5">
-                    {providerDetail.sePublicKey}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          <p className="mt-2 text-xs text-text-tertiary leading-relaxed">
-            Manual: download MDA cert chain from{" "}
-            <a
-              href={`${ATTESTATION_API}/v1/providers/attestation`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent-brand hover:underline inline-flex items-center gap-0.5"
-            >
-              attestation API
-              <ExternalLink size={10} />
-            </a>
-            , decode base64 to DER, verify against{" "}
-            <a
-              href="https://www.apple.com/certificateauthority/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent-brand hover:underline inline-flex items-center gap-0.5"
-            >
-              Apple&apos;s Root CA
-              <ExternalLink size={10} />
-            </a>
-          </p>
-        </div>
-      )}
-
       {!isHardware && (
         <div className="mt-3 pt-2 border-t border-border-dim/50">
           <p className="text-xs text-text-tertiary leading-relaxed">
@@ -462,24 +254,9 @@ function TechnicalModeContent({
   );
 }
 
-interface ProviderDetail {
-  systemVolumeHash?: string;
-  sePublicKey?: string;
-  mdaSerial?: string;
-  mdaOsVersion?: string;
-  mdaSepVersion?: string;
-  mdaCertCount?: number;
-}
-
 export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
   const { mode, toggle } = useVerificationMode();
   const [open, setOpen] = useState(false);
-  const [verifying, setVerifying] = useState(false);
-  const [verifySteps, setVerifySteps] = useState<VerificationStep[]>([]);
-  const [verifyResult, setVerifyResult] = useState<CertVerificationResult | null>(
-    null
-  );
-  const [providerDetail, setProviderDetail] = useState<ProviderDetail | null>(null);
   const [showExplainer, setShowExplainer] = useState(false);
 
   const isHardware = trust.trustLevel === "hardware";
@@ -495,79 +272,7 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
       : "Hardware Verified"
     : "Unverified";
 
-  const displaySerial = trust.providerSerial
-    ? mode === "normal" ? maskSerial(trust.providerSerial) : trust.providerSerial
-    : "";
-  const chipLabel = trust.providerChip
-    ? `${trust.providerChip}${displaySerial ? ` · ${displaySerial}` : ""}`
-    : "";
-
-  async function handleVerify() {
-    setVerifying(true);
-    setVerifyResult(null);
-    setVerifySteps([]);
-
-    try {
-      const res = await fetch(`${ATTESTATION_API}/v1/providers/attestation`);
-      const data = await res.json();
-
-      const provider =
-        data.providers?.find(
-          (p: { serial_number: string }) =>
-            p.serial_number === trust.providerSerial
-        ) || data.providers?.[0];
-
-      if (!provider) {
-        setVerifyResult({
-          success: false,
-          steps: [],
-          error: "Provider not found in attestation API",
-        });
-        return;
-      }
-
-      setProviderDetail({
-        systemVolumeHash: provider.system_volume_hash,
-        sePublicKey: provider.se_public_key,
-        mdaSerial: provider.mda_serial,
-        mdaOsVersion: provider.mda_os_version,
-        mdaSepVersion: provider.mda_sepos_version,
-        mdaCertCount: provider.mda_cert_chain_b64?.length || 0,
-      });
-
-      const certs: string[] = provider.mda_cert_chain_b64 || [];
-
-      if (certs.length < 2) {
-        setVerifyResult({
-          success: false,
-          steps: [
-            {
-              status: "error",
-              label: "Insufficient certificates",
-              detail: `Got ${certs.length}, need at least 2`,
-            },
-          ],
-          error: "Certificate chain too short for verification",
-        });
-        return;
-      }
-
-      // Real X.509 verification!
-      const result = await verifyCertificateChain(certs, (steps) => {
-        setVerifySteps(steps);
-      });
-
-      setVerifyResult(result);
-    } catch (e) {
-      setVerifyResult({
-        success: false,
-        steps: [],
-        error: `Error: ${e instanceof Error ? e.message : String(e)}`,
-      });
-    } finally {
-      setVerifying(false);
-    }
-  }
+  const chipLabel = trust.providerChip ? trust.providerChip : "";
 
   return (
     <>
@@ -625,20 +330,9 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
               <NormalModeContent
                 trust={trust}
                 onOpenExplainer={() => setShowExplainer(true)}
-                verifySteps={verifySteps}
-                verifyResult={verifyResult}
-                verifying={verifying}
-                onVerify={handleVerify}
               />
             ) : (
-              <TechnicalModeContent
-                trust={trust}
-                verifySteps={verifySteps}
-                verifyResult={verifyResult}
-                verifying={verifying}
-                onVerify={handleVerify}
-                providerDetail={providerDetail}
-              />
+              <TechnicalModeContent trust={trust} />
             )}
           </div>
         )}

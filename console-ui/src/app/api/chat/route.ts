@@ -59,11 +59,9 @@ export async function POST(req: NextRequest) {
     "x-provider-secure-enclave",
     "x-provider-mda-verified",
     "x-provider-chip",
-    "x-provider-serial",
     "x-provider-model",
     "x-request-id",
     "x-attestation-se-public-key",
-    "x-attestation-device-serial",
     "x-eigen-sealed",
     "x-eigen-sealed-kid",
   ];

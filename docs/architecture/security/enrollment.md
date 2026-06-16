@@ -67,7 +67,7 @@ Apple Enterprise Attestation Root CA (P-384, embedded in coordinator)
           └─ Freshness code  (OID 1.2.840.113635.100.8.11.1)
 ```
 
-The coordinator verifies the chain against the embedded root CA, cross-checks the serial number against the provider's self-reported attestation, and stores the chain for public inspection. Code:
+The coordinator verifies the chain against the embedded root CA, cross-checks the serial number against the provider's self-reported attestation, and stores the chain internally for coordinator verification. Device serial numbers are not exposed publicly. Code:
 
 - MDA verification: `coordinator/attestation/mda.go:98-186`
 - MDA dispatch and key binding: `coordinator/api/provider.go:2342-2429`
@@ -99,7 +99,7 @@ The ACME payload remains in the profile for future use. Removing it (or slimming
 
 1. Provider registers with SE-signed attestation → trust level = `self_signed`.
 2. MDM `SecurityInfo` passes → upgraded to `hardware`.
-3. MDA certificate chain verifies and the serial number matches → MDA proof stored for public inspection.
+3. MDA certificate chain verifies and the serial number matches → MDA proof stored for coordinator verification; serial numbers remain internal and are not exposed publicly.
 4. APNs code-identity round-trip passes → `CodeAttested = true`, private traffic may route.
 
 Code:

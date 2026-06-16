@@ -146,23 +146,21 @@ const ENDPOINTS = [
   {
     method: "GET",
     path: "/v1/providers/attestation",
-    description: "Full attestation chain for all online providers",
+    description: "Attestation metadata for all online providers",
     icon: Shield,
     auth: false,
     response: `{
   "providers": [{
     "id": "...",
     "chip": "Apple M4 Max",
-    "serial": "F46G****0H",
     "trust_level": "hardware",
     "secure_enclave": true,
     "sip_enabled": true,
     "mda_verified": true,
-    "se_key_bound": true,
-    "attestation_cert_chain": ["<PEM>", "<PEM>"]
+    "se_key_bound": true
   }]
 }`,
-    notes: "Publicly accessible — no authentication required. Use this to independently verify that providers are running on genuine Apple hardware with Secure Enclave attestation.",
+    notes: "Publicly accessible — no authentication required. Returns hardware attestation metadata (trust level, Secure Enclave status, MDA verification) without certificate chains or serial numbers.",
   },
   {
     method: "GET",

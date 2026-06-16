@@ -2264,7 +2264,10 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 		if id == keepID {
 			continue
 		}
-		if p.AttestationResult != nil && p.AttestationResult.SerialNumber == serial {
+		// AttestationResult is written under p.mu (SetAttestationResult), so
+		// read it through the thread-safe accessor — this loop holds only the
+		// registry lock, not the per-provider one.
+		if ar := p.GetAttestationResult(); ar != nil && ar.SerialNumber == serial {
 			toEvict = append(toEvict, id)
 		}
 	}

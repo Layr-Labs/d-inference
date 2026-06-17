@@ -90,6 +90,7 @@ type codeAttestThrottle struct {
 type codeAttestRecord struct {
 	at      time.Time
 	version string
+	token   string // APNs device token the proof was bound to ("" = legacy row from before token-binding)
 }
 
 // codeAttestChallenge is a pushed-but-not-yet-verified code-identity challenge.
@@ -126,15 +127,26 @@ func defaultJitter(max time.Duration) time.Duration {
 }
 
 // reuseAttestation reports whether the device attested recently with the SAME
-// binary version, so a fresh connection can inherit the proof without a push.
-func (t *codeAttestThrottle) reuseAttestation(seKey, version string) bool {
+// binary version AND the SAME APNs token, so a fresh connection can inherit the
+// proof without a push. Binding to the token closes the disconnected-rotation gap
+// (Codex #7): a token that rotated while the provider was offline — so
+// maybeRearmCodeAttest never saw the change to delete the row — cannot ride the
+// pre-rotation proof after a restart reseed; it falls through to a real challenge
+// against the new token. A record with NO recorded token (legacy rows persisted
+// before token-binding) still reuses, so introducing this does not trigger a
+// fleet-wide re-push on deploy; those rows are token-bound the next time they
+// attest, and expire within the reuse window regardless.
+func (t *codeAttestThrottle) reuseAttestation(seKey, version, token string) bool {
 	if seKey == "" {
 		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r, ok := t.attested[seKey]
-	return ok && r.version == version && t.now().Sub(r.at) < t.reuseWindow
+	if !ok || r.version != version || t.now().Sub(r.at) >= t.reuseWindow {
+		return false
+	}
+	return r.token == "" || r.token == token
 }
 
 // pushCooldown returns the per-device push budget for the active delivery mode.
@@ -187,12 +199,12 @@ func (t *codeAttestThrottle) clearPushBudget(seKey string) {
 	t.mu.Unlock()
 }
 
-func (t *codeAttestThrottle) recordAttested(seKey, version string) {
+func (t *codeAttestThrottle) recordAttested(seKey, version, token string) {
 	if seKey == "" {
 		return
 	}
 	t.mu.Lock()
-	t.attested[seKey] = codeAttestRecord{at: t.now(), version: version}
+	t.attested[seKey] = codeAttestRecord{at: t.now(), version: version, token: token}
 	t.mu.Unlock()
 }
 
@@ -237,7 +249,7 @@ func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
 		if cur, ok := t.attested[r.SEPubKey]; ok && !r.AttestedAt.After(cur.at) {
 			continue // keep the fresher in-memory record
 		}
-		t.attested[r.SEPubKey] = codeAttestRecord{at: r.AttestedAt, version: r.Version}
+		t.attested[r.SEPubKey] = codeAttestRecord{at: r.AttestedAt, version: r.Version, token: r.APNsToken}
 		n++
 	}
 	return n
@@ -385,7 +397,7 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 // Runs off the read loop (saferun.Go) so the DB write never stalls WebSocket
 // reads. SECURITY: writes only AFTER the full nonce-match + SE-signature
 // verification — never from an unverified heartbeat token.
-func (s *Server) persistCodeAttestation(seKey, version string) {
+func (s *Server) persistCodeAttestation(seKey, version, token string) {
 	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
 		return
 	}
@@ -401,6 +413,7 @@ func (s *Server) persistCodeAttestation(seKey, version string) {
 			SEPubKey:   seKey,
 			Version:    version,
 			AttestedAt: at,
+			APNsToken:  token,
 		}); err != nil {
 			s.logger.Warn("code-attest: failed to persist reuse record", "error", err)
 		}

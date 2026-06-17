@@ -3,6 +3,8 @@ package api
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // TestCodeAttestThrottleBudgetAndReuse covers the per-device push budget + reuse
@@ -18,7 +20,7 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 	if !th.allowPush(se, false) {
 		t.Fatal("first push should be allowed")
 	}
-	if th.reuseAttestation(se, "0.6.0") {
+	if th.reuseAttestation(se, "0.6.0", "") {
 		t.Fatal("no attestation yet → no reuse")
 	}
 	th.recordPush(se)
@@ -32,16 +34,43 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 		t.Fatal("a background push after the cooldown should be allowed")
 	}
 
-	th.recordAttested(se, "0.6.0")
-	if !th.reuseAttestation(se, "0.6.0") {
+	th.recordAttested(se, "0.6.0", "")
+	if !th.reuseAttestation(se, "0.6.0", "") {
 		t.Fatal("should reuse a fresh, same-version attestation")
 	}
-	if th.reuseAttestation(se, "0.6.1") {
+	if th.reuseAttestation(se, "0.6.1", "") {
 		t.Fatal("must NOT reuse across a binary version change")
 	}
 	cur = cur.Add(th.reuseWindow) // window elapsed
-	if th.reuseAttestation(se, "0.6.0") {
+	if th.reuseAttestation(se, "0.6.0", "") {
 		t.Fatal("reuse must expire after the window")
+	}
+}
+
+// TestCodeAttestThrottleTokenBinding proves Codex #7: a recorded proof is bound to
+// the APNs token, so reuse is granted only for the same token. A token rotation
+// (different token) falls through to a real challenge, while a legacy record with
+// no recorded token still reuses (back-compat, no post-deploy push storm).
+func TestCodeAttestThrottleTokenBinding(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newCodeAttestThrottle()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	th.recordAttested(se, "0.6.0", "tokA")
+	if !th.reuseAttestation(se, "0.6.0", "tokA") {
+		t.Fatal("same token must reuse")
+	}
+	if th.reuseAttestation(se, "0.6.0", "tokB") {
+		t.Fatal("a rotated (different) token must NOT reuse — it must force a real challenge")
+	}
+
+	// A legacy record with no recorded token (e.g. seeded from a pre-binding row)
+	// still reuses for any token, so introducing token-binding does not re-push the
+	// whole fleet on deploy.
+	th.seed([]store.CodeAttestation{{SEPubKey: "se-legacy", Version: "0.6.0", AttestedAt: cur}})
+	if !th.reuseAttestation("se-legacy", "0.6.0", "any-token") {
+		t.Fatal("a legacy token-less record must still reuse (back-compat)")
 	}
 }
 

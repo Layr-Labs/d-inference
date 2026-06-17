@@ -1366,4 +1366,5 @@ type CodeAttestation struct {
 	SEPubKey   string    `json:"se_pubkey"`   // base64 Secure Enclave P-256 public key (bound at registration)
 	Version    string    `json:"version"`     // provider binary version that attested
 	AttestedAt time.Time `json:"attested_at"` // instant of the successful round-trip
+	APNsToken  string    `json:"apns_token"`  // APNs device token the proof was bound to; reuse requires it to match the new registration token (Codex #7). "" = legacy row from before token-binding.
 }

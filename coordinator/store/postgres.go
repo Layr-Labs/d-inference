@@ -895,8 +895,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS code_attestations (
 			se_pubkey TEXT PRIMARY KEY,
 			version TEXT NOT NULL DEFAULT '',
-			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			apns_token TEXT NOT NULL DEFAULT ''
 		)`,
+		// Token-binding column for reuse (Codex #7): additive for DBs whose
+		// code_attestations table predates it (the CREATE above is a no-op there).
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, m := range migrations {
@@ -4105,7 +4109,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -4114,7 +4118,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	var out []CodeAttestation
 	for rows.Next() {
 		var rec CodeAttestation
-		if err := rows.Scan(&rec.SEPubKey, &rec.Version, &rec.AttestedAt); err != nil {
+		if err := rows.Scan(&rec.SEPubKey, &rec.Version, &rec.AttestedAt, &rec.APNsToken); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
 		out = append(out, rec)
@@ -4133,11 +4137,11 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO code_attestations (se_pubkey, version, attested_at)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO code_attestations (se_pubkey, version, attested_at, apns_token)
+		 VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
-			version = $2, attested_at = $3`,
-		rec.SEPubKey, rec.Version, rec.AttestedAt,
+			version = $2, attested_at = $3, apns_token = $4`,
+		rec.SEPubKey, rec.Version, rec.AttestedAt, rec.APNsToken,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)

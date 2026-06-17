@@ -514,23 +514,24 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 	}
 
 	provider.Mu().Lock()
-	hasToken := provider.APNsDeviceToken != ""
+	apnsToken := provider.APNsDeviceToken
 	version := provider.Version
 	var seKey string
 	if provider.AttestationResult != nil {
 		seKey = provider.AttestationResult.PublicKey
 	}
 	provider.Mu().Unlock()
-	if !hasToken {
+	if apnsToken == "" {
 		s.codeAttestMetric("no_token")
 		s.logger.Info("code-attest: provider has no APNs device token; cannot attest (will be derouted once enforcement begins)",
 			"provider_id", providerID)
 		return
 	}
 
-	// Reuse a recent, same-version attestation for this device instead of spending
-	// a push — the binary can't have changed (same version) and the proof is fresh.
-	if s.codeAttestThrottle.reuseAttestation(seKey, version) {
+	// Reuse a recent, same-version, SAME-TOKEN attestation for this device instead
+	// of spending a push — the binary can't have changed (same version), the APNs
+	// token is unchanged (Codex #7), and the proof is fresh.
+	if s.codeAttestThrottle.reuseAttestation(seKey, version, apnsToken) {
 		provider.SetCodeAttested(true)
 		s.registry.DrainQueuedRequestsForProvider(provider)
 		s.codeAttestMetric("reused")
@@ -769,6 +770,7 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 		sePubKey = provider.AttestationResult.PublicKey
 	}
 	version := provider.Version
+	apnsToken := provider.APNsDeviceToken
 	provider.Mu().Unlock()
 
 	if sePubKey == "" {
@@ -796,11 +798,12 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	}
 
 	provider.SetCodeAttested(true)
-	s.codeAttestThrottle.recordAttested(sePubKey, version)
-	// Persist the same record so the reuse cache survives a coordinator
-	// restart/blue-green deploy (W5 Fix 2). Behind the store seam + off the read
-	// loop; written only here, after the full round-trip verified above.
-	s.persistCodeAttestation(sePubKey, version)
+	s.codeAttestThrottle.recordAttested(sePubKey, version, apnsToken)
+	// Persist the same record (incl. the bound APNs token) so the reuse cache
+	// survives a coordinator restart/blue-green deploy (W5 Fix 2) yet still forces a
+	// re-challenge if the token later rotates (Codex #7). Behind the store seam +
+	// off the read loop; written only here, after the full round-trip verified above.
+	s.persistCodeAttestation(sePubKey, version, apnsToken)
 	s.codeAttestThrottle.clearChallengeIf(sePubKey, resp.Nonce)
 	s.codeAttestMetric("attested")
 	s.logger.Info("provider code-attested via APNs", "provider_id", providerID)

@@ -139,7 +139,7 @@ func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 	if !p.GetCodeAttested() {
 		t.Fatal("phase 1 should attest")
 	}
-	if !srv.codeAttestThrottle.reuseAttestation(sePubB64, "0.6.0") {
+	if !srv.codeAttestThrottle.reuseAttestation(sePubB64, "0.6.0", "tok1") {
 		t.Fatal("phase 1 should leave a reusable record")
 	}
 	pushesAfterP1 := atomic.LoadInt32(&pushes)
@@ -156,7 +156,7 @@ func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 	if p.GetCodeAttested() {
 		t.Fatal("a changed token must reset CodeAttested (fail-closed) until re-proven")
 	}
-	if srv.codeAttestThrottle.reuseAttestation(sePubB64, "0.6.0") {
+	if srv.codeAttestThrottle.reuseAttestation(sePubB64, "0.6.0", "tok2") {
 		t.Fatal("a changed token must invalidate the reuse record (no bypass)")
 	}
 	if got := providerToken(p); got != "tok2" {
@@ -275,6 +275,46 @@ func TestSeededReuseSkipsRePush(t *testing.T) {
 	}
 }
 
+// TestSeededRowWithRotatedTokenForcesRealChallenge proves Codex #7: a persisted
+// reuse row is bound to the APNs token, so a provider that rotated its token while
+// DISCONNECTED (the heartbeat re-arm path never saw the change to delete the row)
+// does NOT inherit the pre-rotation proof after a restart reseed — it runs a real
+// challenge against the new token.
+func TestSeededRowWithRotatedTokenForcesRealChallenge(t *testing.T) {
+	logger := quietLogger()
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	fastBudgets(srv)
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+
+	// A genuine attestation persisted under the OLD token, before the restart.
+	if err := st.UpsertCodeAttestation(context.Background(), store.CodeAttestation{
+		SEPubKey: sePubB64, Version: "0.6.0", AttestedAt: time.Now(), APNsToken: "old-tok",
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	srv.SeedCodeAttestCache(context.Background())
+
+	// The device reconnects with a NEW token (rotated while offline).
+	var pushes int32
+	provider := newCodeAttestProvider(kPubB64, sePubB64)
+	provider.Version = "0.6.0"
+	provider.APNsDeviceToken = "new-tok"
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		atomic.AddInt32(&pushes, 1)
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+
+	if atomic.LoadInt32(&pushes) == 0 {
+		t.Fatal("a seeded row bound to the OLD token must force a REAL challenge for the new token (Codex #7)")
+	}
+	if !provider.GetCodeAttested() {
+		t.Fatal("the real challenge round-trip should attest")
+	}
+}
+
 // TestSeededStalePersistedRowForcesRealChallenge proves the persisted-reuse
 // fail-closed property: a seeded row that has aged past the reuse window does NOT
 // grant CodeAttested — it falls through to a REAL challenge round-trip.
@@ -299,7 +339,7 @@ func TestSeededStalePersistedRowForcesRealChallenge(t *testing.T) {
 
 	// ...then advance the clock so the seeded row is now PAST the reuse window.
 	cur = cur.Add(15 * time.Minute) // row is now 35m old > 30m window
-	if srv.codeAttestThrottle.reuseAttestation(sePubB64, "0.6.0") {
+	if srv.codeAttestThrottle.reuseAttestation(sePubB64, "0.6.0", "devtok") {
 		t.Fatal("an aged-out seeded row must not be reusable (fail-closed staleness)")
 	}
 
@@ -340,7 +380,7 @@ func TestSeededWrongVersionRowForcesRealChallenge(t *testing.T) {
 	}
 	srv.SeedCodeAttestCache(context.Background())
 
-	if srv.codeAttestThrottle.reuseAttestation(sePubB64, "0.6.0") {
+	if srv.codeAttestThrottle.reuseAttestation(sePubB64, "0.6.0", "devtok") {
 		t.Fatal("a seeded row for a different version must not be reusable")
 	}
 

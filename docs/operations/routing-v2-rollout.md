@@ -360,3 +360,18 @@ The attestation changes (W5b) are **code-level and ship in the binary from Stage
   future rebuild under a different id (e.g. an 8-bit `mlx-community/...` variant)
   silently falls through until its id + active-param count is added. Add a table
   entry per new served build id (Codex PR #383 follow-up).
+- **W3 shape-aware cold-load planning** — the cold-load warm check
+  (`hasWarmProviderLocked`) and planner (`bestModelLoadProviderLocked` /
+  `planModelLoadActions` in `coordinator/registry/registry.go`) are MODEL-keyed,
+  not request-shape-keyed. So in a fleet that is shape-*heterogeneous* for the same
+  model (a provider that serves it text-only while the request `requiresVision`, a
+  tool-incapable build, or an allowed-serial restriction), a warm but wrong-shape
+  provider can make `ColdSpillProviders` short-circuit to 0 and/or make the planner
+  warm a provider the request can never drain to — so the request follows the
+  pre-W3 preflight path / waits out the queue timeout instead of warming the
+  *eligible* cold provider. Non-regression (this is pre-existing model-only
+  planning; W3 does not make it worse) and rare for the current models
+  (vision/tools capability is model-uniform; the public cold-spill path carries no
+  serial constraint). A complete fix threads the queued request's traits/vision/
+  serial through the queue→planner interface so cold loads target a provider that
+  can actually serve the queued shape (Codex PR #383 follow-up).

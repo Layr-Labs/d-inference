@@ -216,6 +216,13 @@ type Server struct {
 	// (EIGENINFERENCE_TTFT_HARD_REJECT=true) to restore the legacy hard 429.
 	ttftHardReject bool
 
+	// minDecodeTPS is the per-request sustained-decode floor (tokens/sec) passed
+	// to the scheduler as PendingRequest.MinDecodeTPS. When > 0 the router prefers
+	// providers that keep a newly admitted request at >= this rate (avoid
+	// overpacking into degraded streams). Soft: never rejects on its own. Default
+	// 0 (off). Set via EIGENINFERENCE_MIN_DECODE_TPS.
+	minDecodeTPS float64
+
 	// knownRuntimeManifest holds accepted runtime component hashes.
 	// When set, providers whose runtime hashes don't match are marked as
 	// unverified and excluded from routing (but not disconnected).
@@ -977,6 +984,16 @@ func (s *Server) SetBinaryHashEnforcement(enabled bool) {
 // the ttftHardReject field for rationale. Call before serving starts.
 func (s *Server) SetTTFTHardReject(enabled bool) {
 	s.ttftHardReject = enabled
+}
+
+// SetMinDecodeTPS sets the per-request sustained-decode floor (tokens/sec) the
+// scheduler uses as a soft routing preference. <= 0 disables it. See the
+// minDecodeTPS field. Call before serving starts.
+func (s *Server) SetMinDecodeTPS(tps float64) {
+	if tps < 0 {
+		tps = 0
+	}
+	s.minDecodeTPS = tps
 }
 
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.

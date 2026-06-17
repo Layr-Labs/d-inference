@@ -216,6 +216,70 @@ func TestResolvedPrefillTPSFallbackRatio(t *testing.T) {
 	}
 }
 
+func TestProjectedPerRequestDecodeTPS(t *testing.T) {
+	k := effectiveTPSLoadFactor
+	abs := func(x float64) float64 {
+		if x < 0 {
+			return -x
+		}
+		return x
+	}
+	approx := func(a, b float64) bool { return abs(a-b) < 0.01 }
+
+	// Static fallback (no observed rate), idle provider: rate at batch 1 = static/(1+k).
+	if got, want := projectedPerRequestDecodeTPS(routingSnapshot{decodeTPS: 25}), 25.0/(1+k); !approx(got, want) {
+		t.Fatalf("static idle projected = %.2f, want %.2f", got, want)
+	}
+	// Observed rate measured at batch 2 is unwound to a solo rate, then reapplied
+	// at batch 3 (the new request joins): solo = obs*(1+2k); proj = solo/(1+3k).
+	snap := routingSnapshot{decodeTPS: 25, observedDecodeTPS: 20, backendRunning: 2}
+	if got, want := projectedPerRequestDecodeTPS(snap), 20.0*(1+2*k)/(1+3*k); !approx(got, want) {
+		t.Fatalf("observed projected = %.2f, want %.2f", got, want)
+	}
+	// No decode info -> 0 (treated as below any positive floor).
+	if got := projectedPerRequestDecodeTPS(routingSnapshot{}); got != 0 {
+		t.Fatalf("empty snapshot projected = %.2f, want 0", got)
+	}
+}
+
+func TestReserveProviderDecodeFloorPrefersAboveFloor(t *testing.T) {
+	reg := New(testLogger())
+	model := "decode-floor-model"
+	idle := makeSchedulerProvider(t, reg, "idle", model, 30) // batch 0 -> projected ~23.6 (>= 15)
+	packed := makeSchedulerProvider(t, reg, "packed", model, 30)
+	packed.mu.Lock()
+	packed.BackendCapacity.Slots[0].NumRunning = 5        // batched (< maxConc, still a candidate)
+	packed.BackendCapacity.Slots[0].ObservedDecodeTPS = 8 // measured low under load -> projected < 15
+	packed.mu.Unlock()
+
+	req := &PendingRequest{RequestID: "floor-1", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, MinDecodeTPS: 15}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatalf("decode floor must not reject when a candidate exists: %+v", decision)
+	}
+	if selected.ID != idle.ID {
+		t.Fatalf("decode floor selected %q, want the above-floor idle provider", selected.ID)
+	}
+}
+
+func TestReserveProviderDecodeFloorNeverFailsClosed(t *testing.T) {
+	reg := New(testLogger())
+	model := "decode-floor-only-low"
+	only := makeSchedulerProvider(t, reg, "only", model, 20)
+	only.mu.Lock()
+	only.BackendCapacity.Slots[0].NumRunning = 5
+	only.BackendCapacity.Slots[0].ObservedDecodeTPS = 6 // projected well below the floor
+	only.mu.Unlock()
+
+	// Floor higher than any candidate can deliver: the gate is SOFT, so the
+	// request must still be served on the best-available provider, not rejected.
+	req := &PendingRequest{RequestID: "floor-2", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, MinDecodeTPS: 50}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatalf("decode floor is SOFT and must still serve the only (below-floor) provider: %+v", decision)
+	}
+}
+
 func TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet(t *testing.T) {
 	reg := New(testLogger())
 	model := "ttft-ceiling-model"

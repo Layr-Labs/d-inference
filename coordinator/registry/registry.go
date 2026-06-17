@@ -148,6 +148,13 @@ type PendingRequest struct {
 	// <= MaxTTFTMs. Used by public inference routes to honor the public
 	// TTFT target. Self-route / prefer-owner requests leave this at 0.
 	MaxTTFTMs float64
+	// MinDecodeTPS is an optional per-request sustained-decode floor in tokens/sec
+	// (Routing v2 W2). When > 0, the scheduler PREFERS providers that would still
+	// deliver >= MinDecodeTPS to a newly admitted request (i.e. not overpack a
+	// provider into a degraded stream). It is a SOFT preference: if no candidate
+	// meets the floor, the full pool is kept so the request is still served
+	// (cold-dispatch/queue spill is a separate concern). 0 disables it.
+	MinDecodeTPS float64
 	// CacheAffinityKey is SHA256(prompt_cache_key) from the request body. Empty
 	// means no cache-affinity routing. It is scoped again by account and model in
 	// the registry tracker and is never persisted.

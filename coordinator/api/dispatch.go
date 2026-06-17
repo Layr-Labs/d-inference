@@ -474,6 +474,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
 			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
+			MinDecodeTPS:           d.s.minDecodeTPS,
 			AcceptedCh:             make(chan struct{}, 1),
 			ChunkCh:                make(chan string, chunkBufferSize),
 			CompleteCh:             make(chan protocol.UsageInfo, 1),

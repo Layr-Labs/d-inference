@@ -477,6 +477,25 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 	}
 
+	// Decode-floor quality preference (SOFT, Routing v2 W2): when a per-request
+	// decode floor is set, prefer candidates that would still deliver
+	// >= MinDecodeTPS to a newly admitted request, so the router does not overpack
+	// a provider into a degraded (low tok/s) stream. Never fails closed — if no
+	// candidate clears the floor, keep the full pool so the request is still
+	// served (growing warm capacity / queueing to protect quality is handled
+	// upstream, not by dropping the request here).
+	if pr.MinDecodeTPS > 0 {
+		quality := make([]*routingCandidate, 0, len(pool))
+		for _, c := range pool {
+			if projectedPerRequestDecodeTPS(c.snapshot) >= pr.MinDecodeTPS {
+				quality = append(quality, c)
+			}
+		}
+		if len(quality) > 0 {
+			pool = quality
+		}
+	}
+
 	var best *routingCandidate
 	for _, c := range pool {
 		if best == nil || c.costMs < best.costMs {
@@ -1111,6 +1130,33 @@ func resolvedPrefillTPS(p *Provider) float64 {
 		return p.PrefillTPS
 	}
 	return resolvedDecodeTPS(p) * prefillToDecodeRatio
+}
+
+// projectedPerRequestDecodeTPS estimates the decode tokens/sec a NEWLY admitted
+// request would receive on this snapshot's provider once it joins the batch
+// (backendRunning+1 concurrent). Continuous batching is memory-bandwidth bound,
+// so per-request decode degrades with batch size by the same effectiveTPSLoadFactor
+// model used elsewhere: rate(b) = solo / (1 + k·b). The measured observed decode
+// rate (when present) is unwound from the current batch to a solo rate and then
+// reapplied at b+1; otherwise the static benchmark is the solo proxy. Used by the
+// decode-floor quality preference (PendingRequest.MinDecodeTPS).
+func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
+	k := effectiveTPSLoadFactor
+	if k < 0 {
+		k = 0
+	}
+	b := snap.backendRunning
+	if b < 0 {
+		b = 0
+	}
+	solo := snap.decodeTPS
+	if snap.observedDecodeTPS > 0 {
+		solo = snap.observedDecodeTPS * (1 + k*float64(b)) // unwind measured@b to solo (b=0)
+	}
+	if solo <= 0 {
+		return 0
+	}
+	return solo / (1 + k*float64(b+1))
 }
 
 func providerModelIDs(p *Provider) []string {

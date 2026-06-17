@@ -503,6 +503,9 @@ func (s *Server) dispatchOneProvider(
 	if !policy.enabled && !policy.prefer {
 		pr.MaxTTFTMs = float64(ttftDeadline(estimatedPromptTokens).Milliseconds())
 	}
+	// Routing v2 W2: soft per-request decode floor (0 = off). Applies to all
+	// routes; it only ranks providers, never rejects.
+	pr.MinDecodeTPS = s.minDecodeTPS
 
 	excludeList := func() []string {
 		ids := make([]string, 0, len(excludeProviders))
@@ -4751,6 +4754,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if !policy.enabled && !policy.prefer {
 		pr.MaxTTFTMs = float64(genericDeadline.Milliseconds())
 	}
+	// Routing v2 W2: soft per-request decode floor (0 = off).
+	pr.MinDecodeTPS = s.minDecodeTPS
 
 	// refundExtra credits back the provider-specific surcharge that
 	// reserveAdditionalForProvider may have added on top of the base

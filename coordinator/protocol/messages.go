@@ -188,6 +188,7 @@ type HeartbeatMessage struct {
 	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
 	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
 	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+	Energy          *EnergyLedger    `json:"energy,omitempty"`           // cumulative per-operation energy breakdown (nil for providers without IOReport)
 }
 
 // BackendSlotCapacity describes the capacity state of a single backend slot
@@ -221,9 +222,43 @@ type BackendCapacity struct {
 
 // SystemMetrics contains live resource utilization reported by a provider.
 type SystemMetrics struct {
-	MemoryPressure float64 `json:"memory_pressure"` // 0.0 to 1.0
-	CPUUsage       float64 `json:"cpu_usage"`       // 0.0 to 1.0
-	ThermalState   string  `json:"thermal_state"`   // nominal, fair, serious, critical
+	MemoryPressure float64 `json:"memory_pressure"`       // 0.0 to 1.0
+	CPUUsage       float64 `json:"cpu_usage"`             // 0.0 to 1.0
+	ThermalState   string  `json:"thermal_state"`         // nominal, fair, serious, critical
+	PowerWatts     float64 `json:"power_watts,omitempty"` // instantaneous total SoC power (IOReport); 0 = not measured
+}
+
+// EnergyLedger is the cumulative per-operation energy breakdown a provider
+// reports on the heartbeat. All joule fields are cumulative since the provider
+// process started (monotonic within a session; they reset to zero on restart).
+// The coordinator persists periodic snapshots and diffs consecutive rows per
+// session for time-series analysis of where energy goes. Every field is
+// omitempty so legacy providers and the no-IOReport fallback stay
+// byte-compatible on the wire. Mirrors EnergyLedgerSnapshot in
+// provider-swift/Sources/ProviderCore/Protocol/Types.swift.
+type EnergyLedger struct {
+	CurrentWatts float64 `json:"current_watts,omitempty"` // instantaneous total SoC power
+	IdleWatts    float64 `json:"idle_watts,omitempty"`    // measured idle-floor baseline
+
+	// Cumulative joules per operation bucket.
+	IdleJoules    float64 `json:"idle_joules,omitempty"`
+	PrefillJoules float64 `json:"prefill_joules,omitempty"`
+	DecodeJoules  float64 `json:"decode_joules,omitempty"`
+	LoadJoules    float64 `json:"load_joules,omitempty"`
+
+	// Cumulative joules per SoC subsystem (across all buckets).
+	CPUJoules  float64 `json:"cpu_joules,omitempty"`
+	GPUJoules  float64 `json:"gpu_joules,omitempty"`
+	ANEJoules  float64 `json:"ane_joules,omitempty"`
+	DRAMJoules float64 `json:"dram_joules,omitempty"`
+
+	// Normalizers + derived per-token energy coefficients.
+	PrefillTokens    float64 `json:"prefill_tokens,omitempty"`
+	DecodeTokens     float64 `json:"decode_tokens,omitempty"`
+	WarmSeconds      float64 `json:"warm_seconds,omitempty"`
+	ModelLoads       int     `json:"model_loads,omitempty"`
+	JPerPrefillToken float64 `json:"j_per_prefill_token,omitempty"`
+	JPerDecodeToken  float64 `json:"j_per_decode_token,omitempty"`
 }
 
 // HeartbeatStats contains counters reported in heartbeats.

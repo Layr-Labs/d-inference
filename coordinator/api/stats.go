@@ -109,7 +109,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		if p.PrivateOnly {
 			return
 		}
-		activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
+		// Prefer the provider's measured SoC power (IOReport) when reported;
+		// fall back to the static chip estimate otherwise. Same observed→estimate
+		// precedence pattern used for decode TPS.
+		if pw := p.SystemMetrics.PowerWatts; pw > 0 {
+			activePowerWatts += pw
+		} else {
+			activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
+		}
 		totalRequests += p.Stats.RequestsServed
 		totalTokensGen += p.Stats.TokensGenerated
 		totalGPUCores += p.Hardware.GPUCores

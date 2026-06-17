@@ -127,6 +127,9 @@ type MemoryStore struct {
 
 	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
 	inferenceRejections []RejectionRecord
+
+	// Periodic per-provider energy ledger snapshots (time-series).
+	providerEnergy []ProviderEnergyRecord
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -905,6 +908,42 @@ func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
 	}
 	if out == nil {
 		return []RejectionRecord{}
+	}
+	return out
+}
+
+// RecordProviderEnergy appends a periodic energy ledger snapshot for a provider
+// node. Best-effort; failures are discarded.
+func (s *MemoryStore) RecordProviderEnergy(record *ProviderEnergyRecord) error {
+	if record == nil {
+		return nil
+	}
+	rec := *record
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = time.Now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.providerEnergy = append(s.providerEnergy, rec)
+	return nil
+}
+
+// ProviderEnergySince returns energy snapshots created at or after the given
+// time, newest first (capped). Zero since returns all (capped).
+func (s *MemoryStore) ProviderEnergySince(since time.Time) []ProviderEnergyRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ProviderEnergyRecord, 0, len(s.providerEnergy))
+	for i := len(s.providerEnergy) - 1; i >= 0; i-- {
+		r := s.providerEnergy[i]
+		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
 	}
 	return out
 }

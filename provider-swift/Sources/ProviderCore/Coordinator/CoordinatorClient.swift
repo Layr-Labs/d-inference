@@ -41,6 +41,9 @@ public enum CoordinatorEvent: Sendable {
 public final class AtomicProviderStats: Sendable {
     private let _requestsServed = ManagedAtomic<UInt64>(0)
     private let _tokensGenerated = ManagedAtomic<UInt64>(0)
+    // Cumulative prompt tokens that have completed prefill (counted at first
+    // token). Drives the energy accountant's J/prefill-token regression.
+    private let _promptTokensPrefilled = ManagedAtomic<UInt64>(0)
     // Count of completed requests whose usage chunk was missing/zero. Surfaced
     // in the daemon state file so `doctor` can flag a billing under-count.
     private let _usageGaps = ManagedAtomic<UInt64>(0)
@@ -55,6 +58,15 @@ public final class AtomicProviderStats: Sendable {
     public var tokensGenerated: UInt64 {
         get { _tokensGenerated.load() }
         set { _tokensGenerated.store(newValue) }
+    }
+
+    public var promptTokensPrefilled: UInt64 {
+        get { _promptTokensPrefilled.load() }
+        set { _promptTokensPrefilled.store(newValue) }
+    }
+
+    public func addPromptTokensPrefilled(_ count: UInt64) {
+        _promptTokensPrefilled.add(count)
     }
 
     public var usageGaps: UInt64 {
@@ -428,6 +440,12 @@ public actor CoordinatorClient {
     private let config: CoordinatorClientConfig
     private let stats: AtomicProviderStats
     private let state: ProviderState
+
+    /// Sudoless per-operation energy accountant (IOReport). Inert when IOReport
+    /// is unavailable, in which case the heartbeat omits energy and the
+    /// coordinator falls back to the static wall-power estimate.
+    private let energyAccountant = EnergyAccountant()
+    private var energyStarted = false
 
     private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "coordinator")
 
@@ -889,12 +907,28 @@ public actor CoordinatorClient {
 
     // MARK: - Heartbeat
 
-    private func buildHeartbeatJSON() -> String {
+    private func buildHeartbeatJSON() async -> String {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
         let warmModels = state.warmModels
         let capacity = state.backendCapacity
-        let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
+        var metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
+
+        // Start the energy accountant on the first heartbeat, then attach the
+        // latest cumulative snapshot. Inert (snapshot empty) without IOReport.
+        if !energyStarted {
+            energyStarted = true
+            await energyAccountant.start { [weak self] in
+                await self?.energyCounters()
+                    ?? EnergyActivityCounters(decodeTokensTotal: 0, prefillTokensTotal: 0, modelResident: false, loading: false)
+            }
+        }
+        var energySnapshot: EnergyLedgerSnapshot? = nil
+        if await energyAccountant.available() {
+            let snap = await energyAccountant.snapshot()
+            if snap.currentWatts > 0 { metrics.powerWatts = snap.currentWatts }
+            energySnapshot = snap
+        }
 
         let message = CoordinatorClientCodec.heartbeatMessage(
             status: isActive ? .serving : .idle,
@@ -905,7 +939,8 @@ public actor CoordinatorClient {
                 tokensGenerated: stats.tokensGenerated
             ),
             systemMetrics: metrics,
-            backendCapacity: capacity
+            backendCapacity: capacity,
+            energy: energySnapshot
         )
 
         guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),
@@ -913,6 +948,18 @@ public actor CoordinatorClient {
             return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
         }
         return json
+    }
+
+    /// Current cumulative activity counters for the energy accountant. Read once
+    /// per accounting tick; deltas are computed inside the accountant.
+    private func energyCounters() -> EnergyActivityCounters {
+        let model = state.currentModel
+        return EnergyActivityCounters(
+            decodeTokensTotal: stats.tokensGenerated,
+            prefillTokensTotal: stats.promptTokensPrefilled,
+            modelResident: !(model?.isEmpty ?? true),
+            loading: false
+        )
     }
 
     // MARK: - Outbound Encoding

@@ -1467,6 +1467,9 @@ public actor ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
+            // Prefill tokens (counted at completion alongside decode tokens) feed
+            // the energy accountant's J/prefill-token regression.
+            providerStats.addPromptTokensPrefilled(UInt64(max(promptTokens, 0)))
 
             // Update state
             await me.updateAggregateCapacity()

@@ -939,6 +939,75 @@ func TestHeartbeatWithSystemMetricsMarshal(t *testing.T) {
 	}
 }
 
+// TestSystemMetricsPowerWattsOmitempty verifies power_watts is omitted when
+// zero (legacy providers / no-IOReport fallback) and present when measured, so
+// the Swift `power_watts` optional (nil = omitted) stays wire-symmetric.
+func TestSystemMetricsPowerWattsOmitempty(t *testing.T) {
+	b, _ := json.Marshal(SystemMetrics{MemoryPressure: 0.5, CPUUsage: 0.2, ThermalState: "nominal"})
+	if bytes.Contains(b, []byte("power_watts")) {
+		t.Errorf("power_watts must be omitted when zero, got %s", b)
+	}
+	b, _ = json.Marshal(SystemMetrics{ThermalState: "nominal", PowerWatts: 42.5})
+	if !bytes.Contains(b, []byte(`"power_watts":42.5`)) {
+		t.Errorf("power_watts must be present when set, got %s", b)
+	}
+}
+
+// TestHeartbeatEnergyLedgerSymmetry verifies the energy ledger is omitted when
+// nil (providers without IOReport), that zero sub-fields are omitted
+// (byte-compatible with the Swift encodeIfNonZero snapshot), and that a
+// populated ledger round-trips.
+func TestHeartbeatEnergyLedgerSymmetry(t *testing.T) {
+	// Nil energy must be omitted.
+	b, _ := json.Marshal(HeartbeatMessage{Type: TypeHeartbeat, Status: "idle"})
+	var m map[string]any
+	json.Unmarshal(b, &m)
+	if _, ok := m["energy"]; ok {
+		t.Errorf("energy should be omitted when nil (omitempty), got %s", b)
+	}
+
+	msg := HeartbeatMessage{
+		Type:   TypeHeartbeat,
+		Status: "serving",
+		Energy: &EnergyLedger{
+			CurrentWatts:    45.5,
+			IdleWatts:       8.0,
+			IdleJoules:      900.0,
+			PrefillJoules:   300.0,
+			DecodeJoules:    1500.0,
+			DecodeTokens:    3000,
+			JPerDecodeToken: 0.5,
+			ModelLoads:      2,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Zero sub-fields must be omitted (matches Swift snapshot encodeIfNonZero).
+	for _, key := range []string{"load_joules", "ane_joules", "gpu_joules", "j_per_prefill_token", "prefill_tokens"} {
+		if bytes.Contains(data, []byte(key)) {
+			t.Errorf("%s should be omitted when zero (omitempty): %s", key, data)
+		}
+	}
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Energy == nil {
+		t.Fatal("energy lost in round-trip")
+	}
+	if decoded.Energy.DecodeJoules != 1500.0 {
+		t.Errorf("decode_joules = %f, want 1500", decoded.Energy.DecodeJoules)
+	}
+	if decoded.Energy.JPerDecodeToken != 0.5 {
+		t.Errorf("j_per_decode_token = %f, want 0.5", decoded.Energy.JPerDecodeToken)
+	}
+	if decoded.Energy.ModelLoads != 2 {
+		t.Errorf("model_loads = %d, want 2", decoded.Energy.ModelLoads)
+	}
+}
+
 func TestProviderMessageUnmarshalHeartbeatWithMetrics(t *testing.T) {
 	raw := `{"type":"heartbeat","status":"idle","active_model":null,"stats":{"requests_served":0,"tokens_generated":0},"system_metrics":{"memory_pressure":0.42,"cpu_usage":0.15,"thermal_state":"fair"}}`
 

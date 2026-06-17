@@ -54,7 +54,7 @@ extension KVQuantCandidateMode {
             return KVQuantCacheSpec(
                 bits: 8, groupSize: 128, startToken: 0,
                 quantizeKeys: true, quantizeValues: true)
-        case .k8v8g64Dequant:
+        case .k8v8g64, .k8v8g64Dequant:
             return KVQuantCacheSpec(
                 bits: 8, groupSize: 64, startToken: 0,
                 quantizeKeys: true, quantizeValues: true)

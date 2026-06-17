@@ -122,6 +122,17 @@ enum KVQuantExecution {
             }
             return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
 
+        case .k8v8g64:
+            let factory: @Sendable (any LanguageModel) -> [KVCache] = { model in
+                model.newCache(parameters: nil).map { baseCache in
+                    if baseCache is RotatingKVCache {
+                        return baseCache.copy()
+                    }
+                    return ProtocolSafeQuantizedKVCache(groupSize: 64, bits: 8, mode: .affine)
+                }
+            }
+            return KVQuantExecutionConfig(parameters: parameters, cacheFactory: factory)
+
         case .k8v8g64Dequant:
             let spec = KVQuantCacheSpec(
                 bits: 8, groupSize: 64, startToken: 0,

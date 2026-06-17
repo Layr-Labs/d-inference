@@ -12,6 +12,7 @@ func kvQuantCandidateModesParseFromRawLabels() throws {
     #expect(try KVQuantCandidateMode.parse("affine8:g64:start1024") == .affine8)
     #expect(try KVQuantCandidateMode.parse("full-v-affine4:g64:start1024") == .fullVAffine4)
     #expect(try KVQuantCandidateMode.parse("k8v8:g128") == .k8v8g128)
+    #expect(try KVQuantCandidateMode.parse("k8v8:g64") == .k8v8g64)
     #expect(try KVQuantCandidateMode.parse("k8v8:g64:dequant") == .k8v8g64Dequant)
     #expect(try KVQuantCandidateMode.parse("k6v6:g64") == .k6v6g64)
     #expect(try KVQuantCandidateMode.parse("k6v6:g64:dequant") == .k6v6g64Dequant)
@@ -65,6 +66,14 @@ func bf16KVModeSuppliesBFloat16CacheFactory() throws {
 @Test("k8v8:g128 mode supplies a protocol-safe quantized cache factory")
 func k8v8g128ModeSuppliesProtocolSafeQuantizedCacheFactory() throws {
     let config = try KVQuantExecution.config(for: .k8v8g128)
+
+    #expect(config.parameters.kvBits == nil)
+    #expect(config.cacheFactory != nil)
+}
+
+@Test("k8v8:g64 mode supplies a protocol-safe quantized cache factory")
+func k8v8g64ModeSuppliesProtocolSafeQuantizedCacheFactory() throws {
+    let config = try KVQuantExecution.config(for: .k8v8g64)
 
     #expect(config.parameters.kvBits == nil)
     #expect(config.cacheFactory != nil)

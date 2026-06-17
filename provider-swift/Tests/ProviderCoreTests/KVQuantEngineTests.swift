@@ -5,6 +5,7 @@
 // pure factory-selection helper and the KV-byte math directly.
 
 import Foundation
+import Darwin
 import MLX
 @testable import MLXLMCommon
 @testable import ProviderCore
@@ -275,6 +276,7 @@ struct KVQuantEngineTests {
 
     @Test("GPT-OSS resolves to dequant cache scheme K8V8 g64")
     func gptOSSResolvesToDequantScheme() {
+        unsetenv("DARKBLOOM_KV_GPTOSS_KERNEL")
         let architecture = ModelArchitecture(
             numLayers: gptOSSLike.numLayers,
             kvHeads: gptOSSLike.kvHeads,
@@ -295,6 +297,33 @@ struct KVQuantEngineTests {
 
         #expect(scheme == .gptOSSK8V8G64)
         #expect(scheme?.schedulerConfig.cacheKind == .dequant)
+        #expect(scheme?.schedulerConfig.groupSize == 64)
+    }
+
+    @Test("GPT-OSS env override resolves to kernel cache scheme K8V8 g64")
+    func gptOSSKernelOverrideResolvesToKernelScheme() {
+        setenv("DARKBLOOM_KV_GPTOSS_KERNEL", "1", 1)
+        defer { unsetenv("DARKBLOOM_KV_GPTOSS_KERNEL") }
+        let architecture = ModelArchitecture(
+            numLayers: gptOSSLike.numLayers,
+            kvHeads: gptOSSLike.kvHeads,
+            headDim: gptOSSLike.headDim,
+            numKvSharedLayers: gptOSSLike.numKvSharedLayers,
+            globalHeadDim: gptOSSLike.globalHeadDim,
+            numGlobalKvHeads: gptOSSLike.numGlobalKvHeads,
+            slidingWindowPattern: gptOSSLike.slidingWindowPattern,
+            layerTypes: gptOSSLike.layerTypes,
+            maxContextLength: 8192
+        )
+
+        let scheme = BatchScheduler.resolveKVQuantScheme(
+            modelID: "openai/gpt-oss-20b",
+            architecture: architecture,
+            kvQuantEnabled: true
+        )
+
+        #expect(scheme?.candidateMode == .k8v8g64)
+        #expect(scheme?.schedulerConfig.cacheKind == .kernel)
         #expect(scheme?.schedulerConfig.groupSize == 64)
     }
 

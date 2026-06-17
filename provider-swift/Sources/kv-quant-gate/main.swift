@@ -18,11 +18,11 @@ struct KVQuantGate: AsyncParsableCommand {
     @Option(name: .customLong("reference"), help: "Reference KV mode.")
     var reference = "fp16-kv"
 
-    @Option(name: .customLong("candidate"), help: "Candidate KV quant mode.")
-    var candidate = "full-v-affine4:g64:start1024"
+    @Option(name: .customLong("candidate"), help: "Candidate KV quant mode, or 'auto' for the live engine scheme for --model-id.")
+    var candidate = "auto"
 
-    @Option(name: .customLong("suites"), help: "Comma-separated suites to run.")
-    var suites = "perf,memory,output"
+    @Option(name: .customLong("suites"), help: "Comma-separated suites to run. Capacity is always prepended to keep max-admitted-tokens first.")
+    var suites = "capacity,logits,perf,memory,output"
 
     @Option(name: .customLong("contexts"), help: "Comma-separated context lengths.")
     var contexts = "4096,8192"
@@ -49,7 +49,9 @@ struct KVQuantGate: AsyncParsableCommand {
         _ = try parseSuites(suites)
         _ = try parseContexts(contexts)
         _ = try parseCandidateMode(reference, option: "--reference")
-        _ = try parseCandidateMode(candidate, option: "--candidate")
+        if candidate != "auto" {
+            _ = try parseCandidateMode(candidate, option: "--candidate")
+        }
 
         if decodeTokens <= 0 {
             throw ValidationError("--decode-tokens must be greater than zero")
@@ -70,7 +72,7 @@ struct KVQuantGate: AsyncParsableCommand {
             modelID: modelID,
             modelDirectory: modelDir.map { URL(fileURLWithPath: $0) },
             reference: parseCandidateMode(reference, option: "--reference"),
-            candidate: parseCandidateMode(candidate, option: "--candidate"),
+            candidate: try resolvedCandidateMode(),
             suites: parseSuites(suites),
             contexts: parseContexts(contexts),
             decodeTokens: decodeTokens,
@@ -88,6 +90,22 @@ struct KVQuantGate: AsyncParsableCommand {
         } else {
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
+        }
+    }
+}
+
+private extension KVQuantGate {
+    func resolvedCandidateMode() throws -> KVQuantCandidateMode {
+        guard candidate == "auto" else {
+            return try parseCandidateMode(candidate, option: "--candidate")
+        }
+        switch KVQuantPolicy.classify(modelID: modelID) {
+        case .gemma4:
+            return .k8v8g128
+        case .gptOSS:
+            return .k8v8g64Dequant
+        case .unknown:
+            throw ValidationError("--candidate auto has no live KV quant scheme for model-id '\(modelID)'; pass an explicit --candidate")
         }
     }
 }

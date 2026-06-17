@@ -79,11 +79,11 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
                 KVQuantPlan(
                     enabled: true,
                     layerScope: .fullAndGlobalOnly,
-                    tensorTarget: .valuesOnly,
-                    keyPrecision: .fp16,
-                    valuePrecision: .quantized4Bit,
-                    valueEncoding: .affine4Placeholder,
-                    quantizationStartToken: 1024,
+                    tensorTarget: .keysAndValues,
+                    keyPrecision: .quantized8Bit,
+                    valuePrecision: .quantized8Bit,
+                    valueEncoding: .affine8,
+                    quantizationStartToken: 0,
                     sinkAware: .notRequired,
                     rotatingSlidingPrecision: .fp16,
                     mtpPolicy: .disabled,
@@ -100,16 +100,16 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
             )
 
         case .gptOSS:
-            let summary = "GPT-OSS: validated KV quant candidate is `full-v-affine4:g64:start1024` (V-only 4-bit affine on full layers from token 1024; keys and rotating/sliding caches stay fp16)."
+            let summary = "GPT-OSS: validated live KV quant engine scheme is `k8v8:g64:dequant` (8-bit affine K+V on full layers, group size 64; rotating/sliding caches stay fp16; dequant path preserves MLX fused sink-aware attention)."
             return (
                 KVQuantPlan(
                     enabled: true,
                     layerScope: .fullOnly,
-                    tensorTarget: .valuesOnly,
-                    keyPrecision: .fp16,
-                    valuePrecision: .quantized4Bit,
-                    valueEncoding: .affine4Placeholder,
-                    quantizationStartToken: 1024,
+                    tensorTarget: .keysAndValues,
+                    keyPrecision: .quantized8Bit,
+                    valuePrecision: .quantized8Bit,
+                    valueEncoding: .affine8,
+                    quantizationStartToken: 0,
                     sinkAware: .required,
                     rotatingSlidingPrecision: .fp16,
                     mtpPolicy: .disabled,
@@ -118,10 +118,9 @@ public struct KVQuantPolicy: Codable, Sendable, Equatable {
                 summary,
                 [
                     "GPT-OSS should only quantize full attention layers; rotating or sliding-window layers remain fp16.",
-                    "Sink-aware handling is required before applying this policy.",
-                    "Value cache only is selected so key cache attention quality remains fp16.",
-                    "The validated benchmark candidate is `full-v-affine4:g64:start1024`, which passes PPL/logits/output/NIAH gates.",
-                    "Quantization starts at token 1024 to preserve the prompt prefix and attention sinks in fp16.",
+                    "Sink-aware handling is required; the live scheme uses DequantBatchKVCache so MLXFast.scaledDotProductAttention receives dequantized K/V and native sinks.",
+                    "The live engine scheme is `k8v8:g64:dequant` (8-bit affine keys and values, group size 64).",
+                    "The dequant cache stores quantized K/V for capacity while preserving the fused MLX attention path for decode.",
                     mode.reportDescription,
                 ]
             )
@@ -253,16 +252,19 @@ public enum KVQuantLayerScope: String, Codable, Sendable, Equatable {
 public enum KVQuantTensorTarget: String, Codable, Sendable, Equatable {
     case none
     case valuesOnly = "values_only"
+    case keysAndValues = "keys_and_values"
 }
 
 public enum KVQuantPrecision: String, Codable, Sendable, Equatable {
     case fp16
     case quantized4Bit = "quantized_4bit"
+    case quantized8Bit = "quantized_8bit"
 }
 
 public enum KVQuantValueEncoding: String, Codable, Sendable, Equatable {
     case turbo4Placeholder = "turbo4_placeholder"
     case affine4Placeholder = "affine4_placeholder"
+    case affine8 = "affine8"
 }
 
 public enum KVQuantSinkAwareness: String, Codable, Sendable, Equatable {

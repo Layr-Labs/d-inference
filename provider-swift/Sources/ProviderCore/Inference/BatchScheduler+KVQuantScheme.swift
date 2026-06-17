@@ -63,9 +63,17 @@ public struct KVQuantEngineScheme: Sendable, Equatable {
     /// v1 validated Gemma winner: K8V8 affine, group size 128, kernel path.
     public static let gemma4K8V8G128 = KVQuantEngineScheme(candidateMode: .k8v8g128)
 
-    /// v1 GPT-OSS winner: K8V8 affine, group size 64, dequant path.
-    /// Required because GPT-OSS's quantized attention kernel fatals on sinks;
-    /// the cache stores quantized but attends on the dequantized fp16 view.
+    /// v1 GPT-OSS scheme: K8V8 affine, group size 64, dequant path.
+    ///
+    /// Measured decision (DAR-323 concurrency sweep, decode-window metric): under
+    /// concurrency the dequant path decodes at near-parity with fp16
+    /// (~0.93–1.00x) because it keeps MLX's fused flash attention and the per-step
+    /// dequant is well overlapped. The native quantized kernel (`.k8v8g64`, which
+    /// is now sink-correct) is *slower* at decode (~0.6–0.94x) because MLX has no
+    /// fused quantized attention kernel — the hand-rolled `quantizedMM`+softmax
+    /// path can't match fused flash. Both store identical bytes (~1.88x capacity),
+    /// so dequant is the better choice for GPT-OSS. Set
+    /// `DARKBLOOM_KV_GPTOSS_KERNEL=1` to force the kernel path for A/B testing.
     public static let gptOSSK8V8G64 = KVQuantEngineScheme(candidateMode: .k8v8g64Dequant)
 }
 
@@ -93,6 +101,13 @@ extension BatchScheduler {
                   headDim % 64 == 0
             else {
                 return nil
+            }
+            // Experiment hook (DAR-323): force the native quantized kernel path
+            // for A/B perf comparison. Default is dequant, which decodes at
+            // near-parity with fp16 under concurrency (the kernel path is slower
+            // because MLX lacks a fused quantized attention kernel).
+            if ProcessInfo.processInfo.environment["DARKBLOOM_KV_GPTOSS_KERNEL"] == "1" {
+                return KVQuantEngineScheme(candidateMode: .k8v8g64)
             }
             return .gptOSSK8V8G64
         case .unknown:

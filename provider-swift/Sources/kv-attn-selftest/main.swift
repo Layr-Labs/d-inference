@@ -365,6 +365,91 @@ func runQuantizedBatchStorageCheck(bits: Int, groupSize: Int) -> Bool {
     return ok
 }
 
+func runKernelAdditiveArrayMaskCase(_ name: String, bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(31416)
+    let B = 4, nQ = 8, nKV = 2, L = 32, D = groupSize
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+    let (kwq, ks, kb) = quantized(k, groupSize: groupSize, bits: bits)
+    let (vwq, vs, vb) = quantized(v, groupSize: groupSize, bits: bits)
+    let additiveMask = buildCausalAdditiveMask(L: L, Lk: L).reshaped([1, 1, L, L])
+        + zeros([B, 1, 1, 1]).asType(.float32)
+
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: (kwq, ks, kb), quantizedValues: (vwq, vs, vb),
+        scale: scale, mask: .array(additiveMask), groupSize: groupSize, bits: bits, mode: .affine)
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q,
+        keys: dequantized(kwq, scales: ks, biases: kb, groupSize: groupSize, bits: bits),
+        values: dequantized(vwq, scales: vs, biases: vb, groupSize: groupSize, bits: bits),
+        scale: scale, mask: additiveMask)
+    let fp16Ref = MLXFast.scaledDotProductAttention(
+        queries: q, keys: k, values: v, scale: scale, mask: additiveMask)
+    eval(candidate, dequantRef, fp16Ref)
+    let kernelRel = relL2(candidate, dequantRef)
+    let quantLossRel = relL2(candidate, fp16Ref)
+    let ok = kernelRel < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] \(name): kernel_relL2=\(String(format: "%.5f", kernelRel)) quant_loss_relL2=\(String(format: "%.5f", quantLossRel))"
+    )
+    return ok
+}
+
+func runKernelFullyMaskedNoSinkCase(_ name: String, bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(31417)
+    let B = 2, nQ = 8, nKV = 2, L = 16, D = groupSize
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+    let (kwq, ks, kb) = quantized(k, groupSize: groupSize, bits: bits)
+    let (vwq, vs, vb) = quantized(v, groupSize: groupSize, bits: bits)
+
+    var maskValues: [Int32] = []
+    maskValues.reserveCapacity(B * L * L)
+    for b in 0..<B {
+        for qPos in 0..<L {
+            for kPos in 0..<L {
+                let allowed = !(b == 0 && qPos == 0) && kPos <= qPos
+                maskValues.append(allowed ? 1 : 0)
+            }
+        }
+    }
+    let boolMask = MLXArray(maskValues).reshaped([B, 1, L, L]) .== MLXArray(Int32(1))
+    let additiveMask = MLX.where(
+        boolMask, MLXArray(Float(0)), MLXArray(-Float.greatestFiniteMagnitude))
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: (kwq, ks, kb), quantizedValues: (vwq, vs, vb),
+        scale: scale, mask: .array(boolMask), groupSize: groupSize, bits: bits, mode: .affine)
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q,
+        keys: dequantized(kwq, scales: ks, biases: kb, groupSize: groupSize, bits: bits),
+        values: dequantized(vwq, scales: vs, biases: vb, groupSize: groupSize, bits: bits),
+        scale: scale, mask: additiveMask)
+    eval(candidate, dequantRef)
+    var validRows: [Int32] = []
+    validRows.reserveCapacity(B * L)
+    for b in 0..<B {
+        for qPos in 0..<L {
+            validRows.append((b == 0 && qPos == 0) ? 0 : 1)
+        }
+    }
+    let valid = (MLXArray(validRows).reshaped([B, 1, L, 1]) .== MLXArray(Int32(1)))
+    let candidateValid = MLX.where(valid, candidate, MLXArray(Float(0)))
+    let dequantValid = MLX.where(valid, dequantRef, MLXArray(Float(0)))
+    let rel = relL2(candidateValid, dequantValid)
+    let maskedAbs = abs(candidate[0..<1, 0..., 0..<1, 0...]).max().item(Float.self)
+    let ok = rel < 0.02 && maskedAbs < 1e-6
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] \(name): valid_rows_relL2=\(String(format: "%.5f", rel)) fully_masked_abs=\(String(format: "%.6f", maskedAbs))"
+    )
+    return ok
+}
+
 print("== QuantizedBatchKVCache kernel correctness (DAR-314) ==")
 var dar314Ok = true
 for bits in [8, 4] {
@@ -380,12 +465,37 @@ for bits in [8, 4] {
     dar314Ok = runQuantizedBatchKernelCase(
         "case4 growth >256", B: 1, nQ: 4, nKV: 4, L: 300, D: 128,
         bits: bits, groupSize: 64, incremental: true) && dar314Ok
+    // B>1 GQA with an array mask: the concurrency path. The 5D GQA score tensor
+    // must accept a [B,1,L,kL] mask — this crashed before the 4D-collapse fix.
+    dar314Ok = runQuantizedBatchKernelCase(
+        "case5 batched GQA B=4", B: 4, nQ: 8, nKV: 2, L: 32, D: 64,
+        bits: bits, groupSize: 64) && dar314Ok
 }
+
+// Live Gemma scheme: K8V8 g128 kernel. Keep this outside the 4-bit loop so the
+// production K/V path is proven directly and kernel error is reported separately
+// from quantization loss.
+dar314Ok = runQuantizedBatchKernelCase(
+    "live Gemma k8v8:g128 B=4 GQA bool-array", B: 4, nQ: 8, nKV: 2, L: 32, D: 128,
+    bits: 8, groupSize: 128) && dar314Ok
+dar314Ok = runKernelAdditiveArrayMaskCase(
+    "live Gemma k8v8:g128 B=4 GQA additive-array", bits: 8, groupSize: 128) && dar314Ok
+dar314Ok = runKernelFullyMaskedNoSinkCase(
+    "live Gemma k8v8:g128 fully-masked no-sink", bits: 8, groupSize: 128) && dar314Ok
 
 print("== QuantizedBatchKVCache storage round-trip (DAR-314) ==")
 for bits in [8, 4] {
     dar314Ok = runQuantizedBatchStorageCheck(bits: bits, groupSize: 64) && dar314Ok
 }
+
+// Live Gemma cache mutation parameters (K8V8 g128). These exercise the same
+// continuously-batched quantized cache family the engine selects for Gemma.
+followUpOk = runFinalizeBatchedCase(
+    "finalize ragged live g128", bits: 8, groupSize: 128) && followUpOk
+followUpOk = runExtendBatchedCase(
+    "extend empty live g128", bits: 8, groupSize: 128) && followUpOk
+followUpOk = runFilterBatchedCase(
+    "filter drop-row live g128", bits: 8, groupSize: 128) && followUpOk
 
 if dar314Ok {
     print("DAR-314 gate: ALL OK")
@@ -655,10 +765,55 @@ func runDequantBatchCacheCase(
     return ok
 }
 
+func runLiveGPTOSSDequantCase() -> Bool {
+    MLXRandom.seed(32364)
+    let B = 4, nQ = 8, nKV = 2, L = 32, D = 64
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let sinks = MLXRandom.normal([nQ]).asType(.float32) * 2.0
+    let scale = 1.0 / Float(D).squareRoot()
+    let groupSize = 64
+    let bits = 8
+
+    let cache = DequantBatchKVCache(
+        leftPadding: [Int](repeating: 0, count: B),
+        groupSize: groupSize, bits: bits, mode: .affine)
+    let (dqK, dqV) = cache.update(keys: k, values: v)
+
+    let (kwq, ks, kb) = quantized(k, groupSize: groupSize, bits: bits)
+    let (vwq, vs, vb) = quantized(v, groupSize: groupSize, bits: bits)
+    let directDQK = dequantized(kwq, scales: ks, biases: kb, groupSize: groupSize, bits: bits)
+    let directDQV = dequantized(vwq, scales: vs, biases: vb, groupSize: groupSize, bits: bits)
+    let cacheKRel = relL2(dqK, directDQK)
+    let cacheVRel = relL2(dqV, directDQV)
+
+    let boolMask = materializedCausalBoolMask(B: B, L: L)
+    let additiveMask = MLX.where(
+        boolMask, MLXArray(Float(0)), MLXArray(-Float.greatestFiniteMagnitude))
+    let candidate = MLXFast.scaledDotProductAttention(
+        queries: q, keys: dqK, values: dqV, scale: scale, mask: additiveMask, sinks: sinks)
+    let directDequantRef = MLXFast.scaledDotProductAttention(
+        queries: q, keys: directDQK, values: directDQV, scale: scale, mask: additiveMask, sinks: sinks)
+    let fp16Ref = MLXFast.scaledDotProductAttention(
+        queries: q, keys: k, values: v, scale: scale, mask: additiveMask, sinks: sinks)
+    eval(candidate, directDequantRef, fp16Ref)
+
+    let implRel = relL2(candidate, directDequantRef)
+    let quantLossRel = relL2(directDequantRef, fp16Ref)
+    let ok = max(cacheKRel, cacheVRel) < 1e-6 && implRel < 1e-6 && quantLossRel < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] live GPT-OSS k8v8:g64:dequant B=4 GQA+sinks: cache_K_rel=\(String(format: "%.6f", cacheKRel)) cache_V_rel=\(String(format: "%.6f", cacheVRel)) impl_rel=\(String(format: "%.6f", implRel)) quant_loss_rel=\(String(format: "%.5f", quantLossRel))"
+    )
+    return ok
+}
+
 print("== DequantBatchKVCache regular-attention path (DAR-322) ==")
 var dar322Ok = true
 dar322Ok = runDequantBatchCacheCase(
     "dequant g64 D=64", B: 1, nQ: 8, nKV: 2, L: 16, D: 64) && dar322Ok
+dar322Ok = runLiveGPTOSSDequantCase() && dar322Ok
 
 let dequantAsProtocol = DequantBatchKVCache(
     leftPadding: [0], groupSize: 64, bits: 8, mode: .affine
@@ -678,4 +833,260 @@ if dar322Ok {
     print("DAR-322 gate: ALL OK")
 } else {
     print("DAR-322 gate: FAILED")
+}
+
+// MARK: - DAR-323: sink-aware quantized attention (GPT-OSS kernel path)
+//
+// First-principles isolation for attention sinks. An attention sink is a learned
+// per-(query)head logit that joins the softmax denominator as a valueless virtual
+// key. We prove the quantized kernel handles it by comparing against MLX's own
+// `scaledDotProductAttention(..., sinks:)` fed the SAME dequantized K/V and the
+// SAME sinks — any large gap is a kernel/GQA/convention bug, not quant loss.
+// D=64 mirrors GPT-OSS's head_dim (group must be <= 64).
+
+func runSinkCase(
+    _ name: String,
+    B: Int, nQ: Int, nKV: Int, L: Int, Lk: Int, D: Int,
+    bits: Int, groupSize: Int, causal: Bool
+) -> Bool {
+    MLXRandom.seed(2024)
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, Lk, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, Lk, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+    // Nonzero, distinct per-head sink logits (range similar to trained sinks).
+    let sinks = MLXRandom.normal([nQ]).asType(.float32) * 2.0
+
+    let (kwq, ks, kb) = quantized(k, groupSize: groupSize, bits: bits)
+    let (vwq, vs, vb) = quantized(v, groupSize: groupSize, bits: bits)
+    let kdq = dequantized(kwq, scales: ks, biases: kb, groupSize: groupSize, bits: bits)
+    let vdq = dequantized(vwq, scales: vs, biases: vb, groupSize: groupSize, bits: bits)
+
+    let additiveMask: MLXArray? = causal ? buildCausalAdditiveMask(L: L, Lk: Lk) : nil
+    let maskMode: MLXFast.ScaledDotProductAttentionMaskMode = causal ? .causal : .none
+
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q, keys: kdq, values: vdq, scale: scale, mask: additiveMask, sinks: sinks)
+    let fp16Ref = MLXFast.scaledDotProductAttention(
+        queries: q, keys: k, values: v, scale: scale, mask: additiveMask, sinks: sinks)
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: (kwq, ks, kb), quantizedValues: (vwq, vs, vb),
+        scale: scale, mask: maskMode, groupSize: groupSize, bits: bits, mode: .affine,
+        sinks: sinks)
+
+    eval(dequantRef, fp16Ref, candidate)
+    let kernelRel = relL2(candidate, dequantRef)
+    let totalRel = relL2(candidate, fp16Ref)
+    let ok = kernelRel < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] \(name) bits=\(bits): kernel_vs_MLXsinks relL2=\(String(format: "%.5f", kernelRel)) | total_vs_fp16 relL2=\(String(format: "%.5f", totalRel))"
+    )
+    return ok
+}
+
+// Encodes the corrected sink semantics:
+//   (a) sinks: nil  == legacy no-sink kernel (the sink -> -inf limit), bit-exact.
+//   (b) sinks: 0    is a REAL sink (adds exp(0-m) to the denominator), so it must
+//       DIFFER from nil, and must match MLX SDPA fed an explicit zero-sinks array.
+func runSinkSemanticsCase(bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(4242)
+    let B = 1, nQ = 8, nKV = 2, L = 16, D = 64
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+    let (kwq, ks, kb) = quantized(k, groupSize: groupSize, bits: bits)
+    let (vwq, vs, vb) = quantized(v, groupSize: groupSize, bits: bits)
+
+    func cand(_ sinks: MLXArray?) -> MLXArray {
+        quantizedScaledDotProductAttention(
+            queries: q, quantizedKeys: (kwq, ks, kb), quantizedValues: (vwq, vs, vb),
+            scale: scale, mask: .causal, groupSize: groupSize, bits: bits, mode: .affine,
+            sinks: sinks)
+    }
+    let zeroSinks = (MLXRandom.normal([nQ]) * 0).asType(.float32)
+    let nilOut = cand(nil)
+    let zeroOut = cand(zeroSinks)
+    // Legacy path == calling with the default (no sinks argument at all).
+    let legacy = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: (kwq, ks, kb), quantizedValues: (vwq, vs, vb),
+        scale: scale, mask: .causal, groupSize: groupSize, bits: bits, mode: .affine)
+    let kdq = dequantized(kwq, scales: ks, biases: kb, groupSize: groupSize, bits: bits)
+    let vdq = dequantized(vwq, scales: vs, biases: vb, groupSize: groupSize, bits: bits)
+    let mask = buildCausalAdditiveMask(L: L, Lk: L)
+    let mlxZero = MLXFast.scaledDotProductAttention(
+        queries: q, keys: kdq, values: vdq, scale: scale, mask: mask, sinks: zeroSinks)
+
+    eval(nilOut, zeroOut, legacy, mlxZero)
+    let nilRel = relL2(nilOut, legacy)         // (a) must be ~0
+    let zeroVsNil = relL2(zeroOut, nilOut)     // (b) must be > 0
+    let zeroMatch = relL2(zeroOut, mlxZero)    // (b) must be ~quant tolerance
+
+    let ok = nilRel < 1e-6 && zeroVsNil > 1e-3 && zeroMatch < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] sink-semantics bits=\(bits): nil==legacy relL2=\(String(format: "%.6f", nilRel)) | zero!=nil relL2=\(String(format: "%.5f", zeroVsNil)) (>0) | zero==MLX(zero) relL2=\(String(format: "%.5f", zeroMatch))"
+    )
+    return ok
+}
+
+// The concurrency crash scenario: B>1, GQA, an explicit [B,1,L,kL] additive
+// array mask (as the batched engine passes), and nonzero sinks. Compared against
+// MLX SDPA with the same sinks on the dequantized K/V.
+func runSinkBatchedArrayMaskCase(bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(2025)
+    let B = 4, nQ = 8, nKV = 2, L = 32, D = 64
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+    let sinks = MLXRandom.normal([nQ]).asType(.float32) * 2.0
+
+    let (kwq, ks, kb) = quantized(k, groupSize: groupSize, bits: bits)
+    let (vwq, vs, vb) = quantized(v, groupSize: groupSize, bits: bits)
+    let kdq = dequantized(kwq, scales: ks, biases: kb, groupSize: groupSize, bits: bits)
+    let vdq = dequantized(vwq, scales: vs, biases: vb, groupSize: groupSize, bits: bits)
+
+    // Materialize a real [B, 1, L, kL] additive mask (not a leading-1 broadcast).
+    let mask4 = buildCausalAdditiveMask(L: L, Lk: L).reshaped([1, 1, L, L])
+        + zeros([B, 1, 1, 1]).asType(.float32)
+
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: (kwq, ks, kb), quantizedValues: (vwq, vs, vb),
+        scale: scale, mask: .array(mask4), groupSize: groupSize, bits: bits, mode: .affine,
+        sinks: sinks)
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q, keys: kdq, values: vdq, scale: scale, mask: mask4, sinks: sinks)
+    eval(candidate, dequantRef)
+    let rel = relL2(candidate, dequantRef)
+    let ok = rel < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] batched GQA array-mask+sinks B=\(B) bits=\(bits): kernel_vs_MLXsinks relL2=\(String(format: "%.5f", rel))"
+    )
+    return ok
+}
+
+func materializedCausalBoolMask(B: Int, L: Int) -> MLXArray {
+    var values: [Int32] = []
+    values.reserveCapacity(B * L * L)
+    for _ in 0..<B {
+        for q in 0..<L {
+            for k in 0..<L {
+                values.append(k <= q ? 1 : 0)
+            }
+        }
+    }
+    return MLXArray(values).reshaped([B, 1, L, L]) .== MLXArray(Int32(1))
+}
+
+// Same B>1/GQA/sinks shape, but exercises the `.arrays` mask case with a real
+// materialized boolean [B,1,L,kL] mask. The implementation intentionally consumes
+// only the first mask array today; this locks that behavior to MLX SDPA's result
+// for the same first mask.
+func runSinkBatchedArraysBoolMaskCase(bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(2026)
+    let B = 3, nQ = 8, nKV = 2, L = 24, D = 64
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+    let sinks = MLXRandom.normal([nQ]).asType(.float32) * 2.0
+
+    let (kwq, ks, kb) = quantized(k, groupSize: groupSize, bits: bits)
+    let (vwq, vs, vb) = quantized(v, groupSize: groupSize, bits: bits)
+    let kdq = dequantized(kwq, scales: ks, biases: kb, groupSize: groupSize, bits: bits)
+    let vdq = dequantized(vwq, scales: vs, biases: vb, groupSize: groupSize, bits: bits)
+    let boolMask = materializedCausalBoolMask(B: B, L: L)
+    let additiveMask = MLX.where(
+        boolMask, MLXArray(Float(0)), MLXArray(-Float.greatestFiniteMagnitude))
+
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: (kwq, ks, kb), quantizedValues: (vwq, vs, vb),
+        scale: scale, mask: .arrays([boolMask]), groupSize: groupSize, bits: bits,
+        mode: .affine, sinks: sinks)
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q, keys: kdq, values: vdq, scale: scale, mask: additiveMask, sinks: sinks)
+    eval(candidate, dequantRef)
+    let rel = relL2(candidate, dequantRef)
+    let ok = rel < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] batched GQA arrays-bool-mask+sinks B=\(B) bits=\(bits): kernel_vs_MLXsinks relL2=\(String(format: "%.5f", rel))"
+    )
+    return ok
+}
+
+// Fully masked rows must not turn into uniform attention over masked tokens when
+// sinks are active. The sink logit absorbs all probability mass, so the returned
+// value row should match MLX SDPA and remain finite.
+func runSinkFullyMaskedRowCase(bits: Int, groupSize: Int) -> Bool {
+    MLXRandom.seed(2027)
+    let B = 2, nQ = 8, nKV = 2, L = 16, D = 64
+    let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
+    let k = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let v = MLXRandom.normal([B, nKV, L, D]).asType(.float32)
+    let scale = 1.0 / Float(D).squareRoot()
+    let sinks = MLXRandom.normal([nQ]).asType(.float32) * 2.0
+
+    let (kwq, ks, kb) = quantized(k, groupSize: groupSize, bits: bits)
+    let (vwq, vs, vb) = quantized(v, groupSize: groupSize, bits: bits)
+    let kdq = dequantized(kwq, scales: ks, biases: kb, groupSize: groupSize, bits: bits)
+    let vdq = dequantized(vwq, scales: vs, biases: vb, groupSize: groupSize, bits: bits)
+
+    var maskValues: [Int32] = []
+    maskValues.reserveCapacity(B * L * L)
+    for b in 0..<B {
+        for qPos in 0..<L {
+            for kPos in 0..<L {
+                let allowed = !(b == 0 && qPos == 0) && kPos <= qPos
+                maskValues.append(allowed ? 1 : 0)
+            }
+        }
+    }
+    let boolMask = MLXArray(maskValues).reshaped([B, 1, L, L]) .== MLXArray(Int32(1))
+    let additiveMask = MLX.where(
+        boolMask, MLXArray(Float(0)), MLXArray(-Float.greatestFiniteMagnitude))
+
+    let candidate = quantizedScaledDotProductAttention(
+        queries: q, quantizedKeys: (kwq, ks, kb), quantizedValues: (vwq, vs, vb),
+        scale: scale, mask: .array(boolMask), groupSize: groupSize, bits: bits,
+        mode: .affine, sinks: sinks)
+    let dequantRef = MLXFast.scaledDotProductAttention(
+        queries: q, keys: kdq, values: vdq, scale: scale, mask: additiveMask, sinks: sinks)
+    eval(candidate, dequantRef)
+    let rel = relL2(candidate, dequantRef)
+    let ok = rel < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
+    print(
+        "[\(verdict)] fully-masked-row+sinks bits=\(bits): kernel_vs_MLXsinks relL2=\(String(format: "%.5f", rel))"
+    )
+    return ok
+}
+
+print("== sink-aware quantized attention (DAR-323) ==")
+var dar323Ok = true
+for bits in [8, 4] {
+    dar323Ok = runSinkCase(
+        "GQA  causal D=64 ", B: 1, nQ: 8, nKV: 2, L: 16, Lk: 16, D: 64,
+        bits: bits, groupSize: 64, causal: true) && dar323Ok
+    dar323Ok = runSinkBatchedArrayMaskCase(bits: bits, groupSize: 64) && dar323Ok
+    dar323Ok = runSinkBatchedArraysBoolMaskCase(bits: bits, groupSize: 64) && dar323Ok
+    dar323Ok = runSinkFullyMaskedRowCase(bits: bits, groupSize: 64) && dar323Ok
+    dar323Ok = runSinkCase(
+        "GQA  causal D=128", B: 1, nQ: 8, nKV: 2, L: 16, Lk: 16, D: 128,
+        bits: bits, groupSize: 64, causal: true) && dar323Ok
+    dar323Ok = runSinkCase(
+        "MHA  causal D=64 ", B: 1, nQ: 4, nKV: 4, L: 16, Lk: 16, D: 64,
+        bits: bits, groupSize: 64, causal: true) && dar323Ok
+    dar323Ok = runSinkCase(
+        "GQA  decode D=64 ", B: 1, nQ: 8, nKV: 2, L: 1, Lk: 16, D: 64,
+        bits: bits, groupSize: 64, causal: false) && dar323Ok
+    dar323Ok = runSinkSemanticsCase(bits: bits, groupSize: 64) && dar323Ok
+}
+if dar323Ok {
+    print("DAR-323 gate: ALL OK")
+} else {
+    print("DAR-323 gate: FAILED")
 }

@@ -43,6 +43,31 @@ struct KVEngineDemo: AsyncParsableCommand {
     @Flag(help: "Run only the quantized engine smoke (skip fp16 baseline).")
     var quantOnly: Bool = false
 
+    @Option(help: "Comma-separated concurrency levels (e.g. 1,8,16,32). Enables the decode-throughput regression gate; capacity remains the headline.")
+    var concurrencySweep: String?
+
+    @Option(help: "Prompt token length used for every stream in the concurrency sweep.")
+    var concurrencyContext: Int = 4096
+
+    var concurrencyLevels: [Int] {
+        guard let spec = concurrencySweep else { return [] }
+        return spec
+            .split(separator: ",")
+            .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            .filter { $0 > 0 }
+    }
+
+    /// Label for the quantized engine, reflecting the actual scheme the scheduler
+    /// resolves (GPT-OSS defaults to dequant; kernel only via env override).
+    var gptOSSAwareQuantLabel: String {
+        guard KVQuantPolicy.classify(modelID: modelID) == .gptOSS else {
+            return "k8v8:g128 (kernel)"
+        }
+        return ProcessInfo.processInfo.environment["DARKBLOOM_KV_GPTOSS_KERNEL"] == "1"
+            ? "k8v8:g64 (kernel)"
+            : "k8v8:g64 (dequant)"
+    }
+
     var contextLengths: [Int] {
         guard let spec = promptTokens else { return [] }
         return spec
@@ -75,6 +100,11 @@ struct KVEngineDemo: AsyncParsableCommand {
         let container = try await LocalMLXModelLoader.live().loadContainer(for: modelConfig)
         print("Container loaded.\n")
 
+        if !concurrencyLevels.isEmpty {
+            await runConcurrencySweep(container: container)
+            return
+        }
+
         var reports: [EngineReport] = []
 
         if !quantOnly {
@@ -88,9 +118,7 @@ struct KVEngineDemo: AsyncParsableCommand {
             await cleanup()
         }
 
-        let quantLabel = KVQuantPolicy.classify(modelID: modelID) == .gptOSS
-            ? "k8v8:g64 (dequant)"
-            : "k8v8:g128 (kernel)"
+        let quantLabel = gptOSSAwareQuantLabel
         print("\n=== Building \(quantLabel) quantized engine ===")
         let quant = try await runEngine(
             label: quantLabel,
@@ -199,6 +227,136 @@ struct KVEngineDemo: AsyncParsableCommand {
         )
     }
 
+    // MARK: - Concurrency throughput (performance regression gate)
+    //
+    // Batch-1 decode is NOT the serving objective: weights/MoE dominate and the
+    // KV read is tiny, so decode TPS is a regression gate, not the success metric.
+    // This sweep submits N concurrent streams and reports aggregate decode tok/s
+    // over the decode window only. The capacity headline is kv_bytes_per_token and
+    // token_budget_max above.
+
+    private func runConcurrencySweep(container: ModelContainer) async {
+        let maxN = concurrencyLevels.max() ?? 1
+        let tokenizer = await container.tokenizer
+        let promptTokens = syntheticPromptTokens(
+            targetCount: concurrencyContext, tokenizer: tokenizer)
+
+        print("=== Concurrency throughput sweep ===")
+        print("Context per stream: \(concurrencyContext) tok | decode per stream: \(maxTokens) tok")
+        print("Levels: \(concurrencyLevels)\n")
+
+        func measure(kvQuantEnabled: Bool, label: String) async -> [Int: Double] {
+            print("--- \(label) ---")
+            let scheduler = BatchScheduler(
+                maxConcurrentRequests: maxN,
+                defaultMaxTokens: maxTokens,
+                kvQuantEnabled: kvQuantEnabled
+            )
+            await scheduler.loadModel(container: container, modelId: modelID)
+            let kvBytes = await scheduler.resolvedKVBytesPerToken()
+            let budget = await scheduler.resolvedTokenBudgetMax()
+            print("  kv_bytes_per_token: \(kvBytes) | token_budget_max: \(budget)")
+            // Warmup: the first inference compiles Metal kernels; discard it so
+            // cold-start cost doesn't poison the first measured level.
+            _ = await runConcurrentBatch(
+                scheduler: scheduler, promptTokens: promptTokens,
+                concurrency: max(concurrencyLevels.max() ?? 1, 2), decodeTokens: 8)
+            await cleanup()
+            var out: [Int: Double] = [:]
+            for n in concurrencyLevels {
+                let agg = await runConcurrentBatch(
+                    scheduler: scheduler,
+                    promptTokens: promptTokens,
+                    concurrency: n,
+                    decodeTokens: maxTokens
+                )
+                out[n] = agg
+                print(String(format: "  N=%3d  aggregate decode tok/s = %8.2f  (per-stream %6.2f)",
+                             n, agg, agg / Double(n)))
+                await cleanup()
+            }
+            await scheduler.unloadModel()
+            await cleanup()
+            print("")
+            return out
+        }
+
+        let fp16 = await measure(kvQuantEnabled: false, label: "fp16")
+        let quant = await measure(kvQuantEnabled: true, label: gptOSSAwareQuantLabel)
+
+        print("=== Aggregate decode throughput: fp16 vs \(gptOSSAwareQuantLabel) ===")
+        print("   N | fp16 tok/s | quant tok/s | ratio quant/fp16 |")
+        for n in concurrencyLevels {
+            let f = fp16[n] ?? 0
+            let q = quant[n] ?? 0
+            let r = f > 0 ? q / f : 0
+            print(String(format: "%4d | %10.2f | %11.2f | %16.3f |", n, f, q, r))
+        }
+        print("")
+    }
+
+    private struct StreamTiming {
+        let tokens: Int
+        let first: ContinuousClock.Instant?
+        let last: ContinuousClock.Instant?
+    }
+
+    /// Fire `concurrency` identical streams at once; return aggregate *decode*
+    /// tok/s measured over the decode window only (first chunk to last chunk),
+    /// so prefill/queue time is excluded. This isolates steady-state decode
+    /// throughput, which is the capacity-relevant quantity.
+    private func runConcurrentBatch(
+        scheduler: BatchScheduler,
+        promptTokens: [Int],
+        concurrency: Int,
+        decodeTokens: Int
+    ) async -> Double {
+        let timings = await withTaskGroup(of: StreamTiming.self, returning: [StreamTiming].self) {
+            group in
+            for i in 0..<concurrency {
+                group.addTask {
+                    let stream = await scheduler.submitTokenized(
+                        promptTokens: promptTokens,
+                        maxTokens: decodeTokens,
+                        temperature: 0.0,
+                        requestId: "conc-\(i)"
+                    )
+                    var toks = 0
+                    var first: ContinuousClock.Instant?
+                    var last: ContinuousClock.Instant?
+                    for await event in stream {
+                        switch event {
+                        case .chunk:
+                            let now = ContinuousClock.now
+                            if first == nil { first = now }
+                            last = now
+                        case .info(_, let completionTok, _):
+                            toks = completionTok
+                        case .error:
+                            break
+                        }
+                    }
+                    return StreamTiming(tokens: toks, first: first, last: last)
+                }
+            }
+            var out: [StreamTiming] = []
+            for await t in group { out.append(t) }
+            return out
+        }
+
+        let intervalTokens = timings.reduce(0) { $0 + max($1.tokens - 1, 0) }
+        guard let firstStart = timings.compactMap({ $0.first }).min(),
+            let lastEnd = timings.compactMap({ $0.last }).max(),
+            firstStart < lastEnd
+        else {
+            return 0
+        }
+        let elapsed = firstStart.duration(to: lastEnd)
+        let seconds = Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) * 1e-18
+        return seconds > 0 ? Double(intervalTokens) / seconds : 0
+    }
+
     // MARK: - Generation
 
     private func generate(
@@ -277,11 +435,11 @@ struct KVEngineDemo: AsyncParsableCommand {
         }
 
         var decodeTokensPerSecond = reportedTokensPerSecond
-        if let first = firstChunkAt, let last = lastChunkAt, tokens > 0 {
+        if let first = firstChunkAt, let last = lastChunkAt, tokens > 1 {
             let duration = first.duration(to: last)
             let seconds = Double(duration.components.seconds)
                 + Double(duration.components.attoseconds) * 1e-18
-            decodeTokensPerSecond = Double(tokens) / seconds
+            decodeTokensPerSecond = Double(tokens - 1) / seconds
         }
 
         return GenerationResult(
@@ -422,7 +580,7 @@ struct KVEngineDemo: AsyncParsableCommand {
         print("\n========== REPORT ==========")
 
         // 1. CAPACITY
-        print("\n1. CAPACITY")
+        print("\n1. HEADLINE CAPACITY (max admitted tokens)")
         for r in reports {
             print("  \(r.label):")
             print("    kv_bytes_per_token: \(r.kvBytesPerToken)")
@@ -433,12 +591,12 @@ struct KVEngineDemo: AsyncParsableCommand {
             let quant = reports[1]
             let bytesRatio = Double(quant.kvBytesPerToken) / Double(max(fp16.kvBytesPerToken, 1))
             let budgetRatio = Double(quant.tokenBudgetMax) / Double(max(fp16.tokenBudgetMax, 1))
-            print("  -> quantized/fp16 kv_bytes_per_token ratio: \(String(format: "%.3f", bytesRatio))")
-            print("  -> quantized/fp16 token_budget_max ratio:   \(String(format: "%.3f", budgetRatio))")
+            print("  -> kv_bytes_per_token ratio (quant/fp16):  \(String(format: "%.3f", bytesRatio))")
+            print("  -> max admitted tokens ratio (quant/fp16): \(String(format: "%.3f", budgetRatio))")
         }
 
-        // 2. QUALITY
-        print("\n2. QUALITY")
+        // 2. OUTPUT SMOKE
+        print("\n2. OUTPUT SMOKE (coarse only; logits gate is authoritative)")
         if reports.count == 2,
            let fp16 = reports.first(where: { !$0.kvQuantEnabled }),
            let quant = reports.first(where: { $0.kvQuantEnabled }) {
@@ -448,7 +606,7 @@ struct KVEngineDemo: AsyncParsableCommand {
         }
 
         // 3. PERF
-        print("\n3. PERF")
+        print("\n3. PERF REGRESSION GATE")
         if !contextLengths.isEmpty {
             print("\n  Long-context decode scaling (manual decode tok/s, first-token to last-token):")
             print("  context | engine | decode tok/s | reported tok/s |")

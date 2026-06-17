@@ -89,3 +89,23 @@ func (r *Registry) RecordCacheAffinity(account, model, scope, providerID string)
 	}
 	r.cacheAffinity.record(account, model, scope, providerID, time.Now())
 }
+
+func (r *Registry) ConfigureCacheAffinity(cfg CacheAffinityConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cfg.TTL <= 0 {
+		cfg.TTL = cacheAffinityTTL
+	}
+	r.cacheAffinity = newCacheAffinityTracker(cfg.TTL)
+	r.cacheAffinityBonusMs = cfg.BonusMs
+}
+
+func (r *Registry) CacheAffinityConfigSnapshot() CacheAffinityConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ttl := cacheAffinityTTL
+	if r.cacheAffinity != nil {
+		ttl = r.cacheAffinity.ttl
+	}
+	return CacheAffinityConfig{TTL: ttl, BonusMs: r.cacheAffinityBonusMs}
+}

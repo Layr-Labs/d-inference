@@ -520,6 +520,17 @@ const CodeAttestResponseTimeout = 90 * time.Second
 // Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
 // GUI session) can never attest, so the loop exits immediately — they are derouted
 // once enforcement begins, the intended "everyone must update" outcome.
+// codeAttestMetric records a code-identity attestation outcome to both Datadog
+// (s.ddIncr) and the in-process registry exposed at /v1/admin/metrics, so the
+// APNs code-attest funnel (push_sent → attested vs timeout/verify_failed/no_token)
+// is measurable per cohort. Outcomes: no_token, reused, push_sent,
+// push_send_failed, attested, nonce_mismatch, verify_failed, timeout,
+// max_attempts. Metadata only — no provider identifiers in the metric.
+func (s *Server) codeAttestMetric(outcome string) {
+	s.ddIncr("code_attest", []string{"outcome:" + outcome})
+	s.metrics.IncCounter("code_attest_total", MetricLabel{"outcome", outcome})
+}
+
 func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider *registry.Provider, ct *codeAttestTracker) {
 	if s.codeAttestor == nil || provider == nil {
 		return
@@ -534,6 +545,7 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 	}
 	provider.Mu().Unlock()
 	if !hasToken {
+		s.codeAttestMetric("no_token")
 		s.logger.Info("code-attest: provider has no APNs device token; cannot attest (will be derouted once enforcement begins)",
 			"provider_id", providerID)
 		return
@@ -544,6 +556,7 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 	if s.codeAttestThrottle.reuseAttestation(seKey, version) {
 		provider.SetCodeAttested(true)
 		s.registry.DrainQueuedRequestsForProvider(provider)
+		s.codeAttestMetric("reused")
 		s.logger.Info("code-attest: reused a recent attestation for this device (no push)",
 			"provider_id", providerID)
 		return
@@ -573,6 +586,7 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		case <-time.After(s.codeAttestThrottle.pushCooldown):
 		}
 	}
+	s.codeAttestMetric("max_attempts")
 	s.logger.Warn("code-attest: not attested after max attempts; will retry on a later reconnect (within the push budget)",
 		"provider_id", providerID)
 }
@@ -625,28 +639,34 @@ func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID strin
 	err := s.codeAttestor.SendCodeChallenge(sendCtx, deviceToken, env, pubKey, nonceB64)
 	cancel()
 	if err != nil {
+		s.codeAttestMetric("push_send_failed")
 		s.logger.Warn("code-attest push send failed", "provider_id", providerID, "error", err)
 		return
 	}
+	s.codeAttestMetric("push_sent")
 
 	select {
 	case resp := <-respCh:
 		if resp == nil || resp.Nonce != nonceB64 {
+			s.codeAttestMetric("nonce_mismatch")
 			s.logger.Warn("code-attest response nonce mismatch", "provider_id", providerID)
 			return
 		}
 		// Verify Sign_SE(nonceB64) against the SE public key bound to THIS
 		// connection at registration — never a key supplied in the response.
 		if err := attestation.VerifyChallengeSignature(sePubKey, resp.Signature, nonceB64); err != nil {
+			s.codeAttestMetric("verify_failed")
 			s.logger.Warn("code-attest signature verification failed", "provider_id", providerID, "error", err)
 			return
 		}
 		provider.SetCodeAttested(true)
+		s.codeAttestMetric("attested")
 		s.logger.Info("provider code-attested via APNs", "provider_id", providerID)
 		// Newly eligible for private routing — drain requests that queued waiting
 		// for an attested provider instead of waiting for the next heartbeat tick.
 		s.registry.DrainQueuedRequestsForProvider(provider)
 	case <-time.After(CodeAttestResponseTimeout):
+		s.codeAttestMetric("timeout")
 		s.logger.Warn("code-attest timed out awaiting WebSocket response", "provider_id", providerID)
 	case <-ctx.Done():
 	}

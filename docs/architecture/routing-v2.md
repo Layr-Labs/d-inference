@@ -167,7 +167,7 @@ scratch (`/tmp/sim*.py`).
 | W2 | Decode-floor admission + quality filter (`EIGENINFERENCE_MIN_DECODE_TPS`) | coordinator scheduler/consumer | W1 (knee) — can stub | todo |
 | W3 | Cold-dispatch spill + queue-before-shed | coordinator consumer/dispatch | W2 | todo |
 | W4 | Warm-pool rebuild (Little's Law, all-signal, faster ramp) | coordinator registry/warm_pool | W1 | todo |
-| W5 | Attestation-churn unlock (retry/backoff, freshness, cache) | coordinator attestation/provider | — | todo |
+| W5 | Attestation-churn unlock (retry/backoff, freshness, cache) | coordinator attestation/provider | — | **researched** (see routing-v2-attestation-churn.md); **Fix 6 observability DONE**; Fix 0 (`APNS_MODE=alert`) = human config flip |
 | W6 | gemma MoE decode fix (confirm dense-vs-sparse, fix MLX path) + benchmark tooling | provider-swift / mlx | — | research |
 | W7 | Trace-driven sim → committed Go CI replay harness (drives real scheduler; calibration regression test) | coordinator test infra | — | todo |
 | W8 | Throughput anomaly detector (decode vs active-param class) | coordinator telemetry | W1 | todo |

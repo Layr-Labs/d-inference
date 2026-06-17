@@ -172,6 +172,21 @@ func (t *codeAttestThrottle) recordPush(seKey string) {
 	t.mu.Unlock()
 }
 
+// clearPushBudget drops the per-device push cooldown so the NEXT push is allowed
+// immediately. Used on APNs token rotation: the cooldown tracks pushes to the OLD
+// token, but Apple's push budget is per-token, so the freshly registered token has
+// its own untouched budget. Without this, the rearm loop sets CodeAttested=false
+// yet cannot challenge the new token until the old token's (up to 20-minute)
+// background cooldown expires — derouting the provider for no reason (Codex #9).
+func (t *codeAttestThrottle) clearPushBudget(seKey string) {
+	if seKey == "" {
+		return
+	}
+	t.mu.Lock()
+	delete(t.lastPush, seKey)
+	t.mu.Unlock()
+}
+
 func (t *codeAttestThrottle) recordAttested(seKey, version string) {
 	if seKey == "" {
 		return

@@ -70,6 +70,27 @@ func TestCodeAttestThrottleModeAwareBudget(t *testing.T) {
 	}
 }
 
+// TestCodeAttestThrottleClearPushBudget proves Codex #9: clearing the push budget
+// (done on APNs token rotation) lets the next push proceed immediately even though
+// the OLD token's cooldown has not elapsed, so a rotated token is not derouted
+// while it waits out a cooldown that was spent on a different token.
+func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newCodeAttestThrottle()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	th.recordPush(se)
+	cur = cur.Add(time.Minute) // deep inside both cooldowns
+	if th.allowPush(se, false) {
+		t.Fatal("precondition: a push within the cooldown must be blocked")
+	}
+	th.clearPushBudget(se)
+	if !th.allowPush(se, false) {
+		t.Fatal("clearPushBudget must let the next push proceed immediately (rotated token has its own budget)")
+	}
+}
+
 // TestCodeAttestThrottleOutstandingChallenge covers the per-device pushed-nonce
 // tracking that lets the read-loop delivery path verify a reply on ANY connection
 // (Fix 1), bounded by a validity window consistent with the APNs expiry (Fix 5).

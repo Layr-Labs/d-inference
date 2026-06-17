@@ -529,6 +529,16 @@ type Store interface {
 	// GetLogReport retrieves a single log report by ID.
 	GetLogReport(id int64) (*LogReport, error)
 
+	// --- Provider Energy (per-node energy accounting time-series) ---
+
+	// RecordProviderEnergy appends a periodic energy ledger snapshot for a
+	// provider node. Best-effort; failures must not block the heartbeat path.
+	RecordProviderEnergy(record *ProviderEnergyRecord) error
+
+	// ProviderEnergySince returns energy snapshots created at or after the given
+	// time, newest first (capped). Zero since returns all (capped).
+	ProviderEnergySince(since time.Time) []ProviderEnergyRecord
+
 	// --- Telemetry ---
 	//
 	// Telemetry events are forwarded to Datadog (Logs API + DogStatsD)
@@ -722,6 +732,57 @@ type RejectionRecord struct {
 	ShortfallMicroUSD       int64   `json:"shortfall_micro_usd,omitempty"` // for 402
 	LimitKind               string  `json:"limit_kind,omitempty"`          // for 429 rate-limit
 	OverBy                  int64   `json:"over_by,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ProviderEnergyRecord is a periodic snapshot of a provider node's cumulative
+// energy ledger (measured via IOReport on the provider). The joule fields are
+// cumulative since the provider process started; diffing consecutive snapshots
+// yields interval energy per operation, which is how we analyze where energy
+// goes. Contains no prompt or response content.
+//
+// ProviderID is the per-connection session id (a provider process restart =
+// new connection = new ProviderID), so diffing within a single ProviderID never
+// straddles a counter reset. SerialNumber is the stable machine identity for
+// cross-session rollups.
+//
+// The ledger is PROCESS-WIDE, not per-model: IOReport measures whole-SoC energy
+// and cannot be split across concurrently-resident models. Model is only the
+// active (serving) model at snapshot time, for context — do NOT treat it as a
+// per-model energy attribution key. Attribution is per-OPERATION (idle / prefill
+// / decode / load), which is the dimension this feature is built to analyze.
+type ProviderEnergyRecord struct {
+	ProviderID   string `json:"provider_id"`
+	AccountID    string `json:"account_id,omitempty"`
+	SerialNumber string `json:"serial_number,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ChipFamily   string `json:"chip_family,omitempty"`
+	ChipTier     string `json:"chip_tier,omitempty"`
+	GPUCores     int    `json:"gpu_cores,omitempty"`
+
+	CurrentWatts float64 `json:"current_watts"`
+	IdleWatts    float64 `json:"idle_watts"`
+
+	// Cumulative joules per operation bucket.
+	IdleJoules    float64 `json:"idle_joules"`
+	PrefillJoules float64 `json:"prefill_joules"`
+	DecodeJoules  float64 `json:"decode_joules"`
+	LoadJoules    float64 `json:"load_joules"`
+
+	// Cumulative joules per SoC subsystem.
+	CPUJoules  float64 `json:"cpu_joules"`
+	GPUJoules  float64 `json:"gpu_joules"`
+	ANEJoules  float64 `json:"ane_joules"`
+	DRAMJoules float64 `json:"dram_joules"`
+
+	// Normalizers + derived per-token energy coefficients.
+	PrefillTokens    float64 `json:"prefill_tokens"`
+	DecodeTokens     float64 `json:"decode_tokens"`
+	WarmSeconds      float64 `json:"warm_seconds"`
+	ModelLoads       int     `json:"model_loads"`
+	JPerPrefillToken float64 `json:"j_per_prefill_token"`
+	JPerDecodeToken  float64 `json:"j_per_decode_token"`
 
 	CreatedAt time.Time `json:"created_at"`
 }

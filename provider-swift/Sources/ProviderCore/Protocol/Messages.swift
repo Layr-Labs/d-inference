@@ -88,6 +88,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var stats: ProviderStats
         public var systemMetrics: SystemMetrics
         public var backendCapacity: BackendCapacity?
+        public var energy: EnergyLedgerSnapshot?
 
         public init(
             status: ProviderStatus,
@@ -95,7 +96,8 @@ public enum ProviderMessage: Sendable, Equatable {
             warmModels: [String] = [],
             stats: ProviderStats,
             systemMetrics: SystemMetrics,
-            backendCapacity: BackendCapacity? = nil
+            backendCapacity: BackendCapacity? = nil,
+            energy: EnergyLedgerSnapshot? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -103,6 +105,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.stats = stats
             self.systemMetrics = systemMetrics
             self.backendCapacity = backendCapacity
+            self.energy = energy
         }
     }
 
@@ -328,6 +331,7 @@ extension ProviderMessage: Codable {
         case stats
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
+        case energy
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -398,6 +402,7 @@ extension ProviderMessage: Codable {
             try container.encode(h.stats, forKey: .stats)
             try container.encode(h.systemMetrics, forKey: .systemMetrics)
             try container.encodeIfPresent(h.backendCapacity, forKey: .backendCapacity)
+            try container.encodeIfPresent(h.energy, forKey: .energy)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -510,7 +515,8 @@ extension ProviderMessage: Codable {
                 warmModels: try container.decodeIfPresent([String].self, forKey: .warmModels) ?? [],
                 stats: try container.decode(ProviderStats.self, forKey: .stats),
                 systemMetrics: try container.decode(SystemMetrics.self, forKey: .systemMetrics),
-                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity)
+                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity),
+                energy: try container.decodeIfPresent(EnergyLedgerSnapshot.self, forKey: .energy)
             ))
 
         case .inferenceAccepted:

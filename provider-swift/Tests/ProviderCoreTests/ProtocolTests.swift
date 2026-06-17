@@ -517,6 +517,44 @@ import Testing
     #expect(!runtimeJSON.contains("mismatches"))
 }
 
+@Test func energyLedgerSnapshotSymmetry() throws {
+    // Nil energy + unmeasured power are omitted from the heartbeat.
+    let bare = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal)
+    ))
+    let bareJSON = String(data: try ProviderProtocolCodec.encodeProviderMessage(bare), encoding: .utf8) ?? ""
+    #expect(!bareJSON.contains("energy"))
+    #expect(!bareJSON.contains("power_watts"))
+
+    // A populated ledger round-trips; zero sub-fields are omitted (matches the
+    // Go EnergyLedger omitempty so the wire bytes stay symmetric).
+    let snap = EnergyLedgerSnapshot(
+        currentWatts: 45.5, idleWatts: 8.0,
+        idleJoules: 900, prefillJoules: 300, decodeJoules: 1500,
+        decodeTokens: 3000, modelLoads: 2, jPerDecodeToken: 0.5
+    )
+    let hb = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .serving,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal, powerWatts: 45.5),
+        energy: snap
+    ))
+    let json = String(data: try ProviderProtocolCodec.encodeProviderMessage(hb), encoding: .utf8) ?? ""
+    #expect(json.contains("power_watts"))
+    #expect(json.contains("decode_joules"))
+    #expect(!json.contains("load_joules"))          // zero → omitted
+    #expect(!json.contains("ane_joules"))           // zero → omitted
+    #expect(!json.contains("j_per_prefill_token"))  // zero → omitted
+
+    let decoded = try JSONDecoder().decode(
+        EnergyLedgerSnapshot.self, from: try JSONEncoder().encode(snap))
+    #expect(decoded.decodeJoules == 1500)
+    #expect(decoded.jPerDecodeToken == 0.5)
+    #expect(decoded.modelLoads == 2)
+}
+
 @Test func backendSlotCapacityRoundTripsAdaptiveBatchingFields() throws {
     let slot = BackendSlotCapacity(
         model: "mlx-community/Qwen2.5-7B-4bit",

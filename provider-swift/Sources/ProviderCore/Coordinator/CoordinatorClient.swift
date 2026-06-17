@@ -41,6 +41,20 @@ public enum CoordinatorEvent: Sendable {
 public final class AtomicProviderStats: Sendable {
     private let _requestsServed = ManagedAtomic<UInt64>(0)
     private let _tokensGenerated = ManagedAtomic<UInt64>(0)
+    // LIVE decode-token counter for energy accounting: incremented as output
+    // frames stream (≈ one per token), unlike `_tokensGenerated` which only
+    // settles at request completion. The energy accountant needs per-tick
+    // streaming progress, so it reads this, not the billing counter.
+    private let _energyDecodeTokens = ManagedAtomic<UInt64>(0)
+    // Cumulative prompt tokens that have been prefilled (credited at request
+    // completion). Denominator for the energy J/prefill-token ratio.
+    private let _promptTokensPrefilled = ManagedAtomic<UInt64>(0)
+    // Nonzero while a model load/swap is in progress (cold load or coordinator
+    // preload). The energy accountant reads this to bucket load energy; the
+    // provider only ever reports running/idle slot states, so slot state cannot
+    // signal a load in progress. Int (not Bool) because ManagedAtomic requires
+    // a FixedWidthInteger here.
+    private let _modelLoading = ManagedAtomic<Int>(0)
     // Count of completed requests whose usage chunk was missing/zero. Surfaced
     // in the daemon state file so `doctor` can flag a billing under-count.
     private let _usageGaps = ManagedAtomic<UInt64>(0)
@@ -55,6 +69,31 @@ public final class AtomicProviderStats: Sendable {
     public var tokensGenerated: UInt64 {
         get { _tokensGenerated.load() }
         set { _tokensGenerated.store(newValue) }
+    }
+
+    public var promptTokensPrefilled: UInt64 {
+        get { _promptTokensPrefilled.load() }
+        set { _promptTokensPrefilled.store(newValue) }
+    }
+
+    public func addPromptTokensPrefilled(_ count: UInt64) {
+        _promptTokensPrefilled.add(count)
+    }
+
+    /// Live decode-token counter for energy accounting. Read by the accountant.
+    public var energyDecodeTokens: UInt64 { _energyDecodeTokens.load() }
+
+    /// Increment as output frames stream (≈ one token per content frame).
+    public func addEnergyDecodeTokens(_ count: UInt64) {
+        _energyDecodeTokens.add(count)
+    }
+
+    /// True while a model load is in progress. Read by the energy accountant.
+    public var modelLoading: Bool { _modelLoading.load() != 0 }
+
+    /// Set by the load path (ProviderLoop) around model load/swap critical sections.
+    public func setModelLoading(_ value: Bool) {
+        _modelLoading.store(value ? 1 : 0)
     }
 
     public var usageGaps: UInt64 {
@@ -429,6 +468,12 @@ public actor CoordinatorClient {
     private let stats: AtomicProviderStats
     private let state: ProviderState
 
+    /// Sudoless per-operation energy accountant (IOReport). Inert when IOReport
+    /// is unavailable, in which case the heartbeat omits energy and the
+    /// coordinator falls back to the static wall-power estimate.
+    private let energyAccountant = EnergyAccountant()
+    private var energyStarted = false
+
     private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "coordinator")
 
     /// Tracks whether the box currently has a usable network path, so reconnect
@@ -649,6 +694,10 @@ public actor CoordinatorClient {
         // read from the ping task. Using an actor would force structured concurrency
         // overhead on every ping; an unfair lock is cheaper for a single Instant.
         let pongTracker = PongTracker()
+
+        // Begin energy sampling at session start so the first interval after
+        // registration is captured (not skipped until the first heartbeat).
+        await startEnergyAccountant()
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             // Task 1: Receive messages from coordinator
@@ -889,12 +938,21 @@ public actor CoordinatorClient {
 
     // MARK: - Heartbeat
 
-    private func buildHeartbeatJSON() -> String {
+    private func buildHeartbeatJSON() async -> String {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
         let warmModels = state.warmModels
         let capacity = state.backendCapacity
-        let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
+        var metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
+
+        // Attach the latest cumulative energy snapshot (the accountant is started
+        // at session start, see startEnergyAccountant). Inert without IOReport.
+        var energySnapshot: EnergyLedgerSnapshot? = nil
+        if await energyAccountant.available() {
+            let snap = await energyAccountant.snapshot()
+            if snap.currentWatts > 0 { metrics.powerWatts = snap.currentWatts }
+            energySnapshot = snap
+        }
 
         let message = CoordinatorClientCodec.heartbeatMessage(
             status: isActive ? .serving : .idle,
@@ -905,7 +963,8 @@ public actor CoordinatorClient {
                 tokensGenerated: stats.tokensGenerated
             ),
             systemMetrics: metrics,
-            backendCapacity: capacity
+            backendCapacity: capacity,
+            energy: energySnapshot
         )
 
         guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),
@@ -913,6 +972,37 @@ public actor CoordinatorClient {
             return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
         }
         return json
+    }
+
+    /// Start the energy accountant's sampling loop once, at session start, so the
+    /// first interval after registration (preload, cold load, early inference) is
+    /// captured rather than skipped waiting for the first heartbeat.
+    private func startEnergyAccountant() async {
+        guard !energyStarted else { return }
+        energyStarted = true
+        await energyAccountant.start { [weak self] in
+            await self?.energyCounters()
+                ?? EnergyActivityCounters(
+                    decodeTokensTotal: 0, prefillTokensTotal: 0,
+                    inferenceActive: false, modelResident: false, loading: false)
+        }
+    }
+
+    /// Current cumulative activity counters + live flags for the energy
+    /// accountant. Read once per accounting tick; token deltas are computed
+    /// inside the accountant.
+    private func energyCounters() -> EnergyActivityCounters {
+        let model = state.currentModel
+        return EnergyActivityCounters(
+            decodeTokensTotal: stats.energyDecodeTokens,
+            prefillTokensTotal: stats.promptTokensPrefilled,
+            inferenceActive: state.inferenceActive,
+            modelResident: !(model?.isEmpty ?? true),
+            // Authoritative load signal from the provider's load critical section
+            // (covers cold loads + coordinator preloads). The provider never
+            // emits a "reloading" slot state, so this cannot come from capacity.
+            loading: stats.modelLoading
+        )
     }
 
     // MARK: - Outbound Encoding

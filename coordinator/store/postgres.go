@@ -883,6 +883,39 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_model ON request_rejections(resolved_model, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_status ON request_rejections(http_status, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_servable ON request_rejections(could_have_served, created_at DESC) WHERE could_have_served = true`,
+
+		// Per-provider energy ledger snapshots (time-series; diff consecutive
+		// rows per provider to get interval energy per operation).
+		`CREATE TABLE IF NOT EXISTS provider_energy (
+			id BIGSERIAL PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			account_id TEXT NOT NULL DEFAULT '',
+			serial_number TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			chip_family TEXT NOT NULL DEFAULT '',
+			chip_tier TEXT NOT NULL DEFAULT '',
+			gpu_cores INT NOT NULL DEFAULT 0,
+			current_watts DOUBLE PRECISION NOT NULL DEFAULT 0,
+			idle_watts DOUBLE PRECISION NOT NULL DEFAULT 0,
+			idle_joules DOUBLE PRECISION NOT NULL DEFAULT 0,
+			prefill_joules DOUBLE PRECISION NOT NULL DEFAULT 0,
+			decode_joules DOUBLE PRECISION NOT NULL DEFAULT 0,
+			load_joules DOUBLE PRECISION NOT NULL DEFAULT 0,
+			cpu_joules DOUBLE PRECISION NOT NULL DEFAULT 0,
+			gpu_joules DOUBLE PRECISION NOT NULL DEFAULT 0,
+			ane_joules DOUBLE PRECISION NOT NULL DEFAULT 0,
+			dram_joules DOUBLE PRECISION NOT NULL DEFAULT 0,
+			prefill_tokens DOUBLE PRECISION NOT NULL DEFAULT 0,
+			decode_tokens DOUBLE PRECISION NOT NULL DEFAULT 0,
+			warm_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+			model_loads INT NOT NULL DEFAULT 0,
+			j_per_prefill_token DOUBLE PRECISION NOT NULL DEFAULT 0,
+			j_per_decode_token DOUBLE PRECISION NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_energy_created ON provider_energy(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_energy_provider ON provider_energy(provider_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_energy_chip ON provider_energy(chip_family, chip_tier, created_at DESC)`,
 	}
 
 	for _, m := range migrations {
@@ -1689,6 +1722,85 @@ func (s *PostgresStore) RejectionRecordsSince(since time.Time) []RejectionRecord
 		}
 		if len(paramsRaw) > 0 {
 			r.Params = paramsRaw
+		}
+		records = append(records, r)
+	}
+	return records
+}
+
+// RecordProviderEnergy appends a periodic energy ledger snapshot for a provider
+// node. Best-effort; failures are discarded and never block the heartbeat path.
+func (s *PostgresStore) RecordProviderEnergy(record *ProviderEnergyRecord) error {
+	if record == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	createdAt := record.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_energy (
+			provider_id, account_id, serial_number, model, chip_family, chip_tier, gpu_cores,
+			current_watts, idle_watts,
+			idle_joules, prefill_joules, decode_joules, load_joules,
+			cpu_joules, gpu_joules, ane_joules, dram_joules,
+			prefill_tokens, decode_tokens, warm_seconds, model_loads,
+			j_per_prefill_token, j_per_decode_token, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7,
+			$8, $9,
+			$10, $11, $12, $13,
+			$14, $15, $16, $17,
+			$18, $19, $20, $21,
+			$22, $23, $24
+		)`,
+		record.ProviderID, record.AccountID, record.SerialNumber, record.Model, record.ChipFamily, record.ChipTier, record.GPUCores,
+		record.CurrentWatts, record.IdleWatts,
+		record.IdleJoules, record.PrefillJoules, record.DecodeJoules, record.LoadJoules,
+		record.CPUJoules, record.GPUJoules, record.ANEJoules, record.DRAMJoules,
+		record.PrefillTokens, record.DecodeTokens, record.WarmSeconds, record.ModelLoads,
+		record.JPerPrefillToken, record.JPerDecodeToken, createdAt,
+	)
+	return err
+}
+
+// ProviderEnergySince returns energy snapshots created at or after the given
+// time, newest first (capped).
+func (s *PostgresStore) ProviderEnergySince(since time.Time) []ProviderEnergyRecord {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+			provider_id, account_id, serial_number, model, chip_family, chip_tier, gpu_cores,
+			current_watts, idle_watts,
+			idle_joules, prefill_joules, decode_joules, load_joules,
+			cpu_joules, gpu_joules, ane_joules, dram_joules,
+			prefill_tokens, decode_tokens, warm_seconds, model_loads,
+			j_per_prefill_token, j_per_decode_token, created_at
+		 FROM provider_energy WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2`,
+		since, maxTelemetryReadRows)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var records []ProviderEnergyRecord
+	for rows.Next() {
+		var r ProviderEnergyRecord
+		if err := rows.Scan(
+			&r.ProviderID, &r.AccountID, &r.SerialNumber, &r.Model, &r.ChipFamily, &r.ChipTier, &r.GPUCores,
+			&r.CurrentWatts, &r.IdleWatts,
+			&r.IdleJoules, &r.PrefillJoules, &r.DecodeJoules, &r.LoadJoules,
+			&r.CPUJoules, &r.GPUJoules, &r.ANEJoules, &r.DRAMJoules,
+			&r.PrefillTokens, &r.DecodeTokens, &r.WarmSeconds, &r.ModelLoads,
+			&r.JPerPrefillToken, &r.JPerDecodeToken, &r.CreatedAt,
+		); err != nil {
+			continue
 		}
 		records = append(records, r)
 	}

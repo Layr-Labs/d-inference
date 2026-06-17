@@ -70,17 +70,23 @@ public struct SystemMetrics: Codable, Sendable, Equatable {
     public var memoryPressure: Double
     public var cpuUsage: Double
     public var thermalState: ThermalState
+    /// Instantaneous total SoC power in watts (measured via IOReport). Optional:
+    /// omitted by legacy providers and when energy measurement is unavailable,
+    /// so old wire bytes are unchanged. Mirrors `power_watts,omitempty` in Go.
+    public var powerWatts: Double?
 
     enum CodingKeys: String, CodingKey {
         case memoryPressure = "memory_pressure"
         case cpuUsage = "cpu_usage"
         case thermalState = "thermal_state"
+        case powerWatts = "power_watts"
     }
 
-    public init(memoryPressure: Double, cpuUsage: Double, thermalState: ThermalState) {
+    public init(memoryPressure: Double, cpuUsage: Double, thermalState: ThermalState, powerWatts: Double? = nil) {
         self.memoryPressure = memoryPressure
         self.cpuUsage = cpuUsage
         self.thermalState = thermalState
+        self.powerWatts = powerWatts
     }
 }
 
@@ -429,6 +435,117 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryPeakGb = gpuMemoryPeakGb
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
         self.totalMemoryGb = totalMemoryGb
+    }
+}
+
+/// Cumulative per-operation energy breakdown reported on the heartbeat. All
+/// joule fields are cumulative since the provider process started; the
+/// coordinator persists periodic snapshots and diffs them for time-series
+/// analysis. Mirrors `EnergyLedger` in coordinator/protocol/messages.go.
+/// Every field is omit-when-zero so legacy providers (and the no-IOReport
+/// fallback) stay byte-compatible on the wire.
+public struct EnergyLedgerSnapshot: Codable, Sendable, Equatable {
+    public var currentWatts: Double      // instantaneous total SoC power
+    public var idleWatts: Double         // measured idle-floor baseline
+    public var idleJoules: Double
+    public var prefillJoules: Double
+    public var decodeJoules: Double
+    public var loadJoules: Double
+    public var cpuJoules: Double
+    public var gpuJoules: Double
+    public var aneJoules: Double
+    public var dramJoules: Double
+    public var prefillTokens: Double
+    public var decodeTokens: Double
+    public var warmSeconds: Double
+    public var modelLoads: Int
+    public var jPerPrefillToken: Double
+    public var jPerDecodeToken: Double
+
+    enum CodingKeys: String, CodingKey {
+        case currentWatts = "current_watts"
+        case idleWatts = "idle_watts"
+        case idleJoules = "idle_joules"
+        case prefillJoules = "prefill_joules"
+        case decodeJoules = "decode_joules"
+        case loadJoules = "load_joules"
+        case cpuJoules = "cpu_joules"
+        case gpuJoules = "gpu_joules"
+        case aneJoules = "ane_joules"
+        case dramJoules = "dram_joules"
+        case prefillTokens = "prefill_tokens"
+        case decodeTokens = "decode_tokens"
+        case warmSeconds = "warm_seconds"
+        case modelLoads = "model_loads"
+        case jPerPrefillToken = "j_per_prefill_token"
+        case jPerDecodeToken = "j_per_decode_token"
+    }
+
+    public init(
+        currentWatts: Double = 0, idleWatts: Double = 0,
+        idleJoules: Double = 0, prefillJoules: Double = 0, decodeJoules: Double = 0, loadJoules: Double = 0,
+        cpuJoules: Double = 0, gpuJoules: Double = 0, aneJoules: Double = 0, dramJoules: Double = 0,
+        prefillTokens: Double = 0, decodeTokens: Double = 0, warmSeconds: Double = 0, modelLoads: Int = 0,
+        jPerPrefillToken: Double = 0, jPerDecodeToken: Double = 0
+    ) {
+        self.currentWatts = currentWatts
+        self.idleWatts = idleWatts
+        self.idleJoules = idleJoules
+        self.prefillJoules = prefillJoules
+        self.decodeJoules = decodeJoules
+        self.loadJoules = loadJoules
+        self.cpuJoules = cpuJoules
+        self.gpuJoules = gpuJoules
+        self.aneJoules = aneJoules
+        self.dramJoules = dramJoules
+        self.prefillTokens = prefillTokens
+        self.decodeTokens = decodeTokens
+        self.warmSeconds = warmSeconds
+        self.modelLoads = modelLoads
+        self.jPerPrefillToken = jPerPrefillToken
+        self.jPerDecodeToken = jPerDecodeToken
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func d(_ k: CodingKeys) throws -> Double { try c.decodeIfPresent(Double.self, forKey: k) ?? 0 }
+        currentWatts = try d(.currentWatts)
+        idleWatts = try d(.idleWatts)
+        idleJoules = try d(.idleJoules)
+        prefillJoules = try d(.prefillJoules)
+        decodeJoules = try d(.decodeJoules)
+        loadJoules = try d(.loadJoules)
+        cpuJoules = try d(.cpuJoules)
+        gpuJoules = try d(.gpuJoules)
+        aneJoules = try d(.aneJoules)
+        dramJoules = try d(.dramJoules)
+        prefillTokens = try d(.prefillTokens)
+        decodeTokens = try d(.decodeTokens)
+        warmSeconds = try d(.warmSeconds)
+        modelLoads = try c.decodeIfPresent(Int.self, forKey: .modelLoads) ?? 0
+        jPerPrefillToken = try d(.jPerPrefillToken)
+        jPerDecodeToken = try d(.jPerDecodeToken)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        func e(_ v: Double, _ k: CodingKeys) throws { if v != 0 { try c.encode(v, forKey: k) } }
+        try e(currentWatts, .currentWatts)
+        try e(idleWatts, .idleWatts)
+        try e(idleJoules, .idleJoules)
+        try e(prefillJoules, .prefillJoules)
+        try e(decodeJoules, .decodeJoules)
+        try e(loadJoules, .loadJoules)
+        try e(cpuJoules, .cpuJoules)
+        try e(gpuJoules, .gpuJoules)
+        try e(aneJoules, .aneJoules)
+        try e(dramJoules, .dramJoules)
+        try e(prefillTokens, .prefillTokens)
+        try e(decodeTokens, .decodeTokens)
+        try e(warmSeconds, .warmSeconds)
+        if modelLoads != 0 { try c.encode(modelLoads, forKey: .modelLoads) }
+        try e(jPerPrefillToken, .jPerPrefillToken)
+        try e(jPerDecodeToken, .jPerDecodeToken)
     }
 }
 

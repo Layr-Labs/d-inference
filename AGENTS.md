@@ -224,6 +224,14 @@ Keep the codebase modular, never monolithic.
 - One file/component should do one thing. If a file mixes several concerns or grows past a few hundred lines, that's a signal to split it.
 - **At the end of every large piece of work, do a refactor pass to make it modular before calling it done.** Extract helpers/types/hooks into focused files, delete dead code, and keep the public entry point thin. The refactor must be behavior-preserving — build, lint, and tests stay green.
 
+## Pull Requests
+
+Every pull request **must** include a **before/after architecture diagram** — two Mermaid diagrams in the PR description, one showing the relevant flow/architecture *before* the change and one *after*. This is mandatory for every PR, no exceptions; it makes the structural impact of the change reviewable at a glance.
+
+- Use fenced ` ```mermaid ` blocks (GitHub renders them natively).
+- Scope the diagrams to the subsystem(s) the PR touches — the data flow, call path, or component wiring that changed — not the whole system.
+- For a purely additive change, the "before" diagram still shows the prior state so the delta is explicit.
+
 ## Formatting
 
 A pre-commit hook in `.githooks/pre-commit` checks staged files only. It is enabled via:

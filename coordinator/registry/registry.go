@@ -336,6 +336,10 @@ type Provider struct {
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
 
+	// Live cumulative energy ledger from heartbeats (nil for providers without
+	// IOReport energy measurement). Persisted as a time-series for analysis.
+	Energy *protocol.EnergyLedger
+
 	// Reputation tracking
 	Reputation Reputation
 
@@ -362,6 +366,10 @@ type Provider struct {
 	// lastPersisted tracks when this provider was last written to the store.
 	// Used by PersistProviderThrottled to avoid hammering Postgres on every heartbeat.
 	lastPersisted time.Time
+
+	// lastEnergyPersisted throttles per-provider energy time-series writes from
+	// the heartbeat path (energy snapshots are sampled coarser than heartbeats).
+	lastEnergyPersisted time.Time
 
 	// lastReputationPersisted tracks when this provider's reputation was last
 	// written to the store from the heartbeat path. Used by
@@ -1223,6 +1231,85 @@ func (r *Registry) persistReputationThrottled(p *Provider) {
 	p.lastReputationPersisted = time.Now()
 	p.mu.Unlock()
 	r.persistReputation(p)
+}
+
+// persistEnergyThrottled appends a per-provider energy snapshot to the
+// time-series at most once per minute. The provider reports a cumulative ledger
+// on every heartbeat; we sample it at a coarser cadence to bound DB writes
+// while preserving enough resolution to diff consecutive rows.
+func (r *Registry) persistEnergyThrottled(p *Provider) {
+	const minInterval = 60 * time.Second
+	p.mu.Lock()
+	if p.Energy == nil {
+		p.mu.Unlock()
+		return
+	}
+	if time.Since(p.lastEnergyPersisted) < minInterval {
+		p.mu.Unlock()
+		return
+	}
+	p.lastEnergyPersisted = time.Now()
+	p.mu.Unlock()
+	r.persistEnergyNow(p)
+}
+
+// persistEnergyNow writes one energy ledger snapshot to the store. Called
+// asynchronously to avoid blocking the heartbeat path.
+func (r *Registry) persistEnergyNow(p *Provider) {
+	if r.store == nil {
+		return
+	}
+	saferun.Go(r.logger, "registry.persistEnergy", func() {
+		p.mu.Lock()
+		e := p.Energy
+		if e == nil {
+			p.mu.Unlock()
+			return
+		}
+		serial := ""
+		if p.AttestationResult != nil {
+			serial = p.AttestationResult.SerialNumber
+		}
+		// The ledger is process-wide (whole-SoC energy can't be split per resident
+		// model). Tag with the active model only when at most one model is resident;
+		// with several resident, leave it empty rather than mislabel the interval's
+		// energy as belonging to whichever model happens to be current at snapshot
+		// time. See ProviderEnergyRecord.
+		model := p.CurrentModel
+		if len(p.WarmModels) > 1 {
+			model = ""
+		}
+		rec := store.ProviderEnergyRecord{
+			ProviderID:       p.ID,
+			AccountID:        p.AccountID,
+			SerialNumber:     serial,
+			Model:            model,
+			ChipFamily:       p.Hardware.ChipFamily,
+			ChipTier:         p.Hardware.ChipTier,
+			GPUCores:         p.Hardware.GPUCores,
+			CurrentWatts:     e.CurrentWatts,
+			IdleWatts:        e.IdleWatts,
+			IdleJoules:       e.IdleJoules,
+			PrefillJoules:    e.PrefillJoules,
+			DecodeJoules:     e.DecodeJoules,
+			LoadJoules:       e.LoadJoules,
+			CPUJoules:        e.CPUJoules,
+			GPUJoules:        e.GPUJoules,
+			ANEJoules:        e.ANEJoules,
+			DRAMJoules:       e.DRAMJoules,
+			PrefillTokens:    e.PrefillTokens,
+			DecodeTokens:     e.DecodeTokens,
+			WarmSeconds:      e.WarmSeconds,
+			ModelLoads:       e.ModelLoads,
+			JPerPrefillToken: e.JPerPrefillToken,
+			JPerDecodeToken:  e.JPerDecodeToken,
+			CreatedAt:        time.Now(),
+		}
+		p.mu.Unlock()
+		if err := r.store.RecordProviderEnergy(&rec); err != nil {
+			r.logger.Warn("failed to persist provider energy", "provider_id", p.ID, "error", err)
+		}
+	})
 }
 
 // persistProviderNow saves a provider's current state to the store.
@@ -2344,6 +2431,21 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	if v, changed := clampNonNeg(msg.SystemMetrics.CPUUsage, 1.0); changed {
 		msg.SystemMetrics.CPUUsage = v
 	}
+	// Sanitize provider-reported power: out-of-range (negative or absurdly high)
+	// readings are dropped to 0 so /v1/stats falls back to the chip estimate and
+	// a bogus provider can't skew the public network-power figure. Cumulative
+	// joules are left as-is (analysis-only; not used for routing or public stats).
+	if msg.SystemMetrics.PowerWatts < 0 || msg.SystemMetrics.PowerWatts > MaxReasonablePowerWatts {
+		msg.SystemMetrics.PowerWatts = 0
+	}
+	if msg.Energy != nil {
+		if msg.Energy.CurrentWatts < 0 || msg.Energy.CurrentWatts > MaxReasonablePowerWatts {
+			msg.Energy.CurrentWatts = 0
+		}
+		if msg.Energy.IdleWatts < 0 || msg.Energy.IdleWatts > MaxReasonablePowerWatts {
+			msg.Energy.IdleWatts = 0
+		}
+	}
 
 	p.mu.Lock()
 	now := time.Now()
@@ -2353,6 +2455,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.Stats.TokensGenerated += cumulativeDelta(p.lastSessionStats.TokensGenerated, msg.Stats.TokensGenerated)
 	p.lastSessionStats = msg.Stats
 	p.SystemMetrics = msg.SystemMetrics
+	// Cumulative energy ledger (nil for providers without IOReport). Replaces the
+	// pointer wholesale; the old pointee is never mutated, so readers holding it
+	// stay consistent.
+	p.Energy = msg.Energy
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = msg.BackendCapacity
@@ -2412,6 +2518,8 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// Persist accumulated uptime (throttled) so it survives restarts/reconnects;
 	// the heartbeat path is otherwise the only place uptime grows.
 	r.persistReputationThrottled(p)
+	// Append a per-provider energy snapshot to the time-series (throttled).
+	r.persistEnergyThrottled(p)
 
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler

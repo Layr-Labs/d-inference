@@ -260,6 +260,14 @@ Each reviewer should:
 
 Only proceed to the next objective after both reviewers pass. If either flags issues, fix them before moving on.
 
+## Pull Requests
+
+Every pull request **must** include a **before/after architecture diagram** — two Mermaid diagrams in the PR description, one showing the relevant flow/architecture *before* the change and one *after*. This is mandatory for every PR, no exceptions; it makes the structural impact of the change reviewable at a glance.
+
+- Use fenced ` ```mermaid ` blocks (GitHub renders them natively).
+- Scope the diagrams to the subsystem(s) the PR touches — the data flow, call path, or component wiring that changed — not the whole system.
+- For a purely additive change, the "before" diagram still shows the prior state so the delta is explicit.
+
 ## Git Hooks
 
 Hooks live in `.githooks/` and are enabled via `git config core.hooksPath .githooks` (already set for this repo).

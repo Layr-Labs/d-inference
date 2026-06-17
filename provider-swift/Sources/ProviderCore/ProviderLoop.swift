@@ -212,7 +212,12 @@ public actor ProviderLoop {
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var modelsLoading: Set<String> = []
     private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
-    private var isLoadingAny: Bool = false
+    // Mirror the load-in-progress state to the shared stats so the energy
+    // accountant can bucket model-load energy (the provider never emits a
+    // "reloading" slot state, so this is the only reliable load signal).
+    private var isLoadingAny: Bool = false {
+        didSet { stats.setModelLoading(isLoadingAny) }
+    }
     private var isShuttingDown: Bool = false
 
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`
@@ -1348,6 +1353,12 @@ public actor ProviderLoop {
                         }
                         if frameHadContent {
                             contentFrameCount += 1
+                            // Live decode-token progress for energy accounting
+                            // (~one token per content frame). Unlike the billing
+                            // token count (settled at completion), this advances
+                            // every tick so the accountant attributes decode
+                            // energy to the ticks where it was actually spent.
+                            providerStats.addEnergyDecodeTokens(1)
                         }
                         if let usage = parsed.usage {
                             promptTokens = usage.promptTokens
@@ -1400,6 +1411,19 @@ public actor ProviderLoop {
 
             // Cancelled with nothing delivered: 499 so the coordinator refunds.
             if cancelledMidStream && contentFrameCount == 0 && fullResponseText.isEmpty {
+                // Credit a prompt-token floor for the prefill work already done.
+                // The energy accountant may have bucketed the prefill ticks as
+                // prefill_joules; without a matching token denominator here (the
+                // completion-time credit below is skipped by this early return),
+                // j_per_prefill_token would skew in cancellation-heavy runs.
+                let prefillFloor = Self.promptTokenFloor(
+                    request: streamingRequest,
+                    tokenizer: tokenizer,
+                    reasoningEffort: reasoningEffort
+                )
+                if prefillFloor > 0 {
+                    providerStats.addPromptTokensPrefilled(UInt64(prefillFloor))
+                }
                 send.send(.inferenceError(
                     requestId: requestId,
                     error: "request cancelled",
@@ -1467,6 +1491,12 @@ public actor ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
+            // Prefill tokens are credited here at completion (the relay only
+            // learns prompt_tokens from the final usage frame). They are the
+            // DENOMINATOR for J/prefill-token; the prefill ENERGY itself is
+            // bucketed live by the accountant on active ticks that produce no
+            // output (the prefill phase), so the average ratio stays correct.
+            providerStats.addPromptTokensPrefilled(UInt64(max(promptTokens, 0)))
 
             // Update state
             await me.updateAggregateCapacity()

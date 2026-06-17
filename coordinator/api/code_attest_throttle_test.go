@@ -114,9 +114,31 @@ func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
 	if th.allowPush(se, false) {
 		t.Fatal("precondition: a push within the cooldown must be blocked")
 	}
-	th.clearPushBudget(se)
+	if !th.clearPushBudget(se) {
+		t.Fatal("the first budget reset must be honored")
+	}
 	if !th.allowPush(se, false) {
 		t.Fatal("clearPushBudget must let the next push proceed immediately (rotated token has its own budget)")
+	}
+
+	// Anti-DoS (threat-model): a second reset within budgetClearCooldown must be
+	// throttled, so a provider flooding token changes can't spam APNs.
+	th.recordPush(se)          // consume the budget again
+	cur = cur.Add(time.Minute) // still within budgetClearCooldown
+	if th.clearPushBudget(se) {
+		t.Fatal("a second budget reset within budgetClearCooldown must be throttled")
+	}
+	if th.allowPush(se, false) {
+		t.Fatal("a throttled reset must NOT clear the cooldown (flood protection)")
+	}
+
+	// Once budgetClearCooldown elapses, a reset is honored again.
+	cur = cur.Add(th.budgetClearCooldown)
+	if !th.clearPushBudget(se) {
+		t.Fatal("a reset after budgetClearCooldown must be honored")
+	}
+	if !th.allowPush(se, false) {
+		t.Fatal("an honored reset must clear the cooldown")
 	}
 }
 

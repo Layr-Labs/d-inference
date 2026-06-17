@@ -27,6 +27,7 @@ func waitForCond(d time.Duration, cond func() bool) bool {
 func fastBudgets(srv *Server) {
 	srv.codeAttestThrottle.backgroundPushCooldown = time.Millisecond
 	srv.codeAttestThrottle.alertPushCooldown = time.Millisecond
+	srv.codeAttestThrottle.budgetClearCooldown = time.Millisecond
 	srv.codeAttestThrottle.retrySpacing = time.Millisecond
 	srv.codeAttestThrottle.retryJitter = 0
 }

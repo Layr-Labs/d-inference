@@ -52,10 +52,11 @@ type codeAttestStore interface {
 //     (within budget) instead of being pinned to the 20-minute background budget,
 //     and jitter de-synchronises fleet-wide reconnects (e.g. post-deploy).
 type codeAttestThrottle struct {
-	mu          sync.Mutex
-	attested    map[string]codeAttestRecord      // seKey -> last successful attestation (reuse cache)
-	lastPush    map[string]time.Time             // seKey -> last push (device-level rate limit)
-	outstanding map[string][]codeAttestChallenge // seKey -> unexpired pushed, not-yet-verified challenges (alert mode can have several in flight)
+	mu              sync.Mutex
+	attested        map[string]codeAttestRecord      // seKey -> last successful attestation (reuse cache)
+	lastPush        map[string]time.Time             // seKey -> last push (device-level rate limit)
+	lastBudgetClear map[string]time.Time             // seKey -> last token-rotation budget reset (anti-DoS floor)
+	outstanding     map[string][]codeAttestChallenge // seKey -> unexpired pushed, not-yet-verified challenges (alert mode can have several in flight)
 
 	reuseWindow time.Duration
 
@@ -63,6 +64,15 @@ type codeAttestThrottle struct {
 	// allowPush picks the cooldown by delivery mode.
 	backgroundPushCooldown time.Duration
 	alertPushCooldown      time.Duration
+
+	// budgetClearCooldown is the minimum spacing between token-rotation budget
+	// resets per device (clearPushBudget). A provider can put any string in the
+	// heartbeat APNs-token field on every heartbeat; without this floor each
+	// "rotation" would reset the push budget and force an immediate push, letting a
+	// misbehaving provider spam APNs (and coordinator work) far beyond Apple's
+	// per-device budget. A GENUINE rotation is rare, so it still clears promptly; a
+	// flood is throttled back to the normal cooldown.
+	budgetClearCooldown time.Duration
 
 	// retrySpacing is the loop's poll/backoff cadence, decoupled from the push
 	// budget; retryJitter de-synchronises a fleet-wide reconnect so pushes don't
@@ -105,10 +115,12 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 	return &codeAttestThrottle{
 		attested:               make(map[string]codeAttestRecord),
 		lastPush:               make(map[string]time.Time),
+		lastBudgetClear:        make(map[string]time.Time),
 		outstanding:            make(map[string][]codeAttestChallenge),
 		reuseWindow:            30 * time.Minute,
 		backgroundPushCooldown: 20 * time.Minute, // <= 3 pushes/hour/device (APNs background budget)
 		alertPushCooldown:      75 * time.Second, // alert is not background-throttled (Fix 3)
+		budgetClearCooldown:    20 * time.Minute, // a token rotation can reset the budget at most ~3x/hour/device
 		retrySpacing:           15 * time.Second, // poll/backoff cadence, separate from the budget
 		retryJitter:            15 * time.Second, // de-sync fleet retries -> retryDelay in [15s, 30s)
 		challengeValidity:      CodeAttestResponseTimeout,
@@ -190,13 +202,23 @@ func (t *codeAttestThrottle) recordPush(seKey string) {
 // its own untouched budget. Without this, the rearm loop sets CodeAttested=false
 // yet cannot challenge the new token until the old token's (up to 20-minute)
 // background cooldown expires — derouting the provider for no reason (Codex #9).
-func (t *codeAttestThrottle) clearPushBudget(seKey string) {
+//
+// Anti-DoS: the reset is itself throttled to at most once per budgetClearCooldown
+// per device, so a provider that floods token changes in heartbeats cannot reset
+// the budget every time and spam APNs beyond the per-device budget. Returns
+// whether the budget was actually cleared (false = the reset was throttled).
+func (t *codeAttestThrottle) clearPushBudget(seKey string) bool {
 	if seKey == "" {
-		return
+		return false
 	}
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	if last, ok := t.lastBudgetClear[seKey]; ok && t.now().Sub(last) < t.budgetClearCooldown {
+		return false // a recent rotation already reset the budget — throttle the flood
+	}
+	t.lastBudgetClear[seKey] = t.now()
 	delete(t.lastPush, seKey)
-	t.mu.Unlock()
+	return true
 }
 
 func (t *codeAttestThrottle) recordAttested(seKey, version, token string) {

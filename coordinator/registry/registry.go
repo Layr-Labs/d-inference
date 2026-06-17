@@ -1270,14 +1270,20 @@ func (r *Registry) persistEnergyNow(p *Provider) {
 		if p.AttestationResult != nil {
 			serial = p.AttestationResult.SerialNumber
 		}
+		// The ledger is process-wide (whole-SoC energy can't be split per resident
+		// model). Tag with the active model only when at most one model is resident;
+		// with several resident, leave it empty rather than mislabel the interval's
+		// energy as belonging to whichever model happens to be current at snapshot
+		// time. See ProviderEnergyRecord.
+		model := p.CurrentModel
+		if len(p.WarmModels) > 1 {
+			model = ""
+		}
 		rec := store.ProviderEnergyRecord{
-			ProviderID:   p.ID,
-			AccountID:    p.AccountID,
-			SerialNumber: serial,
-			// Active model at snapshot time, for context only. The ledger is
-			// process-wide (whole-SoC energy can't be split per resident model),
-			// so this is NOT a per-model attribution key — see ProviderEnergyRecord.
-			Model:            p.CurrentModel,
+			ProviderID:       p.ID,
+			AccountID:        p.AccountID,
+			SerialNumber:     serial,
+			Model:            model,
 			ChipFamily:       p.Hardware.ChipFamily,
 			ChipTier:         p.Hardware.ChipTier,
 			GPUCores:         p.Hardware.GPUCores,

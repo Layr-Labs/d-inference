@@ -1411,6 +1411,19 @@ public actor ProviderLoop {
 
             // Cancelled with nothing delivered: 499 so the coordinator refunds.
             if cancelledMidStream && contentFrameCount == 0 && fullResponseText.isEmpty {
+                // Credit a prompt-token floor for the prefill work already done.
+                // The energy accountant may have bucketed the prefill ticks as
+                // prefill_joules; without a matching token denominator here (the
+                // completion-time credit below is skipped by this early return),
+                // j_per_prefill_token would skew in cancellation-heavy runs.
+                let prefillFloor = Self.promptTokenFloor(
+                    request: streamingRequest,
+                    tokenizer: tokenizer,
+                    reasoningEffort: reasoningEffort
+                )
+                if prefillFloor > 0 {
+                    providerStats.addPromptTokensPrefilled(UInt64(prefillFloor))
+                }
                 send.send(.inferenceError(
                     requestId: requestId,
                     error: "request cancelled",

@@ -110,13 +110,15 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Prefer the provider's measured SoC power (IOReport) when reported and
-		// within a sane bound; fall back to the static chip estimate otherwise.
-		// The bound stops a bogus/malicious heartbeat from inflating the public
-		// figure. Same observed→estimate precedence pattern used for decode TPS.
-		if pw := p.SystemMetrics.PowerWatts; pw > 0 && pw <= registry.MaxReasonablePowerWatts {
+		// plausible for THIS chip; fall back to the static estimate otherwise.
+		// Bounding to ~1.5x the chip's own estimate (rather than a loose global
+		// cap) stops a bogus/malicious heartbeat from inflating the public figure
+		// by an order of magnitude. Same observed→estimate precedence as decode TPS.
+		est := registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
+		if pw := p.SystemMetrics.PowerWatts; pw > 0 && pw <= est*1.5 {
 			activePowerWatts += pw
 		} else {
-			activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
+			activePowerWatts += est
 		}
 		totalRequests += p.Stats.RequestsServed
 		totalTokensGen += p.Stats.TokensGenerated

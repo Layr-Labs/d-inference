@@ -113,11 +113,18 @@ public struct EnergyLedger: Sendable {
         let joules = max(0, sample.totalJoules)
         lastWatts = joules / dt
 
-        // Off: machine idle with no model resident and not loading. Excluded
-        // from BOTH the operation buckets AND the subsystem totals so the two
-        // stay consistent (subsystem split == sum of buckets' scope). Tracked
-        // separately in offJoules; not reported on the wire.
-        if !activity.loading && !activity.inferenceActive && !activity.modelResident {
+        // Token progress means real serving work happened this tick, even if the
+        // capacity-derived `inferenceActive` flag is briefly stale (first ticks of
+        // a short request) or a model preload is concurrently in progress. So
+        // token progress forces "active".
+        let hasTokenProgress = activity.prefillTokens > 0 || activity.decodeTokens > 0
+        let active = activity.inferenceActive || hasTokenProgress
+
+        // Off: not active, not loading, no model resident. Excluded from BOTH the
+        // operation buckets AND the subsystem totals so the two stay consistent
+        // (subsystem split == sum of buckets' scope). Tracked separately in
+        // offJoules; not reported on the wire.
+        if !active && !activity.loading && !activity.modelResident {
             offJoules += joules
             consecutiveIdleTicks = 0
             return
@@ -132,7 +139,28 @@ public struct EnergyLedger: Sendable {
         prefillTokens += max(0, activity.prefillTokens)
         decodeTokens += max(0, activity.decodeTokens)
 
+        // Active serving takes precedence over a concurrent model load: when a
+        // preload overlaps an already-serving slot, attribute the energy above the
+        // idle baseline to decode/prefill so serving work keeps its denominator,
+        // rather than dumping the whole tick to load. Subtract the measured idle
+        // baseline (clamped to the tick's joules so buckets never exceed measured
+        // energy), then bucket by whether output tokens advanced this tick.
+        if active {
+            consecutiveIdleTicks = 0
+            warmSeconds += dt
+            let base = min(joules, idleWatts * dt)
+            idleJoules += base
+            let residual = joules - base
+            if activity.decodeTokens > 0 {
+                decodeJoules += residual
+            } else {
+                prefillJoules += residual
+            }
+            return
+        }
+
         if activity.loading {
+            // Pure load tick (no serving work in progress).
             consecutiveIdleTicks = 0
             warmSeconds += dt
             loadSeconds += dt
@@ -140,30 +168,13 @@ public struct EnergyLedger: Sendable {
             return
         }
 
-        if !activity.inferenceActive {
-            // Not serving, model resident → warm idle.
-            warmSeconds += dt
-            idleJoules += joules
-            consecutiveIdleTicks += 1
-            if consecutiveIdleTicks >= Self.idleStabilityThreshold {
-                let w = joules / dt
-                idleWatts = idleWatts > 0 ? (Self.idleAlpha * w + (1 - Self.idleAlpha) * idleWatts) : w
-            }
-            return
-        }
-
-        // Active (serving). Subtract the measured idle baseline (clamped to the
-        // tick's actual joules so buckets never exceed measured energy), then
-        // bucket the remainder by whether output tokens advanced this tick.
-        consecutiveIdleTicks = 0
+        // Not active, not loading, model resident → warm idle.
         warmSeconds += dt
-        let base = min(joules, idleWatts * dt)
-        idleJoules += base
-        let residual = joules - base
-        if activity.decodeTokens > 0 {
-            decodeJoules += residual
-        } else {
-            prefillJoules += residual
+        idleJoules += joules
+        consecutiveIdleTicks += 1
+        if consecutiveIdleTicks >= Self.idleStabilityThreshold {
+            let w = joules / dt
+            idleWatts = idleWatts > 0 ? (Self.idleAlpha * w + (1 - Self.idleAlpha) * idleWatts) : w
         }
     }
 

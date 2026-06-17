@@ -187,9 +187,11 @@ type PendingRequest struct {
 	BaseReservedMicroUSD int64
 	// ServiceReservation marks a trusted service account request whose pre-router
 	// admission used an in-memory hold instead of a synchronous ledger debit.
-	ServiceReservation   bool
-	reservationMu        sync.Mutex
-	reservationFinalized bool
+	ServiceReservation    bool
+	reservationMu         sync.Mutex
+	reservationFinalized  bool
+	routeOutcomeMu        sync.Mutex
+	routeOutcomeFinalized bool
 
 	// Timing fields for latency decomposition. Written and read by the
 	// consumer/dispatch goroutine that owns the request. The reputation latency
@@ -270,6 +272,23 @@ func (pr *PendingRequest) FinalizeReservation(settle func() error) (bool, error)
 	}
 	pr.reservationFinalized = true
 	return true, nil
+}
+
+// MarkRouteOutcomeFinalized returns true only for the first terminal route
+// outcome. Non-terminal commit updates leave this gate untouched. It prevents a
+// late provider terminal from overwriting a coordinator-side timeout/error that
+// already finalized the user-visible request outcome.
+func (pr *PendingRequest) MarkRouteOutcomeFinalized() bool {
+	if pr == nil {
+		return false
+	}
+	pr.routeOutcomeMu.Lock()
+	defer pr.routeOutcomeMu.Unlock()
+	if pr.routeOutcomeFinalized {
+		return false
+	}
+	pr.routeOutcomeFinalized = true
+	return true
 }
 
 type RequestTiming struct {

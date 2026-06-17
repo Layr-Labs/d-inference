@@ -22,6 +22,9 @@ func (s *Server) updateInferenceRouteOutcomeForPending(pr *registry.PendingReque
 	if pr == nil {
 		return
 	}
+	if outcome != nil && outcome.FinalStatus != "" && !pr.MarkRouteOutcomeFinalized() {
+		return
+	}
 	s.updateInferenceRouteOutcome(pr.RequestID, pr.Attempt, outcome)
 }
 
@@ -67,6 +70,14 @@ func postCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.In
 	return providerFailedPendingRouteOutcome(pr, "partial_success", class, msg.StatusCode)
 }
 
+func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
+	class := "provider_error_before_response"
+	if providerDisconnectedError(msg.Error, msg.StatusCode) {
+		class = "provider_disconnect_before_response"
+	}
+	return providerFailedPendingRouteOutcome(pr, "error", class, msg.StatusCode)
+}
+
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
 	class := "provider_error"
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
@@ -79,8 +90,16 @@ func postCommitProviderIncompleteOutcome(pr *registry.PendingRequest) *store.Inf
 	return providerFailedPendingRouteOutcome(pr, "partial_success", "provider_incomplete_after_commit", 502)
 }
 
+func preResponseProviderIncompleteOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
+	return providerFailedPendingRouteOutcome(pr, "error", "provider_incomplete_before_response", 502)
+}
+
 func postCommitStreamTimeoutOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
 	return pendingRouteOutcome(pr, "partial_success", "stream_timeout_after_commit", 504)
+}
+
+func preResponseTimeoutOutcome(pr *registry.PendingRequest, class string) *store.InferenceRouteOutcome {
+	return pendingRouteOutcome(pr, "timeout", class, 504)
 }
 
 func noTerminalAfterCancelOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {

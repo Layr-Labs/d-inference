@@ -3081,7 +3081,9 @@ public actor ProviderLoop {
 
     private func handleCancellation(requestId: String, receivedFromCoordinator: Bool = true) async {
         logger.info("Cancelling request: \(requestId)")
-        if receivedFromCoordinator {
+        let hadInflightTask = inflightTasks[requestId] != nil
+        let hadModelReservation = requestToModel[requestId] != nil
+        if receivedFromCoordinator && (hadInflightTask || hadModelReservation) {
             stats.incrementCancellationsReceived()
         }
 
@@ -3115,7 +3117,6 @@ public actor ProviderLoop {
         // reach the same teardown).
         await cancellationRegistry.cancel(requestId: requestId)
 
-        let hadInflightTask = inflightTasks[requestId] != nil
         if requestToModel.removeValue(forKey: requestId) != nil {
             if !hadInflightTask {
                 stats.incrementCancelDuringModelLoad()

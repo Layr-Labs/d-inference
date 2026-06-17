@@ -398,6 +398,17 @@ func (d *dispatchState) rejectionInfo(stage, reason string, status, retryAfterMs
 	}
 }
 
+func (d *dispatchState) rejectionInfoWithDecision(stage, reason string, status, retryAfterMs int, decision registry.RoutingDecision) rejectionInfo {
+	info := d.rejectionInfo(stage, reason, status, retryAfterMs)
+	info.servabilityComputed = true
+	info.candidateCount = decision.CandidateCount
+	info.capacityRejections = decision.CapacityRejections
+	info.modelTooLargeRejections = decision.ModelTooLargeRejections
+	info.visionRejections = decision.VisionRejections
+	info.bestTTFTMs = decision.BestTTFTMs
+	return info
+}
+
 // updateRoutingOutcome writes a final outcome update for the current attempt
 // asynchronously. It is a no-op when there is no request ID to correlate.
 func (d *dispatchState) updateRoutingOutcome(outcome *store.InferenceRouteOutcome) {
@@ -576,7 +587,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			d.refundReservation()
-			s.recordRejection(d.rejectionInfo("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000))
+			s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision))
 			if d.policy.enabled {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
 					"your machine is at capacity — retry shortly", withCode("machine_busy")))
@@ -615,7 +626,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			s.recordRejection(d.rejectionInfo("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000))
+			s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision))
 			if d.policy.enabled {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
 					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
@@ -1341,9 +1352,11 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 					d.lastErr = errMsg2.Error
 					d.lastErrCode = errMsg2.StatusCode
 					d.lastFailedVersion = failedProviderVersion(provider)
+					d.updateSpeculativeFailure(pr, errMsg2)
 					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
+					d.requestID = ""
 					return outcomeRetry
 				default:
 					d.committed = true
@@ -1365,9 +1378,11 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.lastErr = errMsg2.Error
 			d.lastErrCode = errMsg2.StatusCode
 			d.lastFailedVersion = failedProviderVersion(provider)
+			d.updateSpeculativeFailure(pr, errMsg2)
 			d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
+			d.requestID = ""
 			return outcomeRetry
 		case <-remainingPrimary.C:
 			if len(d.heldChunks) > 0 {
@@ -1383,6 +1398,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(provider, pr)
+			d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
 			d.lastErr = "timeout waiting for first response"
 			d.lastErrCode = http.StatusGatewayTimeout
 			if s.metrics != nil {
@@ -1391,9 +1407,11 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
 			d.pr = nil
+			d.requestID = ""
 			return outcomeRetry
 		case <-r.Context().Done():
 			remainingPrimary.Stop()
+			d.updateSpeculativeClientGone(pr)
 			s.cancelDispatch(provider, pr)
 			d.refundReservation()
 			return outcomeClientGone
@@ -1555,9 +1573,11 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			d.lastErr = errMsg2.Error
 			d.lastErrCode = errMsg2.StatusCode
 			d.lastFailedVersion = failedProviderVersion(provider)
+			d.updateSpeculativeFailure(pr, errMsg2)
 			s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
+			d.requestID = ""
 			return outcomeRetry
 		case <-primaryDeadline.C:
 			if len(d.heldChunks) > 0 {
@@ -1570,6 +1590,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(provider, pr)
+			d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
 			d.lastErr = "timeout waiting for first response"
 			d.lastErrCode = http.StatusGatewayTimeout
 			if s.metrics != nil {
@@ -1578,9 +1599,11 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
 			d.pr = nil
+			d.requestID = ""
 			return outcomeRetry
 		case <-r.Context().Done():
 			primaryDeadline.Stop()
+			d.updateSpeculativeClientGone(pr)
 			s.cancelDispatch(provider, pr)
 			d.refundReservation()
 			return outcomeClientGone

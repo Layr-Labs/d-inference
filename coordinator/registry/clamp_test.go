@@ -108,3 +108,34 @@ func TestClampBackendCapacityReasonableValues(t *testing.T) {
 		t.Errorf("MaxConcurrency mutated: %v", bc.Slots[0].MaxConcurrency)
 	}
 }
+
+func TestClampBackendCapacityPrefillOverflowIgnored(t *testing.T) {
+	// A provider-side overflow (billions of tok/s, seen when the
+	// admitted->first-token window collapses on a prefix-cache hit) must be
+	// treated as NO measurement (0) so resolvePrefillTPS falls back to the
+	// conservative decode×ratio estimate — NOT clamped UP to maxPrefillTPS, which
+	// would make the TTFT estimate over-optimistic and the hard gate over-accept.
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	bc := &protocol.BackendCapacity{
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: "gpt-oss-20b", ObservedPrefillTPS: 3.5e9}, // overflow garbage
+			{Model: "gemma", ObservedPrefillTPS: -1},          // negative
+			{Model: "nan", ObservedPrefillTPS: math.NaN()},    // NaN
+			{Model: "ok", ObservedPrefillTPS: 1600},           // plausible -> kept
+		},
+	}
+	clampBackendCapacity(logger, "p1", bc)
+
+	if bc.Slots[0].ObservedPrefillTPS != 0 {
+		t.Errorf("overflow ObservedPrefillTPS = %v, want 0 (ignored, not clamped to max)", bc.Slots[0].ObservedPrefillTPS)
+	}
+	if bc.Slots[1].ObservedPrefillTPS != 0 {
+		t.Errorf("negative ObservedPrefillTPS = %v, want 0", bc.Slots[1].ObservedPrefillTPS)
+	}
+	if bc.Slots[2].ObservedPrefillTPS != 0 {
+		t.Errorf("NaN ObservedPrefillTPS = %v, want 0", bc.Slots[2].ObservedPrefillTPS)
+	}
+	if bc.Slots[3].ObservedPrefillTPS != 1600 {
+		t.Errorf("plausible ObservedPrefillTPS = %v, want 1600 (unchanged)", bc.Slots[3].ObservedPrefillTPS)
+	}
+}

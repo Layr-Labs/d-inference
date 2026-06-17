@@ -2105,10 +2105,18 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 				"provider_id", providerID, "model", s.Model, "reported", s.ObservedDecodeTPS, "clamped", v)
 			s.ObservedDecodeTPS = v
 		}
-		if v, changed := clampNonNeg(s.ObservedPrefillTPS, maxPrefillTPS); changed {
-			logger.Warn("provider slot observed_prefill_tps out of range, clamping",
-				"provider_id", providerID, "model", s.Model, "reported", s.ObservedPrefillTPS, "clamped", v)
-			s.ObservedPrefillTPS = v
+		// observed_prefill_tps: an out-of-range value (NaN/negative, or absurdly
+		// high — a known provider-side overflow when the admitted→first-token
+		// window collapses on a prefix-cache hit) is treated as NO measurement (0)
+		// rather than clamped to the ceiling. Clamping garbage UP to maxPrefillTPS
+		// would make the TTFT estimate over-optimistic (prefill looks instant) and
+		// the hard gate over-accept; zeroing it makes resolvePrefillTPS fall back to
+		// the conservative decode×ratio estimate until the provider reports a sane
+		// value (provider fix: only sample cold prefills).
+		if math.IsNaN(s.ObservedPrefillTPS) || s.ObservedPrefillTPS < 0 || s.ObservedPrefillTPS > maxPrefillTPS {
+			logger.Warn("provider slot observed_prefill_tps out of range; ignoring (fall back to estimate)",
+				"provider_id", providerID, "model", s.Model, "reported", s.ObservedPrefillTPS)
+			s.ObservedPrefillTPS = 0
 		}
 		if s.ModelLoadTimeMS < 0 || s.ModelLoadTimeMS > maxModelLoadTimeMS {
 			logger.Warn("provider slot model_load_time_ms out of range, clamping",

@@ -1615,6 +1615,64 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 	}
 }
 
+// When the provider reports freeForLoadGB, the cold-load gate uses it as the
+// single source of truth: admit iff the model's weights fit, regardless of the
+// coarse total-memory heuristic.
+func TestFreeMemoryAdmitsColdLoadUsesReportedFreeForLoad(t *testing.T) {
+	freeForLoad := 9.0 // e.g. a 24GB box reports ~9GB loadable
+	base := routingSnapshot{
+		totalMemoryGB:   64, // heuristic would happily admit; reported value must win
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+		freeForLoadGB:   &freeForLoad,
+	}
+
+	fits := base
+	fits.modelSizeGB = 8 // 8 <= 9 → admit
+	if !freeMemoryAdmits(fits, 100, 256) {
+		t.Fatal("8GB model must be admitted: fits in reported 9GB free-for-load")
+	}
+
+	tooBig := base
+	tooBig.modelSizeGB = 14 // 14 > 9 → reject, even though heuristic on 64GB would admit
+	if freeMemoryAdmits(tooBig, 100, 256) {
+		t.Fatal("14GB model must be rejected: exceeds reported 9GB free-for-load")
+	}
+}
+
+// A reported 0 ("can't load anything now") must reject any cold load, not fall
+// back to the heuristic (nil is the only fallback trigger).
+func TestFreeMemoryAdmitsColdLoadReportedZeroRejects(t *testing.T) {
+	zero := 0.0
+	snap := routingSnapshot{
+		modelSizeGB:     4,
+		totalMemoryGB:   64,
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+		freeForLoadGB:   &zero,
+	}
+	if freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("reported free-for-load 0 must reject a cold load")
+	}
+}
+
+// Legacy provider (freeForLoadGB nil) falls back to the total-memory heuristic.
+func TestFreeMemoryAdmitsColdLoadFallsBackWhenUnreported(t *testing.T) {
+	snap := routingSnapshot{
+		modelSizeGB:     16,
+		totalMemoryGB:   64, // 16 + ~0 + 4 = 20 <= 64 → admit via heuristic
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+		freeForLoadGB:   nil,
+	}
+	if !freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("legacy provider must fall back to the total-memory heuristic (admit)")
+	}
+}
+
 func TestSlotHeadroomWithExhaustedTokenBudgetRejectsCapacity(t *testing.T) {
 	reg := New(testLogger())
 	model := "budget-headroom-model"

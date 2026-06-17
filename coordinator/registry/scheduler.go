@@ -80,10 +80,15 @@ type routingSnapshot struct {
 	systemMetrics      protocol.SystemMetrics
 	gpuMemoryActiveGB  float64
 	totalMemoryGB      float64
-	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
-	minRAMGb           int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
-	modelLoaded        bool    // true when the requested model is resident (running or idle)
-	availableOnDisk    bool    // model is in provider's Models list but not currently loaded
+	// freeForLoadGB is the provider-reported max additional model-weight (GB) it
+	// can load right now (net of cap/reserve/headroom, idle models reclaimed).
+	// When non-nil it is the authoritative cold-load gate; nil = legacy provider
+	// (fall back to the total-memory heuristic). See protocol.BackendCapacity.
+	freeForLoadGB   *float64
+	modelSizeGB     float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
+	minRAMGb        int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
+	modelLoaded     bool    // true when the requested model is resident (running or idle)
+	availableOnDisk bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
 	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
@@ -780,6 +785,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 
 	if p.BackendCapacity != nil {
 		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
 		if p.BackendCapacity.TotalMemoryGB > 0 {
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
@@ -842,16 +848,28 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	required += kvCacheGB
 
 	// When the model is available on disk but not currently loaded, the
-	// provider will evict idle models to make room (LRU eviction). Check
-	// whether the model individually fits in total memory (with OS/KV
-	// overhead) rather than requiring it to fit alongside existing loaded
-	// models. The provider handles the swap autonomously.
+	// provider will evict idle models to make room (LRU eviction), so we check
+	// whether the model can be loaded rather than requiring it to fit alongside
+	// existing loaded models. The provider handles the swap autonomously.
 	//
-	// However, if the provider has in-flight requests (totalPending > 0),
-	// it cannot evict the currently-serving model. In that case, fall
-	// through to the standard free-memory check which requires room
-	// alongside active models.
+	// However, if the provider has in-flight requests (totalPending > 0), it
+	// cannot evict the currently-serving model. In that case, fall through to the
+	// standard free-memory check which requires room alongside active models.
 	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
+		// Preferred: the provider reports freeForLoadGB — the max model WEIGHT it
+		// can load right now, already net of the 90% unified cap, OS/operator
+		// reserve, activation+min-KV headroom, real OS-available memory, and
+		// eviction of idle models. This is the single source of truth and exactly
+		// mirrors the provider's own ModelLoadAdmission gate, so the coordinator
+		// can't over-admit a load the provider then OOM-rejects (the meltdown
+		// mechanism) nor under-admit because of evictable idle weights.
+		if snap.freeForLoadGB != nil {
+			return snap.modelSizeGB <= *snap.freeForLoadGB
+		}
+		// Fallback for legacy providers that don't report freeForLoadGB: the old
+		// total-memory heuristic (provider evicts idle models, so compare against
+		// total rather than free). Coarser — can't see the unified cap or OS
+		// baseline — but only used until the fleet reports the field.
 		const osReserveGB = 4.0
 		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
 	}
@@ -1354,6 +1372,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 		if snap.hasBackendCapacity {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+			snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
 			if p.BackendCapacity.TotalMemoryGB > 0 {
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}

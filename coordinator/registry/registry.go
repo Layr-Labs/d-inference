@@ -2074,6 +2074,18 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 	if v, changed := clampNonNeg(bc.GPUMemoryCacheGB, maxMemoryGBFloat); changed {
 		bc.GPUMemoryCacheGB = v
 	}
+	// free_for_load_gb: an out-of-range value (NaN/Inf/negative or absurdly high)
+	// is treated as NOT reported (nil) so the cold-load gate falls back to the
+	// total-memory heuristic, rather than trusting a garbage value that would
+	// over- or under-admit. A legitimate 0 ("can't load anything now") is kept.
+	if bc.FreeForLoadGB != nil {
+		v := *bc.FreeForLoadGB
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > maxMemoryGBFloat {
+			logger.Warn("provider free_for_load_gb out of range; ignoring (fall back to heuristic)",
+				"provider_id", providerID, "reported", v)
+			bc.FreeForLoadGB = nil
+		}
+	}
 	for i := range bc.Slots {
 		s := &bc.Slots[i]
 		if s.MaxTokensPotential < 0 || s.MaxTokensPotential > maxTokensPotential {

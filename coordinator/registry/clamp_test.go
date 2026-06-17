@@ -84,6 +84,31 @@ func TestClampBackendCapacityMaliciousValues(t *testing.T) {
 	}
 }
 
+func TestClampBackendCapacityFreeForLoad(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Out-of-range reported values are nilled (→ cold-load gate falls back to the
+	// heuristic) rather than trusted.
+	for _, bad := range []float64{math.NaN(), math.Inf(1), -3, 1e9} {
+		v := bad
+		bc := &protocol.BackendCapacity{TotalMemoryGB: 64, FreeForLoadGB: &v}
+		clampBackendCapacity(logger, "p1", bc)
+		if bc.FreeForLoadGB != nil {
+			t.Errorf("FreeForLoadGB=%v should be nilled, got %v", bad, *bc.FreeForLoadGB)
+		}
+	}
+
+	// A legitimate value (including 0) is preserved.
+	for _, ok := range []float64{0, 9, 128} {
+		v := ok
+		bc := &protocol.BackendCapacity{TotalMemoryGB: 64, FreeForLoadGB: &v}
+		clampBackendCapacity(logger, "p1", bc)
+		if bc.FreeForLoadGB == nil || *bc.FreeForLoadGB != ok {
+			t.Errorf("FreeForLoadGB=%v should be preserved, got %v", ok, bc.FreeForLoadGB)
+		}
+	}
+}
+
 func TestClampBackendCapacityReasonableValues(t *testing.T) {
 	// Realistic values should pass through unchanged.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))

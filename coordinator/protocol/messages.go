@@ -232,6 +232,14 @@ type BackendCapacity struct {
 	GPUMemoryPeakGB   float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
 	GPUMemoryCacheGB  float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
 	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
+	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
+	// provider can load right now: net of the 90% unified-memory cap, OS/operator
+	// reserve, and activation+min-KV load headroom, clamped to real OS-available
+	// memory, and treating idle resident models as evictable. It is the single
+	// source of truth for cold-load admission (the coordinator no longer
+	// re-derives free memory). A pointer so a legacy provider that doesn't report
+	// it is nil (→ coordinator falls back to the total-memory heuristic).
+	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.

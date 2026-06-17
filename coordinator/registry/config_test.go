@@ -37,8 +37,10 @@ func TestReadConfigWarmPoolDefaultsActive(t *testing.T) {
 	if !cfg.Enabled {
 		t.Fatal("warm pool should default to enabled")
 	}
-	if cfg.ObserveOnly {
-		t.Fatal("warm pool should default to active, not observe-only")
+	// Safe by default: enabled (computes targets + telemetry) but observe-only
+	// (issues no load_model actions) until an operator opts in.
+	if !cfg.ObserveOnly {
+		t.Fatal("warm pool should default to observe-only (no autonomous loads)")
 	}
 	if cfg.Interval != 10*time.Second {
 		t.Fatalf("Interval = %v, want 10s", cfg.Interval)
@@ -65,5 +67,20 @@ func TestReadConfigWarmPoolCanBeDisabled(t *testing.T) {
 	}
 	if !cfg.ObserveOnly {
 		t.Fatal("warm pool observe-only override was not honored")
+	}
+}
+
+// Issuing autonomous warm-pool loads is an explicit opt-out of the safe
+// observe-only default: WARM_POOL_OBSERVE_ONLY=false.
+func TestReadConfigWarmPoolObserveOnlyOptOut(t *testing.T) {
+	clearWarmPoolEnv(t)
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", "false")
+
+	cfg := ReadConfig().WarmPool
+	if !cfg.Enabled {
+		t.Fatal("warm pool should remain enabled")
+	}
+	if cfg.ObserveOnly {
+		t.Fatal("WARM_POOL_OBSERVE_ONLY=false should let the warm pool issue loads")
 	}
 }

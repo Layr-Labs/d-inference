@@ -13,24 +13,26 @@ import (
 
 // Routing v2 — W3: cold-dispatch spill + queue-before-shed wiring.
 //
-// Both behaviours are default-ON and reversible without a rebuild via env flags.
-// They are read here (not on the Server struct) so this workstream stays
-// confined to its owned files — server.go / main.go are owned by parallel
-// workstreams. The flags are read per call: a feature-flag lookup is negligible
-// next to the JSON-parse + crypto + DB work each request already does, and
-// reading live env keeps the flags overridable in tests (t.Setenv).
+// Both behaviours are reversible without a rebuild via env flags, read per call:
+// a feature-flag lookup is negligible next to the JSON-parse + crypto + DB work
+// each request already does, and reading live env keeps the flags overridable in
+// tests (t.Setenv).
 //
-//   - EIGENINFERENCE_QUEUE_BEFORE_SHED (default true): when the preflight would
+//   - EIGENINFERENCE_QUEUE_BEFORE_SHED (default TRUE): when the preflight would
 //     429 `machine_busy` (providers exist for the model but all are at capacity),
 //     route the request into the normal dispatch+queue path instead, so a slot
 //     freeing — or a cold load completing — within the queue window serves it.
 //     The dispatch/queue path still returns a 429 when the queue is full or the
 //     wait times out (true saturation).
-//   - EIGENINFERENCE_COLD_DISPATCH (default true): (1) when the preflight would
-//     503 `no_provider` but an idle on-disk provider could load the model, spill
-//     the request into the queue instead of shedding; and (2) on every queue
-//     enqueue, proactively kick the model-swap machinery so a cold provider is
-//     warmed for the queued demand without waiting for the next heartbeat.
+//   - EIGENINFERENCE_COLD_DISPATCH (default FALSE, opt-in): (1) when the
+//     preflight would 503 `no_provider` but an idle on-disk provider could load
+//     the model, spill the request into the queue instead of shedding; and (2)
+//     on every queue enqueue, proactively (and debounced) kick the model-swap
+//     machinery so a cold provider is warmed for the queued demand without
+//     waiting for the next heartbeat. Default-off because this path drove the
+//     routing-v2 meltdown (registry write-lock storm + OOM cold loads); enable
+//     only after the safety fixes (kick debounce + real-free admission) are
+//     validated in the target environment.
 
 const (
 	envQueueBeforeShed         = "EIGENINFERENCE_QUEUE_BEFORE_SHED"
@@ -58,6 +60,20 @@ func envEnabledDefaultTrue(name string) bool {
 	}
 }
 
+// envEnabledDefaultFalse parses a boolean env var that defaults to FALSE when
+// unset. Only an explicit truthy value ("1"/"true"/"yes"/"on",
+// case-insensitive) enables the flag; anything else (including malformed input)
+// leaves the default-safe behaviour disabled. Used for opt-in features that are
+// risky on by default (e.g. cold-dispatch, which drove the routing-v2 meltdown).
+func envEnabledDefaultFalse(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // queueBeforeShedEnabled reports whether capacity-rejected preflight requests
 // are queued instead of immediately 429'd. Default true.
 func (s *Server) queueBeforeShedEnabled() bool {
@@ -66,9 +82,12 @@ func (s *Server) queueBeforeShedEnabled() bool {
 
 // coldDispatchEnabled reports whether the coordinator spills "no eligible
 // provider" requests into the queue when an idle on-disk provider could be
-// warmed, and proactively triggers cold loads for queued demand. Default true.
+// warmed, and proactively triggers cold loads for queued demand. Default FALSE
+// (opt-in): cold-dispatch was the routing-v2 meltdown trigger (write-lock storm
+// + OOM cold loads), so it must be explicitly enabled via
+// EIGENINFERENCE_COLD_DISPATCH=true after the safety fixes are validated.
 func (s *Server) coldDispatchEnabled() bool {
-	return envEnabledDefaultTrue(envColdDispatch)
+	return envEnabledDefaultFalse(envColdDispatch)
 }
 
 // coldSpillAvailable reports whether at least one idle on-disk provider could be

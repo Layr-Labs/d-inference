@@ -72,14 +72,47 @@ func TestQueueBeforeShedFlagDefaultsOn(t *testing.T) {
 	}
 }
 
-func TestColdDispatchFlagDefaultsOn(t *testing.T) {
-	s := &Server{}
-	if !s.coldDispatchEnabled() {
-		t.Fatal("coldDispatchEnabled default = false, want true")
+func TestEnvEnabledDefaultFalse(t *testing.T) {
+	cases := []struct {
+		val  string
+		set  bool
+		want bool
+	}{
+		{set: false, want: false}, // unset → default false
+		{val: "", set: true, want: false},
+		{val: "true", set: true, want: true},
+		{val: "TRUE", set: true, want: true},
+		{val: "1", set: true, want: true},
+		{val: "yes", set: true, want: true},
+		{val: "on", set: true, want: true},
+		{val: " on ", set: true, want: true}, // trimmed
+		{val: "garbage", set: true, want: false},
+		{val: "false", set: true, want: false},
+		{val: "0", set: true, want: false},
+		{val: "no", set: true, want: false},
+		{val: "off", set: true, want: false},
 	}
-	t.Setenv(envColdDispatch, "off")
+	const name = "EIGENINFERENCE_W3_OPTIN_FLAG_TEST"
+	for _, c := range cases {
+		if c.set {
+			t.Setenv(name, c.val)
+		}
+		if got := envEnabledDefaultFalse(name); got != c.want {
+			t.Errorf("envEnabledDefaultFalse(%q set=%v) = %v, want %v", c.val, c.set, got, c.want)
+		}
+	}
+}
+
+// Cold-dispatch is now opt-in (default OFF): it drove the routing-v2 meltdown,
+// so it must be explicitly enabled.
+func TestColdDispatchFlagDefaultsOff(t *testing.T) {
+	s := &Server{}
 	if s.coldDispatchEnabled() {
-		t.Fatal("coldDispatchEnabled with =off = true, want false")
+		t.Fatal("coldDispatchEnabled default = true, want false (opt-in)")
+	}
+	t.Setenv(envColdDispatch, "true")
+	if !s.coldDispatchEnabled() {
+		t.Fatal("coldDispatchEnabled with =true = false, want true")
 	}
 }
 

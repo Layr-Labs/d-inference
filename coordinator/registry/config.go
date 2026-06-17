@@ -80,8 +80,14 @@ func ReadConfig() Config {
 	return Config{
 		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
 		WarmPool: WarmPoolConfig{
-			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
-			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", false),
+			Enabled: env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
+			// Default ObserveOnly=TRUE (safe by default): the warm pool computes
+			// load targets and emits telemetry but issues NO load_model actions
+			// unless explicitly opted in via WARM_POOL_OBSERVE_ONLY=false.
+			// Autonomous warm-pool loads were part of the routing-v2 meltdown
+			// (cold loads the providers OOM-rejected), so issuing them is gated
+			// behind an explicit operator decision.
+			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", true),
 			Interval:                  envDuration(env.EnvPrefix+"_WARM_POOL_INTERVAL", 10*time.Second),
 			MinDwell:                  envDuration(env.EnvPrefix+"_WARM_POOL_MIN_DWELL", 5*time.Minute),
 			QueueAgeThreshold:         envDuration(env.EnvPrefix+"_WARM_POOL_QUEUE_AGE_THRESHOLD", 0),

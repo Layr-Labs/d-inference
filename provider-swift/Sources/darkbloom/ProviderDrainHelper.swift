@@ -52,8 +52,12 @@ func drainRunningProvider(
         return false
     }
 
-    if state?.inferenceActive == true {
-        print("Provider is currently serving requests. Waiting for them to finish before \(action.verb)...")
+    let requestCount = state?.inflightRequestCount ?? 0
+    if requestCount > 0 {
+        let plural = requestCount == 1 ? "" : "s"
+        print("Provider is currently serving \(requestCount) request\(plural). Waiting up to \(Int(timeout))s for them to finish before \(action.verb)...")
+    } else if state?.inferenceActive == true {
+        print("Provider is currently serving requests. Waiting up to \(Int(timeout))s for them to finish before \(action.verb)...")
     }
 
     let outcome = await ProcessLifecycle.stopProcessGracefully(pid: pid, timeout: timeout)

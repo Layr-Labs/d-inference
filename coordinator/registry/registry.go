@@ -2723,6 +2723,118 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 	return nil
 }
 
+// SendGoingAway tells a single provider the coordinator is going away for a
+// planned restart. Like SendLoadModel it is fire-and-forget: the provider
+// drains its in-flight work, closes its socket, and reconnects with its backoff
+// RESET (DAR-327 Phase 3 instant reconnect). The provider conn is read under
+// r.mu.RLock then p.mu, and the write happens OUTSIDE both locks with a 5s
+// timeout (nhooyr.io/websocket Conn.Write is concurrency-safe).
+func (r *Registry) SendGoingAway(providerID string) error {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerID)
+	}
+
+	msg := protocol.GoingAwayMessage{Type: protocol.TypeGoingAway}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal going_away message: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.mu.Lock()
+	conn := p.Conn
+	p.mu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("provider %q has no active connection", providerID)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		return fmt.Errorf("failed to send going_away to provider %q: %w", providerID, err)
+	}
+
+	r.logger.Info("sent going_away to provider", "provider_id", providerID)
+	return nil
+}
+
+// BroadcastGoingAway tells every connected, eligible provider that the
+// coordinator is going away for a planned restart (graceful shutdown). It is the
+// coordinator side of DAR-327 Phase 3: a provider that receives going_away
+// finishes its in-flight work, closes its socket, and reconnects with its
+// backoff RESET so it lands on the freshly-deployed coordinator near-instantly.
+//
+// Concurrency: provider connections are SNAPSHOTTED under r.mu.RLock (reading
+// p.Conn / p.Backend / p.Version under p.mu, matching the r.mu→p.mu lock
+// ordering used by ForEachProvider, evictStale, and Disconnect) and the
+// websocket writes happen AFTER the lock is released — never while holding
+// r.mu. A snapshotted conn may already be closing (Disconnect runs concurrently
+// and calls CloseNow), so per-conn write errors are tolerated: log and continue,
+// like sendModelLoadActions, never panic or abort the broadcast.
+//
+// eligible, when non-nil, gates which providers are notified (backend + version
+// floor) so a provider whose strict decoder would throw on an unknown message
+// type is skipped. Returns the number of providers the message was successfully
+// written to.
+func (r *Registry) BroadcastGoingAway(eligible func(backend, version string) bool) int {
+	type target struct {
+		id   string
+		conn *websocket.Conn
+	}
+
+	// Snapshot eligible conns under the read lock, then release it before any
+	// write so a slow/blocked socket can never stall the registry.
+	r.mu.RLock()
+	targets := make([]target, 0, len(r.providers))
+	for id, p := range r.providers {
+		p.mu.Lock()
+		conn := p.Conn
+		backend := p.Backend
+		version := p.Version
+		p.mu.Unlock()
+		if conn == nil {
+			continue
+		}
+		if eligible != nil && !eligible(backend, version) {
+			continue
+		}
+		targets = append(targets, target{id: id, conn: conn})
+	}
+	r.mu.RUnlock()
+
+	if len(targets) == 0 {
+		return 0
+	}
+
+	msg := protocol.GoingAwayMessage{Type: protocol.TypeGoingAway}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		r.logger.Error("failed to marshal going_away message", "error", err)
+		return 0
+	}
+
+	sent := 0
+	for _, t := range targets {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := t.conn.Write(ctx, websocket.MessageText, data)
+		cancel()
+		if err != nil {
+			// A snapshotted conn may already be closed (concurrent Disconnect /
+			// CloseNow). Tolerate it — never panic or abort the broadcast.
+			r.logger.Warn("failed to send going_away to provider", "provider_id", t.id, "error", err)
+			continue
+		}
+		sent++
+	}
+
+	r.logger.Info("broadcast going_away to providers", "sent", sent, "eligible", len(targets))
+	return sent
+}
+
 // SendPrefetchModel instructs a provider to download + verify a model build
 // in the background without loading it into GPU memory. It mirrors
 // SendLoadModel but carries no expectation that the model becomes warm; the

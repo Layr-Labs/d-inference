@@ -34,6 +34,10 @@ public enum CoordinatorEvent: Sendable {
     case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
+    /// Coordinator announced a planned restart (graceful shutdown), DAR-327
+    /// Phase 3. The provider drains in-flight work then forces an immediate
+    /// reconnect (backoff reset) so it lands on the freshly-deployed coordinator.
+    case goingAway
 }
 
 // MARK: - Shared State
@@ -553,6 +557,13 @@ public actor CoordinatorClient {
 
     private var shutdownRequested = false
 
+    /// Set by `requestPlannedRestart()` when the coordinator announces it is
+    /// going away (DAR-327 Phase 3). Unlike `shutdownRequested` this does NOT
+    /// exit the connection loop — it makes the next reconnect skip the backoff
+    /// sleep so the provider lands on the freshly-deployed coordinator
+    /// near-instantly. Cleared by `runLoop` once the immediate reconnect is taken.
+    private var plannedRestart = false
+
     /// Mutable advertised-model list. Seeded from `config.models`; background
     /// prefetch (Layer 3) appends newly-verified builds so re-registration and
     /// reconnects pick them up without dropping the currently-served model.
@@ -653,6 +664,22 @@ public actor CoordinatorClient {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
     }
 
+    /// Tear down the current coordinator connection and reconnect IMMEDIATELY
+    /// with the backoff RESET (no sleep). Used when the coordinator announces a
+    /// planned restart (`going_away`, DAR-327 Phase 3): after the provider drains
+    /// its in-flight work it closes the socket here and lands on the
+    /// freshly-deployed coordinator near-instantly. Unlike `shutdown()` this does
+    /// NOT set `shutdownRequested`, so the connection loop keeps running; unlike a
+    /// plain connection error it skips the reconnect backoff sleep. No-op once a
+    /// real shutdown is already in progress. Cancelling the socket surfaces as a
+    /// connection error so `runLoop` re-runs `sendRegistration` on the new
+    /// coordinator (the 1001 close code literally means "going away").
+    public func requestPlannedRestart() {
+        guard !shutdownRequested else { return }
+        plannedRestart = true
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+    }
+
     /// Record refreshed per-model weight hashes for use in future
     /// (re)registrations. Called by the provider loop after a model (re)load
     /// recomputes the on-disk weight hash. See `modelWeightHashOverrides`.
@@ -672,10 +699,24 @@ public actor CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info("Coordinator connection closed, reconnecting...")
+                // A planned restart (going_away) that closed the socket cleanly:
+                // the clean path already reconnects with no sleep; just clear the
+                // flag so a later real error still uses normal backoff.
+                plannedRestart = false
                 backoff.reset()
                 continue
             } catch {
                 if shutdownRequested { break }
+
+                // Planned restart (coordinator going_away, DAR-327 Phase 3): skip
+                // the backoff sleep and reconnect immediately so we land on the
+                // freshly-deployed coordinator. Mirrors the clean-close path above.
+                if plannedRestart {
+                    plannedRestart = false
+                    backoff.reset()
+                    logger.info("Planned restart: reconnecting immediately (backoff reset, no sleep)")
+                    continue
+                }
 
                 eventContinuation?.yield(.disconnected)
                 let delay = backoff.nextDelay()
@@ -950,6 +991,10 @@ public actor CoordinatorClient {
                 status: ts.status,
                 reason: ts.reason
             ))
+
+        case .goingAway:
+            logger.info("Coordinator announced going_away (planned restart); will drain in-flight work and reconnect")
+            eventContinuation?.yield(.goingAway)
         }
     }
 

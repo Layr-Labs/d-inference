@@ -396,6 +396,12 @@ public actor ProviderLoop {
     private let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
 
     private static let shutdownDrainTimeout: Duration = .seconds(600)
+    /// Drain budget for a coordinator-announced planned restart (going_away,
+    /// DAR-327 Phase 3). Shorter than `shutdownDrainTimeout` (600s) on purpose:
+    /// the goal is to land on the freshly-deployed coordinator fast, so we let
+    /// in-flight work finish but cap the wait at ~the coordinator's request-queue
+    /// timeout (120s) before force-cancelling and reconnecting.
+    private static let goingAwayDrainTimeout: Duration = .seconds(120)
     private static let preloadShutdownTimeout: Duration = .seconds(10)
     private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
@@ -747,6 +753,30 @@ public actor ProviderLoop {
 
                 case .trustStatus(let trustLevel, let status, let reason):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
+
+                case .goingAway:
+                    // Coordinator is restarting (graceful shutdown, DAR-327
+                    // Phase 3). Drain in-flight work the same way the auto-update
+                    // and shutdown paths do, then force an IMMEDIATE reconnect
+                    // (backoff reset) so we land on the freshly-deployed
+                    // coordinator. The process does NOT restart, so we reopen
+                    // admission afterward (resumeServingAfterUpdate) instead of
+                    // exiting. If an auto-update is already draining/installing it
+                    // will restart the process (reconnecting fresh) — let it own
+                    // the lifecycle and fall back to the normal reconnect.
+                    if updatePhase == .idle {
+                        logger.warning("Coordinator going away (planned restart); draining in-flight work then reconnecting")
+                        beginUpdateDraining()
+                        let drained = await waitForInflightDrain(timeout: Self.goingAwayDrainTimeout)
+                        if !drained {
+                            logger.warning("going_away: in-flight drain timed out; cancelling remaining requests")
+                            await cancelAllInflight()
+                        }
+                        await coordinator.requestPlannedRestart()
+                        await resumeServingAfterUpdate()
+                    } else {
+                        logger.info("going_away received during an in-progress update; deferring to that update's restart")
+                    }
                 }
             }
         } onCancel: {

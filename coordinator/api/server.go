@@ -153,6 +153,19 @@ var LatestProviderVersion = "0.6.11"
 // desired_models support (ProviderCore.version at that cut).
 const minProviderVersionForDesiredModels = "0.5.17"
 
+// minProviderVersionForGoingAway is the first provider version whose Swift
+// runtime understands the going_away message (DAR-327 Phase 3 instant
+// reconnect). The coordinator must NOT broadcast going_away to any provider
+// below this version (or on a non-Swift backend): a pre-feature provider's
+// strict decoder throws on unknown message types and would disconnect.
+//
+// This is forward-looking: ProviderCore.version is 0.6.13 at the time this
+// landed, so the floor is the NEXT cut (0.6.14). going_away stays dormant until
+// providers ship at/above the floor — at that release cut bump ProviderCore.version
+// to 0.6.14 to activate it, mirroring the minProviderVersionForDesiredModels
+// convention above.
+const minProviderVersionForGoingAway = "0.6.14"
+
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when
 // no release record exists.

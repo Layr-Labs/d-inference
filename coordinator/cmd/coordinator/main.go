@@ -694,6 +694,17 @@ func main() {
 	sig := <-sigCh
 	logger.Info("shutting down", "signal", sig.String())
 
+	// DAR-327 Phase 3 (instant reconnect): before tearing anything down, tell
+	// every connected provider we are going away for a planned restart. On
+	// receipt a provider finishes its in-flight work, closes its socket, and
+	// reconnects with its backoff RESET (no sleep) so it lands on the
+	// freshly-deployed coordinator near-instantly — where Phase 0 trust-reuse
+	// re-trusts it sub-second. Version-gated to providers that understand the
+	// message. Broadcast FIRST so providers skip backoff instead of discovering
+	// the drop only once the socket is already torn down.
+	sentGoingAway := srv.BroadcastGoingAway()
+	logger.Info("broadcast going_away to providers", "count", sentGoingAway)
+
 	// Graceful shutdown with a deadline.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()

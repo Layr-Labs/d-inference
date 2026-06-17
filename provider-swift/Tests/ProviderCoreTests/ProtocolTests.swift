@@ -401,6 +401,26 @@ import Testing
     #expect(emptyDesired.models.isEmpty)
 }
 
+@Test func goingAwayMessageRoundTripsWithCoordinator() throws {
+    // Coordinator → provider planned-restart announcement (DAR-327 Phase 3).
+    // Decode the exact Go-emitted wire form: a type-only {"type":"going_away"}
+    // (Go's GoingAwayMessage carries no payload). This is the Swift half of the
+    // protocol-symmetry guard paired with Go's TestGoingAwayMessageMarshal.
+    let goWire = #"{"type":"going_away"}"#
+    let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goWire)
+    guard case .goingAway = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+
+    // Re-encode and confirm the wire shape: the snake_case discriminator and
+    // NOTHING else — a strict Go/Swift decoder must see exactly one key.
+    let encoded = try ProviderProtocolCodec.encodeCoordinatorMessage(decoded)
+    let object = try jsonObject(encoded)
+    #expect(object["type"] as? String == "going_away")
+    #expect(object.count == 1) // type-only: no payload keys on the wire
+    #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: encoded) == decoded)
+}
+
 @Test func desiredModelEntryCodableRoundTripUsesSnakeCaseKeys() throws {
     // Direct Codable round-trip of the entry struct (independent of the envelope):
     // proves the CodingKeys map to snake_case and previous_build omitempty parity.

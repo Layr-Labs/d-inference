@@ -53,6 +53,7 @@ const (
 	TypePrefetchModel        = "prefetch_model"
 	TypeDesiredModels        = "desired_models"
 	TypeTrustStatus          = "trust_status"
+	TypeGoingAway            = "going_away"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -540,6 +541,23 @@ type TrustStatusMessage struct {
 	TrustLevel string `json:"trust_level"` // "none", "self_signed", "hardware"
 	Status     string `json:"status"`      // "online", "untrusted", etc.
 	Reason     string `json:"reason,omitempty"`
+}
+
+// GoingAwayMessage is broadcast by the coordinator to every connected provider
+// at the START of a planned restart (graceful shutdown), BEFORE any WebSocket
+// teardown. On receipt a provider finishes its in-flight work, closes its
+// WebSocket, and reconnects with its exponential backoff RESET (no backoff
+// sleep) so it lands on the freshly-deployed coordinator near-instantly — where
+// Phase 0 trust-reuse re-trusts it sub-second. This is the coordinator side of
+// DAR-327 Phase 3 (instant reconnect).
+//
+// It is type-only on the wire ({"type":"going_away"}): no payload is needed
+// because the provider's drain + reconnect policy lives entirely on the provider
+// side. Sent only to Swift-runtime providers at/above the version that
+// understands it (see api.minProviderVersionForGoingAway); a pre-feature
+// provider's strict decoder throws on unknown message types, so it is gated out.
+type GoingAwayMessage struct {
+	Type string `json:"type"`
 }
 
 // ---------------------------------------------------------------------------

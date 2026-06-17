@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
 )
 
 func testLogger() *slog.Logger {
@@ -3361,4 +3365,124 @@ func TestRemoveProviderBySerialRaceWithAttestation(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// wsConnPair stands up a real nhooyr websocket connection pair via an httptest
+// server. It returns the coordinator-side (accepted) conn — the one to store in
+// Provider.Conn so BroadcastGoingAway writes to it — and the provider-side
+// (dialed) conn used to read back what the registry wrote. cleanup tears both
+// down. This mirrors production: the coordinator holds the accepted conn and
+// writes control messages to the provider over it.
+func wsConnPair(t *testing.T) (serverConn, clientConn *websocket.Conn, cleanup func()) {
+	t.Helper()
+	accepted := make(chan *websocket.Conn, 1)
+	done := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("ws accept: %v", err)
+			return
+		}
+		accepted <- c
+		<-done // keep the handler (and accepted conn) alive until cleanup
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	cc, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		close(done)
+		ts.Close()
+		t.Fatalf("ws dial: %v", err)
+	}
+	sc := <-accepted
+
+	cleanup = func() {
+		// CloseNow (not Close): the peer server conn is parked on <-done and
+		// never reads, so a Close handshake would block until its timeout. We
+		// just want the transport torn down promptly.
+		_ = cc.CloseNow()
+		close(done)
+		ts.Close()
+	}
+	return sc, cc, cleanup
+}
+
+// TestBroadcastGoingAway verifies the coordinator side of DAR-327 Phase 3: the
+// broadcast writes the going_away message to connected, eligible providers, is
+// gated by the eligibility predicate (version/backend floor), and tolerates a
+// provider whose snapshotted conn is already closed (no panic, no abort — the
+// other providers still get the message).
+func TestBroadcastGoingAway(t *testing.T) {
+	r := New(testLogger())
+
+	// p1: connected + eligible -> must receive going_away.
+	sc1, cc1, cleanup1 := wsConnPair(t)
+	defer cleanup1()
+	r.providers["p1"] = &Provider{
+		ID:      "p1",
+		Backend: BackendMLXSwift,
+		Version: "0.6.14",
+		Conn:    sc1,
+		Status:  StatusOnline,
+	}
+
+	// p2: connected + eligible, but its coordinator-side conn is already CLOSED.
+	// BroadcastGoingAway must tolerate the write error and still deliver to p1.
+	sc2, _, cleanup2 := wsConnPair(t)
+	defer cleanup2()
+	sc2.CloseNow()
+	r.providers["p2"] = &Provider{
+		ID:      "p2",
+		Backend: BackendMLXSwift,
+		Version: "0.6.14",
+		Conn:    sc2,
+		Status:  StatusOnline,
+	}
+
+	// p3: connected but INELIGIBLE (below the version floor) -> must be skipped.
+	sc3, cc3, cleanup3 := wsConnPair(t)
+	defer cleanup3()
+	r.providers["p3"] = &Provider{
+		ID:      "p3",
+		Backend: BackendMLXSwift,
+		Version: "0.6.13",
+		Conn:    sc3,
+		Status:  StatusOnline,
+	}
+
+	eligible := func(backend, version string) bool {
+		return BackendUsesSwiftRuntime(backend) && version == "0.6.14"
+	}
+
+	sent := r.BroadcastGoingAway(eligible)
+	if sent != 1 {
+		t.Errorf("BroadcastGoingAway sent = %d, want 1 (p1 only; p2 conn closed, p3 ineligible)", sent)
+	}
+
+	// p1 received the exact going_away wire form.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	typ, data, err := cc1.Read(ctx)
+	if err != nil {
+		t.Fatalf("read going_away on p1: %v", err)
+	}
+	if typ != websocket.MessageText {
+		t.Errorf("message type = %v, want text", typ)
+	}
+	var decoded protocol.GoingAwayMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal going_away: %v", err)
+	}
+	if decoded.Type != protocol.TypeGoingAway {
+		t.Errorf("decoded type = %q, want %q", decoded.Type, protocol.TypeGoingAway)
+	}
+
+	// p3 (ineligible) must NOT have received anything: a short read times out.
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel3()
+	if _, _, err := cc3.Read(ctx3); err == nil {
+		t.Errorf("ineligible provider p3 unexpectedly received a message")
+	}
 }

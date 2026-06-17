@@ -1416,3 +1416,31 @@ func TestDesiredModelsMessageMarshal(t *testing.T) {
 		t.Errorf("entry 1 previous_build should be empty, got %q", decoded.Models[1].PreviousBuild)
 	}
 }
+
+// TestGoingAwayMessageMarshal verifies the going_away wire shape the coordinator
+// broadcasts at the start of a planned restart (DAR-327 Phase 3). It is
+// type-only on the wire ({"type":"going_away"}) and must round-trip — this is
+// the protocol-symmetry guard the Swift decoder side (goingAwayMessageRoundTrips
+// WithCoordinator) is paired with. A bare type-only message is what a strict
+// Swift CoordinatorMessage decoder expects; any extra/renamed key would break it.
+func TestGoingAwayMessageMarshal(t *testing.T) {
+	msg := GoingAwayMessage{Type: TypeGoingAway}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Exact wire form: the discriminator only, no payload keys.
+	if got, want := string(data), `{"type":"going_away"}`; got != want {
+		t.Errorf("going_away wire = %s, want %s", got, want)
+	}
+
+	var decoded GoingAwayMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Type != TypeGoingAway {
+		t.Errorf("type = %q, want %q", decoded.Type, TypeGoingAway)
+	}
+}

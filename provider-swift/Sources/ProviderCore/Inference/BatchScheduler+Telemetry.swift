@@ -142,10 +142,12 @@ extension BatchScheduler {
             maxTokensPotential: maxTokensPotential,
             maxConcurrency: UInt32(cap.maxConcurrent),
             observedDecodeTps: observedDecodeTpsEwma,
+            observedPrefillTps: observedPrefillTpsEwma,
             activeTokenBudgetUsed: Int64(activeTokenBudgetUsed),
             activeTokenBudgetMax: budgetMax,
             queuedTokenBudget: Int64(queuedTokenBudget),
-            kvBytesPerToken: Int64(kvBytesPerToken)
+            kvBytesPerToken: Int64(kvBytesPerToken),
+            modelLoadTimeMs: lastModelLoadMs
         )
         return BackendCapacity(
             slots: [slot],
@@ -192,6 +194,18 @@ extension BatchScheduler {
         } else {
             observedDecodeTpsEwma = tps
             ewmaInitialized = true
+        }
+    }
+
+    /// EWMA update for `observedPrefillTpsEwma`. Mirrors `updateDecodeTpsEwma`
+    /// (same alpha) for the prefill rate measured in `recordFinish`.
+    func updatePrefillTpsEwma(tps: Double) {
+        let alpha = 0.3
+        if prefillEwmaInitialized {
+            observedPrefillTpsEwma = alpha * tps + (1 - alpha) * observedPrefillTpsEwma
+        } else {
+            observedPrefillTpsEwma = tps
+            prefillEwmaInitialized = true
         }
     }
 

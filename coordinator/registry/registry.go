@@ -2027,6 +2027,7 @@ const (
 	maxReportedMaxConcurrency       = 24
 	maxTokensPotential              = 1_000_000
 	maxTokenBudgetCap         int64 = 10_000_000_000 // 10 billion — generous safety valve for total token budget capacity
+	maxModelLoadTimeMS        int64 = 3_600_000      // 1 hour — generous ceiling for a cold-start model load; larger is implausible/garbage
 )
 
 // clampNonNeg returns v clamped into [0, max]; NaN/negative become 0.
@@ -2096,6 +2097,20 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			logger.Warn("provider slot observed_decode_tps out of range, clamping",
 				"provider_id", providerID, "model", s.Model, "reported", s.ObservedDecodeTPS, "clamped", v)
 			s.ObservedDecodeTPS = v
+		}
+		if v, changed := clampNonNeg(s.ObservedPrefillTPS, maxPrefillTPS); changed {
+			logger.Warn("provider slot observed_prefill_tps out of range, clamping",
+				"provider_id", providerID, "model", s.Model, "reported", s.ObservedPrefillTPS, "clamped", v)
+			s.ObservedPrefillTPS = v
+		}
+		if s.ModelLoadTimeMS < 0 || s.ModelLoadTimeMS > maxModelLoadTimeMS {
+			logger.Warn("provider slot model_load_time_ms out of range, clamping",
+				"provider_id", providerID, "model", s.Model, "reported", s.ModelLoadTimeMS)
+			if s.ModelLoadTimeMS < 0 {
+				s.ModelLoadTimeMS = 0
+			} else {
+				s.ModelLoadTimeMS = maxModelLoadTimeMS
+			}
 		}
 		if s.ActiveTokenBudgetUsed < 0 || s.ActiveTokenBudgetUsed > maxTokenBudgetCap {
 			if s.ActiveTokenBudgetUsed < 0 {

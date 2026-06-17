@@ -231,6 +231,24 @@ extension BatchScheduler {
             recordBatchPerformance(observedBatchSize: max(1, runningRows), tps: tps)
         }
 
+        // Prefill rate: prompt tokens processed between engine admission and the
+        // first generated token. Measured with the same wall-clock methodology
+        // as the decode EWMA above — and, like decode, it reflects co-resident
+        // batch load (an OBSERVED effective rate, not an isolated kernel rate).
+        // Recorded only when a genuine prefill window exists (admitted, produced
+        // a first token, non-empty prompt, positive elapsed); otherwise omitted.
+        if success,
+            let admittedAt = bridge.admittedAt,
+            let firstTokenAt = bridge.firstTokenAt,
+            finalPrompt > 0 {
+            let prefillElapsed = firstTokenAt - admittedAt
+            let prefillSeconds = Double(prefillElapsed.components.seconds)
+                + Double(prefillElapsed.components.attoseconds) / 1e18
+            if prefillSeconds > 0 {
+                updatePrefillTpsEwma(tps: Double(finalPrompt) / prefillSeconds)
+            }
+        }
+
         await releaseKVReservation(requestID: requestId)
         if let planner = self.planner {
             // `cancel` (not `complete`): the planner removes the entry

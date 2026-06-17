@@ -35,6 +35,11 @@ export interface MyBackendSlot {
   num_waiting: number;
   active_tokens: number;
   max_tokens_potential: number;
+  // Measured provider telemetry, mirrored from the Go BackendSlotCapacity wire
+  // type. Both are `omitempty` server-side (omitted when zero/unmeasured), so
+  // they are optional here.
+  observed_prefill_tps?: number; // EWMA of measured prefill TPS (admission→first token)
+  model_load_time_ms?: number; // measured cold-start load time (ms) for this slot's model
 }
 
 export interface MyBackendCapacity {

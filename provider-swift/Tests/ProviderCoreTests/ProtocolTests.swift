@@ -527,20 +527,24 @@ import Testing
         maxTokensPotential: 12_000,
         maxConcurrency: 6,
         observedDecodeTps: 85.5,
+        observedPrefillTps: 412.0,
         activeTokenBudgetUsed: 28_000,
         activeTokenBudgetMax: 32_768,
         queuedTokenBudget: 4_096,
-        kvBytesPerToken: 393_216
+        kvBytesPerToken: 393_216,
+        modelLoadTimeMs: 9_300
     )
 
     let data = try JSONEncoder().encode(slot)
     let object = try jsonObject(data)
     #expect(object["max_concurrency"] as? Int == 6)
     #expect(object["observed_decode_tps"] as? Double == 85.5)
+    #expect(object["observed_prefill_tps"] as? Double == 412.0)
     #expect(object["active_token_budget_used"] as? Int == 28_000)
     #expect(object["active_token_budget_max"] as? Int == 32_768)
     #expect(object["queued_token_budget"] as? Int == 4_096)
     #expect(object["kv_bytes_per_token"] as? Int == 393_216)
+    #expect(object["model_load_time_ms"] as? Int == 9_300)
 
     let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: data)
     #expect(decoded == slot)
@@ -561,10 +565,12 @@ import Testing
     #expect(decoded.numRunning == 2)
     #expect(decoded.maxConcurrency == 0)
     #expect(decoded.observedDecodeTps == 0)
+    #expect(decoded.observedPrefillTps == 0)
     #expect(decoded.activeTokenBudgetUsed == 0)
     #expect(decoded.activeTokenBudgetMax == 0)
     #expect(decoded.queuedTokenBudget == 0)
     #expect(decoded.kvBytesPerToken == 0)
+    #expect(decoded.modelLoadTimeMs == 0)
 }
 
 @Test func backendSlotCapacityDecodesMaxConcurrencyZero() throws {
@@ -584,10 +590,12 @@ import Testing
         maxTokensPotential: 0,
         maxConcurrency: 0,
         observedDecodeTps: 0,
+        observedPrefillTps: 0,
         activeTokenBudgetUsed: 0,
         activeTokenBudgetMax: 0,
         queuedTokenBudget: 0,
-        kvBytesPerToken: 0
+        kvBytesPerToken: 0,
+        modelLoadTimeMs: 0
     )
 
     let object = try jsonObject(JSONEncoder().encode(slot))
@@ -596,10 +604,12 @@ import Testing
     #expect(object["max_tokens_potential"] as? Int == 0)
     #expect(object["max_concurrency"] == nil)
     #expect(object["observed_decode_tps"] == nil)
+    #expect(object["observed_prefill_tps"] == nil)
     #expect(object["active_token_budget_used"] == nil)
     #expect(object["active_token_budget_max"] == nil)
     #expect(object["queued_token_budget"] == nil)
     #expect(object["kv_bytes_per_token"] == nil)
+    #expect(object["model_load_time_ms"] == nil)
 }
 
 @Test func privacyCapabilitiesDecodesMissingHypervisorActiveAsFalse() throws {
@@ -625,10 +635,12 @@ import Testing
                 maxTokensPotential: 8000,
                 maxConcurrency: 4,
                 observedDecodeTps: 90,
+                observedPrefillTps: 360,
                 activeTokenBudgetUsed: 5000,
                 activeTokenBudgetMax: 12000,
                 queuedTokenBudget: 7000,
-                kvBytesPerToken: 262144
+                kvBytesPerToken: 262144,
+                modelLoadTimeMs: 8200
             )],
             gpuMemoryActiveGb: 5.5,
             gpuMemoryPeakGb: 6.5,
@@ -652,10 +664,12 @@ import Testing
     #expect(slot?["max_tokens_potential"] as? Int == 8000)
     #expect(slot?["max_concurrency"] as? Int == 4)
     #expect(slot?["observed_decode_tps"] as? Double == 90)
+    #expect(slot?["observed_prefill_tps"] as? Double == 360)
     #expect(slot?["active_token_budget_used"] as? Int == 5000)
     #expect(slot?["active_token_budget_max"] as? Int == 12000)
     #expect(slot?["queued_token_budget"] as? Int == 7000)
     #expect(slot?["kv_bytes_per_token"] as? Int == 262144)
+    #expect(slot?["model_load_time_ms"] as? Int == 8200)
 }
 
 private func sampleHardware() -> HardwareInfo {

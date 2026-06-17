@@ -154,6 +154,14 @@ public actor BatchScheduler {
 
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// EWMA of measured per-request prefill TPS (prompt tokens processed
+    /// between engine admission and the first generated token). Same wall-clock
+    /// methodology — and the same batch-load sensitivity — as the decode EWMA.
+    var observedPrefillTpsEwma: Double = 0
+    var prefillEwmaInitialized = false
+    /// Measured cold-start load time (ms) for the currently-loaded model. Set at
+    /// the end of `loadModel`; 0 until a load completes (omitted on the wire).
+    var lastModelLoadMs: Int64 = 0
     /// Per-batch-size TPS samples that drive `AdaptiveBatchCapPolicy`.
     var performanceByBatchSize: [Int: AdaptiveBatchPerformanceBucket] = [:]
     var lastBatchSampleAt: ContinuousClock.Instant = .now
@@ -212,6 +220,11 @@ public actor BatchScheduler {
 
         await stopCurrentEngine()
         let loadEpoch = generationEpoch
+        // Cold-start load timing: measured from here (after any prior model is
+        // unloaded) to the end of a successful load. Reported per-slot as
+        // `model_load_time_ms`. Superseded loads return early below and never
+        // set `lastModelLoadMs`, so a losing race never reports a bogus time.
+        let loadStartedAt = ContinuousClock.now
 
         let snapshot = await Self.snapshotContainer(container)
         // Detect concurrent reload that won the race; bail before we
@@ -363,6 +376,13 @@ public actor BatchScheduler {
         // Steady-state TTL sweep for the checkpoint SSD tier (no-op when TTL
         // disabled or engine-tier model). Cancelled in stopCurrentEngine.
         startTTLReaper()
+
+        // Record the measured cold-start load time for this slot's heartbeat
+        // telemetry. Only reached on a fully successful, non-superseded load.
+        let loadElapsed = ContinuousClock.now - loadStartedAt
+        let loadMs = Double(loadElapsed.components.seconds) * 1000.0
+            + Double(loadElapsed.components.attoseconds) / 1e15
+        lastModelLoadMs = Int64(max(0, loadMs.rounded()))
     }
 
     /// Snapshot model bytes + tokenizer + architecture out of the
@@ -2057,6 +2077,9 @@ public actor BatchScheduler {
         planner = nil
         observedDecodeTpsEwma = 0
         ewmaInitialized = false
+        observedPrefillTpsEwma = 0
+        prefillEwmaInitialized = false
+        lastModelLoadMs = 0
         performanceByBatchSize.removeAll()
         dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
     }

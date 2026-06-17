@@ -175,12 +175,18 @@ func (d *dispatchState) routingOutcomeKey() string {
 // recordRoutingDecision writes a best-effort snapshot of the scheduler decision
 // for the current attempt. It never blocks inference.
 func (d *dispatchState) recordRoutingDecision(decision registry.RoutingDecision, dispatchErr, outcomeOverride string) {
+	d.recordRoutingDecisionFor(d.provider, d.pr, d.routingOutcomeKey(), d.attempt, decision, dispatchErr, outcomeOverride)
+}
+
+func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr *registry.PendingRequest, requestID string, attempt int, decision registry.RoutingDecision, dispatchErr, outcomeOverride string) {
 	s := d.s
-	requestID := d.routingOutcomeKey()
+	if requestID == "" && pr != nil {
+		requestID = pr.RequestID
+	}
 
 	providerID := ""
-	if d.provider != nil {
-		providerID = d.provider.ID
+	if provider != nil {
+		providerID = provider.ID
 	} else if decision.ProviderID != "" {
 		providerID = decision.ProviderID
 	}
@@ -202,13 +208,13 @@ func (d *dispatchState) recordRoutingDecision(decision registry.RoutingDecision,
 	}
 
 	keyID := ""
-	if d.pr != nil {
-		keyID = d.pr.KeyID
+	if pr != nil {
+		keyID = pr.KeyID
 	}
 
 	record := &store.InferenceRouteRecord{
 		RequestID:               requestID,
-		Attempt:                 d.attempt,
+		Attempt:                 attempt,
 		ProviderID:              providerID,
 		Model:                   d.model,
 		PublicModel:             d.publicModel,
@@ -243,21 +249,21 @@ func (d *dispatchState) recordRoutingDecision(decision registry.RoutingDecision,
 		UpdatedAt:               time.Now(),
 	}
 
-	if d.provider != nil {
-		d.provider.Mu().Lock()
-		record.ProviderStatus = string(d.provider.Status)
-		record.ProviderTrustLevel = string(d.provider.TrustLevel)
-		record.ProviderVersion = d.provider.Version
-		record.HardwareChip = d.provider.Hardware.ChipName
-		record.HardwareChipFamily = d.provider.Hardware.ChipFamily
-		record.HardwareTier = d.provider.Hardware.ChipTier
-		record.MemoryGB = d.provider.Hardware.MemoryGB
-		record.GPUCores = d.provider.Hardware.GPUCores
-		record.CPUCores = d.provider.Hardware.CPUCores.Total
-		record.SystemMemoryPressure = d.provider.SystemMetrics.MemoryPressure
-		record.SystemCPUUsage = d.provider.SystemMetrics.CPUUsage
-		record.SystemThermalState = d.provider.SystemMetrics.ThermalState
-		if cap := d.provider.BackendCapacity; cap != nil {
+	if provider != nil {
+		provider.Mu().Lock()
+		record.ProviderStatus = string(provider.Status)
+		record.ProviderTrustLevel = string(provider.TrustLevel)
+		record.ProviderVersion = provider.Version
+		record.HardwareChip = provider.Hardware.ChipName
+		record.HardwareChipFamily = provider.Hardware.ChipFamily
+		record.HardwareTier = provider.Hardware.ChipTier
+		record.MemoryGB = provider.Hardware.MemoryGB
+		record.GPUCores = provider.Hardware.GPUCores
+		record.CPUCores = provider.Hardware.CPUCores.Total
+		record.SystemMemoryPressure = provider.SystemMetrics.MemoryPressure
+		record.SystemCPUUsage = provider.SystemMetrics.CPUUsage
+		record.SystemThermalState = provider.SystemMetrics.ThermalState
+		if cap := provider.BackendCapacity; cap != nil {
 			record.GPUMemoryActiveGB = cap.GPUMemoryActiveGB
 			record.GPUMemoryPeakGB = cap.GPUMemoryPeakGB
 			record.GPUMemoryCacheGB = cap.GPUMemoryCacheGB
@@ -273,7 +279,7 @@ func (d *dispatchState) recordRoutingDecision(decision registry.RoutingDecision,
 				}
 			}
 		}
-		d.provider.Mu().Unlock()
+		provider.Mu().Unlock()
 	}
 
 	s.submitTelemetry("recordInferenceRoute", func() {
@@ -316,25 +322,11 @@ func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.Requ
 }
 
 // successRoutingOutcome builds a success outcome for the committed attempt.
-// Token counts are left at zero because the final usage is only available when
-// the provider later sends the completion message; handleComplete updates them.
+// Token counts and final_status are left empty because the final terminal is
+// only known when the provider later sends complete/error; handleComplete or
+// post-commit response handlers update them.
 func (d *dispatchState) successRoutingOutcome() *store.InferenceRouteOutcome {
-	out := &store.InferenceRouteOutcome{FinalStatus: "success"}
-	if d.pr != nil && d.pr.Timing != nil {
-		t := d.pr.Timing
-		if !t.FirstChunkAt.IsZero() && !t.DispatchedAt.IsZero() {
-			ms := float64(t.FirstChunkAt.Sub(t.DispatchedAt).Milliseconds())
-			out.ActualTTFTMs = ms
-			out.DispatchToFirstChunkMs = ms
-		}
-		if !t.ReceivedAt.IsZero() {
-			out.TotalDurationMs = float64(time.Since(t.ReceivedAt).Milliseconds())
-		}
-		// Coordinator-side latency decomposition (defensive; zero when unmeasured).
-		// Runs on the dispatch goroutine, so reading t.FirstChunkAt directly is safe.
-		applyTimingDecomposition(out, t, t.FirstChunkAt)
-	}
-	return out
+	return committedRouteOutcome(d.pr)
 }
 
 // errorRoutingOutcome builds an error / timeout / cancelled outcome.
@@ -356,9 +348,52 @@ func (d *dispatchState) errorRoutingOutcome(status, class string, code int) *sto
 // pre-dispatch failures (queue reservation DB error, invalid key, keygen, send
 // failure) and coordinator-side timeouts are NOT flagged.
 func (d *dispatchState) providerFailedRoutingOutcome() *store.InferenceRouteOutcome {
-	out := d.errorRoutingOutcome("error", "provider_error", d.lastErrCode)
+	class := "provider_error"
+	if providerDisconnectedError(d.lastErr, d.lastErrCode) {
+		class = "provider_disconnect_pre_commit"
+	}
+	out := d.errorRoutingOutcome("error", class, d.lastErrCode)
 	out.AdmittedButFailed = true
 	return out
+}
+
+func dispatchErrorClass(errText string) string {
+	switch errText {
+	case "insufficient funds for provider price":
+		return "insufficient_funds"
+	case "no provider with E2E encryption":
+		return "encryption_missing"
+	case "provider public key invalid", "failed to encrypt request", "failed to generate session keys", "failed to marshal request":
+		return "encryption_error"
+	case "failed to send request to provider":
+		return "provider_error"
+	default:
+		if errText == "" {
+			return "provider_error"
+		}
+		return "provider_error"
+	}
+}
+
+func (d *dispatchState) rejectionInfo(stage, reason string, status, retryAfterMs int) rejectionInfo {
+	return rejectionInfo{
+		r:                     d.r,
+		stage:                 stage,
+		reasonCode:            reason,
+		httpStatus:            status,
+		keyID:                 keyIDFromContext(d.r.Context()),
+		consumerKeyHash:       store.HashKey(d.consumerKey),
+		requestedModel:        d.publicModel,
+		resolvedModel:         d.model,
+		stream:                d.stream,
+		estimatedPromptTokens: d.estimatedPromptTokens,
+		requestedMaxTokens:    d.requestedMaxTokens,
+		requiresVision:        d.requiresVision,
+		hasTools:              d.hasTools,
+		selfRouteOnly:         d.policy.enabled,
+		preferOwner:           d.policy.prefer,
+		retryAfterMs:          retryAfterMs,
+	}
 }
 
 // updateRoutingOutcome writes a final outcome update for the current attempt
@@ -371,9 +406,15 @@ func (d *dispatchState) updateRoutingOutcome(outcome *store.InferenceRouteOutcom
 	// Capture attempt on the dispatch goroutine: the closure runs on a telemetry
 	// sink worker, while run()'s retry loop concurrently advances d.attempt.
 	attempt := d.attempt
-	d.s.submitTelemetry("updateInferenceRoute", func() {
-		_ = d.s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome)
-	})
+	d.s.updateInferenceRouteOutcome(requestID, attempt, outcome)
+}
+
+func (d *dispatchState) markSpeculativeLoser(pr *registry.PendingRequest) {
+	if pr == nil {
+		return
+	}
+	pr.UsedBackup = true
+	d.s.updateInferenceRouteOutcomeForPending(pr, speculativeLoserOutcome(pr))
 }
 
 // dispatchPrimary selects (and, when no idle provider exists on the first
@@ -389,17 +430,33 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	var dispatchErr string
 	var dispatchErrCode int
 	var decision registry.RoutingDecision
+	routeRecorded := false
+	routeRequestID := ""
+	routeAttempt := attempt
 	d.provider, d.pr, decision, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 		r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
 		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
 		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cacheAffinityKey, d.excludeProviders,
 		d.attempt,
+		func(provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision) {
+			routeRecorded = true
+			if pr != nil {
+				routeRequestID = pr.RequestID
+				routeAttempt = pr.Attempt
+			}
+			d.recordRoutingDecisionFor(provider, pr, routeRequestID, routeAttempt, decision, "", "")
+		},
 	)
 	d.dispatchErr = dispatchErr
 	d.dispatchErrCode = dispatchErrCode
-	d.recordRoutingDecision(decision, dispatchErr, "")
+	if !routeRecorded {
+		d.recordRoutingDecision(decision, dispatchErr, "")
+	}
 	if d.provider == nil {
+		if routeRecorded {
+			d.s.updateInferenceRouteOutcome(routeRequestID, routeAttempt, d.errorRoutingOutcome("error", dispatchErrorClass(dispatchErr), dispatchErrCode))
+		}
 		// No online provider has enough memory to ever fit this model.
 		// Retrying and queueing are both pointless — reject immediately
 		// with a clear, non-retryable error.
@@ -493,6 +550,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			d.refundReservation()
+			s.recordRejection(d.rejectionInfo("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000))
 			if d.policy.enabled {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
 					"your machine is at capacity — retry shortly", withCode("machine_busy")))
@@ -531,6 +589,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			s.recordRejection(d.rejectionInfo("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000))
 			if d.policy.enabled {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
 					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
@@ -547,6 +606,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.pr = queuePR
 		d.requestID = d.pr.RequestID
 		d.timing.RoutedAt = time.Now()
+		d.recordRoutingDecisionFor(d.provider, d.pr, d.requestID, d.pr.Attempt, queuedReq.Decision, "", "selected")
 
 		// Log missing payout destination but don't skip — earnings
 		// are credited to the provider's internal ledger and can be
@@ -884,6 +944,15 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 			d.cacheAffinityKey,
 			backupExclude,
 			d.attempt,
+			func(provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision) {
+				if d.pr != nil {
+					d.pr.UsedBackup = true
+				}
+				if pr != nil {
+					pr.UsedBackup = true
+				}
+				d.recordRoutingDecisionFor(provider, pr, "", d.attempt, decision, "", "")
+			},
 		)
 	}
 
@@ -896,6 +965,12 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		return d.waitNoBackup()
 	}
 	// Backup dispatched — race primary vs backup.
+	if d.pr != nil {
+		d.pr.UsedBackup = true
+	}
+	if backupPR != nil {
+		backupPR.UsedBackup = true
+	}
 	s.logger.Info("speculative_dispatch",
 		"request_id", d.requestID,
 		"primary_provider", provider.ID,
@@ -1039,6 +1114,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			raceDeadline.Stop()
 			s.cancelDispatch(backupProvider, backupPR)
 			if ok {
+				d.markSpeculativeLoser(backupPR)
 				d.firstChunk = chunk
 				pr.MarkFirstChunkArrived()
 				d.committed = true
@@ -1056,6 +1132,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					d.pr = nil
 					return outcomeRetry
 				default:
+					d.markSpeculativeLoser(backupPR)
 					d.committed = true
 				}
 			}
@@ -1074,6 +1151,8 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.ddIncr("inference.speculative_win", []string{"model:" + d.model})
 			s.registry.RecordWarmPoolSpeculativeWon(d.model)
 			if ok {
+				d.markSpeculativeLoser(pr)
+				backupPR.BackupWon = true
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
@@ -1093,6 +1172,8 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				default:
 					// Backup channel closed with no error — treat as committed.
 					s.cancelDispatch(provider, pr)
+					d.markSpeculativeLoser(pr)
+					backupPR.BackupWon = true
 					d.provider = backupProvider
 					d.pr = backupPR
 					d.requestID = d.pr.RequestID
@@ -1106,6 +1187,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			// Primary accepted (model reload). Cancel backup, extend deadline.
 			raceDeadline.Stop()
 			s.cancelDispatch(backupProvider, backupPR)
+			d.markSpeculativeLoser(backupPR)
 			d.accepted = true
 			return outcomeAccepted
 
@@ -1113,6 +1195,8 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			// Backup accepted (model reload). Cancel primary, extend deadline.
 			raceDeadline.Stop()
 			s.cancelDispatch(provider, pr)
+			d.markSpeculativeLoser(pr)
+			backupPR.BackupWon = true
 			d.provider = backupProvider
 			d.pr = backupPR
 			d.requestID = d.pr.RequestID
@@ -1293,6 +1377,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			}
 			backupDeadline.Stop()
 			if ok {
+				backupPR.BackupWon = true
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
@@ -1313,6 +1398,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 					d.pr = nil
 					return outcomeRetry
 				default:
+					backupPR.BackupWon = true
 					d.provider = backupProvider
 					d.pr = backupPR
 					d.requestID = d.pr.RequestID
@@ -1323,6 +1409,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			return outcomeCommitted
 		case <-backupPR.AcceptedCh:
 			backupDeadline.Stop()
+			backupPR.BackupWon = true
 			d.provider = backupProvider
 			d.pr = backupPR
 			d.requestID = d.pr.RequestID
@@ -1344,6 +1431,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			if len(backupHeld) > 0 {
 				// Backup preamble liveness — promote it and extend
 				// by the preamble-to-content budget for first content.
+				backupPR.BackupWon = true
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
@@ -1708,7 +1796,11 @@ exhausted:
 		}
 		s.ddIncr("inference.dispatches", []string{"status:failure"})
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
-			w.Header().Set("Retry-After", strconv.Itoa(s.estimateRetryAfter(d.model)))
+			retryAfter := s.estimateRetryAfter(d.model)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			s.recordRejection(d.rejectionInfo("dispatch", "dispatch_exhausted", statusCode, retryAfter*1000))
+		} else {
+			s.recordRejection(d.rejectionInfo("dispatch", "dispatch_exhausted", statusCode, 0))
 		}
 		if statusCode == http.StatusTooManyRequests {
 			writeJSON(w, statusCode, errorResponse("rate_limit_exceeded",

@@ -25,12 +25,13 @@ import (
 )
 
 // Sink defaults. The buffer absorbs brief store stalls without dropping, while
-// the small fixed worker pool caps the goroutines (and concurrent store calls)
-// telemetry can ever consume. Both are deliberately modest — telemetry is
-// best-effort and must not compete with inference for resources.
+// one worker preserves route insert -> outcome update ordering for a given
+// request without adding request latency: callers still only enqueue work into
+// the bounded channel. Telemetry is best-effort and must not compete with
+// inference for resources.
 const (
 	defaultTelemetrySinkCapacity = 4096
-	defaultTelemetrySinkWorkers  = 2
+	defaultTelemetrySinkWorkers  = 1
 )
 
 // telemetrySink is a bounded, non-blocking work queue for best-effort telemetry

@@ -3,6 +3,8 @@
 **Status:** Plan / design (branch `feat/inference-routing-telemetry`)
 **Scope:** Coordinator only. No provider-swift or console-ui changes required for data collection. No prompt/response content is ever stored.
 
+Request final-outcome semantics are defined in [request-outcome-observability.md](request-outcome-observability.md). This document focuses on routing calibration; the outcome model splits client, provider, and billing results so route rows do not incorrectly treat post-commit provider errors or client disconnects as plain success.
+
 ## 1. Why we are doing this
 
 The router's scheduler (`coordinator/registry/scheduler.go`) is a **hand-tuned cost
@@ -197,8 +199,8 @@ All already in `inference_routes`. These are the **inputs** the cost used.
 ### 4.5 The outcome (what actually happened) — `inference_routes`
 | Field | Calibrates / answers |
 |-------|----------------------|
-| `final_status` (`success`/`error`/`timeout`/`cancelled`) | Reliability per machine/model/version. |
-| `error_code`, `error_class` (`client_gone`,`queue_timeout`,`insufficient_funds`,`provider_error`,`encryption_missing`,`first_chunk_timeout`,`accepted_timeout`,`preamble_liveness_timeout`) | Failure taxonomy; which failure modes dominate. |
+| `final_status` (`success`/`partial_success`/`cancelled`/`error`/`timeout`) | Reliability per machine/model/version. See [request-outcome-observability.md](request-outcome-observability.md) for the derived status rules and client/provider/billing split. |
+| `error_code`, `error_class` | Stable failure taxonomy; which failure modes dominate. Detailed classes such as `client_gone_after_commit_provider_completed`, `provider_error_after_commit`, `queue_timeout`, `first_chunk_timeout`, `accepted_timeout`, and `preamble_liveness_timeout` are defined in [request-outcome-observability.md](request-outcome-observability.md). |
 | `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `cost_micro_usd` | Actual work done; estimate accuracy; cost-per-token by tier. |
 | `actual_ttft_ms`, `dispatch_to_first_chunk_ms`, `total_duration_ms` | **The ground truth.** `actual_ttft_ms − ttft_ms` = TTFT prediction error. `total_duration_ms` vs predicted `cost_ms` = cost-model error. |
 

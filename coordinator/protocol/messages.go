@@ -251,8 +251,16 @@ type SystemMetrics struct {
 
 // HeartbeatStats contains counters reported in heartbeats.
 type HeartbeatStats struct {
-	RequestsServed  int64 `json:"requests_served"`
-	TokensGenerated int64 `json:"tokens_generated"`
+	RequestsServed               int64 `json:"requests_served"`
+	TokensGenerated              int64 `json:"tokens_generated"`
+	CancellationsReceived        int64 `json:"cancellations_received,omitempty"`
+	CancellationsBeforeOutput    int64 `json:"cancellations_before_output,omitempty"`
+	CancellationsPartialComplete int64 `json:"cancellations_partial_complete,omitempty"`
+	GenerationErrorsAfterOutput  int64 `json:"generation_errors_after_output,omitempty"`
+	ChunkEncryptionErrors        int64 `json:"chunk_encryption_errors,omitempty"`
+	StreamClosedWithoutTerminal  int64 `json:"stream_closed_without_terminal,omitempty"`
+	CancelDuringModelLoad        int64 `json:"cancel_during_model_load,omitempty"`
+	UsageGaps                    int64 `json:"usage_gaps,omitempty"`
 }
 
 // InferenceAcceptedMessage signals the provider accepted the request and is

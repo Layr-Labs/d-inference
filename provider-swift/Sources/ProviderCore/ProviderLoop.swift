@@ -1192,6 +1192,7 @@ public actor ProviderLoop {
                     )
                 } catch {
                     log.error("[\(requestId)] Chunk encryption failed: \(error)")
+                    providerStats.incrementChunkEncryptionErrors()
                     send.send(.inferenceError(
                         requestId: requestId,
                         error: "response encryption failed",
@@ -1387,6 +1388,15 @@ public actor ProviderLoop {
                     cancelledMidStream = true
                 } else {
                     log.error("[\(requestId)] Generation error: \(error)")
+                    if Self.hasVisibleStreamOutput(
+                        contentFrameCount: contentFrameCount,
+                        fullResponseText: fullResponseText
+                    ) {
+                        providerStats.incrementGenerationErrorsAfterOutput()
+                    }
+                    if Self.isStreamClosedWithoutTerminal(error) {
+                        providerStats.incrementStreamClosedWithoutTerminal()
+                    }
                     let statusCode = Self.mapInferenceErrorToStatus(error)
                     send.send(.inferenceError(
                         requestId: requestId,
@@ -1400,6 +1410,7 @@ public actor ProviderLoop {
 
             // Cancelled with nothing delivered: 499 so the coordinator refunds.
             if cancelledMidStream && contentFrameCount == 0 && fullResponseText.isEmpty {
+                providerStats.incrementCancellationsBeforeOutput()
                 send.send(.inferenceError(
                     requestId: requestId,
                     error: "request cancelled",
@@ -1462,6 +1473,10 @@ public actor ProviderLoop {
                 if !cancelledMidStream {
                     providerStats.incrementUsageGaps()
                 }
+            }
+
+            if cancelledMidStream {
+                providerStats.incrementCancellationsPartialComplete()
             }
 
             // Update stats
@@ -3064,8 +3079,11 @@ public actor ProviderLoop {
 
     // MARK: - Cancellation
 
-    private func handleCancellation(requestId: String) async {
+    private func handleCancellation(requestId: String, receivedFromCoordinator: Bool = true) async {
         logger.info("Cancelling request: \(requestId)")
+        if receivedFromCoordinator {
+            stats.incrementCancellationsReceived()
+        }
 
         // P1 #1 (CRITICAL): do NOT call `scheduler.cancel(requestId:)`
         // directly here. After the MLXLMServer adoption,
@@ -3097,7 +3115,11 @@ public actor ProviderLoop {
         // reach the same teardown).
         await cancellationRegistry.cancel(requestId: requestId)
 
+        let hadInflightTask = inflightTasks[requestId] != nil
         if requestToModel.removeValue(forKey: requestId) != nil {
+            if !hadInflightTask {
+                stats.incrementCancelDuringModelLoad()
+            }
             powerAssertion.release()
         }
 
@@ -3112,7 +3134,7 @@ public actor ProviderLoop {
     private func cancelAllInflight() async {
         let requestIds = Array(inflightTasks.keys)
         for requestId in requestIds {
-            await handleCancellation(requestId: requestId)
+            await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
         }
         inflightTasks.removeAll()
         completedBeforeTaskRegistration.removeAll()

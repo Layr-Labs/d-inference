@@ -2178,18 +2178,12 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		}
 
 		// Update the routing telemetry outcome with final token counts and timing.
-		// handleComplete is the authoritative final writer for a SUCCESSFUL request
-		// (UpdateInferenceRouteOutcome overwrites the whole row), so this outcome
-		// carries the full coordinator-side latency decomposition and the measured
-		// decode throughput in addition to tokens/cost.
+		// handleComplete is the authoritative final writer for provider completion;
+		// when the consumer already disconnected this is a partial success because
+		// the provider completed and billing settled, but the client did not receive
+		// the full response.
 		s.submitTelemetry("updateInferenceRoute", func() {
-			outcome := &store.InferenceRouteOutcome{
-				FinalStatus:      "success",
-				PromptTokens:     msg.Usage.PromptTokens,
-				CompletionTokens: msg.Usage.CompletionTokens,
-				ReasoningTokens:  msg.Usage.ReasoningTokens,
-				CostMicroUSD:     totalCost,
-			}
+			outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
 			if pr.Timing != nil {
 				t := pr.Timing
 				// This runs on the provider read-loop goroutine, not the request
@@ -2403,6 +2397,18 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	s.registry.SetProviderIdle(providerID)
 
 	if consumerGone {
+		status := "partial_success"
+		errorClass := "client_gone_after_commit_provider_error"
+		if cancelTerminal {
+			errorClass = "client_gone_after_commit_provider_cancelled"
+		} else if providerDisconnectedError(msg.Error, msg.StatusCode) {
+			errorClass = "client_gone_after_commit_provider_disconnected"
+		}
+		outcome := pendingRouteOutcome(pr, status, errorClass, msg.StatusCode)
+		if !cancelTerminal {
+			outcome.AdmittedButFailed = true
+		}
+		s.updateInferenceRouteOutcomeForPending(pr, outcome)
 		// Consumer disconnected — no reader for the channels; settle by
 		// refunding, OFF the read loop (a store Credit can block for seconds
 		// under DB pressure, and blocking this loop stalls heartbeats and

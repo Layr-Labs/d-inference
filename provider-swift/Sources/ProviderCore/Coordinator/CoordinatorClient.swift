@@ -41,6 +41,13 @@ public enum CoordinatorEvent: Sendable {
 public final class AtomicProviderStats: Sendable {
     private let _requestsServed = ManagedAtomic<UInt64>(0)
     private let _tokensGenerated = ManagedAtomic<UInt64>(0)
+    private let _cancellationsReceived = ManagedAtomic<UInt64>(0)
+    private let _cancellationsBeforeOutput = ManagedAtomic<UInt64>(0)
+    private let _cancellationsPartialComplete = ManagedAtomic<UInt64>(0)
+    private let _generationErrorsAfterOutput = ManagedAtomic<UInt64>(0)
+    private let _chunkEncryptionErrors = ManagedAtomic<UInt64>(0)
+    private let _streamClosedWithoutTerminal = ManagedAtomic<UInt64>(0)
+    private let _cancelDuringModelLoad = ManagedAtomic<UInt64>(0)
     // Count of completed requests whose usage chunk was missing/zero. Surfaced
     // in the daemon state file so `doctor` can flag a billing under-count.
     private let _usageGaps = ManagedAtomic<UInt64>(0)
@@ -62,6 +69,41 @@ public final class AtomicProviderStats: Sendable {
         set { _usageGaps.store(newValue) }
     }
 
+    public var cancellationsReceived: UInt64 {
+        get { _cancellationsReceived.load() }
+        set { _cancellationsReceived.store(newValue) }
+    }
+
+    public var cancellationsBeforeOutput: UInt64 {
+        get { _cancellationsBeforeOutput.load() }
+        set { _cancellationsBeforeOutput.store(newValue) }
+    }
+
+    public var cancellationsPartialComplete: UInt64 {
+        get { _cancellationsPartialComplete.load() }
+        set { _cancellationsPartialComplete.store(newValue) }
+    }
+
+    public var generationErrorsAfterOutput: UInt64 {
+        get { _generationErrorsAfterOutput.load() }
+        set { _generationErrorsAfterOutput.store(newValue) }
+    }
+
+    public var chunkEncryptionErrors: UInt64 {
+        get { _chunkEncryptionErrors.load() }
+        set { _chunkEncryptionErrors.store(newValue) }
+    }
+
+    public var streamClosedWithoutTerminal: UInt64 {
+        get { _streamClosedWithoutTerminal.load() }
+        set { _streamClosedWithoutTerminal.store(newValue) }
+    }
+
+    public var cancelDuringModelLoad: UInt64 {
+        get { _cancelDuringModelLoad.load() }
+        set { _cancelDuringModelLoad.store(newValue) }
+    }
+
     public func incrementRequestsServed() {
         _requestsServed.add(1)
     }
@@ -72,6 +114,49 @@ public final class AtomicProviderStats: Sendable {
 
     public func incrementUsageGaps() {
         _usageGaps.add(1)
+    }
+
+    public func incrementCancellationsReceived() {
+        _cancellationsReceived.add(1)
+    }
+
+    public func incrementCancellationsBeforeOutput() {
+        _cancellationsBeforeOutput.add(1)
+    }
+
+    public func incrementCancellationsPartialComplete() {
+        _cancellationsPartialComplete.add(1)
+    }
+
+    public func incrementGenerationErrorsAfterOutput() {
+        _generationErrorsAfterOutput.add(1)
+    }
+
+    public func incrementChunkEncryptionErrors() {
+        _chunkEncryptionErrors.add(1)
+    }
+
+    public func incrementStreamClosedWithoutTerminal() {
+        _streamClosedWithoutTerminal.add(1)
+    }
+
+    public func incrementCancelDuringModelLoad() {
+        _cancelDuringModelLoad.add(1)
+    }
+
+    public func snapshot() -> ProviderStats {
+        ProviderStats(
+            requestsServed: requestsServed,
+            tokensGenerated: tokensGenerated,
+            cancellationsReceived: cancellationsReceived,
+            cancellationsBeforeOutput: cancellationsBeforeOutput,
+            cancellationsPartialComplete: cancellationsPartialComplete,
+            generationErrorsAfterOutput: generationErrorsAfterOutput,
+            chunkEncryptionErrors: chunkEncryptionErrors,
+            streamClosedWithoutTerminal: streamClosedWithoutTerminal,
+            cancelDuringModelLoad: cancelDuringModelLoad,
+            usageGaps: usageGaps
+        )
     }
 }
 
@@ -931,10 +1016,7 @@ public actor CoordinatorClient {
             status: isActive ? .serving : .idle,
             activeModel: activeModel,
             warmModels: warmModels,
-            stats: ProviderStats(
-                requestsServed: stats.requestsServed,
-                tokensGenerated: stats.tokensGenerated
-            ),
+            stats: stats.snapshot(),
             systemMetrics: metrics,
             backendCapacity: capacity,
             apnsDeviceToken: effectiveToken,

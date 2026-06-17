@@ -80,4 +80,13 @@ extension ProviderLoop {
         }
         return 500
     }
+
+    static func isStreamClosedWithoutTerminal(_ error: Error) -> Bool {
+        if let engineError = error as? MultiModelBatchSchedulerEngineError,
+           case .generationFailed(let message) = engineError
+        {
+            return message == "request stream closed by engine teardown"
+        }
+        return error.localizedDescription == "request stream closed by engine teardown"
+    }
 }

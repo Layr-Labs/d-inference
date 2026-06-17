@@ -169,6 +169,10 @@ type PendingRequest struct {
 	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
 	SESignature    string    // SE signature over response hash
 	ResponseHash   string    // SHA-256 of response data
+	// Speculative backup telemetry. UsedBackup means a backup race was launched
+	// for this logical request; BackupWon is true only on the serving backup.
+	UsedBackup bool
+	BackupWon  bool
 
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
@@ -2480,8 +2484,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	now := time.Now()
 	prevHB := p.LastHeartbeat
 	p.LastHeartbeat = now
-	p.Stats.RequestsServed += cumulativeDelta(p.lastSessionStats.RequestsServed, msg.Stats.RequestsServed)
-	p.Stats.TokensGenerated += cumulativeDelta(p.lastSessionStats.TokensGenerated, msg.Stats.TokensGenerated)
+	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)
 	p.lastSessionStats = msg.Stats
 	p.SystemMetrics = msg.SystemMetrics
 	// Update backend capacity from heartbeat. A nil report clears prior live
@@ -3182,6 +3185,19 @@ func cumulativeDelta(previous, current int64) int64 {
 	}
 	// The provider process restarted and reset its in-memory counters.
 	return current
+}
+
+func applyHeartbeatStatsDelta(total *protocol.HeartbeatStats, previous, current protocol.HeartbeatStats) {
+	total.RequestsServed += cumulativeDelta(previous.RequestsServed, current.RequestsServed)
+	total.TokensGenerated += cumulativeDelta(previous.TokensGenerated, current.TokensGenerated)
+	total.CancellationsReceived += cumulativeDelta(previous.CancellationsReceived, current.CancellationsReceived)
+	total.CancellationsBeforeOutput += cumulativeDelta(previous.CancellationsBeforeOutput, current.CancellationsBeforeOutput)
+	total.CancellationsPartialComplete += cumulativeDelta(previous.CancellationsPartialComplete, current.CancellationsPartialComplete)
+	total.GenerationErrorsAfterOutput += cumulativeDelta(previous.GenerationErrorsAfterOutput, current.GenerationErrorsAfterOutput)
+	total.ChunkEncryptionErrors += cumulativeDelta(previous.ChunkEncryptionErrors, current.ChunkEncryptionErrors)
+	total.StreamClosedWithoutTerminal += cumulativeDelta(previous.StreamClosedWithoutTerminal, current.StreamClosedWithoutTerminal)
+	total.CancelDuringModelLoad += cumulativeDelta(previous.CancelDuringModelLoad, current.CancelDuringModelLoad)
+	total.UsageGaps += cumulativeDelta(previous.UsageGaps, current.UsageGaps)
 }
 
 // Disconnect removes a provider from the registry and cleans up pending requests.

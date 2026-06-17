@@ -1513,7 +1513,61 @@ func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error
 			$49, $50, $51, $52, $53,
 			$54, $55,
 			$56, $57
-		) ON CONFLICT (request_id, attempt) DO NOTHING`,
+		) ON CONFLICT (request_id, attempt) DO UPDATE SET
+			provider_id = EXCLUDED.provider_id,
+			model = EXCLUDED.model,
+			public_model = EXCLUDED.public_model,
+			consumer_key_hash = EXCLUDED.consumer_key_hash,
+			key_id = EXCLUDED.key_id,
+			outcome = EXCLUDED.outcome,
+			cost_ms = EXCLUDED.cost_ms,
+			state_ms = EXCLUDED.state_ms,
+			queue_ms = EXCLUDED.queue_ms,
+			pending_ms = EXCLUDED.pending_ms,
+			backlog_ms = EXCLUDED.backlog_ms,
+			this_req_ms = EXCLUDED.this_req_ms,
+			health_ms = EXCLUDED.health_ms,
+			ttft_ms = EXCLUDED.ttft_ms,
+			best_ttft_ms = EXCLUDED.best_ttft_ms,
+			effective_queue = EXCLUDED.effective_queue,
+			candidate_count = EXCLUDED.candidate_count,
+			capacity_rejections = EXCLUDED.capacity_rejections,
+			model_too_large_rejections = EXCLUDED.model_too_large_rejections,
+			vision_rejections = EXCLUDED.vision_rejections,
+			ttft_rejections = EXCLUDED.ttft_rejections,
+			effective_tps = EXCLUDED.effective_tps,
+			static_tps = EXCLUDED.static_tps,
+			provider_status = EXCLUDED.provider_status,
+			provider_trust_level = EXCLUDED.provider_trust_level,
+			provider_version = EXCLUDED.provider_version,
+			hardware_chip = EXCLUDED.hardware_chip,
+			hardware_chip_family = EXCLUDED.hardware_chip_family,
+			hardware_tier = EXCLUDED.hardware_tier,
+			memory_gb = EXCLUDED.memory_gb,
+			gpu_cores = EXCLUDED.gpu_cores,
+			cpu_cores = EXCLUDED.cpu_cores,
+			system_memory_pressure = EXCLUDED.system_memory_pressure,
+			system_cpu_usage = EXCLUDED.system_cpu_usage,
+			system_thermal_state = EXCLUDED.system_thermal_state,
+			gpu_memory_active_gb = EXCLUDED.gpu_memory_active_gb,
+			gpu_memory_peak_gb = EXCLUDED.gpu_memory_peak_gb,
+			gpu_memory_cache_gb = EXCLUDED.gpu_memory_cache_gb,
+			slot_state = EXCLUDED.slot_state,
+			backend_running = EXCLUDED.backend_running,
+			backend_waiting = EXCLUDED.backend_waiting,
+			active_token_budget_used = EXCLUDED.active_token_budget_used,
+			active_token_budget_max = EXCLUDED.active_token_budget_max,
+			queued_token_budget = EXCLUDED.queued_token_budget,
+			estimated_prompt_tokens = EXCLUDED.estimated_prompt_tokens,
+			requested_max_tokens = EXCLUDED.requested_max_tokens,
+			requires_vision = EXCLUDED.requires_vision,
+			has_tools = EXCLUDED.has_tools,
+			self_route_only = EXCLUDED.self_route_only,
+			prefer_owner = EXCLUDED.prefer_owner,
+			cache_affinity_key = EXCLUDED.cache_affinity_key,
+			provider_region = EXCLUDED.provider_region,
+			consumer_region = EXCLUDED.consumer_region,
+			updated_at = EXCLUDED.updated_at`,
 		record.RequestID, record.Attempt, record.ProviderID, record.Model, record.PublicModel, record.ConsumerKeyHash, record.KeyID, record.Outcome,
 		record.CostMs, record.StateMs, record.QueueMs, record.PendingMs, record.BacklogMs, record.ThisReqMs, record.HealthMs, record.TTFTMs, record.BestTTFTMs,
 		record.EffectiveQueue, record.CandidateCount, record.CapacityRejections, record.ModelTooLargeRejections, record.VisionRejections, record.TTFTRejections,
@@ -1543,26 +1597,26 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 
 	_, _ = s.pool.Exec(ctx,
 		`UPDATE inference_routes SET
-			final_status = $3,
-			error_code = $4,
-			error_class = $5,
-			prompt_tokens = $6,
-			completion_tokens = $7,
-			reasoning_tokens = $8,
-			cost_micro_usd = $9,
-			actual_ttft_ms = $10,
-			dispatch_to_first_chunk_ms = $11,
-			total_duration_ms = $12,
-			parse_ms = $13,
-			reserve_ms = $14,
-			route_ms = $15,
-			encrypt_ms = $16,
-			queue_wait_ms = $17,
-			dispatch_ms = $18,
-			actual_decode_tps = $19,
-			admitted_but_failed = $20,
-			used_backup = $21,
-			backup_won = $22,
+			final_status = COALESCE(NULLIF($3, ''), final_status),
+			error_code = CASE WHEN $4 <> 0 THEN $4 ELSE error_code END,
+			error_class = COALESCE(NULLIF($5, ''), error_class),
+			prompt_tokens = CASE WHEN $6 <> 0 THEN $6 ELSE prompt_tokens END,
+			completion_tokens = CASE WHEN $7 <> 0 THEN $7 ELSE completion_tokens END,
+			reasoning_tokens = CASE WHEN $8 <> 0 THEN $8 ELSE reasoning_tokens END,
+			cost_micro_usd = CASE WHEN $9 <> 0 THEN $9 ELSE cost_micro_usd END,
+			actual_ttft_ms = CASE WHEN $10 <> 0 THEN $10 ELSE actual_ttft_ms END,
+			dispatch_to_first_chunk_ms = CASE WHEN $11 <> 0 THEN $11 ELSE dispatch_to_first_chunk_ms END,
+			total_duration_ms = CASE WHEN $12 <> 0 THEN $12 ELSE total_duration_ms END,
+			parse_ms = CASE WHEN $13 <> 0 THEN $13 ELSE parse_ms END,
+			reserve_ms = CASE WHEN $14 <> 0 THEN $14 ELSE reserve_ms END,
+			route_ms = CASE WHEN $15 <> 0 THEN $15 ELSE route_ms END,
+			encrypt_ms = CASE WHEN $16 <> 0 THEN $16 ELSE encrypt_ms END,
+			queue_wait_ms = CASE WHEN $17 <> 0 THEN $17 ELSE queue_wait_ms END,
+			dispatch_ms = CASE WHEN $18 <> 0 THEN $18 ELSE dispatch_ms END,
+			actual_decode_tps = CASE WHEN $19 <> 0 THEN $19 ELSE actual_decode_tps END,
+			admitted_but_failed = COALESCE(admitted_but_failed, FALSE) OR $20,
+			used_backup = COALESCE(used_backup, FALSE) OR $21,
+			backup_won = COALESCE(backup_won, FALSE) OR $22,
 			updated_at = NOW()
 		 WHERE request_id = $1 AND attempt = $2`,
 		requestID, attempt,
@@ -1602,9 +1656,6 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 		var actualTTFTMs *float64
 		var dispatchToFirstChunkMs *float64
 		var totalDurationMs *float64
-		// Region fields are real record fields; the remaining outcome-gap
-		// columns are scanned into throwaway locals (mirrors the existing
-		// outcome columns above, which the record type does not carry).
 		var providerRegion *string
 		var consumerRegion *string
 		var parseMs *float64
@@ -1646,6 +1697,65 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 		if consumerRegion != nil {
 			r.ConsumerRegion = *consumerRegion
 		}
+		outcome := InferenceRouteOutcome{FinalStatus: finalStatus}
+		if errorCode != nil {
+			outcome.ErrorCode = *errorCode
+		}
+		if errorClass != nil {
+			outcome.ErrorClass = *errorClass
+		}
+		if promptTokens != nil {
+			outcome.PromptTokens = *promptTokens
+		}
+		if completionTokens != nil {
+			outcome.CompletionTokens = *completionTokens
+		}
+		if reasoningTokens != nil {
+			outcome.ReasoningTokens = *reasoningTokens
+		}
+		if costMicroUSD != nil {
+			outcome.CostMicroUSD = *costMicroUSD
+		}
+		if actualTTFTMs != nil {
+			outcome.ActualTTFTMs = *actualTTFTMs
+		}
+		if dispatchToFirstChunkMs != nil {
+			outcome.DispatchToFirstChunkMs = *dispatchToFirstChunkMs
+		}
+		if totalDurationMs != nil {
+			outcome.TotalDurationMs = *totalDurationMs
+		}
+		if parseMs != nil {
+			outcome.ParseMs = *parseMs
+		}
+		if reserveMs != nil {
+			outcome.ReserveMs = *reserveMs
+		}
+		if routeMs != nil {
+			outcome.RouteMs = *routeMs
+		}
+		if encryptMs != nil {
+			outcome.EncryptMs = *encryptMs
+		}
+		if queueWaitMs != nil {
+			outcome.QueueWaitMs = *queueWaitMs
+		}
+		if dispatchMs != nil {
+			outcome.DispatchMs = *dispatchMs
+		}
+		if actualDecodeTPS != nil {
+			outcome.ActualDecodeTPS = *actualDecodeTPS
+		}
+		if admittedButFailed != nil {
+			outcome.AdmittedButFailed = *admittedButFailed
+		}
+		if usedBackup != nil {
+			outcome.UsedBackup = *usedBackup
+		}
+		if backupWon != nil {
+			outcome.BackupWon = *backupWon
+		}
+		applyInferenceRouteOutcomeToRecord(&r, outcome)
 		records = append(records, r)
 	}
 	return records

@@ -831,8 +831,16 @@ func (s *MemoryStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.inferenceRoutes = append(s.inferenceRoutes, rec)
 	key := record.RequestID + "/" + strconv.Itoa(record.Attempt)
+	if idx, ok := s.inferenceRouteIndex[key]; ok {
+		rec.CreatedAt = s.inferenceRoutes[idx].CreatedAt
+		if rec.UpdatedAt.IsZero() {
+			rec.UpdatedAt = now
+		}
+		s.inferenceRoutes[idx] = rec
+		return nil
+	}
+	s.inferenceRoutes = append(s.inferenceRoutes, rec)
 	s.inferenceRouteIndex[key] = len(s.inferenceRoutes) - 1
 	return nil
 }
@@ -853,7 +861,9 @@ func (s *MemoryStore) UpdateInferenceRouteOutcome(requestID string, attempt int,
 		return nil
 	}
 
-	s.inferenceRouteOutcomes[key] = *outcome
+	merged := s.inferenceRouteOutcomes[key]
+	mergeInferenceRouteOutcome(&merged, outcome)
+	s.inferenceRouteOutcomes[key] = merged
 	s.inferenceRoutes[idx].UpdatedAt = time.Now()
 	return nil
 }
@@ -869,6 +879,10 @@ func (s *MemoryStore) InferenceRouteRecordsSince(since time.Time) []InferenceRou
 		r := s.inferenceRoutes[i]
 		if !since.IsZero() && r.CreatedAt.Before(since) {
 			continue
+		}
+		key := r.RequestID + "/" + strconv.Itoa(r.Attempt)
+		if outcome, ok := s.inferenceRouteOutcomes[key]; ok {
+			applyInferenceRouteOutcomeToRecord(&r, outcome)
 		}
 		out = append(out, r)
 		if len(out) >= maxTelemetryReadRows {

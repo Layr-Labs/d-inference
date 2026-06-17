@@ -298,6 +298,32 @@ import Testing
     #expect(!json.contains("apns_environment"))
 }
 
+@Test func atomicProviderStatsSnapshotIncludesOutcomeCounters() {
+    let stats = AtomicProviderStats()
+    stats.incrementRequestsServed()
+    stats.addTokensGenerated(42)
+    stats.incrementCancellationsReceived()
+    stats.incrementCancellationsBeforeOutput()
+    stats.incrementCancellationsPartialComplete()
+    stats.incrementGenerationErrorsAfterOutput()
+    stats.incrementChunkEncryptionErrors()
+    stats.incrementStreamClosedWithoutTerminal()
+    stats.incrementCancelDuringModelLoad()
+    stats.incrementUsageGaps()
+
+    let snapshot = stats.snapshot()
+    #expect(snapshot.requestsServed == 1)
+    #expect(snapshot.tokensGenerated == 42)
+    #expect(snapshot.cancellationsReceived == 1)
+    #expect(snapshot.cancellationsBeforeOutput == 1)
+    #expect(snapshot.cancellationsPartialComplete == 1)
+    #expect(snapshot.generationErrorsAfterOutput == 1)
+    #expect(snapshot.chunkEncryptionErrors == 1)
+    #expect(snapshot.streamClosedWithoutTerminal == 1)
+    #expect(snapshot.cancelDuringModelLoad == 1)
+    #expect(snapshot.usageGaps == 1)
+}
+
 @Test func coordinatorIncomingMessagesDecodeForDispatch() throws {
     let challenge = try CoordinatorClientCodec.decodeIncomingMessage(
         from: #"{"type":"attestation_challenge","nonce":"bm9uY2U=","timestamp":"2026-04-03T12:00:00Z"}"#

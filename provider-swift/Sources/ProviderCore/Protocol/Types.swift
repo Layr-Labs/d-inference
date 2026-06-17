@@ -162,15 +162,88 @@ public struct ModelInfo: Codable, Sendable, Equatable {
 public struct ProviderStats: Codable, Sendable, Equatable {
     public var requestsServed: UInt64
     public var tokensGenerated: UInt64
+    public var cancellationsReceived: UInt64
+    public var cancellationsBeforeOutput: UInt64
+    public var cancellationsPartialComplete: UInt64
+    public var generationErrorsAfterOutput: UInt64
+    public var chunkEncryptionErrors: UInt64
+    public var streamClosedWithoutTerminal: UInt64
+    public var cancelDuringModelLoad: UInt64
+    public var usageGaps: UInt64
 
     enum CodingKeys: String, CodingKey {
         case requestsServed = "requests_served"
         case tokensGenerated = "tokens_generated"
+        case cancellationsReceived = "cancellations_received"
+        case cancellationsBeforeOutput = "cancellations_before_output"
+        case cancellationsPartialComplete = "cancellations_partial_complete"
+        case generationErrorsAfterOutput = "generation_errors_after_output"
+        case chunkEncryptionErrors = "chunk_encryption_errors"
+        case streamClosedWithoutTerminal = "stream_closed_without_terminal"
+        case cancelDuringModelLoad = "cancel_during_model_load"
+        case usageGaps = "usage_gaps"
     }
 
-    public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0) {
+    public init(
+        requestsServed: UInt64 = 0,
+        tokensGenerated: UInt64 = 0,
+        cancellationsReceived: UInt64 = 0,
+        cancellationsBeforeOutput: UInt64 = 0,
+        cancellationsPartialComplete: UInt64 = 0,
+        generationErrorsAfterOutput: UInt64 = 0,
+        chunkEncryptionErrors: UInt64 = 0,
+        streamClosedWithoutTerminal: UInt64 = 0,
+        cancelDuringModelLoad: UInt64 = 0,
+        usageGaps: UInt64 = 0
+    ) {
         self.requestsServed = requestsServed
         self.tokensGenerated = tokensGenerated
+        self.cancellationsReceived = cancellationsReceived
+        self.cancellationsBeforeOutput = cancellationsBeforeOutput
+        self.cancellationsPartialComplete = cancellationsPartialComplete
+        self.generationErrorsAfterOutput = generationErrorsAfterOutput
+        self.chunkEncryptionErrors = chunkEncryptionErrors
+        self.streamClosedWithoutTerminal = streamClosedWithoutTerminal
+        self.cancelDuringModelLoad = cancelDuringModelLoad
+        self.usageGaps = usageGaps
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.requestsServed = try c.decodeIfPresent(UInt64.self, forKey: .requestsServed) ?? 0
+        self.tokensGenerated = try c.decodeIfPresent(UInt64.self, forKey: .tokensGenerated) ?? 0
+        self.cancellationsReceived = try c.decodeIfPresent(UInt64.self, forKey: .cancellationsReceived) ?? 0
+        self.cancellationsBeforeOutput = try c.decodeIfPresent(UInt64.self, forKey: .cancellationsBeforeOutput) ?? 0
+        self.cancellationsPartialComplete = try c.decodeIfPresent(UInt64.self, forKey: .cancellationsPartialComplete) ?? 0
+        self.generationErrorsAfterOutput = try c.decodeIfPresent(UInt64.self, forKey: .generationErrorsAfterOutput) ?? 0
+        self.chunkEncryptionErrors = try c.decodeIfPresent(UInt64.self, forKey: .chunkEncryptionErrors) ?? 0
+        self.streamClosedWithoutTerminal = try c.decodeIfPresent(UInt64.self, forKey: .streamClosedWithoutTerminal) ?? 0
+        self.cancelDuringModelLoad = try c.decodeIfPresent(UInt64.self, forKey: .cancelDuringModelLoad) ?? 0
+        self.usageGaps = try c.decodeIfPresent(UInt64.self, forKey: .usageGaps) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(requestsServed, forKey: .requestsServed)
+        try c.encode(tokensGenerated, forKey: .tokensGenerated)
+        try encodeIfNonZero(cancellationsReceived, to: &c, forKey: .cancellationsReceived)
+        try encodeIfNonZero(cancellationsBeforeOutput, to: &c, forKey: .cancellationsBeforeOutput)
+        try encodeIfNonZero(cancellationsPartialComplete, to: &c, forKey: .cancellationsPartialComplete)
+        try encodeIfNonZero(generationErrorsAfterOutput, to: &c, forKey: .generationErrorsAfterOutput)
+        try encodeIfNonZero(chunkEncryptionErrors, to: &c, forKey: .chunkEncryptionErrors)
+        try encodeIfNonZero(streamClosedWithoutTerminal, to: &c, forKey: .streamClosedWithoutTerminal)
+        try encodeIfNonZero(cancelDuringModelLoad, to: &c, forKey: .cancelDuringModelLoad)
+        try encodeIfNonZero(usageGaps, to: &c, forKey: .usageGaps)
+    }
+
+    private func encodeIfNonZero(
+        _ value: UInt64,
+        to container: inout KeyedEncodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws {
+        if value != 0 {
+            try container.encode(value, forKey: key)
+        }
     }
 }
 

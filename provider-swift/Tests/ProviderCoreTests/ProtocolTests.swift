@@ -517,6 +517,51 @@ import Testing
     #expect(!runtimeJSON.contains("mismatches"))
 }
 
+@Test func providerStatsOutcomeCountersRoundTripAndOmitZeroes() throws {
+    let stats = ProviderStats(
+        requestsServed: 11,
+        tokensGenerated: 22,
+        cancellationsReceived: 3,
+        cancellationsBeforeOutput: 4,
+        cancellationsPartialComplete: 5,
+        generationErrorsAfterOutput: 6,
+        chunkEncryptionErrors: 7,
+        streamClosedWithoutTerminal: 8,
+        cancelDuringModelLoad: 9,
+        usageGaps: 10
+    )
+
+    let data = try JSONEncoder().encode(stats)
+    let object = try jsonObject(data)
+
+    #expect(object["requests_served"] as? Int == 11)
+    #expect(object["tokens_generated"] as? Int == 22)
+    #expect(object["cancellations_received"] as? Int == 3)
+    #expect(object["cancellations_before_output"] as? Int == 4)
+    #expect(object["cancellations_partial_complete"] as? Int == 5)
+    #expect(object["generation_errors_after_output"] as? Int == 6)
+    #expect(object["chunk_encryption_errors"] as? Int == 7)
+    #expect(object["stream_closed_without_terminal"] as? Int == 8)
+    #expect(object["cancel_during_model_load"] as? Int == 9)
+    #expect(object["usage_gaps"] as? Int == 10)
+    #expect(try JSONDecoder().decode(ProviderStats.self, from: data) == stats)
+
+    let zeroObject = try jsonObject(JSONEncoder().encode(ProviderStats()))
+    #expect(zeroObject["requests_served"] as? Int == 0)
+    #expect(zeroObject["tokens_generated"] as? Int == 0)
+    #expect(zeroObject["cancellations_received"] == nil)
+    #expect(zeroObject["cancellations_before_output"] == nil)
+    #expect(zeroObject["cancellations_partial_complete"] == nil)
+    #expect(zeroObject["generation_errors_after_output"] == nil)
+    #expect(zeroObject["chunk_encryption_errors"] == nil)
+    #expect(zeroObject["stream_closed_without_terminal"] == nil)
+    #expect(zeroObject["cancel_during_model_load"] == nil)
+    #expect(zeroObject["usage_gaps"] == nil)
+
+    let legacy = try JSONDecoder().decode(ProviderStats.self, from: Data(#"{}"#.utf8))
+    #expect(legacy == ProviderStats())
+}
+
 @Test func backendSlotCapacityRoundTripsAdaptiveBatchingFields() throws {
     let slot = BackendSlotCapacity(
         model: "mlx-community/Qwen2.5-7B-4bit",

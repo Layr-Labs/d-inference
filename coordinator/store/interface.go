@@ -110,8 +110,8 @@ type Store interface {
 	// plus the optional consumer-facing model name returned by usage history.
 	RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
 
-	// RecordInferenceRoute writes the routing decision snapshot for a request
-	// attempt. Best-effort; failures must not block inference.
+	// RecordInferenceRoute writes or refreshes the routing decision snapshot for a
+	// request attempt. Best-effort; failures must not block inference.
 	RecordInferenceRoute(record *InferenceRouteRecord) error
 
 	// UpdateInferenceRouteOutcome updates the attempt with final outcome data
@@ -702,6 +702,28 @@ type InferenceRouteRecord struct {
 	// Geo (coarse region of provider/consumer; no raw IPs). Optional.
 	ProviderRegion string `json:"provider_region,omitempty"`
 	ConsumerRegion string `json:"consumer_region,omitempty"`
+
+	// Final outcome data, merged from InferenceRouteOutcome updates.
+	FinalStatus            string  `json:"final_status"`
+	ErrorCode              int     `json:"error_code"`
+	ErrorClass             string  `json:"error_class"`
+	PromptTokens           int     `json:"prompt_tokens"`
+	CompletionTokens       int     `json:"completion_tokens"`
+	ReasoningTokens        int     `json:"reasoning_tokens"`
+	CostMicroUSD           int64   `json:"cost_micro_usd"`
+	ActualTTFTMs           float64 `json:"actual_ttft_ms"`
+	DispatchToFirstChunkMs float64 `json:"dispatch_to_first_chunk_ms"`
+	TotalDurationMs        float64 `json:"total_duration_ms"`
+	ParseMs                float64 `json:"parse_ms"`
+	ReserveMs              float64 `json:"reserve_ms"`
+	RouteMs                float64 `json:"route_ms"`
+	EncryptMs              float64 `json:"encrypt_ms"`
+	QueueWaitMs            float64 `json:"queue_wait_ms"`
+	DispatchMs             float64 `json:"dispatch_ms"`
+	ActualDecodeTPS        float64 `json:"actual_decode_tps"`
+	AdmittedButFailed      bool    `json:"admitted_but_failed"`
+	UsedBackup             bool    `json:"used_backup"`
+	BackupWon              bool    `json:"backup_won"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

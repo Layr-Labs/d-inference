@@ -35,7 +35,7 @@ func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	records := filterRouteRecords(
 		s.store.InferenceRouteRecordsSince(parseSince(r)),
-		q.Get("provider"), q.Get("model"), q.Get("outcome"),
+		q.Get("provider"), q.Get("model"), q.Get("outcome"), q.Get("final_status"),
 	)
 	records = capRecords(records, parseLimit(r, defaultBrowseLimit))
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -54,7 +54,7 @@ func (s *Server) handleAdminRoutesExport(w http.ResponseWriter, r *http.Request)
 	q := r.URL.Query()
 	records := filterRouteRecords(
 		s.store.InferenceRouteRecordsSince(parseSince(r)),
-		q.Get("provider"), q.Get("model"), q.Get("outcome"),
+		q.Get("provider"), q.Get("model"), q.Get("outcome"), q.Get("final_status"),
 	)
 	records = capRecords(records, parseLimit(r, 0))
 
@@ -196,8 +196,8 @@ func capRecords[T any](in []T, limit int) []T {
 // filterRouteRecords applies the optional in-memory filters supported by the
 // routes endpoints. Empty filter values are ignored. model matches either the
 // concrete Model or the consumer-facing PublicModel.
-func filterRouteRecords(in []store.InferenceRouteRecord, provider, model, outcome string) []store.InferenceRouteRecord {
-	if provider == "" && model == "" && outcome == "" {
+func filterRouteRecords(in []store.InferenceRouteRecord, provider, model, outcome, finalStatus string) []store.InferenceRouteRecord {
+	if provider == "" && model == "" && outcome == "" && finalStatus == "" {
 		return in
 	}
 	out := make([]store.InferenceRouteRecord, 0, len(in))
@@ -209,6 +209,9 @@ func filterRouteRecords(in []store.InferenceRouteRecord, provider, model, outcom
 			continue
 		}
 		if outcome != "" && rec.Outcome != outcome {
+			continue
+		}
+		if finalStatus != "" && rec.FinalStatus != finalStatus {
 			continue
 		}
 		out = append(out, rec)
@@ -285,6 +288,11 @@ var routeCSVHeader = []string{
 	"estimated_prompt_tokens", "requested_max_tokens",
 	"requires_vision", "has_tools", "self_route_only", "prefer_owner",
 	"cache_affinity_key", "provider_region", "consumer_region",
+	"final_status", "error_code", "error_class",
+	"prompt_tokens", "completion_tokens", "reasoning_tokens", "cost_micro_usd",
+	"actual_ttft_ms", "dispatch_to_first_chunk_ms", "total_duration_ms",
+	"parse_ms", "reserve_ms", "route_ms", "encrypt_ms", "queue_wait_ms", "dispatch_ms",
+	"actual_decode_tps", "admitted_but_failed", "used_backup", "backup_won",
 	"created_at", "updated_at",
 }
 
@@ -362,6 +370,26 @@ func routeCSVRow(rec store.InferenceRouteRecord) []string {
 		rec.CacheAffinityKey,
 		rec.ProviderRegion,
 		rec.ConsumerRegion,
+		rec.FinalStatus,
+		csvInt(rec.ErrorCode),
+		rec.ErrorClass,
+		csvInt(rec.PromptTokens),
+		csvInt(rec.CompletionTokens),
+		csvInt(rec.ReasoningTokens),
+		csvI64(rec.CostMicroUSD),
+		csvFloat(rec.ActualTTFTMs),
+		csvFloat(rec.DispatchToFirstChunkMs),
+		csvFloat(rec.TotalDurationMs),
+		csvFloat(rec.ParseMs),
+		csvFloat(rec.ReserveMs),
+		csvFloat(rec.RouteMs),
+		csvFloat(rec.EncryptMs),
+		csvFloat(rec.QueueWaitMs),
+		csvFloat(rec.DispatchMs),
+		csvFloat(rec.ActualDecodeTPS),
+		csvBool(rec.AdmittedButFailed),
+		csvBool(rec.UsedBackup),
+		csvBool(rec.BackupWon),
 		csvTime(rec.CreatedAt),
 		csvTime(rec.UpdatedAt),
 	}

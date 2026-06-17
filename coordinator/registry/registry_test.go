@@ -387,7 +387,18 @@ func TestHeartbeat(t *testing.T) {
 	hb := &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
-		Stats:  protocol.HeartbeatStats{RequestsServed: 5, TokensGenerated: 1000},
+		Stats: protocol.HeartbeatStats{
+			RequestsServed:               5,
+			TokensGenerated:              1000,
+			CancellationsReceived:        1,
+			CancellationsBeforeOutput:    2,
+			CancellationsPartialComplete: 3,
+			GenerationErrorsAfterOutput:  4,
+			ChunkEncryptionErrors:        5,
+			StreamClosedWithoutTerminal:  6,
+			CancelDuringModelLoad:        7,
+			UsageGaps:                    8,
+		},
 	}
 
 	reg.Heartbeat("p1", hb)
@@ -398,6 +409,30 @@ func TestHeartbeat(t *testing.T) {
 	}
 	if p.Stats.TokensGenerated != 1000 {
 		t.Errorf("tokens_generated = %d, want 1000", p.Stats.TokensGenerated)
+	}
+	if p.Stats.CancellationsReceived != 1 {
+		t.Errorf("cancellations_received = %d, want 1", p.Stats.CancellationsReceived)
+	}
+	if p.Stats.CancellationsBeforeOutput != 2 {
+		t.Errorf("cancellations_before_output = %d, want 2", p.Stats.CancellationsBeforeOutput)
+	}
+	if p.Stats.CancellationsPartialComplete != 3 {
+		t.Errorf("cancellations_partial_complete = %d, want 3", p.Stats.CancellationsPartialComplete)
+	}
+	if p.Stats.GenerationErrorsAfterOutput != 4 {
+		t.Errorf("generation_errors_after_output = %d, want 4", p.Stats.GenerationErrorsAfterOutput)
+	}
+	if p.Stats.ChunkEncryptionErrors != 5 {
+		t.Errorf("chunk_encryption_errors = %d, want 5", p.Stats.ChunkEncryptionErrors)
+	}
+	if p.Stats.StreamClosedWithoutTerminal != 6 {
+		t.Errorf("stream_closed_without_terminal = %d, want 6", p.Stats.StreamClosedWithoutTerminal)
+	}
+	if p.Stats.CancelDuringModelLoad != 7 {
+		t.Errorf("cancel_during_model_load = %d, want 7", p.Stats.CancelDuringModelLoad)
+	}
+	if p.Stats.UsageGaps != 8 {
+		t.Errorf("usage_gaps = %d, want 8", p.Stats.UsageGaps)
 	}
 }
 

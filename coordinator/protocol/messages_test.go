@@ -363,6 +363,75 @@ func TestHeartbeatMessageAPNsFieldsSymmetry(t *testing.T) {
 	}
 }
 
+func TestHeartbeatStatsOutcomeCountersSymmetry(t *testing.T) {
+	stats := HeartbeatStats{
+		RequestsServed:               11,
+		TokensGenerated:              22,
+		CancellationsReceived:        3,
+		CancellationsBeforeOutput:    4,
+		CancellationsPartialComplete: 5,
+		GenerationErrorsAfterOutput:  6,
+		ChunkEncryptionErrors:        7,
+		StreamClosedWithoutTerminal:  8,
+		CancelDuringModelLoad:        9,
+		UsageGaps:                    10,
+	}
+
+	data, err := json.Marshal(stats)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, field := range []string{
+		`"cancellations_received":3`,
+		`"cancellations_before_output":4`,
+		`"cancellations_partial_complete":5`,
+		`"generation_errors_after_output":6`,
+		`"chunk_encryption_errors":7`,
+		`"stream_closed_without_terminal":8`,
+		`"cancel_during_model_load":9`,
+		`"usage_gaps":10`,
+	} {
+		if !bytes.Contains(data, []byte(field)) {
+			t.Fatalf("expected %s in JSON, got %s", field, data)
+		}
+	}
+
+	var decoded HeartbeatStats
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded != stats {
+		t.Fatalf("decoded stats = %+v, want %+v", decoded, stats)
+	}
+
+	zeroData, err := json.Marshal(HeartbeatStats{})
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	for _, field := range []string{
+		"cancellations_received",
+		"cancellations_before_output",
+		"cancellations_partial_complete",
+		"generation_errors_after_output",
+		"chunk_encryption_errors",
+		"stream_closed_without_terminal",
+		"cancel_during_model_load",
+		"usage_gaps",
+	} {
+		if bytes.Contains(zeroData, []byte(field)) {
+			t.Fatalf("expected zero-value field %q to be omitted, got %s", field, zeroData)
+		}
+	}
+
+	var legacy HeartbeatStats
+	if err := json.Unmarshal([]byte(`{"requests_served":1,"tokens_generated":2}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacy.RequestsServed != 1 || legacy.TokensGenerated != 2 || legacy.UsageGaps != 0 {
+		t.Fatalf("legacy stats = %+v, want old counters plus zero outcome counters", legacy)
+	}
+}
+
 func TestBackendSlotCapacityMaxConcurrencyRoundTrip(t *testing.T) {
 	msg := HeartbeatMessage{
 		Type:   TypeHeartbeat,

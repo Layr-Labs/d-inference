@@ -874,6 +874,16 @@ func testInferenceRouteStore(t *testing.T, s Store) {
 		ActualTTFTMs:           150.0,
 		DispatchToFirstChunkMs: 180.0,
 		TotalDurationMs:        1200.0,
+		ParseMs:                1,
+		ReserveMs:              2,
+		RouteMs:                3,
+		EncryptMs:              4,
+		QueueWaitMs:            5,
+		DispatchMs:             6,
+		ActualDecodeTPS:        42,
+		AdmittedButFailed:      true,
+		UsedBackup:             true,
+		BackupWon:              true,
 	}
 	if err := s.UpdateInferenceRouteOutcome("req-1", 1, outcome); err != nil {
 		t.Fatalf("UpdateInferenceRouteOutcome: %v", err)
@@ -891,6 +901,28 @@ func testInferenceRouteStore(t *testing.T, s Store) {
 		if all[0].UpdatedAt.Sub(beforeUpdate) < -time.Second {
 			t.Errorf("updated_at should be after beforeUpdate, got %v (beforeUpdate %v)", all[0].UpdatedAt, beforeUpdate)
 		}
+	}
+	if all[0].FinalStatus != "success" || all[0].PromptTokens != 50 || all[0].CompletionTokens != 100 || all[0].ReasoningTokens != 10 {
+		t.Errorf("outcome tokens/status not exposed on route record: %+v", all[0])
+	}
+	if all[0].CostMicroUSD != 2500 || all[0].ActualTTFTMs != 150 || all[0].DispatchToFirstChunkMs != 180 || all[0].TotalDurationMs != 1200 {
+		t.Errorf("outcome cost/timing not exposed on route record: %+v", all[0])
+	}
+	if all[0].ParseMs != 1 || all[0].ReserveMs != 2 || all[0].RouteMs != 3 || all[0].EncryptMs != 4 || all[0].QueueWaitMs != 5 || all[0].DispatchMs != 6 {
+		t.Errorf("latency decomposition not exposed on route record: %+v", all[0])
+	}
+	if all[0].ActualDecodeTPS != 42 || !all[0].AdmittedButFailed || !all[0].UsedBackup || !all[0].BackupWon {
+		t.Errorf("decode/backup flags not exposed on route record: %+v", all[0])
+	}
+
+	// A later latency-only committed update must not erase the terminal status or
+	// token/cost fields.
+	if err := s.UpdateInferenceRouteOutcome("req-1", 1, &InferenceRouteOutcome{ActualTTFTMs: 175}); err != nil {
+		t.Fatalf("UpdateInferenceRouteOutcome latency-only: %v", err)
+	}
+	all = s.InferenceRouteRecordsSince(time.Time{})
+	if all[0].FinalStatus != "success" || all[0].PromptTokens != 50 || all[0].CostMicroUSD != 2500 || all[0].ActualTTFTMs != 175 {
+		t.Errorf("latency-only outcome update should merge, got %+v", all[0])
 	}
 
 	// Record a second attempt for the same request and verify lookup by request_id.
@@ -916,6 +948,39 @@ func testInferenceRouteStore(t *testing.T, s Store) {
 	}
 	if all[1].Attempt != 1 {
 		t.Errorf("second record attempt = %d, want 1", all[1].Attempt)
+	}
+
+	queued := &InferenceRouteRecord{
+		RequestID: "req-queued",
+		Attempt:   0,
+		Model:     rec.Model,
+		Outcome:   "queued",
+	}
+	if err := s.RecordInferenceRoute(queued); err != nil {
+		t.Fatalf("RecordInferenceRoute queued: %v", err)
+	}
+	queuedSelected := *queued
+	queuedSelected.ProviderID = "prov-queued"
+	queuedSelected.Outcome = "selected"
+	queuedSelected.ProviderStatus = "serving"
+	queuedSelected.HardwareChip = "Apple M4 Max"
+	if err := s.RecordInferenceRoute(&queuedSelected); err != nil {
+		t.Fatalf("RecordInferenceRoute queued selected refresh: %v", err)
+	}
+	all = s.InferenceRouteRecordsSince(time.Time{})
+	var queuedGot *InferenceRouteRecord
+	queuedCount := 0
+	for i := range all {
+		if all[i].RequestID == "req-queued" {
+			queuedCount++
+			queuedGot = &all[i]
+		}
+	}
+	if queuedCount != 1 || queuedGot == nil {
+		t.Fatalf("queued route rows = %d, want 1", queuedCount)
+	}
+	if queuedGot.ProviderID != "prov-queued" || queuedGot.Outcome != "selected" || queuedGot.HardwareChip != "Apple M4 Max" {
+		t.Fatalf("queued route snapshot was not refreshed with serving provider: %+v", queuedGot)
 	}
 
 	// Updating a non-existent attempt is best-effort and returns no error.

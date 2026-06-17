@@ -270,6 +270,21 @@ func (t *codeAttestThrottle) clearChallengeIf(seKey, nonce string) {
 	t.mu.Unlock()
 }
 
+// clearChallenge unconditionally drops any outstanding challenge for a device.
+// Used on APNs token rotation so a stale reply to the OLD-token challenge can
+// never complete the forced re-challenge: if the fresh push is delayed or fails,
+// there is simply no outstanding nonce to match (fail-closed), rather than the
+// pre-rotation nonce remaining answerable. The subsequent fresh push records its
+// own nonce, so this never clobbers the new challenge (it runs before the push).
+func (t *codeAttestThrottle) clearChallenge(seKey string) {
+	if seKey == "" {
+		return
+	}
+	t.mu.Lock()
+	delete(t.outstanding, seKey)
+	t.mu.Unlock()
+}
+
 // SeedCodeAttestCache wires the store into the code-identity reuse cache and
 // seeds it from persisted records at startup (W5 Fix 2). This is what makes the
 // reuse cache survive a coordinator restart / blue-green deploy, so a fresh

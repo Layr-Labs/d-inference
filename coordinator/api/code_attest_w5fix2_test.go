@@ -222,6 +222,26 @@ func TestRearmChangedTokenDeletesPersistedReuse(t *testing.T) {
 	}
 }
 
+// TestClearChallengeDropsOutstanding proves the Codex #1 hardening: clearing the
+// outstanding challenge (done on APNs token rotation) drops it unconditionally,
+// so a stale reply to the pre-rotation challenge can never complete the forced
+// re-challenge — even before the fresh push records a new nonce.
+func TestClearChallengeDropsOutstanding(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+
+	const seKey = "se-key-1"
+	srv.codeAttestThrottle.recordChallenge(seKey, "old-nonce")
+	if _, ok := srv.codeAttestThrottle.outstandingChallenge(seKey); !ok {
+		t.Fatal("precondition: a recorded challenge must be outstanding")
+	}
+	srv.codeAttestThrottle.clearChallenge(seKey)
+	if _, ok := srv.codeAttestThrottle.outstandingChallenge(seKey); ok {
+		t.Fatal("clearChallenge must drop the outstanding challenge so a stale reply can't attest")
+	}
+}
+
 // TestSeededReuseSkipsRePush proves W5 Fix 2 (2b): a persisted attestation seeded
 // at startup (i.e. after a deploy) lets a fresh connection from the same device +
 // version inherit the proof WITHOUT a push — avoiding the post-deploy push storm.

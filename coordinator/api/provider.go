@@ -648,8 +648,11 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 		// No bypass: drop the cached reuse record (in-memory) AND the persisted
 		// row, so neither this connection nor a post-restart reseed can short-
 		// circuit on a prior (old-token) proof — the loop must run a REAL
-		// challenge against the new token (Codex #6).
+		// challenge against the new token (Codex #6). Also drop any outstanding
+		// old-token challenge so a stale reply to it can't complete the rotation
+		// if the fresh push is delayed/fails (Codex #1, fail-closed).
 		s.codeAttestThrottle.invalidateReuse(seKey)
+		s.codeAttestThrottle.clearChallenge(seKey)
 		s.invalidatePersistedCodeAttestation(seKey)
 		s.codeAttestMetric("rearm_token_changed")
 		s.logger.Info("code-attest: APNs device token changed; forcing re-challenge (no reuse bypass)",

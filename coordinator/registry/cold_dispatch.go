@@ -110,9 +110,13 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 		}
 	}
 
-	// Idle enough to evict+load. A provider with in-flight work cannot evict its
-	// active model, so TriggerModelSwaps would never pick it.
-	if p.pendingCount() != 0 {
+	// Idle enough to evict+load. Mirror TriggerModelSwaps' planner gate EXACTLY
+	// (coordinator pending AND backend slot busy — warm_pool_controller.go:499);
+	// otherwise a provider with an empty coordinator-pending map but a running/
+	// waiting backend slot passes here, the request is enqueued, and the planner
+	// then refuses to load it — so it just waits out the 120s queue timeout
+	// instead of failing fast (Codex #3).
+	if p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {
 		return false
 	}
 

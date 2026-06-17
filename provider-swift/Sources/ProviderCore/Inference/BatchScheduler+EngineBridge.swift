@@ -22,6 +22,26 @@ import MLXLMCommon
 
 extension BatchScheduler {
 
+    // MARK: - Prefill-EWMA sampling bounds
+    //
+    // `observed_prefill_tps` feeds the coordinator's routing-v2 TTFT estimate, so
+    // a single bogus sample skews routing for later cold prompts. We therefore
+    // sample ONLY a genuine cold prefill and drop implausible measurements.
+
+    /// Minimum admitted→first-token window (seconds) for a prefill sample to
+    /// count. A prefix-cache HIT restores the KV and emits the first token almost
+    /// instantly, collapsing the window toward ~0; dividing a positive prompt
+    /// length by a near-zero denominator produced the "billions of tok/s" readings
+    /// the coordinator clamped to 5000. 1ms is far below any real cold prefill yet
+    /// rejects that near-zero-window artifact.
+    static let minPrefillWindowSeconds = 0.001
+
+    /// Upper plausibility bound (tok/s) for a prefill sample. Set above the
+    /// coordinator's 5000 clamp so a legitimately fast cold prefill still
+    /// registers, while clearly impossible rates are dropped (defense in depth
+    /// behind the cold-only + window-floor guards).
+    static let maxPlausiblePrefillTps = 8000.0
+
     // MARK: - Bridge runner (called from `submit` in the main file)
 
     /// Spin up the per-request stream consumer that translates
@@ -232,30 +252,37 @@ extension BatchScheduler {
         }
 
         // Prefill rate: prompt tokens processed between engine admission and the
-        // first generated token. Measured with the same wall-clock methodology
-        // as the decode EWMA above — and, like decode, it reflects co-resident
-        // batch load (an OBSERVED effective rate, not an isolated kernel rate).
-        // Recorded only when a genuine prefill window exists (admitted, produced
-        // a first token, non-empty prompt, positive elapsed); otherwise omitted.
+        // first generated token, measured with the same wall-clock methodology as
+        // the decode EWMA above (an OBSERVED effective rate under co-resident batch
+        // load, not an isolated kernel rate). routing-v2 consumes this EWMA for
+        // TTFT estimates, so a single bogus sample skews TTFT for later cold
+        // prompts. Sample ONLY a genuine COLD prefill, and reject implausible ones:
+        //   * restoredPrefixTokens == 0 — a prefix-cache restore materializes the
+        //     prefix KV and emits the first token almost instantly, so the
+        //     admitted→first-token window covers only the uncached suffix and is
+        //     NOT representative of a cold prefill. The near-zero window also
+        //     collapses the denominator and explodes tps to billions (which the
+        //     coordinator then clamps to 5000, corrupting its TTFT estimate). Skip
+        //     cache hits entirely rather than recording an unrepresentative rate.
+        //   * prefilledTokens > 0 — need a real prompt to have prefilled.
+        //   * prefillSeconds >= minPrefillWindowSeconds — floor the denominator so
+        //     a near-zero window can't manufacture an absurd rate.
+        //   * tps finite and <= maxPlausiblePrefillTps — defense in depth: drop any
+        //     surviving implausible sample instead of poisoning the EWMA.
         if success,
             let admittedAt = bridge.admittedAt,
             let firstTokenAt = bridge.firstTokenAt,
-            finalPrompt > 0 {
+            bridge.restoredPrefixTokens == 0 {
             let prefillElapsed = firstTokenAt - admittedAt
             let prefillSeconds = Double(prefillElapsed.components.seconds)
                 + Double(prefillElapsed.components.attoseconds) / 1e18
-            // Exclude any prefix restored from the checkpoint cache: the
-            // admitted→first-token window only covers prefilling the UNCACHED
-            // suffix, so charging the FULL prompt would inflate the rate far above
-            // the true cold-prefill speed. Divide by the tokens ACTUALLY prefilled
-            // so `observed_prefill_tps` stays representative of a cold prefill —
-            // routing-v2 consumes this EWMA for TTFT estimates, and an inflated
-            // value makes the coordinator under-estimate TTFT for later cold large
-            // prompts (`restoredPrefixTokens` is 0 on a cold prefill, so this is a
-            // no-op for the non-cached path).
+            // Cold prefill ⇒ restoredPrefixTokens == 0, so this is the full prompt.
             let prefilledTokens = finalPrompt - bridge.restoredPrefixTokens
-            if prefillSeconds > 0, prefilledTokens > 0 {
-                updatePrefillTpsEwma(tps: Double(prefilledTokens) / prefillSeconds)
+            if prefilledTokens > 0, prefillSeconds >= Self.minPrefillWindowSeconds {
+                let tps = Double(prefilledTokens) / prefillSeconds
+                if tps.isFinite, tps <= Self.maxPlausiblePrefillTps {
+                    updatePrefillTpsEwma(tps: tps)
+                }
             }
         }
 

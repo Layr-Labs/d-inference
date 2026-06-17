@@ -357,23 +357,19 @@ struct BatchSchedulerBudgetTests {
             "P2: queued-not-admitted bridges must NOT inflate observedBatchSize")
     }
 
-    // MARK: - Prefill EWMA excludes restored prefix (routing-v2 TTFT correctness)
+    // MARK: - Prefill EWMA samples cold prefills only (routing-v2 TTFT correctness)
 
-    /// W1 measures `observed_prefill_tps` = promptTokens / (firstToken −
-    /// admitted). When the default-on prefix cache restores a checkpoint, that
-    /// window only covers the UNCACHED suffix, so dividing the FULL prompt by it
-    /// inflates the rate far above the true cold-prefill speed. routing-v2 now
-    /// consumes this EWMA for TTFT estimates, so an inflated value would make the
-    /// coordinator route later COLD large prompts as if they prefill at cached
-    /// speed (under-estimated TTFT). `recordFinish` must divide by the tokens
-    /// ACTUALLY prefilled (prompt − restored prefix).
-    @Test("recordFinish excludes restored-checkpoint prefix from the prefill EWMA")
-    func prefillEwmaExcludesRestoredPrefix() async {
-        // Identical 1-second prefill window and 1000-token prompt in both cases;
-        // explicit instants make the window deterministic (no wall-clock flake).
-        let window = Duration.seconds(1)
-
-        // Cold prefill: all 1000 tokens prefilled in 1s → ~1000 tok/s.
+    /// `observed_prefill_tps` = prefilledTokens / (firstToken − admitted) feeds
+    /// routing-v2's TTFT estimate. A prefix-cache RESTORE window is NOT
+    /// representative of a cold prefill: the engine emits the first token almost
+    /// instantly (KV already materialized), so the window covers only the uncached
+    /// suffix and the near-zero denominator explodes tps to the "billions" the
+    /// coordinator clamps to 5000. `recordFinish` must skip cache hits entirely
+    /// (cold-only) and sample only a genuine cold prefill.
+    @Test("recordFinish samples a cold prefill but skips a cache-restore window")
+    func prefillEwmaSamplesColdPrefillOnly() async {
+        // Cold prefill: all 1000 tokens prefilled in 1s → ~1000 tok/s. Explicit
+        // instants make the window deterministic (no wall-clock flake).
         let cold = BatchScheduler()
         await cold._testSeedBridge(id: "cold", promptTokens: 1000, maxTokens: 16)
         let c0 = ContinuousClock.now
@@ -382,10 +378,11 @@ struct BatchSchedulerBudgetTests {
         _ = await cold.recordFinish(
             requestId: "cold", promptTokens: 1000, completionTokens: 8, success: true)
         let coldTps = await cold.observedPrefillTpsEwma
+        let coldInitialized = await cold.prefillEwmaInitialized
 
         // Restore hit: 900 of the 1000 prompt tokens came from the checkpoint
-        // cache, so only the 100-token suffix was actually prefilled in the same
-        // 1s window → ~100 tok/s, NOT ~1000.
+        // cache, so the admitted→first-token window is unrepresentative of a cold
+        // prefill. NO sample is recorded — the EWMA stays at its 0 default.
         let restore = BatchScheduler()
         await restore._testSeedBridge(
             id: "warm", promptTokens: 1000, maxTokens: 16, restoredPrefixTokens: 900)
@@ -395,13 +392,40 @@ struct BatchSchedulerBudgetTests {
         _ = await restore.recordFinish(
             requestId: "warm", promptTokens: 1000, completionTokens: 8, success: true)
         let restoreTps = await restore.observedPrefillTpsEwma
+        let restoreInitialized = await restore.prefillEwmaInitialized
 
+        #expect(coldInitialized,
+            "cold prefill must record a prefill-EWMA sample")
         #expect(abs(coldTps - 1000) < 1.0,
             "cold prefill: full 1000-token prompt over 1s ≈ 1000 tok/s (got \(coldTps))")
-        #expect(abs(restoreTps - 100) < 1.0,
-            "restore: only the 100 uncached suffix tokens count ≈ 100 tok/s (got \(restoreTps))")
-        #expect(restoreTps < coldTps / 2,
-            "restored prefix must NOT inflate the prefill EWMA toward the cold rate")
+        #expect(!restoreInitialized,
+            "a prefix-cache restore must NOT record a prefill-EWMA sample")
+        #expect(restoreTps == 0,
+            "restore window is unrepresentative; EWMA stays at its 0 default (got \(restoreTps))")
+    }
+
+    /// The production bug: on a near-instant first token the admitted→first-token
+    /// window collapses toward ~0, so prefilledTokens / ~0 explodes to billions of
+    /// tok/s (which the coordinator clamps to 5000, corrupting its TTFT estimate).
+    /// A sub-millisecond window must be rejected even on the cold path
+    /// (restoredPrefixTokens == 0) so the EWMA is never poisoned.
+    @Test("recordFinish rejects a sub-millisecond prefill window (overflow guard)")
+    func prefillEwmaRejectsNearZeroWindow() async {
+        let s = BatchScheduler()
+        await s._testSeedBridge(id: "tiny", promptTokens: 1000, maxTokens: 16)
+        let t0 = ContinuousClock.now
+        await s.recordAdmission(requestId: "tiny", at: t0)
+        // 50µs window: well under the 1ms floor. Pre-fix this yielded ~2e7 tok/s.
+        await s.recordFirstToken(requestId: "tiny", at: t0.advanced(by: .microseconds(50)))
+        _ = await s.recordFinish(
+            requestId: "tiny", promptTokens: 1000, completionTokens: 8, success: true)
+        let tps = await s.observedPrefillTpsEwma
+        let initialized = await s.prefillEwmaInitialized
+
+        #expect(!initialized,
+            "a sub-millisecond prefill window must NOT record a sample")
+        #expect(tps == 0,
+            "near-zero window must not poison the EWMA; stays at 0 default (got \(tps))")
     }
 
     // MARK: - Billing-zero leak: terminal must not zero observed tokens

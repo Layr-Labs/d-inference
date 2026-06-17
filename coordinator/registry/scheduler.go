@@ -857,35 +857,38 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	kvCacheGB := float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
 	required += kvCacheGB
 
-	// When the model is available on disk but not currently loaded, the
-	// provider will LRU-evict idle models to make room, so we check the model
-	// fits in REAL FREE memory rather than requiring it to fit alongside the
-	// currently-loaded models. The provider handles the swap autonomously.
+	// When the model is available on disk but not currently loaded AND the
+	// provider has no in-flight requests (totalPending == 0), every resident
+	// model is idle and the provider will LRU-evict it to make room. Idle
+	// weights are therefore reclaimable, so we do NOT count them against the
+	// load: the model only needs to fit in (total - OS reserve), plus the
+	// activation-reserve headroom the provider's ModelLoadAdmission gate also
+	// requires on top of weights + KV. (An earlier version subtracted
+	// gpuMemoryActiveGB here, which wrongly rejected cold loads onto boxes whose
+	// only resident models were idle and evictable — Codex #389 P2.)
 	//
-	// However, if the provider has in-flight requests (totalPending > 0), it
-	// cannot evict the serving model, so we fall through to the standard
-	// free-memory check which requires room alongside active models.
+	// If the provider DOES have in-flight requests (totalPending > 0) it cannot
+	// evict the serving model, so we fall through to the standard free-memory
+	// check below, which counts active memory as unavailable.
 	//
 	// Source of truth: the provider's ModelLoadAdmission gate (provider-swift)
 	// admits a load only when weights + activation reserve + min serveable KV
-	// fit in its real free memory (total - resident, clamped to OS-available,
-	// under the 90% unified cap). We mirror that here CONSERVATIVELY: real free
-	// ≈ total - gpuMemoryActiveGB - coldLoadOSReserveGB, and required = weights
-	// + KV + activationReserveGB. GPU *cache* (gpuMemoryCacheGB) is reclaimable,
-	// so it is intentionally NOT subtracted — it counts as free. This is
-	// strictly safer than the previous check (which compared against TOTAL
-	// memory, assuming the provider would evict everything down to bare OS
-	// overhead): for any gpuMemoryActiveGB >= 0, this admits a subset of what
-	// the old check admitted, so it never over-admits a load the provider would
-	// reject (the meltdown's OOM-load mechanism).
+	// fit in its real free memory (clamped to OS-available, under the 90%
+	// unified cap). We mirror the activation-reserve headroom here. This stays
+	// strictly safer than the old check, which used the same TOTAL basis but
+	// WITHOUT the activation reserve: `required` is larger, so we admit a strict
+	// subset and never over-admit relative to the pre-fix behavior.
 	//
-	// TODO(routing): the cleanest long-term fix is for the provider to REPORT
-	// its own availableMemoryGb()/freeForLoadGb in BackendCapacity so the
-	// coordinator consumes a single source of truth instead of re-deriving free
-	// memory here. Until then this conservative mirror prevents over-admission.
+	// Known residual (Codex #389 P2): for a near-limit large model with tiny
+	// max_tokens this can still admit a load the provider's cap-aware reserve
+	// rejects (we use the request KV + a flat OS reserve, not the provider's
+	// max(configReserve, physical-hardCap) + min serveable KV). The clean fix is
+	// for the provider to REPORT its own freeForLoadGb in BackendCapacity so the
+	// coordinator consumes one source of truth instead of re-deriving it here.
 	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
-		realFree := snap.totalMemoryGB - snap.gpuMemoryActiveGB - coldLoadOSReserveGB
-		return required+activationReserveGB <= realFree
+		// Idle resident models are evictable, so they count as free.
+		evictableFree := snap.totalMemoryGB - coldLoadOSReserveGB
+		return required+activationReserveGB <= evictableFree
 	}
 
 	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB

@@ -1618,12 +1618,14 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 // Cold load (model on disk, not loaded, no in-flight requests): admission must
 // use REAL FREE memory, not TOTAL. With other models already resident, the old
 // TOTAL-based check over-admitted and the provider OOM-rejected the load.
-func TestFreeMemoryAdmitsColdLoadRejectsOverActiveMemory(t *testing.T) {
-	// 64GB box, 45GB already resident in OTHER models, requested model NOT
-	// loaded, 16GB cold load:
-	//   old (TOTAL):     16 + ~0 KV + 4 = 20 <= 64           → ADMIT (then OOM)
-	//   new (real-free): realFree = 64 - 45 - 4 = 15;
-	//                    required = 16 + ~0 KV + 3 = 19 > 15  → REJECT
+// Idle resident models are evictable when the provider has no in-flight work
+// (totalPending == 0), so they must NOT count against a cold load. (Codex #389
+// P2: an earlier version subtracted gpuMemoryActiveGB here, wrongly rejecting a
+// load onto a box whose only resident model was idle and would be evicted.)
+func TestFreeMemoryAdmitsColdLoadIgnoresEvictableIdleMemory(t *testing.T) {
+	// 64GB box, 45GB idle resident model, requested model NOT loaded, no pending
+	// work, 16GB cold load: evictableFree = 64 - 4 = 60; required = 16 + ~0 KV
+	// + 3 = 19 <= 60 → ADMIT (the provider evicts the idle 45GB model and loads).
 	snap := routingSnapshot{
 		modelSizeGB:       16,
 		totalMemoryGB:     64,
@@ -1632,8 +1634,27 @@ func TestFreeMemoryAdmitsColdLoadRejectsOverActiveMemory(t *testing.T) {
 		modelLoaded:       false,
 		totalPending:      0,
 	}
+	if !freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("cold load must be admitted: idle 45GB model is evictable, 16GB fits in ~60GB")
+	}
+}
+
+// A provider WITH in-flight work cannot evict its serving model, so active
+// memory counts as unavailable — that is the standard (non-cold) branch.
+func TestFreeMemoryAdmitsServingProviderCountsActiveMemory(t *testing.T) {
+	// 64GB box, 52GB active, in-flight work (totalPending > 0), requested 16GB
+	// model not loaded: free = 64 - 52 = 12 < required 16 → REJECT (the serving
+	// model can't be evicted, so the cold-load eviction assumption doesn't hold).
+	snap := routingSnapshot{
+		modelSizeGB:       16,
+		totalMemoryGB:     64,
+		gpuMemoryActiveGB: 52,
+		availableOnDisk:   true,
+		modelLoaded:       false,
+		totalPending:      1,
+	}
 	if freeMemoryAdmits(snap, 100, 256) {
-		t.Fatal("cold load must be rejected: ~15GB real free, model needs ~19GB")
+		t.Fatal("serving provider must reject: only 12GB free, model needs 16GB, can't evict")
 	}
 }
 

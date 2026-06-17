@@ -26,6 +26,11 @@ public actor IOReportSampler {
 
     public private(set) var available = false
 
+    // The dlopen handle + IOReport subscription are held for the lifetime of the
+    // sampler. There is exactly one sampler per daemon process (and one per
+    // short-lived `darkbloom energy` run), so they are intentionally not torn
+    // down — the OS reclaims them at process exit. The ARC-managed CF sample
+    // dictionaries are released normally as they are replaced each tick.
     private var handle: UnsafeMutableRawPointer?
     private var subscription: UnsafeMutableRawPointer?
     private var sampleChannels: CFMutableDictionary?

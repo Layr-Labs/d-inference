@@ -739,8 +739,13 @@ type RejectionRecord struct {
 // ProviderEnergyRecord is a periodic snapshot of a provider node's cumulative
 // energy ledger (measured via IOReport on the provider). The joule fields are
 // cumulative since the provider process started; diffing consecutive snapshots
-// for the same provider session yields interval energy per operation, which is
-// how we analyze where energy goes. Contains no prompt or response content.
+// yields interval energy per operation, which is how we analyze where energy
+// goes. Contains no prompt or response content.
+//
+// ProviderID is the per-connection session id (a provider process restart =
+// new connection = new ProviderID), so diffing within a single ProviderID never
+// straddles a counter reset. SerialNumber is the stable machine identity for
+// cross-session rollups.
 type ProviderEnergyRecord struct {
 	ProviderID   string `json:"provider_id"`
 	AccountID    string `json:"account_id,omitempty"`

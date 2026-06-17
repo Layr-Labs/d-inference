@@ -1742,7 +1742,7 @@ func (s *PostgresStore) RecordProviderEnergy(record *ProviderEnergyRecord) error
 		createdAt = time.Now().UTC()
 	}
 
-	_, _ = s.pool.Exec(ctx,
+	_, err := s.pool.Exec(ctx,
 		`INSERT INTO provider_energy (
 			provider_id, account_id, serial_number, model, chip_family, chip_tier, gpu_cores,
 			current_watts, idle_watts,
@@ -1765,7 +1765,7 @@ func (s *PostgresStore) RecordProviderEnergy(record *ProviderEnergyRecord) error
 		record.PrefillTokens, record.DecodeTokens, record.WarmSeconds, record.ModelLoads,
 		record.JPerPrefillToken, record.JPerDecodeToken, createdAt,
 	)
-	return nil
+	return err
 }
 
 // ProviderEnergySince returns energy snapshots created at or after the given

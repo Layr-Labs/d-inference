@@ -1,17 +1,21 @@
 import Foundation
 
-/// Cumulative activity counters read once per tick. The accountant diffs them
-/// internally to get per-tick prefill/decode token deltas, so the caller only
-/// needs to expose monotonic totals.
+/// Cumulative activity counters read once per tick. The accountant diffs the
+/// token totals internally to get per-tick deltas, so the caller only needs to
+/// expose monotonic totals plus the live flags. `decodeTokensTotal` MUST be a
+/// live streaming counter (incremented as tokens are emitted), not an
+/// end-of-request total, or attribution degenerates.
 public struct EnergyActivityCounters: Sendable, Equatable {
     public var decodeTokensTotal: UInt64
     public var prefillTokensTotal: UInt64
+    public var inferenceActive: Bool
     public var modelResident: Bool
     public var loading: Bool
 
-    public init(decodeTokensTotal: UInt64, prefillTokensTotal: UInt64, modelResident: Bool, loading: Bool) {
+    public init(decodeTokensTotal: UInt64, prefillTokensTotal: UInt64, inferenceActive: Bool, modelResident: Bool, loading: Bool) {
         self.decodeTokensTotal = decodeTokensTotal
         self.prefillTokensTotal = prefillTokensTotal
+        self.inferenceActive = inferenceActive
         self.modelResident = modelResident
         self.loading = loading
     }
@@ -31,6 +35,7 @@ public actor EnergyAccountant {
     private var ledger = EnergyLedger()
     private var prevDecode: UInt64 = 0
     private var prevPrefill: UInt64 = 0
+    private var wasLoading = false
     private var loopTask: Task<Void, Never>?
 
     public init(sampler: IOReportSampler = IOReportSampler()) {
@@ -39,7 +44,10 @@ public actor EnergyAccountant {
 
     public func available() async -> Bool { await sampler.available }
 
-    /// Start the background accounting loop. Idempotent.
+    /// Start the background accounting loop. Idempotent. Call this when the
+    /// session starts (not on the first heartbeat) so the first interval after
+    /// registration — coordinator preload, cold model load, early inference — is
+    /// sampled rather than skipped.
     public func start(intervalMs: UInt64 = 500, counters: @escaping CountersProvider) {
         guard loopTask == nil else { return }
         loopTask = Task { [weak self] in
@@ -66,14 +74,18 @@ public actor EnergyAccountant {
         let dPrefill = counters.prefillTokensTotal >= prevPrefill ? counters.prefillTokensTotal - prevPrefill : 0
         prevDecode = counters.decodeTokensTotal
         prevPrefill = counters.prefillTokensTotal
+
+        // Count a model load on the rising edge of `loading`.
+        if counters.loading && !wasLoading { ledger.noteModelLoad() }
+        wasLoading = counters.loading
+
         ledger.record(sample, activity: EnergyActivity(
             prefillTokens: Double(dPrefill),
             decodeTokens: Double(dDecode),
+            inferenceActive: counters.inferenceActive,
             modelResident: counters.modelResident,
             loading: counters.loading))
     }
-
-    public func noteModelLoad() { ledger.noteModelLoad() }
 
     public func snapshot() -> EnergyLedgerSnapshot { ledger.snapshot() }
 }

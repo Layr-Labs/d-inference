@@ -925,6 +925,12 @@ func (s *MemoryStore) RecordProviderEnergy(record *ProviderEnergyRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.providerEnergy = append(s.providerEnergy, rec)
+	// Bound the in-memory series (the in-memory store is the production default).
+	// Reads are already capped at maxTelemetryReadRows; trim the oldest beyond a
+	// generous multiple so a long-lived process can't grow it without bound.
+	if max := maxTelemetryReadRows * 4; len(s.providerEnergy) > max {
+		s.providerEnergy = s.providerEnergy[len(s.providerEnergy)-max:]
+	}
 	return nil
 }
 

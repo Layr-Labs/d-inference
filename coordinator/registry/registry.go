@@ -2422,6 +2422,21 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	if v, changed := clampNonNeg(msg.SystemMetrics.CPUUsage, 1.0); changed {
 		msg.SystemMetrics.CPUUsage = v
 	}
+	// Sanitize provider-reported power: out-of-range (negative or absurdly high)
+	// readings are dropped to 0 so /v1/stats falls back to the chip estimate and
+	// a bogus provider can't skew the public network-power figure. Cumulative
+	// joules are left as-is (analysis-only; not used for routing or public stats).
+	if msg.SystemMetrics.PowerWatts < 0 || msg.SystemMetrics.PowerWatts > MaxReasonablePowerWatts {
+		msg.SystemMetrics.PowerWatts = 0
+	}
+	if msg.Energy != nil {
+		if msg.Energy.CurrentWatts < 0 || msg.Energy.CurrentWatts > MaxReasonablePowerWatts {
+			msg.Energy.CurrentWatts = 0
+		}
+		if msg.Energy.IdleWatts < 0 || msg.Energy.IdleWatts > MaxReasonablePowerWatts {
+			msg.Energy.IdleWatts = 0
+		}
+	}
 
 	p.mu.Lock()
 	now := time.Now()

@@ -1348,6 +1348,12 @@ public actor ProviderLoop {
                         }
                         if frameHadContent {
                             contentFrameCount += 1
+                            // Live decode-token progress for energy accounting
+                            // (~one token per content frame). Unlike the billing
+                            // token count (settled at completion), this advances
+                            // every tick so the accountant attributes decode
+                            // energy to the ticks where it was actually spent.
+                            providerStats.addEnergyDecodeTokens(1)
                         }
                         if let usage = parsed.usage {
                             promptTokens = usage.promptTokens
@@ -1467,8 +1473,11 @@ public actor ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
-            // Prefill tokens (counted at completion alongside decode tokens) feed
-            // the energy accountant's J/prefill-token regression.
+            // Prefill tokens are credited here at completion (the relay only
+            // learns prompt_tokens from the final usage frame). They are the
+            // DENOMINATOR for J/prefill-token; the prefill ENERGY itself is
+            // bucketed live by the accountant on active ticks that produce no
+            // output (the prefill phase), so the average ratio stays correct.
             providerStats.addPromptTokensPrefilled(UInt64(max(promptTokens, 0)))
 
             // Update state

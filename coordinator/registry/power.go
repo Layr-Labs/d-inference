@@ -2,6 +2,12 @@ package registry
 
 import "strings"
 
+// MaxReasonablePowerWatts is an upper bound on a single Mac's plausible
+// wall/SoC power draw. Provider-reported power above this (or below zero) is
+// treated as bogus — a buggy or malicious provider must not be able to inflate
+// the public network-power figure — and callers fall back to the chip estimate.
+const MaxReasonablePowerWatts = 2000.0
+
 // machineWatts maps a normalized (chip family, tier) pair to a realistic
 // maximum sustained wall-socket power draw under a compute-intensive
 // (inference) load, in watts.

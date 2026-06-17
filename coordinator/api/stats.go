@@ -109,10 +109,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		if p.PrivateOnly {
 			return
 		}
-		// Prefer the provider's measured SoC power (IOReport) when reported;
-		// fall back to the static chip estimate otherwise. Same observed→estimate
-		// precedence pattern used for decode TPS.
-		if pw := p.SystemMetrics.PowerWatts; pw > 0 {
+		// Prefer the provider's measured SoC power (IOReport) when reported and
+		// within a sane bound; fall back to the static chip estimate otherwise.
+		// The bound stops a bogus/malicious heartbeat from inflating the public
+		// figure. Same observed→estimate precedence pattern used for decode TPS.
+		if pw := p.SystemMetrics.PowerWatts; pw > 0 && pw <= registry.MaxReasonablePowerWatts {
 			activePowerWatts += pw
 		} else {
 			activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)

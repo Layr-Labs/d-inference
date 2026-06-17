@@ -2155,6 +2155,35 @@ func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 	}
 }
 
+// TestTTFTSoftGateDoesNotShedAtDispatch is the regression for the Codex P1: in
+// the default SOFT gate, an over-deadline request must not be rejected as
+// ttft_too_slow — not at the preflight AND not (the bug) at dispatch via a
+// non-zero pr.MaxTTFTMs causing ReserveProviderEx to drop every candidate. With
+// a single eligible provider and no capacity pressure, the only possible 429 is
+// the TTFT shed, so asserting "not 429" pins the fix. (The request can't truly
+// stream over a nil test conn; it just must never be ttft-rejected.)
+func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
+	srv, _ := testServer(t) // default: soft gate (ttftHardReject=false)
+	model := "soft-serve-ttft-model"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	p := registerBuildsProvider(srv, "slow-prefill-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 0.2 // ~5s prefill even for a tiny prompt => TTFT estimate >> deadline
+	p.Mu().Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		strings.ReplaceAll(`{"model":"MODEL","messages":[{"role":"user","content":"hello"}],"max_tokens":16}`, "MODEL", model)))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code == http.StatusTooManyRequests {
+		t.Fatalf("soft gate shed an over-deadline request with 429 (P1 regression); body=%s", w.Body.String())
+	}
+}
+
 func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	srv, _ := testServer(t)
 	publicModel := "public-ttft-alias"

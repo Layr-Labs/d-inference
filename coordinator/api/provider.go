@@ -565,7 +565,6 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 				s.codeAttestMetric("timeout")
 				s.logger.Warn("code-attest: no valid reply within the push budget; retrying",
 					"provider_id", providerID, "attempt", pushes)
-				prevSent = false
 			}
 			if pushes >= s.codeAttestThrottle.maxAttempts {
 				s.codeAttestMetric("max_attempts")

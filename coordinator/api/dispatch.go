@@ -751,6 +751,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// pr.ReservedMicroUSD was already set in the struct literal and may
 		// have been increased by reserveAdditionalForProvider. Don't overwrite.
 		data, _ := json.Marshal(wireMsg)
+		d.pr.Timing.DispatchedAt = time.Now()
 		if err := d.provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
@@ -760,7 +761,6 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
 			return outcomeRetry
 		}
-		d.pr.Timing.DispatchedAt = time.Now()
 	}
 	return outcomeProceed
 }

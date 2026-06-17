@@ -655,6 +655,9 @@ func (s *Server) dispatchOneProvider(
 		cleanupPending()
 		return nil, nil, decision, "failed to marshal request", http.StatusInternalServerError
 	}
+	if pr.Timing != nil {
+		pr.Timing.DispatchedAt = time.Now()
+	}
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		refundExtra()
 		cleanupPending()
@@ -662,9 +665,6 @@ func (s *Server) dispatchOneProvider(
 		return nil, nil, decision, "failed to send request to provider", http.StatusBadGateway
 	}
 	pendingCleanup = false
-	if pr.Timing != nil {
-		pr.Timing.DispatchedAt = time.Now()
-	}
 
 	return provider, pr, decision, "", 0
 }
@@ -5214,6 +5214,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	data, _ := json.Marshal(wireMsg)
+	timing.DispatchedAt = time.Now()
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		cleanupPending()
 		refundExtra()
@@ -5222,7 +5223,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return
 	}
-	timing.DispatchedAt = time.Now()
 	pendingCleanup = false
 
 	s.logger.Info("inference request dispatched",

@@ -180,6 +180,40 @@ import Testing
     #expect(servingObject["warm_models"] as? [String] == ["model-a"])
 }
 
+@Test func coordinatorHeartbeatCarriesAPNsTokenForRearm() throws {
+    // W5 Fix 2: the heartbeat carries the APNs device token so the coordinator can
+    // re-arm a code-identity challenge WITHOUT a reconnect.
+    let withToken = CoordinatorClientCodec.heartbeatMessage(
+        status: .idle,
+        activeModel: nil,
+        warmModels: [],
+        stats: ProviderStats(requestsServed: 0, tokensGenerated: 0),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
+        backendCapacity: nil,
+        apnsDeviceToken: "tok-late",
+        apnsEnvironment: "production"
+    )
+    let object = try clientJSONObject(try ProviderProtocolCodec.encodeProviderMessage(withToken))
+    #expect(object["apns_device_token"] as? String == "tok-late")
+    #expect(object["apns_environment"] as? String == "production")
+
+    // Token-less providers keep the wire shape unchanged (fields omitted).
+    let noToken = CoordinatorClientCodec.heartbeatMessage(
+        status: .idle,
+        activeModel: nil,
+        warmModels: [],
+        stats: ProviderStats(requestsServed: 0, tokensGenerated: 0),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
+        backendCapacity: nil
+    )
+    let noTokenJSON = String(
+        data: try ProviderProtocolCodec.encodeProviderMessage(noToken),
+        encoding: .utf8
+    ) ?? ""
+    #expect(!noTokenJSON.contains("apns_device_token"))
+    #expect(!noTokenJSON.contains("apns_environment"))
+}
+
 @Test func coordinatorIncomingMessagesDecodeForDispatch() throws {
     let challenge = try CoordinatorClientCodec.decodeIncomingMessage(
         from: #"{"type":"attestation_challenge","nonce":"bm9uY2U=","timestamp":"2026-04-03T12:00:00Z"}"#

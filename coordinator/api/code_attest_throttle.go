@@ -1,10 +1,26 @@
 package api
 
 import (
+	"context"
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// codeAttestStore is the minimal slice of store.Store the code-identity reuse
+// cache needs to survive coordinator restarts/blue-green deploys (W5 Fix 2).
+// store.Store satisfies it; tests can inject a fake. SECURITY: persistence is a
+// performance optimization (avoid re-pushing within the reuse window) — it is
+// NEVER consulted to grant CodeAttested. The reuse decision (reuseAttestation)
+// re-applies the version gate + freshness window to whatever was seeded, so a
+// stale/wrong-version persisted row falls through to a real challenge.
+type codeAttestStore interface {
+	ListCodeAttestations(ctx context.Context) ([]store.CodeAttestation, error)
+	UpsertCodeAttestation(ctx context.Context, rec store.CodeAttestation) error
+}
 
 // codeAttestThrottle keeps APNs code-identity pushes within Apple's background-
 // push budget, reuses a recent attestation across reconnects, and tracks the
@@ -62,6 +78,12 @@ type codeAttestThrottle struct {
 	maxAttempts int
 	now         func() time.Time
 	jitter      func(max time.Duration) time.Duration
+
+	// store persists the reuse cache across restarts/deploys (W5 Fix 2). nil
+	// until wired by Server.SeedCodeAttestCache at startup (and nil in unit tests
+	// that construct a bare throttle), so every persistence path is nil-safe — the
+	// in-memory reuse cache works identically with or without a store.
+	store codeAttestStore
 }
 
 type codeAttestRecord struct {
@@ -158,6 +180,52 @@ func (t *codeAttestThrottle) recordAttested(seKey, version string) {
 	t.mu.Unlock()
 }
 
+// invalidateReuse drops any cached reuse record for a device so the NEXT
+// code-identity attempt cannot be short-circuited by reuseAttestation and must
+// run a real challenge round-trip. Used when a provider's APNs device token
+// CHANGES mid-connection (W5 Fix 2): a changed token forces a re-challenge with
+// no bypass. Only the in-memory record is dropped — the persisted row (evidence
+// of a genuine prior attestation) is left intact, because across a future restart
+// the normal version+freshness gate already governs whether it may be reused.
+func (t *codeAttestThrottle) invalidateReuse(seKey string) {
+	if seKey == "" {
+		return
+	}
+	t.mu.Lock()
+	delete(t.attested, seKey)
+	t.mu.Unlock()
+}
+
+// seed loads persisted attestation records into the in-memory reuse cache at
+// startup (W5 Fix 2). It applies the SAME freshness window used on read, so only
+// rows that could still be reused are kept (an expired row would be ignored by
+// reuseAttestation anyway). It never overwrites a fresher in-memory record (a
+// device that reconnected and re-attested before seeding finished). Returns the
+// number of rows seeded. SECURITY: seeding only populates the cache that
+// reuseAttestation re-validates (version + freshness) on every read — it cannot
+// by itself grant CodeAttested, and a stale/wrong-version row still forces a real
+// challenge.
+func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	n := 0
+	for _, r := range rows {
+		if r.SEPubKey == "" {
+			continue
+		}
+		if now.Sub(r.AttestedAt) >= t.reuseWindow {
+			continue // already outside the reuse window — would never be reused
+		}
+		if cur, ok := t.attested[r.SEPubKey]; ok && !r.AttestedAt.After(cur.at) {
+			continue // keep the fresher in-memory record
+		}
+		t.attested[r.SEPubKey] = codeAttestRecord{at: r.AttestedAt, version: r.Version}
+		n++
+	}
+	return n
+}
+
 // recordChallenge stores the nonce just pushed to a device so the read-loop
 // delivery path can match the provider's reply — even one that lands on a
 // different (re)connection from the same device (Fix 1). Overwrites any prior
@@ -198,4 +266,62 @@ func (t *codeAttestThrottle) clearChallengeIf(seKey, nonce string) {
 		delete(t.outstanding, seKey)
 	}
 	t.mu.Unlock()
+}
+
+// SeedCodeAttestCache wires the store into the code-identity reuse cache and
+// seeds it from persisted records at startup (W5 Fix 2). This is what makes the
+// reuse cache survive a coordinator restart / blue-green deploy, so a fresh
+// instance does not re-push the entire fleet (against Apple's ~3/hour/device push
+// budget). Safe to call once during server setup, AFTER the store is set and the
+// attestor is wired; a nil store or nil throttle is a no-op. SECURITY: seeding
+// only repopulates the cache that reuseAttestation re-validates (same version +
+// freshness window) on every read — it cannot grant CodeAttested by itself, and a
+// stale/wrong-version persisted row still falls through to a real challenge.
+func (s *Server) SeedCodeAttestCache(ctx context.Context) {
+	if s == nil || s.codeAttestThrottle == nil || s.store == nil {
+		return
+	}
+	// Wire the write-through path so future successful round-trips are persisted.
+	s.codeAttestThrottle.store = s.store
+
+	rows, err := s.store.ListCodeAttestations(ctx)
+	if err != nil {
+		s.logger.Warn("code-attest: failed to seed reuse cache from store", "error", err)
+		return
+	}
+	n := s.codeAttestThrottle.seed(rows)
+	if n > 0 {
+		s.logger.Info("code-attest: seeded reuse cache from persisted records (survives deploys)", "records", n)
+	}
+}
+
+// persistCodeAttestation best-effort writes a successful code-identity round-trip
+// to the store so it survives a coordinator restart/deploy (W5 Fix 2). It mirrors
+// the in-memory recordAttested and is called from the same event
+// (handleCodeAttestationResponse). Behind the store seam: a no-op until
+// SeedCodeAttestCache wires a store, so prod's current in-memory store keeps the
+// existing (process-lifetime) behavior while Postgres makes it durable. Runs off
+// the read loop (saferun.Go) so the DB write never stalls WebSocket reads.
+// SECURITY: writes only AFTER the full nonce-match + SE-signature verification —
+// never from an unverified heartbeat token.
+func (s *Server) persistCodeAttestation(seKey, version string) {
+	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
+		return
+	}
+	st := s.codeAttestThrottle.store
+	if st == nil {
+		return
+	}
+	at := s.codeAttestThrottle.now()
+	saferun.Go(s.logger, "persistCodeAttest", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := st.UpsertCodeAttestation(ctx, store.CodeAttestation{
+			SEPubKey:   seKey,
+			Version:    version,
+			AttestedAt: at,
+		}); err != nil {
+			s.logger.Warn("code-attest: failed to persist reuse record", "error", err)
+		}
+	})
 }

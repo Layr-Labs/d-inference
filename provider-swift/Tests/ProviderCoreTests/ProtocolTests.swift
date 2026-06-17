@@ -672,6 +672,36 @@ import Testing
     #expect(slot?["model_load_time_ms"] as? Int == 8200)
 }
 
+@Test func heartbeatAPNsTokenRoundTripsAndOmitsWhenAbsent() throws {
+    // W5 Fix 2: with a token, the snake_case fields are present and round-trip.
+    let withToken = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
+        apnsDeviceToken: "cb1ceb489ec9",
+        apnsEnvironment: "production"
+    ))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(withToken)
+    let object = try jsonObject(data)
+    #expect(object["apns_device_token"] as? String == "cb1ceb489ec9")
+    #expect(object["apns_environment"] as? String == "production")
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: data) == withToken)
+
+    // Without a token (steady state / legacy): both fields omitted — omitempty
+    // parity with the Go HeartbeatMessage, or the symmetry tests drift.
+    let noToken = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal)
+    ))
+    let noTokenJSON = String(
+        data: try ProviderProtocolCodec.encodeProviderMessage(noToken),
+        encoding: .utf8
+    ) ?? ""
+    #expect(!noTokenJSON.contains("apns_device_token"))
+    #expect(!noTokenJSON.contains("apns_environment"))
+}
+
 private func sampleHardware() -> HardwareInfo {
     HardwareInfo(
         machineModel: "Mac16,5",

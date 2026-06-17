@@ -368,6 +368,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
 			s.registry.Heartbeat(providerID, hbMsg)
+			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
+			// re-arms a code-identity challenge WITHOUT a reconnect.
+			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
 
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)
@@ -472,7 +475,8 @@ const CodeAttestResponseTimeout = 300 * time.Second
 // APNs code-attest funnel (push_sent → attested vs timeout/verify_failed/no_token)
 // is measurable per cohort. Outcomes: no_token, reused, push_sent,
 // push_send_failed, attested, nonce_mismatch, verify_failed, timeout,
-// max_attempts. Metadata only — no provider identifiers in the metric.
+// max_attempts, rearm_token_arrived, rearm_token_changed (W5 Fix 2 heartbeat
+// re-arm). Metadata only — no provider identifiers in the metric.
 func (s *Server) codeAttestMetric(outcome string) {
 	s.ddIncr("code_attest", []string{"outcome:" + outcome})
 	s.metrics.IncCounter("code_attest_total", MetricLabel{"outcome", outcome})
@@ -582,6 +586,81 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		case <-time.After(s.codeAttestThrottle.retryDelay()):
 		}
 	}
+}
+
+// maybeRearmCodeAttest re-arms an APNs code-identity challenge when a provider's
+// HEARTBEAT carries a device token the coordinator has not yet acted on (W5 Fix
+// 2, 2a): a headless/late-token Mac that only obtained its APNs token AFTER
+// registration, or a token that ROTATED mid-connection. The original token
+// arrives only in RegisterMessage, so without a heartbeat re-arm such providers
+// would never be challenged again short of a full reconnect.
+//
+// SECURITY — the heartbeat token NEVER grants attestation. It only updates the
+// push target so the coordinator can SEND a challenge; CodeAttested is still set
+// exclusively by handleCodeAttestationResponse after the full E_K(nonce)
+// round-trip is verified against the SE key bound at REGISTRATION. Two cases:
+//   - First token on a previously token-less provider: record the token and arm
+//     the normal loop. A genuine, same-version recent attestation may still be
+//     reused — that is a real prior proof for this Secure-Enclave identity, not
+//     the token.
+//   - CHANGED token: a material change to the device's identity-binding inputs.
+//     Reset CodeAttested (fail-closed — deroute until re-proven) AND force a real
+//     challenge with NO reuse bypass (invalidateReuse), so the new token cannot
+//     ride a proof earned under the old one.
+//
+// A token-less heartbeat is ignored (it never clears an existing token), and an
+// unchanged token is a no-op, so the steady state adds no churn or pushes.
+func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
+	if s.codeAttestor == nil || provider == nil || hb == nil {
+		return
+	}
+	newTok := hb.APNsDeviceToken
+	if newTok == "" {
+		return // no token in this heartbeat — nothing to re-arm; never clears one
+	}
+
+	provider.Mu().Lock()
+	oldTok := provider.APNsDeviceToken
+	if oldTok == newTok {
+		// Steady state: keep the environment in sync but do not re-challenge.
+		if hb.APNsEnvironment != "" {
+			provider.APNsEnvironment = hb.APNsEnvironment
+		}
+		provider.Mu().Unlock()
+		return
+	}
+	changed := oldTok != ""
+	provider.APNsDeviceToken = newTok
+	if hb.APNsEnvironment != "" {
+		provider.APNsEnvironment = hb.APNsEnvironment
+	}
+	var seKey string
+	if provider.AttestationResult != nil {
+		seKey = provider.AttestationResult.PublicKey
+	}
+	if changed {
+		// Fail-closed: a changed token must complete a fresh round-trip before it
+		// is treated as code-attested (and thus routable) again.
+		provider.CodeAttested = false
+	}
+	provider.Mu().Unlock()
+
+	if changed {
+		// No bypass: drop any cached reuse record so the loop runs a REAL
+		// challenge rather than short-circuiting on a prior (old-token) proof.
+		s.codeAttestThrottle.invalidateReuse(seKey)
+		s.codeAttestMetric("rearm_token_changed")
+		s.logger.Info("code-attest: APNs device token changed; forcing re-challenge (no reuse bypass)",
+			"provider_id", providerID)
+	} else {
+		s.codeAttestMetric("rearm_token_arrived")
+		s.logger.Info("code-attest: APNs device token arrived after registration; arming challenge (no reconnect)",
+			"provider_id", providerID)
+	}
+
+	saferun.Go(s.logger, "codeAttestRearm", func() {
+		s.codeAttestLoop(ctx, providerID, provider)
+	})
 }
 
 // sendCodeIdentityChallenge pushes one APNs code-identity challenge (v0.6.0) and
@@ -709,6 +788,10 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 
 	provider.SetCodeAttested(true)
 	s.codeAttestThrottle.recordAttested(sePubKey, version)
+	// Persist the same record so the reuse cache survives a coordinator
+	// restart/blue-green deploy (W5 Fix 2). Behind the store seam + off the read
+	// loop; written only here, after the full round-trip verified above.
+	s.persistCodeAttestation(sePubKey, version)
 	s.codeAttestThrottle.clearChallengeIf(sePubKey, ch.nonce)
 	s.codeAttestMetric("attested")
 	s.logger.Info("provider code-attested via APNs", "provider_id", providerID)

@@ -896,6 +896,18 @@ public actor CoordinatorClient {
         let capacity = state.backendCapacity
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
 
+        // Carry the APNs device token in every heartbeat (W5 Fix 2) so the
+        // coordinator can re-arm a code-identity challenge WITHOUT a reconnect when
+        // the token arrived after registration or rotated. Effective token/env
+        // mirror the registration path (a late `apnsTokenOverride` wins over the
+        // config value; env defaults to "production" when only an override exists).
+        // nil when there is no token, so token-less providers keep the wire shape
+        // unchanged (encodeIfPresent omits the fields).
+        let effectiveToken = apnsTokenOverride ?? config.apnsDeviceToken
+        let effectiveEnv: String? = apnsTokenOverride != nil
+            ? (config.apnsEnvironment ?? "production")
+            : config.apnsEnvironment
+
         let message = CoordinatorClientCodec.heartbeatMessage(
             status: isActive ? .serving : .idle,
             activeModel: activeModel,
@@ -905,7 +917,9 @@ public actor CoordinatorClient {
                 tokensGenerated: stats.tokensGenerated
             ),
             systemMetrics: metrics,
-            backendCapacity: capacity
+            backendCapacity: capacity,
+            apnsDeviceToken: effectiveToken,
+            apnsEnvironment: effectiveEnv
         )
 
         guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),

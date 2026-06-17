@@ -321,6 +321,48 @@ func TestHeartbeatMessageMarshal(t *testing.T) {
 	}
 }
 
+func TestHeartbeatMessageAPNsFieldsSymmetry(t *testing.T) {
+	// A heartbeat payload exactly as the Swift ProviderMessage encoder emits it
+	// once a late/changed APNs device token is carried in the heartbeat (W5 Fix 2).
+	swiftJSON := `{
+		"type": "heartbeat",
+		"status": "idle",
+		"active_model": null,
+		"stats": {"requests_served": 0, "tokens_generated": 0},
+		"system_metrics": {"memory_pressure": 0, "cpu_usage": 0, "thermal_state": "nominal"},
+		"apns_device_token": "cb1ceb489ec9",
+		"apns_environment": "production"
+	}`
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal([]byte(swiftJSON), &decoded); err != nil {
+		t.Fatalf("unmarshal swift payload: %v", err)
+	}
+	if decoded.APNsDeviceToken != "cb1ceb489ec9" {
+		t.Errorf("apns_device_token did not decode: %q", decoded.APNsDeviceToken)
+	}
+	if decoded.APNsEnvironment != "production" {
+		t.Errorf("apns_environment did not decode: %q", decoded.APNsEnvironment)
+	}
+
+	// Both fields are omitempty: a token-less heartbeat (the steady state, and
+	// what the Swift encoder emits when nil) must NOT emit them, or the symmetry
+	// tests on the Swift side drift.
+	data, _ := json.Marshal(HeartbeatMessage{Type: TypeHeartbeat, Status: "idle"})
+	if contains(string(data), "apns_device_token") || contains(string(data), "apns_environment") {
+		t.Errorf("empty APNs heartbeat fields should be omitted, got %s", data)
+	}
+
+	// Round-trip with values.
+	data, _ = json.Marshal(HeartbeatMessage{Type: TypeHeartbeat, Status: "idle", APNsDeviceToken: "tok", APNsEnvironment: "development"})
+	var back HeartbeatMessage
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	if back.APNsDeviceToken != "tok" || back.APNsEnvironment != "development" {
+		t.Errorf("APNs heartbeat fields round-trip failed: %+v from %s", back, data)
+	}
+}
+
 func TestBackendSlotCapacityMaxConcurrencyRoundTrip(t *testing.T) {
 	msg := HeartbeatMessage{
 		Type:   TypeHeartbeat,

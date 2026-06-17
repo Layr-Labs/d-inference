@@ -513,6 +513,11 @@ func main() {
 	// grace window to update to 0.6.0 and attest. Absent config leaves it disabled.
 	if attestor := loadAPNsAttestor(logger); attestor != nil {
 		srv.SetCodeAttestor(attestor)
+		// W5 Fix 2 (2b): seed the code-identity reuse cache from the store (and
+		// wire write-through) so a blue-green deploy / restart doesn't wipe it and
+		// re-push the whole fleet against Apple's ~3/hour/device budget. No-op with
+		// the in-memory store (prod today); durable once Postgres is the backend.
+		srv.SeedCodeAttestCache(ctx)
 		deadline, err := parseAPNsEnforceAfter()
 		if err != nil {
 			// A non-empty but malformed APNS_ENFORCE_AFTER is an operator error on a

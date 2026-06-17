@@ -518,6 +518,28 @@ type Store interface {
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
 
+	// --- APNs code-identity attestation reuse cache (survives deploys) ---
+	//
+	// These persist the in-memory reuse cache used by the APNs code-identity
+	// flow (W5 Fix 2) so a blue-green deploy / coordinator restart does not wipe
+	// it and trigger a fleet-wide push storm against Apple's ~3/hour/device push
+	// budget. SECURITY: a persisted row records that a device (keyed by its Secure
+	// Enclave public key) completed a FULL code-identity round-trip at AttestedAt
+	// running binary Version. It NEVER by itself grants CodeAttested — it only lets
+	// the coordinator skip RE-PUSHING within the same-version, bounded reuse window
+	// (api.codeAttestThrottle.reuseAttestation re-checks version + freshness on
+	// read, so a stale / wrong-version / expired persisted row falls through to a
+	// real challenge).
+
+	// ListCodeAttestations returns all persisted code-identity attestation
+	// records (for seeding the in-memory reuse cache at startup).
+	ListCodeAttestations(ctx context.Context) ([]CodeAttestation, error)
+
+	// UpsertCodeAttestation creates or updates the attestation record for a
+	// device (keyed by SEPubKey). Called after a successful code-identity
+	// round-trip; best-effort, must not block the read loop.
+	UpsertCodeAttestation(ctx context.Context, rec CodeAttestation) error
+
 	// --- Provider Log Reports ---
 
 	// StoreLogReport stores a provider log report.
@@ -1321,4 +1343,20 @@ type ReputationRecord struct {
 	AvgResponseTimeMs  int64 `json:"avg_response_time_ms"`
 	ChallengesPassed   int   `json:"challenges_passed"`
 	ChallengesFailed   int   `json:"challenges_failed"`
+}
+
+// CodeAttestation is the persistent representation of one device's most recent
+// successful APNs code-identity attestation (W5 Fix 2). It is the durable form
+// of api.codeAttestRecord. Keyed by the Secure Enclave public key — the stable
+// per-device identity that survives reconnects AND coordinator restarts.
+//
+// SECURITY: the row is written ONLY after a full, verified code-identity
+// round-trip; it is never created from an unverified heartbeat token. On read,
+// the reuse decision still re-applies the version gate and freshness window, so a
+// persisted row can only ever let the coordinator skip a redundant push — never
+// extend or fabricate trust.
+type CodeAttestation struct {
+	SEPubKey   string    `json:"se_pubkey"`   // base64 Secure Enclave P-256 public key (bound at registration)
+	Version    string    `json:"version"`     // provider binary version that attested
+	AttestedAt time.Time `json:"attested_at"` // instant of the successful round-trip
 }

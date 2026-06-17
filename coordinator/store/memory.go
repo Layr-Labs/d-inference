@@ -112,6 +112,12 @@ type MemoryStore struct {
 	reputationRecords  map[string]*ReputationRecord // providerID → reputation
 	serialToProviderID map[string]string            // serialNumber → providerID
 
+	// APNs code-identity attestation reuse cache (W5 Fix 2). Keyed by SE pubkey.
+	// In the memory store this is lost on restart (same as the in-memory throttle
+	// it backs), but the methods exist so the store seam is uniform and Postgres
+	// persists for real once it is the production backend.
+	codeAttestations map[string]CodeAttestation
+
 	// Provider log reports
 	logReports   []LogReport
 	logReportSeq int64
@@ -173,6 +179,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
+		codeAttestations:              make(map[string]CodeAttestation),
 		inferenceRoutes:               make([]InferenceRouteRecord, 0),
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
@@ -2794,6 +2801,30 @@ func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*Repu
 	}
 	cp := *rep
 	return &cp, nil
+}
+
+// --- APNs code-identity attestation reuse cache (W5 Fix 2) ---
+
+func (s *MemoryStore) ListCodeAttestations(_ context.Context) ([]CodeAttestation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]CodeAttestation, 0, len(s.codeAttestations))
+	for _, rec := range s.codeAttestations {
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec CodeAttestation) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.codeAttestations[rec.SEPubKey] = rec
+	return nil
 }
 
 // --- Provider Log Reports ---

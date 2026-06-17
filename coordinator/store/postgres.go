@@ -883,6 +883,20 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_model ON request_rejections(resolved_model, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_status ON request_rejections(http_status, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_servable ON request_rejections(could_have_served, created_at DESC) WHERE could_have_served = true`,
+
+		// APNs code-identity attestation reuse cache (W5 Fix 2). Persists the
+		// in-memory reuse cache so a blue-green deploy / restart does not wipe it
+		// and provoke a fleet-wide push storm against Apple's ~3/hour/device push
+		// budget. One row per device (keyed by Secure Enclave public key). The
+		// row records that the device completed a FULL code-identity round-trip at
+		// attested_at on binary version; the freshness + version gate is applied on
+		// READ (in the coordinator), so a stale/wrong-version row never extends
+		// trust — it only lets the coordinator skip a redundant push.
+		`CREATE TABLE IF NOT EXISTS code_attestations (
+			se_pubkey TEXT PRIMARY KEY,
+			version TEXT NOT NULL DEFAULT '',
+			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -4082,6 +4096,53 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		return nil, fmt.Errorf("store: reputation not found: %w", err)
 	}
 	return &rep, nil
+}
+
+// --- APNs code-identity attestation reuse cache (W5 Fix 2) ---
+
+func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttestation, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT se_pubkey, version, attested_at FROM code_attestations`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list code attestations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CodeAttestation
+	for rows.Next() {
+		var rec CodeAttestation
+		if err := rows.Scan(&rec.SEPubKey, &rec.Version, &rec.AttestedAt); err != nil {
+			return nil, fmt.Errorf("store: scan code attestation: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate code attestations: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttestation) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO code_attestations (se_pubkey, version, attested_at)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (se_pubkey) DO UPDATE SET
+			version = $2, attested_at = $3`,
+		rec.SEPubKey, rec.Version, rec.AttestedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert code attestation: %w", err)
+	}
+	return nil
 }
 
 // --- Provider Log Reports ---

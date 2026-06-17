@@ -1,0 +1,148 @@
+package api
+
+import (
+	"testing"
+	"time"
+)
+
+// TestCodeAttestThrottleBudgetAndReuse covers the per-device push budget + reuse
+// cache with a fake clock: background pushes are blocked within the cooldown, and a
+// recent attestation is reused only within the window and only for the same binary
+// version.
+func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newCodeAttestThrottle()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	if !th.allowPush(se, false) {
+		t.Fatal("first push should be allowed")
+	}
+	if th.reuseAttestation(se, "0.6.0") {
+		t.Fatal("no attestation yet → no reuse")
+	}
+	th.recordPush(se)
+
+	cur = cur.Add(th.backgroundPushCooldown - time.Minute) // still inside the cooldown
+	if th.allowPush(se, false) {
+		t.Fatal("a background push within the cooldown must be blocked (background-push budget)")
+	}
+	cur = cur.Add(2 * time.Minute) // now just past the cooldown
+	if !th.allowPush(se, false) {
+		t.Fatal("a background push after the cooldown should be allowed")
+	}
+
+	th.recordAttested(se, "0.6.0")
+	if !th.reuseAttestation(se, "0.6.0") {
+		t.Fatal("should reuse a fresh, same-version attestation")
+	}
+	if th.reuseAttestation(se, "0.6.1") {
+		t.Fatal("must NOT reuse across a binary version change")
+	}
+	cur = cur.Add(th.reuseWindow) // window elapsed
+	if th.reuseAttestation(se, "0.6.0") {
+		t.Fatal("reuse must expire after the window")
+	}
+}
+
+// TestCodeAttestThrottleModeAwareBudget proves Fix 3: alert pushes use a far
+// shorter per-device budget than background pushes, so a missed alert push retries
+// promptly instead of being pinned to the long background budget.
+func TestCodeAttestThrottleModeAwareBudget(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newCodeAttestThrottle()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	if th.alertPushCooldown >= th.backgroundPushCooldown {
+		t.Fatalf("alert cooldown (%s) must be shorter than background (%s)",
+			th.alertPushCooldown, th.backgroundPushCooldown)
+	}
+
+	th.recordPush(se)
+	// Just past the (short) alert cooldown but well inside the background cooldown.
+	cur = cur.Add(th.alertPushCooldown + time.Second)
+	if !th.allowPush(se, true) {
+		t.Fatal("alert push should be allowed once the short alert cooldown elapses")
+	}
+	if th.allowPush(se, false) {
+		t.Fatal("background push must still be blocked inside the long background cooldown")
+	}
+}
+
+// TestCodeAttestThrottleOutstandingChallenge covers the per-device pushed-nonce
+// tracking that lets the read-loop delivery path verify a reply on ANY connection
+// (Fix 1), bounded by a validity window consistent with the APNs expiry (Fix 5).
+func TestCodeAttestThrottleOutstandingChallenge(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newCodeAttestThrottle()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	if _, ok := th.outstandingChallenge(se); ok {
+		t.Fatal("no challenge recorded yet")
+	}
+	th.recordChallenge(se, "nonce-A")
+
+	// Within the validity window: matchable.
+	cur = cur.Add(th.challengeValidity - time.Second)
+	ch, ok := th.outstandingChallenge(se)
+	if !ok || ch.nonce != "nonce-A" {
+		t.Fatalf("challenge should still be valid within the window, got %q ok=%v", ch.nonce, ok)
+	}
+
+	// A non-matching clear must NOT drop it; a matching clear must.
+	th.clearChallengeIf(se, "nonce-WRONG")
+	if _, ok := th.outstandingChallenge(se); !ok {
+		t.Fatal("clearChallengeIf with a non-matching nonce must not drop the challenge")
+	}
+	th.clearChallengeIf(se, "nonce-A")
+	if _, ok := th.outstandingChallenge(se); ok {
+		t.Fatal("clearChallengeIf with the matching nonce must drop the challenge")
+	}
+
+	// Re-record then let it expire past the validity window (fail-closed staleness).
+	th.recordChallenge(se, "nonce-B")
+	cur = cur.Add(th.challengeValidity)
+	if _, ok := th.outstandingChallenge(se); ok {
+		t.Fatal("challenge must expire after the validity window")
+	}
+}
+
+// TestCodeAttestThrottleRetryDelayJitter proves the retry cadence is the base
+// spacing plus injected jitter, and is decoupled from (and much shorter than) the
+// push budget (Fix 3).
+func TestCodeAttestThrottleRetryDelayJitter(t *testing.T) {
+	th := newCodeAttestThrottle()
+	th.retrySpacing = 10 * time.Second
+	th.retryJitter = 4 * time.Second
+
+	th.jitter = func(time.Duration) time.Duration { return 0 }
+	if got := th.retryDelay(); got != 10*time.Second {
+		t.Fatalf("retryDelay with zero jitter = %s, want 10s", got)
+	}
+	th.jitter = func(max time.Duration) time.Duration { return max - 1 }
+	if got, want := th.retryDelay(), 10*time.Second+(4*time.Second-1); got != want {
+		t.Fatalf("retryDelay with max jitter = %s, want %s", got, want)
+	}
+	if th.retryDelay() >= th.backgroundPushCooldown {
+		t.Fatal("retry cadence must be decoupled from (and shorter than) the push budget")
+	}
+}
+
+// TestCodeAttestThrottleDefaultsConsistent pins the cross-knob invariants the
+// fixes depend on: the delivery-acceptance window is the shared reply timeout
+// (Fix 5 ordering), and the alert budget is short while background stays long.
+func TestCodeAttestThrottleDefaultsConsistent(t *testing.T) {
+	th := newCodeAttestThrottle()
+	if th.challengeValidity != CodeAttestResponseTimeout {
+		t.Fatalf("challengeValidity %s must equal CodeAttestResponseTimeout %s",
+			th.challengeValidity, CodeAttestResponseTimeout)
+	}
+	if th.retrySpacing >= th.backgroundPushCooldown {
+		t.Fatal("retry spacing must be shorter than the background push budget")
+	}
+	if th.alertPushCooldown >= th.backgroundPushCooldown {
+		t.Fatal("alert budget must be shorter than the background budget")
+	}
+}

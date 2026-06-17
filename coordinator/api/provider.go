@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
@@ -104,46 +105,6 @@ func (ct *challengeTracker) remove(nonce string) *pendingChallenge {
 	return pc
 }
 
-// codeAttestTracker tracks the outstanding APNs code-identity challenge for a
-// connection — the WebSocket return leg of the push round-trip. It is SEPARATE
-// from challengeTracker (which is the liveness/SE challenge) so the two flows
-// never collide. Keyed by the base64 nonce we pushed.
-type codeAttestTracker struct {
-	mu      sync.Mutex
-	pending map[string]chan *protocol.CodeAttestationResponseMessage
-}
-
-func newCodeAttestTracker() *codeAttestTracker {
-	return &codeAttestTracker{pending: make(map[string]chan *protocol.CodeAttestationResponseMessage)}
-}
-
-func (t *codeAttestTracker) await(nonce string) chan *protocol.CodeAttestationResponseMessage {
-	ch := make(chan *protocol.CodeAttestationResponseMessage, 1)
-	t.mu.Lock()
-	t.pending[nonce] = ch
-	t.mu.Unlock()
-	return ch
-}
-
-func (t *codeAttestTracker) cancel(nonce string) {
-	t.mu.Lock()
-	delete(t.pending, nonce)
-	t.mu.Unlock()
-}
-
-func (t *codeAttestTracker) deliver(resp *protocol.CodeAttestationResponseMessage) {
-	if resp == nil {
-		return
-	}
-	t.mu.Lock()
-	ch := t.pending[resp.Nonce]
-	delete(t.pending, resp.Nonce)
-	t.mu.Unlock()
-	if ch != nil {
-		ch <- resp
-	}
-}
-
 // handleProviderWS upgrades the connection to WebSocket and manages the
 // provider's lifecycle: registration, heartbeats, and inference responses.
 func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +137,6 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult, r *http.Request) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
-	codeTracker := newCodeAttestTracker()
 
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
@@ -394,13 +354,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// configured; otherwise the provider simply never becomes CodeAttested
 			// (fail-closed at the routing chokepoint once enforcement begins). The
 			// code-identity proof and the SIP/liveness pillar compose at the routing
-			// gate (providerSupportsPrivateTextLocked requires both). The loop
-			// re-challenges on the ticker until the provider attests, so a single
-			// dropped background push doesn't strand a capable provider past the
-			// grace deadline.
+			// gate (providerSupportsPrivateTextLocked requires both). The loop pushes
+			// (within the per-device budget) and polls; verification of the reply
+			// happens in the read-loop delivery path (handleCodeAttestationResponse),
+			// so a single dropped/late background push doesn't strand a capable
+			// provider, and a reply on a reconnected socket still attests (Fix 1).
 			if s.codeAttestor != nil {
 				saferun.Go(s.logger, "codeAttest", func() {
-					s.codeAttestLoop(loopCtx, providerID, provider, codeTracker)
+					s.codeAttestLoop(loopCtx, providerID, provider)
 				})
 			}
 
@@ -437,7 +398,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeCodeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.CodeAttestationResponseMessage)
-			codeTracker.deliver(respMsg)
+			// Verify in the delivery path (Fix 1): a reply attests THIS live
+			// connection even if the push round-trip outlived the pushing
+			// goroutine or the original connection (reconnect).
+			s.handleCodeAttestationResponse(providerID, provider, respMsg)
 
 		case protocol.TypeLoadModelStatus:
 			statusMsg := msg.Payload.(*protocol.LoadModelStatusMessage)
@@ -494,32 +458,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	}
 }
 
-// CodeAttestResponseTimeout bounds how long the coordinator waits for the
-// provider's WebSocket reply to an APNs code-identity challenge. Generous because
-// a background push may be briefly delayed; the provider's local decrypt+sign is
-// sub-second.
-const CodeAttestResponseTimeout = 90 * time.Second
+// CodeAttestResponseTimeout bounds how long the coordinator will accept a
+// provider's WebSocket reply to an APNs code-identity challenge after the push.
+// It is no longer a blocking wait (Fix 1): verification happens in the read-loop
+// delivery path (handleCodeAttestationResponse), so this is the acceptance window
+// for the pushed nonce. Kept consistent with the APNs apns-expiration window
+// (apns.challengeExpirySeconds, Fix 5) — a reply is honored for as long as the
+// push could still be delivered. It seeds codeAttestThrottle.challengeValidity.
+const CodeAttestResponseTimeout = 300 * time.Second
 
-// codeAttestLoop drives the APNs code-identity round-trip for one connection.
-//
-// Attestation is PER-CONNECTION: while a WebSocket is alive the provider's binary
-// cannot change (a binary swap restarts the process and drops the connection), so
-// one successful challenge proves the connection's code identity for its whole
-// lifetime — there is NO periodic re-challenge. That also respects Apple's
-// background-push budget (~2-3/hour/device); a 5-minute ticker (12/hour) would be
-// throttled and dropped.
-//
-// Reliability without spamming pushes:
-//   - Reuse: if this device (Secure Enclave key) attested recently with the same
-//     binary version, the new connection inherits the proof with NO push — so a
-//     brief reconnect/network blip doesn't burn a push or strand the provider.
-//   - Bounded retry: otherwise challenge once, retrying only on delivery failure,
-//     spaced by the per-device push cooldown and capped, so a dropped push heals
-//     without exceeding the budget.
-//
-// Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
-// GUI session) can never attest, so the loop exits immediately — they are derouted
-// once enforcement begins, the intended "everyone must update" outcome.
 // codeAttestMetric records a code-identity attestation outcome to both Datadog
 // (s.ddIncr) and the in-process registry exposed at /v1/admin/metrics, so the
 // APNs code-attest funnel (push_sent → attested vs timeout/verify_failed/no_token)
@@ -531,7 +478,33 @@ func (s *Server) codeAttestMetric(outcome string) {
 	s.metrics.IncCounter("code_attest_total", MetricLabel{"outcome", outcome})
 }
 
-func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider *registry.Provider, ct *codeAttestTracker) {
+// codeAttestLoop drives the APNs code-identity challenge for one connection.
+//
+// Attestation is PER-CONNECTION: while a WebSocket is alive the provider's binary
+// cannot change (a binary swap restarts the process and drops the connection), so
+// one successful challenge proves the connection's code identity for its whole
+// lifetime — there is NO periodic re-challenge. That also respects Apple's
+// background-push budget (~2-3/hour/device); a 5-minute ticker (12/hour) would be
+// throttled and dropped.
+//
+// The loop only PUSHES; it never blocks on the reply. The provider's
+// code_attestation_response is verified in the read-loop delivery path
+// (handleCodeAttestationResponse), which flips CodeAttested. So:
+//   - Reuse: if this device (Secure Enclave key) attested recently with the same
+//     binary version, the new connection inherits the proof with NO push.
+//   - Reconnect-safe (Fix 1): the pushed nonce is tracked per-device, so a reply
+//     that lands on a DIFFERENT (re)connection still attests; this loop just polls
+//     GetCodeAttested and exits. A push budget held over from the prior connection
+//     means this loop simply waits for that reply instead of burning a new push.
+//   - Bounded, jittered retry (Fix 3): if no reply lands within the budget cooldown
+//     the loop re-pushes, capped at maxAttempts. The poll/backoff cadence
+//     (retryDelay) is decoupled from the push budget; alert delivery uses a far
+//     shorter budget than background.
+//
+// Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
+// GUI session) can never attest, so the loop exits immediately — they are derouted
+// once enforcement begins, the intended "everyone must update" outcome.
+func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider *registry.Provider) {
 	if s.codeAttestor == nil || provider == nil {
 		return
 	}
@@ -562,48 +535,70 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		return
 	}
 
-	for attempt := 0; attempt < s.codeAttestThrottle.maxAttempts; attempt++ {
+	// Alert delivery is not background-throttled, so it may retry on a far shorter
+	// push budget than background (Fix 3). Detected via the attestor seam.
+	alertMode := false
+	if m, ok := s.codeAttestor.(interface{ Mode() apns.Mode }); ok {
+		alertMode = m.Mode() == apns.ModeAlert
+	}
+
+	pushes := 0
+	prevSent := false // the last push was accepted by APNs but not yet answered
+	for {
 		if provider.GetCodeAttested() {
-			return // attested for this connection; nothing more to do
+			return // attested by the delivery path; nothing more to do
 		}
 		if provider.ChallengeShouldStop() {
 			return // hard (non-recoverable) untrust — stop challenging
 		}
-		// Only push if the per-device cooldown allows it (background-push budget).
-		if s.codeAttestThrottle.allowPush(seKey) {
-			s.codeAttestThrottle.recordPush(seKey)
-			s.sendCodeIdentityChallenge(ctx, providerID, provider, ct)
-			if provider.GetCodeAttested() {
-				s.codeAttestThrottle.recordAttested(seKey, version)
+
+		// Push when the per-device budget permits. A budget cooldown elapsing
+		// without attestation means a delivered push's reply never came (timeout);
+		// a budget held over from a prior connection means we simply wait (poll)
+		// for that reply rather than burning another push (reconnect-safe).
+		if s.codeAttestThrottle.allowPush(seKey, alertMode) {
+			if prevSent {
+				s.codeAttestMetric("timeout")
+				s.logger.Warn("code-attest: no valid reply within the push budget; retrying",
+					"provider_id", providerID, "attempt", pushes)
+				prevSent = false
+			}
+			if pushes >= s.codeAttestThrottle.maxAttempts {
+				s.codeAttestMetric("max_attempts")
+				s.logger.Warn("code-attest: not attested after max attempts; will retry on a later reconnect (within the push budget)",
+					"provider_id", providerID)
 				return
 			}
+			s.codeAttestThrottle.recordPush(seKey)
+			prevSent = s.sendCodeIdentityChallenge(ctx, providerID, provider)
+			pushes++
 		}
-		// Space retries by the cooldown so we never exceed the background-push
-		// budget; bail if the connection ends first.
+
+		// Poll for the delivery path's verdict on a jittered cadence decoupled from
+		// the push budget; bail if the connection ends first.
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(s.codeAttestThrottle.pushCooldown):
+		case <-time.After(s.codeAttestThrottle.retryDelay()):
 		}
 	}
-	s.codeAttestMetric("max_attempts")
-	s.logger.Warn("code-attest: not attested after max attempts; will retry on a later reconnect (within the push budget)",
-		"provider_id", providerID)
 }
 
-// sendCodeIdentityChallenge runs the per-connection APNs code-identity round-trip
-// (v0.6.0): it pushes E_K(nonce) to the provider's device, awaits the provider's
-// code_attestation_response over the WebSocket, verifies it (the returned nonce
-// equals the one we pushed AND Sign_SE over that nonce verifies against the SE
-// public key bound at registration), and marks the connection CodeAttested on
-// success. Fail-closed: any failure leaves CodeAttested false, so once the
-// rollout flag is on the provider is not routed private traffic. The nonce is a
-// base64 string; it is encrypted to the provider's X25519 key K via the same E2E
-// path used for inference bodies, and the signature is the SE P-256 key (K is
-// decrypt-only — there is no Sign_K). See docs/apns-code-attestation-design.md.
-func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID string, provider *registry.Provider, ct *codeAttestTracker) {
+// sendCodeIdentityChallenge pushes one APNs code-identity challenge (v0.6.0) and
+// returns WITHOUT waiting for the reply (Fix 1). It generates a fresh nonce,
+// records it per-device (keyed by the registration-bound SE key) so the read-loop
+// delivery path can match the provider's code_attestation_response — even one that
+// arrives on a later (reconnected) WebSocket — then pushes E_K(nonce) to the
+// device. The nonce is a base64 string encrypted to the provider's X25519 key K
+// via the same E2E path used for inference bodies; the eventual proof is the SE
+// P-256 signature over that nonce (K is decrypt-only — there is no Sign_K).
+// Fail-closed: a failed push clears the outstanding challenge so a stale reply for
+// it can never attest. Returns true iff the push was accepted by APNs (so the loop
+// can tell a delivered-but-unanswered push apart from a send failure). See
+// docs/apns-code-attestation-design.md.
+func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID string, provider *registry.Provider) bool {
 	if s.codeAttestor == nil || provider == nil {
-		return
+		return false
 	}
 	provider.Mu().Lock()
 	deviceToken := provider.APNsDeviceToken
@@ -622,54 +617,107 @@ func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID strin
 			"has_pubkey", pubKey != "",
 			"has_se_key", sePubKey != "",
 		)
-		return
+		return false
 	}
 
 	nonceBytes := make([]byte, 32)
 	if _, err := rand.Read(nonceBytes); err != nil {
 		s.logger.Error("code-attest nonce generation failed", "provider_id", providerID, "error", err)
-		return
+		return false
 	}
 	nonceB64 := base64.StdEncoding.EncodeToString(nonceBytes)
 
-	respCh := ct.await(nonceB64)
-	defer ct.cancel(nonceB64)
+	// Record BEFORE the push so a reply that races back (even on another
+	// connection) is matchable. Keyed by SE key, so it survives reconnects.
+	s.codeAttestThrottle.recordChallenge(sePubKey, nonceB64)
 
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	err := s.codeAttestor.SendCodeChallenge(sendCtx, deviceToken, env, pubKey, nonceB64)
 	cancel()
 	if err != nil {
+		// The push never went out — drop the outstanding challenge so no stale
+		// reply for this nonce can attest.
+		s.codeAttestThrottle.clearChallengeIf(sePubKey, nonceB64)
 		s.codeAttestMetric("push_send_failed")
 		s.logger.Warn("code-attest push send failed", "provider_id", providerID, "error", err)
-		return
+		return false
 	}
 	s.codeAttestMetric("push_sent")
+	// No blocking wait: the reply is verified in handleCodeAttestationResponse on
+	// whichever live connection it lands.
+	return true
+}
 
-	select {
-	case resp := <-respCh:
-		if resp == nil || resp.Nonce != nonceB64 {
-			s.codeAttestMetric("nonce_mismatch")
-			s.logger.Warn("code-attest response nonce mismatch", "provider_id", providerID)
-			return
-		}
-		// Verify Sign_SE(nonceB64) against the SE public key bound to THIS
-		// connection at registration — never a key supplied in the response.
-		if err := attestation.VerifyChallengeSignature(sePubKey, resp.Signature, nonceB64); err != nil {
-			s.codeAttestMetric("verify_failed")
-			s.logger.Warn("code-attest signature verification failed", "provider_id", providerID, "error", err)
-			return
-		}
-		provider.SetCodeAttested(true)
-		s.codeAttestMetric("attested")
-		s.logger.Info("provider code-attested via APNs", "provider_id", providerID)
-		// Newly eligible for private routing — drain requests that queued waiting
-		// for an attested provider instead of waiting for the next heartbeat tick.
-		s.registry.DrainQueuedRequestsForProvider(provider)
-	case <-time.After(CodeAttestResponseTimeout):
-		s.codeAttestMetric("timeout")
-		s.logger.Warn("code-attest timed out awaiting WebSocket response", "provider_id", providerID)
-	case <-ctx.Done():
+// handleCodeAttestationResponse verifies a provider's code_attestation_response in
+// the WebSocket read-loop delivery path and marks the connection CodeAttested on
+// success (Fix 1). This is the SINGLE fail-closed code-identity chokepoint moved
+// off the blocking push goroutine: it attests whatever live connection the reply
+// lands on, so a late reply or a reply after a mid-flight reconnect still attests
+// (within the pushed nonce's validity window), while every security check is
+// byte-for-byte the prior logic:
+//   - the reply's nonce must equal the nonce the coordinator pushed to THIS device
+//     (looked up by the registration-bound SE key; proves the provider decrypted
+//     E_K(nonce) ⟹ holds K), AND
+//   - Sign_SE(nonce) must verify against the SE public key bound to THIS connection
+//     at registration — never a key supplied in the response.
+//
+// Any failure leaves CodeAttested false (fail-closed). Runs in the read loop, so
+// the (potentially slower) queue drain is dispatched to a goroutine.
+func (s *Server) handleCodeAttestationResponse(providerID string, provider *registry.Provider, resp *protocol.CodeAttestationResponseMessage) {
+	if provider == nil {
+		s.logger.Warn("code-attest response from unregistered provider", "provider_id", providerID)
+		return
 	}
+	if resp == nil {
+		return
+	}
+	if provider.GetCodeAttested() {
+		return // already attested on this connection; ignore duplicate/late replies
+	}
+
+	provider.Mu().Lock()
+	var sePubKey string
+	if provider.AttestationResult != nil {
+		sePubKey = provider.AttestationResult.PublicKey
+	}
+	version := provider.Version
+	provider.Mu().Unlock()
+
+	if sePubKey == "" {
+		s.codeAttestMetric("verify_failed")
+		s.logger.Warn("code-attest response but provider has no registration-bound SE key",
+			"provider_id", providerID)
+		return
+	}
+
+	// Match against the nonce we pushed to THIS device (survives reconnect; nil or
+	// expired => no match => fail-closed).
+	ch, ok := s.codeAttestThrottle.outstandingChallenge(sePubKey)
+	if !ok || resp.Nonce == "" || resp.Nonce != ch.nonce {
+		s.codeAttestMetric("nonce_mismatch")
+		s.logger.Warn("code-attest response nonce mismatch or no outstanding challenge",
+			"provider_id", providerID, "have_challenge", ok)
+		return
+	}
+	// Verify Sign_SE(nonce) against the SE public key bound to THIS connection at
+	// registration — never a key supplied in the response.
+	if err := attestation.VerifyChallengeSignature(sePubKey, resp.Signature, resp.Nonce); err != nil {
+		s.codeAttestMetric("verify_failed")
+		s.logger.Warn("code-attest signature verification failed", "provider_id", providerID, "error", err)
+		return
+	}
+
+	provider.SetCodeAttested(true)
+	s.codeAttestThrottle.recordAttested(sePubKey, version)
+	s.codeAttestThrottle.clearChallengeIf(sePubKey, ch.nonce)
+	s.codeAttestMetric("attested")
+	s.logger.Info("provider code-attested via APNs", "provider_id", providerID)
+	// Newly eligible for private routing — drain requests that queued waiting for an
+	// attested provider instead of waiting for the next heartbeat tick. Off the read
+	// loop so verification stays responsive.
+	saferun.Go(s.logger, "codeAttestDrain", func() {
+		s.registry.DrainQueuedRequestsForProvider(provider)
+	})
 }
 
 // handlePrefetchModelStatus records a provider's background-prefetch progress.

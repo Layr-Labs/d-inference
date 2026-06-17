@@ -62,10 +62,15 @@ const (
 	// safe middle. One JWT is reused across all hosts/sends.
 	jwtMaxAge = 50 * time.Minute
 
-	// challengeExpirySeconds is the apns-expiration window. Short so a stale
-	// challenge is discarded rather than delivered late, but long enough to
-	// tolerate brief device-side delay.
-	challengeExpirySeconds = 60
+	// challengeExpirySeconds is the apns-expiration window: how long APNs keeps
+	// trying to deliver the code-identity push. Widened 60s→300s (W5b Fix 5) so it
+	// is no longer SHORTER than the coordinator's reply-acceptance window
+	// (api.CodeAttestResponseTimeout). The legacy 60s<90s inversion meant the push
+	// expired before the coordinator stopped accepting a reply, wasting any late
+	// delivery. With Fix 1 the coordinator no longer blocks on the reply, so a
+	// longer-lived push simply gives a sleepy/over-budget device more time to
+	// receive it and answer on a live socket.
+	challengeExpirySeconds = 300
 )
 
 // CodeIdentityAttestor sends a code-identity challenge to a provider's device.
@@ -232,6 +237,12 @@ func (a *APNsPushAttestor) priority() string {
 	}
 	return "5"
 }
+
+// Mode reports the configured APNs delivery mode. The coordinator's code-attest
+// retry loop reads it (via a type assertion on the CodeIdentityAttestor seam) to
+// choose a mode-aware push cooldown: alert delivery is not background-throttled,
+// so it may retry far sooner than the background-push budget (W5b Fix 3).
+func (a *APNsPushAttestor) Mode() Mode { return a.mode }
 
 // jwt returns a cached ES256 JWT, minting a fresh one if older than jwtMaxAge.
 func (a *APNsPushAttestor) jwt() (string, error) {

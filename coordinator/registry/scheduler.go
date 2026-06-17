@@ -34,7 +34,7 @@ const (
 	thermalPenaltyFairMs     = 2_000.0
 	thermalPenaltySeriousMs  = 8_000.0
 	nearTieCostWindowMs      = 3_000.0
-	challengeFreshnessMaxAge = 6 * time.Minute
+	challengeFreshnessMaxAge = 16 * time.Minute
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
 	// the free-memory admission gate.

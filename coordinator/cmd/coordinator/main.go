@@ -315,18 +315,21 @@ func main() {
 		}
 	}
 
-	// Routing: per-request sustained-decode floor (tokens/sec). When set, the
-	// scheduler softly prefers providers that keep a newly admitted request at
-	// >= this rate, avoiding overpacking a provider into a degraded stream.
-	// Default 0 (off) — soft, never rejects on its own.
+	// Routing: per-request sustained-decode floor (tokens/sec). The quality bar is
+	// ON BY DEFAULT (15 tok/s) so the scheduler won't pack a provider into a
+	// degraded stream; it softly prefers providers that keep a newly admitted
+	// request at >= this rate (never rejects on its own — falls back to
+	// best-available). Set EIGENINFERENCE_MIN_DECODE_TPS to override; 0 disables.
+	minDecodeTPS := 15.0 // default quality bar
 	if v := os.Getenv("EIGENINFERENCE_MIN_DECODE_TPS"); v != "" {
 		if tps, err := strconv.ParseFloat(v, 64); err == nil && tps >= 0 {
-			srv.SetMinDecodeTPS(tps)
-			logger.Info("per-request decode floor via EIGENINFERENCE_MIN_DECODE_TPS", "min_decode_tps", tps)
+			minDecodeTPS = tps
 		} else {
-			logger.Warn("invalid EIGENINFERENCE_MIN_DECODE_TPS; ignoring", "value", v)
+			logger.Warn("invalid EIGENINFERENCE_MIN_DECODE_TPS; using default", "value", v, "default", minDecodeTPS)
 		}
 	}
+	srv.SetMinDecodeTPS(minDecodeTPS)
+	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from

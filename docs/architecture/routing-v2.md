@@ -137,7 +137,7 @@ floor; else grow warm capacity; else queue; shed only when truly saturated.**
 
 - `EIGENINFERENCE_TTFT_HARD_REJECT` (default false — soft) — already in #381.
 - `EIGENINFERENCE_PREFILL_DECODE_RATIO` (default 12) — already in #381.
-- `EIGENINFERENCE_MIN_DECODE_TPS` (decode floor, default ~15) — new.
+- `EIGENINFERENCE_MIN_DECODE_TPS` (decode floor, **default 15 — quality bar ON by default**; set 0 to disable) — new.
 - warm-pool: target buffer, ramp rate, min-dwell, cold-dispatch threshold.
 - queue bound; SLA-tail cap threshold.
 

@@ -495,9 +495,9 @@ func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
 
 	var parsed struct {
 		Providers []struct {
-			ProviderID  string `json:"provider_id"`
-			MDAVerified bool   `json:"mda_verified"`
-			MDAUDID     string `json:"mda_udid"`
+			ProviderID   string `json:"provider_id"`
+			MDAVerified  bool   `json:"mda_verified"`
+			MDAOSVersion string `json:"mda_os_version"`
 		} `json:"providers"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
@@ -506,16 +506,16 @@ func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
 	for _, pr := range parsed.Providers {
 		switch pr.ProviderID {
 		case "ss-payload":
-			if pr.MDAVerified || pr.MDAUDID != "" {
-				t.Errorf("self_signed provider leaked MDA payload: verified=%v udid=%q",
-					pr.MDAVerified, pr.MDAUDID)
+			if pr.MDAVerified || pr.MDAOSVersion != "" {
+				t.Errorf("self_signed provider leaked MDA payload: verified=%v os_version=%q",
+					pr.MDAVerified, pr.MDAOSVersion)
 			}
 		case "hw-payload":
 			if !pr.MDAVerified {
 				t.Errorf("hardware provider should be mda_verified=true, got %v", pr.MDAVerified)
 			}
-			if pr.MDAUDID == "" {
-				t.Errorf("hardware provider should expose mda_udid, got empty")
+			if pr.MDAOSVersion == "" {
+				t.Errorf("hardware provider should expose mda_os_version, got empty")
 			}
 		}
 	}

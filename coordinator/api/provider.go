@@ -2877,11 +2877,11 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		ACMEVerified bool `json:"acme_verified"`
 
 		// Apple Device Attestation (MDA) — status signed by Apple.
-		// Device serial numbers and the per-device MDA certificate chain are
-		// intentionally omitted from this public endpoint; they remain internal
-		// to the coordinator for debugging, deduplication, and MDM verification.
+		// Device serial numbers, UDIDs, and the per-device MDA certificate chain
+		// are intentionally omitted from this public endpoint; they remain
+		// internal to the coordinator for debugging, deduplication, and MDM
+		// verification.
 		MDAVerified   bool   `json:"mda_verified"`
-		MDAUDID       string `json:"mda_udid,omitempty"`
 		MDAOSVersion  string `json:"mda_os_version,omitempty"`
 		MDASepVersion string `json:"mda_sepos_version,omitempty"`
 	}
@@ -2940,16 +2940,15 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			pa.SEPublicKey = attestResult.PublicKey
 		}
 
-		// Include the parsed MDA fields for independent verification ONLY for a
-		// connection currently holding hardware trust — same gate as the
-		// mda_verified boolean above. The late-MDA callback (main.go) can attach
-		// MDA metadata to a provider that has since reconnected as self_signed;
-		// without this gate the endpoint would emit mda_verified=false alongside
-		// a populated udid/os_version/sepos_version, which is the same class of
-		// drift the cert-chain removal fixes. Per-device MDA certificate chains
-		// and serial numbers are not exposed publicly.
+		// Include the parsed MDA OS/security fields ONLY for a connection
+		// currently holding hardware trust — same gate as the mda_verified
+		// boolean above. The late-MDA callback (main.go) can attach MDA metadata
+		// to a provider that has since reconnected as self_signed; without this
+		// gate the endpoint would emit mda_verified=false alongside populated
+		// os_version/sepos_version, which is the same class of drift the
+		// cert-chain removal fixes. Device identifiers (serial/UDID) and the
+		// per-device MDA certificate chain are not exposed publicly.
 		if isHardware && mdaResult != nil {
-			pa.MDAUDID = mdaResult.DeviceUDID
 			pa.MDAOSVersion = mdaResult.OSVersion
 			pa.MDASepVersion = mdaResult.SepOSVersion
 		}
@@ -2962,7 +2961,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		"verification_instructions": "This endpoint shows the coordinator-verified MDA status for each provider. " +
 			"mda_verified is true only for providers currently holding hardware trust, meaning Apple Device Attestation " +
 			"was verified by the coordinator against Apple's Enterprise Attestation Root CA. " +
-			"Per-device MDA certificate chains and serial numbers are not exposed on this public endpoint.",
+			"Device identifiers (serial numbers / UDIDs) and per-device MDA certificate chains are not exposed on this public endpoint.",
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

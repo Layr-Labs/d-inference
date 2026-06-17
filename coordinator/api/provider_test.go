@@ -354,6 +354,36 @@ func testChallengeSignature(nonce, timestamp, encryptionKey string) string {
 	return "dGVzdHNpZ25hdHVyZQ=="
 }
 
+// testStatusSignature signs the canonical status payload with the SE private key
+// registered for encryptionKey, so verifyChallengeResponse treats the status
+// fields as cryptographically bound (statusFieldsTrusted=true) — required to reach
+// the trust-reuse fast-skip in tests.
+func testStatusSignature(t *testing.T, in attestation.StatusCanonicalInput, encryptionKey string) string {
+	t.Helper()
+	rawKey, ok := testAttestationChallengeKeys.Load(encryptionKey)
+	if !ok {
+		t.Fatalf("no challenge signer registered for %q", encryptionKey)
+	}
+	privKey, ok := rawKey.(*ecdsa.PrivateKey)
+	if !ok || privKey == nil {
+		t.Fatalf("invalid challenge signer for %q", encryptionKey)
+	}
+	canonical, err := attestation.BuildStatusCanonical(in)
+	if err != nil {
+		t.Fatalf("BuildStatusCanonical: %v", err)
+	}
+	hash := sha256.Sum256(canonical)
+	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash[:])
+	if err != nil {
+		t.Fatalf("sign status: %v", err)
+	}
+	sigDER, err := asn1.Marshal(ecdsaSigHelper{R: r, S: s})
+	if err != nil {
+		t.Fatalf("marshal status sig: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(sigDER)
+}
+
 func rawP256PublicKeyB64ForTest(t *testing.T, pubKey *ecdsa.PublicKey) string {
 	t.Helper()
 	xBytes := pubKey.X.Bytes()

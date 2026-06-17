@@ -349,14 +349,18 @@ func (s *Server) SeedTrustReuseCache(ctx context.Context) {
 // the forgery. This is bounded by the webhook being localhost-only; full
 // mitigation is authenticating the webhook (SEC-004, tracked separately).
 func (s *Server) recordTrustReuse(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string) {
-	if s == nil || s.trustReuseCache == nil || provider == nil || seKey == "" || serial == "" {
+	// FIX 1: an empty seKey or binaryHash is a hard no-op — never record in-memory
+	// or persist. An empty-seKey row would be unkeyed (poisoning the cache / store);
+	// an empty binaryHash can never satisfy the read gate (b) so it would be a dead
+	// row. (ApplyLateSecurityInfo can derive empty values when AttestationResult is
+	// absent or carries no binary hash.)
+	if s == nil || s.trustReuseCache == nil || provider == nil || seKey == "" || serial == "" || binaryHash == "" {
 		return
 	}
 	normHash, err := normalizeSHA256Hex(binaryHash, "binary_hash")
 	if err != nil {
-		// No usable signed binary hash to bind the reuse record to; the read gate
-		// (b) requires a binary-hash match, so an unbindable record would never be
-		// reused. Skip caching rather than store a dead row.
+		// Non-empty but not a usable SHA-256 hex; the read gate (b) requires a
+		// binary-hash match, so this would be a dead row. Skip caching.
 		return
 	}
 	rec := store.ProviderTrustReuse{
@@ -381,9 +385,9 @@ func (s *Server) recordTrustReuse(provider *registry.Provider, seKey, serial, bi
 		return // no durable store wired; the in-memory record is enough
 	}
 
-	// Re-check immediately before the synchronous upsert: if a hard untrust raced
-	// this grant (the provider is now hard-untrusted, or the epoch bumped), drop the
-	// in-memory entry and do NOT persist a stale `hardware` row.
+	// PRE-write recheck: if a hard untrust raced this grant (the provider is now
+	// hard-untrusted, or the epoch bumped), drop the in-memory entry and do NOT
+	// persist a stale `hardware` row.
 	if provider.ChallengeShouldStop() || provider.HardUntrustEpoch() != epoch {
 		s.trustReuseCache.invalidateReuse(seKey)
 		return
@@ -392,6 +396,24 @@ func (s *Server) recordTrustReuse(provider *registry.Provider, seKey, serial, bi
 	defer cancel()
 	if err := st.UpsertProviderTrustReuse(ctx, rec); err != nil {
 		s.logger.Warn("trust-reuse: failed to persist reuse record", "error", err)
+		return
+	}
+
+	// POST-write recheck (FIX 2 — close the check-then-write TOCTOU). The pre-write
+	// check alone leaves a window: a hard untrust landing between it and the upsert
+	// COMMITTING runs its synchronous delete first, then this upsert resurrects the
+	// row → reseeded on restart. So re-check AFTER the write: if a hard untrust raced
+	// in, delete the row we just wrote (idempotent, bounded retry) and drop the
+	// in-memory entry. Combined with markUntrusted's own synchronous delete this
+	// fully linearizes write vs delete on the epoch — an untrust before the
+	// pre-check is dropped, one during the write is compensated here, and one after
+	// is removed by its own delete (our committed row is already visible to it).
+	if provider.ChallengeShouldStop() || provider.HardUntrustEpoch() != epoch {
+		s.trustReuseCache.invalidateReuse(seKey)
+		if err := s.deletePersistedTrustReuseWithRetry(st, seKey); err != nil {
+			s.logger.Warn("trust-reuse: failed to delete reuse record after post-write untrust recheck",
+				"error", err, "attempts", trustReuseDeleteAttempts)
+		}
 	}
 }
 
@@ -422,19 +444,29 @@ func (s *Server) invalidateTrustReuse(seKey string) {
 	}
 	// Bounded inline retry of the persisted delete (FIX 1): keep "hard untrust
 	// takes effect" durable across a restart even through a transient DB error.
+	if err := s.deletePersistedTrustReuseWithRetry(st, seKey); err != nil {
+		// Log only after the final attempt fails (avoids alarming logs on a
+		// recovered transient blip).
+		s.logger.Warn("trust-reuse: failed to delete persisted reuse record on hard untrust after retries",
+			"error", err, "attempts", trustReuseDeleteAttempts)
+	}
+}
+
+// deletePersistedTrustReuseWithRetry deletes the persisted reuse row with a bounded
+// inline retry, returning nil on success or the last error. Idempotent (deleting a
+// missing row is fine), so it is reused both by the hard-untrust hook
+// (invalidateTrustReuse) and by recordTrustReuse's post-write recheck (FIX 2).
+func (s *Server) deletePersistedTrustReuseWithRetry(st trustReuseStore, seKey string) error {
 	var err error
 	for attempt := 0; attempt < trustReuseDeleteAttempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(trustReuseDeleteRetryBackoff)
 		}
 		if err = deleteProviderTrustReuseOnce(st, seKey); err == nil {
-			return
+			return nil
 		}
 	}
-	// Log only after the final attempt fails (avoids alarming logs on a recovered
-	// transient blip).
-	s.logger.Warn("trust-reuse: failed to delete persisted reuse record on hard untrust after retries",
-		"error", err, "attempts", trustReuseDeleteAttempts)
+	return err
 }
 
 // deleteProviderTrustReuseOnce runs one persisted-delete attempt with its own
@@ -523,9 +555,15 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		return false
 	}
 	provider.SetMDMFailureReason("")
-	// The device is now hardware, so any connect-time ACME result stashed for a
-	// later retry is moot — drop it (FIX 5b), mirroring a normal hardware upgrade.
-	s.clearPendingACME(providerID)
+	// MDA-freshness trade-off (Threat-Model TB-005 / T-036): this fast-skip skips the
+	// live MDA cert-chain re-verification (and the live MDM SecurityInfo round-trip)
+	// that the full path performs. It relies on the SIP/Secure-Boot posture captured
+	// at the LAST full verification (within the reuse window) plus the always-run
+	// live SE challenge that just re-proved identity + posture + unchanged binary. It
+	// does NOT re-prove MDA cert-chain freshness within the window — an accepted
+	// trade-off for the restart-herd problem, bounded by the (short) reuse window and
+	// the live SE challenge. Connect-time ACME state is reconciled by the caller
+	// (reconcileACMEAfterFastSkip) so an unbound cert is not reported as verified.
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "trust-reuse fast-skip (recent MDM verification re-proven by live SE challenge)")
 	s.registry.PersistProvider(provider)
 	s.ddIncr("mdm.verification", []string{"outcome:granted-trust-reuse"})

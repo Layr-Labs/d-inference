@@ -540,6 +540,17 @@ func (p *Provider) GetStatus() ProviderStatus {
 	return p.Status
 }
 
+// SetACMEVerified sets the ACME-verified flag (thread-safe). Used to clear a
+// flag that applyACMETrust set optimistically (it marks the cert verified before
+// the SE-key binding completes) when a trust-reuse fast-skip grants hardware via
+// MDM-reuse and the stashed ACME never bound (DAR-326 FIX 4a) — so the attestation
+// report does not claim acme_verified for an unproven binding.
+func (p *Provider) SetACMEVerified(v bool) {
+	p.mu.Lock()
+	p.ACMEVerified = v
+	p.mu.Unlock()
+}
+
 // SetMDMFailureReason records the bucketed reason this connection's MDM
 // verification has not (yet) granted hardware trust (thread-safe). Empty string
 // clears it (verified / no failure).
@@ -721,6 +732,21 @@ func (p *Provider) SignalChallengeSettled() {
 // select then simply never fires that case and falls back to the timer).
 func (p *Provider) ChallengeSettledChan() <-chan struct{} {
 	return p.challengeSettled
+}
+
+// ResetChallengeSettled drains any buffered challenge-settled signal so a fresh
+// connection can never consume a stale one (DAR-326 FIX 4c). Register allocates a
+// fresh channel per connection, so this is also belt-and-suspenders that keeps the
+// connection-scoping invariant explicit and robust to any future Provider reuse.
+// Non-blocking; safe on a nil channel.
+func (p *Provider) ResetChallengeSettled() {
+	if p.challengeSettled == nil {
+		return
+	}
+	select {
+	case <-p.challengeSettled:
+	default:
+	}
 }
 
 // HardUntrustEpoch returns the current hard-untrust epoch (thread-safe). It is
@@ -2295,6 +2321,11 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		pendingReqs:             make(map[string]*PendingRequest),
 		challengeSettled:        make(chan struct{}, 1),
 	}
+
+	// Connection-scope the challenge-settled signal (DAR-326 FIX 4c): the channel is
+	// freshly allocated above, and draining here makes the "no stale signal carries
+	// into a new connection" invariant explicit and robust to future Provider reuse.
+	p.ResetChallengeSettled()
 
 	r.mu.Lock()
 	r.providers[id] = p

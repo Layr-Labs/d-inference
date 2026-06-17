@@ -49,6 +49,22 @@ func (f *flakyDeleteStore) calls() int {
 	return f.deleteCalls
 }
 
+// upsertHookStore wraps a real store and runs onUpsert just BEFORE delegating the
+// reuse-record upsert. It deterministically injects a hard untrust into the
+// check-then-write window (between recordTrustReuse's pre-write epoch check and the
+// upsert committing) to exercise the FIX 2 post-write recheck.
+type upsertHookStore struct {
+	store.Store
+	onUpsert func()
+}
+
+func (s *upsertHookStore) UpsertProviderTrustReuse(ctx context.Context, rec store.ProviderTrustReuse) error {
+	if s.onUpsert != nil {
+		s.onUpsert()
+	}
+	return s.Store.UpsertProviderTrustReuse(ctx, rec)
+}
+
 // Two distinct, valid 64-char SHA-256 hex digests for binary-hash gate tests.
 var (
 	trHashA = strings.Repeat("a", 64)
@@ -769,5 +785,287 @@ func TestTrustReuseFastSkipRequiresMDMConfigured(t *testing.T) {
 	}
 	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
 		t.Fatalf("provider must stay self_signed, got %q", lvl)
+	}
+}
+
+// --- Round 2 FIX 1: empty-seKey / empty-binaryHash guard ---
+
+// TestRecordTrustReuseRejectsEmptyInputs proves FIX 1: recordTrustReuse is a hard
+// no-op for an empty seKey or empty binaryHash — no in-memory entry, no persisted
+// row (an empty-key row would poison the cache/store; an empty binary hash can
+// never satisfy the read gate).
+func TestRecordTrustReuseRejectsEmptyInputs(t *testing.T) {
+	srv, st := trustReuseServer(t)
+	srv.SeedTrustReuseCache(context.Background())
+	p := newTrustReuseProvider(t, srv, "prov-empty", "se-empty", "SER-E")
+
+	srv.recordTrustReuse(p, "", "SER-E", trHashA, true, true, "udid")    // empty seKey
+	srv.recordTrustReuse(p, "se-empty", "SER-E", "", true, true, "udid") // empty binaryHash
+
+	if srv.trustReuseCache.hasFreshRecord("se-empty", "SER-E") {
+		t.Fatal("empty seKey/binaryHash must not record in-memory")
+	}
+	if rows, _ := st.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("empty seKey/binaryHash must not persist, got %d rows", len(rows))
+	}
+}
+
+// TestApplyLateSecurityInfoSkipsWhenNoBinaryHash proves FIX 1's ApplyLateSecurityInfo
+// guard: a late grant for a provider whose SE attestation carries no binary hash
+// upgrades trust but caches NO reuse record (rather than a dead/unbindable row).
+func TestApplyLateSecurityInfoSkipsWhenNoBinaryHash(t *testing.T) {
+	fake := &fakeMDMServer{device: &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true}}
+	srv, p := mdmReliabilityServer(t, fake)
+	srv.SeedTrustReuseCache(context.Background())
+	// mdmReliabilityServer leaves AttestationResult.BinaryHash empty.
+
+	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
+		SystemIntegrityProtectionEnabled: true,
+		SecureBootLevel:                  "full",
+	})
+
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Fatalf("late SecurityInfo must still upgrade to hardware, got %q", lvl)
+	}
+	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("no reuse record may be cached without a binary hash, got %d rows", len(rows))
+	}
+}
+
+// --- Round 2 FIX 2: post-write epoch recheck (check-then-write TOCTOU) ---
+
+// TestRecordTrustReusePostWriteRecheckDeletesOnRacedUntrust proves FIX 2: a hard
+// untrust landing in the window between the pre-write epoch check and the upsert
+// committing is caught by the POST-write recheck, which deletes the just-written
+// row and drops the in-memory entry — so nothing reseeds on a restart.
+func TestRecordTrustReusePostWriteRecheckDeletesOnRacedUntrust(t *testing.T) {
+	srv, _ := trustReuseServer(t)
+	mem := store.NewMemory(store.Config{})
+	p := newTrustReuseProvider(t, srv, "prov-toctou", "se-tt", "SER-TT")
+
+	// Inject the hard untrust exactly during the upsert (i.e. after the pre-write
+	// check passed, before/at the write committing).
+	hooked := &upsertHookStore{Store: mem, onUpsert: func() {
+		srv.registry.MarkUntrusted("prov-toctou")
+	}}
+	srv.trustReuseCache.store = hooked
+
+	srv.recordTrustReuse(p, "se-tt", "SER-TT", trHashA, true, true, "udid")
+
+	// The post-write recheck must have deleted the row it wrote under the race.
+	if rows, _ := mem.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("post-write recheck must delete the row written under a racing untrust, got %d rows", len(rows))
+	}
+	if srv.trustReuseCache.hasFreshRecord("se-tt", "SER-TT") {
+		t.Fatal("post-write recheck must drop the in-memory entry")
+	}
+	// A fresh cache seeded from the same store (simulated restart) finds nothing.
+	if n := newTrustReuseCache().seed(mustList(t, mem)); n != 0 {
+		t.Fatalf("restart reseed = %d, want 0 (durable untrust)", n)
+	}
+}
+
+func mustList(t *testing.T, st store.Store) []store.ProviderTrustReuse {
+	t.Helper()
+	rows, err := st.ListProviderTrustReuse(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	return rows
+}
+
+// --- Round 2 FIX 4a: reconcile ACME after a fast-skip grant ---
+
+// TestReconcileACMEAfterFastSkipClearsUnboundFlag proves FIX 4a: when an MDM-reuse
+// fast-skip grants hardware while a connect-time ACME cert is stashed but never
+// bound (its SE-key binding can't complete), the unbound, unvalidated ACMEVerified
+// flag is cleared and the stale pending result discarded — so the attestation
+// report does not falsely claim acme_verified.
+func TestReconcileACMEAfterFastSkipClearsUnboundFlag(t *testing.T) {
+	srv, _ := trustReuseServer(t)
+	p := newTrustReuseProvider(t, srv, "prov-acme", "se-acme", "SER-AC")
+	// AttestationResult has no EncryptionPublicKey, so the ACME SE-key binding can
+	// never complete on retry (providerHasBoundEncryptionAttestation is false).
+	p.Mu().Lock()
+	p.ACMEVerified = true // optimistically set by applyACMETrust before binding
+	p.Mu().Unlock()
+	s := srv
+	s.stashPendingACME("prov-acme", &ACMEVerificationResult{Valid: true, SerialNumber: "SER-AC"})
+
+	s.reconcileACMEAfterFastSkip("prov-acme", p)
+
+	p.Mu().Lock()
+	acme := p.ACMEVerified
+	p.Mu().Unlock()
+	if acme {
+		t.Fatal("an unbound ACME result must not leave ACMEVerified=true after a fast-skip grant")
+	}
+	if s.hasPendingACME("prov-acme") {
+		t.Fatal("the stale unbound pending ACME result must be discarded")
+	}
+}
+
+// TestReconcileACMEAfterFastSkipNoPendingIsNoop proves reconcile is a no-op when no
+// ACME was stashed (so a genuinely-bound-and-granted ACME flag is left intact).
+func TestReconcileACMEAfterFastSkipNoPendingIsNoop(t *testing.T) {
+	srv, _ := trustReuseServer(t)
+	p := newTrustReuseProvider(t, srv, "prov-acme2", "se-acme2", "SER-AC2")
+	p.Mu().Lock()
+	p.ACMEVerified = true // simulate an already-bound+granted ACME
+	p.Mu().Unlock()
+
+	srv.reconcileACMEAfterFastSkip("prov-acme2", p)
+
+	p.Mu().Lock()
+	acme := p.ACMEVerified
+	p.Mu().Unlock()
+	if !acme {
+		t.Fatal("reconcile must not clear ACMEVerified when nothing is stashed (already bound)")
+	}
+}
+
+// --- Round 2 FIX 3 / FIX 4b: verifyChallengeResponse wiring (drain + ACME/signal) ---
+
+// fastSkipChallengeResp builds a fully-signed challenge response (challenge sig +
+// status sig so statusFieldsTrusted=true) that satisfies the fast-skip posture +
+// binary gates for a provider registered with createTestAttestationJSONWithBinaryHash.
+func fastSkipChallengeResp(t *testing.T, nonce, ts, pubKey, binHash string) *protocol.AttestationResponseMessage {
+	t.Helper()
+	sip, sb, rdma := true, true, true
+	resp := &protocol.AttestationResponseMessage{
+		Type:              protocol.TypeAttestationResponse,
+		Nonce:             nonce,
+		Signature:         testChallengeSignature(nonce, ts, pubKey),
+		PublicKey:         pubKey,
+		SIPEnabled:        &sip,
+		SecureBootEnabled: &sb,
+		RDMADisabled:      &rdma,
+		BinaryHash:        binHash,
+	}
+	resp.StatusSignature = testStatusSignature(t, attestation.StatusCanonicalInput{
+		Nonce: nonce, Timestamp: ts, RDMADisabled: &rdma,
+		SIPEnabled: &sip, SecureBootEnabled: &sb, BinaryHash: binHash,
+	}, pubKey)
+	return resp
+}
+
+// TestVerifyChallengeFastSkipGrantDrainsQueue proves FIX 3: when the fast-skip
+// grants hardware from the trust-reuse cache, verifyChallengeResponse drains the
+// provider's queued work immediately (instead of waiting for a heartbeat / 120s
+// timeout). Without the drain the queued request would not dispatch from the
+// challenge path at all.
+func TestVerifyChallengeFastSkipGrantDrainsQueue(t *testing.T) {
+	logger := quietLogger()
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv.mdmClient = dummyMDMClient()
+	srv.SeedTrustReuseCache(context.Background())
+
+	const model = "fast-skip-drain-model"
+	binHash := trHashA
+	pubKey := testPublicKeyB64()
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 registry.BackendMLXSwift,
+		PublicKey:               pubKey,
+		DecodeTPS:               90,
+		PrefillTPS:              900,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, binHash),
+	}
+	p := reg.Register("prov-drain", nil, regMsg)
+	srv.verifyProviderAttestation("prov-drain", p, regMsg)
+
+	// Test attestation blobs carry no serial; set one + make the provider routable.
+	p.Mu().Lock()
+	seKey := p.AttestationResult.PublicKey
+	p.AttestationResult.SerialNumber = "SER-DRAIN"
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots:         []protocol.BackendSlotCapacity{{Model: model, State: "running"}},
+	}
+	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"}
+	p.Mu().Unlock()
+
+	// Seed a fresh trust-reuse record so the fast-skip can grant.
+	srv.trustReuseCache.recordTrust(hardwareReuseRecord(seKey, "SER-DRAIN", binHash, time.Now()))
+
+	// Enqueue work for the model.
+	req := &registry.QueuedRequest{
+		RequestID:  "queued-fast-skip",
+		Model:      model,
+		ResponseCh: make(chan *registry.Provider, 1),
+		Pending: &registry.PendingRequest{
+			RequestID: "queued-fast-skip", Model: model,
+			RequestedMaxTokens: 256, EstimatedPromptTokens: 50,
+		},
+	}
+	if err := reg.Queue().Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	nonce, ts := "nonce-fs", "2026-04-24T12:00:00Z"
+	srv.verifyChallengeResponse("prov-drain", p, &pendingChallenge{nonce: nonce, timestamp: ts},
+		fastSkipChallengeResp(t, nonce, ts, pubKey, binHash))
+
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Fatalf("fast-skip must grant hardware, got %q", lvl)
+	}
+	select {
+	case assigned := <-req.ResponseCh:
+		if assigned == nil || assigned.ID != "prov-drain" {
+			t.Fatalf("expected drain dispatch to prov-drain, got %+v", assigned)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fast-skip grant must drain the queued request to the provider (FIX 3)")
+	}
+}
+
+// TestVerifyChallengeFastSkipMissSignalsSettled proves FIX 4b: when the fast-skip
+// MISSES (no reuse record) and ACME does not promote, verifyChallengeResponse fires
+// the challenge-settled signal so the mdmVerificationLoop stops deferring and runs
+// the full live MDM verify. The provider stays self_signed.
+func TestVerifyChallengeFastSkipMissSignalsSettled(t *testing.T) {
+	logger := quietLogger()
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv.mdmClient = dummyMDMClient()
+	srv.SeedTrustReuseCache(context.Background())
+
+	binHash := trHashA
+	pubKey := testPublicKeyB64()
+	regMsg := &protocol.RegisterMessage{
+		Type:                protocol.TypeRegister,
+		Hardware:            protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:              []protocol.ModelInfo{{ID: "fast-skip-miss-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:             registry.BackendMLXSwift,
+		PublicKey:           pubKey,
+		PrivacyCapabilities: testPrivacyCaps(),
+		Attestation:         createTestAttestationJSONWithBinaryHash(t, pubKey, binHash),
+	}
+	p := reg.Register("prov-miss", nil, regMsg)
+	srv.verifyProviderAttestation("prov-miss", p, regMsg)
+	p.Mu().Lock()
+	p.AttestationResult.SerialNumber = "SER-MISS"
+	p.Mu().Unlock()
+
+	// No trust-reuse record seeded → fast-skip misses. No pending ACME → no promotion.
+	nonce, ts := "nonce-miss", "2026-04-24T12:00:00Z"
+	srv.verifyChallengeResponse("prov-miss", p, &pendingChallenge{nonce: nonce, timestamp: ts},
+		fastSkipChallengeResp(t, nonce, ts, pubKey, binHash))
+
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
+		t.Fatalf("no record + no ACME → provider must stay self_signed, got %q", lvl)
+	}
+	select {
+	case <-p.ChallengeSettledChan():
+		// good — settled signal fired so the MDM loop proceeds to live verify.
+	default:
+		t.Fatal("a fast-skip miss with no ACME promotion must fire the challenge-settled signal (FIX 4b)")
 	}
 }

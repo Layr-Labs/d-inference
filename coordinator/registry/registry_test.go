@@ -1015,6 +1015,30 @@ func TestHardUntrustEpoch(t *testing.T) {
 	}
 }
 
+// TestResetChallengeSettledDrainsStaleSignal proves DAR-326 FIX 4c: a freshly
+// registered provider carries no settled signal, and ResetChallengeSettled drains a
+// buffered one so a new connection cannot consume a stale signal.
+func TestResetChallengeSettledDrainsStaleSignal(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	// A freshly-registered provider's signal is empty (Register resets it).
+	select {
+	case <-p.ChallengeSettledChan():
+		t.Fatal("a freshly-registered provider must have no buffered settled signal")
+	default:
+	}
+
+	// Buffer a (stale) signal, then reset → drained.
+	p.SignalChallengeSettled()
+	p.ResetChallengeSettled()
+	select {
+	case <-p.ChallengeSettledChan():
+		t.Fatal("ResetChallengeSettled must drain the buffered signal")
+	default:
+	}
+}
+
 func TestFindProviderSkipsUntrusted(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

@@ -1757,6 +1757,21 @@ threats:
         status: open
       - description: Attestation tests require AuthenticatedRootEnabled=true or earlier errors are overwritten.
         status: implemented
+      - description: >
+          DAR-326 trust-reuse fast-skip (coordinator/api/trust_reuse.go tryTrustReuseFastSkip)
+          lets a reconnecting, recently-fully-verified provider regain hardware trust from a
+          persisted record without re-running the live MDM SecurityInfo round-trip — avoiding a
+          fleet-wide MDM/APNs re-verification herd on a planned coordinator restart/swap. ACCEPTED
+          TRADE-OFF (relative to TB-005): within the reuse window the fast-skip captures the prior
+          SIP/Secure-Boot posture but does NOT re-prove MDA cert-chain freshness. It is bounded by
+          (1) the short reuse window (EIGENINFERENCE_TRUST_REUSE_WINDOW, default 10m — cannot span a
+          SIP-disable reboot cycle), (2) the ALWAYS-run live SE challenge that re-proves
+          identity + SIP/Secure-Boot posture + unchanged binary on every reuse, (3) a durable
+          hard-untrust epoch that refuses/removes a record if a hard untrust races the grant, and
+          (4) declining the fast-skip entirely when no MDM client is configured. A genuine MDA
+          re-verification still runs for every first-ever connection and for any reconnect outside
+          the window or failing a gate.
+        status: accepted
     open_findings: [SEC-004]
     severity: critical
     detection_hint: >

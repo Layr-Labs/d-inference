@@ -954,6 +954,38 @@ func (s *Server) clearPendingACME(providerID string) {
 	s.pendingACMEMu.Unlock()
 }
 
+// hasPendingACME reports whether a connect-time ACME result is still stashed for a
+// provider (i.e. its SE-key binding has not completed — applyACMETrust clears it on
+// a successful bind).
+func (s *Server) hasPendingACME(providerID string) bool {
+	s.pendingACMEMu.Lock()
+	_, ok := s.pendingACME[providerID]
+	s.pendingACMEMu.Unlock()
+	return ok
+}
+
+// reconcileACMEAfterFastSkip keeps ACMEVerified honest after a trust-reuse
+// fast-skip granted hardware via MDM-reuse (DAR-326 FIX 4a). applyACMETrust sets
+// ACMEVerified=true as soon as a device cert is valid, BEFORE its SE-key binding is
+// proven (the binding needs a passing challenge). The challenge has now passed, so
+// try the binding once: if it binds, ACME genuinely backs hardware and the flag is
+// legitimate (applyACMETrust clears the pending result on success). If it still
+// does not bind, the cert was never proven against the attested SE key, so we must
+// NOT report acme_verified=true off an MDM-reuse grant — clear the flag and discard
+// the stale pending result. No-op when nothing is stashed (then any ACMEVerified
+// was already granted+bound, or was never set).
+func (s *Server) reconcileACMEAfterFastSkip(providerID string, provider *registry.Provider) {
+	if !s.hasPendingACME(providerID) {
+		return
+	}
+	s.retryACMETrust(providerID, provider)
+	if s.hasPendingACME(providerID) {
+		// Binding still did not complete → unbound ACME. Don't claim ACME proof.
+		provider.SetACMEVerified(false)
+		s.clearPendingACME(providerID)
+	}
+}
+
 // retryACMETrust re-applies a stashed ACME result. Called from the
 // challenge-success path so a provider whose device cert was presented at
 // connect — but whose attestation had not yet bound — gets upgraded to
@@ -1638,17 +1670,28 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		// first; any gate miss (no record, binary changed, posture bad/unsigned,
 		// window elapsed, hard-untrusted) returns false and falls through to the
 		// unchanged full live MDM verify.
-		if !s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted) {
-			// DAR-326 FIX 3: the live challenge settled WITHOUT a trust-reuse fast-skip
-			// grant. Signal the per-connection mdmVerificationLoop so a non-fast-skip
-			// candidate stops deferring and proceeds to the full live MDM verify
-			// immediately, instead of stalling the whole trust-reuse grace window.
-			provider.SignalChallengeSettled()
-			// Re-attempt ACME (mTLS device-cert) trust for self_signed providers.
-			// applyACMETrust ran at registration before attestation was bound, so a
-			// provider that presented a valid device cert can be promoted to hardware
-			// now that the challenge has passed. No-op if nothing was stashed.
+		if s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted) {
+			// DAR-326 FIX 3: the fast-skip just granted hardware, so this provider is
+			// freshly routable — drain any queued requests now instead of waiting for
+			// the next heartbeat / 120s queue timeout. Off the challenge goroutine,
+			// mirroring the code-attest / MDM hardware-grant drain.
+			saferun.Go(s.logger, "trustReuseDrain", func() {
+				s.registry.DrainQueuedRequestsForProvider(provider)
+			})
+			// FIX 4a: keep ACMEVerified honest after an MDM-reuse grant — a connect-time
+			// cert may have set the flag before its SE-key binding completed.
+			s.reconcileACMEAfterFastSkip(providerID, provider)
+		} else {
+			// Fast-skip missed. FIX 4b: re-attempt ACME FIRST — applyACMETrust ran at
+			// registration before attestation was bound, so a provider that presented a
+			// valid device cert can be promoted to hardware now that the challenge has
+			// passed, WITHOUT forcing a live MDM round-trip. Only nudge the
+			// mdmVerificationLoop (SignalChallengeSettled, so it stops deferring and
+			// runs the live verify) if ACME did NOT grant hardware.
 			s.retryACMETrust(providerID, provider)
+			if provider.GetTrustLevel() != registry.TrustHardware {
+				provider.SignalChallengeSettled()
+			}
 		}
 	}
 }
@@ -2840,6 +2883,12 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		// same epoch-checked synchronous write-through (recordTrustReuse) — a
 		// concurrent hard untrust is detected and not persisted. seKey + binary hash
 		// come from the registration-bound SE attestation.
+		//
+		// FIX 1: nil-guard the derivation. The candidate set guaranteed a valid
+		// attestation + non-empty serial, but NOT a non-empty SE key or binary hash
+		// (Swift providers may omit the self-reported binary hash). Skip caching
+		// rather than call recordTrustReuse with empty values (which it would reject
+		// anyway) — keeps the intent explicit and avoids a useless call.
 		c.provider.Mu().Lock()
 		var seKey, binaryHash string
 		if c.provider.AttestationResult != nil {
@@ -2847,7 +2896,9 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 			binaryHash = c.provider.AttestationResult.BinaryHash
 		}
 		c.provider.Mu().Unlock()
-		s.recordTrustReuse(c.provider, seKey, c.serial, binaryHash, true /*sip*/, true /*secureBootFull*/, udid)
+		if seKey != "" && binaryHash != "" {
+			s.recordTrustReuse(c.provider, seKey, c.serial, binaryHash, true /*sip*/, true /*secureBootFull*/, udid)
+		}
 	}
 }
 

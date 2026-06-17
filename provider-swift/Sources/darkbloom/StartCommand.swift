@@ -535,6 +535,13 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        // If the service is already running, drain it before replacing the plist.
+        // This avoids aborting in-flight requests when the user re-runs `start`
+        // with a new model selection.
+        if LaunchAgent.isLoaded() {
+            _ = await drainRunningProvider(action: .startReplace)
+        }
+
         try LaunchAgent.installAndStart(
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,

@@ -329,6 +329,10 @@ public enum LaunchAgent: Sendable {
     /// the binary, racing the stage-then-swap. Crash-recovery is instead owned by
     /// the separate `WatchdogAgent`, which waits out a grace period before
     /// relaunching (so it never races the updater) and honours `darkbloom stop`.
+    ///
+    /// `ExitTimeOut = 600` gives the provider the same 10-minute window used by
+    /// `ProviderLoop.waitForInflightDrain()` to finish active inference before
+    /// launchd escalates `launchctl bootout` / logout shutdown to SIGKILL.
     static func makeServicePlist(
         label: String,
         programArguments: [String],
@@ -344,6 +348,7 @@ public enum LaunchAgent: Sendable {
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
+            "ExitTimeOut": 600,
         ]
 
         // launchd does NOT inherit the installing shell's environment, so any

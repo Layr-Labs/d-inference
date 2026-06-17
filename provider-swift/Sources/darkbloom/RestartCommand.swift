@@ -17,6 +17,11 @@ struct Restart: AsyncParsableCommand {
 
     mutating func run() async throws {
         let wasLoaded = LaunchAgent.isLoaded()
+
+        // Drain active inference before asking launchd to kill+relaunch, so in-flight
+        // requests finish on this instance instead of being aborted mid-stream.
+        _ = await drainRunningProvider(action: .restart)
+
         do {
             try LaunchAgent.restart()
         } catch LaunchAgentError.notInstalled {

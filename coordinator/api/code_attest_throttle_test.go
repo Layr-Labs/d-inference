@@ -130,6 +130,47 @@ func TestCodeAttestThrottleOutstandingChallenge(t *testing.T) {
 	}
 }
 
+// TestCodeAttestThrottleMultipleInFlightNonces proves Codex #8: when more than one
+// challenge is pushed within the validity window (alert mode, where the push
+// cooldown is shorter than the validity), a reply to EITHER in-flight nonce is
+// accepted — a delayed first-alert delivery is not rejected just because a second
+// nonce was pushed after it.
+func TestCodeAttestThrottleMultipleInFlightNonces(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newCodeAttestThrottle()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	th.recordChallenge(se, "nonce-A")
+	cur = cur.Add(th.alertPushCooldown + time.Second) // second push, first still valid
+	th.recordChallenge(se, "nonce-B")
+
+	if !th.matchChallenge(se, "nonce-A") {
+		t.Fatal("a reply to the FIRST (still-valid) nonce must be accepted, not clobbered by the second")
+	}
+	if !th.matchChallenge(se, "nonce-B") {
+		t.Fatal("a reply to the second nonce must be accepted")
+	}
+	if th.matchChallenge(se, "nonce-UNKNOWN") {
+		t.Fatal("an unknown nonce must never match")
+	}
+
+	// Answering one nonce leaves the other in flight.
+	th.clearChallengeIf(se, "nonce-A")
+	if th.matchChallenge(se, "nonce-A") {
+		t.Fatal("a cleared nonce must no longer match")
+	}
+	if !th.matchChallenge(se, "nonce-B") {
+		t.Fatal("clearing one nonce must not drop the other")
+	}
+
+	// Both expire past the validity window (fail-closed staleness).
+	cur = cur.Add(th.challengeValidity)
+	if th.matchChallenge(se, "nonce-B") {
+		t.Fatal("a nonce must stop matching after the validity window")
+	}
+}
+
 // TestCodeAttestThrottleRetryDelayJitter proves the retry cadence is the base
 // spacing plus injected jitter, and is decoupled from (and much shorter than) the
 // push budget (Fix 3).

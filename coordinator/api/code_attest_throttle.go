@@ -53,9 +53,9 @@ type codeAttestStore interface {
 //     and jitter de-synchronises fleet-wide reconnects (e.g. post-deploy).
 type codeAttestThrottle struct {
 	mu          sync.Mutex
-	attested    map[string]codeAttestRecord    // seKey -> last successful attestation (reuse cache)
-	lastPush    map[string]time.Time           // seKey -> last push (device-level rate limit)
-	outstanding map[string]codeAttestChallenge // seKey -> last pushed, not-yet-verified challenge
+	attested    map[string]codeAttestRecord      // seKey -> last successful attestation (reuse cache)
+	lastPush    map[string]time.Time             // seKey -> last push (device-level rate limit)
+	outstanding map[string][]codeAttestChallenge // seKey -> unexpired pushed, not-yet-verified challenges (alert mode can have several in flight)
 
 	reuseWindow time.Duration
 
@@ -104,7 +104,7 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 	return &codeAttestThrottle{
 		attested:               make(map[string]codeAttestRecord),
 		lastPush:               make(map[string]time.Time),
-		outstanding:            make(map[string]codeAttestChallenge),
+		outstanding:            make(map[string][]codeAttestChallenge),
 		reuseWindow:            30 * time.Minute,
 		backgroundPushCooldown: 20 * time.Minute, // <= 3 pushes/hour/device (APNs background budget)
 		alertPushCooldown:      75 * time.Second, // alert is not background-throttled (Fix 3)
@@ -252,35 +252,84 @@ func (t *codeAttestThrottle) recordChallenge(seKey, nonce string) {
 		return
 	}
 	t.mu.Lock()
-	t.outstanding[seKey] = codeAttestChallenge{nonce: nonce, at: t.now()}
+	now := t.now()
+	// Keep EVERY still-unexpired nonce, not just the latest: in alert mode the push
+	// cooldown (75s) is shorter than the challenge validity (the APNs expiry window),
+	// so a second challenge can be pushed while the first is still deliverable. If we
+	// kept only the newest nonce, a delayed delivery of the first alert would make the
+	// device reply with a nonce we had already discarded, we'd reject a valid proof,
+	// and repeated delayed deliveries could strand attestation (Codex #8). Prune
+	// expired entries on the way in so the slice stays bounded by validity/cooldown.
+	old := t.outstanding[seKey]
+	kept := make([]codeAttestChallenge, 0, len(old)+1)
+	for _, ch := range old {
+		if now.Sub(ch.at) < t.challengeValidity {
+			kept = append(kept, ch)
+		}
+	}
+	t.outstanding[seKey] = append(kept, codeAttestChallenge{nonce: nonce, at: now})
 	t.mu.Unlock()
 }
 
-// outstandingChallenge returns the device's most recent pushed challenge if it is
-// still within the validity window. The delivery path verifies the provider's
-// reply nonce against this value (fail-closed: no/expired challenge => no match).
+// outstandingChallenge reports whether the device has ANY still-valid pushed
+// challenge, returning the most recent one. The delivery path matches a specific
+// reply nonce via matchChallenge; this is the existence / most-recent view.
 func (t *codeAttestThrottle) outstandingChallenge(seKey string) (codeAttestChallenge, bool) {
 	if seKey == "" {
 		return codeAttestChallenge{}, false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ch, ok := t.outstanding[seKey]
-	if !ok || t.now().Sub(ch.at) >= t.challengeValidity {
-		return codeAttestChallenge{}, false
+	now := t.now()
+	var best codeAttestChallenge
+	found := false
+	for _, ch := range t.outstanding[seKey] {
+		if now.Sub(ch.at) < t.challengeValidity && (!found || ch.at.After(best.at)) {
+			best = ch
+			found = true
+		}
 	}
-	return ch, true
+	return best, found
 }
 
-// clearChallengeIf removes the outstanding challenge only if it still matches the
-// given nonce, so a concurrent re-push for the same device is never clobbered.
+// matchChallenge reports whether nonce equals ANY still-unexpired challenge pushed
+// to this device. Accepting a reply to any in-flight challenge (not only the latest)
+// is what prevents a delayed alert delivery from being rejected (Codex #8).
+func (t *codeAttestThrottle) matchChallenge(seKey, nonce string) bool {
+	if seKey == "" || nonce == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	for _, ch := range t.outstanding[seKey] {
+		if ch.nonce == nonce && now.Sub(ch.at) < t.challengeValidity {
+			return true
+		}
+	}
+	return false
+}
+
+// clearChallengeIf removes the given nonce from the device's outstanding set (e.g.
+// after it was answered or its push failed), leaving any other in-flight nonces
+// intact so a concurrent challenge is never clobbered.
 func (t *codeAttestThrottle) clearChallengeIf(seKey, nonce string) {
 	if seKey == "" {
 		return
 	}
 	t.mu.Lock()
-	if ch, ok := t.outstanding[seKey]; ok && ch.nonce == nonce {
-		delete(t.outstanding, seKey)
+	if chs, ok := t.outstanding[seKey]; ok {
+		kept := chs[:0]
+		for _, ch := range chs {
+			if ch.nonce != nonce {
+				kept = append(kept, ch)
+			}
+		}
+		if len(kept) == 0 {
+			delete(t.outstanding, seKey)
+		} else {
+			t.outstanding[seKey] = kept
+		}
 	}
 	t.mu.Unlock()
 }

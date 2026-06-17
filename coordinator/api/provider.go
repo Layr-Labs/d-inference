@@ -778,13 +778,13 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 		return
 	}
 
-	// Match against the nonce we pushed to THIS device (survives reconnect; nil or
-	// expired => no match => fail-closed).
-	ch, ok := s.codeAttestThrottle.outstandingChallenge(sePubKey)
-	if !ok || resp.Nonce == "" || resp.Nonce != ch.nonce {
+	// Match against ANY still-valid nonce we pushed to THIS device (survives
+	// reconnect, and accepts a reply to an earlier in-flight challenge in alert
+	// mode; no/expired match => fail-closed) — Codex #8.
+	if resp.Nonce == "" || !s.codeAttestThrottle.matchChallenge(sePubKey, resp.Nonce) {
 		s.codeAttestMetric("nonce_mismatch")
 		s.logger.Warn("code-attest response nonce mismatch or no outstanding challenge",
-			"provider_id", providerID, "have_challenge", ok)
+			"provider_id", providerID)
 		return
 	}
 	// Verify Sign_SE(nonce) against the SE public key bound to THIS connection at
@@ -801,7 +801,7 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	// restart/blue-green deploy (W5 Fix 2). Behind the store seam + off the read
 	// loop; written only here, after the full round-trip verified above.
 	s.persistCodeAttestation(sePubKey, version)
-	s.codeAttestThrottle.clearChallengeIf(sePubKey, ch.nonce)
+	s.codeAttestThrottle.clearChallengeIf(sePubKey, resp.Nonce)
 	s.codeAttestMetric("attested")
 	s.logger.Info("provider code-attested via APNs", "provider_id", providerID)
 	// Newly eligible for private routing — drain requests that queued waiting for an

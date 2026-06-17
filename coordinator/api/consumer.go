@@ -5015,13 +5015,33 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// heartbeat, so the queued request drains onto it sooner.
 		s.kickColdDispatch(model)
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
+		routeState := &dispatchState{
+			s:                     s,
+			r:                     r,
+			model:                 model,
+			publicModel:           publicModel,
+			consumerKey:           consumerKey,
+			consumerLocation:      consumerLocation,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			policy:                policy,
+			cacheAffinityKey:      cacheAffinityKey,
+			requestID:             requestID,
+			attempt:               pr.Attempt,
+			pr:                    pr,
+		}
+		routeState.recordRoutingDecisionFor(nil, pr, requestID, pr.Attempt, decision, "", "queued")
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				s.recordWarmPoolQueueState(model)
+				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 				refundReservation()
 				return
 			}
+			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "queue_timeout", http.StatusTooManyRequests))
 			retryAfter := s.estimateRetryAfter(model)
 			s.registry.RecordWarmPoolQueueTimeout(model, time.Since(queuedReq.EnqueuedAt))
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))

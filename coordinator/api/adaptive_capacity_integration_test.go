@@ -226,6 +226,12 @@ func TestAdaptiveCapacityIntegrationHTTP429WhenTokenBudgetExhausted(t *testing.T
 	ts, reg := setupAdaptiveCapacityIntegration(t)
 	defer ts.Close()
 
+	// Routing v2 W3: with queue-before-shed ON (the default) a token-budget
+	// exhausted request is QUEUED rather than fast-429'd (see
+	// TestAdaptiveCapacityIntegrationQueueBeforeShedQueuesInsteadOf429). This test
+	// pins the legacy fast-shed path that the flag-off behaviour preserves.
+	t.Setenv(envQueueBeforeShed, "false")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -259,6 +265,78 @@ func TestAdaptiveCapacityIntegrationHTTP429WhenTokenBudgetExhausted(t *testing.T
 	}
 	if !strings.Contains(body, "at capacity") {
 		t.Fatalf("body = %s, want capacity error", body)
+	}
+}
+
+// Routing v2 W3 queue-before-shed: with the flag ON (default), a request that
+// the preflight would have 429'd `machine_busy` (all providers at capacity)
+// instead enters the dispatch+queue path so a freeing slot can serve it within
+// the queue window. We assert the request lands in the queue rather than getting
+// an immediate 429.
+func TestAdaptiveCapacityIntegrationQueueBeforeShedQueuesInsteadOf429(t *testing.T) {
+	ts, reg := setupAdaptiveCapacityIntegration(t)
+	defer ts.Close()
+
+	// Ensure the default-on behaviour even if the ambient env disables it.
+	t.Setenv(envQueueBeforeShed, "true")
+	// Keep cold-dispatch from kicking model swaps in this single-warm-provider
+	// scenario — irrelevant here and keeps the test focused on queueing.
+	t.Setenv(envColdDispatch, "false")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	model := "adaptive-queue-before-shed"
+	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, testPublicKeyB64())
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	p := markOnlyProviderRoutable(t, reg)
+
+	writeAdaptiveHeartbeat(t, ctx, conn, model, &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{{
+			Model:                 model,
+			State:                 "running",
+			MaxConcurrency:        8,
+			ActiveTokenBudgetUsed: 950,
+			ActiveTokenBudgetMax:  1_000,
+		}},
+	})
+	waitForAdaptiveCondition(t, time.Second, func() bool {
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		return p.BackendCapacity != nil && p.BackendCapacity.Slots[0].ActiveTokenBudgetMax == 1_000
+	})
+
+	// Fire a request whose token budget cannot be admitted right now. It must
+	// QUEUE (not return an immediate 429).
+	reqCtx, reqCancel := context.WithCancel(ctx)
+	defer reqCancel()
+	done := make(chan int, 1)
+	go func() {
+		status, _, _ := adaptiveChatRequest(reqCtx, ts.URL, model, 256)
+		done <- status
+	}()
+
+	// Within a short window the capacity-rejected request should be sitting in
+	// the queue rather than having been shed.
+	waitForAdaptiveCondition(t, 3*time.Second, func() bool {
+		depth, _ := reg.Queue().QueueStats(model)
+		return depth >= 1
+	})
+
+	// It must not have already returned a fast 429.
+	select {
+	case status := <-done:
+		t.Fatalf("request returned status %d while it should still be queued (queue-before-shed)", status)
+	default:
+	}
+
+	// Cancel the queued request and confirm it unwinds cleanly.
+	reqCancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued request did not return after cancellation")
 	}
 }
 

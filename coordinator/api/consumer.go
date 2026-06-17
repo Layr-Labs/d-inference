@@ -1918,81 +1918,114 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if candidateCount == 0 && capacityRejections > 0 {
+			// Routing v2 W3: feed the autoscaler the demand the preflight sees.
 			s.registry.RecordWarmPoolCapacityReject(model)
 			s.triggerWarmPool()
-			// Providers exist for this model but ALL are at capacity.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "machine_busy",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  stream,
-				estimatedPromptTokens:   estimatedPromptTokens,
-				requestedMaxTokens:      requestedMaxTokens,
-				requiresVision:          requiresVision,
-				hasTools:                hasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-			})
-			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
-				withCode("rate_limit_exceeded")))
-			return
+			// Queue-before-shed (default on): providers exist for this model but
+			// all are at capacity right now. Rather than an immediate 429, let the
+			// request fall through to the normal dispatch+queue path so a slot
+			// freeing — or a cold load completing — within the queue window serves
+			// it. The dispatch/queue path still returns a 429 when the queue is
+			// full or the wait times out (true saturation). The reservation is
+			// kept for dispatch.
+			if s.queueBeforeShedEnabled() {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
+			} else {
+				// Legacy fast-shed: immediate 429.
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "machine_busy",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
+					withCode("rate_limit_exceeded")))
+				return
+			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
 			// No provider is even structurally eligible right now: the model's
 			// whole pool is offline/untrusted, trait-gated (below the tools floor
 			// / render-broken), or — the case the shape-keyed breaker introduces —
 			// every serving provider is in inference-error cooldown for THIS
-			// request shape. None of those clear by a slot freeing up, so queueing
-			// for up to 120s only adds misleading latency before the same 429.
-			// Fail fast with a retryable 503 + Retry-After (OpenRouter treats 503
-			// as unavailable, not a uptime-penalised error here because the body
-			// is explicit). This mirrors the trait fast-fails above for the
-			// transient-cooldown case they cannot see.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "no_provider",
-				httpStatus:              http.StatusServiceUnavailable,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  stream,
-				estimatedPromptTokens:   estimatedPromptTokens,
-				requestedMaxTokens:      requestedMaxTokens,
-				requiresVision:          requiresVision,
-				hasTools:                hasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-			})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
-				withCode("model_unavailable")))
-			return
+			// request shape.
+			//
+			// Routing v2 W3 cold-dispatch (default on): before shedding, check
+			// whether an idle on-disk provider could be WARMED to serve this model
+			// (and would then pass admission for these traits). If so, spill the
+			// request into the queue instead of 503'ing — the enqueue path kicks
+			// the model-swap machinery, and the queued request drains onto the
+			// provider once the cold load completes. Note that an idle, fitting
+			// cold provider is already a scheduler candidate (slot "unknown" is
+			// eligible), so this branch usually only fires for genuinely
+			// unservable demand; it is the safety valve for the narrow window
+			// where a loadable cold provider is not yet a candidate.
+			//
+			// Feed the autoscaler the demand regardless of outcome.
+			s.registry.RecordWarmPoolCapacityReject(model)
+			s.triggerWarmPool()
+			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
+				// Fall through to dispatch+queue; reservation kept.
+			} else {
+				// None of these clear by a slot freeing up, so queueing for up to
+				// 120s only adds misleading latency before the same error. Fail
+				// fast with a retryable 503 + Retry-After (OpenRouter treats 503
+				// as unavailable, not a uptime-penalised error here because the
+				// body is explicit). This mirrors the trait fast-fails above for
+				// the transient-cooldown case they cannot see.
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "no_provider",
+					httpStatus:              http.StatusServiceUnavailable,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+					fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
+					withCode("model_unavailable")))
+				return
+			}
 		}
 		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
@@ -2025,6 +2058,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					rawBody, _ = marshalForwardBody(parsed)
 				}
 			} else if s.ttftHardReject {
+				// Routing v2 W3: feed the autoscaler a TTFT-miss for this model so
+				// it can grow warm capacity even though this request is shed.
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
 				s.recordRejection(rejectionInfo{
@@ -2057,6 +2094,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				// provider-measured (~10x pessimistic), so serve the best-available
 				// provider rather than 429'ing a request we can fulfill. The
 				// reservation is kept for dispatch; record the decision for telemetry.
+				//
+				// Routing v2 W3: a soft-serve over the deadline is still a TTFT
+				// near-miss — feed the autoscaler so it grows warm capacity for
+				// this model even though we serve this request.
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 			}
 		}
@@ -4605,80 +4648,107 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		if candidateCount == 0 && capacityRejections > 0 {
+			// Routing v2 W3: feed the autoscaler the demand the preflight sees.
 			s.registry.RecordWarmPoolCapacityReject(model)
 			s.triggerWarmPool()
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "machine_busy",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  stream,
-				estimatedPromptTokens:   estimatedPromptTokens,
-				requestedMaxTokens:      requestedMaxTokens,
-				requiresVision:          requiresVision,
-				hasTools:                hasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-			})
-			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
-				withCode("rate_limit_exceeded")))
-			return
+			// Queue-before-shed (default on): all providers for this model are at
+			// capacity right now. Fall through to the dispatch+queue path so a slot
+			// freeing — or a cold load completing — within the queue window serves
+			// it; the queue path still 429s on a full queue or wait timeout.
+			if s.queueBeforeShedEnabled() {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
+			} else {
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "machine_busy",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
+					withCode("rate_limit_exceeded")))
+				return
+			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
 			// No structurally-eligible provider right now (offline, trait-gated,
-			// or shape-cooled by the inference-error breaker). Queueing cannot help
-			// — fail fast with a retryable 503 instead of a 120s queue. Mirrors the
-			// chat-completions preflight.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "no_provider",
-				httpStatus:              http.StatusServiceUnavailable,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  stream,
-				estimatedPromptTokens:   estimatedPromptTokens,
-				requestedMaxTokens:      requestedMaxTokens,
-				requiresVision:          requiresVision,
-				hasTools:                hasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-			})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
-				withCode("model_unavailable")))
-			return
+			// or shape-cooled by the inference-error breaker).
+			//
+			// Routing v2 W3 cold-dispatch (default on): if an idle on-disk provider
+			// could be warmed to serve this model (and would pass admission for
+			// these traits), spill into the queue instead of 503'ing — the enqueue
+			// path kicks the model-swap machinery and the queued request drains
+			// onto the provider once the cold load completes. Feed the autoscaler
+			// the demand regardless of outcome.
+			s.registry.RecordWarmPoolCapacityReject(model)
+			s.triggerWarmPool()
+			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
+				// Fall through to dispatch+queue; reservation kept.
+			} else {
+				// Queueing cannot help — fail fast with a retryable 503 instead of
+				// a 120s queue. Mirrors the chat-completions preflight.
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "no_provider",
+					httpStatus:              http.StatusServiceUnavailable,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+					fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
+					withCode("model_unavailable")))
+				return
+			}
 		}
 		ttftThreshold := genericDeadline
 		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 			} else if s.ttftHardReject {
+				// Routing v2 W3: feed the autoscaler a TTFT-miss for this model so
+				// it can grow warm capacity even though this request is shed.
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
 				s.recordRejection(rejectionInfo{
@@ -4711,6 +4781,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				// provider-measured (~10x pessimistic), so serve the best-available
 				// provider rather than 429'ing a request we can fulfill. The
 				// reservation is kept for dispatch; record the decision for telemetry.
+				//
+				// Routing v2 W3: a soft-serve over the deadline is still a TTFT
+				// near-miss — feed the autoscaler so it grows warm capacity for
+				// this model even though we serve this request.
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 			}
 		}
@@ -4863,6 +4939,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		s.recordWarmPoolQueueState(model)
+		// Routing v2 W3: the model now has queued demand — proactively warm a cold
+		// provider for it (TriggerModelSwaps) instead of waiting for the next
+		// heartbeat, so the queued request drains onto it sooner.
+		s.kickColdDispatch(model)
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {

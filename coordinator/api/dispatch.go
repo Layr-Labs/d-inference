@@ -504,6 +504,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			return outcomeResponseWritten
 		}
 		s.recordWarmPoolQueueState(d.model)
+		// Routing v2 W3: the model now has queued demand — proactively warm a cold
+		// provider for it (TriggerModelSwaps) instead of waiting for the next
+		// heartbeat, so the queued request drains onto it sooner.
+		s.kickColdDispatch(d.model)
 		s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:queued"})
 		d.recordRoutingDecision(decision, "", "queued")
 

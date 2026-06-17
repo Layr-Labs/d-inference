@@ -49,6 +49,12 @@ public final class AtomicProviderStats: Sendable {
     // Cumulative prompt tokens that have been prefilled (credited at request
     // completion). Denominator for the energy J/prefill-token ratio.
     private let _promptTokensPrefilled = ManagedAtomic<UInt64>(0)
+    // Nonzero while a model load/swap is in progress (cold load or coordinator
+    // preload). The energy accountant reads this to bucket load energy; the
+    // provider only ever reports running/idle slot states, so slot state cannot
+    // signal a load in progress. Int (not Bool) because ManagedAtomic requires
+    // a FixedWidthInteger here.
+    private let _modelLoading = ManagedAtomic<Int>(0)
     // Count of completed requests whose usage chunk was missing/zero. Surfaced
     // in the daemon state file so `doctor` can flag a billing under-count.
     private let _usageGaps = ManagedAtomic<UInt64>(0)
@@ -80,6 +86,14 @@ public final class AtomicProviderStats: Sendable {
     /// Increment as output frames stream (≈ one token per content frame).
     public func addEnergyDecodeTokens(_ count: UInt64) {
         _energyDecodeTokens.add(count)
+    }
+
+    /// True while a model load is in progress. Read by the energy accountant.
+    public var modelLoading: Bool { _modelLoading.load() != 0 }
+
+    /// Set by the load path (ProviderLoop) around model load/swap critical sections.
+    public func setModelLoading(_ value: Bool) {
+        _modelLoading.store(value ? 1 : 0)
     }
 
     public var usageGaps: UInt64 {
@@ -979,14 +993,15 @@ public actor CoordinatorClient {
     /// inside the accountant.
     private func energyCounters() -> EnergyActivityCounters {
         let model = state.currentModel
-        // A model is mid-load when any backend slot reports the reloading state.
-        let loading = state.backendCapacity?.slots.contains { $0.state == "reloading" } ?? false
         return EnergyActivityCounters(
             decodeTokensTotal: stats.energyDecodeTokens,
             prefillTokensTotal: stats.promptTokensPrefilled,
             inferenceActive: state.inferenceActive,
             modelResident: !(model?.isEmpty ?? true),
-            loading: loading
+            // Authoritative load signal from the provider's load critical section
+            // (covers cold loads + coordinator preloads). The provider never
+            // emits a "reloading" slot state, so this cannot come from capacity.
+            loading: stats.modelLoading
         )
     }
 

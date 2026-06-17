@@ -746,6 +746,12 @@ type RejectionRecord struct {
 // new connection = new ProviderID), so diffing within a single ProviderID never
 // straddles a counter reset. SerialNumber is the stable machine identity for
 // cross-session rollups.
+//
+// The ledger is PROCESS-WIDE, not per-model: IOReport measures whole-SoC energy
+// and cannot be split across concurrently-resident models. Model is only the
+// active (serving) model at snapshot time, for context — do NOT treat it as a
+// per-model energy attribution key. Attribution is per-OPERATION (idle / prefill
+// / decode / load), which is the dimension this feature is built to analyze.
 type ProviderEnergyRecord struct {
 	ProviderID   string `json:"provider_id"`
 	AccountID    string `json:"account_id,omitempty"`

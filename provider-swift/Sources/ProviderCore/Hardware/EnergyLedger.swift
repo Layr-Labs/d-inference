@@ -113,14 +113,22 @@ public struct EnergyLedger: Sendable {
         let joules = max(0, sample.totalJoules)
         lastWatts = joules / dt
 
-        // Subsystem totals accrue regardless of bucket.
+        // Off: machine idle with no model resident and not loading. Excluded
+        // from BOTH the operation buckets AND the subsystem totals so the two
+        // stay consistent (subsystem split == sum of buckets' scope). Tracked
+        // separately in offJoules; not reported on the wire.
+        if !activity.loading && !activity.inferenceActive && !activity.modelResident {
+            offJoules += joules
+            consecutiveIdleTicks = 0
+            return
+        }
+
+        // Accounted tick (warm idle / prefill / decode / load): subsystem totals
+        // and token denominators accrue here so they match the buckets.
         cpuJoules += max(0, sample.cpuJoules)
         gpuJoules += max(0, sample.gpuJoules)
         aneJoules += max(0, sample.aneJoules)
         dramJoules += max(0, sample.dramJoules)
-
-        // Token deltas accrue regardless of how this tick is bucketed; they are
-        // the denominators for the per-token energy ratios.
         prefillTokens += max(0, activity.prefillTokens)
         decodeTokens += max(0, activity.decodeTokens)
 
@@ -133,19 +141,13 @@ public struct EnergyLedger: Sendable {
         }
 
         if !activity.inferenceActive {
-            // Not serving. Only count as warm idle when a model is resident;
-            // otherwise it's machine-idle and must not bias the warm baseline.
-            if activity.modelResident {
-                warmSeconds += dt
-                idleJoules += joules
-                consecutiveIdleTicks += 1
-                if consecutiveIdleTicks >= Self.idleStabilityThreshold {
-                    let w = joules / dt
-                    idleWatts = idleWatts > 0 ? (Self.idleAlpha * w + (1 - Self.idleAlpha) * idleWatts) : w
-                }
-            } else {
-                offJoules += joules
-                consecutiveIdleTicks = 0
+            // Not serving, model resident → warm idle.
+            warmSeconds += dt
+            idleJoules += joules
+            consecutiveIdleTicks += 1
+            if consecutiveIdleTicks >= Self.idleStabilityThreshold {
+                let w = joules / dt
+                idleWatts = idleWatts > 0 ? (Self.idleAlpha * w + (1 - Self.idleAlpha) * idleWatts) : w
             }
             return
         }

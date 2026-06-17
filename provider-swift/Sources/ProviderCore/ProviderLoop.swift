@@ -212,7 +212,12 @@ public actor ProviderLoop {
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var modelsLoading: Set<String> = []
     private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
-    private var isLoadingAny: Bool = false
+    // Mirror the load-in-progress state to the shared stats so the energy
+    // accountant can bucket model-load energy (the provider never emits a
+    // "reloading" slot state, so this is the only reliable load signal).
+    private var isLoadingAny: Bool = false {
+        didSet { stats.setModelLoading(isLoadingAny) }
+    }
     private var isShuttingDown: Bool = false
 
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`

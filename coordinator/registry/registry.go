@@ -1271,9 +1271,12 @@ func (r *Registry) persistEnergyNow(p *Provider) {
 			serial = p.AttestationResult.SerialNumber
 		}
 		rec := store.ProviderEnergyRecord{
-			ProviderID:       p.ID,
-			AccountID:        p.AccountID,
-			SerialNumber:     serial,
+			ProviderID:   p.ID,
+			AccountID:    p.AccountID,
+			SerialNumber: serial,
+			// Active model at snapshot time, for context only. The ledger is
+			// process-wide (whole-SoC energy can't be split per resident model),
+			// so this is NOT a per-model attribution key — see ProviderEnergyRecord.
 			Model:            p.CurrentModel,
 			ChipFamily:       p.Hardware.ChipFamily,
 			ChipTier:         p.Hardware.ChipTier,

@@ -49,6 +49,22 @@ const (
 	kvCacheBytesPerToken = 400_000 // ~0.38 MB; covers 7-8B with slack
 	bytesPerGB           = 1 << 30
 
+	// activationReserveGB is the working-memory headroom a cold load needs
+	// on top of weights + KV cache: transient activation/compute buffers the
+	// engine allocates while running. It mirrors the provider's authoritative
+	// ModelLoadAdmission activation reserve (provider-swift) so the
+	// coordinator's cold-load admission (freeMemoryAdmits) does not over-admit
+	// loads the provider would then OOM-reject. ~3 GB is conservative for the
+	// 7-8B-class models the fleet serves.
+	activationReserveGB = 3.0
+
+	// coldLoadOSReserveGB is the OS / non-engine memory we hold back when
+	// estimating real free memory for a cold load. It stands in for the
+	// provider's "clamp to OS-available, under the 90% unified-memory cap"
+	// term until the provider reports free-for-load directly (see the TODO in
+	// freeMemoryAdmits).
+	coldLoadOSReserveGB = 4.0
+
 	// effectiveTPSLoadFactor controls how aggressively decode TPS
 	// degrades as a provider takes on more concurrent requests. The
 	// effective TPS used in cost is `decodeTPS / (1 + k * batchSize)`
@@ -842,18 +858,34 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	required += kvCacheGB
 
 	// When the model is available on disk but not currently loaded, the
-	// provider will evict idle models to make room (LRU eviction). Check
-	// whether the model individually fits in total memory (with OS/KV
-	// overhead) rather than requiring it to fit alongside existing loaded
-	// models. The provider handles the swap autonomously.
+	// provider will LRU-evict idle models to make room, so we check the model
+	// fits in REAL FREE memory rather than requiring it to fit alongside the
+	// currently-loaded models. The provider handles the swap autonomously.
 	//
-	// However, if the provider has in-flight requests (totalPending > 0),
-	// it cannot evict the currently-serving model. In that case, fall
-	// through to the standard free-memory check which requires room
-	// alongside active models.
+	// However, if the provider has in-flight requests (totalPending > 0), it
+	// cannot evict the serving model, so we fall through to the standard
+	// free-memory check which requires room alongside active models.
+	//
+	// Source of truth: the provider's ModelLoadAdmission gate (provider-swift)
+	// admits a load only when weights + activation reserve + min serveable KV
+	// fit in its real free memory (total - resident, clamped to OS-available,
+	// under the 90% unified cap). We mirror that here CONSERVATIVELY: real free
+	// ≈ total - gpuMemoryActiveGB - coldLoadOSReserveGB, and required = weights
+	// + KV + activationReserveGB. GPU *cache* (gpuMemoryCacheGB) is reclaimable,
+	// so it is intentionally NOT subtracted — it counts as free. This is
+	// strictly safer than the previous check (which compared against TOTAL
+	// memory, assuming the provider would evict everything down to bare OS
+	// overhead): for any gpuMemoryActiveGB >= 0, this admits a subset of what
+	// the old check admitted, so it never over-admits a load the provider would
+	// reject (the meltdown's OOM-load mechanism).
+	//
+	// TODO(routing): the cleanest long-term fix is for the provider to REPORT
+	// its own availableMemoryGb()/freeForLoadGb in BackendCapacity so the
+	// coordinator consumes a single source of truth instead of re-deriving free
+	// memory here. Until then this conservative mirror prevents over-admission.
 	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
-		const osReserveGB = 4.0
-		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
+		realFree := snap.totalMemoryGB - snap.gpuMemoryActiveGB - coldLoadOSReserveGB
+		return required+activationReserveGB <= realFree
 	}
 
 	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB

@@ -55,6 +55,10 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
     /// of `exit(0)` so AppKit finishes its own termination sequence cleanly.
     private var terminationRequested = false
 
+    /// Guard against calling `reply(toApplicationShouldTerminate:)` more than
+    /// once if AppKit re-enters termination or the signal source races it.
+    private var hasReplied = false
+
     init(args: [String]) {
         self.args = args
         super.init()
@@ -116,11 +120,12 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishServeTask() async {
-        if terminationRequested {
-            NSApp.reply(toApplicationShouldTerminate: true)
-        } else {
+        guard terminationRequested else {
             exit(0)
         }
+        guard !hasReplied else { return }
+        hasReplied = true
+        NSApp.reply(toApplicationShouldTerminate: true)
     }
 
     private func installShutdownSignalSources() {

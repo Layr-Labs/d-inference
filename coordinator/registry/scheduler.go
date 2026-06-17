@@ -86,6 +86,7 @@ type routingSnapshot struct {
 	availableOnDisk    bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
+	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
 	activeTokenBudgetUsed int64
 	activeTokenBudgetMax  int64
 	queuedTokenBudget     int64
@@ -791,6 +792,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 			snap.backendWaiting = int(slot.NumWaiting)
 			snap.maxTokensPotential = slot.MaxTokensPotential
 			snap.observedDecodeTPS = slot.ObservedDecodeTPS
+			snap.observedPrefillTPS = slot.ObservedPrefillTPS
 			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 			snap.queuedTokenBudget = slot.QueuedTokenBudget
@@ -1056,6 +1058,26 @@ func resolveEffectiveTPS(snap routingSnapshot) float64 {
 		return snap.fleetMedianTPS
 	}
 	return effectiveDecodeTPS(snap.decodeTPS, snap.backendRunning)
+}
+
+// resolvePrefillTPS returns the best available prefill TPS estimate for TTFT.
+// Fallback chain: measured per-slot observed prefill EWMA → snap.prefillTPS (the
+// resolvedPrefillTPS chain: registration benchmark → decode×prefillToDecodeRatio
+// ×12 fallback). This mirrors how resolveEffectiveTPS prefers the measured
+// decode rate over the static estimate. The result is clamped to maxPrefillTPS
+// so a single outlier heartbeat cannot collapse the TTFT estimate.
+//
+// observedPrefillTPS stays 0 until providers ship the W1 measurement, so on
+// today's fleet this is a no-op that returns the existing ×12-chain value.
+func resolvePrefillTPS(snap routingSnapshot) float64 {
+	tps := snap.prefillTPS
+	if snap.observedPrefillTPS > 0 {
+		tps = snap.observedPrefillTPS
+	}
+	if tps > maxPrefillTPS {
+		tps = maxPrefillTPS
+	}
+	return tps
 }
 
 // effectiveDecodeTPS scales the static decode TPS down by current
@@ -1343,6 +1365,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.backendRunning = int(slot.NumRunning)
 				snap.backendWaiting = int(slot.NumWaiting)
 				snap.observedDecodeTPS = slot.ObservedDecodeTPS
+				snap.observedPrefillTPS = slot.ObservedPrefillTPS
 				snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 				snap.queuedTokenBudget = slot.QueuedTokenBudget
@@ -1423,7 +1446,7 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	if reqPromptTokens < 0 {
 		reqPromptTokens = 0
 	}
-	prefillTPS := snap.prefillTPS
+	prefillTPS := resolvePrefillTPS(snap)
 	if prefillTPS <= 0 {
 		prefillTPS = 1.0
 	}

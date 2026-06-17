@@ -4282,6 +4282,12 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					if slot.ObservedDecodeTPS > 0 {
 						snap.effectiveTPS = slot.ObservedDecodeTPS
 					}
+					// Prefer the measured per-slot prefill EWMA over the ×12
+					// fallback for the capacity TTFT estimate, mirroring the
+					// routing path (resolvePrefillTPS). 0 = unreported.
+					if slot.ObservedPrefillTPS > 0 {
+						snap.prefillTPS = slot.ObservedPrefillTPS
+					}
 					snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 					snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 					snap.queuedTokenBudget = slot.QueuedTokenBudget

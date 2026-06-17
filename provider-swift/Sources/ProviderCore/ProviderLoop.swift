@@ -3178,16 +3178,26 @@ public actor ProviderLoop {
         let totalMem = ProcessInfo.processInfo.physicalMemory
 
         // Max model weight we could load right now (single source of truth for
-        // the coordinator's cold-load routing). Treats current MLX usage as
-        // reclaimable (idle models are evicted on a cold load) and holds back the
-        // same load reserve the load gate uses, so it enforces the 90% cap.
+        // the coordinator's cold-load routing). Holds back the same load reserve
+        // the load gate uses, so it enforces the 90% cap.
+        //
+        // Eviction handling: current MLX usage may be reclaimed by evicting idle
+        // models on a cold load — BUT ONLY when nothing is being served. MLX
+        // memory is global (it also covers the local inference endpoint, whose
+        // streams are tracked by localReservations, not modelSlots), so a model
+        // serving a local request is NOT evictable. `hasInflightWork` is the
+        // comprehensive signal (coordinator inflight + local streams): when work
+        // is in flight we treat NOTHING as reclaimable (conservative, never
+        // advertises an actively-served model's weights as free); only when fully
+        // idle do we assume idle models can be evicted.
         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+        let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
         let loadReserve = UnifiedMemoryCap.loadReserveBytes(
             configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
         let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
             totalBytes: totalMem,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
-            mlxUsedBytes: mlxUsed,
+            mlxUsedBytes: reclaimableMlx,
             reserveBytes: loadReserve)
 
         state.backendCapacity = BackendCapacity(

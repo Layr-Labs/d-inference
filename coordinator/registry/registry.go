@@ -2875,6 +2875,18 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
 			return 0, false
 		}
+		// Live free-capacity gate: don't plan a load the provider already reports
+		// it cannot fit (free_for_load_gb = max model weight loadable right now,
+		// net of cap/reserve/headroom and evictable idle models). Mirrors the
+		// direct-routing freeMemoryAdmits gate so the warming planner can't send a
+		// load_model the provider then OOM-rejects — which would otherwise leave
+		// queued cold-dispatch requests sitting until they time out. Only applies
+		// when the provider reports the field (legacy providers fall through to the
+		// static hardware gate above).
+		if entry.SizeGB > 0 && p.BackendCapacity != nil && p.BackendCapacity.FreeForLoadGB != nil &&
+			entry.SizeGB > *p.BackendCapacity.FreeForLoadGB {
+			return 0, false
+		}
 	}
 
 	return p.pendingCount(), true

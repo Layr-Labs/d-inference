@@ -1658,6 +1658,45 @@ func TestFreeMemoryAdmitsColdLoadReportedZeroRejects(t *testing.T) {
 	}
 }
 
+// The cold-load *planner* (modelLoadCandidatePendingLocked, used by warm-pool /
+// queue-before-shed) must also respect free_for_load_gb, so it never sends a
+// load_model the direct gate would reject (Codex #390 P2). Mirrors the direct path.
+func TestModelLoadCandidateRespectsFreeForLoad(t *testing.T) {
+	reg := New(testLogger())
+	const model = "free-for-load-planner"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 14}})
+
+	p := registerProviderWithModel(reg, "p1", model)
+	makeProviderRoutable(p)
+	p.mu.Lock()
+	p.Hardware.MemoryGB = 64 // passes the static hardware gate
+	p.mu.Unlock()
+	now := time.Now()
+
+	setFFL := func(v *float64) {
+		p.mu.Lock()
+		p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 64, FreeForLoadGB: v}
+		p.mu.Unlock()
+	}
+
+	low := 9.0
+	setFFL(&low)
+	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); ok {
+		t.Fatal("planner must reject a 14GB model when the provider reports 9GB free-for-load")
+	}
+
+	high := 20.0
+	setFFL(&high)
+	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); !ok {
+		t.Fatal("planner must accept a 14GB model when the provider reports 20GB free-for-load")
+	}
+
+	setFFL(nil) // legacy provider → fall back to the static hardware gate (64GB box)
+	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); !ok {
+		t.Fatal("legacy provider (no free-for-load) must fall back to the static hardware gate")
+	}
+}
+
 // Legacy provider (freeForLoadGB nil) falls back to the total-memory heuristic.
 func TestFreeMemoryAdmitsColdLoadFallsBackWhenUnreported(t *testing.T) {
 	snap := routingSnapshot{

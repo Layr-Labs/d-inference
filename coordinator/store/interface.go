@@ -540,6 +540,13 @@ type Store interface {
 	// round-trip; best-effort, must not block the read loop.
 	UpsertCodeAttestation(ctx context.Context, rec CodeAttestation) error
 
+	// DeleteCodeAttestation removes a device's persisted attestation record
+	// (keyed by SEPubKey). Called when the device's APNs token CHANGES so a later
+	// coordinator restart cannot reseed and reuse the pre-rotation proof — keeping
+	// the "token change forces a real re-challenge" invariant durable across
+	// restarts. Best-effort; must not block the read loop.
+	DeleteCodeAttestation(ctx context.Context, seKey string) error
+
 	// --- Provider Log Reports ---
 
 	// StoreLogReport stores a provider log report.

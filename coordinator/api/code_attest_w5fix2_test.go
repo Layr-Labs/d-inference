@@ -173,6 +173,55 @@ func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 	}
 }
 
+// TestRearmChangedTokenDeletesPersistedReuse proves the Codex #6 fix: a changed
+// APNs token must delete the PERSISTED reuse row (not just the in-memory one), so
+// a coordinator restart before the forced re-challenge completes cannot reseed and
+// reuse the pre-rotation proof.
+func TestRearmChangedTokenDeletesPersistedReuse(t *testing.T) {
+	logger := quietLogger()
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error { return nil }})
+
+	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
+	p := newCodeAttestProvider(kPubB64, sePubB64)
+	p.APNsDeviceToken = "tok1"
+	p.Version = "0.6.0"
+
+	// A genuine prior attestation is persisted, and the store seam is wired.
+	if err := st.UpsertCodeAttestation(context.Background(), store.CodeAttestation{
+		SEPubKey:   sePubB64,
+		Version:    "0.6.0",
+		AttestedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SeedCodeAttestCache(context.Background())
+
+	// Token rotation in a heartbeat.
+	srv.maybeRearmCodeAttest(context.Background(), "p1", p, &protocol.HeartbeatMessage{
+		Type:            protocol.TypeHeartbeat,
+		Status:          "idle",
+		APNsDeviceToken: "tok2",
+	})
+
+	if !waitForCond(2*time.Second, func() bool {
+		rows, err := st.ListCodeAttestations(context.Background())
+		if err != nil {
+			return false
+		}
+		for _, r := range rows {
+			if r.SEPubKey == sePubB64 {
+				return false // persisted row still present
+			}
+		}
+		return true // deleted
+	}) {
+		t.Fatal("a changed APNs token must delete the persisted reuse row so a restart cannot reseed it (Codex #6)")
+	}
+}
+
 // TestSeededReuseSkipsRePush proves W5 Fix 2 (2b): a persisted attestation seeded
 // at startup (i.e. after a deploy) lets a fresh connection from the same device +
 // version inherit the proof WITHOUT a push — avoiding the post-deploy push storm.

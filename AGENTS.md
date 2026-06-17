@@ -189,7 +189,7 @@ Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
 - Model scan uses fast discovery (no hashing) at startup. Weight hashing is on-demand via `compute_weight_hash()` only for the served model. Don't add hashing back to the scan path.
 - Provider auto-injects ChatML template for models missing `chat_template` field. This is intentional -- Qwen3.5 base models ship without it.
-- The coordinator uses in-memory store by default. Provider state is lost on restart. Postgres store exists but is not used in production yet.
+- Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does — durable across restarts/deploys), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). Note: the live provider *registry* (WebSocket connections/attestation) is always in-process and is rebuilt on reconnect regardless of store.
 - Request queue timeout is 120 seconds. Initial attestation challenge is sent immediately on registration, then every 5 minutes.
 - Backend idle timeout is 1 hour (not 10 minutes as some comments may say).
 

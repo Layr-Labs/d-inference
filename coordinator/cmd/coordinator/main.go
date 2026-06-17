@@ -515,8 +515,9 @@ func main() {
 		srv.SetCodeAttestor(attestor)
 		// W5 Fix 2 (2b): seed the code-identity reuse cache from the store (and
 		// wire write-through) so a blue-green deploy / restart doesn't wipe it and
-		// re-push the whole fleet against Apple's ~3/hour/device budget. No-op with
-		// the in-memory store (prod today); durable once Postgres is the backend.
+		// re-push the whole fleet against Apple's ~3/hour/device budget. Durable in
+		// prod (Postgres store; see the store selection above); a no-op only under
+		// the in-memory store fallback.
 		srv.SeedCodeAttestCache(ctx)
 		deadline, err := parseAPNsEnforceAfter()
 		if err != nil {

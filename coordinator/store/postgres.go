@@ -4145,6 +4145,19 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 	return nil
 }
 
+func (s *PostgresStore) DeleteCodeAttestation(ctx context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `DELETE FROM code_attestations WHERE se_pubkey = $1`, seKey); err != nil {
+		return fmt.Errorf("store: delete code attestation: %w", err)
+	}
+	return nil
+}
+
 // --- Provider Log Reports ---
 
 const maxLogReportSize = 10 << 20 // 10 MB

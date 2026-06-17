@@ -645,9 +645,12 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 	provider.Mu().Unlock()
 
 	if changed {
-		// No bypass: drop any cached reuse record so the loop runs a REAL
-		// challenge rather than short-circuiting on a prior (old-token) proof.
+		// No bypass: drop the cached reuse record (in-memory) AND the persisted
+		// row, so neither this connection nor a post-restart reseed can short-
+		// circuit on a prior (old-token) proof — the loop must run a REAL
+		// challenge against the new token (Codex #6).
 		s.codeAttestThrottle.invalidateReuse(seKey)
+		s.invalidatePersistedCodeAttestation(seKey)
 		s.codeAttestMetric("rearm_token_changed")
 		s.logger.Info("code-attest: APNs device token changed; forcing re-challenge (no reuse bypass)",
 			"provider_id", providerID)

@@ -20,6 +20,7 @@ import (
 type codeAttestStore interface {
 	ListCodeAttestations(ctx context.Context) ([]store.CodeAttestation, error)
 	UpsertCodeAttestation(ctx context.Context, rec store.CodeAttestation) error
+	DeleteCodeAttestation(ctx context.Context, seKey string) error
 }
 
 // codeAttestThrottle keeps APNs code-identity pushes within Apple's background-
@@ -184,9 +185,10 @@ func (t *codeAttestThrottle) recordAttested(seKey, version string) {
 // code-identity attempt cannot be short-circuited by reuseAttestation and must
 // run a real challenge round-trip. Used when a provider's APNs device token
 // CHANGES mid-connection (W5 Fix 2): a changed token forces a re-challenge with
-// no bypass. Only the in-memory record is dropped — the persisted row (evidence
-// of a genuine prior attestation) is left intact, because across a future restart
-// the normal version+freshness gate already governs whether it may be reused.
+// no bypass. This drops only the IN-MEMORY record; the caller also deletes the
+// PERSISTED row (Server.invalidatePersistedCodeAttestation) so a coordinator
+// restart before the fresh challenge completes cannot reseed and reuse the
+// pre-rotation proof (Codex #6).
 func (t *codeAttestThrottle) invalidateReuse(seKey string) {
 	if seKey == "" {
 		return
@@ -298,12 +300,12 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 // persistCodeAttestation best-effort writes a successful code-identity round-trip
 // to the store so it survives a coordinator restart/deploy (W5 Fix 2). It mirrors
 // the in-memory recordAttested and is called from the same event
-// (handleCodeAttestationResponse). Behind the store seam: a no-op until
-// SeedCodeAttestCache wires a store, so prod's current in-memory store keeps the
-// existing (process-lifetime) behavior while Postgres makes it durable. Runs off
-// the read loop (saferun.Go) so the DB write never stalls WebSocket reads.
-// SECURITY: writes only AFTER the full nonce-match + SE-signature verification —
-// never from an unverified heartbeat token.
+// (handleCodeAttestationResponse). Behind the store seam (no-op until
+// SeedCodeAttestCache wires a store): prod runs the Postgres store, so this makes
+// reuse durable across blue-green deploys (avoiding a fleet-wide re-push storm).
+// Runs off the read loop (saferun.Go) so the DB write never stalls WebSocket
+// reads. SECURITY: writes only AFTER the full nonce-match + SE-signature
+// verification — never from an unverified heartbeat token.
 func (s *Server) persistCodeAttestation(seKey, version string) {
 	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
 		return
@@ -322,6 +324,29 @@ func (s *Server) persistCodeAttestation(seKey, version string) {
 			AttestedAt: at,
 		}); err != nil {
 			s.logger.Warn("code-attest: failed to persist reuse record", "error", err)
+		}
+	})
+}
+
+// invalidatePersistedCodeAttestation deletes a device's PERSISTED reuse row off
+// the read loop. Called alongside the in-memory invalidateReuse when a provider's
+// APNs token CHANGES, so a coordinator restart before the forced re-challenge
+// completes cannot reseed and reuse the pre-rotation proof (Codex #6). No-op when
+// no store is wired. The persisted row is only a re-push optimization — never a
+// grant of CodeAttested — so deleting it can never weaken fail-closed identity.
+func (s *Server) invalidatePersistedCodeAttestation(seKey string) {
+	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
+		return
+	}
+	st := s.codeAttestThrottle.store
+	if st == nil {
+		return
+	}
+	saferun.Go(s.logger, "invalidatePersistedCodeAttest", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := st.DeleteCodeAttestation(ctx, seKey); err != nil {
+			s.logger.Warn("code-attest: failed to delete persisted reuse record on token change", "error", err)
 		}
 	})
 }

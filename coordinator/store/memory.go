@@ -2827,6 +2827,16 @@ func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec CodeAttestati
 	return nil
 }
 
+func (s *MemoryStore) DeleteCodeAttestation(_ context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.codeAttestations, seKey)
+	return nil
+}
+
 // --- Provider Log Reports ---
 
 func (s *MemoryStore) StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error {

@@ -133,6 +133,13 @@ func (s *Server) collectThroughputBuckets() map[string]*throughputBucket {
 			if slot.Model == "" || slot.ObservedDecodeTPS <= 0 {
 				continue
 			}
+			// Only sample near-solo slots (batch <= 1). The expected-decode bound
+			// is a batch≈1 memory-bandwidth ceiling; comparing it against a
+			// batch-degraded observed rate would false-flag a healthy model under
+			// load. Skipping loaded slots keeps the comparison apples-to-apples.
+			if slot.NumRunning > 1 {
+				continue
+			}
 			key := slot.Model + "\x00" + chipClass
 			b := buckets[key]
 			if b == nil {

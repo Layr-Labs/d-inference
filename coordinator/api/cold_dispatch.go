@@ -71,11 +71,16 @@ func (s *Server) coldSpillAvailable(model string, traits registry.RequestTraits,
 	return s.registry.ColdSpillProviders(model, traits, requiresVision, allowedSerials...) > 0
 }
 
-// kickColdDispatch records cold-dispatch demand and proactively triggers the
-// model-swap machinery so a cold provider is warmed for a freshly-queued model
-// without waiting for the next heartbeat. It is a no-op when cold-dispatch is
-// disabled. Safe to call on every enqueue: TriggerModelSwaps only loads models
-// that have queued demand and no warm provider, and de-dups in-flight loads.
+// kickColdDispatch proactively triggers the model-swap machinery so a cold
+// provider is warmed for a freshly-queued model without waiting for the next
+// heartbeat. It is a no-op when cold-dispatch is disabled. Safe to call on every
+// enqueue: TriggerModelSwaps only loads models that have queued demand and no
+// warm provider, and de-dups in-flight loads.
+//
+// It deliberately does NOT emit RecordWarmPoolColdDispatch: the queued request is
+// already counted via the warm-pool queue-depth signal, and the cold-dispatch
+// counter is recorded once at the actual cold reserve (registry/scheduler.go), so
+// emitting here too would double-count the autoscaler's demand signal.
 //
 // The swap is dispatched on a recovered goroutine so the request hot path never
 // blocks on registry locking.
@@ -86,7 +91,6 @@ func (s *Server) kickColdDispatch(model string) {
 	if !s.coldDispatchEnabled() {
 		return
 	}
-	s.registry.RecordWarmPoolColdDispatch(model)
 	saferun.Go(s.logger, "api.coldDispatchSwap", func() {
 		s.registry.TriggerModelSwaps()
 	})

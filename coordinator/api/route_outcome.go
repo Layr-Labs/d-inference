@@ -51,6 +51,10 @@ func providerFailedPendingRouteOutcome(pr *registry.PendingRequest, status, clas
 	return out
 }
 
+func dispatchFailedPendingRouteOutcome(pr *registry.PendingRequest, class string, code int) *store.InferenceRouteOutcome {
+	return pendingRouteOutcome(pr, "error", class, code)
+}
+
 func providerDisconnectedError(errorText string, statusCode int) bool {
 	return statusCode == 502 && strings.EqualFold(strings.TrimSpace(errorText), "provider disconnected")
 }
@@ -85,6 +89,10 @@ func noTerminalAfterCancelOutcome(pr *registry.PendingRequest) *store.InferenceR
 
 func speculativeLoserOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
 	return pendingRouteOutcome(pr, "cancelled", "speculative_loser", 0)
+}
+
+func clientGoneBeforeResponseOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
+	return pendingRouteOutcome(pr, "cancelled", "client_gone_before_response", 0)
 }
 
 func completeRouteOutcome(pr *registry.PendingRequest, usage protocol.UsageInfo, costMicroUSD int64, consumerGone bool) *store.InferenceRouteOutcome {

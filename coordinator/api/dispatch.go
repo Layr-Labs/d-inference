@@ -417,6 +417,22 @@ func (d *dispatchState) markSpeculativeLoser(pr *registry.PendingRequest) {
 	d.s.updateInferenceRouteOutcomeForPending(pr, speculativeLoserOutcome(pr))
 }
 
+func (d *dispatchState) updateSpeculativeFailure(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) {
+	if pr == nil {
+		return
+	}
+	pr.UsedBackup = true
+	d.s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, msg))
+}
+
+func (d *dispatchState) updateSpeculativeTimeout(pr *registry.PendingRequest, class string) {
+	if pr == nil {
+		return
+	}
+	pr.UsedBackup = true
+	d.s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", class, http.StatusGatewayTimeout))
+}
+
 // dispatchPrimary selects (and, when no idle provider exists on the first
 // attempt, queues + dispatches) the primary provider for this attempt. It is the
 // extraction of the original loop's dispatch-primary block (incl. the queue path).
@@ -911,6 +927,11 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 
 	var backupProvider *registry.Provider
 	var backupPR *registry.PendingRequest
+	var backupErr string
+	var backupErrCode int
+	backupRouteRecorded := false
+	backupRouteRequestID := ""
+	backupRouteAttempt := d.attempt
 
 	// Do NOT speculatively race a paid PUBLIC backup against a prefer
 	// request that is being served by the caller's OWN machine: the user
@@ -934,7 +955,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		}
 		backupExclude[provider.ID] = struct{}{}
 
-		backupProvider, backupPR, _, _, _ = s.dispatchOneProvider(
+		backupProvider, backupPR, _, backupErr, backupErrCode = s.dispatchOneProvider(
 			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
 			d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
@@ -945,11 +966,10 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 			backupExclude,
 			d.attempt,
 			func(provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision) {
-				if d.pr != nil {
-					d.pr.UsedBackup = true
-				}
 				if pr != nil {
-					pr.UsedBackup = true
+					backupRouteRecorded = true
+					backupRouteRequestID = pr.RequestID
+					backupRouteAttempt = pr.Attempt
 				}
 				d.recordRoutingDecisionFor(provider, pr, "", d.attempt, decision, "", "")
 			},
@@ -957,6 +977,9 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 	}
 
 	if backupProvider == nil {
+		if backupRouteRecorded {
+			d.s.updateInferenceRouteOutcome(backupRouteRequestID, backupRouteAttempt, d.errorRoutingOutcome("error", dispatchErrorClass(backupErr), backupErrCode))
+		}
 		// No backup available. Keep waiting for primary with remaining deadline.
 		s.logger.Info("speculative_dispatch_no_backup",
 			"request_id", d.requestID,
@@ -1122,6 +1145,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				select {
 				case errMsg := <-pr.ErrorCh:
 					// Primary failed but we already cancelled backup.
+					d.markSpeculativeLoser(backupPR)
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
 					d.lastErr = errMsg.Error
@@ -1166,6 +1190,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					// Backup failed too. Keep primary context for retry.
 					d.excludeProviders[backupProvider.ID] = struct{}{}
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
+					d.updateSpeculativeFailure(backupPR, errMsg)
 					s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, &backupHeld)
 					// Wait remaining deadline for primary.
 					return d.raceBackupChunkClosedWaitPrimary(provider, pr)
@@ -1210,6 +1235,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
 			d.lastFailedVersion = failedProviderVersion(provider)
+			d.updateSpeculativeFailure(pr, errMsg)
 			s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &d.heldChunks)
 			return d.racePrimaryFailedWaitBackup(backupProvider, backupPR, backupHeld)
 
@@ -1219,6 +1245,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			s.cancelDispatch(backupProvider, backupPR)
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
+			d.updateSpeculativeFailure(backupPR, errMsg)
 			s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, &backupHeld)
 			return d.raceBackupErrWaitPrimary(provider, pr)
 
@@ -1248,6 +1275,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.cancelDispatch(provider, pr)
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(backupProvider, backupPR)
+			d.updateSpeculativeTimeout(backupPR, "first_chunk_timeout")
 			d.excludeProviders[provider.ID] = struct{}{}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			d.lastErr = "timeout waiting for first response (both providers)"
@@ -1393,6 +1421,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 					d.lastErr = errMsg2.Error
 					d.lastErrCode = errMsg2.StatusCode
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
+					d.updateSpeculativeFailure(backupPR, errMsg2)
 					d.noteDispatchRetry(backupProvider, backupPR, errMsg2.StatusCode, &backupHeld)
 					d.provider = nil
 					d.pr = nil
@@ -1423,6 +1452,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.lastErr = errMsg2.Error
 			d.lastErrCode = errMsg2.StatusCode
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
+			d.updateSpeculativeFailure(backupPR, errMsg2)
 			s.noteDispatchProviderError(backupProvider, backupPR, errMsg2.StatusCode, &backupHeld)
 			d.provider = nil
 			d.pr = nil
@@ -1443,6 +1473,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			s.cancelDispatch(backupProvider, backupPR)
+			d.updateSpeculativeTimeout(backupPR, "first_chunk_timeout")
 			d.lastErr = "timeout waiting for first response (backup)"
 			d.lastErrCode = http.StatusGatewayTimeout
 			if s.metrics != nil {

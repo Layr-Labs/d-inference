@@ -2599,6 +2599,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 									s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 									s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
 									writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+								} else {
+									s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
+									s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
 								}
 								return
 							}
@@ -2673,6 +2676,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 						s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 						s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
 						writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+					} else {
+						s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
+						s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
 					}
 				}
 				return
@@ -2698,6 +2704,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 				s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
 				writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "request timed out"))
+			} else {
+				s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
+				s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
 			}
 			return
 		}
@@ -5191,7 +5200,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		cleanupPending()
 		refundExtra()
 		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, providerFailedPendingRouteOutcome(pr, "error", "provider_error", http.StatusBadGateway))
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusBadGateway))
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return
 	}

@@ -1346,6 +1346,8 @@ type ProviderRecord struct {
 	LifetimeTokensGenerated    int64           `json:"lifetime_tokens_generated"`
 	LastSessionRequestsServed  int64           `json:"last_session_requests_served"`
 	LastSessionTokensGenerated int64           `json:"last_session_tokens_generated"`
+	LifetimeStats              json.RawMessage `json:"lifetime_stats,omitempty"`
+	LastSessionStats           json.RawMessage `json:"last_session_stats,omitempty"`
 	RegisteredAt               time.Time       `json:"registered_at"`
 	LastSeen                   time.Time       `json:"last_seen"`
 }

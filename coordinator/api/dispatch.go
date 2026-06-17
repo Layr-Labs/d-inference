@@ -331,11 +331,13 @@ func (d *dispatchState) successRoutingOutcome() *store.InferenceRouteOutcome {
 
 // errorRoutingOutcome builds an error / timeout / cancelled outcome.
 func (d *dispatchState) errorRoutingOutcome(status, class string, code int) *store.InferenceRouteOutcome {
-	return &store.InferenceRouteOutcome{
+	out := &store.InferenceRouteOutcome{
 		FinalStatus: status,
 		ErrorCode:   code,
 		ErrorClass:  class,
 	}
+	applyPendingRouteTelemetry(out, d.pr)
+	return out
 }
 
 // providerFailedRoutingOutcome builds the outcome for a POST-DISPATCH provider
@@ -431,6 +433,14 @@ func (d *dispatchState) updateSpeculativeTimeout(pr *registry.PendingRequest, cl
 	}
 	pr.UsedBackup = true
 	d.s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", class, http.StatusGatewayTimeout))
+}
+
+func (d *dispatchState) updateSpeculativeClientGone(pr *registry.PendingRequest) {
+	if pr == nil {
+		return
+	}
+	pr.UsedBackup = true
+	d.s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 }
 
 // dispatchPrimary selects (and, when no idle provider exists on the first
@@ -1237,6 +1247,9 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg)
 			s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, &d.heldChunks)
+			d.requestID = ""
+			d.provider = nil
+			d.pr = nil
 			return d.racePrimaryFailedWaitBackup(backupProvider, backupPR, backupHeld)
 
 		case errMsg := <-backupPR.ErrorCh:
@@ -1290,6 +1303,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 
 		case <-r.Context().Done():
 			raceDeadline.Stop()
+			d.updateSpeculativeClientGone(backupPR)
 			s.cancelDispatch(provider, pr)
 			s.cancelDispatch(backupProvider, backupPR)
 			d.refundReservation()
@@ -1485,6 +1499,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			return outcomeRetry
 		case <-r.Context().Done():
 			backupDeadline.Stop()
+			d.updateSpeculativeClientGone(backupPR)
 			s.cancelDispatch(backupProvider, backupPR)
 			d.refundReservation()
 			return outcomeClientGone

@@ -1244,15 +1244,11 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	}
 
 	// Restore lifetime counters and the last raw session counters so future
-	// heartbeats can merge cleanly after coordinator or provider restarts.
-	p.Stats = protocol.HeartbeatStats{
-		RequestsServed:  rec.LifetimeRequestsServed,
-		TokensGenerated: rec.LifetimeTokensGenerated,
-	}
-	p.lastSessionStats = protocol.HeartbeatStats{
-		RequestsServed:  rec.LastSessionRequestsServed,
-		TokensGenerated: rec.LastSessionTokensGenerated,
-	}
+	// heartbeats can merge cleanly after coordinator or provider restarts. The
+	// legacy scalar columns keep old DB rows readable; the JSON snapshots carry
+	// newer additive heartbeat counters.
+	p.Stats = providerRecordStats(rec.LifetimeStats, rec.LifetimeRequestsServed, rec.LifetimeTokensGenerated)
+	p.lastSessionStats = providerRecordStats(rec.LastSessionStats, rec.LastSessionRequestsServed, rec.LastSessionTokensGenerated)
 
 	// Restore reputation from store
 	if r.store != nil {
@@ -1277,6 +1273,27 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 		"attested", rec.Attested,
 		"serial", rec.SerialNumber,
 	)
+}
+
+func providerRecordStats(raw json.RawMessage, requestsServed, tokensGenerated int64) protocol.HeartbeatStats {
+	stats := protocol.HeartbeatStats{
+		RequestsServed:  requestsServed,
+		TokensGenerated: tokensGenerated,
+	}
+	if len(raw) == 0 {
+		return stats
+	}
+	var decoded protocol.HeartbeatStats
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return stats
+	}
+	if decoded.RequestsServed == 0 && requestsServed != 0 {
+		decoded.RequestsServed = requestsServed
+	}
+	if decoded.TokensGenerated == 0 && tokensGenerated != 0 {
+		decoded.TokensGenerated = tokensGenerated
+	}
+	return decoded
 }
 
 // PersistProvider unconditionally persists provider state to the store.
@@ -1357,6 +1374,8 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			lc := *p.Location
 			locationCopy = &lc
 		}
+		statsJSON, _ := json.Marshal(p.Stats)
+		lastSessionStatsJSON, _ := json.Marshal(p.lastSessionStats)
 
 		rec := store.ProviderRecord{
 			ID:                         p.ID,
@@ -1384,6 +1403,8 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			LifetimeTokensGenerated:    p.Stats.TokensGenerated,
 			LastSessionRequestsServed:  p.lastSessionStats.RequestsServed,
 			LastSessionTokensGenerated: p.lastSessionStats.TokensGenerated,
+			LifetimeStats:              statsJSON,
+			LastSessionStats:           lastSessionStatsJSON,
 			RegisteredAt:               time.Now(),
 			LastSeen:                   time.Now(),
 		}
@@ -2485,7 +2506,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	prevHB := p.LastHeartbeat
 	p.LastHeartbeat = now
 	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)
-	p.lastSessionStats = msg.Stats
+	p.lastSessionStats = mergeHeartbeatSessionStats(p.lastSessionStats, msg.Stats)
 	p.SystemMetrics = msg.SystemMetrics
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
@@ -3198,6 +3219,35 @@ func applyHeartbeatStatsDelta(total *protocol.HeartbeatStats, previous, current 
 	total.StreamClosedWithoutTerminal += cumulativeDelta(previous.StreamClosedWithoutTerminal, current.StreamClosedWithoutTerminal)
 	total.CancelDuringModelLoad += cumulativeDelta(previous.CancelDuringModelLoad, current.CancelDuringModelLoad)
 	total.UsageGaps += cumulativeDelta(previous.UsageGaps, current.UsageGaps)
+}
+
+func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) protocol.HeartbeatStats {
+	merged := current
+	if merged.CancellationsReceived == 0 {
+		merged.CancellationsReceived = previous.CancellationsReceived
+	}
+	if merged.CancellationsBeforeOutput == 0 {
+		merged.CancellationsBeforeOutput = previous.CancellationsBeforeOutput
+	}
+	if merged.CancellationsPartialComplete == 0 {
+		merged.CancellationsPartialComplete = previous.CancellationsPartialComplete
+	}
+	if merged.GenerationErrorsAfterOutput == 0 {
+		merged.GenerationErrorsAfterOutput = previous.GenerationErrorsAfterOutput
+	}
+	if merged.ChunkEncryptionErrors == 0 {
+		merged.ChunkEncryptionErrors = previous.ChunkEncryptionErrors
+	}
+	if merged.StreamClosedWithoutTerminal == 0 {
+		merged.StreamClosedWithoutTerminal = previous.StreamClosedWithoutTerminal
+	}
+	if merged.CancelDuringModelLoad == 0 {
+		merged.CancelDuringModelLoad = previous.CancelDuringModelLoad
+	}
+	if merged.UsageGaps == 0 {
+		merged.UsageGaps = previous.UsageGaps
+	}
+	return merged
 }
 
 // Disconnect removes a provider from the registry and cleans up pending requests.

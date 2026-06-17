@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -491,6 +492,21 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
+	lifetimeStats := protocol.HeartbeatStats{
+		RequestsServed:               100,
+		TokensGenerated:              2000,
+		CancellationsReceived:        7,
+		CancellationsBeforeOutput:    3,
+		CancellationsPartialComplete: 2,
+		GenerationErrorsAfterOutput:  4,
+		ChunkEncryptionErrors:        1,
+		StreamClosedWithoutTerminal:  5,
+		CancelDuringModelLoad:        6,
+		UsageGaps:                    8,
+	}
+	lastSessionStats := lifetimeStats
+	lifetimeJSON, _ := json.Marshal(lifetimeStats)
+	lastSessionJSON, _ := json.Marshal(lastSessionStats)
 
 	reg.RestoreProviderState(p, &store.ProviderRecord{
 		ID:                         "persisted-p1",
@@ -500,6 +516,8 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 		LifetimeTokensGenerated:    2000,
 		LastSessionRequestsServed:  100,
 		LastSessionTokensGenerated: 2000,
+		LifetimeStats:              lifetimeJSON,
+		LastSessionStats:           lastSessionJSON,
 	})
 
 	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
@@ -514,11 +532,19 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	if p.Stats.TokensGenerated != 2000 {
 		t.Fatalf("tokens_generated after coordinator restart = %d, want 2000", p.Stats.TokensGenerated)
 	}
+	if p.Stats.CancellationsReceived != 7 || p.Stats.UsageGaps != 8 {
+		t.Fatalf("restored outcome counters = %+v, want persisted heartbeat stats", p.Stats)
+	}
 
 	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
-		Stats:  protocol.HeartbeatStats{RequestsServed: 105, TokensGenerated: 2300},
+		Stats: protocol.HeartbeatStats{
+			RequestsServed:        105,
+			TokensGenerated:       2300,
+			CancellationsReceived: 9,
+			UsageGaps:             11,
+		},
 	})
 
 	if p.Stats.RequestsServed != 105 {
@@ -527,11 +553,19 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	if p.Stats.TokensGenerated != 2300 {
 		t.Fatalf("tokens_generated after new work = %d, want 2300", p.Stats.TokensGenerated)
 	}
+	if p.Stats.CancellationsReceived != 9 || p.Stats.UsageGaps != 11 {
+		t.Fatalf("outcome counters after new work = %+v, want updated counters", p.Stats)
+	}
 
 	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
-		Stats:  protocol.HeartbeatStats{RequestsServed: 2, TokensGenerated: 40},
+		Stats: protocol.HeartbeatStats{
+			RequestsServed:        2,
+			TokensGenerated:       40,
+			CancellationsReceived: 1,
+			UsageGaps:             1,
+		},
 	})
 
 	if p.Stats.RequestsServed != 107 {
@@ -539,6 +573,9 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	}
 	if p.Stats.TokensGenerated != 2340 {
 		t.Fatalf("tokens_generated after provider restart = %d, want 2340", p.Stats.TokensGenerated)
+	}
+	if p.Stats.CancellationsReceived != 10 || p.Stats.UsageGaps != 12 {
+		t.Fatalf("outcome counters after provider restart = %+v, want accumulated counters", p.Stats)
 	}
 }
 

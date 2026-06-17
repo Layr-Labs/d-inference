@@ -352,3 +352,11 @@ The attestation changes (W5b) are **code-level and ship in the binary from Stage
   follow-up; until then the per-request decode projection unwinds measured decode
   rather than reading a measured knee
   ([`../architecture/routing-v2.md`](../architecture/routing-v2.md) W1, §11).
+- **W8 decode-class table coverage** — `ModelDecodeClasses` in
+  `coordinator/registry/throughput_anomaly.go` keys on the served model id
+  (`gpt-oss-20b`, `gemma-4-26b-qat-4bit` today, matching what the prod fleet
+  advertises via `/v1/models`). It is fail-safe on unknown ids — an id absent from
+  the table is **not evaluated** (a missed detection, never a false alarm) — so a
+  future rebuild under a different id (e.g. an 8-bit `mlx-community/...` variant)
+  silently falls through until its id + active-param count is added. Add a table
+  entry per new served build id (Codex PR #383 follow-up).

@@ -76,9 +76,10 @@ public func runUpdateBannerIfEnabled() async {
     // wrapper is uninitialized outside ArgumentParser's decoding lifecycle
     // and accessing it causes a fatal error. Pass nil to use defaults.
     let coordinatorURL: String
-    if let snapshot = try? loadRuntimeSnapshot(configPath: nil) {
-        coordinatorURL = snapshot.config.coordinator.url
-    } else {
+    do {
+        let config = try loadProviderConfig(configPath: nil)
+        coordinatorURL = config.coordinator.url
+    } catch {
         coordinatorURL = "https://api.darkbloom.dev"
     }
     await UpdateBanner.run(coordinatorURL: coordinatorURL)
@@ -100,16 +101,22 @@ struct RuntimeSnapshot {
     let hardware: HardwareInfo?
     let hardwareError: Error?
     let models: [ModelInfo]
+    /// Coordinator catalog fetched at load time. `nil` means the catalog could
+    /// not be fetched and no cached catalog was available; callers should treat
+    /// it as an empty catalog (fail closed) and warn the operator.
+    let catalog: CatalogSnapshot?
 }
 
-func loadRuntimeSnapshot(configOptions: ConfigOptions) throws -> RuntimeSnapshot {
+func loadRuntimeSnapshot(configOptions: ConfigOptions) async throws -> RuntimeSnapshot {
     Darkbloom.ensureLogging()
-    return try loadRuntimeSnapshot(configPath: configOptions.config)
+    return try await loadRuntimeSnapshot(configPath: configOptions.config)
 }
 
-func loadRuntimeSnapshot(configPath rawPath: String?) throws -> RuntimeSnapshot {
+func loadRuntimeSnapshot(configPath rawPath: String?) async throws -> RuntimeSnapshot {
     let configPath = try resolveConfigPath(rawPath)
     let configFileExists = FileManager.default.fileExists(atPath: configPath.path)
+
+    let config = try loadProviderConfig(configPath: configPath, configFileExists: configFileExists)
 
     let hardware: HardwareInfo?
     let hardwareError: Error?
@@ -119,6 +126,39 @@ func loadRuntimeSnapshot(configPath rawPath: String?) throws -> RuntimeSnapshot 
     } catch {
         hardware = nil
         hardwareError = error
+    }
+
+    let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
+
+    // Fetch the coordinator catalog. A cached snapshot is used as a fallback
+    // so offline commands can still distinguish supported models.
+    let catalog = try? await fetchCatalogSnapshot(coordinatorURL: config.coordinator.url)
+
+    return RuntimeSnapshot(
+        configPath: configPath,
+        configFileExists: configFileExists,
+        config: config,
+        hardware: hardware,
+        hardwareError: hardwareError,
+        models: models,
+        catalog: catalog
+    )
+}
+
+/// Load just the provider config, without scanning models or fetching the
+/// coordinator catalog. Useful for commands that only need the coordinator URL.
+func loadProviderConfig(configPath rawPath: String?) throws -> ProviderConfig {
+    let configPath = try resolveConfigPath(rawPath)
+    let configFileExists = FileManager.default.fileExists(atPath: configPath.path)
+    return try loadProviderConfig(configPath: configPath, configFileExists: configFileExists)
+}
+
+private func loadProviderConfig(configPath: URL, configFileExists: Bool) throws -> ProviderConfig {
+    let hardware: HardwareInfo?
+    do {
+        hardware = try HardwareDetector.detect()
+    } catch {
+        hardware = nil
     }
 
     var config: ProviderConfig
@@ -132,17 +172,20 @@ func loadRuntimeSnapshot(configPath rawPath: String?) throws -> RuntimeSnapshot 
 
     // Auto-migrate stale config values (idempotent, best-effort).
     config = migrateConfigIfNeeded(configPath: configPath, config: config)
+    return config
+}
 
-    let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
-
-    return RuntimeSnapshot(
-        configPath: configPath,
-        configFileExists: configFileExists,
-        config: config,
-        hardware: hardware,
-        hardwareError: hardwareError,
-        models: models
-    )
+private func fetchCatalogSnapshot(coordinatorURL: String) async -> CatalogSnapshot? {
+    let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
+    do {
+        let snapshot = try await client.fetchCatalogSnapshot(includeAliases: true)
+        CatalogCache.write(snapshot)
+        return snapshot
+    } catch {
+        // Fall back to the on-disk cache so offline/briefly-unreachable
+        // commands still see the last known catalog.
+        return CatalogCache.read()
+    }
 }
 
 private func resolveConfigPath(_ rawPath: String?) throws -> URL {
@@ -263,21 +306,36 @@ func describeConfigPath(_ snapshot: RuntimeSnapshot) -> String {
     return "\(snapshot.configPath.path) (missing, using defaults)"
 }
 
+/// Filter local models to those present in the coordinator catalog.
+/// Non-catalog weights are invisible to the network and should not be
+/// advertised, served, or diagnosed. If the catalog is unavailable, fail
+/// closed and return an empty list.
+func catalogFilteredModels(
+    _ models: [ModelInfo],
+    catalog: CatalogSnapshot?
+) -> [ModelInfo] {
+    guard let catalog else { return [] }
+    let allowed = Set(catalog.models.map(\.id))
+    return models.filter { allowed.contains($0.id) }
+}
+
 func advertisedModels(
     from models: [ModelInfo],
     config: ProviderConfig,
+    catalog: CatalogSnapshot?,
     modelOverrides: [String] = [],
     includeDisabled: Bool = false
 ) -> [ModelInfo] {
+    let supported = catalogFilteredModels(models, catalog: catalog)
     if !modelOverrides.isEmpty {
-        let byID = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0) })
+        let byID = Dictionary(uniqueKeysWithValues: supported.map { ($0.id, $0) })
         return modelOverrides.compactMap { byID[$0] }
     }
     guard !includeDisabled, !config.backend.enabledModels.isEmpty else {
-        return models
+        return supported
     }
     let enabled = Set(config.backend.enabledModels)
-    return models.filter { enabled.contains($0.id) }
+    return supported.filter { enabled.contains($0.id) }
 }
 
 func attachWeightHashes(to models: [ModelInfo]) -> (

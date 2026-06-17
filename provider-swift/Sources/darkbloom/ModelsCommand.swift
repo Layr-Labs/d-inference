@@ -54,10 +54,11 @@ extension Models {
                 return
             }
 
-            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+            let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
             let models = advertisedModels(
                 from: snapshot.models,
                 config: snapshot.config,
+                catalog: snapshot.catalog,
                 includeDisabled: all
             )
 
@@ -105,7 +106,7 @@ extension Models {
         var type: String?
 
         mutating func run() async throws {
-            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+            let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
             let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
             let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 
@@ -124,9 +125,8 @@ extension Models {
 
             // UNFILTERED on-disk scan: a downloaded model that exceeds available
             // RAM is still on disk, so it must show the "downloaded" checkmark
-            // (and appear under "Local only" when off-catalog) rather than reading
-            // as not-downloaded on a marginal-RAM box. The memory filter only
-            // governs loadability, not presence.
+            // rather than reading as not-downloaded on a marginal-RAM box. The
+            // memory filter only governs loadability, not presence.
             let localModels: [ModelInfo]
             if let hardware = snapshot.hardware {
                 localModels = ModelScanner.scanAllModels(hardwareInfo: hardware)
@@ -150,18 +150,11 @@ extension Models {
                 }
             }
 
-            // -- Local-only models (downloaded but not in current catalog) --
-            let localOnly = localModels.filter { !catalogIDs.contains($0.id) }
-            if !localOnly.isEmpty {
+            // -- Downloaded models not in the supported catalog --
+            let offCatalog = localModels.filter { !catalogIDs.contains($0.id) }
+            if !offCatalog.isEmpty {
                 print()
-                print("Local only (not in current catalog)")
-                print()
-                for m in localOnly {
-                    print("  \(m.id)  \(String(format: "%.1f", m.estimatedMemoryGb)) GB")
-                }
-                print()
-                print("  These models are no longer served by the network.")
-                print("  Remove with: darkbloom models remove <id>")
+                print("  \(offCatalog.count) downloaded model\(offCatalog.count == 1 ? "" : "s") \(offCatalog.count == 1 ? "is" : "are") not in the supported catalog and will not be served.")
             }
         }
     }
@@ -187,7 +180,7 @@ extension Models {
         var r2CDN: String?
 
         mutating func run() async throws {
-            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+            let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
             let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
             let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 

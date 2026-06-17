@@ -14,9 +14,9 @@ struct Status: AsyncParsableCommand {
         // we dump current status. Bounded by a 2s timeout in UpdateBanner.
         await runUpdateBannerIfEnabled()
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
         let config = snapshot.config
-        let models = advertisedModels(from: snapshot.models, config: config)
+        let models = advertisedModels(from: snapshot.models, config: config, catalog: snapshot.catalog)
 
         print("darkbloom \(ProviderCore.version)")
         print("Provider: \(config.provider.name)")

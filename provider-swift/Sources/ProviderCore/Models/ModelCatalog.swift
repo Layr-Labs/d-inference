@@ -137,14 +137,58 @@ public struct CatalogAlias: Codable, Sendable, Equatable {
     }
 }
 
-public struct CatalogSnapshot: Sendable, Equatable {
+public struct CatalogSnapshot: Sendable, Equatable, Codable {
     public let models: [CatalogModel]
     public let aliases: [CatalogAlias]
+
+    public init(models: [CatalogModel], aliases: [CatalogAlias] = []) {
+        self.models = models
+        self.aliases = aliases
+    }
 }
 
 private struct CatalogResponse: Codable {
     let models: [CatalogModel]
     let aliases: [CatalogAlias]?
+}
+
+// MARK: - Catalog cache
+
+/// On-disk cache for the coordinator catalog so offline commands (`doctor`,
+/// `status`, `models list`) can still distinguish supported models from
+/// downloaded-but-unsupported weights.
+public enum CatalogCache: Sendable {
+    /// Default cache file path: `~/.cache/darkbloom/catalog.json`.
+    public static func defaultPath() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache", isDirectory: true)
+            .appendingPathComponent("darkbloom", isDirectory: true)
+            .appendingPathComponent("catalog.json", isDirectory: false)
+    }
+
+    /// Read the cached snapshot, if any. Returns `nil` when the file is missing
+    /// or unreadable; callers decide whether an empty catalog is appropriate.
+    public static func read(from path: URL = defaultPath()) -> CatalogSnapshot? {
+        guard FileManager.default.fileExists(atPath: path.path),
+              let data = try? Data(contentsOf: path)
+        else {
+            return nil
+        }
+        do {
+            return try JSONDecoder().decode(CatalogSnapshot.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Persist a snapshot to disk, creating parent directories as needed.
+    public static func write(_ snapshot: CatalogSnapshot, to path: URL = defaultPath()) {
+        let dir = path.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(snapshot) {
+            try? data.write(to: path, options: .atomic)
+        }
+    }
 }
 
 // MARK: - Errors

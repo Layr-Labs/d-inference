@@ -84,7 +84,7 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         if let idleTimeout {
@@ -125,12 +125,25 @@ struct Start: AsyncParsableCommand {
         config: ProviderConfig,
         hardware: HardwareInfo
     ) async throws {
+        guard snapshot.catalog != nil else {
+            printError("Cannot start: coordinator model catalog is unavailable.")
+            printError("hint: check your network connection and coordinator URL, or retry after the coordinator is reachable.")
+            throw ExitCode.failure
+        }
+        try validateModelSelections(against: snapshot.catalog, localModels: snapshot.models)
+
         let advertised = advertisedModels(
             from: snapshot.models,
             config: config,
+            catalog: snapshot.catalog,
             modelOverrides: model,
             includeDisabled: all
         )
+
+        guard !advertised.isEmpty else {
+            printError("No supported models selected.")
+            throw ExitCode.failure
+        }
 
         // Direct/local mode: mint (or reuse) a bearer token so the loopback
         // server isn't open to every local process / hostile webpage. --no-auth
@@ -222,17 +235,27 @@ struct Start: AsyncParsableCommand {
         config: ProviderConfig,
         coordinatorURL: String
     ) async throws {
+        guard snapshot.catalog != nil else {
+            printError("Cannot start: coordinator model catalog is unavailable.")
+            printError("hint: check your network connection and coordinator URL, or retry after the coordinator is reachable.")
+            throw ExitCode.failure
+        }
+
+        // The launchd plist may contain stale --model flags from before a model
+        // was retired. Filter them to catalog IDs rather than failing to start.
+        let effectiveOverrides = catalogFilteredOverrides(model, catalog: snapshot.catalog)
+
         let selectedModels: [ModelInfo]
-        if !model.isEmpty {
-            selectedModels = advertisedModels(from: snapshot.models, config: config, modelOverrides: model)
+        if !effectiveOverrides.isEmpty {
+            selectedModels = advertisedModels(from: snapshot.models, config: config, catalog: snapshot.catalog, modelOverrides: effectiveOverrides)
         } else if all {
-            selectedModels = snapshot.models
+            selectedModels = catalogFilteredModels(snapshot.models, catalog: snapshot.catalog)
         } else {
-            selectedModels = advertisedModels(from: snapshot.models, config: config)
+            selectedModels = advertisedModels(from: snapshot.models, config: config, catalog: snapshot.catalog)
         }
 
         guard !selectedModels.isEmpty else {
-            printError("No models selected.")
+            printError("No supported models selected.")
             throw ExitCode.failure
         }
 
@@ -329,7 +352,8 @@ struct Start: AsyncParsableCommand {
             runtimeHashes: runtimeHashes,
             modelHashes: modelHashes,
             modelHashFingerprints: modelHashFingerprints,
-            localEndpoint: localEndpointConfig
+            localEndpoint: localEndpointConfig,
+            catalog: snapshot.catalog
         )
 
         do {
@@ -1128,5 +1152,41 @@ struct Start: AsyncParsableCommand {
 
             lastLineCount = render(pos: cursorPos, sel: selected, prevLines: lastLineCount)
         }
+    }
+
+    // MARK: - Catalog validation
+
+    /// Reject `--model` selections that are not in the coordinator catalog.
+    /// Used for explicit user invocations (`--local`); the foreground launchd
+    /// path uses `catalogFilteredOverrides` so a stale plist does not kill the
+    /// daemon on every restart.
+    private func validateModelSelections(against catalog: CatalogSnapshot?, localModels: [ModelInfo]) throws {
+        guard !model.isEmpty else { return }
+        guard let catalog else {
+            throw ValidationError("Cannot validate --model selections: coordinator catalog is unavailable.")
+        }
+        let catalogIDs = Set(catalog.models.map(\.id))
+        for id in model {
+            guard catalogIDs.contains(id) else {
+                throw ValidationError("'\(id)' is not in the coordinator model catalog; only supported models can be served.")
+            }
+        }
+    }
+
+    /// Filter `--model` overrides to catalog-known IDs, warning about any
+    /// stale/non-catalog IDs. Returns the original array when the catalog is
+    /// unavailable so the caller's existing "no models" guard still fires.
+    private func catalogFilteredOverrides(_ overrides: [String], catalog: CatalogSnapshot?) -> [String] {
+        guard let catalog else { return overrides }
+        let catalogIDs = Set(catalog.models.map(\.id))
+        var kept: [String] = []
+        for id in overrides {
+            if catalogIDs.contains(id) {
+                kept.append(id)
+            } else {
+                printError("Ignoring --model '\(id)': not in the coordinator model catalog.")
+            }
+        }
+        return kept
     }
 }

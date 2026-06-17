@@ -16,7 +16,7 @@ struct Login: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
 
     mutating func run() async throws {
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
         let coordinatorURL = snapshot.config.coordinator.url
 
         do {

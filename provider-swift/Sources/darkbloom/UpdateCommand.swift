@@ -18,8 +18,7 @@ struct Update: AsyncParsableCommand {
     mutating func run() async throws {
         let config: ProviderConfig
         do {
-            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-            config = snapshot.config
+            config = try loadProviderConfig(configPath: configOptions.config)
         } catch {
             config = ConfigManager.loadDefault()
         }

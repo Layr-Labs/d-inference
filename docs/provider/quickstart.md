@@ -129,7 +129,7 @@ start = "22:00"
 end = "08:00"
 ```
 
-- `backend.enabled_models` — if non-empty, only these models are advertised.
+- `backend.enabled_models` — if non-empty, only these catalog-supported models are advertised.
 - `backend.idle_timeout_mins` — minutes of inactivity before an idle model is
   unloaded (default 60; 0 disables eviction).
 - `backend.max_model_slots` — maximum resident models at once (default 3).

@@ -51,14 +51,14 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
 
         guard let hardware = snapshot.hardware else {
             printError("hardware detection failed: \(snapshot.hardwareError?.localizedDescription ?? "unknown")")
             throw ExitCode.failure
         }
 
-        let models = advertisedModels(from: snapshot.models, config: snapshot.config)
+        let models = advertisedModels(from: snapshot.models, config: snapshot.config, catalog: snapshot.catalog)
 
         guard let selectedModel = ModelBenchmark.selectModel(
             models: models,

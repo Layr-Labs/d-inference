@@ -27,8 +27,8 @@ darkbloom start [flags]
 | Flag | Description |
 |------|-------------|
 | `--coordinator-url <url>` | Override the coordinator WebSocket URL |
-| `--model <id>` | Model to serve; repeatable (skips the interactive picker) |
-| `--all` | Serve all downloaded models |
+| `--model <id>` | Supported model to serve; repeatable (skips the interactive picker) |
+| `--all` | Serve all downloaded models that are in the coordinator catalog |
 | `--idle-timeout <mins>` | Idle timeout before unloading a model |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Run a local OpenAI server only; do not connect to the coordinator |
@@ -126,7 +126,9 @@ darkbloom verify [--coordinator <url>]
 
 ## `darkbloom models`
 
-Manage locally cached MLX models.
+Manage locally cached MLX models. Only models that are in the coordinator's
+active catalog can be served; other downloaded weights are ignored by the
+provider and are not advertised to the network.
 
 ### `darkbloom models catalog`
 

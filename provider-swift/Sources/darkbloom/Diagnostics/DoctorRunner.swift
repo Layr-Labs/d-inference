@@ -74,7 +74,11 @@ enum DoctorRunner {
         }
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
-        if let hw = snapshot.hardware {
+        if snapshot.catalog == nil {
+            out.append(Diagnostic(section: .traffic, name: "model catalog", level: .warn,
+                                  message: "could not fetch the coordinator model catalog; traffic readiness check skipped.",
+                                  fix: "check connectivity to the coordinator and re-run."))
+        } else if let hw = snapshot.hardware {
             // Mirror the provider's REAL load gate via ModelFitDiagnostic →
             // ModelLoadAdmission: clamp to live OS-available memory and subtract
             // the OS reserve + resident MLX memory, not raw total−reserve —
@@ -93,32 +97,36 @@ enum DoctorRunner {
                 gpuActiveGb: gpuActiveGb,
                 gpuCacheGb: gpuCacheGb)
 
-            // Prefer the live loaded model ONLY when the daemon is up and fresh;
-            // otherwise diagnose the CONFIGURED model. A stale state file (daemon
-            // stopped/crashed, then provider.toml changed to a larger model)
-            // would otherwise check last session's model and miss the new misfit.
-            let liveModel = stateFresh ? state?.currentModel : nil
-            let targetID = liveModel ?? snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first
-
-            // Use the UNFILTERED model list: ModelScanner.scanModels drops models
-            // too large for this box, so a too-large CONFIGURED model would be
-            // absent and doctor would silently diagnose a different (fitting) one
-            // instead of flagging the one that will never load.
-            let allModels = ModelScanner.scanAllModels(hardwareInfo: hw)
-            let alternatives = allModels.map {
+            // Diagnose only models the coordinator currently advertises. Local
+            // weights that are not in the catalog are never served.
+            let supportedModels = catalogFilteredModels(snapshot.models, catalog: snapshot.catalog)
+            let alternatives = supportedModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
-            if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
+
+            // Target precedence: live loaded model → configured model → first
+            // enabled model → largest catalog-filtered local model. All targets
+            // must be in the current coordinator catalog.
+            let targetID: String? = {
+                if stateFresh, let current = state?.currentModel,
+                   supportedModels.contains(where: { $0.id == current }) {
+                    return current
+                }
+                if let configured = snapshot.config.backend.model,
+                   supportedModels.contains(where: { $0.id == configured }) {
+                    return configured
+                }
+                if let firstEnabled = snapshot.config.backend.enabledModels.first,
+                   supportedModels.contains(where: { $0.id == firstEnabled }) {
+                    return firstEnabled
+                }
+                return alternatives.max(by: { $0.weightGb < $1.weightGb })?.id
+            }()
+
+            if let targetID, let target = supportedModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,
                     usableGb: usableGb, alternatives: alternatives))
-            } else if !alternatives.isEmpty {
-                // No specific/known target; check the largest local model fits.
-                if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {
-                    out.append(ModelFitDiagnostic.diagnose(
-                        modelID: biggest.id, weightGb: biggest.weightGb,
-                        usableGb: usableGb, alternatives: alternatives))
-                }
             }
         }
 

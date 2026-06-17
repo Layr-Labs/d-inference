@@ -1639,6 +1639,11 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		// window elapsed, hard-untrusted) returns false and falls through to the
 		// unchanged full live MDM verify.
 		if !s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted) {
+			// DAR-326 FIX 3: the live challenge settled WITHOUT a trust-reuse fast-skip
+			// grant. Signal the per-connection mdmVerificationLoop so a non-fast-skip
+			// candidate stops deferring and proceeds to the full live MDM verify
+			// immediately, instead of stalling the whole trust-reuse grace window.
+			provider.SignalChallengeSettled()
 			// Re-attempt ACME (mTLS device-cert) trust for self_signed providers.
 			// applyACMETrust ran at registration before attestation was bound, so a
 			// provider that presented a valid device cert can be promoted to hardware

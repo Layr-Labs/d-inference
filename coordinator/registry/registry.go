@@ -381,6 +381,15 @@ type Provider struct {
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges      int       // consecutive failed challenges
 
+	// challengeSettled is a per-connection buffered (cap 1) signal fired by the
+	// challenge path AFTER a challenge passes but the trust-reuse fast-skip did NOT
+	// grant hardware (DAR-326). It lets awaitTrustReuseGrant stop waiting
+	// immediately for a non-fast-skip provider instead of stalling up to
+	// trustReuseGrantWait before falling back to the full live MDM verify. Created
+	// fresh per Provider (so it never carries a stale signal across reconnects); a
+	// nil channel degrades safely to the timer-based wait.
+	challengeSettled chan struct{}
+
 	// untrustedRecoverable marks an untrust as a *transient* missed-challenge
 	// deroute (timeout / no-response) that may self-recover on the next passing
 	// challenge. It is false for every hard/security deroute. In-memory only —
@@ -680,6 +689,29 @@ func (p *Provider) ChallengeShouldStop() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Status == StatusUntrusted && !p.untrustedRecoverable
+}
+
+// SignalChallengeSettled fires the per-connection "challenge settled without a
+// trust-reuse fast-skip grant" signal (non-blocking; buffered cap 1). The
+// mdmVerificationLoop's awaitTrustReuseGrant selects on it so a non-fast-skip
+// provider proceeds to the full live MDM verify immediately instead of stalling
+// the trust-reuse grace window (DAR-326). The channel is set once at construction
+// and never reassigned, so no lock is needed; a nil channel is a no-op.
+func (p *Provider) SignalChallengeSettled() {
+	if p.challengeSettled == nil {
+		return
+	}
+	select {
+	case p.challengeSettled <- struct{}{}:
+	default: // a prior signal is still buffered — one is enough to stop the wait
+	}
+}
+
+// ChallengeSettledChan returns the per-connection challenge-settled signal for
+// awaitTrustReuseGrant to select on. May be nil for a zero-value Provider (the
+// select then simply never fires that case and falls back to the timer).
+func (p *Provider) ChallengeSettledChan() <-chan struct{} {
+	return p.challengeSettled
 }
 
 // SetAttestationResult stores a snapshot of the parsed attestation result
@@ -2244,6 +2276,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		LastHeartbeat:           time.Now(),
 		Reputation:              NewReputation(),
 		pendingReqs:             make(map[string]*PendingRequest),
+		challengeSettled:        make(chan struct{}, 1),
 	}
 
 	r.mu.Lock()

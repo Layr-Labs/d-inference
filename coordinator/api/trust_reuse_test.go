@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +13,33 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// flakyDeleteStore wraps a real store and fails the first failFirst calls to
+// DeleteProviderTrustReuse, then delegates. Used to prove the inline bounded retry
+// in invalidateTrustReuse (DAR-326 FIX 1) ultimately deletes the persisted row.
+type flakyDeleteStore struct {
+	store.Store
+	mu          sync.Mutex
+	failFirst   int
+	deleteCalls int
+}
+
+func (f *flakyDeleteStore) DeleteProviderTrustReuse(ctx context.Context, seKey string) error {
+	f.mu.Lock()
+	f.deleteCalls++
+	n := f.deleteCalls
+	f.mu.Unlock()
+	if n <= f.failFirst {
+		return fmt.Errorf("simulated transient delete failure #%d", n)
+	}
+	return f.Store.DeleteProviderTrustReuse(ctx, seKey)
+}
+
+func (f *flakyDeleteStore) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deleteCalls
+}
 
 // Two distinct, valid 64-char SHA-256 hex digests for binary-hash gate tests.
 var (
@@ -65,6 +94,17 @@ func TestTrustReuseCacheReuseAndWindow(t *testing.T) {
 	}
 	if c.hasFreshRecord(se, serial) {
 		t.Fatal("candidate status must expire after the window")
+	}
+
+	// FIX 2 clock-skew guard: a record dated implausibly far in the FUTURE
+	// (corrupt/forged VerifiedAt) must be rejected, not treated as eternally fresh.
+	future := c.now().Add(c.reuseWindow + time.Minute)
+	c.recordTrust(hardwareReuseRecord(se, serial, trHashA, future))
+	if _, ok := c.reuseTrust(se, serial, trHashA); ok {
+		t.Fatal("a future-dated record (beyond skew tolerance) must not reuse")
+	}
+	if c.hasFreshRecord(se, serial) {
+		t.Fatal("a future-dated record must not be a candidate")
 	}
 }
 
@@ -141,8 +181,10 @@ func TestTrustReuseCacheSeed(t *testing.T) {
 	fresh := hardwareReuseRecord("se-fresh", "SER-F", trHashA, cur.Add(-time.Minute))
 	expired := hardwareReuseRecord("se-old", "SER-O", trHashA, cur.Add(-2*c.reuseWindow))
 	empty := hardwareReuseRecord("", "SER-E", trHashA, cur)
+	// FIX 2: a future-dated row (beyond skew tolerance) must be skipped on seed too.
+	future := hardwareReuseRecord("se-future", "SER-FU", trHashA, cur.Add(c.reuseWindow+time.Minute))
 
-	if n := c.seed([]store.ProviderTrustReuse{fresh, expired, empty}); n != 1 {
+	if n := c.seed([]store.ProviderTrustReuse{fresh, expired, empty, future}); n != 1 {
 		t.Fatalf("seed count = %d, want 1 (only the in-window keyed row)", n)
 	}
 	if _, ok := c.reuseTrust("se-fresh", "SER-F", trHashA); !ok {
@@ -150,6 +192,9 @@ func TestTrustReuseCacheSeed(t *testing.T) {
 	}
 	if c.hasFreshRecord("se-old", "SER-O") {
 		t.Fatal("expired row must not be seeded")
+	}
+	if c.hasFreshRecord("se-future", "SER-FU") {
+		t.Fatal("future-dated row must not be seeded (clock-skew guard)")
 	}
 
 	// A newer in-memory record must not be clobbered by an older persisted row.
@@ -225,8 +270,9 @@ func TestRecordTrustReusePersists(t *testing.T) {
 }
 
 // TestInvalidateTrustReuseDeletesPersisted proves the hard-untrust invalidation
-// removes the record both in-memory and from the store (durable across restarts),
-// and that wiring the registry hook fires it on a real hard untrust.
+// removes the record both in-memory and from the store SYNCHRONOUSLY (FIX 1: the
+// persisted delete is inline now, not fire-and-forget), and that wiring the
+// registry hook fires it on a real hard untrust.
 func TestInvalidateTrustReuseDeletesPersisted(t *testing.T) {
 	srv, st := trustReuseServer(t)
 	srv.SeedTrustReuseCache(context.Background()) // wires store + hard-untrust hook
@@ -241,14 +287,14 @@ func TestInvalidateTrustReuseDeletesPersisted(t *testing.T) {
 	if _, ok := srv.trustReuseCache.reuseTrust("se-z", "SER-Z", trHashA); ok {
 		t.Fatal("invalidate must drop the in-memory record")
 	}
-	if !waitForCond(2*time.Second, func() bool {
-		rows, _ := st.ListProviderTrustReuse(context.Background())
-		return len(rows) == 0
-	}) {
-		t.Fatal("invalidate must delete the persisted record")
+	// Inline delete → row gone as soon as invalidateTrustReuse returns (no polling).
+	if rows, _ := st.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("invalidate must delete the persisted record synchronously, got %d rows", len(rows))
 	}
 
-	// The registry hard-untrust hook must invalidate on a real hard untrust.
+	// The registry hard-untrust hook must invalidate on a real hard untrust. The
+	// hook fires synchronously off all registry locks, and the in-memory + inline
+	// persisted delete are both synchronous, so no polling is needed.
 	msg := &protocol.RegisterMessage{
 		Type: protocol.TypeRegister, Backend: "mlx-swift", PublicKey: testPublicKeyB64(),
 		Models: []protocol.ModelInfo{{ID: "m", ModelType: "chat", Quantization: "4bit"}},
@@ -261,10 +307,83 @@ func TestInvalidateTrustReuseDeletesPersisted(t *testing.T) {
 
 	srv.registry.MarkUntrusted("prov-hook") // hard untrust → hook fires
 
-	if !waitForCond(2*time.Second, func() bool {
-		return !srv.trustReuseCache.hasFreshRecord("se-hook", "SER-H")
-	}) {
+	if srv.trustReuseCache.hasFreshRecord("se-hook", "SER-H") {
 		t.Fatal("a hard untrust must invalidate the device's trust-reuse record (durable hard-untrust)")
+	}
+}
+
+// TestInvalidateTrustReuseRetriesPersistedDelete proves FIX 1's bounded inline
+// retry: a transient store-delete failure is retried, and the persisted row is
+// ultimately removed (so a restart cannot reseed it).
+func TestInvalidateTrustReuseRetriesPersistedDelete(t *testing.T) {
+	old := trustReuseDeleteRetryBackoff
+	trustReuseDeleteRetryBackoff = time.Millisecond // keep the test fast
+	defer func() { trustReuseDeleteRetryBackoff = old }()
+
+	srv, _ := trustReuseServer(t)
+	mem := store.NewMemory(store.Config{})
+	flaky := &flakyDeleteStore{Store: mem, failFirst: 2} // fail twice, succeed on the 3rd
+	srv.trustReuseCache.store = flaky
+
+	rec := hardwareReuseRecord("se-retry", "SER-RT", trHashA, time.Now())
+	srv.trustReuseCache.recordTrust(rec)
+	if err := mem.UpsertProviderTrustReuse(context.Background(), rec); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	srv.invalidateTrustReuse("se-retry")
+
+	if srv.trustReuseCache.hasFreshRecord("se-retry", "SER-RT") {
+		t.Fatal("in-memory record must be dropped synchronously")
+	}
+	if got := flaky.calls(); got != 3 {
+		t.Fatalf("delete attempts = %d, want 3 (2 failures then success)", got)
+	}
+	if rows, _ := mem.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("persisted row must be deleted after retries, got %d rows", len(rows))
+	}
+}
+
+// TestInvalidateTrustReuseDurableAcrossRestart proves FIX 1's durability goal: a
+// hard untrust (via the registry hook) deletes the persisted row, so a simulated
+// restart that seeds a FRESH cache from the SAME store finds nothing — the
+// device cannot fast-skip after a restart on a stale, pre-untrust record.
+func TestInvalidateTrustReuseDurableAcrossRestart(t *testing.T) {
+	srv, st := trustReuseServer(t)
+	srv.SeedTrustReuseCache(context.Background()) // wires store + hook
+
+	msg := &protocol.RegisterMessage{
+		Type: protocol.TypeRegister, Backend: "mlx-swift", PublicKey: testPublicKeyB64(),
+		Models: []protocol.ModelInfo{{ID: "m", ModelType: "chat", Quantization: "4bit"}},
+	}
+	p := srv.registry.Register("prov-dur", nil, msg)
+	p.Mu().Lock()
+	p.AttestationResult = &attestation.VerificationResult{Valid: true, SerialNumber: "SER-DUR", PublicKey: "se-dur"}
+	p.Mu().Unlock()
+
+	srv.recordTrustReuse("se-dur", "SER-DUR", trHashA, true, true, "udid-dur")
+	// recordTrustReuse persists via saferun.Go — wait for it before untrusting so
+	// the delete cannot race ahead of the write-through.
+	if !waitForCond(2*time.Second, func() bool {
+		rows, _ := st.ListProviderTrustReuse(context.Background())
+		return len(rows) == 1
+	}) {
+		t.Fatal("precondition: record must be persisted")
+	}
+
+	srv.registry.MarkUntrusted("prov-dur") // hard untrust → hook → synchronous persisted delete
+
+	// "Restart": a FRESH cache seeded from the SAME store must find nothing.
+	fresh := newTrustReuseCache()
+	rows, err := st.ListProviderTrustReuse(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if n := fresh.seed(rows); n != 0 {
+		t.Fatalf("seeded %d records after a hard untrust; want 0 (durable invalidation)", n)
+	}
+	if fresh.hasFreshRecord("se-dur", "SER-DUR") {
+		t.Fatal("a hard-untrusted device must not be reusable after a restart reseed")
 	}
 }
 
@@ -344,6 +463,26 @@ func TestTrustReuseFastSkipFallsThrough(t *testing.T) {
 			},
 		},
 		{
+			name:        "serial mismatch",
+			seedRecord:  false, // custom seed below
+			statusTrust: true,
+			mutate: func(_ *registry.Provider, _ *protocol.AttestationResponseMessage, _ *func() time.Time, c *trustReuseCache) {
+				// Record keyed by the right SE key but a DIFFERENT serial than the
+				// attestation ("SERIAL-1") → identity gate (a) fails.
+				c.recordTrust(hardwareReuseRecord("se-pub-key-bytes", "SERIAL-2", trHashA, c.now()))
+			},
+		},
+		{
+			name:        "SE key mismatch",
+			seedRecord:  false, // custom seed below
+			statusTrust: true,
+			mutate: func(_ *registry.Provider, _ *protocol.AttestationResponseMessage, _ *func() time.Time, c *trustReuseCache) {
+				// Record under a DIFFERENT SE key than the attestation's
+				// ("se-pub-key-bytes") → lookup finds nothing → falls through.
+				c.recordTrust(hardwareReuseRecord("other-se-key", "SERIAL-1", trHashA, c.now()))
+			},
+		},
+		{
 			name:        "status fields not signed",
 			seedRecord:  true,
 			statusTrust: false, // statusFieldsTrusted=false → posture advisory, never trusted
@@ -419,5 +558,71 @@ func TestTrustReuseFastSkipFallsThrough(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- FIX 3: awaitTrustReuseGrant fast-path on the challenge-settled signal ---
+
+// TestAwaitTrustReuseGrantReturnsOnSettledSignal proves FIX 3: when the live
+// challenge settles WITHOUT a fast-skip grant, the settled signal makes
+// awaitTrustReuseGrant return promptly (false) instead of stalling the full
+// trustReuseGrantWait — so a non-fast-skip candidate proceeds to the full live MDM
+// verify without an up-to-10s delay.
+func TestAwaitTrustReuseGrantReturnsOnSettledSignal(t *testing.T) {
+	srv, p, _ := trustReuseFastSkipProvider(t)
+
+	// Mimic verifyChallengeResponse firing the signal after the fast-skip declined.
+	p.SignalChallengeSettled()
+
+	start := time.Now()
+	if srv.awaitTrustReuseGrant(context.Background(), p) {
+		t.Fatal("awaitTrustReuseGrant must return false when the challenge settled without a grant")
+	}
+	if elapsed := time.Since(start); elapsed >= trustReuseGrantWait {
+		t.Fatalf("settled signal must return well under the wait; took %s (>= %s)", elapsed, trustReuseGrantWait)
+	}
+}
+
+// TestAwaitTrustReuseGrantReturnsTrueOnHardware proves the success path: once the
+// fast-skip (or ACME) grants hardware, awaitTrustReuseGrant returns true so the
+// mdmVerificationLoop skips the live MDM round-trip.
+func TestAwaitTrustReuseGrantReturnsTrueOnHardware(t *testing.T) {
+	srv, p, _ := trustReuseFastSkipProvider(t)
+	if !p.GrantHardwareIfNotUntrusted() {
+		t.Fatal("precondition: grant should succeed")
+	}
+	if !srv.awaitTrustReuseGrant(context.Background(), p) {
+		t.Fatal("awaitTrustReuseGrant must return true once hardware is granted")
+	}
+}
+
+// --- FIX 5: hard-untrust hook is wired independent of store presence ---
+
+// TestSeedTrustReuseCacheWiresHookWithoutStore proves FIX 5: SeedTrustReuseCache
+// wires the hard-untrust invalidation hook even when no store is available for
+// persistence/seeding, so a hard untrust still drops the in-memory record (under
+// the memory-store fallback the in-memory cache must stay correct).
+func TestSeedTrustReuseCacheWiresHookWithoutStore(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	// Simulate "no store wired for persistence/seeding". The hook must STILL be
+	// wired (decoupled from the store) by SeedTrustReuseCache.
+	srv.store = nil
+	srv.SeedTrustReuseCache(context.Background())
+
+	msg := &protocol.RegisterMessage{
+		Type: protocol.TypeRegister, Backend: "mlx-swift", PublicKey: testPublicKeyB64(),
+		Models: []protocol.ModelInfo{{ID: "m", ModelType: "chat", Quantization: "4bit"}},
+	}
+	p := srv.registry.Register("prov-nostore", nil, msg)
+	p.Mu().Lock()
+	p.AttestationResult = &attestation.VerificationResult{Valid: true, SerialNumber: "SER-NS", PublicKey: "se-nostore"}
+	p.Mu().Unlock()
+	srv.trustReuseCache.recordTrust(hardwareReuseRecord("se-nostore", "SER-NS", trHashA, time.Now()))
+
+	srv.registry.MarkUntrusted("prov-nostore") // hard untrust → hook must fire even w/o store
+
+	if srv.trustReuseCache.hasFreshRecord("se-nostore", "SER-NS") {
+		t.Fatal("hard untrust must invalidate the in-memory record even with no store wired (FIX 5 decoupling)")
 	}
 }

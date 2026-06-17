@@ -32,6 +32,24 @@ const (
 	trustReuseGrantPoll = 100 * time.Millisecond
 )
 
+// clockSkewTolerance lets a record whose VerifiedAt is slightly in the FUTURE
+// (coordinator/provider clock skew, or a small NTP step) still count as fresh,
+// while rejecting one dated implausibly far in the future — a corrupt/forged
+// VerifiedAt that would otherwise keep a record "fresh" long past the real
+// window. Applied identically in reuseTrust / hasFreshRecord / seed (DAR-326
+// FIX 2): a record is fresh iff age in [-clockSkewTolerance, reuseWindow).
+const clockSkewTolerance = 2 * time.Minute
+
+// trustReuseDeleteAttempts / trustReuseDeleteRetryBackoff bound the INLINE
+// persisted-delete retry on hard untrust (DAR-326 FIX 1). The hard-untrust hook
+// runs off all registry locks and a hard untrust is rare, so a brief blocking,
+// retried delete is safe — and keeps "hard untrust always takes effect" durable
+// across a coordinator restart even through a transient DB blip. The backoff is a
+// var so tests can shorten it.
+const trustReuseDeleteAttempts = 3
+
+var trustReuseDeleteRetryBackoff = 200 * time.Millisecond
+
 // trustReuseStore is the minimal slice of store.Store the trust-reuse cache needs
 // to survive coordinator restarts/blue-green deploys (DAR-326 Phase 0). store.Store
 // satisfies it; tests can inject a fake. SECURITY: persistence is a performance
@@ -149,7 +167,10 @@ func (c *trustReuseCache) reuseTrust(seKey, serial, freshBinaryHash string) (tru
 	if !r.sipEnabled || !r.secureBootFull { // recorded posture must have been good (defensive)
 		return trustReuseRecord{}, false
 	}
-	if c.now().Sub(r.at) >= c.reuseWindow { // (d) freshness window
+	// (d) freshness window, with clock-skew tolerance: reject a record dated
+	// implausibly far in the FUTURE (corrupt/forged VerifiedAt) as well as an
+	// expired one.
+	if age := c.now().Sub(r.at); age < -clockSkewTolerance || age >= c.reuseWindow {
 		return trustReuseRecord{}, false
 	}
 	return r, true
@@ -170,7 +191,9 @@ func (c *trustReuseCache) hasFreshRecord(seKey, serial string) bool {
 	if !ok || r.serial != serial || r.trustLevel != string(registry.TrustHardware) {
 		return false
 	}
-	return c.now().Sub(r.at) < c.reuseWindow
+	// Fresh iff within the window and not implausibly future-dated (clock skew).
+	age := c.now().Sub(r.at)
+	return age >= -clockSkewTolerance && age < c.reuseWindow
 }
 
 // recordTrust updates the in-memory reuse record for a device after a successful
@@ -224,8 +247,8 @@ func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 		if r.SEPubKey == "" {
 			continue
 		}
-		if now.Sub(r.VerifiedAt) >= c.reuseWindow {
-			continue // already outside the reuse window — would never be reused
+		if age := now.Sub(r.VerifiedAt); age < -clockSkewTolerance || age >= c.reuseWindow {
+			continue // outside the reuse window, or implausibly future-dated — never reusable
 		}
 		if cur, ok := c.records[r.SEPubKey]; ok && !r.VerifiedAt.After(cur.at) {
 			continue // keep the fresher in-memory record
@@ -244,26 +267,36 @@ func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 	return n
 }
 
-// SeedTrustReuseCache wires the store into the trust-reuse cache, wires durable
-// invalidation on hard untrust, and seeds the cache from persisted records at
+// SeedTrustReuseCache wires durable invalidation on hard untrust, wires the store
+// into the trust-reuse cache, and seeds the cache from persisted records at
 // startup (DAR-326 Phase 0). This is what makes the reuse cache survive a
 // coordinator restart / blue-green deploy so a fresh instance does not re-run a
 // fleet-wide live MDM SecurityInfo + APNs verification. Safe to call once during
-// server setup, AFTER the store is set; a nil store or nil cache is a no-op.
-// SECURITY: seeding only repopulates the cache that reuseTrust re-validates (behind
-// a live SE challenge) on every read — it cannot grant hardware by itself, and a
-// stale/wrong-binary/expired row still falls through to a full live MDM verify.
+// server setup. The hard-untrust hook is wired UNCONDITIONALLY (independent of
+// store presence) so a hard untrust always drops the in-memory record even under
+// the memory-store fallback; persistence + startup seeding are skipped when no
+// store is wired. SECURITY: seeding only repopulates the cache that reuseTrust
+// re-validates (behind a live SE challenge) on every read — it cannot grant
+// hardware by itself, and a stale/wrong-binary/expired row still falls through to
+// a full live MDM verify.
 func (s *Server) SeedTrustReuseCache(ctx context.Context) {
-	if s == nil || s.trustReuseCache == nil || s.store == nil {
+	if s == nil || s.trustReuseCache == nil {
+		return
+	}
+	// Wire durable invalidation UNCONDITIONALLY — independent of store presence. A
+	// HARD untrust must always drop the in-memory record (and, when a store is
+	// wired, the persisted row too), so a hard-untrusted device cannot fast-skip on
+	// reconnect even under the memory-store fallback (FIX 5).
+	if s.registry != nil {
+		s.registry.SetHardUntrustHook(s.invalidateTrustReuse)
+	}
+	// Persistence + startup seeding require a store; the in-memory reuse cache works
+	// identically with or without one.
+	if s.store == nil {
 		return
 	}
 	// Wire the write-through path so future successful verifications are persisted.
 	s.trustReuseCache.store = s.store
-	// Wire durable invalidation: a HARD untrust must delete the persisted record so
-	// a coordinator restart cannot reseed and fast-skip on a stale, pre-untrust row.
-	if s.registry != nil {
-		s.registry.SetHardUntrustHook(s.invalidateTrustReuse)
-	}
 
 	rows, err := s.store.ListProviderTrustReuse(ctx)
 	if err != nil {
@@ -334,29 +367,53 @@ func (s *Server) persistTrustReuse(rec store.ProviderTrustReuse) {
 }
 
 // invalidateTrustReuse drops a device's reuse record in-memory AND deletes the
-// persisted row (off the read loop). Wired as the registry's hard-untrust hook, so
-// EVERY hard/security deroute (SIP off, Secure Boot off, binary/model-hash change,
-// MDM posture mismatch, serial impersonation, bad encrypted chunk, ...) makes
-// "hard untrust always takes effect" durable across restarts: the device cannot
-// fast-skip on a stale, pre-untrust record after a coordinator restart. No-op when
-// no store is wired (in-memory invalidation still applies). Mirrors
+// persisted row. Wired as the registry's hard-untrust hook, so EVERY hard/security
+// deroute (SIP off, Secure Boot off, binary/model-hash change, MDM posture
+// mismatch, serial impersonation, bad encrypted chunk, ...) makes "hard untrust
+// always takes effect" durable across restarts: the device cannot fast-skip on a
+// stale, pre-untrust record after a coordinator restart.
+//
+// DAR-326 FIX 1: the in-memory invalidation is synchronous and unconditional; the
+// persisted delete runs INLINE with a bounded retry (not fire-and-forget) so a
+// transient DB blip cannot silently leave a stale row that reseeds + fast-skips
+// after a restart. This is safe because the hook fires off ALL registry locks
+// (registry.markUntrusted) and a hard untrust is rare. No-op on the persisted leg
+// when no store is wired (in-memory invalidation still applies). Mirrors
 // Server.invalidatePersistedCodeAttestation.
 func (s *Server) invalidateTrustReuse(seKey string) {
 	if s == nil || s.trustReuseCache == nil || seKey == "" {
 		return
 	}
+	// Synchronous, unconditional in-memory invalidation: an immediate reconnect
+	// (no restart) must not fast-skip on the dropped record.
 	s.trustReuseCache.invalidateReuse(seKey)
 	st := s.trustReuseCache.store
 	if st == nil {
 		return
 	}
-	saferun.Go(s.logger, "invalidateTrustReuse", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := st.DeleteProviderTrustReuse(ctx, seKey); err != nil {
-			s.logger.Warn("trust-reuse: failed to delete persisted reuse record on hard untrust", "error", err)
+	// Bounded inline retry of the persisted delete (FIX 1): keep "hard untrust
+	// takes effect" durable across a restart even through a transient DB error.
+	var err error
+	for attempt := 0; attempt < trustReuseDeleteAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(trustReuseDeleteRetryBackoff)
 		}
-	})
+		if err = deleteProviderTrustReuseOnce(st, seKey); err == nil {
+			return
+		}
+	}
+	// Log only after the final attempt fails (avoids alarming logs on a recovered
+	// transient blip).
+	s.logger.Warn("trust-reuse: failed to delete persisted reuse record on hard untrust after retries",
+		"error", err, "attempts", trustReuseDeleteAttempts)
+}
+
+// deleteProviderTrustReuseOnce runs one persisted-delete attempt with its own
+// bounded timeout (kept out of the retry loop to avoid a defer-in-loop).
+func deleteProviderTrustReuseOnce(st trustReuseStore, seKey string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return st.DeleteProviderTrustReuse(ctx, seKey)
 }
 
 // tryTrustReuseFastSkip is the read-path gate + grant. It runs AFTER the live SE
@@ -426,6 +483,9 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		return false
 	}
 	provider.SetMDMFailureReason("")
+	// The device is now hardware, so any connect-time ACME result stashed for a
+	// later retry is moot — drop it (FIX 5b), mirroring a normal hardware upgrade.
+	s.clearPendingACME(providerID)
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "trust-reuse fast-skip (recent MDM verification re-proven by live SE challenge)")
 	s.registry.PersistProvider(provider)
 	s.ddIncr("mdm.verification", []string{"outcome:granted-trust-reuse"})
@@ -440,11 +500,17 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 // awaitTrustReuseGrant lets the mdmVerificationLoop briefly defer to the live SE
 // challenge's trust-reuse fast-skip before running the (herd-causing) live MDM
 // round-trip. It returns true if hardware is granted within trustReuseGrantWait
-// (by the fast-skip, or the ACME leg), false otherwise (slow challenge / gate miss
-// / hard untrust / ctx done) — in which case the caller proceeds to the full live
-// MDM verify, unchanged. Only invoked for fast-skip candidates (hasFreshRecord),
-// so a first-ever / expired device is never delayed.
+// (by the fast-skip, or the ACME leg), false otherwise (challenge settled without
+// a grant / hard untrust / ctx done / timeout) — in which case the caller proceeds
+// to the full live MDM verify, unchanged. Only invoked for fast-skip candidates
+// (hasFreshRecord), so a first-ever / expired device is never delayed.
+//
+// DAR-326 FIX 3: the challenge-settled signal lets a candidate whose gates DON'T
+// pass proceed to the full live verify immediately instead of stalling the whole
+// trustReuseGrantWait — the timer is only the backstop for a slow/never-arriving
+// challenge.
 func (s *Server) awaitTrustReuseGrant(ctx context.Context, provider *registry.Provider) bool {
+	settled := provider.ChallengeSettledChan()
 	timer := time.NewTimer(trustReuseGrantWait)
 	defer timer.Stop()
 	ticker := time.NewTicker(trustReuseGrantPoll)
@@ -459,6 +525,11 @@ func (s *Server) awaitTrustReuseGrant(ctx context.Context, provider *registry.Pr
 		select {
 		case <-ctx.Done():
 			return false
+		case <-settled:
+			// The live challenge settled WITHOUT a fast-skip grant — stop waiting and
+			// fall through to the full live MDM verify now (no up-to-10s stall). Re-read
+			// trust in case the ACME leg granted in the same challenge pass.
+			return provider.GetTrustLevel() == registry.TrustHardware
 		case <-timer.C:
 			return provider.GetTrustLevel() == registry.TrustHardware
 		case <-ticker.C:

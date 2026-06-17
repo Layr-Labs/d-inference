@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -290,6 +291,28 @@ func main() {
 	if os.Getenv("EIGENINFERENCE_BINARYHASH_ENFORCE") == "true" {
 		srv.SetBinaryHashEnforcement(true)
 		logger.Warn("binaryHash enforcement ENABLED via EIGENINFERENCE_BINARYHASH_ENFORCE (legacy; APNs code-identity is the real signal)")
+	}
+
+	// Routing: TTFT admission ceiling mode. Default is a SOFT routing preference
+	// (serve the best-available provider when one passes every routing/capacity
+	// gate). Set this to restore the legacy HARD 429 when the best estimated TTFT
+	// exceeds the 5s+1ms/token deadline. The estimate's prefill term is not
+	// provider-measured, so the hard gate over-rejected serveable requests.
+	if os.Getenv("EIGENINFERENCE_TTFT_HARD_REJECT") == "true" {
+		srv.SetTTFTHardReject(true)
+		logger.Warn("TTFT hard-reject ENABLED via EIGENINFERENCE_TTFT_HARD_REJECT (legacy 429-on-slow-estimate; soft preference is the default)")
+	}
+
+	// Routing: decode→prefill ratio fallback, used to estimate prefill TPS when a
+	// provider does not report a measured prefill_tps. Defaults to
+	// registry.defaultPrefillToDecodeRatio.
+	if v := os.Getenv("EIGENINFERENCE_PREFILL_DECODE_RATIO"); v != "" {
+		if ratio, err := strconv.ParseFloat(v, 64); err == nil && ratio > 0 {
+			registry.SetPrefillToDecodeRatio(ratio)
+			logger.Info("prefill/decode ratio override via EIGENINFERENCE_PREFILL_DECODE_RATIO", "ratio", ratio)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PREFILL_DECODE_RATIO; ignoring", "value", v)
+		}
 	}
 
 	// Load runtime template manifest from environment variable (optional override).

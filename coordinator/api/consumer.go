@@ -2021,7 +2021,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				} else {
 					rawBody, _ = marshalForwardBody(parsed)
 				}
-			} else {
+			} else if s.ttftHardReject {
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
 				s.recordRejection(rejectionInfo{
@@ -2047,6 +2047,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				})
 				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
+			} else {
+				// Soft TTFT gate (default): the best estimated TTFT exceeds the
+				// deadline, but at least one provider passed every routing and
+				// capacity gate. The prefill term of that estimate is not
+				// provider-measured (~10x pessimistic), so serve the best-available
+				// provider rather than 429'ing a request we can fulfill. The
+				// reservation is kept for dispatch; record the decision for telemetry.
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 			}
 		}
 	}
@@ -4667,7 +4675,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
-			} else {
+			} else if s.ttftHardReject {
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
 				s.recordRejection(rejectionInfo{
@@ -4693,6 +4701,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				})
 				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
+			} else {
+				// Soft TTFT gate (default): the best estimated TTFT exceeds the
+				// deadline, but at least one provider passed every routing and
+				// capacity gate. The prefill term of that estimate is not
+				// provider-measured (~10x pessimistic), so serve the best-available
+				// provider rather than 429'ing a request we can fulfill. The
+				// reservation is kept for dispatch; record the decision for telemetry.
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 			}
 		}
 	}

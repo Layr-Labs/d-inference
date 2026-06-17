@@ -2062,6 +2062,7 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 
 func TestTTFTAdmission429BelowOldTenSecondFloor(t *testing.T) {
 	srv, _ := testServer(t)
+	srv.SetTTFTHardReject(true) // legacy hard 429-on-slow-estimate path (now opt-in)
 	model := "exact-ttft-floor-model"
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
 	p := registerBuildsProvider(srv, "exact-floor-provider", model)
@@ -2087,6 +2088,7 @@ func TestTTFTAdmission429BelowOldTenSecondFloor(t *testing.T) {
 
 func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 	srv, _ := testServer(t)
+	srv.SetTTFTHardReject(true) // legacy hard 429-on-slow-estimate path (now opt-in)
 	model := "route-slow-ttft-model"
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
 	p := registerBuildsProvider(srv, "route-slow-provider", model)
@@ -2134,7 +2136,8 @@ func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 			}
 			var body struct {
 				Error struct {
-					Code string `json:"code"`
+					Code    string `json:"code"`
+					Message string `json:"message"`
 				} `json:"error"`
 			}
 			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
@@ -2142,6 +2145,11 @@ func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 			}
 			if body.Error.Code != "rate_limit_exceeded" {
 				t.Fatalf("code = %q, want rate_limit_exceeded", body.Error.Code)
+			}
+			// Assert the TTFT preflight path specifically (not a capacity 429),
+			// so this test exercises the hard TTFT gate it is named for.
+			if !strings.Contains(body.Error.Message, "TTFT target") {
+				t.Fatalf("message = %q, want TTFT target detail", body.Error.Message)
 			}
 		})
 	}

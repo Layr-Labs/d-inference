@@ -205,6 +205,17 @@ type Server struct {
 	// (EIGENINFERENCE_BINARYHASH_ENFORCE=true).
 	binaryHashEnforce bool
 
+	// ttftHardReject controls how the per-request TTFT admission ceiling
+	// (5s+1ms/token) behaves when the best ESTIMATED time-to-first-token exceeds
+	// it. The estimate's prefill term is not provider-measured and runs ~10x
+	// pessimistic (see resolvedPrefillTPS), which made the legacy hard gate 429
+	// the majority of serveable requests above ~550 prompt tokens. Default false:
+	// the ceiling is a SOFT routing preference — when at least one provider passed
+	// every routing and capacity gate, the request is served on the best-available
+	// provider instead of being rejected. Set true
+	// (EIGENINFERENCE_TTFT_HARD_REJECT=true) to restore the legacy hard 429.
+	ttftHardReject bool
+
 	// knownRuntimeManifest holds accepted runtime component hashes.
 	// When set, providers whose runtime hashes don't match are marked as
 	// unverified and excluded from routing (but not disconnected).
@@ -959,6 +970,13 @@ func (s *Server) invalidateCatalogCache() {
 // rollback or to test the legacy enforcement path.
 func (s *Server) SetBinaryHashEnforcement(enabled bool) {
 	s.binaryHashEnforce = enabled
+}
+
+// SetTTFTHardReject toggles the per-request TTFT admission ceiling between a
+// hard 429 (true, legacy) and a soft routing preference (false, default). See
+// the ttftHardReject field for rationale. Call before serving starts.
+func (s *Server) SetTTFTHardReject(enabled bool) {
+	s.ttftHardReject = enabled
 }
 
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.

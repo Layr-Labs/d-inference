@@ -142,8 +142,18 @@ func (d *dispatchState) traits() registry.RequestTraits {
 // queueMaxTTFTMs returns the TTFT ceiling for queued requests. Public routes
 // inherit the prompt-scaled admission threshold; self-route / prefer-owner paths
 // are not subject to the public SLA ceiling.
-func queueMaxTTFTMs(policy selfRoutePolicy, deadline time.Duration) float64 {
+//
+// When hardReject is false (the default soft gate), a zero ceiling is returned
+// so the scheduler's enforceTTFT path is disabled: candidates over the estimated
+// deadline are no longer dropped (and no errTTFTTooSlow is produced). The router
+// still ranks by cost (which is TTFT-weighted), so the fastest provider wins, but
+// a request is served on the best-available provider instead of being rejected
+// on a pessimistic prefill estimate.
+func queueMaxTTFTMs(policy selfRoutePolicy, deadline time.Duration, hardReject bool) float64 {
 	if policy.enabled || policy.prefer {
+		return 0
+	}
+	if !hardReject {
 		return 0
 	}
 	return float64(deadline.Milliseconds())
@@ -463,7 +473,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			PreferOwner:            d.policy.prefer,
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
-			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline),
+			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
 			AcceptedCh:             make(chan struct{}, 1),
 			ChunkCh:                make(chan string, chunkBufferSize),
 			CompleteCh:             make(chan protocol.UsageInfo, 1),

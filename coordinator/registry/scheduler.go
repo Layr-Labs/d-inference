@@ -1075,11 +1075,35 @@ func resolvedDecodeTPS(p *Provider) float64 {
 	return 1.0
 }
 
+// defaultPrefillToDecodeRatio is the fallback multiplier applied to a provider's
+// decode TPS to estimate its prefill TPS when the provider does not report a
+// measured prefill rate (prefill_tps). Apple-Silicon MLX prefills the prompt in
+// large parallel batches, so prefill throughput is roughly an order of magnitude
+// above decode throughput. The historical 4x was far too conservative: combined
+// with the 5s+1ms/token TTFT deadline it estimated ~100 tok/s prefill (vs the
+// ~1000 tok/s the deadline implicitly assumes), so the TTFT gate wrongly
+// rejected warm, capable providers on any prompt above ~550 tokens. No provider
+// currently reports prefill_tps, so this fallback is the production path.
+const defaultPrefillToDecodeRatio = 12.0
+
+// prefillToDecodeRatio is configured once at startup (via SetPrefillToDecodeRatio,
+// e.g. from EIGENINFERENCE_PREFILL_DECODE_RATIO) before the server begins
+// serving, then only read on routing paths.
+var prefillToDecodeRatio = defaultPrefillToDecodeRatio
+
+// SetPrefillToDecodeRatio overrides the decode→prefill fallback multiplier.
+// Values <= 0 are ignored. Must be called before serving starts (read-only after).
+func SetPrefillToDecodeRatio(ratio float64) {
+	if ratio > 0 {
+		prefillToDecodeRatio = ratio
+	}
+}
+
 func resolvedPrefillTPS(p *Provider) float64 {
 	if p.PrefillTPS > 0 {
 		return p.PrefillTPS
 	}
-	return resolvedDecodeTPS(p) * 4.0
+	return resolvedDecodeTPS(p) * prefillToDecodeRatio
 }
 
 func providerModelIDs(p *Provider) []string {

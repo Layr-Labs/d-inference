@@ -119,6 +119,9 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 	model := "ttft-model"
 	slow := makeSchedulerProvider(t, reg, "slow", model, 100)
 	slow.mu.Lock()
+	// Pin the prefill rate (== old decodeTPS*4 fallback) so the TTFT queue-math
+	// assertions here are independent of the tunable decode→prefill fallback ratio.
+	slow.PrefillTPS = 400
 	slow.BackendCapacity.Slots[0].NumWaiting = 100
 	slow.BackendCapacity.Slots[0].MaxConcurrency = 128
 	slow.mu.Unlock()
@@ -131,7 +134,10 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 		t.Fatalf("bestTTFT = %v has=%v, want above 10s with backlog", bestTTFT, hasTTFT)
 	}
 
-	makeSchedulerProvider(t, reg, "fast", model, 100)
+	fast := makeSchedulerProvider(t, reg, "fast", model, 100)
+	fast.mu.Lock()
+	fast.PrefillTPS = 400
+	fast.mu.Unlock()
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT = reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
 	if candidates != 2 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity with fast provider = (%d,%d,%d), want (2,0,0)", candidates, rejections, tooLarge)
@@ -146,6 +152,9 @@ func TestQuickCapacityCheckWithTTFTIncludesWaitingPrefills(t *testing.T) {
 	model := "ttft-waiting-prefill-model"
 	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 20_000, 100_000, 100)
 	p.mu.Lock()
+	// Pin the prefill rate (== old decodeTPS*4 fallback) so this waiting-prefill
+	// TTFT assertion is independent of the tunable decode→prefill fallback ratio.
+	p.PrefillTPS = 400
 	p.BackendCapacity.Slots[0].NumWaiting = 3
 	p.BackendCapacity.Slots[0].MaxConcurrency = 8
 	p.BackendCapacity.Slots[0].QueuedTokenBudget = 40_000
@@ -176,6 +185,34 @@ func TestQuickCapacityCheckWithTTFTIgnoresActiveReservations(t *testing.T) {
 	}
 	if !hasTTFT || bestTTFT > time.Second {
 		t.Fatalf("bestTTFT = %v has=%v, want active reservations not to inflate first-token estimate", bestTTFT, hasTTFT)
+	}
+}
+
+func TestResolvedPrefillTPSFallbackRatio(t *testing.T) {
+	// A provider-reported prefill rate always wins.
+	if got := resolvedPrefillTPS(&Provider{PrefillTPS: 500, DecodeTPS: 50}); got != 500 {
+		t.Fatalf("reported prefill = %v, want 500", got)
+	}
+
+	// Without a reported rate, fall back to decodeTPS * the configured ratio
+	// (default 12) — not the old 4x, which under-estimated prefill ~3x and made
+	// the TTFT gate reject warm providers above ~550 prompt tokens.
+	noReport := &Provider{DecodeTPS: 50}
+	if got, want := resolvedPrefillTPS(noReport), 50*defaultPrefillToDecodeRatio; got != want {
+		t.Fatalf("fallback prefill = %v, want %v", got, want)
+	}
+
+	// Overrides are honored; non-positive values are ignored.
+	orig := prefillToDecodeRatio
+	defer func() { prefillToDecodeRatio = orig }()
+	SetPrefillToDecodeRatio(20)
+	if got := resolvedPrefillTPS(noReport); got != 50*20 {
+		t.Fatalf("overridden prefill = %v, want 1000", got)
+	}
+	SetPrefillToDecodeRatio(0)
+	SetPrefillToDecodeRatio(-5)
+	if got := resolvedPrefillTPS(noReport); got != 50*20 {
+		t.Fatalf("prefill after ignored non-positive overrides = %v, want 1000", got)
 	}
 }
 

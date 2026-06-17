@@ -35,7 +35,7 @@ func drainRunningProvider(
     action: DrainAction,
     timeout: TimeInterval = 120.0
 ) async -> Bool {
-    guard LaunchAgent.isLoaded() else { return false }
+    guard LaunchAgent.isAnySupportedLabelLoaded() else { return false }
 
     let state = DaemonStateFile.read()
     let now = Date().timeIntervalSince1970

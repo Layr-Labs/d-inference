@@ -3174,14 +3174,20 @@ public actor ProviderLoop {
         logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
         let started = ContinuousClock.now
         while hasInflightWork {
-            if Task.isCancelled { return false }
+            // During a controlled shutdown (user stop/restart, schedule window
+            // close, or update hot-swap) we want to finish active inference even
+            // if the outer task was cancelled. Only abort early on cancellation
+            // when we are not in the shutdown path.
+            if !isShuttingDown, Task.isCancelled { return false }
             if ContinuousClock.now - started >= timeout {
                 return false
             }
             do {
                 try await Task.sleep(for: .milliseconds(250))
             } catch {
-                return false
+                if !isShuttingDown { return false }
+                // Controlled shutdown: ignore cancellation from the sleep and
+                // keep polling until the work finishes or the timeout expires.
             }
         }
         return true

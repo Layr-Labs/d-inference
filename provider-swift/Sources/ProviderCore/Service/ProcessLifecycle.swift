@@ -191,7 +191,7 @@ public enum ProcessLifecycle {
         timeout: TimeInterval = 120.0,
         onActiveRequests: (() -> Void)? = nil
     ) async -> GracefulStopOutcome {
-        guard processIsAlive(pid) else { return .notRunning }
+        guard pid > 0, processIsAlive(pid) else { return .notRunning }
 
         sendSignal(SIGTERM, to: pid)
 
@@ -211,7 +211,9 @@ public enum ProcessLifecycle {
             return .stoppedGracefully
         }
 
-        // Drain timeout expired: escalate to SIGKILL.
+        // Drain timeout expired: escalate to SIGKILL. Report this as a force
+        // kill even if SIGKILL eventually succeeds, because the graceful drain
+        // window was exceeded.
         sendSignal(SIGKILL, to: pid)
 
         let killDeadline = Date().addingTimeInterval(2.0)
@@ -219,7 +221,7 @@ public enum ProcessLifecycle {
             try? await Task.sleep(nanoseconds: 50_000_000) // 0.05s
         }
 
-        return processIsAlive(pid) ? .forceKilled(pid) : .stoppedGracefully
+        return .forceKilled(pid)
     }
 
     // MARK: - Internals

@@ -85,6 +85,12 @@ struct ProcessLifecycleGracefulStopTests {
         #expect(outcome == .notRunning)
     }
 
+    @Test("stopProcessGracefully rejects nonpositive PIDs")
+    func gracefulStopRejectsNonpositivePids() async {
+        #expect(await ProcessLifecycle.stopProcessGracefully(pid: 0, timeout: 1.0) == .notRunning)
+        #expect(await ProcessLifecycle.stopProcessGracefully(pid: -1, timeout: 1.0) == .notRunning)
+    }
+
     @Test("stopProcessGracefully can stop a spawned subprocess")
     func gracefulStopStopsSubprocess() async throws {
         // Spawn a long-lived child process (`sleep`) that we can gracefully stop.
@@ -102,6 +108,26 @@ struct ProcessLifecycleGracefulStopTests {
         let outcome = await ProcessLifecycle.stopProcessGracefully(pid: pid, timeout: 2.0)
 
         #expect(outcome == .stoppedGracefully)
+        #expect(!ProcessLifecycle.processIsAlive(pid))
+    }
+
+    @Test("stopProcessGracefully reports force kill when SIGTERM is ignored")
+    func gracefulStopReportsForceKill() async throws {
+        // Spawn a shell that ignores SIGTERM and then execs sleep, so the helper
+        // has to escalate to SIGKILL. `trap '' TERM` sets SIGTERM to ignored,
+        // and `exec` preserves the ignored disposition across the replacement.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", "trap '' TERM; exec /bin/sleep 300"]
+        try process.run()
+        let pid = Int32(process.processIdentifier)
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        #expect(ProcessLifecycle.processIsAlive(pid))
+
+        let outcome = await ProcessLifecycle.stopProcessGracefully(pid: pid, timeout: 0.5)
+
+        #expect(outcome == .forceKilled(pid))
         #expect(!ProcessLifecycle.processIsAlive(pid))
     }
 }

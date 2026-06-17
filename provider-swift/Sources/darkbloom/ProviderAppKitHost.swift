@@ -94,7 +94,12 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
                 }
                 await self.finishServeTask()
             } catch {
-                await self.finishServeTask()
+                // When AppKit requested termination, reply before exiting so
+                // the run loop terminates cleanly; otherwise preserve the
+                // nonzero exit from the actual failure.
+                if terminationRequested {
+                    await self.finishServeTask()
+                }
                 Darkbloom.exit(withError: error)
             }
         }

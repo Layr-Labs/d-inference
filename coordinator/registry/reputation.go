@@ -9,12 +9,7 @@
 //   - 40% job success rate (successful / total jobs)
 //   - 30% uptime ratio (uptime / expected uptime)
 //   - 20% challenge pass rate (passed / total challenges)
-//   - 10% response time factor (faster = higher, capped at 1.0)
-//
-// The response time factor grades AvgResponseTime, an EWMA of a per-request
-// responsiveness sample (time to first content, with the prompt-size-dependent
-// prefill removed) fed via RecordLatency — NOT a synthetic function of answer
-// length, and not penalized by how large a prompt the provider happened to serve.
+//   - 10% response time factor (responsiveness EWMA; faster = higher, capped at 1.0)
 //
 // New providers start with a score of 0.5 (neutral). The score is always
 // bounded to [0.0, 1.0].
@@ -24,23 +19,15 @@ import (
 	"time"
 )
 
-// ttftEWMAAlpha is the weight given to each new TTFT sample in the exponential
-// moving average held by AvgResponseTime. 0.2 means a fresh sample contributes
-// 20% and the prior average 80%, so the value is recency-weighted but smooth
-// across transient spikes.
 const ttftEWMAAlpha = 0.2
 
 // Reputation tracks a provider's operational reliability metrics.
 type Reputation struct {
-	TotalJobs      int
-	SuccessfulJobs int
-	FailedJobs     int
-	TotalUptime    time.Duration
-	LastOnline     time.Time
-	// AvgResponseTime is an EWMA of a per-request responsiveness sample (time to
-	// first content minus the prompt-size prefill). It backs the stable wire field
-	// avg_response_time_ms. Updated by RecordLatency; decoupled from job counting
-	// (RecordJobSuccess).
+	TotalJobs        int
+	SuccessfulJobs   int
+	FailedJobs       int
+	TotalUptime      time.Duration
+	LastOnline       time.Time
 	AvgResponseTime  time.Duration
 	ChallengesPassed int
 	ChallengesFailed int
@@ -54,19 +41,12 @@ func NewReputation() Reputation {
 }
 
 // RecordJobSuccess records a successful job completion.
-//
-// Latency is recorded separately via RecordLatency: job success and TTFT are
-// orthogonal so a completion with no first-chunk timestamp still counts as a
-// success without poisoning the latency EWMA.
 func (r *Reputation) RecordJobSuccess() {
 	r.TotalJobs++
 	r.SuccessfulJobs++
 }
 
-// RecordLatency folds a per-request responsiveness sample into the
-// AvgResponseTime EWMA. Non-positive samples (e.g. a completion with no
-// first-content timestamp) are ignored so a missing timestamp cannot drag the
-// average toward zero. The first valid sample seeds the average directly.
+// RecordLatency folds a per-request responsiveness sample into AvgResponseTime.
 func (r *Reputation) RecordLatency(ttft time.Duration) {
 	if ttft <= 0 {
 		return
@@ -124,14 +104,8 @@ func (r *Reputation) Score() float64 {
 		jobRate = 0.5 // neutral if no jobs yet
 	}
 
-	// Uptime ratio (30%) — 24-hour expected-uptime baseline, FLOORED at the
-	// neutral 0.5 during ramp-up. Uptime only ever *adds* above the legacy
-	// baseline: it never pulls a provider below the score it had when uptime
-	// was untracked (== 0.5). Without this floor a freshly-connected or
-	// recently-restarted provider (small TotalUptime → tiny ratio) would score
-	// BELOW the old 0.85 cap for ~12h and be derouted — and because prod uses
-	// the in-memory store, TotalUptime resets on every coordinator restart /
-	// provider reconnect, so that penalty would re-apply fleet-wide.
+	// Uptime ratio (30%) — 24-hour expected-uptime baseline, floored at neutral
+	// so missing/short uptime history does not penalize otherwise healthy nodes.
 	uptimeRate := 0.5
 	expectedUptime := 24 * time.Hour
 	if r.TotalUptime > 0 {

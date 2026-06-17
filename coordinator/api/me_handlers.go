@@ -58,16 +58,12 @@ type myProvider struct {
 	SerialNumber string               `json:"serial_number,omitempty"`
 
 	// Trust & attestation
-	TrustLevel   string `json:"trust_level"`
-	Attested     bool   `json:"attested"`
-	MDAVerified  bool   `json:"mda_verified"`
-	ACMEVerified bool   `json:"acme_verified"`
-	SEKeyBound   bool   `json:"se_key_bound"`
-	SEPublicKey  string `json:"se_public_key,omitempty"`
-	// ProviderKey is the machine's X25519 E2E public key, used to resolve
-	// per-node earnings. Same value senders fetch from /v1/encryption-key, so
-	// it is not a secret on the owner's own dashboard. Present only for
-	// currently-online machines (it is not persisted on ProviderRecord).
+	TrustLevel        string   `json:"trust_level"`
+	Attested          bool     `json:"attested"`
+	MDAVerified       bool     `json:"mda_verified"`
+	ACMEVerified      bool     `json:"acme_verified"`
+	SEKeyBound        bool     `json:"se_key_bound"`
+	SEPublicKey       string   `json:"se_public_key,omitempty"`
 	ProviderKey       string   `json:"provider_key,omitempty"`
 	SecureEnclave     bool     `json:"secure_enclave"`
 	SIPEnabled        bool     `json:"sip_enabled"`
@@ -470,9 +466,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.MDAVerified = rec.MDAVerified
 		mp.ACMEVerified = rec.ACMEVerified
 		mp.SEPublicKey = rec.SEPublicKey
-		// X25519 E2E key from the persisted record so OFFLINE machines still
-		// resolve per-node earnings. The live branch below overrides
-		// it with live.PublicKey when the machine is currently connected.
 		mp.ProviderKey = rec.PublicKey
 		mp.RuntimeVerified = rec.RuntimeVerified
 		mp.PythonHash = rec.PythonHash
@@ -553,17 +546,14 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.RuntimeVerified = live.RuntimeVerified
 		mp.PythonHash = live.PythonHash
 		mp.RuntimeHash = live.RuntimeHash
+		if live.PublicKey != "" {
+			mp.ProviderKey = live.PublicKey
+		}
 		if !live.LastChallengeVerified.IsZero() {
 			t := live.LastChallengeVerified
 			mp.LastChallengeVerified = &t
 		}
 		mp.FailedChallenges = live.FailedChallenges
-		// X25519 E2E key — the earnings table is keyed on this. Persisted on the
-		// record too, so offline machines resolve earnings; the live
-		// value is authoritative when connected.
-		if live.PublicKey != "" {
-			mp.ProviderKey = live.PublicKey
-		}
 		mp.LifetimeRequestsServed = live.Stats.RequestsServed
 		mp.LifetimeTokensGenerated = live.Stats.TokensGenerated
 		mp.PrefillTPS = live.PrefillTPS
@@ -625,16 +615,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 }
 
 // handleDeleteMyProvider handles DELETE /v1/me/providers/{serial}.
-//
-// Removes an offline/retired machine's persisted record(s) so it stops
-// reappearing in GET /v1/me/providers. Ownership-checked: the caller's account
-// must own the record. A currently-connected machine is refused with 409 (it
-// would just re-register). Billing/uptime history (earnings, usage, sessions)
-// is preserved by the store.
 func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) {
 	user := s.requirePrivyUser(w, r)
 	if user == nil {
-		return // 401 already written
+		return
 	}
 
 	serial := strings.TrimSpace(r.PathValue("serial"))
@@ -644,9 +628,6 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ctx := r.Context()
-
-	// Resolve the record by serial, falling back to treating the token as a
-	// session id (covers never-attested boxes whose card key is the id).
 	rec, err := s.store.GetProviderBySerial(ctx, serial)
 	if err != nil || rec == nil {
 		rec, err = s.store.GetProviderRecord(ctx, serial)
@@ -660,8 +641,6 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Refuse if the machine is currently connected — it would re-register and
-	// the card would return.
 	if s.registry.RemoveProviderBySerial(serial, false) {
 		writeJSON(w, http.StatusConflict, errorResponse("conflict", "machine is currently online — stop it before removing"))
 		return
@@ -678,10 +657,7 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Best-effort: drop any lingering in-memory entry so an evict-race can't
-	// re-persist the record we just removed.
 	s.registry.RemoveProviderBySerial(serial, true)
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted":      true,
 		"serial":       serial,

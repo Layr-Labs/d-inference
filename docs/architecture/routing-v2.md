@@ -163,7 +163,7 @@ scratch (`/tmp/sim*.py`).
 | ID | Workstream | Area | Depends on | Status |
 |----|-----------|------|-----------|--------|
 | W0 | Soft TTFT gate + prefill ×12 + kill-switch | coordinator | — | **DONE (PR #381)** |
-| W1 | Provider monitors: `observed_prefill_tps`, `observed_ttft_ms`, `decode_knee`, `model_load_time_ms` (protocol + provider-swift + TS mirror + symmetry tests) | protocol/provider/ui | — | spec |
+| W1 | Provider monitors: `observed_prefill_tps`, `model_load_time_ms` (protocol + provider-swift + TS mirror + symmetry tests) | protocol/provider/ui | — | **DONE** (measured EWMA prefill + model load time on BackendSlotCapacity; not yet consumed by routing). `observed_ttft_ms` + `decode_knee` deferred to a follow-up. |
 | W2 | Decode-floor admission + quality filter (`EIGENINFERENCE_MIN_DECODE_TPS`) | coordinator scheduler/consumer | W1 (knee) — can stub | todo |
 | W3 | Cold-dispatch spill + queue-before-shed | coordinator consumer/dispatch | W2 | todo |
 | W4 | Warm-pool rebuild (Little's Law, all-signal, faster ramp) | coordinator registry/warm_pool | W1 | todo |

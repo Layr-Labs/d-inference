@@ -499,8 +499,11 @@ func (s *Server) dispatchOneProvider(
 	// Public inference routes (not self-route / prefer-owner) enforce the
 	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated
-	// TTFT is above the threshold.
-	if !policy.enabled && !policy.prefer {
+	// TTFT is above the threshold. P1 fix: only enforce it when the HARD gate is
+	// on — soft mode (default) leaves MaxTTFTMs 0 so dispatch serves the best-
+	// available provider instead of re-rejecting an over-threshold request the
+	// preflight already chose to soft-serve (mirrors queueMaxTTFTMs).
+	if !policy.enabled && !policy.prefer && s.ttftHardReject {
 		pr.MaxTTFTMs = float64(ttftDeadline(estimatedPromptTokens).Milliseconds())
 	}
 
@@ -1992,7 +1995,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			if !s.ttftHardReject {
+				// Soft TTFT gate (default): a provider passed every routing and
+				// capacity gate, and pr.MaxTTFTMs is left 0 in soft mode, so the
+				// dispatch path serves the best-available provider instead of
+				// re-rejecting (P1 fix). Do NOT divert to an older alias build here
+				// (P2 fix) — the desired build is routable. The prefill term of the
+				// TTFT estimate is not provider-measured (~10x pessimistic), so
+				// serve the request we can fulfill; keep the reservation for
+				// dispatch and record the decision for telemetry.
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
+			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
@@ -2021,7 +2034,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				} else {
 					rawBody, _ = marshalForwardBody(parsed)
 				}
-			} else if s.ttftHardReject {
+			} else {
+				// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After.
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
 				s.recordRejection(rejectionInfo{
@@ -2047,14 +2061,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				})
 				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
-			} else {
-				// Soft TTFT gate (default): the best estimated TTFT exceeds the
-				// deadline, but at least one provider passed every routing and
-				// capacity gate. The prefill term of that estimate is not
-				// provider-measured (~10x pessimistic), so serve the best-available
-				// provider rather than 429'ing a request we can fulfill. The
-				// reservation is kept for dispatch; record the decision for telemetry.
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 			}
 		}
 	}
@@ -4673,9 +4679,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		ttftThreshold := genericDeadline
 		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			if !s.ttftHardReject {
+				// Soft TTFT gate (default): serve the best-available provider
+				// (MaxTTFTMs is 0 in soft mode — P1 fix); do not divert to an older
+				// alias build (P2 fix) — the desired build is routable. Keep the
+				// reservation for dispatch and record the decision for telemetry.
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
+			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
-			} else if s.ttftHardReject {
+			} else {
+				// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After.
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
 				s.recordRejection(rejectionInfo{
@@ -4701,14 +4714,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				})
 				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
-			} else {
-				// Soft TTFT gate (default): the best estimated TTFT exceeds the
-				// deadline, but at least one provider passed every routing and
-				// capacity gate. The prefill term of that estimate is not
-				// provider-measured (~10x pessimistic), so serve the best-available
-				// provider rather than 429'ing a request we can fulfill. The
-				// reservation is kept for dispatch; record the decision for telemetry.
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 			}
 		}
 	}
@@ -4747,8 +4752,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Public inference routes (not self-route / prefer-owner) enforce the
 	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated
-	// TTFT is above the threshold.
-	if !policy.enabled && !policy.prefer {
+	// TTFT is above the threshold. P1 fix: enforce it only in HARD mode; soft mode
+	// leaves MaxTTFTMs 0 so dispatch serves the best-available provider.
+	if !policy.enabled && !policy.prefer && s.ttftHardReject {
 		pr.MaxTTFTMs = float64(genericDeadline.Milliseconds())
 	}
 

@@ -169,7 +169,7 @@ scratch (`/tmp/sim*.py`).
 | W4 | Warm-pool rebuild (Little's Law, all-signal, faster ramp) | coordinator registry/warm_pool | W1 | todo |
 | W5 | Attestation-churn unlock (retry/backoff, freshness, cache) | coordinator attestation/provider | — | **researched** (see routing-v2-attestation-churn.md); **Fix 6 observability DONE**; Fix 0 (`APNS_MODE=alert`) = human config flip |
 | W6 | gemma MoE decode fix (confirm dense-vs-sparse, fix MLX path) + benchmark tooling | provider-swift / mlx | — | research |
-| W7 | Trace-driven sim → committed Go CI replay harness (drives real scheduler; calibration regression test) | coordinator test infra | — | todo |
+| W7 | Trace-driven sim → committed Go CI replay harness (drives real scheduler; calibration regression test) | coordinator test infra | — | **DONE** (coordinator/registry/routingsim: ×4 cliff 601, ×12 cliff 2384, soft-gate serves all) |
 | W8 | Throughput anomaly detector (decode vs active-param class) | coordinator telemetry | W1 | todo |
 
 Conflict map: W2/W3 both touch `consumer.go`/`dispatch.go` (sequence together).

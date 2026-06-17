@@ -164,11 +164,11 @@ scratch (`/tmp/sim*.py`).
 |----|-----------|------|-----------|--------|
 | W0 | Soft TTFT gate + prefill ×12 + kill-switch | coordinator | — | **DONE (PR #381)** |
 | W1 | Provider monitors: `observed_prefill_tps`, `model_load_time_ms` (protocol + provider-swift + TS mirror + symmetry tests) | protocol/provider/ui | — | **DONE** (measured EWMA prefill + model load time on BackendSlotCapacity; not yet consumed by routing). `observed_ttft_ms` + `decode_knee` deferred to a follow-up. |
-| W2 | Decode-floor admission + quality filter (`EIGENINFERENCE_MIN_DECODE_TPS`) | coordinator scheduler/consumer | W1 (knee) — can stub | todo |
+| W2 | Decode-floor admission + quality filter (`EIGENINFERENCE_MIN_DECODE_TPS`) | coordinator scheduler/consumer | W1 | **DONE** (soft preference: `projectedPerRequestDecodeTPS` unwinds measured decode at batch→solo→batch+1; `MinDecodeTPS` on PendingRequest; default off; never fails closed). The hard quality guarantee — spill when ALL candidates are below floor — lands with W3. |
 | W3 | Cold-dispatch spill + queue-before-shed | coordinator consumer/dispatch | W2 | todo |
 | W4 | Warm-pool rebuild (Little's Law, all-signal, faster ramp) | coordinator registry/warm_pool | W1 | todo |
 | W5 | Attestation-churn unlock (retry/backoff, freshness, cache) | coordinator attestation/provider | — | **researched** (see routing-v2-attestation-churn.md); **Fix 6 observability DONE**; Fix 0 (`APNS_MODE=alert`) = human config flip |
-| W6 | gemma MoE decode fix (confirm dense-vs-sparse, fix MLX path) + benchmark tooling | provider-swift / mlx | — | research |
+| W6 | gemma MoE decode fix (confirm dense-vs-sparse, fix MLX path) + benchmark tooling | provider-swift / mlx | — | **investigated** (`darkbloom benchmark --sweep` shipped; provider-swift/docs/gemma-decode-bandwidth-analysis.md). gemma ~21 tok/s == dense-26B bandwidth (~13GB/tok) vs ~142 sparse expectation; Swift gathers sparsely, so root cause is **MLX 4-bit `gatherQuantizedMM` small-batch path** (smoking gun: 4-bit ~21 < 8-bit ~74) + gemma's always-on dense FFN. Fix is MLX/submodule-level — run sweep on a real box to confirm, then patch the 4-bit expert gather. |
 | W7 | Trace-driven sim → committed Go CI replay harness (drives real scheduler; calibration regression test) | coordinator test infra | — | **DONE** (coordinator/registry/routingsim: ×4 cliff 601, ×12 cliff 2384, soft-gate serves all) |
 | W8 | Throughput anomaly detector (decode vs active-param class) | coordinator telemetry | W1 | todo |
 

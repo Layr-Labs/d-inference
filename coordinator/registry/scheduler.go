@@ -49,6 +49,22 @@ const (
 	kvCacheBytesPerToken = 400_000 // ~0.38 MB; covers 7-8B with slack
 	bytesPerGB           = 1 << 30
 
+	// activationReserveGB is the working-memory headroom a cold load needs
+	// on top of weights + KV cache: transient activation/compute buffers the
+	// engine allocates while running. It mirrors the provider's authoritative
+	// ModelLoadAdmission activation reserve (provider-swift) so the
+	// coordinator's cold-load admission (freeMemoryAdmits) does not over-admit
+	// loads the provider would then OOM-reject. ~3 GB is conservative for the
+	// 7-8B-class models the fleet serves.
+	activationReserveGB = 3.0
+
+	// coldLoadOSReserveGB is the OS / non-engine memory we hold back when
+	// estimating real free memory for a cold load. It stands in for the
+	// provider's "clamp to OS-available, under the 90% unified-memory cap"
+	// term until the provider reports free-for-load directly (see the TODO in
+	// freeMemoryAdmits).
+	coldLoadOSReserveGB = 4.0
+
 	// effectiveTPSLoadFactor controls how aggressively decode TPS
 	// degrades as a provider takes on more concurrent requests. The
 	// effective TPS used in cost is `decodeTPS / (1 + k * batchSize)`
@@ -841,19 +857,38 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	kvCacheGB := float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
 	required += kvCacheGB
 
-	// When the model is available on disk but not currently loaded, the
-	// provider will evict idle models to make room (LRU eviction). Check
-	// whether the model individually fits in total memory (with OS/KV
-	// overhead) rather than requiring it to fit alongside existing loaded
-	// models. The provider handles the swap autonomously.
+	// When the model is available on disk but not currently loaded AND the
+	// provider has no in-flight requests (totalPending == 0), every resident
+	// model is idle and the provider will LRU-evict it to make room. Idle
+	// weights are therefore reclaimable, so we do NOT count them against the
+	// load: the model only needs to fit in (total - OS reserve), plus the
+	// activation-reserve headroom the provider's ModelLoadAdmission gate also
+	// requires on top of weights + KV. (An earlier version subtracted
+	// gpuMemoryActiveGB here, which wrongly rejected cold loads onto boxes whose
+	// only resident models were idle and evictable — Codex #389 P2.)
 	//
-	// However, if the provider has in-flight requests (totalPending > 0),
-	// it cannot evict the currently-serving model. In that case, fall
-	// through to the standard free-memory check which requires room
-	// alongside active models.
+	// If the provider DOES have in-flight requests (totalPending > 0) it cannot
+	// evict the serving model, so we fall through to the standard free-memory
+	// check below, which counts active memory as unavailable.
+	//
+	// Source of truth: the provider's ModelLoadAdmission gate (provider-swift)
+	// admits a load only when weights + activation reserve + min serveable KV
+	// fit in its real free memory (clamped to OS-available, under the 90%
+	// unified cap). We mirror the activation-reserve headroom here. This stays
+	// strictly safer than the old check, which used the same TOTAL basis but
+	// WITHOUT the activation reserve: `required` is larger, so we admit a strict
+	// subset and never over-admit relative to the pre-fix behavior.
+	//
+	// Known residual (Codex #389 P2): for a near-limit large model with tiny
+	// max_tokens this can still admit a load the provider's cap-aware reserve
+	// rejects (we use the request KV + a flat OS reserve, not the provider's
+	// max(configReserve, physical-hardCap) + min serveable KV). The clean fix is
+	// for the provider to REPORT its own freeForLoadGb in BackendCapacity so the
+	// coordinator consumes one source of truth instead of re-deriving it here.
 	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
-		const osReserveGB = 4.0
-		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
+		// Idle resident models are evictable, so they count as free.
+		evictableFree := snap.totalMemoryGB - coldLoadOSReserveGB
+		return required+activationReserveGB <= evictableFree
 	}
 
 	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB

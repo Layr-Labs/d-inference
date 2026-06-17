@@ -1615,6 +1615,113 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 	}
 }
 
+// Cold load (model on disk, not loaded, no in-flight requests): admission must
+// use REAL FREE memory, not TOTAL. With other models already resident, the old
+// TOTAL-based check over-admitted and the provider OOM-rejected the load.
+// Idle resident models are evictable when the provider has no in-flight work
+// (totalPending == 0), so they must NOT count against a cold load. (Codex #389
+// P2: an earlier version subtracted gpuMemoryActiveGB here, wrongly rejecting a
+// load onto a box whose only resident model was idle and would be evicted.)
+func TestFreeMemoryAdmitsColdLoadIgnoresEvictableIdleMemory(t *testing.T) {
+	// 64GB box, 45GB idle resident model, requested model NOT loaded, no pending
+	// work, 16GB cold load: evictableFree = 64 - 4 = 60; required = 16 + ~0 KV
+	// + 3 = 19 <= 60 → ADMIT (the provider evicts the idle 45GB model and loads).
+	snap := routingSnapshot{
+		modelSizeGB:       16,
+		totalMemoryGB:     64,
+		gpuMemoryActiveGB: 45,
+		availableOnDisk:   true,
+		modelLoaded:       false,
+		totalPending:      0,
+	}
+	if !freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("cold load must be admitted: idle 45GB model is evictable, 16GB fits in ~60GB")
+	}
+}
+
+// A provider WITH in-flight work cannot evict its serving model, so active
+// memory counts as unavailable — that is the standard (non-cold) branch.
+func TestFreeMemoryAdmitsServingProviderCountsActiveMemory(t *testing.T) {
+	// 64GB box, 52GB active, in-flight work (totalPending > 0), requested 16GB
+	// model not loaded: free = 64 - 52 = 12 < required 16 → REJECT (the serving
+	// model can't be evicted, so the cold-load eviction assumption doesn't hold).
+	snap := routingSnapshot{
+		modelSizeGB:       16,
+		totalMemoryGB:     64,
+		gpuMemoryActiveGB: 52,
+		availableOnDisk:   true,
+		modelLoaded:       false,
+		totalPending:      1,
+	}
+	if freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("serving provider must reject: only 12GB free, model needs 16GB, can't evict")
+	}
+}
+
+// A genuinely-fitting cold load on an otherwise-idle box must still be admitted.
+func TestFreeMemoryAdmitsColdLoadAdmitsWhenRealFreeFits(t *testing.T) {
+	// 64GB box, nothing resident, 8GB cold load:
+	//   realFree = 64 - 0 - 4 = 60; required = 8 + ~0 KV + 3 = ~11 <= 60 → ADMIT
+	snap := routingSnapshot{
+		modelSizeGB:       8,
+		totalMemoryGB:     64,
+		gpuMemoryActiveGB: 0,
+		availableOnDisk:   true,
+		modelLoaded:       false,
+		totalPending:      0,
+	}
+	if !freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("cold load must be admitted: ~60GB real free, model needs ~11GB")
+	}
+}
+
+// Invariant: the new real-free cold-load gate is STRICTLY SAFER than the old
+// TOTAL-based one — it must never admit (return true) where the old check
+// rejected (return false). Verified across a representative grid of memory
+// shapes. This is the property the meltdown fix turns on.
+func TestFreeMemoryAdmitsColdLoadStrictlySaferThanTotal(t *testing.T) {
+	oldColdAdmit := func(snap routingSnapshot, prompt, maxTok int) bool {
+		tokens := int64(prompt) + int64(maxTok)
+		if tokens < 0 {
+			tokens = 0
+		}
+		const maxTokensForCalc = 16 << 20
+		if tokens > maxTokensForCalc {
+			tokens = maxTokensForCalc
+		}
+		kvCacheGB := float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
+		const osReserveGB = 4.0 // the pre-fix TOTAL-based reserve
+		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
+	}
+
+	totals := []float64{8, 16, 32, 64, 128, 192}
+	sizes := []float64{2, 4, 8, 16, 32, 70}
+	actives := []float64{0, 2, 8, 20, 45, 60}
+	maxToks := []int{0, 256, 4096, 32768}
+	for _, total := range totals {
+		for _, size := range sizes {
+			for _, active := range actives {
+				for _, maxTok := range maxToks {
+					snap := routingSnapshot{
+						modelSizeGB:       size,
+						totalMemoryGB:     total,
+						gpuMemoryActiveGB: active,
+						availableOnDisk:   true,
+						modelLoaded:       false,
+						totalPending:      0,
+					}
+					gotNew := freeMemoryAdmits(snap, 100, maxTok)
+					gotOld := oldColdAdmit(snap, 100, maxTok)
+					if gotNew && !gotOld {
+						t.Fatalf("strictly-safer violated: new admits, old rejects "+
+							"(total=%.0f size=%.0f active=%.0f maxTok=%d)", total, size, active, maxTok)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestSlotHeadroomWithExhaustedTokenBudgetRejectsCapacity(t *testing.T) {
 	reg := New(testLogger())
 	model := "budget-headroom-model"

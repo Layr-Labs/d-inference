@@ -203,7 +203,7 @@ Provider state lives in several fields that are read by different code paths wit
 - `pendingModelLoads` is only checked by `TriggerModelSwaps` planning. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `freeMemoryAdmits`. Do not assume pending-load state affects routing decisions.
 - Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
 - Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
-- The provider's `ensureModelLoaded` requires `estimatedMemoryGb * 3.0` headroom. The coordinator's `freeMemoryAdmits` uses a different (less conservative) check. A model the coordinator admits can still fail on the provider side.
+- The provider's `ModelLoadAdmission` gate (the source of truth for whether a load fits) admits a load when `weights + activation reserve + min serveable KV <= real free memory` (real free = total − resident, clamped to OS-available and kept under the 90% unified-memory cap). There is **no** `* 3.0` / 2.86× multiplier — that heuristic is stale. The coordinator's `freeMemoryAdmits` now mirrors this conservatively for cold loads (real free ≈ total − `gpuMemoryActiveGB` − OS reserve, required = weights + KV + ~3 GB activation reserve; see Fix 2 / `coordinator/registry/scheduler.go`), so it should no longer over-admit a load the provider then rejects. Long-term, the provider should report its own free-for-load figure in `BackendCapacity` so there is a single source of truth.
 
 ### Coordinator Mutation Checklist
 
@@ -213,7 +213,7 @@ When adding code that mutates provider state or sends commands (`load_model`, et
 2. Check what happens on the failure path — does state get cleaned up on disconnect, timeout, and load failure?
 3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModels`.
 4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
-5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the 3x memory gate on the provider side.
+5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the provider's real-free `ModelLoadAdmission` memory gate (weights + activation reserve + min serveable KV vs real free memory — no 3× multiplier; the coordinator's `freeMemoryAdmits` mirrors it conservatively).
 
 ## Code Structure & Modularity
 

@@ -369,6 +369,11 @@ type Server struct {
 	// Server built directly (e.g. &Server{} in tests) leaves it nil, and
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
+
+	// coldKick debounces the per-enqueue cold-dispatch model-swap kick into a
+	// coalescing single-flight + min-interval pass (see cold_dispatch.go), so a
+	// burst of enqueues cannot storm the registry write lock. Zero value ready.
+	coldKick coldKickState
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to

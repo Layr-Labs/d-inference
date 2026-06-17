@@ -440,16 +440,25 @@ trust_boundaries:
       A match on SIPEnabled and SecureBoot triggers async promotion to TrustHardware
       (provider.go:1398).
 
-      MDA verification (provider.go:1419–1539): the coordinator computes
-      sha256(SE_public_key_bytes) and sends this as a nonce to Apple via
-      SendDeviceAttestationCommand(). Apple returns a plist containing DER-encoded
-      certificate chain entries. The coordinator parses the chain, verifies it against
+      MDA verification (api/mda_verify.go): the coordinator derives an epoch-rotating
+      nonce HMAC-SHA256(seed, epoch || SE_public_key) — epoch length 7 days, matching
+      Apple's documented attestation rate limit — and sends it to the device via
+      SendDeviceAttestationCommand(). Apple embeds the nonce verbatim as the cert's
+      FreshnessCode. The coordinator parses the returned chain, verifies it against
       the embedded Apple Enterprise Attestation Root CA (P-384, valid 2022–2047) using
       Go's standard x509.Verify() with ExtKeyUsageAny. Custom OIDs are extracted from
       the leaf certificate: device serial number (1.2.840.113635.100.8.9.1), UDID
-      (.8.9.2), OS version (.8.10.1), SepOS version (.8.10.2), Secure Boot level
-      (.8.13.2), and freshness code (.8.11.1). The freshness code is compared against
-      sha256(SE_public_key_bytes) byte-for-byte (provider.go:1502–1504).
+      (.8.9.2), OS version (.8.10.1), SepOS version (.8.10.2), SIP state (.8.13.1,
+      DER INTEGER, 0 = fully enabled), Secure Boot level (.8.13.2, string, must be
+      "Full Security"), and freshness code (.8.11.1). The routing verdict
+      (MDASIPVerified) requires: valid chain, serial match, SEP-signed SIP-on +
+      Full-Security, a FreshnessCode from the last 3 nonce epochs, and leaf NotBefore
+      within MDAMaxCertAge (21 days, re-checked at the routing chokepoint). Apple-signed
+      violations (chain/serial/SIP/boot) mark the provider untrusted under enforcement;
+      stale or cached responses only withhold the verdict. Enforcement is gated by
+      EIGENINFERENCE_MDA_ENFORCE_AFTER (grace -> enforce, requires a stable
+      EIGENINFERENCE_MDA_NONCE_SEED); a periodic 12h re-check keeps long-lived
+      connections' certs rotating across epochs.
 
       The SE attestation blob (attestation.go:127–231) is a JSON structure
       containing: SE public key (raw 64-byte P-256 X||Y in base64), hardware info, SIP
@@ -469,10 +478,34 @@ trust_boundaries:
       - "No MDM command UUID correlation: the webhook response is not bound to a specific
         outbound command. A replay of any old SecurityInfo webhook response for the same
         UDID would be accepted."
-      - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key is
-        publicly visible in the provider's attestation blob. An attacker who captures the
-        attestation can pre-compute the expected freshness code, potentially forging a
-        cert with a matching OID value."
+      - "MDA freshness is bounded, not instantaneous: Apple rate-limits new attestations
+        to ~1 per device per 7 days and serves cached certs (with the previous nonce)
+        otherwise, so the nonce rotates per 7-day epoch and the coordinator accepts the
+        last 3 epochs plus a 21-day mint-age cap. A SIP-on cert captured before a SIP
+        downgrade therefore remains replayable for up to ~21 days after its mint — the
+        floor Apple's rate limit imposes — instead of indefinitely. Certs minted before
+        this scheme (legacy sha256(SE key) nonce) are key-bound but never satisfy the
+        routing verdict."
+      - "RESIDUAL (self-asserted serial, #302 follow-up): the serial the MDA SIP gate
+        verifies is the provider's SELF-ASSERTED attestation serial, not one rooted to
+        the connection's Secure-Enclave key. macOS has no App Attest, so an app-held SE
+        key cannot be cryptographically tied to a device serial with the current
+        primitives. A malicious owner with a SECOND, genuinely-SIP-on enrolled Mac can
+        therefore claim that clean device's serial while serving inference from a SIP-off
+        box: the coordinator's MDM/MDA round-trips (keyed by the claimed serial) hit the
+        clean Mac and return a genuine SIP-on attestation, so the SIP-off connection
+        routes. Bar: the attacker must enroll and keep online a second SIP-on Mac; the
+        live per-connection SE challenge still proves the SIP-off box holds the SE key it
+        registered, but nothing binds that key to the claimed serial. The clean fix
+        requires the provider to prove possession of the Apple-attested ACME
+        device-attest key (re-keyed to P-256 so it equals the SE key, or used directly as
+        the connection identity) and the coordinator to read the validated
+        permanent-identifier SAN (not the CSR-controlled cert CN) — a provider-swift +
+        protocol change tracked separately. An interim coordinator-only ACME serial check
+        was prototyped and reverted: the served ACME profile mints a P-384 key the
+        Secure Enclave cannot hardware-bind (SE is P-256-only; the fleet is 0%
+        acme_verified), and step-ca copies the cert CN from the unvalidated CSR, so a
+        coordinator-side CN check is both non-functional and bypassable."
       - "No OCSP/CRL checks on the Apple MDA certificate chain. A revoked Apple
         intermediate CA would be accepted until the embedded root is manually updated."
       - "x509.Verify() is called with ExtKeyUsageAny, which does not enforce leaf or
@@ -712,9 +745,11 @@ trust_boundaries:
         string could theoretically produce the same signed bytes as a different
         (nonce, timestamp) pair, though in practice base64 nonces (44 chars) and RFC3339
         timestamps are statistically non-overlapping."
-      - "MDA freshness code is sha256(SE_public_key_bytes). The SE public key is publicly
-        visible in the attestation blob returned by GET /v1/providers/attestation.
-        An attacker can pre-compute the expected freshness code for any known provider."
+      - "MDA freshness is epoch-bounded (see TB-005): the nonce is
+        HMAC-SHA256(secret seed, epoch || SE key), unpredictable without the seed, and a
+        captured SIP-on cert ages out of the accepted window within ~21 days of its mint.
+        Until EIGENINFERENCE_MDA_ENFORCE_AFTER passes, the SEP-signed SIP verdict is
+        measured but not enforced at the routing gate (grace rollout)."
       - "No OCSP or CRL checks on the Apple Enterprise Attestation Root CA chain. A
         compromised or revoked Apple intermediate CA certificate would be accepted by the
         coordinator until the embedded root CA is manually updated."

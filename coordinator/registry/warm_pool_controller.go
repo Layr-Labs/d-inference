@@ -502,7 +502,9 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 	if p.SystemMetrics.ThermalState == "critical" {
 		return warmPoolCandidate{}, false
 	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
+	// Public-fleet pre-warming (PrivateOnly excluded above, full MinTrustLevel
+	// floor applied), so the MDA gate is NOT self-route-exempt here.
+	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p, false) {
 		return warmPoolCandidate{}, false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {

@@ -302,6 +302,19 @@ type Provider struct {
 	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
 
+	// MDA routing gate (issue #302). MDASIPVerified is true only when a FRESH
+	// (epoch-nonce-bound) Apple-signed attestation proved SIP-on + Full-Security
+	// for THIS device's SE key. Per-connection, in-memory, never persisted or
+	// restored — a stored verdict would resurrect a stale SIP claim across the
+	// reboot that a SIP downgrade requires. MDAMintedAt is the verified leaf's
+	// NotBefore (mint time): the routing chokepoint re-checks it against
+	// attestation.MDAMaxCertAge on every routing decision, so a verdict expires
+	// even if periodic re-attestation stalls.
+	MDASIPVerified bool
+	MDAMintedAt    time.Time
+	MDAUDID        string    // MDM UDID captured at MDA time (drives periodic re-checks)
+	MDACheckedAt   time.Time // last MDA attempt (rate-limits the periodic re-check)
+
 	// MDMFailureReason records the last MDM verification outcome for this
 	// connection, bucketed for observability: "" (verified/none),
 	// "device-not-found", "found-not-enrolled", "securityinfo-timeout",
@@ -406,7 +419,7 @@ type Provider struct {
 // (codeAttestationEnforcedLocked) rather than a value stamped at registration —
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
-func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
+func (r *Registry) providerSupportsPrivateTextLocked(p *Provider, selfRouteOwner bool) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -421,7 +434,30 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 	// v0.6.0 APNs code-identity gate — the SINGLE chokepoint, no self-route
 	// exemption (gate everyone). Enforced only once configured AND past the grace
 	// deadline, so the fleet keeps routing through the rollout; fail-closed after.
+	// NOTE this gate intentionally has NO self-route exemption (unlike the MDA gate
+	// below): the APNs code-identity challenge needs no MDM enrollment, so a
+	// personal Mac can satisfy it, and gating self-route too keeps a SIP-off owner
+	// box from serving even its own private prompts with un-attested code.
 	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
+		return false
+	}
+	// Issue #302: the SIP signal that gates routing must be the SEP-signed MDA
+	// verdict — fresh (epoch nonce), SE-key-bound, SIP-on, Full-Security — not
+	// just ChallengeVerifiedSIP above, which the provider PROCESS self-reports
+	// and a SIP-off root owner can forge. Same grace→enforce rollout shape as
+	// the code-attestation gate; the mint-age re-check makes a stale verdict
+	// expire at routing time.
+	//
+	// EXEMPT self-route: unlike the APNs gate, the MDA verdict REQUIRES MDM/MDA
+	// enrollment, and self-route deliberately drops MDM/MDA-requiring floors — "a
+	// personal Mac will not be MDM/MDA enrolled, so without this it would be
+	// unroutable to its own owner" (see anyEligibleProviderCanRouteLocked /
+	// scheduler.go). Enforcing MDA on an owner's own machine would lock them out of
+	// it under enforcement. The owner serving their OWN prompts on their OWN box is
+	// outside the threat the MDA gate addresses (routing a stranger's private text
+	// to a possibly-SIP-off provider); every privacy-critical gate above still
+	// applies, so plaintext is never exposed.
+	if !selfRouteOwner && r.mdaEnforcedLocked() && !mdaRoutableLocked(p) {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -666,10 +702,93 @@ func (r *Registry) codeAttestationEnforcedLocked() bool {
 	return !time.Now().Before(r.codeAttestationDeadline)
 }
 
+// SetMDAEnforceDeadline sets the instant at which the SEP-signed MDA
+// SIP/Full-Security verdict becomes a hard routing prerequisite (issue #302).
+// Zero leaves the gate in grace mode (measured, logged, never derouting).
+func (r *Registry) SetMDAEnforceDeadline(deadline time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mdaDeadline = deadline
+}
+
+// MDAEnforced reports whether the MDA SIP gate is currently mandatory for
+// routing. Thread-safe.
+func (r *Registry) MDAEnforced() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mdaEnforcedLocked()
+}
+
+// mdaEnforcedLocked reports whether the MDA SIP gate is currently MANDATORY for
+// routing. Caller must hold r.mu. Like the code-attestation deadline, this is
+// consulted live at the routing chokepoint so the grace→enforce flip needs no
+// reconnect.
+func (r *Registry) mdaEnforcedLocked() bool {
+	if r.mdaDeadline.IsZero() {
+		return false
+	}
+	return !time.Now().Before(r.mdaDeadline)
+}
+
+// mdaRoutableLocked reports whether p currently satisfies the MDA SIP gate: a
+// verified fresh SIP-on/Full-Security verdict whose mint time is still within
+// attestation.MDAMaxCertAge. The age is re-checked against the wall clock on
+// every routing decision so a verdict expires even if re-attestation stalls
+// (e.g. MDM outage) — fail closed, recover on the next passing attestation.
+//
+// KNOWN RESIDUAL (issue #302 follow-up): the serial evaluateMDA compares is the
+// provider's SELF-ASSERTED attestation serial, not an Apple-rooted one. A
+// malicious owner with a second, genuinely-SIP-on enrolled Mac can claim that
+// device's serial while serving from a SIP-off box. Cleanly closing this needs
+// the connection to prove possession of the Apple-attested (ACME device-attest)
+// key bound to the serial — a provider-swift + protocol change, tracked
+// separately. See docs/threat-model.yaml.
+func mdaRoutableLocked(p *Provider) bool {
+	return p.MDASIPVerified && time.Since(p.MDAMintedAt) <= attestation.MDAMaxCertAge
+}
+
+// HasFreshMDAVerdict reports whether this provider currently holds a fresh,
+// in-window MDA SIP verdict (the value the routing gate requires under
+// enforcement). Thread-safe. Used by mdmVerificationLoop to decide whether a
+// hardware-trusted provider still needs an MDA round: a provider promoted to
+// hardware by a path that does NOT issue the MDA command (late SecurityInfo,
+// ACME) has MDASIPVerified=false and would be derouted once enforcement is on
+// unless the loop keeps going until the verdict lands.
+func (p *Provider) HasFreshMDAVerdict() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return mdaRoutableLocked(p)
+}
+
 // Mu returns the provider's mutex for external callers that need to read
 // fields like Status atomically. Prefer dedicated getters where available.
 func (p *Provider) Mu() *sync.Mutex {
 	return &p.mu
+}
+
+// MDARecheckDue reports whether a periodic MDA re-attestation should run now,
+// returning the MDM UDID to use. Due once interval has elapsed since the last
+// attempt — but only for providers that already completed an MDA round (UDID
+// captured), so environments without MDM never trigger it. The caller's
+// verification run stamps MDACheckedAt at start, which keeps concurrent
+// re-checks from stacking. Thread-safe.
+func (p *Provider) MDARecheckDue(interval time.Duration) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.MDAUDID == "" {
+		return "", false
+	}
+	return p.MDAUDID, time.Since(p.MDACheckedAt) >= interval
+}
+
+// SetMDACheckStarted stamps the start of an MDA verification attempt (and the
+// UDID it targets) so periodic re-checks are rate-limited per provider.
+// Thread-safe.
+func (p *Provider) SetMDACheckStarted(udid string, at time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.MDAUDID = udid
+	p.MDACheckedAt = at
 }
 
 // ChallengeShouldStop reports whether the attestation challenge loop should
@@ -870,6 +989,13 @@ type Registry struct {
 	// on automatically when that instant passes.
 	codeAttestationConfigured bool
 	codeAttestationDeadline   time.Time
+
+	// mdaDeadline gates the SEP-signed MDA SIP/Full-Security routing requirement
+	// (issue #302) with the same grace→enforce shape as the code-attestation
+	// deadline: zero = grace (measure + log only), set = enforcement begins when
+	// the instant passes. Wired from EIGENINFERENCE_MDA_ENFORCE_AFTER; main.go
+	// refuses enforcement unless MDM and a stable nonce seed are configured.
+	mdaDeadline time.Time
 
 	modelCatalog map[string]CatalogEntry
 
@@ -1122,14 +1248,18 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	if !p.Attested {
 		p.Attested = rec.Attested
 	}
-	// Never resurrect MDA/ACME proofs from the store. Trust above self_signed was
-	// just capped away (see above), so a restored connection is always
-	// self_signed or lower — and a hardware proof is only meaningful for the
-	// connection that earned it live. Restoring MDAVerified=true here produced the
-	// misleading "mda_verified=true while self_signed" drift on
-	// /v1/providers/attestation. These flags are re-set by the live MDM/ACME legs
+	// Never resurrect MDA/ACME proofs from the store (issue #302 + #341). Trust
+	// above self_signed was just capped away (see above), so a restored connection
+	// is always self_signed or lower — and a hardware proof is only meaningful for
+	// the connection that earned it live. The stored MDAVerified flag has no cert
+	// chain behind it (the chain is not restored) and would claim "Apple attested
+	// this device" across a reconnect — exactly the window a SIP downgrade needs,
+	// since a downgrade requires the reboot that drops the connection. Restoring
+	// it also produced the misleading "mda_verified=true while self_signed" drift
+	// on /v1/providers/attestation. Both flags are re-set by the live MDM/ACME legs
 	// (verifyAppleDeviceAttestation / applyACMETrust) once hardware is re-earned
-	// this connection.
+	// this connection. The per-connection MDA gate fields (MDASIPVerified,
+	// MDAMintedAt) are never persisted, so they need no explicit clear here.
 	p.MDAVerified = false
 	p.ACMEVerified = false
 
@@ -1605,7 +1735,11 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	if trustRank(p.TrustLevel) < trustRank(minTrust) {
 		return false
 	}
-	if !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
+	// allowPrivate is true exactly when this is the owner's own self-route/prefer
+	// request (set by the caller alongside the minTrust=TrustNone relaxation), so
+	// it is the self-route-owner signal the MDA gate uses to exempt a personal,
+	// not-MDM-enrolled Mac from MDA enforcement.
+	if !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p, allowPrivate) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -2754,7 +2888,7 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !p.RuntimeVerified {
 		return false
 	}
-	if !r.providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextLocked(p, false) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -2834,7 +2968,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	if !p.RuntimeVerified {
 		return 0, false
 	}
-	if !r.providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextLocked(p, false) {
 		return 0, false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
@@ -3626,7 +3760,7 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		trust := p.TrustLevel
 		lastChallenge := p.LastChallengeVerified
 		runtimeVerified := p.RuntimeVerified
-		privateReady := r.providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p, false)
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
@@ -3761,7 +3895,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		trust := p.TrustLevel
 		attested := p.Attested
 		attestResult := p.AttestationResult
-		privateReady := r.providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p, false)
 		privateOnly := p.PrivateOnly
 		// p.Models is replaced copy-on-write by UpdateModelWeightHashes (which
 		// holds only p.mu, not r.mu), so snapshot it here under p.mu rather than
@@ -3849,7 +3983,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
-		privateReady := r.providerSupportsPrivateTextLocked(p)
+		privateReady := r.providerSupportsPrivateTextLocked(p, false)
 		var cc string
 		if p.Location != nil {
 			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
@@ -4231,7 +4365,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			p.mu.Unlock()
 			continue
 		}
-		if !r.providerSupportsPrivateTextLocked(p) {
+		if !r.providerSupportsPrivateTextLocked(p, false) {
 			p.mu.Unlock()
 			continue
 		}

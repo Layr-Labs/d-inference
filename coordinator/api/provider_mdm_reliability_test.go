@@ -591,6 +591,37 @@ func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
 	}
 }
 
+// TestApplyLateSecurityInfo_GrantsHardwareButNoMDAVerdictYet (issue #302): a late
+// SecurityInfo grant reaches hardware WITHOUT issuing the MDA command, so the
+// provider has no fresh MDA SIP verdict yet. Under MDA enforcement the routing
+// gate requires that verdict, so mdmVerificationLoop must NOT stop on hardware
+// alone — it gates its early-return on HasFreshMDAVerdict and keeps running until
+// the verdict lands. This locks the invariant the loop relies on: a hardware
+// grant via the late path is, by itself, not MDA-routable.
+func TestApplyLateSecurityInfo_GrantsHardwareButNoMDAVerdictYet(t *testing.T) {
+	fake := &fakeMDMServer{
+		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+		commandUUID: "unused",
+	}
+	srv, p := mdmReliabilityServer(t, fake)
+
+	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
+		SystemIntegrityProtectionEnabled: true,
+		SecureBootLevel:                  "full",
+	})
+
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Fatalf("trust = %q, want hardware after late SecurityInfo", lvl)
+	}
+	// The late path grants hardware but never runs verifyAppleDeviceAttestation,
+	// so there is no fresh MDA verdict. If the loop stopped on hardware alone, such
+	// a provider would be derouted once enforcement is on; the loop instead keeps
+	// running (gated on HasFreshMDAVerdict) until an MDA round produces a verdict.
+	if p.HasFreshMDAVerdict() {
+		t.Error("late SecurityInfo grant must NOT by itself yield a fresh MDA verdict — the MDA loop must still run to obtain one")
+	}
+}
+
 // TestApplyLateSecurityInfo_SkipsUntrusted: if the provider became untrusted while
 // the SecurityInfo response was in flight, the late path must NOT grant hardware
 // (that would leave hardware/untrusted). Mirrors the sync-path status guard.

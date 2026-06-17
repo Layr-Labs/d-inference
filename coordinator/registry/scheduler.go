@@ -619,9 +619,13 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 			continue
 		}
 		online++
+		// This is the owner's own-machine summary (p.AccountID == accountID), a
+		// self-route-owner context — it "deliberately ignores the hardware-trust
+		// gate, which self-route relaxes" (see doc above), so the MDA gate is
+		// likewise exempt here, matching the routing path.
 		serves := r.providerServesCatalogModelLocked(p, model) &&
 			p.RuntimeVerified &&
-			r.providerSupportsPrivateTextLocked(p) &&
+			r.providerSupportsPrivateTextLocked(p, true) &&
 			!p.LastChallengeVerified.IsZero() &&
 			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
 		p.mu.Unlock()
@@ -719,7 +723,9 @@ func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, t
 	if !p.RuntimeVerified {
 		return false
 	}
-	if !r.providerSupportsPrivateTextLocked(p) {
+	// Thread the self-route-owner context: like the hardware-trust floor above,
+	// the MDA gate is exempt for an owner's own (not-MDM-enrolled) machine.
+	if !r.providerSupportsPrivateTextLocked(p, selfRouteOwner) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {

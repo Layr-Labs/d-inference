@@ -58,14 +58,20 @@ struct KVEngineDemo: AsyncParsableCommand {
     }
 
     /// Label for the quantized engine, reflecting the actual scheme the scheduler
-    /// resolves (GPT-OSS defaults to dequant; kernel only via env override).
+    /// resolves. Gemma 4 uses the g128 kernel; GPT-OSS defaults to dequant
+    /// (kernel only via env override); unsupported families resolve to no scheme
+    /// (fp16), so the "quantized" run is really fp16 — label it honestly.
     var gptOSSAwareQuantLabel: String {
-        guard KVQuantPolicy.classify(modelID: modelID) == .gptOSS else {
+        switch KVQuantPolicy.classify(modelID: modelID) {
+        case .gemma4:
             return "k8v8:g128 (kernel)"
+        case .gptOSS:
+            return ProcessInfo.processInfo.environment["DARKBLOOM_KV_GPTOSS_KERNEL"] == "1"
+                ? "k8v8:g64 (kernel)"
+                : "k8v8:g64 (dequant)"
+        case .unknown:
+            return "fp16 (KV quant unsupported for this model)"
         }
-        return ProcessInfo.processInfo.environment["DARKBLOOM_KV_GPTOSS_KERNEL"] == "1"
-            ? "k8v8:g64 (kernel)"
-            : "k8v8:g64 (dequant)"
     }
 
     var contextLengths: [Int] {
@@ -94,6 +100,13 @@ struct KVEngineDemo: AsyncParsableCommand {
             }
             print("ERROR: model not ready: \(issueStrings.joined(separator: "; "))")
             throw ExitCode.failure
+        }
+
+        // The demo's whole purpose is an fp16-vs-quantized comparison. For model
+        // families with no KV-quant scheme the "quantized" run silently falls back
+        // to fp16, so reject them up front instead of emitting a bogus comparison.
+        guard KVQuantPolicy.classify(modelID: modelID) != .unknown else {
+            throw KVEngineDemoError.unsupportedModel(modelID)
         }
 
         print("Loading model container...")
@@ -406,51 +419,71 @@ struct KVEngineDemo: AsyncParsableCommand {
         promptTokenCount: Int,
         scheduler: BatchScheduler
     ) async throws -> GenerationResult {
-        var text = ""
-        var tokens = 0
-        var reportedTokensPerSecond: Double = 0
-        var firstChunkAt: ContinuousClock.Instant?
-        var lastChunkAt: ContinuousClock.Instant?
+        let timeoutSeconds = generationTimeout
 
-        let deadline = ContinuousClock.now.advanced(by: .seconds(generationTimeout))
+        // Race stream consumption against the generation timeout. A bare
+        // `for await` only observes the deadline *after* an event is yielded, so
+        // a scheduler/model stall before the first chunk (or between chunks)
+        // would suspend here forever. The timeout task fires while we are
+        // suspended awaiting the next event.
+        return try await withThrowingTaskGroup(of: GenerationResult.self) { group in
+            group.addTask {
+                var text = ""
+                var tokens = 0
+                var reportedTokensPerSecond: Double = 0
+                var firstChunkAt: ContinuousClock.Instant?
+                var lastChunkAt: ContinuousClock.Instant?
 
-        for await event in stream {
-            switch event {
-            case .chunk(let chunk):
-                text += chunk
-                let now = ContinuousClock.now
-                if firstChunkAt == nil { firstChunkAt = now }
-                lastChunkAt = now
-            case .info(_, let completionTok, let tps):
-                tokens = completionTok
-                reportedTokensPerSecond = tps
-            case .error(let message):
-                throw KVEngineDemoError.generationFailed(message)
+                for await event in stream {
+                    switch event {
+                    case .chunk(let chunk):
+                        text += chunk
+                        let now = ContinuousClock.now
+                        if firstChunkAt == nil { firstChunkAt = now }
+                        lastChunkAt = now
+                    case .info(_, let completionTok, let tps):
+                        tokens = completionTok
+                        reportedTokensPerSecond = tps
+                    case .error(let message):
+                        throw KVEngineDemoError.generationFailed(message)
+                    }
+                }
+
+                var decodeTokensPerSecond = reportedTokensPerSecond
+                if let first = firstChunkAt, let last = lastChunkAt, tokens > 1 {
+                    let duration = first.duration(to: last)
+                    let seconds = Double(duration.components.seconds)
+                        + Double(duration.components.attoseconds) * 1e-18
+                    decodeTokensPerSecond = Double(tokens - 1) / seconds
+                }
+
+                return GenerationResult(
+                    prompt: prompt,
+                    promptTokenCount: promptTokenCount,
+                    text: text,
+                    tokens: tokens,
+                    decodeTokensPerSecond: decodeTokensPerSecond,
+                    reportedTokensPerSecond: reportedTokensPerSecond,
+                    error: nil
+                )
             }
-
-            if ContinuousClock.now > deadline {
-                await scheduler.cancelAll()
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeoutSeconds))
                 throw KVEngineDemoError.generationTimeout
             }
-        }
 
-        var decodeTokensPerSecond = reportedTokensPerSecond
-        if let first = firstChunkAt, let last = lastChunkAt, tokens > 1 {
-            let duration = first.duration(to: last)
-            let seconds = Double(duration.components.seconds)
-                + Double(duration.components.attoseconds) * 1e-18
-            decodeTokensPerSecond = Double(tokens - 1) / seconds
+            do {
+                guard let result = try await group.next() else {
+                    throw KVEngineDemoError.generationFailed("stream produced no result")
+                }
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                await scheduler.cancelAll()
+                throw error
+            }
         }
-
-        return GenerationResult(
-            prompt: prompt,
-            promptTokenCount: promptTokenCount,
-            text: text,
-            tokens: tokens,
-            decodeTokensPerSecond: decodeTokensPerSecond,
-            reportedTokensPerSecond: reportedTokensPerSecond,
-            error: nil
-        )
     }
 
     // MARK: - Synthetic prompt
@@ -738,6 +771,7 @@ private enum KVEngineDemoError: Error, LocalizedError {
     case modelNotInCache(String)
     case generationFailed(String)
     case generationTimeout
+    case unsupportedModel(String)
 
     var errorDescription: String? {
         switch self {
@@ -749,6 +783,10 @@ private enum KVEngineDemoError: Error, LocalizedError {
             return "generation failed: \(message)"
         case .generationTimeout:
             return "generation timed out"
+        case .unsupportedModel(let id):
+            return "model '\(id)' has no KV-quant scheme (not Gemma 4 / GPT-OSS); "
+                + "the fp16-vs-quant comparison would be fp16-vs-fp16. "
+                + "Run the gate with a supported target model."
         }
     }
 }

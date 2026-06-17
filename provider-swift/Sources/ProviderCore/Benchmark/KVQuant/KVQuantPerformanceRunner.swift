@@ -113,7 +113,11 @@ public struct KVQuantPerformanceRunner {
                     candidate: candidateReport,
                     notes: gate.notes
                 )
-                suitePassFail = gate.passFail
+                // The decode-TPS regression gate only governs the performance
+                // suite. The memory suite shares this runner to collect the same
+                // measurements, but its pass/fail is owned by memory/threshold
+                // evaluation — it must not fail solely on candidate throughput.
+                suitePassFail = (suite == .performance) ? gate.passFail : .passed()
                 skipped = []
                 todos = [
                     "This perf suite is a fail-safe sequential regression gate. Use kv-engine-demo --concurrency-sweep for the live continuous-batching diagnostic."

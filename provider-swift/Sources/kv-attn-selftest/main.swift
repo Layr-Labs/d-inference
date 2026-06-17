@@ -490,12 +490,14 @@ for bits in [8, 4] {
 
 // Live Gemma cache mutation parameters (K8V8 g128). These exercise the same
 // continuously-batched quantized cache family the engine selects for Gemma.
-followUpOk = runFinalizeBatchedCase(
-    "finalize ragged live g128", bits: 8, groupSize: 128) && followUpOk
-followUpOk = runExtendBatchedCase(
-    "extend empty live g128", bits: 8, groupSize: 128) && followUpOk
-followUpOk = runFilterBatchedCase(
-    "filter drop-row live g128", bits: 8, groupSize: 128) && followUpOk
+// They fold into the DAR-314 gate below (not the later g64 follow-up, whose
+// `followUpOk` is declared further down and would otherwise discard these).
+dar314Ok = runFinalizeBatchedCase(
+    "finalize ragged live g128", bits: 8, groupSize: 128) && dar314Ok
+dar314Ok = runExtendBatchedCase(
+    "extend empty live g128", bits: 8, groupSize: 128) && dar314Ok
+dar314Ok = runFilterBatchedCase(
+    "filter drop-row live g128", bits: 8, groupSize: 128) && dar314Ok
 
 if dar314Ok {
     print("DAR-314 gate: ALL OK")

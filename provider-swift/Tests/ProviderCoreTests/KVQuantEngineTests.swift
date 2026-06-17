@@ -11,7 +11,11 @@ import MLX
 @testable import ProviderCore
 import Testing
 
-@Suite("KV-quant engine wiring + byte accounting")
+// `.serialized`: several tests mutate the process-wide DARKBLOOM_KV_GPTOSS_KERNEL
+// env var (set/unset) to exercise the GPT-OSS kernel override. Swift Testing runs
+// tests in parallel by default, so without serialization these would race and
+// observe each other's environment state nondeterministically.
+@Suite("KV-quant engine wiring + byte accounting", .serialized)
 struct KVQuantEngineTests {
 
     // MARK: - Byte accounting (DAR-318)

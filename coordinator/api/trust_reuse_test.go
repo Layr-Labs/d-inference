@@ -9,10 +9,18 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// dummyMDMClient returns a non-nil *mdm.Client (no network at construction) so
+// tryTrustReuseFastSkip's "MDM configured" gate (FIX C) is satisfied in unit tests
+// that don't stand up a fake MicroMDM server.
+func dummyMDMClient() *mdm.Client {
+	return mdm.NewClient("http://127.0.0.1:1", "test", quietLogger())
+}
 
 // flakyDeleteStore wraps a real store and fails the first failFirst calls to
 // DeleteProviderTrustReuse, then delegates. Used to prove the inline bounded retry
@@ -232,6 +240,22 @@ func trustReuseServer(t *testing.T) (*Server, store.Store) {
 	return srv, st
 }
 
+// newTrustReuseProvider registers a fresh, online (not-untrusted, epoch 0) provider
+// with the given SE key + serial, for exercising recordTrustReuse's epoch-checked
+// write-through (FIX A) and the late-SecurityInfo path (FIX B).
+func newTrustReuseProvider(t *testing.T, srv *Server, id, seKey, serial string) *registry.Provider {
+	t.Helper()
+	msg := &protocol.RegisterMessage{
+		Type: protocol.TypeRegister, Backend: "mlx-swift", PublicKey: testPublicKeyB64(),
+		Models: []protocol.ModelInfo{{ID: "m", ModelType: "chat", Quantization: "4bit"}},
+	}
+	p := srv.registry.Register(id, nil, msg)
+	p.Mu().Lock()
+	p.AttestationResult = &attestation.VerificationResult{Valid: true, SerialNumber: serial, PublicKey: seKey}
+	p.Mu().Unlock()
+	return p
+}
+
 // TestTrustReuseSeedFromStore proves SeedTrustReuseCache repopulates the in-memory
 // cache from persisted rows at startup (survives a coordinator restart/deploy).
 func TestTrustReuseSeedFromStore(t *testing.T) {
@@ -246,24 +270,25 @@ func TestTrustReuseSeedFromStore(t *testing.T) {
 	}
 }
 
-// TestRecordTrustReusePersists proves the write-through reaches the store, so a
-// simulated restart (fresh cache seeded from the store) can fast-skip.
+// TestRecordTrustReusePersists proves the write-through reaches the store
+// SYNCHRONOUSLY (FIX A), so a simulated restart (fresh cache seeded from the store)
+// can fast-skip.
 func TestRecordTrustReusePersists(t *testing.T) {
 	srv, st := trustReuseServer(t)
 	srv.SeedTrustReuseCache(context.Background()) // wires the store (empty seed)
+	p := newTrustReuseProvider(t, srv, "prov-y", "se-y", "SER-Y")
 
-	srv.recordTrustReuse("se-y", "SER-Y", trHashA, true, true, "UDID-Y")
+	srv.recordTrustReuse(p, "se-y", "SER-Y", trHashA, true, true, "UDID-Y")
 
-	// Write-through is async (saferun.Go); poll the store.
-	if !waitForCond(2*time.Second, func() bool {
-		rows, _ := st.ListProviderTrustReuse(context.Background())
-		return len(rows) == 1 && rows[0].SEPubKey == "se-y" && rows[0].BinaryHash == trHashA
-	}) {
-		t.Fatal("recordTrustReuse must persist the record to the store")
+	// Write-through is now synchronous — the row is present as soon as it returns.
+	rows, _ := st.ListProviderTrustReuse(context.Background())
+	if len(rows) != 1 || rows[0].SEPubKey != "se-y" || rows[0].BinaryHash != trHashA {
+		t.Fatalf("recordTrustReuse must persist the record synchronously, got %+v", rows)
 	}
 
 	// A record with no usable binary hash is NOT cached (read gate requires a match).
-	srv.recordTrustReuse("se-nohash", "SER-N", "not-a-hash", true, true, "UDID-N")
+	p2 := newTrustReuseProvider(t, srv, "prov-nohash", "se-nohash", "SER-N")
+	srv.recordTrustReuse(p2, "se-nohash", "SER-N", "not-a-hash", true, true, "UDID-N")
 	if _, ok := srv.trustReuseCache.reuseTrust("se-nohash", "SER-N", trHashA); ok {
 		t.Fatal("a record with an unusable binary hash must not be cached/reusable")
 	}
@@ -361,14 +386,11 @@ func TestInvalidateTrustReuseDurableAcrossRestart(t *testing.T) {
 	p.AttestationResult = &attestation.VerificationResult{Valid: true, SerialNumber: "SER-DUR", PublicKey: "se-dur"}
 	p.Mu().Unlock()
 
-	srv.recordTrustReuse("se-dur", "SER-DUR", trHashA, true, true, "udid-dur")
-	// recordTrustReuse persists via saferun.Go — wait for it before untrusting so
-	// the delete cannot race ahead of the write-through.
-	if !waitForCond(2*time.Second, func() bool {
-		rows, _ := st.ListProviderTrustReuse(context.Background())
-		return len(rows) == 1
-	}) {
-		t.Fatal("precondition: record must be persisted")
+	// Synchronous, epoch-checked write-through (FIX A): the row is persisted before
+	// this returns.
+	srv.recordTrustReuse(p, "se-dur", "SER-DUR", trHashA, true, true, "udid-dur")
+	if rows, _ := st.ListProviderTrustReuse(context.Background()); len(rows) != 1 {
+		t.Fatalf("precondition: record must be persisted, got %d rows", len(rows))
 	}
 
 	srv.registry.MarkUntrusted("prov-dur") // hard untrust → hook → synchronous persisted delete
@@ -396,6 +418,7 @@ func trustReuseFastSkipProvider(t *testing.T) (*Server, *registry.Provider, *fun
 	t.Helper()
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv.mdmClient = dummyMDMClient() // satisfy the FIX C "MDM configured" gate
 	cur := time.Unix(1_700_000_000, 0)
 	clock := func() time.Time { return cur }
 	srv.trustReuseCache.now = clock
@@ -624,5 +647,127 @@ func TestSeedTrustReuseCacheWiresHookWithoutStore(t *testing.T) {
 
 	if srv.trustReuseCache.hasFreshRecord("se-nostore", "SER-NS") {
 		t.Fatal("hard untrust must invalidate the in-memory record even with no store wired (FIX 5 decoupling)")
+	}
+}
+
+// --- FIX A: durable hard-untrust epoch (close the write-after-delete race) ---
+
+// TestRecordTrustReuseSkipsPersistAfterHardUntrust proves FIX A ordering B: a hard
+// untrust that has landed by the time recordTrustReuse does its pre-upsert recheck
+// (epoch bumped + provider hard-untrusted) makes it persist NOTHING and keep no
+// in-memory entry — so a synchronous write can never resurrect a row the untrust's
+// synchronous delete already removed.
+func TestRecordTrustReuseSkipsPersistAfterHardUntrust(t *testing.T) {
+	srv, st := trustReuseServer(t)
+	srv.SeedTrustReuseCache(context.Background())
+	p := newTrustReuseProvider(t, srv, "prov-epoch", "se-epoch", "SER-EP")
+
+	epochBefore := p.HardUntrustEpoch()
+	srv.registry.MarkUntrusted("prov-epoch") // bumps the epoch + sets Status=Untrusted
+	if p.HardUntrustEpoch() == epochBefore {
+		t.Fatal("a hard untrust must bump the provider's hard-untrust epoch")
+	}
+
+	// The grant's write-through arrives AFTER the untrust — it must be refused.
+	srv.recordTrustReuse(p, "se-epoch", "SER-EP", trHashA, true, true, "udid")
+
+	if rows, _ := st.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("must NOT persist a record after a hard untrust, got %d rows", len(rows))
+	}
+	if srv.trustReuseCache.hasFreshRecord("se-epoch", "SER-EP") {
+		t.Fatal("must NOT keep an in-memory record after a hard untrust")
+	}
+}
+
+// TestRecordTrustReuseDurableBothOrderings proves FIX A's durability goal in both
+// orderings: whether the hard untrust lands AFTER the record (ordering A: the
+// untrust's synchronous delete removes the persisted row) or BEFORE the record
+// completes (ordering B: the epoch recheck refuses to persist), a fresh cache
+// seeded from the SAME store after a simulated restart finds no record.
+func TestRecordTrustReuseDurableBothOrderings(t *testing.T) {
+	seedFromStore := func(t *testing.T, st store.Store) int {
+		t.Helper()
+		rows, err := st.ListProviderTrustReuse(context.Background())
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		return newTrustReuseCache().seed(rows)
+	}
+
+	t.Run("ordering A: record then untrust", func(t *testing.T) {
+		srv, st := trustReuseServer(t)
+		srv.SeedTrustReuseCache(context.Background())
+		p := newTrustReuseProvider(t, srv, "prov-a", "se-a", "SER-A")
+
+		srv.recordTrustReuse(p, "se-a", "SER-A", trHashA, true, true, "udid")
+		if rows, _ := st.ListProviderTrustReuse(context.Background()); len(rows) != 1 {
+			t.Fatalf("record must be persisted first, got %d rows", len(rows))
+		}
+		srv.registry.MarkUntrusted("prov-a") // hook → synchronous delete
+		if n := seedFromStore(t, st); n != 0 {
+			t.Fatalf("ordering A: restart reseed = %d, want 0", n)
+		}
+	})
+
+	t.Run("ordering B: untrust then record", func(t *testing.T) {
+		srv, st := trustReuseServer(t)
+		srv.SeedTrustReuseCache(context.Background())
+		p := newTrustReuseProvider(t, srv, "prov-b", "se-b", "SER-B")
+
+		srv.registry.MarkUntrusted("prov-b") // epoch bumped + delete (no row yet)
+		srv.recordTrustReuse(p, "se-b", "SER-B", trHashA, true, true, "udid")
+		if n := seedFromStore(t, st); n != 0 {
+			t.Fatalf("ordering B: restart reseed = %d, want 0", n)
+		}
+	})
+}
+
+// --- FIX B: late-SecurityInfo grants are cached too ---
+
+// TestApplyLateSecurityInfoCachesReuse proves FIX B: a self_signed→hardware upgrade
+// via a late SecurityInfo persists a trust-reuse record (same epoch-checked
+// write-through as the synchronous MDM path) so it gets restart-survivable
+// fast-skip.
+func TestApplyLateSecurityInfoCachesReuse(t *testing.T) {
+	fake := &fakeMDMServer{device: &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true}}
+	srv, p := mdmReliabilityServer(t, fake)
+	srv.SeedTrustReuseCache(context.Background()) // wire store + hook
+	// Give the provider a usable signed binary hash so the reuse record can bind.
+	p.Mu().Lock()
+	p.AttestationResult.BinaryHash = trHashA
+	p.Mu().Unlock()
+
+	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
+		SystemIntegrityProtectionEnabled: true,
+		SecureBootLevel:                  "full",
+	})
+
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Fatalf("late SecurityInfo must upgrade to hardware, got %q", lvl)
+	}
+	if _, ok := srv.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashA); !ok {
+		t.Fatal("late SecurityInfo grant must cache a reusable trust-reuse record (FIX B)")
+	}
+	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 1 {
+		t.Fatalf("late grant must persist exactly one reuse row, got %d", len(rows))
+	}
+}
+
+// --- FIX C: fast-skip requires a configured MDM client ---
+
+// TestTrustReuseFastSkipRequiresMDMConfigured proves FIX C: with a valid fresh
+// record and all other gates passing, a nil mdmClient (no-MDM / misconfigured
+// deploy) makes the fast-skip decline so hardware is never granted from cache with
+// no live MDM fallback.
+func TestTrustReuseFastSkipRequiresMDMConfigured(t *testing.T) {
+	srv, p, _ := trustReuseFastSkipProvider(t)
+	srv.mdmClient = nil // no MDM configured
+	srv.trustReuseCache.recordTrust(hardwareReuseRecord("se-pub-key-bytes", "SERIAL-1", trHashA, srv.trustReuseCache.now()))
+
+	if srv.tryTrustReuseFastSkip("prov-fs", p, goodFastSkipResp(), true) {
+		t.Fatal("fast-skip must NOT grant when no MDM client is configured (no live fallback)")
+	}
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
+		t.Fatalf("provider must stay self_signed, got %q", lvl)
 	}
 }

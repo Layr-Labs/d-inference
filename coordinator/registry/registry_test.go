@@ -986,6 +986,35 @@ func TestHardUntrustHook(t *testing.T) {
 	mu.Unlock()
 }
 
+// TestHardUntrustEpoch proves the DAR-326 FIX A epoch counter: it starts at 0,
+// bumps on every HARD untrust, and does NOT bump on a transient untrust (which can
+// self-recover). recordTrustReuse captures + re-checks this epoch to refuse a
+// stale write that races a hard untrust.
+func TestHardUntrustEpoch(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	if e := p.HardUntrustEpoch(); e != 0 {
+		t.Fatalf("fresh provider epoch = %d, want 0", e)
+	}
+
+	// A transient untrust must NOT bump the epoch.
+	reg.MarkUntrustedTransient("p1")
+	if e := p.HardUntrustEpoch(); e != 0 {
+		t.Fatalf("transient untrust must not bump the epoch, got %d", e)
+	}
+
+	// Each hard untrust bumps it (monotonic).
+	reg.MarkUntrusted("p1")
+	if e := p.HardUntrustEpoch(); e != 1 {
+		t.Fatalf("epoch after first hard untrust = %d, want 1", e)
+	}
+	reg.MarkUntrusted("p1")
+	if e := p.HardUntrustEpoch(); e != 2 {
+		t.Fatalf("epoch after second hard untrust = %d, want 2", e)
+	}
+}
+
 func TestFindProviderSkipsUntrusted(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

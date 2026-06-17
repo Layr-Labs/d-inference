@@ -390,6 +390,15 @@ type Provider struct {
 	// nil channel degrades safely to the timer-based wait.
 	challengeSettled chan struct{}
 
+	// untrustEpoch is bumped on every HARD untrust of this provider (DAR-326
+	// FIX A). The trust-reuse write-through (api.recordTrustReuse) captures it at
+	// grant time and re-checks it immediately before persisting; a bump in between
+	// means a hard untrust raced the grant, so the stale `hardware` row is not
+	// persisted. This closes the write-after-delete race where an async write could
+	// land AFTER the hard-untrust's synchronous delete and resurrect a row that a
+	// restart would reseed. atomic so it is read/written without p.mu.
+	untrustEpoch atomic.Uint64
+
 	// untrustedRecoverable marks an untrust as a *transient* missed-challenge
 	// deroute (timeout / no-response) that may self-recover on the next passing
 	// challenge. It is false for every hard/security deroute. In-memory only —
@@ -712,6 +721,14 @@ func (p *Provider) SignalChallengeSettled() {
 // select then simply never fires that case and falls back to the timer).
 func (p *Provider) ChallengeSettledChan() <-chan struct{} {
 	return p.challengeSettled
+}
+
+// HardUntrustEpoch returns the current hard-untrust epoch (thread-safe). It is
+// bumped on every hard untrust; the trust-reuse write-through captures it at grant
+// time and re-checks it before persisting so a hard untrust that races a grant
+// cannot leave a stale, reseedable `hardware` row (DAR-326 FIX A).
+func (p *Provider) HardUntrustEpoch() uint64 {
+	return p.untrustEpoch.Load()
 }
 
 // SetAttestationResult stores a snapshot of the parsed attestation result
@@ -3356,8 +3373,16 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 	// on a stale, pre-untrust record (DAR-326). Fired after releasing the locks; a
 	// transient (recoverable) untrust does NOT invalidate — it can self-recover via
 	// a passing challenge.
-	if hook != nil && seKey != "" {
-		hook(seKey)
+	if !recoverable {
+		// FIX A: bump the hard-untrust epoch BEFORE firing the delete hook. A
+		// concurrent recordTrustReuse that captured the old epoch at grant time then
+		// sees the change on its pre-upsert recheck and refuses to persist a stale
+		// `hardware` row — closing the write-after-delete race (a write landing after
+		// the synchronous delete that a restart would otherwise reseed).
+		p.untrustEpoch.Add(1)
+		if hook != nil && seKey != "" {
+			hook(seKey)
+		}
 	}
 }
 

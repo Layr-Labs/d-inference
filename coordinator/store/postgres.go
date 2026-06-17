@@ -912,6 +912,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// on READ (in the coordinator, behind a live SE challenge), so a
 		// stale/wrong-binary/expired row never extends trust — it only lets the
 		// coordinator skip a redundant live MDM round-trip.
+		//
+		// SECURITY-SENSITIVE (Threat-Model #5): a row here grants a hardware
+		// fast-skip, so write access must be guarded like the payment ledger — only
+		// the coordinator writes it, and only after a verified live MDM pass.
+		// SeedTrustReuseCache TRUSTS this table's contents on restart; that trust is
+		// bounded by the always-run live SE challenge on read (re-proving posture +
+		// binary + identity) plus future-date rejection, so a tampered/stale row
+		// still falls through to a full live MDM verification rather than silently
+		// granting hardware.
 		`CREATE TABLE IF NOT EXISTS provider_trust_reuse (
 			se_pubkey TEXT PRIMARY KEY,
 			serial TEXT NOT NULL DEFAULT '',

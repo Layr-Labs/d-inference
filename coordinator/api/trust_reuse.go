@@ -8,7 +8,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -16,9 +15,11 @@ import (
 // honored for a NEW connection from the same device — without re-running the live
 // MDM SecurityInfo round-trip — provided a fresh live SE challenge re-proves the
 // SAME identity, binary, and good posture. It bounds the staleness of the MDM
-// proof, so it is kept short (mirrors the code-identity reuse window). Overridable
-// via EIGENINFERENCE_TRUST_REUSE_WINDOW.
-const defaultTrustReuseWindow = 30 * time.Minute
+// proof. Kept SHORT (Threat-Model #3): the reuse must not be able to span a
+// SIP-disable reboot cycle (where a box reboots into Recovery, disables SIP, and
+// reconnects), so a window comfortably under a realistic reboot+reconnect is used.
+// Overridable via EIGENINFERENCE_TRUST_REUSE_WINDOW.
+const defaultTrustReuseWindow = 10 * time.Minute
 
 // trustReuseGrantWait bounds how long the per-connection mdmVerificationLoop
 // defers to the live SE challenge's trust-reuse fast-skip for a known, recently
@@ -275,10 +276,17 @@ func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 // server setup. The hard-untrust hook is wired UNCONDITIONALLY (independent of
 // store presence) so a hard untrust always drops the in-memory record even under
 // the memory-store fallback; persistence + startup seeding are skipped when no
-// store is wired. SECURITY: seeding only repopulates the cache that reuseTrust
-// re-validates (behind a live SE challenge) on every read — it cannot grant
-// hardware by itself, and a stale/wrong-binary/expired row still falls through to
-// a full live MDM verify.
+// store is wired. SECURITY: seeding TRUSTS the DB contents — a row that says
+// `hardware` is loaded as a fast-skip candidate. That trust is bounded because
+// reuseTrust re-validates every row on read behind an always-run live SE challenge
+// (re-proving SIP/Secure-Boot posture + binary + identity) and rejects future-
+// dated rows, so a stale/wrong-binary/expired/forged row still falls through to a
+// full live MDM verify — seeding cannot grant hardware by itself. The write path
+// (provider_trust_reuse table) must therefore be guarded like the payment ledger
+// (Threat-Model #5): only the coordinator writes it, after a verified live MDM
+// pass. SEC-004: a forged localhost MDM webhook that drove a grant would be
+// persisted + reseeded here (amplified across restarts); bounded by the
+// localhost-only webhook, fully mitigated by authenticating it (tracked separately).
 func (s *Server) SeedTrustReuseCache(ctx context.Context) {
 	if s == nil || s.trustReuseCache == nil {
 		return
@@ -310,18 +318,38 @@ func (s *Server) SeedTrustReuseCache(ctx context.Context) {
 }
 
 // recordTrustReuse writes a successful FULL live MDM verification to the reuse
-// cache: in-memory (recordTrust) AND durable write-through (persistTrustReuse), so
-// a planned coordinator restart/swap can fast-skip the live MDM round-trip for
-// this device within the freshness window. Called from verifyProviderViaMDM AFTER
-// hardware is granted. The recorded binary hash is the SE-attested provider binary
-// (normalized); the read gate compares it to the binary hash in the fresh SIGNED
-// challenge, so a binary change between connections forces a full re-verify. If the
-// SE attestation carries no usable binary hash, no record is cached (the read gate
-// requires a binary match anyway) — the device simply re-verifies via full MDM next
-// time. SECURITY: written only after a full, verified live MDM pass — never from an
-// unverified self-report.
-func (s *Server) recordTrustReuse(seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string) {
-	if s == nil || s.trustReuseCache == nil || seKey == "" || serial == "" {
+// cache — in-memory AND a SYNCHRONOUS, epoch-checked durable write-through — so a
+// planned coordinator restart/swap can fast-skip the live MDM round-trip for this
+// device within the freshness window. Called from verifyProviderViaMDM and
+// ApplyLateSecurityInfo AFTER hardware is granted.
+//
+// FIX A (durable hard-untrust — close the write-after-delete race): the persist is
+// SYNCHRONOUS, not fire-and-forget. A fire-and-forget write could land AFTER a
+// concurrent hard-untrust's synchronous delete (invalidateTrustReuse) and
+// resurrect a stale `hardware` row that a restart would reseed → fast-skip
+// untrusted hardware (Codex trust_reuse.go:366 / Threat-Model #6). We capture the
+// provider's hard-untrust epoch at grant time and, immediately before the upsert,
+// re-check that no hard untrust has raced in (provider not hard-untrusted AND the
+// epoch is unchanged); if it has, we drop the in-memory entry and skip the
+// persist. markUntrusted bumps the epoch BEFORE its synchronous delete hook, so
+// this linearizes write vs delete on the epoch: a write that began before the
+// untrust is dropped by the recheck, and a write that lands before the untrust's
+// delete is removed by that delete. The always-required live SE challenge on reuse
+// is the backstop for the residual instruction-level window between recheck and
+// upsert.
+//
+// The recorded binary hash is the SE-attested provider binary (normalized); the
+// read gate compares it to the binary hash in the fresh SIGNED challenge, so a
+// binary change between connections forces a full re-verify. If the SE attestation
+// carries no usable binary hash, no record is cached (the read gate requires a
+// binary match anyway). SECURITY: written only after a full, verified live MDM
+// pass — never from an unverified self-report. SEC-004: were a forged MDM webhook
+// (unauthenticated, but localhost-bound in-container) ever to drive a grant, that
+// grant would be durably persisted here and reseeded across restarts — amplifying
+// the forgery. This is bounded by the webhook being localhost-only; full
+// mitigation is authenticating the webhook (SEC-004, tracked separately).
+func (s *Server) recordTrustReuse(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string) {
+	if s == nil || s.trustReuseCache == nil || provider == nil || seKey == "" || serial == "" {
 		return
 	}
 	normHash, err := normalizeSHA256Hex(binaryHash, "binary_hash")
@@ -341,29 +369,30 @@ func (s *Server) recordTrustReuse(seKey, serial, binaryHash string, sipEnabled, 
 		MDAUDID:        udid,
 		VerifiedAt:     s.trustReuseCache.now(),
 	}
-	s.trustReuseCache.recordTrust(rec) // in-memory
-	s.persistTrustReuse(rec)           // durable write-through
-}
 
-// persistTrustReuse best-effort writes a reuse record to the store off the read
-// loop (saferun.Go) so it survives a coordinator restart/deploy. Behind the store
-// seam (no-op until SeedTrustReuseCache wires a store). Mirrors
-// Server.persistCodeAttestation.
-func (s *Server) persistTrustReuse(rec store.ProviderTrustReuse) {
-	if s == nil || s.trustReuseCache == nil || rec.SEPubKey == "" {
-		return
-	}
+	// Capture the hard-untrust epoch at grant time (FIX A).
+	epoch := provider.HardUntrustEpoch()
+
+	// Record in-memory so an immediate same-process reconnect can fast-skip.
+	s.trustReuseCache.recordTrust(rec)
+
 	st := s.trustReuseCache.store
 	if st == nil {
+		return // no durable store wired; the in-memory record is enough
+	}
+
+	// Re-check immediately before the synchronous upsert: if a hard untrust raced
+	// this grant (the provider is now hard-untrusted, or the epoch bumped), drop the
+	// in-memory entry and do NOT persist a stale `hardware` row.
+	if provider.ChallengeShouldStop() || provider.HardUntrustEpoch() != epoch {
+		s.trustReuseCache.invalidateReuse(seKey)
 		return
 	}
-	saferun.Go(s.logger, "persistTrustReuse", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := st.UpsertProviderTrustReuse(ctx, rec); err != nil {
-			s.logger.Warn("trust-reuse: failed to persist reuse record", "error", err)
-		}
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := st.UpsertProviderTrustReuse(ctx, rec); err != nil {
+		s.logger.Warn("trust-reuse: failed to persist reuse record", "error", err)
+	}
 }
 
 // invalidateTrustReuse drops a device's reuse record in-memory AND deletes the
@@ -431,9 +460,20 @@ func deleteProviderTrustReuseOnce(st trustReuseStore, seKey string) error {
 //	(c) fresh posture is good AND cryptographically bound: SIPEnabled &&
 //	    SecureBootEnabled && statusFieldsTrusted;
 //	(d) within the freshness window (enforced in reuseTrust);
-//	(e) the provider is not currently HARD-untrusted.
+//	(e) the provider is not currently HARD-untrusted;
+//	(f) an MDM client is configured (FIX C) — the fast-skip only ever SUBSTITUTES
+//	    for a live MDM round-trip, so on a no-MDM / misconfigured deploy there is no
+//	    live fallback and we must not grant hardware from a (possibly stale) cache.
 func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Provider, resp *protocol.AttestationResponseMessage, statusFieldsTrusted bool) bool {
 	if s == nil || s.trustReuseCache == nil || provider == nil || resp == nil {
+		return false
+	}
+	// (f) require MDM to be configured. The trust-reuse fast-skip is purely an
+	// optimization that REPLACES a live MDM SecurityInfo round-trip; if no MDM
+	// client is wired (no-MDM or misconfigured deploy), the normal path would never
+	// grant hardware via MDM at all, so granting it here from the reuse cache would
+	// be a strictly weaker trust decision with no live fallback. Decline.
+	if s.mdmClient == nil {
 		return false
 	}
 	// (c) fresh good posture, cryptographically bound to the SE key. Without a

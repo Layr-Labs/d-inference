@@ -2746,6 +2746,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	// re-proves the same identity, unchanged binary, and good posture within the
 	// window. Written only here, AFTER the verified MDM pass + hardware grant.
 	s.recordTrustReuse(
+		provider,
 		attestResult.PublicKey,
 		attestResult.SerialNumber,
 		attestResult.BinaryHash,
@@ -2832,6 +2833,21 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 			"udid", udid,
 		)
 		s.registry.PersistProvider(c.provider)
+
+		// DAR-326 FIX B: cache this late grant in the trust-reuse cache too, so it
+		// gets the same restart-survivable fast-skip as the synchronous MDM path.
+		// Posture was confirmed good above (SIP on + Secure Boot full). Uses the
+		// same epoch-checked synchronous write-through (recordTrustReuse) — a
+		// concurrent hard untrust is detected and not persisted. seKey + binary hash
+		// come from the registration-bound SE attestation.
+		c.provider.Mu().Lock()
+		var seKey, binaryHash string
+		if c.provider.AttestationResult != nil {
+			seKey = c.provider.AttestationResult.PublicKey
+			binaryHash = c.provider.AttestationResult.BinaryHash
+		}
+		c.provider.Mu().Unlock()
+		s.recordTrustReuse(c.provider, seKey, c.serial, binaryHash, true /*sip*/, true /*secureBootFull*/, udid)
 	}
 }
 

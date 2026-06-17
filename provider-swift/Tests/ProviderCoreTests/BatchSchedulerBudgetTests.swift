@@ -428,6 +428,36 @@ struct BatchSchedulerBudgetTests {
             "near-zero window must not poison the EWMA; stays at 0 default (got \(tps))")
     }
 
+    /// Engine-tier (in-GPU) prefix cache: the engine restores a matched prefix
+    /// WITHOUT surfacing a per-request restored-token count, so a cache hit
+    /// leaves `restoredPrefixTokens == 0` and would be misread as a cold prefill
+    /// — recording fullPrompt / collapsed-window and re-poisoning the very EWMA
+    /// the cold-only guard protects (the gap Codex flagged on the #388 fix).
+    /// While an engine-tier prefix cache is active, `recordFinish` must skip
+    /// prefill sampling entirely, even for a window that LOOKS like a clean cold
+    /// prefill (we can't prove it wasn't a hit).
+    @Test("recordFinish skips prefill sampling for engine-tier prefix-cache models")
+    func prefillEwmaSkipsEngineTierCache() async {
+        let s = BatchScheduler()
+        await s._setEnginePrefixCacheActiveForTest(true)
+        await s._testSeedBridge(id: "engine", promptTokens: 1000, maxTokens: 16)
+        let t0 = ContinuousClock.now
+        // A perfectly representative-looking cold window (1000 tok over 1s, well
+        // above the 1ms floor and below the 8000 cap): the ONLY reason to skip is
+        // that an engine-tier hit is indistinguishable from a cold prefill.
+        await s.recordAdmission(requestId: "engine", at: t0.advanced(by: .seconds(-2)))
+        await s.recordFirstToken(requestId: "engine", at: t0.advanced(by: .seconds(-1)))
+        _ = await s.recordFinish(
+            requestId: "engine", promptTokens: 1000, completionTokens: 8, success: true)
+        let tps = await s.observedPrefillTpsEwma
+        let initialized = await s.prefillEwmaInitialized
+
+        #expect(!initialized,
+            "engine-tier prefix cache active ⇒ no prefill-EWMA sample (hit vs cold ambiguous)")
+        #expect(tps == 0,
+            "engine-tier sampling skipped; EWMA stays at its 0 default (got \(tps))")
+    }
+
     // MARK: - Billing-zero leak: terminal must not zero observed tokens
 
     /// Regression for the revenue leak: when the engine's terminal

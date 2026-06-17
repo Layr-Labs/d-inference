@@ -264,6 +264,14 @@ extension BatchScheduler {
         //     collapses the denominator and explodes tps to billions (which the
         //     coordinator then clamps to 5000, corrupting its TTFT estimate). Skip
         //     cache hits entirely rather than recording an unrepresentative rate.
+        //   * !enginePrefixCacheActive — the engine-tier (in-GPU) prefix cache
+        //     restores a matched prefix WITHOUT surfacing a per-request
+        //     restored-token count, so restoredPrefixTokens stays 0 even on a hit
+        //     and the bullet above can't catch it. Pure-attention (.engine) models
+        //     therefore skip prefill sampling entirely; checkpoint-tier models
+        //     (Gemma-4, GPT-OSS) DO set restoredPrefixTokens on a hit and are
+        //     unaffected. (Long-term: have the engine report reused tokens so cold
+        //     engine prefills can be sampled too — tracked as a follow-up.)
         //   * prefilledTokens > 0 — need a real prompt to have prefilled.
         //   * prefillSeconds >= minPrefillWindowSeconds — floor the denominator so
         //     a near-zero window can't manufacture an absurd rate.
@@ -272,7 +280,8 @@ extension BatchScheduler {
         if success,
             let admittedAt = bridge.admittedAt,
             let firstTokenAt = bridge.firstTokenAt,
-            bridge.restoredPrefixTokens == 0 {
+            bridge.restoredPrefixTokens == 0,
+            !enginePrefixCacheActive {
             let prefillElapsed = firstTokenAt - admittedAt
             let prefillSeconds = Double(prefillElapsed.components.seconds)
                 + Double(prefillElapsed.components.attoseconds) / 1e18

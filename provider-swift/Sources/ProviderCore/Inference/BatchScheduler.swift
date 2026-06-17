@@ -97,6 +97,32 @@ public actor BatchScheduler {
     var engineTierOwner: EncryptedPrefixCachePersistence?
     var engineTierAccountantToken: AccountantToken?
 
+    /// Test-only override backing `enginePrefixCacheActive`, set via
+    /// `_setEnginePrefixCacheActiveForTest` so tests can exercise the engine-tier
+    /// prefill-sampling skip without constructing a real
+    /// `EncryptedPrefixCachePersistence`. Production code leaves this false and
+    /// the gate derives solely from `engineTierOwner`.
+    private var _forceEnginePrefixCacheActiveForTest = false
+
+    /// True when an engine-tier (in-GPU block) prefix cache is active for the
+    /// loaded model. The engine restores a matched prefix internally and does
+    /// NOT surface a per-request restored-token count, so `restoredPrefixTokens`
+    /// stays 0 even on a cache hit — a hit is therefore indistinguishable from a
+    /// cold prefill. `recordFinish` skips prefill-EWMA sampling while this is
+    /// active so an unrepresentative cache-hit window can't poison routing-v2's
+    /// TTFT estimate. Single source of truth: `engineTierOwner` (set when the
+    /// engine-tier cache is built, cleared on teardown). Checkpoint-tier models
+    /// (Gemma-4, GPT-OSS) are unaffected — their `restoredPrefixTokens` IS set
+    /// on a hit, so the cold-only guard already excludes their restores.
+    var enginePrefixCacheActive: Bool {
+        engineTierOwner != nil || _forceEnginePrefixCacheActiveForTest
+    }
+
+    /// Test seam: force `enginePrefixCacheActive` without a real engine-tier owner.
+    func _setEnginePrefixCacheActiveForTest(_ active: Bool) {
+        _forceEnginePrefixCacheActiveForTest = active
+    }
+
     /// Admission control + token budget tracking. `nil` until `loadModel()`.
     var planner: BatchQueuePlanner?
 

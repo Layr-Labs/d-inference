@@ -49,6 +49,8 @@ coordinator/.env
 *.pem
 *.csr
 *.p12
+*.key
+*.crt
 enclave_key.data
 
 # Database dumps (contain prod data)

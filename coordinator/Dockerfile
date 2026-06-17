@@ -21,6 +21,14 @@ COPY coordinator/Caddyfile /Caddyfile
 COPY coordinator/deploy/start.sh /usr/local/bin/start.sh
 RUN chmod +x /usr/local/bin/start.sh
 
+# Blue-green split entrypoints (DAR-327 Phase 2). The default CMD stays start.sh
+# (the combined EigenCloud path). For the GCE blue-green deployment the systemd
+# units override the container command with start-platform.sh (long-lived
+# step-ca + MicroMDM) and start-coordinator.sh (swappable coordinator-only).
+COPY coordinator/deploy/start-platform.sh /usr/local/bin/start-platform.sh
+COPY coordinator/deploy/start-coordinator.sh /usr/local/bin/start-coordinator.sh
+RUN chmod +x /usr/local/bin/start-platform.sh /usr/local/bin/start-coordinator.sh
+
 ENV EIGENINFERENCE_PORT=8080
 ENV EIGENINFERENCE_MDM_URL=https://localhost:9002
 ENV EIGENINFERENCE_MDM_API_KEY=eigeninference-micromdm-api

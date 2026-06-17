@@ -1,0 +1,43 @@
+# darkbloom-platform.service (DAR-327 Phase 2)
+#
+# Long-lived "platform" half of the blue-green split: step-ca (:9000) +
+# MicroMDM (:9002) + ownership of the shared /mnt/disks/userdata volume and
+# its first-boot init. This unit is NOT part of the color swap — it stays up
+# across coordinator flips so CA/MDM state and provider trust survive a deploy.
+#
+# Install (on the GCE box, as root):
+#   install -m 0755 deploy/gcp/prod/darkbloom-run.sh /usr/local/bin/darkbloom-run.sh
+#   install -m 0644 deploy/gcp/prod/darkbloom-platform.service \
+#       /etc/systemd/system/darkbloom-platform.service
+#   systemctl daemon-reload && systemctl enable --now darkbloom-platform.service
+#
+# Secrets are NOT inlined: app config + secrets are read at runtime from
+# /etc/d-inference/env (written from GCP Secret Manager by refresh-env.sh) and
+# passed to the container via --env-file inside darkbloom-run.sh.
+
+[Unit]
+Description=Darkbloom platform (step-ca + MicroMDM + shared /data volume)
+After=docker.service network-online.target cloud-sql-proxy.service
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+# step-ca/MicroMDM get time to drain; the container traps SIGTERM (see
+# start-platform.sh) and docker stop -t below bounds the wait.
+TimeoutStopSec=45
+# Point MicroMDM's command webhook at the stable loopback Caddy listener so it
+# follows the active coordinator color through the single upstream swap.
+Environment=EIGENINFERENCE_MDM_WEBHOOK_URL=http://127.0.0.1:8090/v1/mdm/webhook
+# Optional non-secret deploy config (e.g. DINF_IMAGE pin written by deploy.sh).
+# The leading '-' makes it optional: the unit starts even if the file is absent.
+EnvironmentFile=-/etc/d-inference/deploy.env
+ExecStartPre=-/usr/bin/docker stop darkbloom-platform
+ExecStartPre=-/usr/bin/docker rm darkbloom-platform
+ExecStart=/usr/local/bin/darkbloom-run.sh platform
+ExecStop=/usr/bin/docker stop -t 30 darkbloom-platform
+
+[Install]
+WantedBy=multi-user.target

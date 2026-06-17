@@ -1,0 +1,49 @@
+# darkbloom-coordinator@.service (DAR-327 Phase 2)
+#
+# TEMPLATED, swappable "coordinator-only" half of the blue-green split.
+# %i is the color: blue or green.
+#   darkbloom-coordinator@blue  -> coordinator-only container on EIGENINFERENCE_PORT=8080
+#   darkbloom-coordinator@green -> coordinator-only container on EIGENINFERENCE_PORT=8081
+# Both colors share the same /mnt/disks/userdata volume and the same step-ca/
+# MicroMDM state owned by darkbloom-platform.service. The color->port mapping
+# and per-color container name live in darkbloom-run.sh (so this template needs
+# no arithmetic and no per-color drop-in files).
+#
+# deploy.sh starts the IDLE color, waits for /health + /readyz, flips Caddy,
+# drains the OLD color, then `systemctl stop darkbloom-coordinator@<old>`.
+# NOTE: stopping a color triggers the coordinator's `going_away` provider
+# broadcast (DAR-327 Phase 3, separate PR) so providers reconnect to the new
+# color instantly instead of waiting for a heartbeat timeout.
+#
+# Install (on the GCE box, as root):
+#   install -m 0755 deploy/gcp/prod/darkbloom-run.sh /usr/local/bin/darkbloom-run.sh
+#   install -m 0644 deploy/gcp/prod/darkbloom-coordinator@.service \
+#       /etc/systemd/system/darkbloom-coordinator@.service
+#   systemctl daemon-reload
+#   systemctl enable --now darkbloom-coordinator@blue   # initial/active color
+#
+# Secrets are NOT inlined: config + secrets come from /etc/d-inference/env via
+# --env-file (inside darkbloom-run.sh). The per-color EIGENINFERENCE_PORT is
+# passed as an explicit `-e` AFTER --env-file so it overrides the file default.
+
+[Unit]
+Description=Darkbloom coordinator (%i color, blue-green)
+After=docker.service network-online.target darkbloom-platform.service cloud-sql-proxy.service
+Requires=docker.service
+Wants=network-online.target darkbloom-platform.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+# Optional non-secret deploy config (e.g. DINF_IMAGE pin written by deploy.sh).
+# The leading '-' makes it optional: the unit starts even if the file is absent.
+EnvironmentFile=-/etc/d-inference/deploy.env
+ExecStartPre=-/usr/bin/docker stop darkbloom-coordinator-%i
+ExecStartPre=-/usr/bin/docker rm darkbloom-coordinator-%i
+ExecStart=/usr/local/bin/darkbloom-run.sh coordinator %i
+ExecStop=/usr/bin/docker stop -t 30 darkbloom-coordinator-%i
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,102 @@
+# Prod host Caddy (darkbloom-mainnet GCE box) — TLS termination + reverse proxy.
+#
+# coord-staging.darkbloom.dev : auto-HTTPS via Let's Encrypt HTTP-01 (validation host).
+# api.darkbloom.dev           : served with a DNS-01-issued LE cert (static `tls`),
+#   pre-provisioned BEFORE the DNS flip so cutover has zero TLS cold-start. AFTER the
+#   flip (once api.darkbloom.dev resolves to this box) the `tls` line can be removed to
+#   let Caddy auto-renew via HTTP-01.
+#
+# Shared routing lives in the (coordinator_routes) snippet. The bare
+# `reverse_proxy 127.0.0.1:8080` is the coordinator upstream (blue-green swap target).
+#
+# BLUE-GREEN (DAR-327 Phase 2):
+#   There is exactly ONE coordinator upstream line in this file (inside the
+#   snippet). blue = 127.0.0.1:8080, green = 127.0.0.1:8081. deploy.sh flips that
+#   single line old<->new and `caddy reload`s gracefully; because every site
+#   below imports the same snippet, the flip atomically moves ALL traffic — the
+#   public sites AND the internal MDM-webhook listener — to the new color.
+#   Do NOT add a second `reverse_proxy 127.0.0.1:<port>` line; that would break
+#   the single-swap-point invariant deploy.sh / flip_upstream rely on. The
+#   step-ca (:9000) and MicroMDM (:9002) upstreams use the https:// scheme and a
+#   different port, so the port flip never touches them.
+
+(coordinator_routes) {
+	# step-ca ACME proxy (device-attest-01 challenges)
+	handle /acme/* {
+		reverse_proxy https://127.0.0.1:9000 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+			header_up Host {host}
+		}
+	}
+
+	# MicroMDM — SCEP enrollment + MDM checkin/connect
+	handle /scep {
+		reverse_proxy https://127.0.0.1:9002 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+		}
+	}
+	handle /mdm/* {
+		reverse_proxy https://127.0.0.1:9002 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+		}
+	}
+
+	# Everything else -> coordinator (HTTP + WebSocket). Blue-green swap target.
+	# THE single upstream line flipped by deploy.sh / flip_upstream (8080<->8081).
+	reverse_proxy 127.0.0.1:8080 {
+		health_uri /health
+		health_interval 30s
+		health_timeout 5s
+		health_status 200
+	}
+
+	request_body {
+		max_size 25MB
+	}
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+}
+
+coord-staging.darkbloom.dev {
+	import coordinator_routes
+}
+
+api.darkbloom.dev {
+	# DNS-01-issued Let's Encrypt cert (pre-provisioned before the DNS flip).
+	tls /etc/caddy/certs/api.darkbloom.dev.crt /etc/caddy/certs/api.darkbloom.dev.key
+	import coordinator_routes
+}
+
+# Internal-only stable webhook endpoint (DAR-327 Phase 2 — MDM coupling fix).
+#
+# MicroMDM runs in the long-lived platform container and must POST MDM command
+# callbacks to the ACTIVE coordinator color, but its -command-webhook-url is set
+# once at startup and cannot follow a color flip on its own. Binding to the
+# loopback address 127.0.0.1 keeps this listener host-local (no firewall change,
+# never publicly reachable). It imports the SAME (coordinator_routes) snippet, so
+# /v1/mdm/webhook falls through to the one swap-target upstream and is rerouted
+# to the active color by the exact same single-line flip — no extra swap point.
+#
+# The platform points MicroMDM here via
+#   EIGENINFERENCE_MDM_WEBHOOK_URL=http://127.0.0.1:8090/v1/mdm/webhook
+# (the shared ?token= secret is appended by start-platform.sh, not stored here).
+http://127.0.0.1:8090 {
+	import coordinator_routes
+}

@@ -698,6 +698,11 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 
+	// Enter drain mode first so /readyz immediately reports not-ready and new
+	// inference requests get 429+Retry-After while http.Server.Shutdown waits for
+	// in-flight requests to finish within the deadline (DAR-327 Phase 1).
+	srv.SetDraining(true)
+
 	cancel() // Stop the eviction loop.
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

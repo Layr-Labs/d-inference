@@ -1658,6 +1658,29 @@ func TestFreeMemoryAdmitsColdLoadReportedZeroRejects(t *testing.T) {
 	}
 }
 
+// The cold-load gate must compare against the provider's PADDED-GiB load basis,
+// not the raw catalog size, or a near-threshold model whose raw size fits but
+// whose padded estimate doesn't gets routed and then 503'd at load (Codex #390).
+func TestFreeMemoryAdmitsColdLoadNormalizesCatalogSize(t *testing.T) {
+	free := 10.0
+	// Raw 9.5GB naively "fits" 10, but padded 9.5*1.1176≈10.6 > 10 → must reject.
+	snap := routingSnapshot{
+		modelSizeGB:     9.5,
+		totalMemoryGB:   64,
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+		freeForLoadGB:   &free,
+	}
+	if freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("near-threshold model must reject: padded estimate exceeds reported free-for-load")
+	}
+	snap.modelSizeGB = 8 // padded 8*1.1176≈8.94 <= 10 → admit
+	if !freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("8GB model must admit: padded estimate fits reported free-for-load")
+	}
+}
+
 // The cold-load *planner* (modelLoadCandidatePendingLocked, used by warm-pool /
 // queue-before-shed) must also respect free_for_load_gb, so it never sends a
 // load_model the direct gate would reject (Codex #390 P2). Mirrors the direct path.

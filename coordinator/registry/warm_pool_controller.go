@@ -522,6 +522,13 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 	if !modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemoryGB) {
 		return warmPoolCandidate{}, false
 	}
+	// Live free-capacity gate (shared helper with the direct/planner paths): don't
+	// pick a warm-pool target the provider already reports it cannot fit, or the
+	// warm pool issues a load_model the provider rejects (failed warm + pending-load
+	// cooldown) instead of choosing a truly loadable node (#390).
+	if admit, reported := reportedFreeForLoadAdmits(r.catalogSizeGBLocked(model), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
+		return warmPoolCandidate{}, false
+	}
 	freeGB := totalMemoryGB - gpuActiveGB
 	if freeGB < 0 {
 		freeGB = 0

@@ -165,6 +165,17 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(w == 0, "never negative")
 }
 
+// KV already promised to in-flight requests (coordinator or local streams) must
+// be held back, exactly as the real load gate does (Codex #390).
+@Test func maxLoadableWeightSubtractsOutstandingReservations() {
+    // 64 GB idle, 4 GB reserve, 4 GB headroom, 6 GB outstanding KV:
+    // reclaimable = 64; minus (4 + 6) committed = 54; minus 4 headroom = 50.
+    let w = ModelLoadAdmission.maxLoadableWeightGb(
+        totalBytes: 64 * gib, mlxUsedBytes: 0, reserveBytes: 4 * gib,
+        headroomGb: 4.0, outstandingReservationBytes: 6 * gib)
+    #expect(abs(w - 50.0) < 0.001, "outstanding KV must be subtracted (got \(w))")
+}
+
 // THE INVARIANT the coordinator relies on: for an idle box (gpuActive≈0), the
 // reported max-loadable-weight equals the largest weight the provider's own
 // canLoad gate would accept. So `modelSizeGB <= free_for_load_gb` on the

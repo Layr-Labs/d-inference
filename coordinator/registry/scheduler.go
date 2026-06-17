@@ -812,6 +812,42 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 	return snap, true
 }
 
+// coldLoadCatalogGBToMemGiB converts a model's catalog on-disk size (decimal GB,
+// TotalSizeBytes/1e9, unpadded) into the provider's load-gate basis (padded GiB).
+// The provider's ModelLoadAdmission.canLoad weighs estimatedMemoryGb = on-disk
+// bytes × 1.2 (scanner memory-overhead) / 2^30, and free_for_load_gb is reported
+// in that same padded-GiB basis. So a raw catalog size must be padded+converted
+// the same way before comparing, or a near-threshold model whose RAW size fits
+// but whose PADDED estimate doesn't would be admitted here and then 503'd at load
+// (Codex #390). 1.2 mirrors the provider scanner's overhead factor; (1e9/2^30)
+// converts decimal GB → GiB. Conservative: if the scanner's factor ever drops,
+// this stays safe (slightly stricter); it must not be set BELOW the provider's.
+const coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30)) // ≈ 1.1176
+
+// backendFreeForLoadGB returns the provider-reported free_for_load_gb (nil-safe).
+// Caller must hold the provider lock when passing p.BackendCapacity.
+func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
+	if bc == nil {
+		return nil
+	}
+	return bc.FreeForLoadGB
+}
+
+// reportedFreeForLoadAdmits reports whether a cold load of a model with the given
+// catalog size (decimal GB) fits the provider's reported free_for_load_gb (max
+// loadable model weight, padded GiB — the provider's authoritative gate). The
+// second return is whether the provider reported the value at all; false means
+// the caller should fall back to its static hardware heuristic (legacy provider,
+// or unknown catalog size that can't be normalized). Used by every cold-load
+// decision path (direct admission, the swap planner, the warm pool, and the
+// cold-spill predicate) so they cannot drift.
+func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
+	if freeForLoadGB == nil || catalogSizeGB <= 0 {
+		return false, false
+	}
+	return catalogSizeGB*coldLoadCatalogGBToMemGiB <= *freeForLoadGB, true
+}
+
 // freeMemoryAdmits returns true when the provider has enough headroom.
 // Providers that report a token budget use budget-based admission;
 // legacy providers fall back to memory-based estimation.
@@ -859,12 +895,12 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		// Preferred: the provider reports freeForLoadGB — the max model WEIGHT it
 		// can load right now, already net of the 90% unified cap, OS/operator
 		// reserve, activation+min-KV headroom, real OS-available memory, and
-		// eviction of idle models. This is the single source of truth and exactly
-		// mirrors the provider's own ModelLoadAdmission gate, so the coordinator
-		// can't over-admit a load the provider then OOM-rejects (the meltdown
-		// mechanism) nor under-admit because of evictable idle weights.
-		if snap.freeForLoadGB != nil {
-			return snap.modelSizeGB <= *snap.freeForLoadGB
+		// eviction of idle models. The single source of truth, normalized to the
+		// provider's padded-GiB load basis so it exactly mirrors the provider's own
+		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
+		// weights).
+		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
+			return admit
 		}
 		// Fallback for legacy providers that don't report freeForLoadGB: the old
 		// total-memory heuristic (provider evicts idle models, so compare against

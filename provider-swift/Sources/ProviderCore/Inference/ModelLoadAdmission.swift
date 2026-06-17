@@ -87,18 +87,26 @@ public enum ModelLoadAdmission {
     ///     physical − hardCap). This is what enforces the 90% unified cap.
     ///   - headroomGb: activation reserve + min serveable KV (defaults to the
     ///     same `defaultLoadHeadroomGb` the load gate requires above weights).
+    ///   - outstandingReservationBytes: KV already promised to in-flight requests
+    ///     (coordinator OR local-endpoint streams). Subtracted just like the
+    ///     real load gate (`availableMemoryGb`) does, so a heartbeat can't
+    ///     advertise bytes a mid-decode request is counting on but that the OS
+    ///     hasn't shown as used yet.
     public static func maxLoadableWeightGb(
         totalBytes: UInt64,
         systemAvailableBytes: UInt64 = .max,
         mlxUsedBytes: UInt64,
         reserveBytes: UInt64,
-        headroomGb: Double = defaultLoadHeadroomGb
+        headroomGb: Double = defaultLoadHeadroomGb,
+        outstandingReservationBytes: UInt64 = 0
     ) -> Double {
         // Evicting idle models frees their MLX memory back to the OS, so the
         // reclaimable pool is current OS-available plus our own MLX usage, capped
-        // at total physical. Hold back the load reserve, then the load headroom.
+        // at total physical. Hold back the load reserve and any outstanding KV
+        // reservation, then the load headroom.
         let reclaimable = min(totalBytes, saturatingAdd(systemAvailableBytes, mlxUsedBytes))
-        let usable = reclaimable > reserveBytes ? reclaimable - reserveBytes : 0
+        let committed = saturatingAdd(reserveBytes, outstandingReservationBytes)
+        let usable = reclaimable > committed ? reclaimable - committed : 0
         let freeGb = Double(usable) / bytesPerGb
         return max(0, freeGb - max(0, headroomGb))
     }

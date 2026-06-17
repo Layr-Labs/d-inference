@@ -3194,11 +3194,16 @@ public actor ProviderLoop {
         let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
         let loadReserve = UnifiedMemoryCap.loadReserveBytes(
             configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
+        // Subtract KV already promised to in-flight requests (coordinator + local
+        // streams), exactly as the real load gate (availableMemoryGb) does, so the
+        // heartbeat can't advertise reserved-but-not-yet-allocated bytes as loadable.
+        let outstandingKV = await kvBudget.outstandingReservedBytes()
         let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
             totalBytes: totalMem,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             mlxUsedBytes: reclaimableMlx,
-            reserveBytes: loadReserve)
+            reserveBytes: loadReserve,
+            outstandingReservationBytes: outstandingKV)
 
         state.backendCapacity = BackendCapacity(
             slots: allSlots,

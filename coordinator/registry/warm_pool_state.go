@@ -15,6 +15,11 @@ const (
 	warmPoolEventColdDispatch       warmPoolPressureEvent = "cold_dispatch"
 )
 
+// warmPoolArrivalEWMAAlpha smooths the per-model spill arrival rate. 0.3 weights
+// the latest interval enough to track a rising demand wave within a few control
+// ticks while damping single-tick noise.
+const warmPoolArrivalEWMAAlpha = 0.3
+
 type warmPoolPressureBucket struct {
 	capacityRejects     int
 	ttftMisses          int
@@ -27,6 +32,14 @@ type warmPoolPressureBucket struct {
 	lastEventAt         time.Time
 	lastTarget          int
 	lastTargetChangedAt time.Time
+
+	// arrivalAccum counts spill arrivals (capacity_reject + ttft_miss +
+	// cold_dispatch) since the last rate fold. arrivalRateEWMA is the smoothed
+	// arrivals/sec derived from it by foldArrivalRates; it feeds the Little's Law
+	// target so the controller sizes capacity to demand it is currently shedding.
+	arrivalAccum    int
+	arrivalRateEWMA float64
+	lastRateAt      time.Time
 }
 
 type warmPoolState struct {
@@ -91,10 +104,50 @@ func (s *warmPoolState) snapshot(now time.Time, recentWindow time.Duration) map[
 			b.loadSuccesses = 0
 			b.loadFailures = 0
 			b.loadDurationEWMA = 0
+			b.arrivalAccum = 0
+			b.arrivalRateEWMA = 0
 		}
 		out[model] = *b
 	}
 	return out
+}
+
+// foldArrivalRates converts each model's accumulated spill arrivals into a
+// per-second EWMA. It is called once per planning tick. To keep coalesced
+// hot-path trigger ticks (RequestWarmPoolTrigger) from spiking the rate, a fold
+// only happens once at least minInterval has elapsed since the last one; until
+// then the accumulator keeps counting, so the next real fold sees the full count
+// over the true elapsed time.
+func (s *warmPoolState) foldArrivalRates(now time.Time, minInterval time.Duration, alpha float64) {
+	if alpha <= 0 || alpha > 1 {
+		alpha = warmPoolArrivalEWMAAlpha
+	}
+	if minInterval <= 0 {
+		minInterval = time.Second
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.models {
+		if b.lastRateAt.IsZero() {
+			b.lastRateAt = now
+			continue
+		}
+		elapsed := now.Sub(b.lastRateAt)
+		if elapsed < minInterval {
+			continue
+		}
+		inst := 0.0
+		if secs := elapsed.Seconds(); secs > 0 {
+			inst = float64(b.arrivalAccum) / secs
+		}
+		if b.arrivalRateEWMA <= 0 {
+			b.arrivalRateEWMA = inst
+		} else {
+			b.arrivalRateEWMA = alpha*inst + (1-alpha)*b.arrivalRateEWMA
+		}
+		b.arrivalAccum = 0
+		b.lastRateAt = now
+	}
 }
 
 func (s *warmPoolState) rememberTarget(model string, target int, now time.Time) {
@@ -125,14 +178,17 @@ func (s *warmPoolState) recordEventLocked(b *warmPoolPressureBucket, event warmP
 	switch event {
 	case warmPoolEventCapacityReject:
 		b.capacityRejects++
+		b.arrivalAccum++
 	case warmPoolEventTTFTMiss:
 		b.ttftMisses++
+		b.arrivalAccum++
 	case warmPoolEventSpeculativeStarted:
 		b.speculativeStarted++
 	case warmPoolEventSpeculativeWon:
 		b.speculativeWon++
 	case warmPoolEventColdDispatch:
 		b.coldDispatches++
+		b.arrivalAccum++
 	}
 	b.lastEventAt = now
 }

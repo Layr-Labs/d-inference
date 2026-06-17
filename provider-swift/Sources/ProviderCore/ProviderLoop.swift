@@ -3176,12 +3176,27 @@ public actor ProviderLoop {
 
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let totalMem = ProcessInfo.processInfo.physicalMemory
+
+        // Max model weight we could load right now (single source of truth for
+        // the coordinator's cold-load routing). Treats current MLX usage as
+        // reclaimable (idle models are evicted on a cold load) and holds back the
+        // same load reserve the load gate uses, so it enforces the 90% cap.
+        let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+        let loadReserve = UnifiedMemoryCap.loadReserveBytes(
+            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
+        let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
+            totalBytes: totalMem,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            mlxUsedBytes: mlxUsed,
+            reserveBytes: loadReserve)
+
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,
             gpuMemoryPeakGb: Double(MLX.GPU.peakMemory) / gbDivisor,
             gpuMemoryCacheGb: Double(MLX.GPU.cacheMemory) / gbDivisor,
-            totalMemoryGb: Double(totalMem) / gbDivisor
+            totalMemoryGb: Double(totalMem) / gbDivisor,
+            freeForLoadGb: freeForLoadGb
         )
         state.inferenceActive = totalActive > 0
     }

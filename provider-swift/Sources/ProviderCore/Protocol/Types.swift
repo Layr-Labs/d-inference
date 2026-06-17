@@ -420,6 +420,14 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public var gpuMemoryPeakGb: Double
     public var gpuMemoryCacheGb: Double
     public var totalMemoryGb: Double
+    /// Max additional model-WEIGHT footprint (GB) the provider can load right
+    /// now, accounting for the 90% unified cap, OS/operator reserve, load
+    /// headroom, real OS-available memory, and eviction of idle resident models
+    /// (see `ModelLoadAdmission.maxLoadableWeightGb`). The coordinator consumes
+    /// this as the single source of truth for cold-load routing instead of
+    /// re-deriving free memory from the gpu/total figures. 0 means "cannot load
+    /// anything new right now".
+    public var freeForLoadGb: Double
 
     enum CodingKeys: String, CodingKey {
         case slots
@@ -427,6 +435,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case gpuMemoryPeakGb = "gpu_memory_peak_gb"
         case gpuMemoryCacheGb = "gpu_memory_cache_gb"
         case totalMemoryGb = "total_memory_gb"
+        case freeForLoadGb = "free_for_load_gb"
     }
 
     public init(
@@ -434,13 +443,27 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         gpuMemoryActiveGb: Double,
         gpuMemoryPeakGb: Double,
         gpuMemoryCacheGb: Double,
-        totalMemoryGb: Double
+        totalMemoryGb: Double,
+        freeForLoadGb: Double = 0
     ) {
         self.slots = slots
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
         self.gpuMemoryPeakGb = gpuMemoryPeakGb
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
         self.totalMemoryGb = totalMemoryGb
+        self.freeForLoadGb = freeForLoadGb
+    }
+
+    // Explicit decode so older payloads without `free_for_load_gb` still decode
+    // (defaults to 0). Encoding stays synthesized and always emits the field.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
+        self.gpuMemoryActiveGb = try c.decode(Double.self, forKey: .gpuMemoryActiveGb)
+        self.gpuMemoryPeakGb = try c.decode(Double.self, forKey: .gpuMemoryPeakGb)
+        self.gpuMemoryCacheGb = try c.decode(Double.self, forKey: .gpuMemoryCacheGb)
+        self.totalMemoryGb = try c.decode(Double.self, forKey: .totalMemoryGb)
+        self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
     }
 }
 

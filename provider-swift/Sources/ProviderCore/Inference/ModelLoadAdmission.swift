@@ -66,6 +66,43 @@ public enum ModelLoadAdmission {
         return Double(usable) / bytesPerGb
     }
 
+    /// Maximum model-WEIGHT footprint (GB) this machine could load right now,
+    /// assuming idle/evictable resident models are unloaded to make room. This is
+    /// the number the coordinator needs for COLD-LOAD routing: it answers "if I
+    /// send this model, will the provider successfully load it?" — net of the
+    /// unified-memory cap, OS/operator reserve, the activation + min-serveable-KV
+    /// load headroom, and real OS-available memory.
+    ///
+    /// Unlike `freeForLoadGb`, `mlxUsedBytes` (MLX active + cache) is treated as
+    /// RECLAIMABLE: on a cold load the provider LRU-evicts idle models, freeing
+    /// that memory back to the OS, so the memory we could reclaim is
+    /// `min(total, systemAvailable + mlxUsed)`. The coordinator only consults this
+    /// value on the idle path (totalPending == 0), where every resident model is
+    /// in fact evictable, so the full-eviction assumption holds. The result is the
+    /// loadable headroom MINUS the load headroom, i.e. weights only; clamped >= 0.
+    ///
+    /// - Parameters:
+    ///   - reserveBytes: OS/operator reserve to hold back, i.e.
+    ///     `UnifiedMemoryCap.loadReserveBytes(...)` = max(configReserve,
+    ///     physical − hardCap). This is what enforces the 90% unified cap.
+    ///   - headroomGb: activation reserve + min serveable KV (defaults to the
+    ///     same `defaultLoadHeadroomGb` the load gate requires above weights).
+    public static func maxLoadableWeightGb(
+        totalBytes: UInt64,
+        systemAvailableBytes: UInt64 = .max,
+        mlxUsedBytes: UInt64,
+        reserveBytes: UInt64,
+        headroomGb: Double = defaultLoadHeadroomGb
+    ) -> Double {
+        // Evicting idle models frees their MLX memory back to the OS, so the
+        // reclaimable pool is current OS-available plus our own MLX usage, capped
+        // at total physical. Hold back the load reserve, then the load headroom.
+        let reclaimable = min(totalBytes, saturatingAdd(systemAvailableBytes, mlxUsedBytes))
+        let usable = reclaimable > reserveBytes ? reclaimable - reserveBytes : 0
+        let freeGb = Double(usable) / bytesPerGb
+        return max(0, freeGb - max(0, headroomGb))
+    }
+
     /// Memory (GB) required to load a model and serve at least one request:
     /// the (overhead-padded) weight footprint plus one-request headroom.
     public static func requiredToLoadGb(weightsGb: Double, headroomGb: Double = defaultLoadHeadroomGb) -> Double {

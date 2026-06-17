@@ -544,6 +544,10 @@ func main() {
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)
 
+	// Flag any model decoding far below its active-param/hardware class (W8 —
+	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
+	srv.StartThroughputAnomalyDetector(ctx)
+
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.ServerConfig.Port,

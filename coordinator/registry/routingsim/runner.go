@@ -31,27 +31,34 @@ func TTFTDeadline(promptTokens int) time.Duration {
 	return 5*time.Second + time.Duration(promptTokens)*time.Millisecond
 }
 
-// Classify runs the REAL consumer preflight admission for one arrival and maps
-// it to an Outcome exactly as coordinator/api/consumer.go does at the preflight:
+// ClassifyWithGate runs the REAL preflight capacity check for one arrival and
+// maps it to an Outcome. softTTFT selects the gate policy:
 //
-//	candidateCount==0 && capacityRejections>0  -> machine_busy
-//	bestTTFT over the deadline                 -> ttft_too_slow
-//	otherwise                                  -> served
+//	candidateCount==0 && capacityRejections>0  -> machine_busy (both modes)
+//	!softTTFT && bestTTFT over the deadline     -> ttft_too_slow (legacy hard gate)
+//	softTTFT && a candidate exists              -> served (Routing v2 / PR #381:
+//	                                               TTFT is a preference, not a reject)
+//	otherwise                                   -> served
 //
-// modelTooLarge / no-provider cases collapse into the served default here
-// because, like the task's classification, the harness focuses on the
-// capacity-vs-TTFT distinction; a well-formed fleet never produces them.
-func Classify(reg *registry.Registry, a Arrival) Outcome {
+// modelTooLarge / no-provider cases collapse into the served default here; a
+// well-formed fleet never produces them.
+func ClassifyWithGate(reg *registry.Registry, a Arrival, softTTFT bool) Outcome {
 	candidateCount, capacityRejections, _, bestTTFT, hasTTFT :=
 		reg.QuickCapacityCheckWithTTFTForRequest(a.Model, a.PromptTokens, a.MaxTokens, registry.RequestTraits{}, false)
 
 	if candidateCount == 0 && capacityRejections > 0 {
 		return OutcomeMachineBusy
 	}
-	if hasTTFT && bestTTFT > TTFTDeadline(a.PromptTokens) {
+	if !softTTFT && hasTTFT && bestTTFT > TTFTDeadline(a.PromptTokens) {
 		return OutcomeTTFTTooSlow
 	}
 	return OutcomeServed
+}
+
+// Classify runs the legacy HARD TTFT gate (the calibration anchor): an arrival
+// whose best estimated TTFT exceeds the deadline is rejected as ttft_too_slow.
+func Classify(reg *registry.Registry, a Arrival) Outcome {
+	return ClassifyWithGate(reg, a, false)
 }
 
 // Result is the per-arrival simulation record.
@@ -60,12 +67,17 @@ type Result struct {
 	Outcome Outcome
 }
 
-// Run replays a whole trace through the preflight against reg and returns the
-// per-arrival results in trace order.
-func Run(reg *registry.Registry, trace []Arrival) []Result {
+// RunWithGate replays a whole trace through the preflight against reg with the
+// given TTFT gate policy and returns the per-arrival results in trace order.
+func RunWithGate(reg *registry.Registry, trace []Arrival, softTTFT bool) []Result {
 	results := make([]Result, 0, len(trace))
 	for _, a := range trace {
-		results = append(results, Result{Arrival: a, Outcome: Classify(reg, a)})
+		results = append(results, Result{Arrival: a, Outcome: ClassifyWithGate(reg, a, softTTFT)})
 	}
 	return results
+}
+
+// Run replays a whole trace through the legacy HARD TTFT gate.
+func Run(reg *registry.Registry, trace []Arrival) []Result {
+	return RunWithGate(reg, trace, false)
 }

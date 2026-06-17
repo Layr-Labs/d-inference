@@ -1099,6 +1099,13 @@ func SetPrefillToDecodeRatio(ratio float64) {
 	}
 }
 
+// PrefillToDecodeRatio returns the current decode→prefill fallback multiplier
+// (the value used by resolvedPrefillTPS when a provider does not report a
+// measured prefill rate). Exposed for the routing simulation harness.
+func PrefillToDecodeRatio() float64 {
+	return prefillToDecodeRatio
+}
+
 func resolvedPrefillTPS(p *Provider) float64 {
 	if p.PrefillTPS > 0 {
 		return p.PrefillTPS

@@ -56,6 +56,13 @@ struct BridgeState {
     /// reservation because the provider materializes restored KV before handing
     /// it to MLX, and MLX then builds a batched copy for decode.
     var reservedTokens: Int? = nil
+    /// Prefix tokens whose KV was restored from the checkpoint cache (0 on a cold
+    /// prefill). The admitted→first-token window only covers prefilling the
+    /// UNCACHED suffix, so `recordFinish` subtracts this from the prompt length
+    /// before updating the prefill-rate EWMA — otherwise a cache hit would inflate
+    /// `observed_prefill_tps` far above the true cold-prefill rate (which
+    /// routing-v2 consumes for TTFT estimates).
+    var restoredPrefixTokens: Int = 0
     let submittedAt: ContinuousClock.Instant
     var admittedAt: ContinuousClock.Instant?
     var firstTokenAt: ContinuousClock.Instant?

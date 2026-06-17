@@ -447,6 +447,15 @@ public actor CoordinatorClient {
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
     private var apnsTokenOverride: String?
 
+    /// Live APNs device-token source, read by every heartbeat. Defaults to the
+    /// process-wide ``APNsBridge`` so a token that ROTATES after registration is
+    /// reflected in the next heartbeat — `apnsTokenOverride`/`config` only hold the
+    /// value captured at startup, and the late-token watcher in `ProviderLoop`
+    /// stops after the first token, so a rotation would otherwise keep the
+    /// coordinator pushing code-identity challenges to the dead token until a
+    /// reconnect. Injectable so unit tests drive rotation deterministically.
+    private let liveAPNsToken: @Sendable () -> String?
+
     /// Live per-model weight hashes pushed by the provider loop when a model
     /// (re)load discovers the on-disk weights changed (model re-published while
     /// the daemon runs). Once set, every (re)registration patches
@@ -467,12 +476,14 @@ public actor CoordinatorClient {
     public init(
         config: CoordinatorClientConfig,
         stats: AtomicProviderStats,
-        state: ProviderState
+        state: ProviderState,
+        liveAPNsToken: (@Sendable () -> String?)? = nil
     ) {
         self.config = config
         self.stats = stats
         self.state = state
         self.advertisedModelStore = AdvertisedModelStore(config.models)
+        self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
     }
 
     /// Add a runtime-verified build to the advertised set so the coordinator
@@ -889,7 +900,7 @@ public actor CoordinatorClient {
 
     // MARK: - Heartbeat
 
-    private func buildHeartbeatJSON() -> String {
+    func buildHeartbeatJSON() -> String {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
         let warmModels = state.warmModels
@@ -898,13 +909,21 @@ public actor CoordinatorClient {
 
         // Carry the APNs device token in every heartbeat (W5 Fix 2) so the
         // coordinator can re-arm a code-identity challenge WITHOUT a reconnect when
-        // the token arrived after registration or rotated. Effective token/env
-        // mirror the registration path (a late `apnsTokenOverride` wins over the
-        // config value; env defaults to "production" when only an override exists).
-        // nil when there is no token, so token-less providers keep the wire shape
-        // unchanged (encodeIfPresent omits the fields).
-        let effectiveToken = apnsTokenOverride ?? config.apnsDeviceToken
-        let effectiveEnv: String? = apnsTokenOverride != nil
+        // the token arrived after registration or rotated. Prefer the LIVE token
+        // from the APNs bridge: on a post-registration rotation the bridge is
+        // updated immediately, but `apnsTokenOverride`/`config` still hold the
+        // value captured at startup, so reading them would keep pushing challenges
+        // to the dead token until a reconnect. Fall back to the late-arrival
+        // override, then the startup config value, when the bridge has none
+        // (headless / no-GUI boxes never get a bridge token). nil when there is no
+        // token at all, so token-less providers keep the wire shape unchanged
+        // (encodeIfPresent omits the fields).
+        let liveToken = liveAPNsToken()
+        let effectiveToken = liveToken ?? apnsTokenOverride ?? config.apnsDeviceToken
+        // Env mirrors the registration path: a dynamically-sourced token (live
+        // bridge or late override) defaults to "production" when config carried no
+        // environment; a config-only token keeps config's environment as-is.
+        let effectiveEnv: String? = (liveToken != nil || apnsTokenOverride != nil)
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
 

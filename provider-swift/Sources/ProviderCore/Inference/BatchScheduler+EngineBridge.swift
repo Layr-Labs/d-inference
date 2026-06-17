@@ -244,8 +244,18 @@ extension BatchScheduler {
             let prefillElapsed = firstTokenAt - admittedAt
             let prefillSeconds = Double(prefillElapsed.components.seconds)
                 + Double(prefillElapsed.components.attoseconds) / 1e18
-            if prefillSeconds > 0 {
-                updatePrefillTpsEwma(tps: Double(finalPrompt) / prefillSeconds)
+            // Exclude any prefix restored from the checkpoint cache: the
+            // admitted→first-token window only covers prefilling the UNCACHED
+            // suffix, so charging the FULL prompt would inflate the rate far above
+            // the true cold-prefill speed. Divide by the tokens ACTUALLY prefilled
+            // so `observed_prefill_tps` stays representative of a cold prefill —
+            // routing-v2 consumes this EWMA for TTFT estimates, and an inflated
+            // value makes the coordinator under-estimate TTFT for later cold large
+            // prompts (`restoredPrefixTokens` is 0 on a cold prefill, so this is a
+            // no-op for the non-cached path).
+            let prefilledTokens = finalPrompt - bridge.restoredPrefixTokens
+            if prefillSeconds > 0, prefilledTokens > 0 {
+                updatePrefillTpsEwma(tps: Double(prefilledTokens) / prefillSeconds)
             }
         }
 
@@ -414,7 +424,8 @@ extension BatchScheduler {
         promptTokens: Int,
         maxTokens: Int,
         admitted: Bool = false,
-        reservedTokens: Int? = nil
+        reservedTokens: Int? = nil,
+        restoredPrefixTokens: Int = 0
     ) {
         var bridge = BridgeState(
             requestId: id,
@@ -423,6 +434,7 @@ extension BatchScheduler {
             submittedAt: .now
         )
         bridge.reservedTokens = reservedTokens
+        bridge.restoredPrefixTokens = restoredPrefixTokens
         if admitted { bridge.admittedAt = .now }
         activeBridges[id] = bridge
     }

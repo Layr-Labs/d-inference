@@ -214,6 +214,90 @@ import Testing
     #expect(!noTokenJSON.contains("apns_environment"))
 }
 
+@Test func heartbeatSendsLiveRotatedApnsToken() async throws {
+    // W5 Fix 2 follow-up: `buildHeartbeatJSON` must send the CURRENT (live) APNs
+    // token. When APNs rotates the token AFTER registration, the bridge is updated
+    // immediately but `apnsTokenOverride`/`config` still hold the startup value
+    // (the late-token watcher in ProviderLoop stops after the first token). The
+    // heartbeat must carry the rotated token so the coordinator re-arms
+    // code-attestation WITHOUT waiting for a reconnect.
+    let live = LiveTokenBox("tok-startup")
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj",
+        apnsDeviceToken: "tok-startup",
+        apnsEnvironment: "production"
+    )
+    let client = CoordinatorClient(
+        config: config,
+        stats: AtomicProviderStats(),
+        state: ProviderState(),
+        liveAPNsToken: { live.get() }
+    )
+
+    let beforeJSON = await client.buildHeartbeatJSON()
+    let before = try clientJSONObject(Data(beforeJSON.utf8))
+    #expect(before["apns_device_token"] as? String == "tok-startup")
+    #expect(before["apns_environment"] as? String == "production")
+
+    // APNs rotates the token post-registration (bridge updated; override/config stale).
+    live.set("tok-rotated")
+
+    let afterJSON = await client.buildHeartbeatJSON()
+    let after = try clientJSONObject(Data(afterJSON.utf8))
+    #expect(after["apns_device_token"] as? String == "tok-rotated",
+        "heartbeat must carry the LIVE rotated token, not the startup value")
+    #expect(after["apns_environment"] as? String == "production")
+}
+
+@Test func heartbeatFallsBackToConfigTokenWhenBridgeEmpty() async throws {
+    // No live bridge token (token not yet observed by the bridge in this path):
+    // the heartbeat falls back to the startup config token — prior behavior.
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj",
+        apnsDeviceToken: "tok-startup",
+        apnsEnvironment: "production"
+    )
+    let client = CoordinatorClient(
+        config: config,
+        stats: AtomicProviderStats(),
+        state: ProviderState(),
+        liveAPNsToken: { nil }
+    )
+    let json = await client.buildHeartbeatJSON()
+    let object = try clientJSONObject(Data(json.utf8))
+    #expect(object["apns_device_token"] as? String == "tok-startup")
+    #expect(object["apns_environment"] as? String == "production")
+}
+
+@Test func heartbeatOmitsApnsFieldsWhenNoToken() async throws {
+    // No live token and no config token (headless / token-less provider): the
+    // APNs fields are omitted so the wire shape is unchanged.
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj"
+    )
+    let client = CoordinatorClient(
+        config: config,
+        stats: AtomicProviderStats(),
+        state: ProviderState(),
+        liveAPNsToken: { nil }
+    )
+    let json = await client.buildHeartbeatJSON()
+    #expect(!json.contains("apns_device_token"))
+    #expect(!json.contains("apns_environment"))
+}
+
 @Test func coordinatorIncomingMessagesDecodeForDispatch() throws {
     let challenge = try CoordinatorClientCodec.decodeIncomingMessage(
         from: #"{"type":"attestation_challenge","nonce":"bm9uY2U=","timestamp":"2026-04-03T12:00:00Z"}"#
@@ -318,4 +402,15 @@ private func clientJSONObject(_ data: Data) throws -> [String: Any] {
 private enum ClientTestFailure: Error {
     case notJSONObject
     case unexpectedMessage
+}
+
+/// Thread-safe mutable box so a `@Sendable` live-token closure can observe a
+/// rotation driven from the test thread (mirrors how `APNsBridge` guards its
+/// token with a lock).
+private final class LiveTokenBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+    init(_ value: String?) { self.value = value }
+    func get() -> String? { lock.lock(); defer { lock.unlock() }; return value }
+    func set(_ newValue: String?) { lock.lock(); value = newValue; lock.unlock() }
 }

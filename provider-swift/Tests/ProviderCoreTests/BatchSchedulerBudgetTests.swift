@@ -357,6 +357,53 @@ struct BatchSchedulerBudgetTests {
             "P2: queued-not-admitted bridges must NOT inflate observedBatchSize")
     }
 
+    // MARK: - Prefill EWMA excludes restored prefix (routing-v2 TTFT correctness)
+
+    /// W1 measures `observed_prefill_tps` = promptTokens / (firstToken −
+    /// admitted). When the default-on prefix cache restores a checkpoint, that
+    /// window only covers the UNCACHED suffix, so dividing the FULL prompt by it
+    /// inflates the rate far above the true cold-prefill speed. routing-v2 now
+    /// consumes this EWMA for TTFT estimates, so an inflated value would make the
+    /// coordinator route later COLD large prompts as if they prefill at cached
+    /// speed (under-estimated TTFT). `recordFinish` must divide by the tokens
+    /// ACTUALLY prefilled (prompt − restored prefix).
+    @Test("recordFinish excludes restored-checkpoint prefix from the prefill EWMA")
+    func prefillEwmaExcludesRestoredPrefix() async {
+        // Identical 1-second prefill window and 1000-token prompt in both cases;
+        // explicit instants make the window deterministic (no wall-clock flake).
+        let window = Duration.seconds(1)
+
+        // Cold prefill: all 1000 tokens prefilled in 1s → ~1000 tok/s.
+        let cold = BatchScheduler()
+        await cold._testSeedBridge(id: "cold", promptTokens: 1000, maxTokens: 16)
+        let c0 = ContinuousClock.now
+        await cold.recordAdmission(requestId: "cold", at: c0.advanced(by: .seconds(-2)))
+        await cold.recordFirstToken(requestId: "cold", at: c0.advanced(by: .seconds(-1)))
+        _ = await cold.recordFinish(
+            requestId: "cold", promptTokens: 1000, completionTokens: 8, success: true)
+        let coldTps = await cold.observedPrefillTpsEwma
+
+        // Restore hit: 900 of the 1000 prompt tokens came from the checkpoint
+        // cache, so only the 100-token suffix was actually prefilled in the same
+        // 1s window → ~100 tok/s, NOT ~1000.
+        let restore = BatchScheduler()
+        await restore._testSeedBridge(
+            id: "warm", promptTokens: 1000, maxTokens: 16, restoredPrefixTokens: 900)
+        let r0 = ContinuousClock.now
+        await restore.recordAdmission(requestId: "warm", at: r0.advanced(by: .seconds(-2)))
+        await restore.recordFirstToken(requestId: "warm", at: r0.advanced(by: .seconds(-1)))
+        _ = await restore.recordFinish(
+            requestId: "warm", promptTokens: 1000, completionTokens: 8, success: true)
+        let restoreTps = await restore.observedPrefillTpsEwma
+
+        #expect(abs(coldTps - 1000) < 1.0,
+            "cold prefill: full 1000-token prompt over 1s ≈ 1000 tok/s (got \(coldTps))")
+        #expect(abs(restoreTps - 100) < 1.0,
+            "restore: only the 100 uncached suffix tokens count ≈ 100 tok/s (got \(restoreTps))")
+        #expect(restoreTps < coldTps / 2,
+            "restored prefix must NOT inflate the prefill EWMA toward the cold rate")
+    }
+
     // MARK: - Billing-zero leak: terminal must not zero observed tokens
 
     /// Regression for the revenue leak: when the engine's terminal

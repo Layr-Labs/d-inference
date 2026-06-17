@@ -509,6 +509,16 @@ public actor BatchScheduler {
         }
 
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
+        // Record the restored prefix length on the bridge so `recordFinish`
+        // excludes it from the prefill-rate EWMA: the admitted→first-token window
+        // only covers prefilling the UNCACHED suffix, so dividing the FULL prompt
+        // by it would inflate `observed_prefill_tps` far above the true
+        // cold-prefill rate (now consumed by routing-v2 for TTFT estimates).
+        // The bridge is guaranteed present here (checked above, no awaits since).
+        if var bridge = activeBridges[req.requestId] {
+            bridge.restoredPrefixTokens = hit.tokenCount
+            activeBridges[req.requestId] = bridge
+        }
         return true
     }
 

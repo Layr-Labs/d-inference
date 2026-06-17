@@ -547,6 +547,38 @@ type Store interface {
 	// restarts. Best-effort; must not block the read loop.
 	DeleteCodeAttestation(ctx context.Context, seKey string) error
 
+	// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+	//
+	// These mirror the code-identity reuse cache above. A persisted row records
+	// that a device (keyed by its Secure Enclave public key) completed a FULL live
+	// MDM SecurityInfo verification at VerifiedAt — proven SIP/Secure-Boot posture,
+	// serial, and binary hash. It lets a planned coordinator restart/blue-green
+	// swap skip a fleet-wide live MDM SecurityInfo + APNs re-verification HERD: on
+	// reconnect, once the live SE challenge re-proves identity + posture, a fresh
+	// record short-circuits the (otherwise immediate) live MDM round-trip.
+	//
+	// SECURITY: a persisted row NEVER by itself grants hardware trust. The reuse
+	// decision (api.trustReuseCache.reuseTrust) re-applies, on every read, a live
+	// SE challenge, a serial+SE-key identity match, a binary-hash match, a fresh
+	// good-posture check, and the freshness window — so a stale / wrong-binary /
+	// expired / hard-untrusted row falls through to the full live MDM verification.
+
+	// ListProviderTrustReuse returns all persisted trust-reuse records (for
+	// seeding the in-memory reuse cache at startup).
+	ListProviderTrustReuse(ctx context.Context) ([]ProviderTrustReuse, error)
+
+	// UpsertProviderTrustReuse creates or updates the trust-reuse record for a
+	// device (keyed by SEPubKey). Called after a successful live MDM verification;
+	// best-effort, must not block the read loop.
+	UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse) error
+
+	// DeleteProviderTrustReuse removes a device's persisted trust-reuse record
+	// (keyed by SEPubKey). Called when the provider is HARD-untrusted so a later
+	// coordinator restart cannot reseed and fast-skip on a stale pre-untrust
+	// record — keeping "hard untrust always takes effect" durable across restarts.
+	// Best-effort; must not block the read loop.
+	DeleteProviderTrustReuse(ctx context.Context, seKey string) error
+
 	// --- Provider Log Reports ---
 
 	// StoreLogReport stores a provider log report.
@@ -1367,4 +1399,29 @@ type CodeAttestation struct {
 	Version    string    `json:"version"`     // provider binary version that attested
 	AttestedAt time.Time `json:"attested_at"` // instant of the successful round-trip
 	APNsToken  string    `json:"apns_token"`  // APNs device token the proof was bound to; reuse requires it to match the new registration token (Codex #7). "" = legacy row from before token-binding.
+}
+
+// ProviderTrustReuse is the persistent representation of one device's most recent
+// successful FULL live MDM SecurityInfo verification (DAR-326 Phase 0). It is the
+// durable form of api.trustReuseRecord. Keyed by the Secure Enclave public key —
+// the stable per-device identity that survives reconnects AND coordinator
+// restarts. It mirrors CodeAttestation: persistence lets a planned coordinator
+// restart/blue-green swap skip a fleet-wide live MDM SecurityInfo + APNs
+// re-verification herd.
+//
+// SECURITY: the row is written ONLY after a full, verified live MDM
+// verification; it is never created from an unverified heartbeat or self-report.
+// On read, the reuse decision still re-applies a live SE challenge, a serial+SE
+// identity match, a binary-hash match, a fresh good-posture check, and the
+// freshness window, so a persisted row can only ever let the coordinator skip a
+// redundant live MDM round-trip — never extend or fabricate trust.
+type ProviderTrustReuse struct {
+	SEPubKey       string    `json:"se_pubkey"`        // base64 Secure Enclave P-256 public key (bound at registration)
+	Serial         string    `json:"serial"`           // device serial number proven by the SE attestation at last verification
+	TrustLevel     string    `json:"trust_level"`      // trust level earned at last verification (only "hardware" is reusable)
+	BinaryHash     string    `json:"binary_hash"`      // provider binary SHA-256 at last verification; reuse requires the fresh signed challenge to match
+	SIPEnabled     bool      `json:"sip_enabled"`      // SIP posture confirmed by MDM at last verification
+	SecureBootFull bool      `json:"secure_boot_full"` // Secure Boot (full) confirmed by MDM at last verification
+	MDAUDID        string    `json:"mda_udid"`         // MDM/MDA device UDID at last verification (diagnostics)
+	VerifiedAt     time.Time `json:"verified_at"`      // instant of the successful live MDM verification
 }

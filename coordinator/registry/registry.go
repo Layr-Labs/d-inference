@@ -935,6 +935,14 @@ type Registry struct {
 	warmPool             *warmPoolController
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
+
+	// onHardUntrust is an optional hook fired (off the registry locks) whenever a
+	// provider is HARD-untrusted (a non-recoverable security deroute). The api
+	// layer wires it to invalidate that device's trust-reuse record (DAR-326), so
+	// "hard untrust always takes effect" stays durable across coordinator
+	// restarts. Keyed by the device's Secure Enclave public key. Set once at
+	// startup; nil = no-op. Guarded by r.mu (set + read).
+	onHardUntrust func(seKey string)
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -3230,6 +3238,17 @@ func (r *Registry) CountProvidersByBinaryHash(hash string) int {
 	return count
 }
 
+// SetHardUntrustHook registers an optional callback fired whenever a provider is
+// HARD-untrusted (non-recoverable). It is invoked with the device's Secure Enclave
+// public key, off the registry locks, so the callback may do store I/O. The api
+// layer uses it to invalidate the device's trust-reuse record (DAR-326). Set once
+// at startup before providers connect; nil clears it. Thread-safe.
+func (r *Registry) SetHardUntrustHook(fn func(seKey string)) {
+	r.mu.Lock()
+	r.onHardUntrust = fn
+	r.mu.Unlock()
+}
+
 // MarkUntrusted sets a provider's status to untrusted for a hard/security
 // reason (bad encrypted chunk, MDM/MDA failure, SIP disabled, binary or model
 // hash mismatch, serial impersonation, attestation failure). The deroute is
@@ -3271,6 +3290,7 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		r.mu.Unlock()
 		return
 	}
+	hook := r.onHardUntrust // capture under r.mu (race-safe)
 
 	p.mu.Lock()
 	if p.Status != StatusUntrusted {
@@ -3284,6 +3304,11 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		p.untrustedRecoverable = false
 	}
 	failed := p.FailedChallenges // read under p.mu (the old code read this unlocked)
+	// Capture the SE key for the hard-untrust hook while we hold p.mu.
+	var seKey string
+	if !recoverable && p.AttestationResult != nil {
+		seKey = p.AttestationResult.PublicKey
+	}
 	p.mu.Unlock()
 	r.mu.Unlock()
 
@@ -3292,6 +3317,15 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		"failed_challenges", failed,
 		"recoverable", recoverable,
 	)
+
+	// A HARD untrust invalidates the device's trust-reuse record (in-memory +
+	// persisted) so a later reconnect cannot fast-skip the live MDM re-verification
+	// on a stale, pre-untrust record (DAR-326). Fired after releasing the locks; a
+	// transient (recoverable) untrust does NOT invalidate — it can self-recover via
+	// a passing challenge.
+	if hook != nil && seKey != "" {
+		hook(seKey)
+	}
 }
 
 // SetTrustLevel updates a provider's trust level (thread-safe).

@@ -1626,12 +1626,25 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	trustLevel := provider.TrustLevel
 	provider.Mu().Unlock()
 
-	// Re-attempt ACME (mTLS device-cert) trust for self_signed providers.
-	// applyACMETrust ran at registration before attestation was bound, so a
-	// provider that presented a valid device cert can be promoted to hardware
-	// now that the challenge has passed. No-op if nothing was stashed.
 	if trustLevel == registry.TrustSelfSigned {
-		s.retryACMETrust(providerID, provider)
+		// DAR-326 Phase 0: trust-reuse fast-skip. The live SE challenge above just
+		// re-proved this connection's identity + posture. If this device recently
+		// passed a FULL live MDM verification (a fresh trust-reuse record) and the
+		// fresh SIGNED challenge re-proves the SAME identity, an unchanged binary,
+		// and good posture within the window, grant hardware now — letting the
+		// per-connection mdmVerificationLoop SKIP its live MDM SecurityInfo
+		// round-trip. This is what avoids a fleet-wide MDM/APNs herd on a planned
+		// coordinator restart/swap. SECURITY: the live SE challenge always ran
+		// first; any gate miss (no record, binary changed, posture bad/unsigned,
+		// window elapsed, hard-untrusted) returns false and falls through to the
+		// unchanged full live MDM verify.
+		if !s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted) {
+			// Re-attempt ACME (mTLS device-cert) trust for self_signed providers.
+			// applyACMETrust ran at registration before attestation was bound, so a
+			// provider that presented a valid device cert can be promoted to hardware
+			// now that the challenge has passed. No-op if nothing was stashed.
+			s.retryACMETrust(providerID, provider)
+		}
 	}
 }
 
@@ -2722,6 +2735,20 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	// Persist the trust upgrade.
 	s.registry.PersistProvider(provider)
 
+	// DAR-326 Phase 0: record this FULL live MDM verification in the trust-reuse
+	// cache (in-memory + durable) so a planned coordinator restart/swap can
+	// fast-skip this device's live MDM round-trip — once a fresh live SE challenge
+	// re-proves the same identity, unchanged binary, and good posture within the
+	// window. Written only here, AFTER the verified MDM pass + hardware grant.
+	s.recordTrustReuse(
+		attestResult.PublicKey,
+		attestResult.SerialNumber,
+		attestResult.BinaryHash,
+		mdmResult.MDMSIPEnabled,
+		mdmResult.MDMSecureBootFull,
+		mdmResult.UDID,
+	)
+
 	// Request Apple Device Attestation — Apple's servers generate a
 	// certificate chain that proves this device's identity. This cert
 	// chain can be independently verified by users against Apple's
@@ -2839,6 +2866,22 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 	// passed (verifyProviderAttestation returns early otherwise).
 	if result == nil || !result.Valid || result.SerialNumber == "" {
 		return
+	}
+
+	// DAR-326 Phase 0: if this device has a fresh trust-reuse record (it recently
+	// passed a FULL live MDM verification), give the live SE challenge a brief head
+	// start to re-prove identity + posture and grant hardware via the trust-reuse
+	// fast-skip BEFORE we run the (herd-causing) live MDM SecurityInfo round-trip.
+	// Without this, this loop's immediate first attempt would race ahead of the
+	// challenge and re-run the full verify anyway, recreating the fleet-wide MDM/APNs
+	// herd on a planned coordinator restart/swap. Only candidates wait; a first-ever
+	// / expired device proceeds straight to the full live verify (unchanged). If the
+	// challenge does not grant within the window (slow / gate miss / hard untrust),
+	// we fall through to the unchanged full live MDM verify below.
+	if s.trustReuseCache.hasFreshRecord(result.PublicKey, result.SerialNumber) {
+		if s.awaitTrustReuseGrant(ctx, provider) {
+			return // fast-skip granted hardware — no live MDM round-trip needed
+		}
 	}
 
 	// One attempt up front, then a gentle cadence. The initial push (with the

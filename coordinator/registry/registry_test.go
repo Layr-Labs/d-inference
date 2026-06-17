@@ -949,6 +949,43 @@ func TestMarkUntrusted(t *testing.T) {
 	}
 }
 
+// TestHardUntrustHook proves the DAR-326 invalidation hook fires with the
+// device's SE public key on a HARD untrust, but NOT on a transient (recoverable)
+// untrust — so a missed-challenge deroute that can self-recover does not drop the
+// trust-reuse record, while a real security deroute durably invalidates it.
+func TestHardUntrustHook(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.mu.Lock()
+	p.AttestationResult = &attestation.VerificationResult{PublicKey: "se-key-1"}
+	p.mu.Unlock()
+
+	var mu sync.Mutex
+	var fired []string
+	reg.SetHardUntrustHook(func(seKey string) {
+		mu.Lock()
+		fired = append(fired, seKey)
+		mu.Unlock()
+	})
+
+	// A transient untrust must NOT fire the hook.
+	reg.MarkUntrustedTransient("p1")
+	mu.Lock()
+	if len(fired) != 0 {
+		t.Fatalf("transient untrust must not fire the hard-untrust hook, got %v", fired)
+	}
+	mu.Unlock()
+
+	// A hard untrust must fire the hook with the device's SE key.
+	reg.MarkUntrusted("p1")
+	mu.Lock()
+	if len(fired) != 1 || fired[0] != "se-key-1" {
+		t.Fatalf("hard untrust must fire the hook with the SE key, got %v", fired)
+	}
+	mu.Unlock()
+}
+
 func TestFindProviderSkipsUntrusted(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

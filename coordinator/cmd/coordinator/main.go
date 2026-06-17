@@ -544,6 +544,16 @@ func main() {
 		logger.Info("APNs code-identity attestation not configured — providers route without code-identity proof")
 	}
 
+	// DAR-326 Phase 0: seed the provider trust-reuse cache from the store (and wire
+	// write-through + the hard-untrust invalidation hook). This lets a planned
+	// coordinator restart / blue-green swap skip a fleet-wide live MDM SecurityInfo
+	// + APNs re-verification herd: a reconnecting, recently-fully-verified provider
+	// is granted hardware from its record once a fresh live SE challenge re-proves
+	// identity + posture. Durable in prod (Postgres store; see the store selection
+	// above); a no-op only under the in-memory store fallback. Independent of the
+	// APNs attestor — MDM verification runs whenever an MDM client is configured.
+	srv.SeedTrustReuseCache(ctx)
+
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
 

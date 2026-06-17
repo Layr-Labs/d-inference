@@ -118,6 +118,12 @@ type MemoryStore struct {
 	// persists for real once it is the production backend.
 	codeAttestations map[string]CodeAttestation
 
+	// Provider trust-reuse cache (DAR-326 Phase 0). Keyed by SE pubkey. Mirrors
+	// codeAttestations: lost on restart in the memory store (same as the in-memory
+	// cache it backs), but the methods exist so the store seam is uniform and
+	// Postgres persists for real as the production backend.
+	providerTrustReuse map[string]ProviderTrustReuse
+
 	// Provider log reports
 	logReports   []LogReport
 	logReportSeq int64
@@ -180,6 +186,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
 		codeAttestations:              make(map[string]CodeAttestation),
+		providerTrustReuse:            make(map[string]ProviderTrustReuse),
 		inferenceRoutes:               make([]InferenceRouteRecord, 0),
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
@@ -2834,6 +2841,40 @@ func (s *MemoryStore) DeleteCodeAttestation(_ context.Context, seKey string) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.codeAttestations, seKey)
+	return nil
+}
+
+// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+
+func (s *MemoryStore) ListProviderTrustReuse(_ context.Context) ([]ProviderTrustReuse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ProviderTrustReuse, 0, len(s.providerTrustReuse))
+	for _, rec := range s.providerTrustReuse {
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertProviderTrustReuse(_ context.Context, rec ProviderTrustReuse) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.providerTrustReuse[rec.SEPubKey] = rec
+	return nil
+}
+
+func (s *MemoryStore) DeleteProviderTrustReuse(_ context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.providerTrustReuse, seKey)
 	return nil
 }
 

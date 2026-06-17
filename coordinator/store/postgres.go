@@ -901,6 +901,27 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Token-binding column for reuse (Codex #7): additive for DBs whose
 		// code_attestations table predates it (the CREATE above is a no-op there).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
+
+		// Provider trust-reuse cache (DAR-326 Phase 0). Mirrors code_attestations.
+		// Persists the in-memory trust-reuse cache so a blue-green deploy / restart
+		// does not wipe it and provoke a fleet-wide live MDM SecurityInfo + APNs
+		// re-verification herd. One row per device (keyed by Secure Enclave public
+		// key). The row records that the device completed a FULL live MDM
+		// verification at verified_at (proven serial, binary hash, SIP, Secure
+		// Boot). The identity + binary + fresh-posture + freshness gate is applied
+		// on READ (in the coordinator, behind a live SE challenge), so a
+		// stale/wrong-binary/expired row never extends trust — it only lets the
+		// coordinator skip a redundant live MDM round-trip.
+		`CREATE TABLE IF NOT EXISTS provider_trust_reuse (
+			se_pubkey TEXT PRIMARY KEY,
+			serial TEXT NOT NULL DEFAULT '',
+			trust_level TEXT NOT NULL DEFAULT '',
+			binary_hash TEXT NOT NULL DEFAULT '',
+			sip_enabled BOOL NOT NULL DEFAULT FALSE,
+			secure_boot_full BOOL NOT NULL DEFAULT FALSE,
+			mda_udid TEXT NOT NULL DEFAULT '',
+			verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -4158,6 +4179,66 @@ func (s *PostgresStore) DeleteCodeAttestation(ctx context.Context, seKey string)
 
 	if _, err := s.pool.Exec(ctx, `DELETE FROM code_attestations WHERE se_pubkey = $1`, seKey); err != nil {
 		return fmt.Errorf("store: delete code attestation: %w", err)
+	}
+	return nil
+}
+
+// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+
+func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderTrustReuse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at FROM provider_trust_reuse`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list provider trust reuse: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ProviderTrustReuse
+	for rows.Next() {
+		var rec ProviderTrustReuse
+		if err := rows.Scan(&rec.SEPubKey, &rec.Serial, &rec.TrustLevel, &rec.BinaryHash, &rec.SIPEnabled, &rec.SecureBootFull, &rec.MDAUDID, &rec.VerifiedAt); err != nil {
+			return nil, fmt.Errorf("store: scan provider trust reuse: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider trust reuse: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_trust_reuse (se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 ON CONFLICT (se_pubkey) DO UPDATE SET
+			serial = $2, trust_level = $3, binary_hash = $4, sip_enabled = $5, secure_boot_full = $6, mda_udid = $7, verified_at = $8`,
+		rec.SEPubKey, rec.Serial, rec.TrustLevel, rec.BinaryHash, rec.SIPEnabled, rec.SecureBootFull, rec.MDAUDID, rec.VerifiedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert provider trust reuse: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteProviderTrustReuse(ctx context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `DELETE FROM provider_trust_reuse WHERE se_pubkey = $1`, seKey); err != nil {
+		return fmt.Errorf("store: delete provider trust reuse: %w", err)
 	}
 	return nil
 }

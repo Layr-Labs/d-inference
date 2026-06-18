@@ -699,22 +699,33 @@ public actor CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info("Coordinator connection closed, reconnecting...")
-                // A planned restart (going_away) that closed the socket cleanly:
-                // the clean path already reconnects with no sleep; just clear the
-                // flag so a later real error still uses normal backoff.
-                plannedRestart = false
                 backoff.reset()
+                // A planned restart (going_away) that closed the socket cleanly:
+                // reconnect with the backoff reset, but apply a small RANDOM
+                // jitter first so the synchronized fleet-wide going_away doesn't
+                // stampede the freshly-deployed coordinator. A plain clean close
+                // still reconnects immediately. Consume the flag exactly once so
+                // a later real error uses normal backoff.
+                if plannedRestart {
+                    plannedRestart = false
+                    await sleepPlannedRestartJitter()
+                }
                 continue
             } catch {
                 if shutdownRequested { break }
 
                 // Planned restart (coordinator going_away, DAR-327 Phase 3): skip
-                // the backoff sleep and reconnect immediately so we land on the
-                // freshly-deployed coordinator. Mirrors the clean-close path above.
+                // the EXPONENTIAL backoff sleep so we land on the freshly-deployed
+                // coordinator fast — but still apply a small bounded RANDOM jitter.
+                // going_away is fleet-wide and synchronized, so a zero-delay
+                // reconnect would send every idle provider onto the just-deployed
+                // (most fragile) coordinator in lockstep — the exact herd
+                // ExponentialBackoff's jitter exists to break. Consume the flag
+                // exactly once. Mirrors the clean-close path above.
                 if plannedRestart {
                     plannedRestart = false
                     backoff.reset()
-                    logger.info("Planned restart: reconnecting immediately (backoff reset, no sleep)")
+                    await sleepPlannedRestartJitter()
                     continue
                 }
 
@@ -739,6 +750,22 @@ public actor CoordinatorClient {
 
         logger.info("Coordinator client shut down")
         eventContinuation?.finish()
+    }
+
+    /// Sleep a small bounded random jitter (0–3s) before a planned-restart
+    /// reconnect. `going_away` (DAR-327 Phase 3) is a fleet-wide synchronized
+    /// event: a zero-delay reconnect would stampede every idle provider onto the
+    /// just-deployed — and most fragile — coordinator in lockstep, the
+    /// synchronized herd that `ExponentialBackoff`'s own jitter exists to break.
+    /// Spreading reconnects over a few seconds keeps the landing "near-instant"
+    /// while avoiding the thundering herd. Cancellable (`try?`): a shutdown
+    /// during the sleep simply falls through to the loop's `shutdownRequested`
+    /// guard, which breaks on the next iteration. Does NOT touch
+    /// `shutdownRequested` or the exponential backoff state.
+    private func sleepPlannedRestartJitter() async {
+        let jitterMs = Int.random(in: 0...3000)
+        logger.info("Planned restart: reconnecting after \(jitterMs)ms jitter (backoff reset)")
+        try? await Task.sleep(for: .milliseconds(jitterMs))
     }
 
     // MARK: - Single Connection Session

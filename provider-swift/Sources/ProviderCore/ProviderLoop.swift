@@ -388,6 +388,13 @@ public actor ProviderLoop {
     /// before `run()` starts it.
     private var autoUpdateTask: Task<Void, Never>?
 
+    /// Child task running the going_away drain → planned-restart reconnect off
+    /// the event-consumer loop (DAR-327 Phase 3). Spawned by the `.goingAway`
+    /// arm so a long (≤120s) in-flight drain can't stall other coordinator
+    /// events. Tracked so shutdown cancels it instead of leaving it draining
+    /// after the event stream ends.
+    private var goingAwayTask: Task<Void, Never>?
+
     /// Reacts to kernel memory pressure (reclaim MLX cache, mark an imminent
     /// OOM). Held for the loop's lifetime so the DispatchSource isn't
     /// deallocated. See `MemoryPressureMonitor` / `OOMDetector`.
@@ -756,24 +763,25 @@ public actor ProviderLoop {
 
                 case .goingAway:
                     // Coordinator is restarting (graceful shutdown, DAR-327
-                    // Phase 3). Drain in-flight work the same way the auto-update
-                    // and shutdown paths do, then force an IMMEDIATE reconnect
-                    // (backoff reset) so we land on the freshly-deployed
-                    // coordinator. The process does NOT restart, so we reopen
-                    // admission afterward (resumeServingAfterUpdate) instead of
-                    // exiting. If an auto-update is already draining/installing it
-                    // will restart the process (reconnecting fresh) — let it own
-                    // the lifecycle and fall back to the normal reconnect.
+                    // Phase 3). Flip admission to draining SYNCHRONOUSLY here —
+                    // before any await — so new work is refused immediately and a
+                    // second going_away can't double-spawn the drain. Then run the
+                    // drain → planned-restart reconnect → reopen sequence on a
+                    // CHILD TASK so a long (≤120s) drain no longer blocks this
+                    // single event-consumer loop: cancellations (which free
+                    // in-flight work and let the drain finish sooner) and
+                    // attestation challenges (a 120s stall could trip the
+                    // coordinator's trust timer) keep flowing meanwhile. The child
+                    // preserves the drain-before-reconnect ordering. If an
+                    // auto-update is already draining/installing it owns the
+                    // process restart — defer to it.
                     if updatePhase == .idle {
                         logger.warning("Coordinator going away (planned restart); draining in-flight work then reconnecting")
                         beginUpdateDraining()
-                        let drained = await waitForInflightDrain(timeout: Self.goingAwayDrainTimeout)
-                        if !drained {
-                            logger.warning("going_away: in-flight drain timed out; cancelling remaining requests")
-                            await cancelAllInflight()
+                        goingAwayTask?.cancel()
+                        goingAwayTask = Task { [coordinator] in
+                            await self.drainThenPlannedRestart(coordinator: coordinator)
                         }
-                        await coordinator.requestPlannedRestart()
-                        await resumeServingAfterUpdate()
                     } else {
                         logger.info("going_away received during an in-progress update; deferring to that update's restart")
                     }
@@ -793,6 +801,12 @@ public actor ProviderLoop {
         autoUpdateTask = nil
         autoReportTask?.cancel()
         autoReportTask = nil
+        // Stop the going_away drain task (DAR-327 Phase 3) if one is mid-drain:
+        // we're shutting down, so its reconnect/reopen is moot. Cancelling makes
+        // its waitForInflightDrain return promptly; the teardown below owns the
+        // final drain + coordinator.shutdown().
+        goingAwayTask?.cancel()
+        goingAwayTask = nil
         // Cancel any scheduled desired-build prefetch retries before tearing
         // the prefetch subsystem down.
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
@@ -2518,6 +2532,24 @@ public actor ProviderLoop {
     /// hot-swap.
     private func beginUpdateDraining() {
         updatePhase = .draining
+    }
+
+    /// Drain in-flight work then force the planned-restart reconnect, run off the
+    /// event-consumer loop as a child task (DAR-327 Phase 3). The caller has
+    /// already flipped `updatePhase` to `.draining` synchronously, so admission
+    /// is closed; here we only drain → reconnect → reopen, preserving the
+    /// drain-before-reconnect ordering. `requestPlannedRestart` cancels the
+    /// socket so `runLoop` reconnects (jittered) onto the freshly-deployed
+    /// coordinator; the process does NOT restart, so we reopen admission
+    /// afterward via `resumeServingAfterUpdate`.
+    private func drainThenPlannedRestart(coordinator: CoordinatorClient) async {
+        let drained = await waitForInflightDrain(timeout: Self.goingAwayDrainTimeout)
+        if !drained {
+            logger.warning("going_away: in-flight drain timed out; cancelling remaining requests")
+            await cancelAllInflight()
+        }
+        await coordinator.requestPlannedRestart()
+        await resumeServingAfterUpdate()
     }
 
     /// Download, verify, and stage the release bundle while still serving.

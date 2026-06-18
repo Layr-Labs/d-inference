@@ -2723,44 +2723,11 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 	return nil
 }
 
-// SendGoingAway tells a single provider the coordinator is going away for a
-// planned restart. Like SendLoadModel it is fire-and-forget: the provider
-// drains its in-flight work, closes its socket, and reconnects with its backoff
-// RESET (DAR-327 Phase 3 instant reconnect). The provider conn is read under
-// r.mu.RLock then p.mu, and the write happens OUTSIDE both locks with a 5s
-// timeout (nhooyr.io/websocket Conn.Write is concurrency-safe).
-func (r *Registry) SendGoingAway(providerID string) error {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("provider %q not found", providerID)
-	}
-
-	msg := protocol.GoingAwayMessage{Type: protocol.TypeGoingAway}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal going_away message: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	p.mu.Lock()
-	conn := p.Conn
-	p.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("provider %q has no active connection", providerID)
-	}
-
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
-		return fmt.Errorf("failed to send going_away to provider %q: %w", providerID, err)
-	}
-
-	r.logger.Info("sent going_away to provider", "provider_id", providerID)
-	return nil
-}
+// goingAwayBroadcastTimeout bounds the WHOLE going_away broadcast (every per-conn
+// write shares it), so a slow/blocked socket or a large fleet can never eat into
+// the caller's graceful-shutdown window. going_away is a best-effort nudge: a
+// provider that misses it just discovers the drop and reconnects with backoff.
+const goingAwayBroadcastTimeout = 3 * time.Second
 
 // BroadcastGoingAway tells every connected, eligible provider that the
 // coordinator is going away for a planned restart (graceful shutdown). It is the
@@ -2771,10 +2738,15 @@ func (r *Registry) SendGoingAway(providerID string) error {
 // Concurrency: provider connections are SNAPSHOTTED under r.mu.RLock (reading
 // p.Conn / p.Backend / p.Version under p.mu, matching the r.mu→p.mu lock
 // ordering used by ForEachProvider, evictStale, and Disconnect) and the
-// websocket writes happen AFTER the lock is released — never while holding
-// r.mu. A snapshotted conn may already be closing (Disconnect runs concurrently
-// and calls CloseNow), so per-conn write errors are tolerated: log and continue,
-// like sendModelLoadActions, never panic or abort the broadcast.
+// websocket writes happen AFTER the lock is released — never while holding r.mu.
+// The writes then fan out CONCURRENTLY (one goroutine per conn) under a single
+// goingAwayBroadcastTimeout deadline shared by all of them, so the cost is
+// ~one timeout rather than N×perWrite and the broadcast can't stall shutdown.
+// nhooyr.io/websocket Conn.Write is concurrency-safe and each conn is distinct,
+// so the writes don't contend. A snapshotted conn may already be closing
+// (Disconnect runs concurrently and calls CloseNow), so per-conn write errors
+// are tolerated: log and continue, never abort the broadcast. Each goroutine
+// also recovers via saferun so one bad write can never crash the process.
 //
 // eligible, when non-nil, gates which providers are notified (backend + version
 // floor) so a provider whose strict decoder would throw on an unknown message
@@ -2817,22 +2789,37 @@ func (r *Registry) BroadcastGoingAway(eligible func(backend, version string) boo
 		return 0
 	}
 
-	sent := 0
-	for _, t := range targets {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := t.conn.Write(ctx, websocket.MessageText, data)
-		cancel()
-		if err != nil {
-			// A snapshotted conn may already be closed (concurrent Disconnect /
-			// CloseNow). Tolerate it — never panic or abort the broadcast.
-			r.logger.Warn("failed to send going_away to provider", "provider_id", t.id, "error", err)
-			continue
-		}
-		sent++
-	}
+	// One deadline for the entire broadcast (shared by every write), so the
+	// worst case is a single timeout no matter how many providers are connected.
+	ctx, cancel := context.WithTimeout(context.Background(), goingAwayBroadcastTimeout)
+	defer cancel()
 
-	r.logger.Info("broadcast going_away to providers", "sent", sent, "eligible", len(targets))
-	return sent
+	var (
+		wg   sync.WaitGroup
+		sent atomic.Int64
+	)
+	for _, t := range targets {
+		wg.Add(1)
+		go func(t target) {
+			// wg.Done is the OUTERMOST defer so a recovered panic still
+			// releases the WaitGroup — wg.Wait below can never hang.
+			defer wg.Done()
+			defer saferun.Recover(r.logger, "registry.broadcastGoingAway")
+			if err := t.conn.Write(ctx, websocket.MessageText, data); err != nil {
+				// A snapshotted conn may already be closed (concurrent
+				// Disconnect / CloseNow) or the shared deadline fired.
+				// Tolerate it — never abort the broadcast.
+				r.logger.Warn("failed to send going_away to provider", "provider_id", t.id, "error", err)
+				return
+			}
+			sent.Add(1)
+		}(t)
+	}
+	wg.Wait()
+
+	total := int(sent.Load())
+	r.logger.Info("broadcast going_away to providers", "sent", total, "eligible", len(targets))
+	return total
 }
 
 // SendPrefetchModel instructs a provider to download + verify a model build

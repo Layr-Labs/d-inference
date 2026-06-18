@@ -88,6 +88,15 @@ const (
 	// block. Using context.Background() unbounded here risks hanging the HTTP
 	// handler goroutine when a WebSocket is half-dead.
 	cancelWriteTimeout = 2 * time.Second
+
+	// Provider dispatch writes can be large (sealed/base64 inference requests), so
+	// the external wait budget scales with frame size. The Write itself deliberately
+	// uses a non-canceling context because nhooyr closes the entire WebSocket when a
+	// write context is cancelled/expired. On timeout we immediately close the
+	// provider socket as unhealthy so request cleanup can continue.
+	providerDispatchWriteMinTimeout     = 5 * time.Second
+	providerDispatchWriteMaxTimeout     = 30 * time.Second
+	providerDispatchWriteBytesPerSecond = 2 << 20 // 2 MiB/s (~16 Mbps) floor.
 )
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
@@ -99,6 +108,20 @@ func ttftDeadline(estimatedPromptTokens int) time.Duration {
 	base := 5 * time.Second
 	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond
 	return base + perToken
+}
+
+func providerDispatchWriteTimeout(frameBytes int) time.Duration {
+	if frameBytes <= 0 {
+		return providerDispatchWriteMinTimeout
+	}
+	d := time.Duration(frameBytes) * time.Second / providerDispatchWriteBytesPerSecond
+	if d < providerDispatchWriteMinTimeout {
+		return providerDispatchWriteMinTimeout
+	}
+	if d > providerDispatchWriteMaxTimeout {
+		return providerDispatchWriteMaxTimeout
+	}
+	return d
 }
 
 // sendProviderCancel sends a Cancel message for the given request to the
@@ -120,6 +143,28 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 	if err := provider.Conn.Write(ctx, websocket.MessageText, cancelData); err != nil {
 		s.logger.Debug("failed to send cancel (provider may have disconnected)",
 			"request_id", requestID, "error", err)
+	}
+}
+
+func writeProviderInferenceRequest(_ context.Context, provider *registry.Provider, data []byte) error {
+	if provider == nil || provider.Conn == nil {
+		return errors.New("provider websocket is not connected")
+	}
+	done := make(chan error, 1)
+	go func() {
+		// Do not pass the consumer request context (or any timeout context) to
+		// nhooyr.Conn.Write: any cancellation/expiration passed to nhooyr can close
+		// the shared provider socket. Keep the timeout outside the Write call.
+		done <- provider.Conn.Write(context.Background(), websocket.MessageText, data)
+	}()
+	timer := time.NewTimer(providerDispatchWriteTimeout(len(data)))
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		_ = provider.Conn.CloseNow()
+		return errors.New("provider websocket write timeout")
 	}
 }
 
@@ -658,7 +703,7 @@ func (s *Server) dispatchOneProvider(
 	if pr.Timing != nil {
 		pr.Timing.DispatchedAt = time.Now()
 	}
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
 		refundExtra()
 		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
@@ -5235,7 +5280,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	data, _ := json.Marshal(wireMsg)
 	timing.DispatchedAt = time.Now()
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
 		cleanupPending()
 		refundExtra()
 		refundReservation()

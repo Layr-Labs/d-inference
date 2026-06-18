@@ -387,6 +387,12 @@ func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure wa
 			target = maxReachable
 		}
 	}
+	if floor := c.config.MinWarmByModel[fleet.model]; floor > target {
+		target = floor
+		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
+			target = maxReachable
+		}
+	}
 	return target
 }
 

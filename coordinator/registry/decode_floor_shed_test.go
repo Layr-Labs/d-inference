@@ -216,6 +216,32 @@ func TestDecodeFloorShed_FullButFastFleet_StillQueues(t *testing.T) {
 	}
 }
 
+// Boundary: for a concurrency-full provider, the decode-floor decision must use
+// the rate the queued request would see AFTER a slot frees, not the immediate
+// "admit one more now" projection. With k=0.27, observed 11 tok/s at one active
+// request is above a 10 tok/s shed floor, but projecting b+1 makes it ~9.1 tok/s.
+// That b+1 projection is correct for providers with headroom, but too pessimistic
+// for a full provider that queue-before-shed would wait on.
+func TestDecodeFloorShed_FullProviderUsesQueuedStartProjection(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-full-boundary"
+	p := slowGemmaProvider(t, reg, "p1", model, 11)
+	setSlotFull(t, p)
+
+	reg.SetDecodeFloorShed(10, true)
+
+	cc, capRej, _, decodeFloorRej, _, _ := reg.quickCapacityCheck(model, 500, 4096, RequestTraits{}, false)
+	if cc != 0 {
+		t.Fatalf("a concurrency-full provider must have no candidates; got cc=%d", cc)
+	}
+	if capRej == 0 {
+		t.Fatalf("a concurrency-full provider must be a capacity rejection; got capRej=%d", capRej)
+	}
+	if decodeFloorRej != 0 {
+		t.Fatalf("a full provider above the shed floor after a slot frees must queue, not throughput-shed; got decodeFloor=%d of %d", decodeFloorRej, capRej)
+	}
+}
+
 // A MIXED fleet (one full+slow, one full+fast) must queue: because the fast
 // provider's slot can free and serve at an acceptable rate, the request is worth
 // queueing. decodeFloorRejections (1) < capacityRejections (2).

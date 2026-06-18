@@ -1217,6 +1217,22 @@ func resolvedPrefillTPS(p *Provider) float64 {
 // reapplied at b+1; otherwise the static benchmark is the solo proxy. Used by the
 // decode-floor quality preference (PendingRequest.MinDecodeTPS).
 func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
+	return projectedPerRequestDecodeTPSAtBatch(snap, snap.backendRunning+1)
+}
+
+// projectedQueuedStartDecodeTPS estimates the per-request decode TPS a queued
+// request would see after this model's slot frees. Unlike the immediate-admit
+// projection above, it does NOT add one on top of the already-full batch: the
+// request starts by replacing a completed/waiting slot, so the relevant batch is
+// the model's concurrency cap.
+func projectedQueuedStartDecodeTPS(snap routingSnapshot, modelMaxConcurrency int) float64 {
+	if modelMaxConcurrency < 1 {
+		modelMaxConcurrency = 1
+	}
+	return projectedPerRequestDecodeTPSAtBatch(snap, modelMaxConcurrency)
+}
+
+func projectedPerRequestDecodeTPSAtBatch(snap routingSnapshot, targetBatchSize int) float64 {
 	k := effectiveTPSLoadFactor
 	if k < 0 {
 		k = 0
@@ -1225,6 +1241,9 @@ func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
 	if b < 0 {
 		b = 0
 	}
+	if targetBatchSize < 1 {
+		targetBatchSize = 1
+	}
 	solo := snap.decodeTPS
 	if snap.observedDecodeTPS > 0 {
 		solo = snap.observedDecodeTPS * (1 + k*float64(b)) // unwind measured@b to solo (b=0)
@@ -1232,7 +1251,7 @@ func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
 	if solo <= 0 {
 		return 0
 	}
-	return solo / (1 + k*float64(b+1))
+	return solo / (1 + k*float64(targetBatchSize))
 }
 
 func providerModelIDs(p *Provider) []string {
@@ -1436,7 +1455,15 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// Capture concurrency headroom under the lock (the gate is applied after
 		// unlock, below, so a full-but-slow provider is still classified against
 		// the decode floor instead of short-circuiting as a plain capacity full).
-		hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(model)
+		// Keep per-model and global headroom separate: if the model slot itself is
+		// full, queue-before-shed would wait for a model slot to free, so the
+		// decode-floor projection must use the queued-start batch size. If only the
+		// provider-wide/global cap is full but this model has headroom, the request
+		// will join this model's batch after an unrelated slot frees, so the normal
+		// immediate b+1 projection is still the right throughput check.
+		modelMaxConcurrency := p.maxConcurrencyForModelLocked(model)
+		hasModelHeadroom := p.pendingLoadForModelLocked(model) < modelMaxConcurrency
+		hasHeadroom := hasModelHeadroom && p.pendingCount() < p.maxConcurrency()
 
 		p.mu.Unlock()
 
@@ -1464,8 +1491,12 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// model (e.g. gemma-4 under load) never exhausts, so without this gate the
 		// preflight counts every such provider as admissible and over-admits
 		// requests that then queue and time out.
+		projectedDecodeTPS := projectedPerRequestDecodeTPS(snap)
+		if !hasModelHeadroom {
+			projectedDecodeTPS = projectedQueuedStartDecodeTPS(snap, modelMaxConcurrency)
+		}
 		belowDecodeFloor := r.decodeFloorHardShed && r.decodeFloorTPS > 0 &&
-			snap.hasBackendCapacity && projectedPerRequestDecodeTPS(snap) < r.decodeFloorTPS
+			snap.hasBackendCapacity && projectedDecodeTPS < r.decodeFloorTPS
 
 		// Concurrency gate. A full provider is a capacity rejection. CRUCIAL: if
 		// it is ALSO below the decode floor, count it in decodeFloorRejections too

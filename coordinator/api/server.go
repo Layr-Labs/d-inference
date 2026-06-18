@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
@@ -414,6 +415,18 @@ type Server struct {
 	// Server built directly (e.g. &Server{} in tests) leaves it nil, and
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
+
+	// goingAway is latched true the first time this coordinator announces a
+	// planned restart (DAR-327 Phase 3) — via BroadcastGoingAway, which fires
+	// both from the admin POST /v1/admin/going-away endpoint and at the start of
+	// graceful shutdown. Once set, handleProviderWS refuses NEW provider
+	// registrations with 503 so a provider reconnecting after going_away can't
+	// stick to this dying instance (it would miss the broadcast and later fall
+	// back to backoff); it instead retries and lands on the freshly-deployed
+	// coordinator via the load balancer. One-way (never cleared): a coordinator
+	// that has announced going_away is on its way out. Named distinctly from any
+	// request-draining flag to avoid colliding with Phase 1.
+	goingAway atomic.Bool
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -1838,6 +1851,15 @@ func (s *Server) routes() {
 	// Admin credit & reward
 	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(s.handleAdminCredit))
 	s.mux.HandleFunc("POST /v1/admin/reward", s.requireAuth(s.handleAdminReward))
+
+	// Admin planned-restart trigger (DAR-327 Phase 3 instant reconnect). The
+	// blue-green deploy calls this on the OLD coordinator to make providers
+	// reconnect onto the new color BEFORE the old one is stopped. Wrapped in
+	// requireAuth so auth.UserFromContext is populated and isAdminAuthorized
+	// accepts BOTH the admin key (pseudo-account) and a Privy admin token — the
+	// same pattern as POST /v1/admin/credit above. Registered here, before the
+	// /v1/ catch-all.
+	s.mux.HandleFunc("POST /v1/admin/going-away", s.requireAuth(s.handleGoingAway))
 
 	// Telemetry ingestion — authentication is resolved inside the handler
 	// because providers, consumers, and anonymous clients all hit this path.

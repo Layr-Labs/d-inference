@@ -664,6 +664,20 @@ public actor CoordinatorClient {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
     }
 
+    /// Mark that the NEXT disconnect is a planned restart (`going_away`, DAR-327
+    /// Phase 3) WITHOUT closing the socket. This is called the moment going_away
+    /// is received — before the in-flight drain — so that if the socket dies
+    /// mid-drain (an early/unexpected close, not our explicit post-drain
+    /// `requestPlannedRestart`), `runLoop` still observes `plannedRestart` and
+    /// takes the no-backoff reconnect path instead of treating it as an ordinary
+    /// disconnect and backing off. The socket is left ALIVE here so in-flight
+    /// work can finish draining first (drain-before-close). Idempotent; no-op once
+    /// a real shutdown is already in progress.
+    public func markPlannedRestart() {
+        guard !shutdownRequested else { return }
+        plannedRestart = true
+    }
+
     /// Tear down the current coordinator connection and reconnect IMMEDIATELY
     /// with the backoff RESET (no sleep). Used when the coordinator announces a
     /// planned restart (`going_away`, DAR-327 Phase 3): after the provider drains
@@ -673,7 +687,9 @@ public actor CoordinatorClient {
     /// plain connection error it skips the reconnect backoff sleep. No-op once a
     /// real shutdown is already in progress. Cancelling the socket surfaces as a
     /// connection error so `runLoop` re-runs `sendRegistration` on the new
-    /// coordinator (the 1001 close code literally means "going away").
+    /// coordinator (the 1001 close code literally means "going away"). The
+    /// `plannedRestart` flag is set here too (idempotent with `markPlannedRestart`)
+    /// so this remains correct when called on its own.
     public func requestPlannedRestart() {
         guard !shutdownRequested else { return }
         plannedRestart = true

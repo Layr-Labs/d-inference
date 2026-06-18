@@ -762,22 +762,28 @@ public actor ProviderLoop {
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
 
                 case .goingAway:
-                    // Coordinator is restarting (graceful shutdown, DAR-327
-                    // Phase 3). Flip admission to draining SYNCHRONOUSLY here —
-                    // before any await — so new work is refused immediately and a
-                    // second going_away can't double-spawn the drain. Then run the
-                    // drain → planned-restart reconnect → reopen sequence on a
-                    // CHILD TASK so a long (≤120s) drain no longer blocks this
-                    // single event-consumer loop: cancellations (which free
-                    // in-flight work and let the drain finish sooner) and
-                    // attestation challenges (a 120s stall could trip the
-                    // coordinator's trust timer) keep flowing meanwhile. The child
-                    // preserves the drain-before-reconnect ordering. If an
-                    // auto-update is already draining/installing it owns the
-                    // process restart — defer to it.
+                    // Coordinator is restarting (graceful shutdown / blue-green
+                    // cutover, DAR-327 Phase 3). Flip admission to draining
+                    // SYNCHRONOUSLY here — before any await — so new work is
+                    // refused immediately and a second going_away can't
+                    // double-spawn the drain. Then mark the planned restart on the
+                    // coordinator client IMMEDIATELY (before the drain), so that
+                    // even if the socket dies mid-drain — an early/unexpected close
+                    // rather than our own post-drain close — runLoop still takes
+                    // the no-backoff planned-restart path instead of backing off
+                    // and defeating instant reconnect. Only THEN run the
+                    // drain → close → reconnect → reopen sequence on a CHILD TASK
+                    // so a long (≤120s) drain no longer blocks this single
+                    // event-consumer loop: cancellations (which free in-flight work
+                    // and let the drain finish sooner) and attestation challenges
+                    // (a 120s stall could trip the coordinator's trust timer) keep
+                    // flowing meanwhile. The child preserves the drain-before-close
+                    // ordering. If an auto-update is already draining/installing it
+                    // owns the process restart — defer to it.
                     if updatePhase == .idle {
                         logger.warning("Coordinator going away (planned restart); draining in-flight work then reconnecting")
                         beginUpdateDraining()
+                        await coordinator.markPlannedRestart()
                         goingAwayTask?.cancel()
                         goingAwayTask = Task { [coordinator] in
                             await self.drainThenPlannedRestart(coordinator: coordinator)
@@ -2536,12 +2542,14 @@ public actor ProviderLoop {
 
     /// Drain in-flight work then force the planned-restart reconnect, run off the
     /// event-consumer loop as a child task (DAR-327 Phase 3). The caller has
-    /// already flipped `updatePhase` to `.draining` synchronously, so admission
-    /// is closed; here we only drain → reconnect → reopen, preserving the
-    /// drain-before-reconnect ordering. `requestPlannedRestart` cancels the
-    /// socket so `runLoop` reconnects (jittered) onto the freshly-deployed
-    /// coordinator; the process does NOT restart, so we reopen admission
-    /// afterward via `resumeServingAfterUpdate`.
+    /// already flipped `updatePhase` to `.draining` (synchronously) AND called
+    /// `markPlannedRestart()` on receipt, so admission is closed and the
+    /// no-backoff reconnect is armed even if the socket dies mid-drain. Here
+    /// we only drain → close → reopen, preserving the drain-before-close ordering.
+    /// `requestPlannedRestart` cancels the socket (the flag is already set, so this
+    /// is the explicit graceful close) so `runLoop` reconnects (jittered) onto the
+    /// freshly-deployed coordinator; the process does NOT restart, so we reopen
+    /// admission afterward via `resumeServingAfterUpdate`.
     private func drainThenPlannedRestart(coordinator: CoordinatorClient) async {
         let drained = await waitForInflightDrain(timeout: Self.goingAwayDrainTimeout)
         if !drained {

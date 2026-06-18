@@ -108,6 +108,21 @@ func (ct *challengeTracker) remove(nonce string) *pendingChallenge {
 // handleProviderWS upgrades the connection to WebSocket and manages the
 // provider's lifecycle: registration, heartbeats, and inference responses.
 func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
+	// DAR-327 Phase 3 (instant reconnect): once this coordinator has announced a
+	// planned restart (going_away, via the admin endpoint or graceful shutdown),
+	// refuse NEW provider registrations BEFORE the WebSocket upgrade. Otherwise an
+	// idle provider that closes and immediately reconnects could re-register on
+	// this dying instance, miss the broadcast (it isn't in the snapshot), and
+	// later fall back to backoff when the instance exits. A 503 (with Retry-After)
+	// surfaces as a transient connect failure so the provider retries and lands on
+	// the freshly-deployed coordinator via the load balancer instead.
+	if s.goingAway.Load() {
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
+			"coordinator is going away (planned restart); reconnect to the new instance"))
+		return
+	}
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Allow any origin for provider connections.
 		InsecureSkipVerify: true,

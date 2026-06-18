@@ -1455,6 +1455,23 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 
+		// Decode-floor SHED gate (opt-in, EIGENINFERENCE_DECODE_FLOOR_HARD_SHED).
+		// freeMemoryAdmits keys on KV memory, which a bandwidth-bound model (e.g.
+		// gemma-4 under load) never exhausts — so the preflight would count every
+		// provider as admissible even when none can decode at usable speed,
+		// over-admitting requests that then queue and time out. When enabled, a
+		// provider whose PROJECTED per-request decode TPS (with this request
+		// added) falls below the floor is counted as a capacity rejection, so an
+		// all-slow fleet yields candidateCount==0 / capacityRejections>0 and the
+		// caller sheds with a fast 429/Retry-After instead of admit-and-stall.
+		// Throughput-only — independent of the memory cap / free_for_load gates.
+		if r.decodeFloorHardShed && r.decodeFloorTPS > 0 && snap.hasBackendCapacity {
+			if projectedPerRequestDecodeTPS(snap) < r.decodeFloorTPS {
+				capacityRejections++
+				continue
+			}
+		}
+
 		candidateCount++
 		if snap.hasBackendCapacity {
 			ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens)

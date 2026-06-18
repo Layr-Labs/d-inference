@@ -331,6 +331,17 @@ func main() {
 	srv.SetMinDecodeTPS(minDecodeTPS)
 	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
+	// Decode-floor LOAD-SHEDDING (opt-in). The per-request decode floor above is
+	// advisory: it ranks providers but never rejects, so a bandwidth-bound model
+	// whose whole fleet decodes below the floor (e.g. gemma-4 under load) is still
+	// admitted and then stalls in the queue. EIGENINFERENCE_DECODE_FLOOR_HARD_SHED
+	// =true makes the capacity preflight SHED such requests with a fast
+	// 429/Retry-After instead. Default off (advisory). Sheds on THROUGHPUT only —
+	// orthogonal to the memory cap / free_for_load_gb / resource-count gates.
+	decodeFloorHardShed := os.Getenv("EIGENINFERENCE_DECODE_FLOOR_HARD_SHED") == "true"
+	reg.SetDecodeFloorShed(minDecodeTPS, decodeFloorHardShed)
+	logger.Info("decode-floor load-shedding", "hard_shed", decodeFloorHardShed, "floor_tps", minDecodeTPS)
+
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from
 	// routing (but not disconnected) and receive feedback about mismatches.

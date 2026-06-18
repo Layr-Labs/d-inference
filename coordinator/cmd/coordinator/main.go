@@ -338,9 +338,28 @@ func main() {
 	// =true makes the capacity preflight SHED such requests with a fast
 	// 429/Retry-After instead. Default off (advisory). Sheds on THROUGHPUT only —
 	// orthogonal to the memory cap / free_for_load_gb / resource-count gates.
+	//
+	// The SHED floor is decoupled from the soft quality floor above and defaults
+	// LOWER. The soft floor (15) only ranks providers, so a high bar is harmless;
+	// the shed floor 429s, and only when EVERY eligible candidate projects below
+	// it. Production telemetry on the gemma-4 over-admission incident showed a
+	// healthy, uncontended (backend_running=0) request projects ~15 tok/s at p50
+	// on the 4-bit fleet, so a shed floor of 15 would 429 whenever the fleet's
+	// fast half briefly dropped out — converting a latency problem into an
+	// availability one. A floor of ~10 leaves headroom above the ~8-9 tok/s
+	// normal-load projection and only trips when the entire fleet is genuinely
+	// overpacked into uselessness. Tune with EIGENINFERENCE_DECODE_FLOOR_SHED_TPS.
 	decodeFloorHardShed := os.Getenv("EIGENINFERENCE_DECODE_FLOOR_HARD_SHED") == "true"
-	reg.SetDecodeFloorShed(minDecodeTPS, decodeFloorHardShed)
-	logger.Info("decode-floor load-shedding", "hard_shed", decodeFloorHardShed, "floor_tps", minDecodeTPS)
+	decodeFloorShedTPS := 10.0 // default shed threshold (decoupled from the soft quality bar)
+	if v := os.Getenv("EIGENINFERENCE_DECODE_FLOOR_SHED_TPS"); v != "" {
+		if tps, err := strconv.ParseFloat(v, 64); err == nil && tps >= 0 {
+			decodeFloorShedTPS = tps
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_DECODE_FLOOR_SHED_TPS; using default", "value", v, "default", decodeFloorShedTPS)
+		}
+	}
+	reg.SetDecodeFloorShed(decodeFloorShedTPS, decodeFloorHardShed)
+	logger.Info("decode-floor load-shedding", "hard_shed", decodeFloorHardShed, "shed_floor_tps", decodeFloorShedTPS, "soft_floor_tps", minDecodeTPS)
 
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from

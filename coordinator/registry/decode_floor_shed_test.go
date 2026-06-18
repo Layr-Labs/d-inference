@@ -122,3 +122,39 @@ func TestDecodeFloorShed_ZeroFloor_NoOp(t *testing.T) {
 		t.Fatalf("floor 0 must disable shedding (no-op); got cc=0")
 	}
 }
+
+// The shed floor is DECOUPLED from the soft quality floor and defaults lower
+// (shed 10 vs soft 15). A fleet decoding in the gap between them — too slow for
+// the quality preference but not degraded enough to shed — must be admitted, not
+// 429'd. This pins the decoupling that keeps a shed-floor of 15 (which the gemma
+// telemetry showed would 429 a healthy uncontended fleet projecting ~15) from
+// turning a latency problem into an availability outage.
+func TestDecodeFloorShed_BetweenSoftAndShedFloor_Admits(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-mid"
+	// Observed ~14 tok/s at backend_running=0 ⇒ projection ≈ 14/(1+0.27) ≈ 11.0:
+	// below the soft quality bar (15) but above the shed floor (10).
+	slowGemmaProvider(t, reg, "p1", model, 14)
+
+	if got := projectedPerRequestDecodeTPS(routingSnapshot{observedDecodeTPS: 14, backendRunning: 0}); got < 10 || got >= 15 {
+		t.Fatalf("fixture must land in the (10,15) gap; projected %.2f", got)
+	}
+
+	// Shed floor 10 (the new decoupled default), hard shed armed.
+	reg.SetDecodeFloorShed(10, true)
+	cc, capRej, _ := reg.QuickCapacityCheck(model, 500, 4096, RequestTraits{})
+	if cc == 0 {
+		t.Fatalf("a fleet above the shed floor (10) must be admitted even when below the soft bar (15); got cc=0 capRej=%d", capRej)
+	}
+	if capRej != 0 {
+		t.Fatalf("no capacity rejection expected above the shed floor; got capRej=%d", capRej)
+	}
+
+	// And the SAME fleet, were the shed floor mistakenly coupled back to 15,
+	// WOULD be shed — proving the decoupling is load-bearing.
+	reg.SetDecodeFloorShed(15, true)
+	cc15, capRej15, _ := reg.QuickCapacityCheck(model, 500, 4096, RequestTraits{})
+	if cc15 != 0 || capRej15 == 0 {
+		t.Fatalf("control: a shed floor of 15 must shed this ~11-tok/s fleet; got cc=%d capRej=%d", cc15, capRej15)
+	}
+}

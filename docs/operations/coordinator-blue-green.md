@@ -132,9 +132,20 @@ sudo ./deploy.sh --rollback
 ```
 
 This flips the Caddy upstream back to the other (still-running) color and
-reloads. If the old color was already stopped, start it again first
-(`systemctl start darkbloom-coordinator@<old>`), then `--rollback`. `deploy.sh`
-also auto-rolls-back the flip if `caddy reload` fails mid-cutover.
+reloads. Before flipping, `deploy.sh` health-checks the rollback target with a
+single-shot `GET /health` liveness probe so it never cuts traffic over to a dead
+port (which would surface as 502s). If the target is **not** healthy the rollback
+is refused; start it again first (`systemctl start darkbloom-coordinator@<old>`),
+then re-run `--rollback`.
+
+To override the health gate and flip anyway (for example, you are certain the
+probe is wrong), add `--force`:
+
+```bash
+sudo ./deploy.sh --rollback --force   # DANGEROUS: may route traffic to a dead port
+```
+
+`deploy.sh` also auto-rolls-back the flip if `caddy reload` fails mid-cutover.
 
 ## Cross-phase contracts
 
@@ -167,6 +178,12 @@ Secrets are unchanged: GCP Secret Manager → tmpfs `/etc/d-inference/env`
 `darkbloom-run.sh`. Nothing secret is committed; registry auth uses the VM
 service-account token from the metadata server. `/etc/d-inference/deploy.env`
 holds only the non-secret `DINF_IMAGE` pin.
+
+`deploy.sh` itself sources `EIGENINFERENCE_ADMIN_KEY` from `/etc/d-inference/env`
+(path overridable via `DINF_ENV_FILE`) **only at drain time**, to authenticate
+`POST /v1/admin/drain`. It never prints or writes secret values and skips this
+entirely under `--dry-run`. If the key is missing the drain step warns and
+continues (the graceful container stop still finishes in-flight requests).
 
 ## Manual validation (human-only, on the GCP box)
 

@@ -27,8 +27,11 @@
 #     flip_upstream(); see deploy/gcp/prod/deploy_test.sh.
 #   * sourcing this file (e.g. from the test) defines the functions but NEVER
 #     runs main — see the BASH_SOURCE guard at the bottom.
-#   * NO secrets are read or written here; coordinator secrets stay in
-#     /etc/d-inference/env (Secret Manager -> tmpfs -> --env-file).
+#   * the ONLY secret touched here is EIGENINFERENCE_ADMIN_KEY: it is sourced
+#     from /etc/d-inference/env (Secret Manager -> tmpfs -> --env-file) at drain
+#     time to authenticate POST /v1/admin/drain. It is never printed or written,
+#     and is NOT read in --dry-run. All other coordinator secrets stay in that
+#     file and are never touched here.
 #
 # Cross-phase contracts (separate PRs; referenced, not implemented here):
 #   Phase 1 : GET /readyz  +  POST /v1/admin/drain
@@ -55,11 +58,16 @@ CADDY_BIN="${CADDY_BIN:-caddy}"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
 CURL_BIN="${CURL_BIN:-curl}"
 DINF_DEPLOY_ENV="${DINF_DEPLOY_ENV:-/etc/d-inference/deploy.env}"
+# Secrets env file (Secret Manager -> tmpfs). Holds EIGENINFERENCE_ADMIN_KEY,
+# sourced at drain time to authenticate POST /v1/admin/drain. Distinct from the
+# non-secret DINF_DEPLOY_ENV image-pin file above. Overridable for tests.
+DINF_ENV_FILE="${DINF_ENV_FILE:-/etc/d-inference/env}"
 
 # Runtime flags (main overrides from CLI args).
 DRY_RUN="${DRY_RUN:-0}"
 ROLLBACK=0
 ASSUME_YES=0
+FORCE=0
 IMAGE_REF=""
 
 # ---------------------------------------------------------------------------
@@ -274,6 +282,25 @@ wait_healthy() {
   return 1
 }
 
+# load_admin_env — source the secrets env file so EIGENINFERENCE_ADMIN_KEY is
+# available for the authenticated drain request. `set -a` exports each assignment
+# for the duration of the source; values are NEVER printed. Called only at real
+# drain time (after the --dry-run early return) so the plan stays secret-free.
+# No-op + warning if the file is absent/unreadable (caller still warns on empty
+# key and continues).
+load_admin_env() {
+  if [ -r "$DINF_ENV_FILE" ]; then
+    # Runtime secrets file (Secret Manager -> tmpfs); not present at lint time, so
+    # its source path cannot be followed by shellcheck.
+    set -a
+    # shellcheck source=/dev/null
+    . "$DINF_ENV_FILE"
+    set +a
+  else
+    warn "secrets env file not readable at $DINF_ENV_FILE; admin key unavailable for drain auth"
+  fi
+}
+
 # drain_color <color> <port> — POST /v1/admin/drain then poll /readyz inflight==0.
 drain_color() {
   local color="$1" port="$2"
@@ -281,6 +308,12 @@ drain_color() {
   if [ "$DRY_RUN" -eq 1 ]; then
     log "DRY-RUN: would POST $DRAIN_PATH to $color:$port and poll inflight==0 (timeout ${DRAIN_TIMEOUT}s)"
     return 0
+  fi
+  # Pull EIGENINFERENCE_ADMIN_KEY from the secrets env file (only now, never in
+  # --dry-run) so the drain request below is actually authenticated.
+  load_admin_env
+  if [ -z "${EIGENINFERENCE_ADMIN_KEY:-}" ]; then
+    warn "EIGENINFERENCE_ADMIN_KEY is empty (env file $DINF_ENV_FILE missing or unset); drain will likely be rejected — continuing to poll readiness."
   fi
   # Phase 1 contract: admin-authenticated drain endpoint.
   if ! "$CURL_BIN" -fsS -X POST \
@@ -319,8 +352,25 @@ do_rollback() {
   log "ROLLBACK: Caddy currently -> $cur_color ($cur_port); reverting to $target_color ($target_port)."
   warn "Rollback only restores routing. The $target_color container must still be RUNNING (valid only before it was stopped)."
   if [ "$DRY_RUN" -eq 1 ]; then
+    log "DRY-RUN: would health-check $target_color at http://${HEALTH_HOST}:${target_port}${HEALTH_PATH} before flipping."
     log "DRY-RUN: would flip_upstream $CADDYFILE $cur_port $target_port, then reload Caddy."
     return 0
+  fi
+  # Never flip onto a dead port (connection refused -> 502s): probe the target's
+  # liveness BEFORE flipping. Single-shot http_code (not the up-to-${HEALTH_TIMEOUT}s
+  # wait_healthy poll) so a dead target is refused fast. /health is liveness only:
+  # a drained-but-running old color stays rollback-able even if /readyz is not 200.
+  local target_health
+  target_health="$(http_code "http://${HEALTH_HOST}:${target_port}${HEALTH_PATH}")"
+  if [ "$target_health" = "200" ]; then
+    log "Rollback target $target_color (port $target_port) is alive (/health=200)."
+  elif [ "$FORCE" -eq 1 ]; then
+    warn "!!! Rollback target $target_color (port $target_port) is NOT healthy (/health=$target_health); proceeding anyway because --force was given — traffic may hit a dead port (502s) !!!"
+  else
+    err "Rollback target $target_color (port $target_port) is NOT healthy (/health=$target_health)."
+    err "Refusing to flip Caddy onto a dead/unhealthy port (would cause 502s)."
+    err "Start it first (e.g. '$SYSTEMCTL_BIN start darkbloom-coordinator@${target_color}'), or re-run with --force to flip anyway."
+    return 1
   fi
   confirm "Flip Caddy upstream $cur_port -> $target_port and reload?" || { log "Rollback aborted."; return 1; }
   flip_upstream "$CADDYFILE" "$cur_port" "$target_port" || die "flip_upstream failed (rc $?)"
@@ -342,12 +392,15 @@ Options:
   --image <ref>      Pin this container image for the idle color before starting.
   --caddyfile <path> Caddyfile to read/flip (default: /etc/caddy/Caddyfile).
   --rollback         Flip Caddy back to the other (still-running) color + reload.
+  --force            With --rollback: flip even if the target color fails its
+                     health check (DANGEROUS — may route traffic to a dead port).
   --dry-run          Print the plan; change nothing.
   -y, --yes          Assume "yes" to all confirmation prompts (non-interactive).
   -h, --help         Show this help.
 
 Environment overrides: CADDYFILE, BLUE_PORT(8080), GREEN_PORT(8081), HEALTH_HOST,
-HEALTH_TIMEOUT, DRAIN_TIMEOUT, CADDY_BIN, SYSTEMCTL_BIN, CURL_BIN, DINF_DEPLOY_ENV.
+HEALTH_TIMEOUT, DRAIN_TIMEOUT, CADDY_BIN, SYSTEMCTL_BIN, CURL_BIN, DINF_DEPLOY_ENV,
+DINF_ENV_FILE(/etc/d-inference/env).
 USAGE
 }
 
@@ -357,12 +410,14 @@ main() {
   DRY_RUN=0
   ROLLBACK=0
   ASSUME_YES=0
+  FORCE=0
   IMAGE_REF=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --dry-run) DRY_RUN=1 ;;
       --rollback) ROLLBACK=1 ;;
+      --force) FORCE=1 ;;
       -y|--yes) ASSUME_YES=1 ;;
       --image) [ "$#" -ge 2 ] || { err "--image requires a value"; return 2; }; IMAGE_REF="$2"; shift ;;
       --image=*) IMAGE_REF="${1#*=}" ;;
@@ -402,9 +457,12 @@ main() {
     pin_image "$IMAGE_REF"
   fi
 
-  # 2. Start the idle color.
+  # 2. Start the idle color. Check the start rc and fail fast: a failed unit start
+  #    would otherwise only surface after wait_healthy times out (up to ${HEALTH_TIMEOUT}s).
   confirm "Start idle color '$idle_color'?" || die "aborted before starting idle color"
-  run_cmd "$SYSTEMCTL_BIN" start "darkbloom-coordinator@${idle_color}"
+  if ! run_cmd "$SYSTEMCTL_BIN" start "darkbloom-coordinator@${idle_color}"; then
+    die "failed to start idle color '$idle_color' ($SYSTEMCTL_BIN start darkbloom-coordinator@${idle_color} exited non-zero); Caddy untouched ($active_color still live). Inspect: $SYSTEMCTL_BIN status darkbloom-coordinator@${idle_color}"
+  fi
 
   # 3. Wait for idle health + readiness.
   if ! wait_healthy "$idle_color" "$idle_port"; then

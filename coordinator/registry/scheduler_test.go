@@ -1562,6 +1562,54 @@ func TestResolveEffectiveTPSFallback(t *testing.T) {
 	}
 }
 
+func TestResolvedModelTPSLockedUsesMatchingObservedSlot(t *testing.T) {
+	reg := New(testLogger())
+	model := "observed-model-tps"
+	p := makeSchedulerProvider(t, reg, "observed", model, 23)
+	p.mu.Lock()
+	p.PrefillTPS = 700
+	p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+		Model:              "other-model",
+		ObservedDecodeTPS:  999,
+		ObservedPrefillTPS: 9999,
+	})
+	p.BackendCapacity.Slots[0].ObservedDecodeTPS = 73
+	p.BackendCapacity.Slots[0].ObservedPrefillTPS = 0
+	decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+	p.mu.Unlock()
+
+	if decodeTPS != 73 {
+		t.Fatalf("decodeTPS = %v, want matching observed decode 73", decodeTPS)
+	}
+	if prefillTPS != 700 {
+		t.Fatalf("prefillTPS = %v, want static prefill fallback 700", prefillTPS)
+	}
+}
+
+func TestResolvedModelTPSLockedIgnoresOtherModelObservedSlot(t *testing.T) {
+	reg := New(testLogger())
+	model := "static-model-tps"
+	p := makeSchedulerProvider(t, reg, "static", model, 23)
+	p.mu.Lock()
+	p.PrefillTPS = 700
+	p.BackendCapacity.Slots[0].ObservedDecodeTPS = 0
+	p.BackendCapacity.Slots[0].ObservedPrefillTPS = 0
+	p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+		Model:              "other-model",
+		ObservedDecodeTPS:  999,
+		ObservedPrefillTPS: 9999,
+	})
+	decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+	p.mu.Unlock()
+
+	if decodeTPS != 23 {
+		t.Fatalf("decodeTPS = %v, want static decode fallback 23", decodeTPS)
+	}
+	if prefillTPS != 700 {
+		t.Fatalf("prefillTPS = %v, want static prefill fallback 700", prefillTPS)
+	}
+}
+
 func TestFreeMemoryAdmitsTokenBudget(t *testing.T) {
 	// With token budget, should use budget-based admission.
 	snap := routingSnapshot{

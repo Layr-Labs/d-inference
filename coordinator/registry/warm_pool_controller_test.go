@@ -218,6 +218,69 @@ func TestWarmPoolNoPressureForLongActiveDecodeAlone(t *testing.T) {
 	}
 }
 
+func TestWarmPoolFleetSnapshotUsesObservedSlotTPS(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-observed-tps"
+	p := makeSchedulerProvider(t, reg, "warm", model, 23)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].ObservedDecodeTPS = 73
+	p.BackendCapacity.Slots[0].ObservedPrefillTPS = 1000
+	p.mu.Unlock()
+
+	snap := reg.warmPoolFleetSnapshot(time.Now())[model]
+
+	if snap.soloDecodeTPS != 73 {
+		t.Fatalf("soloDecodeTPS = %v, want observed slot TPS 73", snap.soloDecodeTPS)
+	}
+	if snap.prefillTPS != 1000 {
+		t.Fatalf("prefillTPS = %v, want observed slot prefill TPS 1000", snap.prefillTPS)
+	}
+}
+
+func TestWarmPoolFleetSnapshotFallsBackToStaticTPS(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-static-tps"
+	makeSchedulerProvider(t, reg, "warm", model, 23)
+
+	snap := reg.warmPoolFleetSnapshot(time.Now())[model]
+
+	if snap.soloDecodeTPS != 23 {
+		t.Fatalf("soloDecodeTPS = %v, want static TPS 23", snap.soloDecodeTPS)
+	}
+	if snap.prefillTPS != 23*PrefillToDecodeRatio() {
+		t.Fatalf("prefillTPS = %v, want static fallback %v", snap.prefillTPS, 23*PrefillToDecodeRatio())
+	}
+}
+
+func TestWarmPoolDiagnosticsReflectObservedTPS(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-observed-diagnostics"
+	p := makeSchedulerProvider(t, reg, "warm", model, 23)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].ObservedDecodeTPS = 73
+	p.BackendCapacity.Slots[0].ObservedPrefillTPS = 1000
+	p.mu.Unlock()
+
+	cfg := testWarmPoolConfig()
+	cfg.DecodeFloorTPS = 15
+	cfg.AssumedPromptTokens = 512
+	cfg.AssumedCompletionTokens = 256
+	reg.ConfigureWarmPool(cfg)
+	reg.RecordWarmPoolCapacityReject(model)
+
+	snaps := reg.warmPool.tick(time.Now())
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snaps))
+	}
+	snap := snaps[0]
+	if snap.QualityConcurrency <= 2 {
+		t.Fatalf("QualityConcurrency = %d, want observed TPS to raise it above stale value 2", snap.QualityConcurrency)
+	}
+	if snap.ServiceTime >= 10*time.Second {
+		t.Fatalf("ServiceTime = %v, want observed TPS to keep it below stale 12.8s", snap.ServiceTime)
+	}
+}
+
 func TestWarmPoolSkipsIneligibleProviders(t *testing.T) {
 	reg := New(testLogger())
 	model := "warm-pool-skip"

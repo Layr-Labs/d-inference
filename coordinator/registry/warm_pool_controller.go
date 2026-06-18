@@ -447,8 +447,9 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 					s.warmSaturated++
 				}
 				out[model] = s
-				decodeSamples[model] = append(decodeSamples[model], resolvedDecodeTPS(p))
-				prefillSamples[model] = append(prefillSamples[model], resolvedPrefillTPS(p))
+				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
+				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
 				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 				continue
 			}
@@ -457,8 +458,9 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 				s.model = model
 				s.eligibleCold = append(s.eligibleCold, candidate)
 				out[model] = s
-				decodeSamples[model] = append(decodeSamples[model], resolvedDecodeTPS(p))
-				prefillSamples[model] = append(prefillSamples[model], resolvedPrefillTPS(p))
+				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
+				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
 				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 			}
 		}

@@ -1,5 +1,6 @@
 "use client";
 
+import "./stats.css";
 import type { ReactNode } from "react";
 
 interface StatsObservatoryShellProps {

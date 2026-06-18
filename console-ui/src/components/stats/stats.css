@@ -1,0 +1,58 @@
+@keyframes network-flow-ping {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -180; }
+}
+
+.network-flow-ping {
+  animation-name: network-flow-ping;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .network-flow-ping {
+    animation: none;
+  }
+}
+
+@keyframes stats-reveal-keyframes {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes stats-pulse-ring {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-green) 40%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent-green) 0%, transparent);
+  }
+}
+
+.stats-reveal {
+  animation: stats-reveal-keyframes 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.stats-reveal-1 { animation-delay: 0.04s; }
+.stats-reveal-2 { animation-delay: 0.1s; }
+.stats-reveal-3 { animation-delay: 0.16s; }
+.stats-reveal-4 { animation-delay: 0.22s; }
+.stats-reveal-5 { animation-delay: 0.28s; }
+.stats-reveal-6 { animation-delay: 0.34s; }
+
+.stats-live-dot {
+  animation: stats-pulse-ring 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stats-reveal,
+  .stats-live-dot {
+    animation: none;
+  }
+}

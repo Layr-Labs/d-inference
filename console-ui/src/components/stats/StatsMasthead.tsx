@@ -9,6 +9,7 @@ interface StatsMastheadProps {
   activeTab: StatsTab;
   onTabChange: (tab: StatsTab) => void;
   onRefresh: () => void;
+  refreshing?: boolean;
 }
 
 const TABS: Array<{ value: StatsTab; label: string }> = [
@@ -16,7 +17,7 @@ const TABS: Array<{ value: StatsTab; label: string }> = [
   { value: "leaderboard", label: "Leaderboard" },
 ];
 
-export function StatsMasthead({ activeTab, onTabChange, onRefresh }: StatsMastheadProps) {
+export function StatsMasthead({ activeTab, onTabChange, onRefresh, refreshing = false }: StatsMastheadProps) {
   return (
     <header className={`flex flex-col gap-5 ${statsReveal}`}>
       <div className="relative grid items-end gap-6 border-b-2 border-border-dim pb-5 sm:grid-cols-[1fr_auto] sm:gap-x-8">
@@ -43,10 +44,12 @@ export function StatsMasthead({ activeTab, onTabChange, onRefresh }: StatsMasthe
           <button
             type="button"
             onClick={onRefresh}
-            className="flex size-9 items-center justify-center rounded-[0.65rem] border border-border-dim bg-bg-primary text-text-tertiary transition-[border-color,color,background,transform] hover:rotate-[-24deg] hover:border-accent-brand/40 hover:bg-bg-hover hover:text-accent-brand"
+            disabled={refreshing}
+            className="flex size-9 items-center justify-center rounded-[0.65rem] border border-border-dim bg-bg-primary text-text-tertiary transition-[border-color,color,background,transform] hover:rotate-[-24deg] hover:border-accent-brand/40 hover:bg-bg-hover hover:text-accent-brand disabled:pointer-events-none disabled:opacity-60"
             aria-label="Refresh stats"
+            aria-busy={refreshing}
           >
-            <RefreshCw size={14} />
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} />
           </button>
         </div>
       </div>

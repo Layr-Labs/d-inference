@@ -1,20 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import type {
+  ProviderLocationBucketView,
+  RequestLocationBucketView,
+} from "@/lib/stats-geography-types";
 import { statsCapacityGrid } from "./styles";
 
-export interface RequestLocationBucketView {
-  key: string;
-  city?: string;
-  region?: string;
-  region_code?: string;
-  country?: string;
-  country_code?: string;
-  requests: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  providers: number;
-}
+export type { ProviderLocationBucketView, RequestLocationBucketView };
 
 interface StatsRequestGeographyLeaderboardProps {
   cityBuckets: RequestLocationBucketView[];
@@ -36,6 +29,12 @@ export function StatsRequestGeographyLeaderboard({
   const [scope, setScope] = useState<"city" | "region">("city");
   const buckets = scope === "city" ? cityBuckets : regionBuckets;
   const maxRequests = scope === "city" ? maxCityRequests : maxRegionRequests;
+  const barPcts = useMemo(
+    () => buckets.map((bucket) => (
+      maxRequests > 0 ? Math.max(6, (bucket.requests / maxRequests) * 100) : 0
+    )),
+    [buckets, maxRequests],
+  );
   const emptyMessage =
     scope === "city"
       ? "No city-level demand buckets yet."
@@ -80,9 +79,7 @@ export function StatsRequestGeographyLeaderboard({
         <ol className="m-0 list-none flex-1 p-0.5">
           {buckets.map((bucket, index) => {
             const tokens = bucket.prompt_tokens + bucket.completion_tokens;
-            const barPct = maxRequests > 0
-              ? Math.max(6, (bucket.requests / maxRequests) * 100)
-              : 0;
+            const barPct = barPcts[index];
             const rankLabel = (index + 1).toString().padStart(2, "0");
 
             return (
@@ -132,19 +129,6 @@ export function StatsRequestGeographyLeaderboard({
       )}
     </div>
   );
-}
-
-export interface ProviderLocationBucketView {
-  key: string;
-  city?: string;
-  region?: string;
-  region_code?: string;
-  country?: string;
-  country_code?: string;
-  providers: number;
-  hardware_attested: number;
-  gpu_cores: number;
-  memory_gb: number;
 }
 
 export function StatsProviderCapacityTable({

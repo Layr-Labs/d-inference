@@ -14,23 +14,18 @@ import {
   statsFilterPill,
   statsFilterPillActive,
   statsFilterPillTrustActive,
-  statsMapLegend,
-  statsMapLegendDemand,
-  statsMapStageDemand,
   statsMapStageFlow,
-  statsMapTheaterCorners,
   statsMetricLabel,
   statsModelCard,
   statsModelCardLeader,
+  statsPageStyles,
   statsPanel,
-  statsPanelDemand,
   statsReveal2,
   statsReveal4,
   statsReveal5,
   statsReveal6,
-  statsTokenBar,
 } from "@/components/stats/styles";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   BarChart3,
@@ -796,34 +791,66 @@ function ActiveModelsSection({
   capacityModels: CapacityModelSummary[] | null;
 }) {
   const [showDeprecatedModels, setShowDeprecatedModels] = useState(false);
-  const aliases = catalogData?.aliases ?? [];
-  const catalogModels = catalogData ? publicCatalogModels(catalogData.models, aliases) : null;
-  const publicCapacity = publicCapacityModels(capacityModels, aliases);
-  const inventory = buildModelInventory(stats, aliases);
-  const catalogByID = new Map((catalogModels ?? []).map((model) => [model.id, model]));
-  const capacityByID = new Map((publicCapacity ?? []).map((model) => [model.id, model]));
-  const servedInventory = inventory.map((item) => ({
-    ...item,
-    id: item.model.id,
-    providers: item.model.providers,
-    catalogModel: catalogByID.get(item.model.id),
-    capacity: capacityByID.get(item.model.id),
-  }));
-  const filtered = catalogModels
-    ? filterServedCatalogModels(servedInventory, catalogModels, showDeprecatedModels)
-    : {
-      visible: servedInventory.map((item) => ({ ...item, catalogStatus: "active" })),
-      catalogServedCount: servedInventory.length,
-      deprecatedCount: 0,
-    };
-  const filteredSlots = filtered.visible.reduce((sum, item) => sum + item.model.providers, 0);
-  const visibleInventory = filtered.visible.map((item) => ({
-    ...item,
-    sharePct: filteredSlots > 0 ? (item.model.providers / filteredSlots) * 100 : 0,
-  }));
-  const maxProviders = Math.max(...visibleInventory.map((item) => item.model.providers), 1);
-  const totalSlots = filteredSlots;
-  const routableSlots = visibleInventory.reduce((sum, item) => sum + item.routable, 0);
+  const aliases = useMemo(() => catalogData?.aliases ?? [], [catalogData?.aliases]);
+  const catalogModels = useMemo(
+    () => (catalogData ? publicCatalogModels(catalogData.models, aliases) : null),
+    [catalogData, aliases],
+  );
+  const publicCapacity = useMemo(
+    () => publicCapacityModels(capacityModels, aliases),
+    [capacityModels, aliases],
+  );
+  const inventory = useMemo(
+    () => buildModelInventory(stats, aliases),
+    [stats, aliases],
+  );
+  const catalogByID = useMemo(
+    () => new Map((catalogModels ?? []).map((model) => [model.id, model])),
+    [catalogModels],
+  );
+  const capacityByID = useMemo(
+    () => new Map((publicCapacity ?? []).map((model) => [model.id, model])),
+    [publicCapacity],
+  );
+  const servedInventory = useMemo(
+    () => inventory.map((item) => ({
+      ...item,
+      id: item.model.id,
+      providers: item.model.providers,
+      catalogModel: catalogByID.get(item.model.id),
+      capacity: capacityByID.get(item.model.id),
+    })),
+    [inventory, catalogByID, capacityByID],
+  );
+  const filtered = useMemo(
+    () => (catalogModels
+      ? filterServedCatalogModels(servedInventory, catalogModels, showDeprecatedModels)
+      : {
+        visible: servedInventory.map((item) => ({ ...item, catalogStatus: "active" })),
+        catalogServedCount: servedInventory.length,
+        deprecatedCount: 0,
+      }),
+    [catalogModels, servedInventory, showDeprecatedModels],
+  );
+  const visibleInventory = useMemo(() => {
+    const filteredSlots = filtered.visible.reduce((sum, item) => sum + item.model.providers, 0);
+    return filtered.visible.map((item) => ({
+      ...item,
+      sharePct: filteredSlots > 0 ? (item.model.providers / filteredSlots) * 100 : 0,
+    }));
+  }, [filtered]);
+  const maxProviders = useMemo(
+    () => Math.max(...visibleInventory.map((item) => item.model.providers), 1),
+    [visibleInventory],
+  );
+  const totalSlots = useMemo(
+    () => visibleInventory.reduce((sum, item) => sum + item.model.providers, 0),
+    [visibleInventory],
+  );
+  const routableSlots = useMemo(
+    () => visibleInventory.reduce((sum, item) => sum + item.routable, 0),
+    [visibleInventory],
+  );
 
   return (
     <section className={`${statsPanel} space-y-5 p-5 sm:p-6 ${statsReveal6}`}>
@@ -1086,58 +1113,104 @@ function flowPath(from: { latitude?: number; longitude?: number }, to: { latitud
 const WORLD_LAND_PATH = "M311.8 399.6 L318.1 403.3 L313.1 403.6 L305.7 403.3 L296.4 399.9 L298.8 399.2 L304.8 397.0 L310.4 397.5 Z M337.4 391.9 L335.0 395.0 L330.0 394.0 L337.4 391.9 Z M903.9 363.3 L910.2 363.4 L911.2 367.8 L908.0 371.2 L904.0 368.6 L902.1 363.1 Z M980.6 363.7 L984.0 364.9 L981.2 369.4 L978.6 371.8 L973.9 377.5 L967.8 379.5 L962.5 377.4 L969.3 372.0 L975.3 368.1 L978.0 363.8 Z M985.0 350.4 L988.4 352.2 L992.9 355.4 L995.2 357.2 L991.5 359.6 L990.3 362.8 L986.3 365.1 L985.8 360.9 L984.9 357.8 L984.1 352.0 L980.7 347.9 L982.1 347.2 Z M964.2 311.6 L959.6 310.2 L955.6 305.8 L959.6 307.8 L964.2 311.6 Z M0.0 296.0 L996.1 296.2 L0.0 294.6 L0.2 295.8 Z M639.0 287.7 L639.9 293.6 L638.0 293.6 L637.5 297.5 L634.9 306.9 L630.8 319.3 L624.5 320.4 L621.4 315.5 L620.6 309.3 L623.3 305.8 L622.3 300.9 L623.5 295.0 L627.4 293.9 L632.5 290.5 L634.1 288.3 L636.7 283.4 L639.0 287.7 Z M898.8 288.2 L902.5 290.5 L904.1 295.2 L906.0 299.3 L909.6 304.1 L913.1 307.3 L916.9 311.5 L919.2 315.2 L924.6 320.2 L925.3 325.7 L925.9 331.8 L924.7 337.9 L920.4 343.9 L917.6 349.1 L916.7 354.0 L909.4 356.2 L904.1 357.2 L901.3 355.8 L894.9 356.6 L888.9 353.9 L886.3 349.3 L883.9 345.5 L881.5 346.4 L882.8 341.4 L877.7 346.9 L873.9 342.3 L869.4 338.9 L859.8 337.8 L850.4 339.5 L844.5 343.0 L839.4 344.5 L833.0 344.4 L829.2 346.5 L824.0 347.3 L819.6 343.4 L821.3 341.4 L819.9 335.0 L818.4 330.0 L816.8 325.9 L816.0 323.7 L817.3 323.1 L815.6 318.6 L815.8 315.4 L817.1 310.4 L820.7 309.7 L825.5 307.3 L830.1 306.3 L832.8 305.5 L837.9 302.0 L839.8 297.9 L844.1 297.4 L845.2 295.4 L847.7 290.8 L850.3 289.9 L853.0 288.4 L858.3 291.3 L860.8 287.8 L862.8 284.8 L868.3 283.7 L867.7 280.9 L873.3 283.4 L877.4 283.2 L880.4 284.3 L877.7 287.0 L876.2 290.9 L880.7 294.1 L885.0 296.7 L889.5 299.2 L892.4 295.5 L893.2 290.4 L893.5 286.0 L894.2 283.0 L895.9 279.6 L897.5 283.1 L898.9 287.2 Z M845.7 278.2 L843.2 277.5 L847.5 274.0 L852.7 273.0 L849.8 275.3 Z M841.4 272.5 L841.0 274.0 L836.8 274.8 L833.1 274.5 L833.1 273.5 L835.3 272.9 L837.1 273.7 L838.9 273.5 L841.4 272.5 Z M801.7 268.8 L812.8 269.3 L821.4 273.3 L812.7 273.3 L804.0 271.5 L795.7 270.4 L794.6 266.4 L801.3 267.8 Z M933.0 268.9 L929.8 266.4 L929.9 264.8 L933.4 268.2 Z M922.2 265.2 L918.8 266.9 L913.6 266.7 L914.7 265.5 L917.1 263.9 L919.7 264.2 L922.6 261.5 L922.2 265.2 Z M862.4 258.6 L863.4 260.7 L861.1 259.6 L858.8 259.3 L857.2 259.5 L855.3 259.4 L855.9 257.9 L859.4 257.8 L862.4 258.6 Z M925.4 262.5 L923.3 260.5 L918.5 257.6 L921.7 258.3 L925.1 261.1 Z M872.6 253.2 L878.6 256.4 L886.6 255.7 L896.5 259.1 L905.1 263.5 L910.8 268.4 L911.3 272.3 L914.6 276.4 L918.9 278.6 L916.1 278.9 L908.7 276.4 L902.1 271.2 L898.4 275.0 L891.8 275.3 L885.8 273.3 L885.2 270.3 L877.7 262.6 L870.5 261.2 L868.8 259.2 L871.6 256.9 L866.2 254.5 L866.3 251.9 L872.6 253.2 Z M847.9 246.1 L840.9 248.8 L833.4 251.4 L842.6 251.7 L840.0 254.2 L839.6 259.8 L840.6 265.6 L838.2 263.5 L835.8 260.0 L834.4 261.4 L831.6 264.9 L830.8 259.7 L831.5 253.8 L835.8 246.4 L844.7 247.5 Z M857.5 246.9 L855.5 250.7 L854.7 250.7 L855.4 244.0 L857.5 246.9 Z M793.9 266.3 L785.0 261.7 L780.3 255.7 L774.9 247.1 L769.9 240.8 L764.7 234.8 L773.2 238.1 L779.6 244.2 L786.3 248.4 L788.9 252.9 L791.4 256.5 L794.0 262.0 Z M827.4 244.9 L826.3 249.7 L823.7 256.9 L819.1 261.4 L814.6 258.7 L808.5 258.5 L804.4 253.7 L803.0 246.3 L808.8 244.9 L813.9 241.4 L818.3 236.4 L824.2 230.8 L826.9 233.4 L830.9 236.1 L827.4 238.5 L827.4 244.9 Z M851.0 226.6 L850.5 232.6 L849.1 233.2 L844.3 230.9 L842.5 229.4 L838.7 230.0 L843.0 225.9 L846.6 225.1 L850.6 224.2 Z M725.6 232.8 L721.4 227.2 L725.8 226.2 L725.6 232.8 Z M844.4 221.4 L841.7 224.9 L841.2 221.5 L842.6 221.5 Z M829.2 224.1 L825.5 226.8 L826.8 224.8 L828.8 223.1 L830.5 221.2 L832.0 218.4 L832.5 220.7 L830.6 222.2 L829.2 224.1 Z M848.6 216.2 L847.3 219.5 L846.6 219.9 L846.9 218.3 L847.8 215.2 Z M837.0 198.6 L839.8 199.4 L839.6 204.8 L838.1 210.2 L844.3 211.7 L844.7 215.2 L840.8 213.4 L835.1 211.5 L835.3 209.0 L833.1 207.2 L834.4 201.1 Z M298.4 194.8 L303.3 194.8 L306.2 196.4 L308.9 197.3 L307.9 198.8 L305.2 199.3 L302.8 199.2 L300.8 199.9 L296.0 199.4 L293.4 198.2 L299.1 198.1 L296.1 195.4 Z M806.5 198.1 L801.7 196.2 L807.7 194.2 L806.5 198.1 Z M278.7 186.8 L283.4 188.1 L288.4 191.1 L291.9 192.5 L291.8 194.7 L284.0 194.8 L283.0 192.4 L279.8 190.1 L272.7 188.4 L270.1 187.0 L266.5 189.1 L265.4 188.3 L268.7 186.2 L273.9 185.8 Z M836.6 186.7 L835.4 189.0 L833.9 186.6 L833.6 184.6 L835.3 181.8 L837.5 179.7 L838.8 180.6 L838.3 182.2 L836.6 186.7 Z M874.0 155.1 L871.6 156.9 L867.7 158.4 L870.8 155.7 Z M596.0 150.9 L594.5 152.8 L589.6 152.5 L591.5 151.7 Z M543.1 143.8 L541.9 148.3 L534.5 145.5 L541.0 144.0 Z M525.6 135.5 L525.6 141.0 L523.3 137.8 L525.6 135.5 Z M891.6 146.8 L889.6 152.4 L877.2 157.0 L870.4 154.5 L866.7 157.9 L861.7 162.7 L859.5 157.5 L866.3 153.5 L876.9 151.3 L885.7 144.9 L888.6 137.3 L894.2 138.9 L891.6 146.8 Z M899.7 127.3 L904.3 129.8 L893.4 131.4 L888.4 131.8 L893.5 125.6 L899.7 127.3 Z M323.2 120.7 L325.2 121.1 L327.7 121.0 L326.4 122.1 L325.4 122.3 L321.8 121.1 L321.1 120.2 L322.2 119.3 L323.2 120.7 Z M328.3 113.6 L327.0 113.6 L323.4 112.8 L320.8 111.5 L321.7 111.2 L325.4 111.9 L328.2 113.1 L328.3 113.6 Z M156.9 115.3 L150.1 113.4 L144.3 111.1 L146.4 109.6 L151.6 111.3 L156.9 115.3 Z M344.1 109.2 L345.9 111.3 L348.7 112.3 L352.5 114.8 L352.6 120.4 L350.1 117.7 L344.5 119.7 L340.8 117.9 L336.7 116.0 L340.7 109.1 L346.1 106.7 Z M131.4 99.9 L135.6 105.1 L131.8 102.5 L130.1 99.5 Z M899.0 109.0 L896.0 117.1 L896.5 120.2 L894.5 117.3 L894.9 108.5 L896.1 100.7 L897.0 100.8 L899.0 109.0 Z M481.1 104.8 L474.5 103.2 L479.0 96.9 L482.8 100.4 Z M535.2 95.5 L533.6 97.8 L530.7 96.2 L530.3 95.1 L534.4 94.1 L535.2 95.5 Z M75.0 91.3 L72.2 92.4 L70.8 91.7 L70.4 90.4 L72.9 89.4 L74.4 89.0 L76.2 89.2 L77.4 90.0 L75.0 91.3 Z M491.7 87.1 L494.6 89.8 L494.2 94.7 L500.5 101.9 L504.3 105.3 L501.5 109.0 L491.8 109.2 L485.4 111.2 L490.5 107.2 L488.3 104.7 L491.4 101.7 L486.5 97.8 L486.0 95.0 L482.9 92.3 L488.3 87.4 Z M23.0 72.8 L28.7 73.8 L29.1 75.1 L23.5 74.1 Z M263.4 67.6 L267.0 69.1 L273.5 72.3 L275.0 73.9 L266.4 73.4 L257.7 73.5 L261.4 67.4 Z M459.7 65.4 L458.6 71.2 L444.5 73.2 L433.5 69.7 L432.4 67.7 L442.8 67.4 L455.1 65.2 Z M289.3 63.5 L286.1 63.6 L285.5 62.3 L286.6 60.7 L289.2 60.3 L291.4 61.1 L291.4 62.3 L291.1 62.7 L289.3 63.5 Z M0.0 58.4 L13.9 65.0 L22.6 64.1 L20.8 68.2 L17.0 71.4 L10.5 68.5 L3.1 67.4 L1.6 68.3 L1000.0 69.5 L995.3 72.0 L998.6 76.2 L984.9 78.4 L974.2 82.4 L961.9 83.9 L954.3 83.7 L950.1 89.3 L950.4 94.1 L945.5 99.0 L939.5 105.7 L933.3 102.3 L935.4 90.7 L944.9 85.2 L956.9 76.2 L944.8 81.8 L928.4 84.0 L920.2 86.7 L912.6 85.7 L886.0 91.4 L881.1 100.1 L888.6 99.5 L890.5 107.7 L884.9 119.4 L876.4 127.8 L869.2 131.1 L863.3 132.7 L860.2 134.4 L858.4 137.5 L854.3 139.6 L855.0 141.5 L859.6 147.8 L856.1 153.1 L851.0 153.0 L852.4 147.5 L848.8 145.1 L847.2 144.6 L847.8 142.6 L848.1 140.1 L841.3 139.9 L837.7 140.7 L837.9 136.3 L830.6 141.0 L827.9 144.3 L832.5 146.8 L839.9 146.0 L835.1 149.7 L834.0 154.6 L838.6 162.0 L837.5 166.3 L838.0 171.6 L832.2 178.5 L821.9 186.7 L816.1 187.4 L807.7 190.6 L804.5 191.6 L800.1 190.1 L793.5 197.1 L800.7 205.3 L803.3 217.6 L795.6 223.5 L791.9 222.4 L786.4 219.0 L780.1 214.9 L777.8 215.8 L775.6 224.3 L779.1 229.4 L783.7 232.7 L787.2 236.5 L787.3 240.6 L789.6 245.5 L784.9 244.5 L779.7 239.1 L778.6 233.2 L776.4 229.6 L773.2 228.3 L773.8 222.4 L773.4 216.6 L771.6 208.8 L768.1 204.4 L761.6 205.5 L759.8 196.2 L756.6 192.6 L755.1 188.4 L751.6 187.8 L749.2 189.3 L746.9 189.7 L741.8 192.4 L733.2 199.2 L728.3 204.0 L723.1 205.8 L723.0 213.9 L720.4 221.4 L717.4 225.2 L712.8 225.3 L709.4 217.3 L706.8 209.4 L702.3 196.6 L697.7 192.3 L693.5 187.6 L687.3 183.5 L679.2 179.9 L665.6 179.5 L658.3 175.1 L652.0 176.4 L643.1 172.6 L637.7 166.7 L633.3 166.7 L634.5 170.7 L637.4 174.7 L639.2 177.9 L640.7 180.6 L641.7 177.8 L643.4 180.0 L643.8 182.5 L648.3 182.9 L654.0 179.3 L656.9 176.9 L656.7 180.8 L661.5 184.0 L665.1 187.1 L665.1 189.7 L662.5 193.3 L660.2 195.2 L659.0 197.4 L656.3 200.3 L653.5 202.1 L648.8 203.6 L645.0 205.7 L637.7 209.1 L633.2 211.1 L627.4 212.9 L625.4 214.0 L622.7 215.0 L620.1 211.8 L618.3 207.7 L619.0 205.8 L617.6 202.6 L614.5 198.1 L610.6 193.5 L608.5 187.3 L604.1 182.5 L602.6 178.9 L599.0 174.0 L596.6 170.5 L597.0 168.1 L594.9 172.7 L592.0 171.1 L590.9 170.3 L595.8 178.9 L598.6 184.0 L602.4 188.9 L603.1 195.0 L606.7 200.0 L610.6 207.1 L617.4 212.9 L620.3 215.6 L619.8 218.2 L622.5 221.0 L629.6 220.0 L634.4 218.4 L638.1 217.8 L642.0 216.6 L641.8 220.4 L639.1 227.5 L632.6 238.3 L622.4 247.1 L616.1 254.0 L612.9 256.9 L610.6 260.2 L607.6 266.4 L609.6 269.7 L608.9 273.6 L612.0 278.7 L612.7 285.1 L612.4 292.8 L607.0 297.5 L599.7 302.3 L596.4 306.9 L598.3 311.5 L598.3 315.4 L597.3 318.0 L590.5 321.5 L591.2 324.3 L589.5 329.9 L585.8 333.1 L580.3 339.4 L573.4 343.4 L569.9 343.9 L563.9 344.2 L557.5 345.6 L553.3 345.7 L551.0 344.8 L549.8 340.6 L548.8 335.4 L545.4 329.4 L541.6 322.5 L540.0 312.9 L537.1 308.0 L532.8 300.2 L532.7 293.9 L534.7 287.6 L537.9 283.4 L537.2 278.8 L535.9 274.9 L535.4 269.2 L533.8 266.1 L528.0 258.2 L524.5 252.2 L526.4 247.2 L527.2 241.5 L524.3 237.9 L520.7 237.7 L516.4 238.2 L512.0 232.6 L505.2 232.9 L497.0 236.1 L490.8 236.2 L483.8 236.1 L478.6 237.9 L472.5 234.5 L467.5 230.9 L463.5 227.3 L460.9 222.5 L459.2 220.4 L456.5 218.2 L454.7 216.8 L453.2 213.5 L451.0 209.1 L454.3 205.2 L455.1 199.7 L454.8 194.2 L452.7 190.5 L454.8 187.0 L457.2 182.3 L458.9 178.8 L463.5 173.2 L469.7 169.9 L472.7 163.4 L476.0 157.7 L482.7 152.4 L487.2 151.9 L494.0 152.3 L501.4 149.2 L513.4 147.6 L520.4 146.9 L526.4 146.2 L530.6 147.0 L529.4 150.1 L528.2 154.6 L530.9 157.5 L536.3 158.7 L543.6 162.8 L553.0 165.9 L555.1 161.8 L559.8 158.8 L565.6 160.6 L569.9 162.3 L579.0 163.8 L583.6 162.6 L588.8 164.1 L593.8 164.0 L595.8 162.2 L597.5 158.1 L599.9 153.9 L600.4 150.5 L598.8 148.4 L590.3 149.7 L584.4 149.3 L576.8 148.2 L574.5 141.7 L580.1 137.6 L589.9 134.1 L602.5 135.2 L612.1 136.1 L615.1 131.5 L611.0 129.3 L601.9 124.3 L604.6 120.5 L606.2 119.2 L599.5 120.4 L598.6 123.9 L597.9 125.2 L593.2 124.9 L593.3 122.6 L588.0 120.3 L582.2 124.2 L580.1 125.2 L576.9 131.7 L580.5 135.3 L575.5 137.0 L572.4 136.6 L565.9 137.0 L564.8 139.0 L563.5 139.8 L565.4 143.0 L564.2 144.7 L564.3 148.8 L559.2 145.4 L556.2 140.7 L555.4 139.1 L553.9 135.0 L553.2 133.5 L548.6 131.0 L542.2 127.1 L541.4 124.8 L537.9 124.6 L538.7 123.4 L534.4 125.3 L537.6 128.9 L544.2 133.4 L546.6 135.6 L551.3 138.4 L546.9 137.7 L547.4 141.9 L543.6 144.7 L544.7 141.8 L541.7 138.4 L537.9 135.6 L531.1 132.3 L527.0 127.7 L521.8 128.4 L512.7 129.4 L508.4 133.6 L502.0 137.0 L500.3 142.4 L496.0 146.0 L487.9 148.1 L483.7 149.9 L479.3 146.9 L475.3 147.6 L474.2 143.4 L474.9 139.6 L475.6 135.6 L475.0 131.7 L481.2 129.0 L490.2 129.3 L496.7 122.2 L487.5 116.8 L495.5 114.9 L503.7 110.8 L509.2 107.4 L516.9 101.4 L522.0 100.7 L523.8 98.9 L522.5 92.9 L526.2 91.2 L529.3 91.1 L530.3 93.2 L526.8 95.9 L530.4 99.0 L534.8 98.7 L541.1 99.9 L551.7 98.1 L555.2 97.6 L558.6 92.3 L564.8 91.7 L567.9 87.8 L564.8 85.6 L574.9 84.9 L578.0 81.9 L563.5 83.8 L559.8 78.6 L562.3 72.7 L570.3 68.0 L558.9 69.4 L549.6 75.7 L552.2 83.1 L545.7 91.6 L539.2 96.1 L532.7 90.4 L523.3 88.0 L514.7 84.3 L523.8 73.7 L541.0 61.6 L559.4 54.8 L573.2 52.8 L583.3 55.0 L593.8 57.5 L614.1 62.6 L606.6 66.7 L596.7 66.9 L602.8 72.6 L603.3 69.0 L610.5 68.1 L622.1 66.5 L622.7 61.2 L630.1 62.0 L628.7 64.8 L639.5 61.1 L648.6 60.6 L659.2 59.8 L669.7 58.5 L676.4 56.8 L692.2 59.4 L685.9 57.1 L685.3 52.7 L694.3 47.1 L699.6 51.6 L701.6 58.3 L698.0 65.8 L705.3 64.5 L706.9 60.2 L704.4 56.6 L708.0 49.7 L710.2 49.2 L710.8 50.4 L726.4 50.7 L728.5 44.9 L738.9 43.2 L750.7 39.9 L766.3 38.5 L779.9 37.7 L789.9 34.2 L797.1 36.2 L808.5 36.9 L816.3 40.8 L803.9 43.9 L813.9 44.5 L821.0 45.1 L842.2 47.3 L852.7 45.7 L856.8 50.1 L867.4 50.5 L881.9 51.8 L886.5 48.8 L917.6 51.1 L941.7 53.1 L947.1 57.1 L960.9 57.0 L974.5 58.3 L982.3 56.1 L0.0 58.4 Z M636.4 135.3 L640.0 138.2 L636.7 141.5 L636.7 145.6 L645.2 148.1 L649.3 144.7 L648.2 139.0 L649.6 137.1 L649.2 133.0 L645.8 133.9 L645.8 131.1 L639.8 127.0 L642.5 124.3 L647.8 121.6 L642.2 119.3 L635.1 122.8 L632.2 128.7 L636.4 135.3 Z M234.3 58.0 L226.6 58.5 L227.2 55.2 L232.6 57.0 Z M0.0 51.3 L1000.0 53.2 L996.9 53.4 L996.5 52.5 L0.0 51.3 Z M248.5 57.0 L255.5 59.4 L260.3 61.3 L266.4 56.1 L274.4 59.3 L273.9 63.6 L261.8 65.1 L257.4 70.1 L248.0 73.3 L241.2 77.7 L237.0 86.3 L243.6 91.4 L255.4 93.1 L263.9 96.4 L271.0 99.2 L278.0 107.8 L280.2 99.6 L285.8 94.9 L285.3 88.7 L284.0 81.2 L289.7 77.0 L297.5 77.5 L306.7 80.4 L310.1 86.7 L318.8 83.7 L326.4 88.4 L332.0 95.1 L340.7 98.3 L345.1 102.0 L341.3 107.2 L328.5 110.9 L315.6 110.5 L305.7 117.4 L309.3 115.8 L321.7 114.6 L320.9 121.6 L331.9 119.4 L330.4 124.3 L318.4 129.0 L321.0 124.2 L314.0 125.5 L305.2 128.7 L303.3 132.4 L305.0 132.9 L303.8 134.8 L299.2 135.4 L299.3 135.8 L294.5 137.1 L294.6 137.7 L291.7 141.1 L290.8 141.8 L290.6 144.4 L289.7 144.6 L287.4 142.5 L288.1 144.7 L289.3 148.5 L285.0 154.1 L280.4 157.0 L275.4 161.0 L274.1 166.6 L276.3 172.1 L277.4 178.3 L274.5 180.0 L271.6 175.8 L270.4 170.7 L266.4 166.4 L261.7 166.2 L254.4 165.6 L251.6 167.0 L251.6 169.0 L247.6 169.0 L241.0 167.3 L234.4 170.2 L229.5 173.9 L230.2 178.1 L229.1 180.6 L228.1 187.7 L230.0 192.7 L233.6 197.7 L240.1 198.8 L246.1 197.6 L248.7 192.5 L254.0 190.3 L258.9 190.7 L256.6 195.4 L256.0 199.3 L254.7 199.0 L254.8 201.0 L254.9 202.7 L253.5 204.9 L254.1 206.0 L255.8 205.9 L257.3 206.0 L260.8 205.9 L262.7 205.9 L265.2 206.0 L267.3 207.2 L268.8 208.6 L268.3 211.2 L268.1 214.3 L267.4 217.0 L267.2 219.2 L269.4 222.2 L271.6 225.0 L273.8 225.6 L278.0 224.1 L280.4 223.7 L284.1 225.1 L288.7 224.1 L290.3 220.5 L293.9 218.6 L299.3 216.8 L302.4 216.4 L300.1 218.3 L299.8 222.6 L302.7 222.6 L305.1 218.4 L306.7 218.2 L310.6 220.7 L317.6 221.7 L321.3 220.4 L325.8 221.1 L331.0 223.9 L334.0 226.8 L337.6 231.0 L341.3 233.4 L347.1 233.3 L353.1 235.0 L357.5 238.3 L361.2 245.2 L360.0 250.2 L367.2 251.6 L376.6 255.9 L384.8 258.1 L396.6 263.4 L402.1 265.2 L402.4 275.0 L395.3 283.8 L391.8 288.3 L390.9 299.6 L386.7 308.1 L383.4 313.8 L374.0 316.1 L365.3 321.9 L364.8 328.3 L359.2 336.1 L353.6 342.2 L347.4 347.1 L341.3 345.6 L337.5 345.6 L342.4 351.1 L335.5 357.6 L327.4 359.5 L325.7 364.0 L319.1 364.1 L322.9 366.8 L318.9 370.8 L315.3 375.1 L315.0 380.6 L313.4 385.3 L308.0 390.9 L309.5 395.3 L303.2 396.9 L298.5 398.7 L290.9 393.4 L290.0 385.2 L289.9 379.6 L296.6 373.5 L295.3 370.5 L295.3 361.0 L295.6 353.2 L300.4 344.2 L301.8 333.6 L303.5 321.4 L305.1 304.9 L301.5 298.2 L288.9 290.7 L285.8 284.0 L279.3 272.0 L274.3 267.0 L274.7 261.2 L277.8 256.2 L275.7 255.5 L276.7 250.8 L279.1 247.3 L281.6 245.1 L283.5 242.5 L284.7 238.6 L285.2 233.8 L282.7 229.1 L282.1 226.7 L279.0 225.2 L276.7 226.9 L277.0 229.4 L274.8 228.3 L273.0 227.5 L269.9 227.0 L268.0 226.5 L267.7 224.9 L264.9 223.3 L264.1 222.8 L262.1 222.4 L262.1 220.1 L261.0 218.3 L257.9 215.4 L257.2 214.1 L256.1 212.8 L253.2 213.2 L249.7 211.8 L245.3 210.8 L239.2 205.7 L233.2 206.2 L227.7 205.3 L219.9 202.3 L215.3 200.1 L208.4 196.3 L207.2 193.0 L207.6 190.5 L205.5 186.7 L198.9 180.1 L196.4 176.5 L192.7 172.6 L188.3 169.6 L185.7 164.5 L182.8 162.4 L181.2 164.1 L184.5 169.3 L185.7 171.1 L187.6 173.5 L190.9 178.5 L192.6 182.5 L196.1 185.1 L194.4 186.6 L189.8 182.0 L188.1 177.7 L184.5 176.0 L180.4 173.0 L182.8 171.9 L179.1 167.9 L175.8 162.1 L172.4 156.6 L169.2 155.3 L164.9 153.9 L159.6 145.7 L156.3 141.8 L155.1 135.7 L155.2 128.6 L154.5 117.4 L158.0 116.6 L159.7 116.2 L153.0 111.2 L144.5 106.3 L140.8 101.2 L135.9 96.7 L129.1 91.2 L120.5 88.3 L108.8 84.1 L94.7 82.1 L88.8 83.4 L81.6 85.1 L79.4 81.3 L78.1 81.3 L74.2 86.5 L65.8 90.5 L59.9 94.5 L52.2 96.2 L42.3 98.9 L47.6 96.3 L55.4 93.3 L61.9 90.1 L60.6 87.2 L56.4 86.3 L51.8 87.0 L50.4 84.3 L42.6 82.6 L38.6 79.2 L42.9 74.6 L49.3 73.5 L52.9 71.6 L51.7 70.1 L45.7 70.7 L36.5 69.2 L43.1 65.1 L50.9 66.3 L43.3 62.2 L38.3 58.7 L47.4 56.0 L58.2 53.1 L69.3 52.4 L77.2 53.2 L84.1 54.1 L97.4 55.6 L108.4 56.4 L120.8 58.6 L130.8 56.9 L141.4 56.2 L146.0 54.5 L154.8 57.2 L162.6 56.1 L177.2 58.8 L179.7 61.4 L194.6 61.2 L197.7 60.2 L205.1 58.9 L213.3 60.8 L226.5 61.7 L233.0 60.4 L237.0 60.9 L232.0 55.3 L239.2 50.7 L243.3 56.4 Z M182.9 46.9 L191.5 48.7 L199.5 51.0 L201.3 46.6 L209.0 50.8 L219.5 55.5 L216.4 58.0 L205.7 57.8 L189.0 59.4 L179.9 57.6 L175.9 55.4 L187.7 54.5 L172.5 54.1 L173.2 52.0 L172.6 48.0 Z M287.9 46.9 L282.2 47.6 L275.3 46.3 L283.2 45.4 Z M259.6 46.8 L271.3 45.1 L281.2 49.0 L293.8 50.6 L302.2 53.0 L314.0 57.8 L319.8 61.5 L327.3 66.2 L314.7 65.6 L313.6 69.1 L320.4 73.9 L308.9 72.9 L316.2 78.0 L299.3 73.9 L292.1 70.3 L281.8 70.6 L294.6 68.2 L298.2 63.1 L292.1 59.6 L285.3 56.2 L279.2 55.9 L258.2 54.8 L254.3 52.2 L251.6 46.9 L259.6 46.8 Z M221.2 44.9 L230.2 45.9 L231.3 50.9 L222.2 50.7 L221.0 48.0 Z M898.9 46.6 L894.7 46.7 L889.0 46.3 L888.5 46.2 L891.1 45.1 L894.6 44.8 L898.6 45.9 L898.9 46.6 Z M241.1 47.9 L233.2 47.4 L237.5 44.1 L244.4 47.3 Z M165.4 51.7 L150.2 50.4 L155.7 45.3 L166.4 43.8 L179.1 45.9 L165.4 50.5 Z M918.7 41.4 L915.5 42.5 L911.0 42.3 L905.9 41.2 L906.5 40.3 L911.7 40.7 L918.7 41.4 Z M240.0 41.7 L238.5 42.8 L234.4 42.6 L231.1 41.9 L232.5 40.6 L236.5 39.9 L239.0 40.8 L240.0 41.7 Z M903.0 40.1 L900.8 42.2 L890.6 42.1 L886.0 42.7 L880.5 40.9 L882.0 39.0 L885.6 38.5 L893.0 38.6 L903.0 40.1 Z M226.4 36.9 L227.3 41.7 L219.8 39.9 L218.1 38.0 L226.4 36.9 Z M199.4 38.3 L205.9 39.0 L195.3 42.1 L183.7 42.4 L173.0 41.0 L187.3 38.5 L193.1 37.7 L199.4 38.3 Z M659.8 53.6 L648.4 52.2 L645.8 49.4 L648.6 45.1 L660.7 40.0 L683.9 36.6 L689.4 38.2 L662.4 43.6 L654.5 51.3 Z M237.0 35.8 L247.9 37.6 L252.3 40.0 L264.5 39.7 L277.6 40.7 L272.4 43.2 L255.1 43.4 L242.3 40.6 L233.4 37.7 L237.0 35.8 Z M177.2 34.3 L172.1 37.6 L158.7 38.6 L173.4 34.7 Z M193.9 34.2 L188.7 35.0 L184.6 34.1 L186.9 33.2 L190.9 32.9 L194.9 33.3 L193.9 34.2 Z M568.7 33.7 L562.5 34.9 L557.6 34.2 L559.5 33.5 L557.8 32.6 L563.6 32.1 L564.7 33.1 L568.7 33.7 Z M233.8 33.2 L229.7 33.8 L227.4 33.1 L226.2 32.1 L226.0 30.9 L229.6 31.0 L231.2 31.2 L234.6 32.2 L233.8 33.2 Z M222.1 32.4 L214.0 32.4 L207.2 30.8 L219.9 31.1 Z M791.9 32.5 L776.2 33.6 L781.3 29.9 L783.6 29.6 L785.7 29.8 L792.7 31.4 L791.9 32.5 Z M550.7 28.6 L551.3 33.8 L544.2 36.8 L536.6 33.3 L536.6 27.7 L543.1 27.7 Z M570.7 26.6 L564.0 29.4 L551.3 28.2 L560.9 26.8 Z M642.0 26.3 L635.4 27.3 L630.8 26.2 L634.2 25.6 L639.0 25.2 Z M777.6 30.9 L759.2 29.4 L760.5 24.9 L778.3 28.4 Z M258.3 28.7 L252.7 32.5 L239.0 31.2 L236.2 29.5 L233.3 26.1 L236.8 24.4 L251.5 26.4 Z M309.7 19.1 L328.2 20.5 L314.6 23.0 L311.6 25.3 L296.5 28.8 L290.2 30.0 L287.9 32.8 L278.4 35.5 L283.6 36.7 L260.8 38.1 L251.1 36.2 L256.5 33.4 L255.7 32.3 L263.6 29.6 L266.1 27.2 L266.4 26.2 L249.4 24.3 L249.7 22.0 L262.5 20.4 L271.1 19.8 L288.2 19.0 L303.7 19.0 Z M424.7 18.0 L426.3 21.4 L422.6 21.9 L438.7 23.0 L456.2 22.5 L454.8 26.2 L450.7 27.4 L445.4 34.3 L439.8 37.1 L442.6 41.2 L443.2 45.0 L434.5 46.4 L432.6 48.3 L438.5 51.5 L432.5 53.2 L426.8 54.9 L430.5 57.6 L411.7 60.8 L399.0 66.7 L389.4 68.2 L385.6 73.7 L380.9 80.3 L371.5 81.0 L361.4 76.7 L354.8 69.0 L350.1 63.4 L358.1 57.9 L354.0 57.2 L347.9 54.8 L357.3 54.0 L347.2 51.6 L346.3 47.3 L337.2 41.4 L323.9 38.4 L306.5 37.8 L314.5 35.1 L296.8 32.1 L318.5 28.5 L323.1 24.4 L332.6 22.1 L352.7 22.5 L370.6 22.3 L370.1 20.5 L392.7 17.9 Z";
 
 function ProviderGeography({ stats }: { stats: PlatformStats }) {
-  const cityBuckets = stats.provider_locations ?? [];
-  const regionBuckets = stats.provider_regions ?? [];
-  const requestBuckets = stats.request_locations ?? [];
-  const requestFlows = (stats.request_flows ?? [])
-    .filter((flow) => hasCoordinates(flow.from) && hasCoordinates(flow.to))
-    .slice(0, 18);
-  const unknown = stats.unknown_location_providers ?? 0;
-  const suppressed = stats.suppressed_city_location_providers ?? 0;
-  const privacyMin = stats.location_privacy_min_providers ?? 2;
-  const knownProviders = regionBuckets.reduce((sum, bucket) => sum + bucket.providers, 0);
-  const providerCityKeys = new Set(cityBuckets.map(locationBucketKey));
-  const providerRegionKeys = new Set(regionBuckets.map(locationBucketKey));
-  const hasLocalProvider = (bucket: RequestLocationBucket) => {
-    const cityKey = locationBucketKey(bucket);
-    const regionKey = [
-      bucket.country_code,
-      bucket.region_code || bucket.region,
-    ]
-      .filter(Boolean)
-      .join("|")
-      .toLowerCase();
-    return providerCityKeys.has(cityKey) || providerRegionKeys.has(regionKey);
-  };
-  const plotted = cityBuckets.filter(hasCoordinates);
-  const fallbackPlotted = plotted.length > 0
-    ? plotted
-    : regionBuckets.filter(hasCoordinates);
-  const sortedRequestBuckets = requestBuckets
-    .slice()
-    .sort((a, b) => b.requests - a.requests);
-  const consumerPlotted = sortedRequestBuckets.filter(hasCoordinates).slice(0, 14);
-  const demandOnlyOrigins = sortedRequestBuckets.filter((bucket) => !hasLocalProvider(bucket));
-  const demandOnlyRequests = demandOnlyOrigins.reduce((sum, bucket) => sum + bucket.requests, 0);
-  const topCities = cityBuckets.slice(0, 4);
-  const recentBuckets = normalizeTimeSeries(stats.time_series);
-  const recentRequests = recentBuckets.reduce((sum, bucket) => sum + bucket.requests, 0);
-  const recentTokens = recentBuckets.reduce(
-    (sum, bucket) => sum + bucket.prompt_tokens + bucket.completion_tokens,
-    0,
-  );
-  const peakRequests = Math.max(...recentBuckets.map((bucket) => bucket.requests), 0);
-  const routableProviders = stats.providers.filter(isProviderRoutable).length;
-  const hardwareProviders = stats.providers.filter((provider) => provider.trust_level === "hardware").length;
-  const certificateProviders = stats.providers.filter(
-    (provider) => provider.certificate_available || provider.mda_verified,
-  ).length;
-  const networkDecodeTPS = stats.providers.reduce((sum, provider) => sum + provider.decode_tps, 0);
-  const networkTPS = stats.network_capacity_tps || networkDecodeTPS;
-  const unknownProviderLabel = unknown === 1 ? "provider" : "providers";
-  const emptyLocationMessage = unknown > 0
-    ? `${unknown} ${unknownProviderLabel} online without a resolved location`
-    : "No resolved provider locations yet";
+  const geo = useMemo(() => {
+    const cityBuckets = stats.provider_locations ?? [];
+    const regionBuckets = stats.provider_regions ?? [];
+    const requestBuckets = stats.request_locations ?? [];
+    const requestFlows = (stats.request_flows ?? [])
+      .filter((flow) => hasCoordinates(flow.from) && hasCoordinates(flow.to))
+      .slice(0, 18);
+    const unknown = stats.unknown_location_providers ?? 0;
+    const suppressed = stats.suppressed_city_location_providers ?? 0;
+    const privacyMin = stats.location_privacy_min_providers ?? 2;
+    const knownProviders = regionBuckets.reduce((sum, bucket) => sum + bucket.providers, 0);
+    const providerCityKeys = new Set(cityBuckets.map(locationBucketKey));
+    const providerRegionKeys = new Set(regionBuckets.map(locationBucketKey));
+    const hasLocalProvider = (bucket: RequestLocationBucket) => {
+      const cityKey = locationBucketKey(bucket);
+      const regionKey = [
+        bucket.country_code,
+        bucket.region_code || bucket.region,
+      ]
+        .filter(Boolean)
+        .join("|")
+        .toLowerCase();
+      return providerCityKeys.has(cityKey) || providerRegionKeys.has(regionKey);
+    };
+    const plotted = cityBuckets.filter(hasCoordinates);
+    const fallbackPlotted = plotted.length > 0
+      ? plotted
+      : regionBuckets.filter(hasCoordinates);
+    const sortedRequestBuckets = requestBuckets
+      .slice()
+      .sort((a, b) => b.requests - a.requests);
+    const consumerPlotted = sortedRequestBuckets.filter(hasCoordinates).slice(0, 14);
+    const demandOnlyOrigins = sortedRequestBuckets.filter((bucket) => !hasLocalProvider(bucket));
+    const demandOnlyRequests = demandOnlyOrigins.reduce((sum, bucket) => sum + bucket.requests, 0);
+    const topCities = cityBuckets.slice(0, 4);
+    const recentBuckets = normalizeTimeSeries(stats.time_series);
+    const recentRequests = recentBuckets.reduce((sum, bucket) => sum + bucket.requests, 0);
+    const recentTokens = recentBuckets.reduce(
+      (sum, bucket) => sum + bucket.prompt_tokens + bucket.completion_tokens,
+      0,
+    );
+    const peakRequests = Math.max(...recentBuckets.map((bucket) => bucket.requests), 0);
+    const routableProviders = stats.providers.filter(isProviderRoutable).length;
+    const hardwareProviders = stats.providers.filter((provider) => provider.trust_level === "hardware").length;
+    const certificateProviders = stats.providers.filter(
+      (provider) => provider.certificate_available || provider.mda_verified,
+    ).length;
+    const networkDecodeTPS = stats.providers.reduce((sum, provider) => sum + provider.decode_tps, 0);
+    const networkTPS = stats.network_capacity_tps || networkDecodeTPS;
+    const unknownProviderLabel = unknown === 1 ? "provider" : "providers";
+    const emptyLocationMessage = unknown > 0
+      ? `${unknown} ${unknownProviderLabel} online without a resolved location`
+      : "No resolved provider locations yet";
+
+    return {
+      requestFlows,
+      unknown,
+      suppressed,
+      privacyMin,
+      knownProviders,
+      fallbackPlotted,
+      consumerPlotted,
+      demandOnlyRequests,
+      topCities,
+      recentBuckets,
+      recentRequests,
+      recentTokens,
+      peakRequests,
+      routableProviders,
+      hardwareProviders,
+      certificateProviders,
+      networkTPS,
+      emptyLocationMessage,
+      hasLocalProvider,
+    };
+  }, [stats]);
+
+  const {
+    requestFlows,
+    unknown,
+    suppressed,
+    privacyMin,
+    knownProviders,
+    fallbackPlotted,
+    consumerPlotted,
+    demandOnlyRequests,
+    topCities,
+    recentBuckets,
+    recentRequests,
+    recentTokens,
+    peakRequests,
+    routableProviders,
+    hardwareProviders,
+    certificateProviders,
+    networkTPS,
+    emptyLocationMessage,
+    hasLocalProvider,
+  } = geo;
 
   return (
     <section className={`${statsPanel} space-y-5 p-5 sm:p-6 ${statsReveal5}`}>
@@ -1154,7 +1227,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
       />
 
       <div
-        className={`relative aspect-[2/1] min-h-[260px] overflow-hidden ${statsMapStageFlow} ${statsMapTheaterCorners}`}
+        className={`relative aspect-[2/1] min-h-[260px] overflow-hidden ${statsMapStageFlow} ${statsPageStyles.mapTheaterCorners}`}
       >
           <div className="absolute inset-0 opacity-[0.18]">
             <div
@@ -1300,7 +1373,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
             </g>
           </svg>
 
-          <div className={`${statsMapLegend} pointer-events-none absolute left-4 top-4 z-30 flex flex-wrap items-center gap-2`}>
+          <div className={`${statsPageStyles.mapLegend} pointer-events-none absolute left-4 top-4 z-30 flex flex-wrap items-center gap-2`}>
             <span className="flex items-center gap-1.5 text-[11px] font-mono text-text-tertiary">
               <span className="h-2.5 w-2.5 rounded-full bg-accent-green" />
               consumers
@@ -1422,23 +1495,53 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
 }
 
 function RequestGeography({ stats }: { stats: PlatformStats }) {
-  const cityBuckets = stats.request_locations ?? [];
-  const regionBuckets = stats.request_regions ?? [];
-  const unknown = stats.unknown_request_location_requests ?? 0;
-  const suppressed = stats.suppressed_request_city_requests ?? 0;
-  const privacyMin = stats.request_location_privacy_min_requests ?? 5;
-  const plotted = cityBuckets.filter(hasCoordinates);
-  const fallbackPlotted = plotted.length > 0
-    ? plotted
-    : regionBuckets.filter(hasCoordinates);
-  const totalRequests = regionBuckets.reduce((sum, bucket) => sum + bucket.requests, 0);
-  const topCities = cityBuckets.slice(0, 5);
-  const topRegions = regionBuckets.slice(0, 5);
-  const maxCityRequests = Math.max(...topCities.map((bucket) => bucket.requests), 1);
-  const maxRegionRequests = Math.max(...topRegions.map((bucket) => bucket.requests), 1);
+  const geo = useMemo(() => {
+    const cityBuckets = stats.request_locations ?? [];
+    const regionBuckets = stats.request_regions ?? [];
+    const unknown = stats.unknown_request_location_requests ?? 0;
+    const suppressed = stats.suppressed_request_city_requests ?? 0;
+    const privacyMin = stats.request_location_privacy_min_requests ?? 5;
+    const plotted = cityBuckets.filter(hasCoordinates);
+    const fallbackPlotted = plotted.length > 0
+      ? plotted
+      : regionBuckets.filter(hasCoordinates);
+    const totalRequests = regionBuckets.reduce((sum, bucket) => sum + bucket.requests, 0);
+    const topCities = cityBuckets.slice(0, 5);
+    const topRegions = regionBuckets.slice(0, 5);
+    const maxCityRequests = Math.max(...topCities.map((bucket) => bucket.requests), 1);
+    const maxRegionRequests = Math.max(...topRegions.map((bucket) => bucket.requests), 1);
+
+    return {
+      unknown,
+      suppressed,
+      privacyMin,
+      fallbackPlotted,
+      totalRequests,
+      cityCount: cityBuckets.length,
+      regionCount: regionBuckets.length,
+      topCities,
+      topRegions,
+      maxCityRequests,
+      maxRegionRequests,
+    };
+  }, [stats]);
+
+  const {
+    unknown,
+    suppressed,
+    privacyMin,
+    fallbackPlotted,
+    totalRequests,
+    cityCount,
+    regionCount,
+    topCities,
+    topRegions,
+    maxCityRequests,
+    maxRegionRequests,
+  } = geo;
 
   return (
-    <section className={`${statsPanel} ${statsPanelDemand} space-y-5 p-5 sm:p-6 ${statsReveal6}`}>
+    <section className={`${statsPanel} ${statsPageStyles.panelDemand} space-y-5 p-5 sm:p-6 ${statsReveal6}`}>
       <StatsSectionHeader
         index="07"
         title="Request Geography"
@@ -1446,13 +1549,13 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
         icon={<MapPin size={16} />}
         metrics={[
           { value: formatNumber(totalRequests), label: "Requests" },
-          { value: cityBuckets.length.toString(), label: "Cities" },
-          { value: regionBuckets.length.toString(), label: "Regions" },
+          { value: cityCount.toString(), label: "Cities" },
+          { value: regionCount.toString(), label: "Regions" },
         ]}
       />
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-stretch">
-        <div className={`relative aspect-[2/1] min-h-[260px] overflow-hidden ${statsMapStageDemand}`}>
+        <div className={`relative aspect-[2/1] min-h-[260px] overflow-hidden ${statsPageStyles.mapStageDemand}`}>
           <svg
             className="absolute inset-0 h-full w-full"
             viewBox="0 0 1000 500"
@@ -1519,7 +1622,7 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
           </svg>
 
           {fallbackPlotted.length > 0 && (
-            <div className={`${statsMapLegend} ${statsMapLegendDemand} pointer-events-none absolute left-4 top-4 z-30 flex flex-wrap items-center gap-2`}>
+            <div className={`${statsPageStyles.mapLegend} ${statsPageStyles.mapLegendDemand} pointer-events-none absolute left-4 top-4 z-30 flex flex-wrap items-center gap-2`}>
               <span className="flex items-center gap-1.5 text-[11px] font-mono text-text-tertiary">
                 <span className="h-2.5 w-2.5 rounded-full bg-accent-green" />
                 demand density
@@ -2711,9 +2814,13 @@ export default function StatsPage() {
   const [capacityModels, setCapacityModels] = useState<CapacityModelSummary[] | null>(null);
   const [activeTab, setActiveTab] = useState<StatsTab>("overview");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async (options?: { showRefreshIndicator?: boolean }) => {
+    if (options?.showRefreshIndicator) {
+      setRefreshing(true);
+    }
     try {
       const query = typeof window === "undefined" ? "" : window.location.search;
       const [res, catalog, capacity] = await Promise.all([
@@ -2735,14 +2842,56 @@ export default function StatsPage() {
       setError(e instanceof Error ? e.message : "Failed to fetch stats");
     } finally {
       setLoading(false);
+      if (options?.showRefreshIndicator) {
+        setRefreshing(false);
+      }
     }
-  };
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    void fetchStats({ showRefreshIndicator: true });
+  }, [fetchStats]);
 
   useEffect(() => {
-    fetchStats();
-    const interval = setInterval(fetchStats, 10_000);
+    void fetchStats();
+    const interval = setInterval(() => {
+      void fetchStats();
+    }, 10_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchStats]);
+
+  const aliases = useMemo(() => catalogData?.aliases ?? [], [catalogData?.aliases]);
+  const hardwareAttested = useMemo(
+    () => stats?.providers.filter((p) => p.trust_level === "hardware").length ?? 0,
+    [stats],
+  );
+  const visibleModelCount = useMemo(
+    () => (stats ? buildModelInventory(stats, aliases).length : 0),
+    [stats, aliases],
+  );
+  const networkPowerWatts = useMemo(
+    () => (stats ? activeNetworkPowerWatts(stats) : 0),
+    [stats],
+  );
+  const hardwareMetrics = useMemo(
+    () => {
+      if (!stats) return [];
+      return [
+        ...(networkPowerWatts > 0
+          ? [{ label: "Network Power", value: formatPower(networkPowerWatts), sub: "under load", power: true }]
+          : []),
+        { label: "GPU Cores", value: stats.total_gpu_cores.toString(), sub: "Apple Silicon" },
+        { label: "CPU Cores", value: stats.total_cpu_cores.toString(), sub: "P + E cores" },
+        { label: "Unified RAM", value: formatNumber(stats.total_memory_gb), unit: "GB" },
+        {
+          label: "Avg Tok/Req",
+          value: stats.avg_tokens_per_request > 0 ? stats.avg_tokens_per_request.toFixed(0) : "--",
+        },
+        { label: "Models", value: visibleModelCount.toString(), sub: "serving now" },
+      ];
+    },
+    [networkPowerWatts, stats, visibleModelCount],
+  );
 
   if (loading) {
     return (
@@ -2765,33 +2914,17 @@ export default function StatsPage() {
           <p className="font-mono text-xs text-text-tertiary">{error}</p>
           <button
             type="button"
-            onClick={fetchStats}
-            className="relative mt-2 min-h-10 px-4 pb-2.5 font-mono text-[0.72rem] font-medium tracking-widest uppercase text-accent-brand"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="relative mt-2 min-h-10 px-4 pb-2.5 font-mono text-[0.72rem] font-medium tracking-widest uppercase text-accent-brand disabled:opacity-60"
           >
-            Retry
+            {refreshing ? "Retrying…" : "Retry"}
             <span className="absolute right-4 bottom-[-1px] left-4 h-0.5 bg-linear-to-r from-accent-brand to-accent-green" aria-hidden="true" />
           </button>
         </div>
       </div>
     );
   }
-
-  const hardwareAttested = stats.providers.filter((p) => p.trust_level === "hardware").length;
-  const visibleModelCount = buildModelInventory(stats, catalogData?.aliases ?? []).length;
-  const networkPowerWatts = activeNetworkPowerWatts(stats);
-  const hardwareMetrics = [
-    ...(networkPowerWatts > 0
-      ? [{ label: "Network Power", value: formatPower(networkPowerWatts), sub: "under load", power: true }]
-      : []),
-    { label: "GPU Cores", value: stats.total_gpu_cores.toString(), sub: "Apple Silicon" },
-    { label: "CPU Cores", value: stats.total_cpu_cores.toString(), sub: "P + E cores" },
-    { label: "Unified RAM", value: formatNumber(stats.total_memory_gb), unit: "GB" },
-    {
-      label: "Avg Tok/Req",
-      value: stats.avg_tokens_per_request > 0 ? stats.avg_tokens_per_request.toFixed(0) : "--",
-    },
-    { label: "Models", value: visibleModelCount.toString(), sub: "serving now" },
-  ];
 
   return (
     <>
@@ -2800,7 +2933,8 @@ export default function StatsPage() {
         <StatsMasthead
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          onRefresh={fetchStats}
+          onRefresh={handleRefresh}
+          refreshing={refreshing}
         />
 
         {activeTab === "leaderboard" ? (
@@ -2835,7 +2969,7 @@ export default function StatsPage() {
             </div>
 
             {stats.total_tokens > 0 && (
-              <div className={`${statsTokenBar} ${statsReveal5}`}>
+              <div className={`${statsPageStyles.tokenBar} ${statsReveal5}`}>
                 <div className="mb-3.5 flex items-baseline justify-between gap-4">
                   <h3 className={`${statsMetricLabel} mb-0`}>Token distribution</h3>
                   <div className="flex gap-4 font-mono text-[0.62rem] text-text-tertiary">

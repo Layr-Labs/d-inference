@@ -161,6 +161,26 @@ func (t *codeAttestThrottle) reuseAttestation(seKey, version, token string) bool
 	return r.token == "" || r.token == token
 }
 
+// reuseAttestationCrossVersion is reuseAttestation without the version match —
+// it rides a recent proof across a version bump (which every update causes) so a
+// healthy update isn't forced into a fresh push. Dropping the version alone is
+// unsafe (SE key + token prove the device, not that the binary is legitimate), so
+// the caller (codeAttestLoop) only invokes it behind live binary-identity fences.
+// The token match is STRICT here: both stored and current token must be non-empty
+// and equal (unlike reuseAttestation's legacy empty-token leniency).
+func (t *codeAttestThrottle) reuseAttestationCrossVersion(seKey, token string) bool {
+	if seKey == "" || token == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.attested[seKey]
+	if !ok || t.now().Sub(r.at) >= t.reuseWindow {
+		return false
+	}
+	return r.token != "" && r.token == token
+}
+
 // pushCooldown returns the per-device push budget for the active delivery mode.
 func (t *codeAttestThrottle) pushCooldown(alert bool) time.Duration {
 	if alert {

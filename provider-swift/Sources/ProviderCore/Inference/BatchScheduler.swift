@@ -66,6 +66,15 @@ public actor BatchScheduler {
     var modelId: String = ""
     var modelWeightBytes: Int = 0
     var kvBytesPerToken: Int = 400_000
+    /// FP16 (un-quantized) per-token KV cost. Equals `kvBytesPerToken` unless KV
+    /// quantization is active for this model — in which case `kvBytesPerToken`
+    /// holds the reduced (quantized) rate used for batched-engine admission while
+    /// this holds the full fp16 rate. The non-batched VLM media path streams
+    /// through `container.generate`, which allocates an fp16 KV cache (NOT the
+    /// quantized batched cache), so its reservation (`reserveVisionRequest`) must
+    /// size generation KV from THIS value; reserving at the quantized rate would
+    /// under-count ~2x and risk unified-memory OOM under concurrent media traffic.
+    var fp16KVBytesPerToken: Int = 400_000
     var dynamicTokenBudgetMax: Int = 0
     /// The model's maximum context window read from config.json
     /// (`max_position_embeddings`). Used to size `maxTokensPerBatch`
@@ -1573,6 +1582,16 @@ public actor BatchScheduler {
             weightBytes: snapshot.bytes,
             quantScheme: quantScheme
         )
+        // FP16 KV cost (no quantScheme): identical to kvBytesPerToken when KV
+        // quant is off, but ~2x larger when it's on. The non-batched VLM media
+        // path uses container.generate (fp16 KV, not the quantized batched
+        // cache), so reserveVisionRequest sizes its generation-KV reservation
+        // from this un-quantized value rather than the quantized rate the
+        // batched engine admits against.
+        self.fp16KVBytesPerToken = Self.resolvedKVBytesPerToken(
+            architecture: snapshot.architecture,
+            weightBytes: snapshot.bytes
+        )
         // Static upper-bound budget from the unified 90% cap minus THIS model's
         // measured resident weights (snapshot.bytes) and the activation reserve.
         // Only the per-model clamp; cross-model headroom (other resident models'
@@ -1615,7 +1634,9 @@ public actor BatchScheduler {
     /// 1. `mediaDecodeBytes` — the transient CIImage rasters + Swift `Data` pixel
     ///    buffers from media decode. These are NOT MLXArrays, so they are
     ///    invisible to the cap's live MLX counters (the original blind spot).
-    /// 2. The generation KV cache — `kvBytesPerToken × maxOutputTokens`. This IS
+    /// 2. The generation KV cache — `fp16KVBytesPerToken × kvTokens` (the fp16
+    ///    rate, since this path's `container.generate` allocates an un-quantized
+    ///    KV cache even when batched admission uses quantized KV). This IS
     ///    MLXArray-backed (eventually visible to the live counters), but the
     ///    vision path's decode loop runs in a detached task with no per-request
     ///    reservation, so N concurrent media requests can grow KV simultaneously
@@ -1635,14 +1656,21 @@ public actor BatchScheduler {
         requestId: String, mediaDecodeBytes: UInt64, kvTokens: Int
     ) async -> Bool {
         guard let kvBudget else { return true }
-        // KV bytes = kvBytesPerToken × the FULL token span the cache will hold:
+        // KV bytes = per-token KV cost × the FULL token span the cache will hold:
         // prompt text + image/video soft tokens + generated output (the caller
         // computes that conservative total). Reserving only the output tokens
         // would badly under-count — a single image expands to hundreds of vision
         // tokens, all of which occupy KV.
+        // Charge the FP16 (un-quantized) per-token KV cost: this request streams
+        // through container.generate, which allocates an fp16 KV cache — NOT the
+        // quantized batched cache. With KV quant on, kvBytesPerToken is the
+        // reduced batched rate (~0.52x); sizing the reservation from it would
+        // under-reserve the real fp16 allocation ~2x and risk OOM under
+        // concurrent image/video traffic. When KV quant is off,
+        // fp16KVBytesPerToken == kvBytesPerToken, so this is a no-op.
         var genKVBytes: UInt64 = 0
-        if kvBytesPerToken > 0, kvTokens > 0 {
-            let (b, overflow) = UInt64(kvBytesPerToken)
+        if fp16KVBytesPerToken > 0, kvTokens > 0 {
+            let (b, overflow) = UInt64(fp16KVBytesPerToken)
                 .multipliedReportingOverflow(by: UInt64(kvTokens))
             genKVBytes = overflow ? .max : b
         }
@@ -2187,6 +2215,7 @@ public actor BatchScheduler {
         modelWeightBytes = 0
         modelId = ""
         kvBytesPerToken = 400_000
+        fp16KVBytesPerToken = 400_000
         dynamicTokenBudgetMax = 0
         maxContextLength = 0
         defaultMaxTokens = initDefaultMaxTokens

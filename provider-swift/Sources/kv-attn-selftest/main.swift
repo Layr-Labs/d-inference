@@ -1092,3 +1092,13 @@ if dar323Ok {
 } else {
     print("DAR-323 gate: FAILED")
 }
+
+// MARK: - Overall exit status
+//
+// Each DAR gate prints its own "ALL OK"/"FAILED" summary above, but as a
+// top-level executable, falling off the end of the file always exits 0 — so CI
+// would treat a failing correctness gate as success. Combine every gate result
+// and exit nonzero if any gate failed.
+let allOK = dar314Ok && followUpOk && dar322Ok && dar323Ok
+print("== self-test summary: \(allOK ? "ALL GATES OK" : "ONE OR MORE GATES FAILED") ==")
+exit(allOK ? 0 : 1)

@@ -103,6 +103,13 @@ private extension KVQuantGate {
         case .gemma4:
             return .k8v8g128
         case .gptOSS:
+            // Mirror BatchScheduler.resolveKVQuantScheme: the live scheduler
+            // forces the native quantized kernel path when
+            // DARKBLOOM_KV_GPTOSS_KERNEL=1, so the gate must benchmark that same
+            // path for the forced-kernel experiment instead of the dequant default.
+            if ProcessInfo.processInfo.environment["DARKBLOOM_KV_GPTOSS_KERNEL"] == "1" {
+                return .k8v8g64
+            }
             return .k8v8g64Dequant
         case .unknown:
             throw ValidationError("--candidate auto has no live KV quant scheme for model-id '\(modelID)'; pass an explicit --candidate")

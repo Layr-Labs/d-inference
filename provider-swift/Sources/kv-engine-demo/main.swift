@@ -324,6 +324,9 @@ struct KVEngineDemo: AsyncParsableCommand {
         concurrency: Int,
         decodeTokens: Int
     ) async -> Double {
+        // Capture the deadline as a local so the worker tasks below don't capture
+        // `self`; mirrors how `consumeStream` snapshots `generationTimeout`.
+        let timeoutSeconds = generationTimeout
         let timings = await withTaskGroup(of: StreamTiming.self, returning: [StreamTiming].self) {
             group in
             for i in 0..<concurrency {
@@ -334,22 +337,50 @@ struct KVEngineDemo: AsyncParsableCommand {
                         temperature: 0.0,
                         requestId: "conc-\(i)"
                     )
-                    var toks = 0
-                    var first: ContinuousClock.Instant?
-                    var last: ContinuousClock.Instant?
-                    for await event in stream {
-                        switch event {
-                        case .chunk:
-                            let now = ContinuousClock.now
-                            if first == nil { first = now }
-                            last = now
-                        case .info(_, let completionTok, _):
-                            toks = completionTok
-                        case .error:
-                            break
+                    // Race stream consumption against the generation timeout, the
+                    // same way `consumeStream` does. A bare `for await` only
+                    // observes the deadline after an event is yielded, so a stalled
+                    // stream would hang the whole sweep. On timeout, abort this
+                    // stream and report empty timing so it drops out of the
+                    // aggregate instead of blocking the task group forever.
+                    do {
+                        return try await withThrowingTaskGroup(of: StreamTiming.self) { inner in
+                            inner.addTask {
+                                var toks = 0
+                                var first: ContinuousClock.Instant?
+                                var last: ContinuousClock.Instant?
+                                for await event in stream {
+                                    switch event {
+                                    case .chunk:
+                                        let now = ContinuousClock.now
+                                        if first == nil { first = now }
+                                        last = now
+                                    case .info(_, let completionTok, _):
+                                        toks = completionTok
+                                    case .error:
+                                        break
+                                    }
+                                }
+                                return StreamTiming(tokens: toks, first: first, last: last)
+                            }
+                            inner.addTask {
+                                try await Task.sleep(for: .seconds(timeoutSeconds))
+                                throw KVEngineDemoError.generationTimeout
+                            }
+                            do {
+                                guard let result = try await inner.next() else {
+                                    return StreamTiming(tokens: 0, first: nil, last: nil)
+                                }
+                                inner.cancelAll()
+                                return result
+                            } catch {
+                                inner.cancelAll()
+                                throw error
+                            }
                         }
+                    } catch {
+                        return StreamTiming(tokens: 0, first: nil, last: nil)
                     }
-                    return StreamTiming(tokens: toks, first: first, last: last)
                 }
             }
             var out: [StreamTiming] = []
@@ -720,6 +751,23 @@ struct KVEngineDemo: AsyncParsableCommand {
             for d in divergences.prefix(3) {
                 print("    - \(d)")
             }
+        }
+
+        // Full side-by-side text so the actual generation difference is visible,
+        // not just a match rate. Greedy decode => the only difference is the KV
+        // representation (fp16 vs quantized).
+        print("\n  ===== FULL GENERATIONS: fp16 vs \(quant.label) =====")
+        for (fp16Gen, quantGen) in zip(fp16.generations, quant.generations) {
+            print("\n  ┌── PROMPT: \(fp16Gen.prompt)")
+            print("  │")
+            print("  ├── [fp16]:")
+            print(fp16Gen.text.split(separator: "\n", omittingEmptySubsequences: false)
+                .map { "  │   \($0)" }.joined(separator: "\n"))
+            print("  │")
+            print("  ├── [\(quant.label)]:")
+            print(quantGen.text.split(separator: "\n", omittingEmptySubsequences: false)
+                .map { "  │   \($0)" }.joined(separator: "\n"))
+            print("  └────────────────────────────────────────────────")
         }
     }
 

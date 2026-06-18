@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -81,6 +82,50 @@ func TestAdminDrain_SetAndUndrain(t *testing.T) {
 	}
 	if srv.IsDraining() {
 		t.Fatal("IsDraining() = true after undrain, want false")
+	}
+}
+
+// (a) Regression (DAR-327 Phase 1 review): the un-drain rollback must work even
+// when {"draining":false} arrives with chunked transfer-encoding / unknown
+// Content-Length (ContentLength == -1). The old `ContentLength > 0` guard skipped
+// the body for such requests and silently defaulted to draining=true, so a
+// rollback sent without a Content-Length would fail to un-drain.
+func TestAdminDrain_UndrainChunkedBodyNoContentLength(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetAdminKey("test-key")
+
+	// Start from the state a rollback must clear.
+	srv.SetDraining(true)
+	if !srv.IsDraining() {
+		t.Fatal("precondition: IsDraining() should be true before rollback")
+	}
+
+	// Build a chunked POST with no Content-Length. An io.NopCloser body is not
+	// one of httptest's length-known types, so ContentLength is unset; we also
+	// force ContentLength = -1 and chunked transfer-encoding to make the
+	// unknown-length path explicit and exercise the exact regression.
+	body := io.NopCloser(strings.NewReader(`{"draining":false}`))
+	r := httptest.NewRequest(http.MethodPost, "/v1/admin/drain", body)
+	r.ContentLength = -1
+	r.TransferEncoding = []string{"chunked"}
+	r.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("chunked undrain status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	if srv.IsDraining() {
+		t.Fatal(`IsDraining() = true after chunked {"draining":false}, want false`)
+	}
+	var got struct {
+		Draining bool `json:"draining"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal undrain response: %v", err)
+	}
+	if got.Draining {
+		t.Fatalf("response draining = true, want false (body=%s)", w.Body.String())
 	}
 }
 

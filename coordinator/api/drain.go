@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"time"
 )
@@ -121,18 +124,33 @@ func (s *Server) handleAdminDrain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default to draining=true; only parse a body when one is actually present
-	// (decodeCappedJSON treats an empty body as invalid JSON).
+	// Default to draining=true. Attempt to decode a body whenever one MAY be
+	// present — including chunked / unknown-length requests (ContentLength == -1).
+	// The previous ContentLength>0 guard silently skipped those and defaulted to
+	// draining=true, which broke the {"draining":false} rollback path when sent
+	// without a Content-Length (e.g. chunked transfer-encoding). We can't reuse
+	// decodeCappedJSON here because it treats an empty body as invalid JSON; an
+	// empty body surfaces as io.EOF, which we tolerate as "no override" and keep
+	// the draining=true default. The body is still capped for safety.
 	draining := true
-	if r.ContentLength > 0 {
-		var req struct {
+	if r.Body != nil && r.ContentLength != 0 {
+		var payload struct {
 			Draining *bool `json:"draining"`
 		}
-		if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxControlPlaneBodyBytes)
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeJSON(w, http.StatusRequestEntityTooLarge,
+					errorResponse("invalid_request_error", "request body too large"))
+				return
+			}
+			writeJSON(w, http.StatusBadRequest,
+				errorResponse("invalid_request_error", "invalid JSON"))
 			return
 		}
-		if req.Draining != nil {
-			draining = *req.Draining
+		if payload.Draining != nil {
+			draining = *payload.Draining
 		}
 	}
 

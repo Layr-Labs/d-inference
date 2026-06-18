@@ -2,14 +2,66 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
+
+// capacityShedReason must distinguish a decode-floor (throughput) shed from an
+// ordinary full-fleet rejection so the shed is observable in telemetry on its
+// own reason_code/outcome — the lesson from the gemma incident (only mitigations
+// with distinct reason codes were diagnosable).
+func TestCapacityShedReasonDistinguishesThroughputShed(t *testing.T) {
+	reason, outcome := capacityShedReason(true)
+	if reason != "decode_floor_shed" || outcome != "decode_floor_shed" {
+		t.Fatalf("throughput shed: got reason=%q outcome=%q, want decode_floor_shed/decode_floor_shed", reason, outcome)
+	}
+	reason, outcome = capacityShedReason(false)
+	if reason != "machine_busy" || outcome != "capacity_429" {
+		t.Fatalf("ordinary capacity: got reason=%q outcome=%q, want machine_busy/capacity_429", reason, outcome)
+	}
+}
+
+// pureThroughputShed: bypass queue-before-shed ONLY when the shed is armed AND
+// every capacity rejection is a throughput shed. A fast-but-full fleet
+// (decodeFloorRejections < capacityRejections) must keep queueing.
+func TestPureThroughputShedRequiresAllRejectionsBelowFloor(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	// Shed disarmed → never a pure throughput shed, regardless of counts.
+	if srv.pureThroughputShed(3, 3) {
+		t.Fatalf("shed disarmed must never report a pure throughput shed")
+	}
+
+	reg.SetDecodeFloorShed(10, true) // arm
+	cases := []struct {
+		decodeFloor, capacity int
+		want                  bool
+		why                   string
+	}{
+		{3, 3, true, "all rejections are throughput sheds → shed"},
+		{1, 3, false, "mixed (some fast-but-full) → still queue"},
+		{0, 3, false, "no throughput sheds → still queue"},
+		{0, 0, false, "no rejections at all → not a shed"},
+	}
+	for _, c := range cases {
+		if got := srv.pureThroughputShed(c.decodeFloor, c.capacity); got != c.want {
+			t.Errorf("pureThroughputShed(decodeFloor=%d, capacity=%d) = %v, want %v (%s)",
+				c.decodeFloor, c.capacity, got, c.want, c.why)
+		}
+	}
+}
 
 // HTTP-level regression for the gemma-4 over-admission fix: a fleet whose only
 // provider decodes BELOW the per-request floor (but has ample KV budget, so the
@@ -75,8 +127,12 @@ func TestDecodeFloorHardShedReturns429UnderDefaultQueueBeforeShed(t *testing.T) 
 	if status != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429 (decode-floor shed), body = %s", status, body)
 	}
-	if !strings.Contains(body, "at capacity") {
-		t.Fatalf("body = %s, want a capacity/429 error", body)
+	// A decode-floor (throughput) shed is surfaced with a DISTINCT message from an
+	// ordinary capacity 429 ("at capacity"), so it is observable as its own class
+	// — both to the client and, via the matching reason_code "decode_floor_shed",
+	// in the rejection ledger.
+	if !strings.Contains(body, "below the decode-speed floor") {
+		t.Fatalf("body = %s, want the distinct decode-floor-shed message", body)
 	}
 }
 

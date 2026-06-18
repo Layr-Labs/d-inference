@@ -342,6 +342,32 @@ func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) 
 	return hasTTFT && bestTTFT > threshold
 }
 
+// pureThroughputShed reports whether a capacity rejection (candidateCount==0,
+// capacityRejections>0) is a PURE decode-floor (throughput) shed — every
+// rejection came from the throughput gate, so no provider can decode at the
+// floor. Only then does the consumer bypass queue-before-shed: queueing a
+// fundamentally too-slow fleet just defers the same outcome to a 120s timeout.
+// A mix with concurrency/memory-full-but-fast providers (decodeFloorRejections
+// < capacityRejections) must still queue — a slot can free and serve in time.
+func (s *Server) pureThroughputShed(decodeFloorRejections, capacityRejections int) bool {
+	return s.registry.DecodeFloorShedArmed() &&
+		decodeFloorRejections > 0 && decodeFloorRejections == capacityRejections
+}
+
+// capacityShedReason returns the rejection reason_code and routing.decisions
+// outcome label for a preflight capacity shed, distinguishing a decode-floor
+// (throughput) shed from an ordinary full-fleet rejection. Keeping them distinct
+// is the only way to observe the decode-floor shed in telemetry — it 429s on a
+// tuned, opt-in threshold, so its shed rate must be measurable separately from
+// genuine machine_busy capacity pressure (the lesson from the gemma incident:
+// the mitigations we could diagnose were the ones with their own reason codes).
+func capacityShedReason(throughputShed bool) (reasonCode, outcome string) {
+	if throughputShed {
+		return "decode_floor_shed", "decode_floor_shed"
+	}
+	return "machine_busy", "capacity_429"
+}
+
 func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateModel string, alternate time.Duration, alternateOK bool) (string, time.Duration) {
 	if alternateOK && alternate < primary {
 		return alternateModel, alternate
@@ -1953,20 +1979,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// would fast-429 a momentarily-full-but-fast fleet (a queue-before-shed
 			// regression). decodeFloorRejections is the subset of capacityRejections
 			// from the throughput gate; equality means a pure throughput shed.
-			pureThroughputShed := s.registry.DecodeFloorShedArmed() &&
-				decodeFloorRejections > 0 && decodeFloorRejections == capacityRejections
-			if s.queueBeforeShedEnabled() && !pureThroughputShed {
+			throughputShed := s.pureThroughputShed(decodeFloorRejections, capacityRejections)
+			if s.queueBeforeShedEnabled() && !throughputShed {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
-				// Legacy fast-shed: immediate 429.
+				// Fast-shed: immediate 429. A decode-floor (throughput) shed is
+				// recorded with a DISTINCT reason_code/outcome so it is observable
+				// separately from ordinary capacity pressure (see capacityShedReason).
+				reasonCode, outcome := capacityShedReason(throughputShed)
 				retryAfter := s.estimateRetryAfter(model)
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				refundReservation()
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:" + outcome})
 				s.recordRejection(rejectionInfo{
 					r:                       r,
 					stage:                   "preflight_capacity",
-					reasonCode:              "machine_busy",
+					reasonCode:              reasonCode,
 					httpStatus:              http.StatusTooManyRequests,
 					keyID:                   keyIDFromContext(r.Context()),
 					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
@@ -1985,8 +2013,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					modelTooLargeRejections: modelTooLarge,
 					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
 				})
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
+				msg := fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter)
+				if throughputShed {
+					msg = fmt.Sprintf("all providers for model %q are overloaded below the decode-speed floor — retry after %ds", publicModel, retryAfter)
+				}
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded", msg,
 					withCode("rate_limit_exceeded")))
 				return
 			}
@@ -4750,19 +4781,21 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			// EXCEPTION: shed now ONLY when every rejection is a decode-floor
 			// (throughput) shed — a concurrency/memory-full fleet still queues (see
 			// the matching note on the primary path above).
-			pureThroughputShed := s.registry.DecodeFloorShedArmed() &&
-				decodeFloorRejections > 0 && decodeFloorRejections == capacityRejections
-			if s.queueBeforeShedEnabled() && !pureThroughputShed {
+			throughputShed := s.pureThroughputShed(decodeFloorRejections, capacityRejections)
+			if s.queueBeforeShedEnabled() && !throughputShed {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
+				// Distinct reason_code/outcome for a decode-floor (throughput) shed
+				// so it is observable separately from ordinary capacity pressure.
+				reasonCode, outcome := capacityShedReason(throughputShed)
 				retryAfter := s.estimateRetryAfter(model)
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				refundReservation()
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:" + outcome})
 				s.recordRejection(rejectionInfo{
 					r:                       r,
 					stage:                   "preflight_capacity",
-					reasonCode:              "machine_busy",
+					reasonCode:              reasonCode,
 					httpStatus:              http.StatusTooManyRequests,
 					keyID:                   keyIDFromContext(r.Context()),
 					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
@@ -4781,8 +4814,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					modelTooLargeRejections: modelTooLarge,
 					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
 				})
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
+				msg := fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter)
+				if throughputShed {
+					msg = fmt.Sprintf("all providers for model %q are overloaded below the decode-speed floor — retry after %ds", publicModel, retryAfter)
+				}
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded", msg,
 					withCode("rate_limit_exceeded")))
 				return
 			}

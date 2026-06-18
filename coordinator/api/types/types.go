@@ -264,7 +264,11 @@ type CreateAPIKeyResponse struct {
 
 // HealthResponse is the GET /health response.
 type HealthResponse struct {
-	Status      string `json:"status"`
+	Status string `json:"status"`
+	// Draining is true while the coordinator is gracefully draining for a
+	// restart/upgrade; in that state /health also returns HTTP 503 (not-ready).
+	// Omitted (false) during normal operation so the healthy response is unchanged.
+	Draining    bool   `json:"draining,omitempty"`
 	Providers   int    `json:"providers"`
 	Version     string `json:"version"`
 	BuildCommit string `json:"build_commit"`

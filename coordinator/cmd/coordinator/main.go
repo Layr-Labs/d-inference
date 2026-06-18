@@ -13,8 +13,10 @@
 // Configuration is defined per-package and composed into config.AppConfig.
 // See coordinator/config/ for the full schema.
 //
-// Graceful shutdown: The coordinator handles SIGINT/SIGTERM, stops the
-// eviction loop, and drains active connections with a 15-second deadline.
+// Graceful shutdown: The coordinator handles SIGINT/SIGTERM, enters drain mode,
+// stops the eviction loop, waits for in-flight requests to finish (up to
+// EIGENINFERENCE_DRAIN_GRACE, default 60s), then drains connections with a hard
+// 15-second http.Server.Shutdown deadline as the final backstop.
 package main
 
 import (
@@ -694,17 +696,33 @@ func main() {
 	sig := <-sigCh
 	logger.Info("shutting down", "signal", sig.String())
 
-	// Graceful shutdown with a deadline.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer shutdownCancel()
-
-	// Enter drain mode first so /readyz immediately reports not-ready and new
-	// inference requests get 429+Retry-After while http.Server.Shutdown waits for
-	// in-flight requests to finish within the deadline (DAR-327 Phase 1).
+	// Enter drain mode first so /readyz and /health immediately report not-ready,
+	// the capacity feed stops advertising, and new inference requests get
+	// 429+Retry-After (DAR-327 Phase 1).
 	srv.SetDraining(true)
 
 	cancel() // Stop the eviction loop.
 
+	// Wait for already-admitted in-flight requests to finish before shutting the
+	// HTTP server down. Streaming responses can run well past the 15s Shutdown
+	// deadline, so we poll Inflight() until it reaches 0 or EIGENINFERENCE_DRAIN_GRACE
+	// (default 60s) elapses — whichever comes first — instead of cutting them off.
+	// We never block forever: the grace context bounds the wait, and the hard
+	// Shutdown deadline below is the final backstop.
+	grace := api.DrainGraceFromEnv()
+	graceCtx, graceCancel := context.WithTimeout(context.Background(), grace)
+	if srv.WaitForInflightZero(graceCtx) {
+		logger.Info("drain complete; in-flight requests finished", "grace", grace.String())
+	} else {
+		logger.Warn("drain grace elapsed; forcing shutdown with requests still in flight",
+			"grace", grace.String(), "inflight", srv.Inflight())
+	}
+	graceCancel()
+
+	// Hard backstop: even after the grace wait, give Shutdown a bounded deadline so
+	// a stuck connection can't block process exit forever.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}

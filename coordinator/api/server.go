@@ -1867,9 +1867,13 @@ func (s *Server) routes() {
 
 	// Graceful drain toggle (admin only) — sets the coordinator into drain mode
 	// before a restart/upgrade so new inference requests get 429 while in-flight
-	// ones finish. Registered RAW (auth gated inside via isAdminAuthorized) like
-	// /v1/admin/metrics, and before the /v1/ catch-all. See drain.go (DAR-327).
-	s.mux.HandleFunc("POST /v1/admin/drain", s.handleAdminDrain)
+	// ones finish. Wrapped with requireAuth (the SAME pattern as the other
+	// isAdminAuthorized/requireAdminKey endpoints, e.g. invite codes) so a Privy
+	// admin JWT is parsed into the request context AND the admin key is accepted
+	// as a pseudo-account; handleAdminDrain then authorizes via isAdminAuthorized
+	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
+	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
+	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.

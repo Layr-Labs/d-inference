@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -76,11 +79,22 @@ func (s *Server) decInflight() int64 {
 // connection draining, reaches a stable 0.
 func (s *Server) drainGate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Count this request as in-flight BEFORE reading the drain flag. If we
+		// checked draining first and incremented second, a request entering in the
+		// window between a concurrent SetDraining(true) and its own increment could
+		// slip past the gate while /readyz still reported inflight:0 — telling the
+		// deploy script it was safe to kill the process mid-request. Incrementing
+		// first makes Inflight() (and thus /readyz) a strict upper bound on requests
+		// past the gate: any request that observes draining==false was already
+		// counted, so it can never be running while /readyz reports 0.
+		s.incInflight()
 		if s.IsDraining() {
+			// Lost the race (or drain was already set): back the count out and
+			// reject. A rejected request nets zero change to Inflight().
+			s.decInflight()
 			s.writeTokenRateLimited(w, "coordinator", "draining", coordinatorDrainRetryAfter)
 			return
 		}
-		s.incInflight()
 		defer s.decInflight()
 		next(w, r)
 	}
@@ -112,9 +126,18 @@ type readinessResponse struct {
 	Ready    bool  `json:"ready"`
 }
 
-// handleAdminDrain handles POST /v1/admin/drain (admin-gated, registered raw
-// like /v1/admin/metrics). It sets the coordinator into graceful-drain mode so
-// new inference requests are rejected with 429 while in-flight ones finish.
+// handleAdminDrain handles POST /v1/admin/drain. It sets the coordinator into
+// graceful-drain mode so new inference requests are rejected with 429 while
+// in-flight ones finish.
+//
+// Authorization: the route is wrapped with requireAuth (see routes() in
+// server.go) — the SAME pattern used by the other isAdminAuthorized/requireAdminKey
+// endpoints (invite codes, credit, reward). requireAuth parses a Privy admin JWT
+// into the request context AND accepts EIGENINFERENCE_ADMIN_KEY as a pseudo-account,
+// so the isAdminAuthorized check below authorizes EITHER the admin key OR a Privy
+// admin. Previously this route was registered raw with no middleware, so
+// auth.UserFromContext was never populated and the Privy-admin branch was dead —
+// only the admin key worked (the bug this fixes; scripts/admin.sh uses a Privy token).
 //
 // The body is optional: an empty body (the common case) sets draining=true. An
 // explicit JSON body {"draining": false} un-drains, for rolling back an aborted
@@ -163,4 +186,59 @@ func (s *Server) handleAdminDrain(w http.ResponseWriter, r *http.Request) {
 		"draining": draining,
 		"inflight": s.Inflight(),
 	})
+}
+
+// DefaultDrainGrace is how long SIGTERM shutdown waits for in-flight inference
+// requests to finish (after entering drain mode) before forcing the HTTP server
+// to shut down. Streaming responses can run well past the old 15s Shutdown
+// deadline, so the default is generous. Overridable via EIGENINFERENCE_DRAIN_GRACE.
+const DefaultDrainGrace = 60 * time.Second
+
+// drainGracePollInterval is how often WaitForInflightZero re-checks the in-flight
+// count while waiting for requests to finish.
+const drainGracePollInterval = 100 * time.Millisecond
+
+// DrainGraceFromEnv returns the configured SIGTERM drain grace. It reads
+// EIGENINFERENCE_DRAIN_GRACE (a Go duration string, e.g. "90s"); an unset, empty,
+// or invalid value falls back to DefaultDrainGrace. An explicit "0" disables the
+// wait so shutdown calls http.Server.Shutdown immediately.
+func DrainGraceFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("EIGENINFERENCE_DRAIN_GRACE"))
+	if raw == "" {
+		return DefaultDrainGrace
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return DefaultDrainGrace
+	}
+	return d
+}
+
+// WaitForInflightZero blocks until the in-flight inference count reaches 0 or ctx
+// is done (its deadline elapses or it is cancelled), polling periodically. It
+// returns true if inflight reached 0 (clean drain) and false if it gave up with
+// requests still in flight.
+//
+// Used by SIGTERM shutdown to let already-admitted (possibly long-streaming)
+// requests finish before calling http.Server.Shutdown. It never blocks forever:
+// the caller bounds the wait with a context deadline (EIGENINFERENCE_DRAIN_GRACE)
+// and then proceeds to Shutdown regardless — Shutdown's own deadline is the hard
+// backstop. Pair with SetDraining(true) first so no NEW requests are admitted
+// while we wait, otherwise the count may never settle.
+func (s *Server) WaitForInflightZero(ctx context.Context) bool {
+	if s.Inflight() == 0 {
+		return true
+	}
+	ticker := time.NewTicker(drainGracePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return s.Inflight() == 0
+		case <-ticker.C:
+			if s.Inflight() == 0 {
+				return true
+			}
+		}
+	}
 }

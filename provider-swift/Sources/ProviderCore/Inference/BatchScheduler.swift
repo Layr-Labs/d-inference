@@ -2161,6 +2161,18 @@ public actor BatchScheduler {
         }
         activeBridges.removeAll()
         timedOutBridges.removeAll()
+        // Release in-flight VLM/media reservations on teardown too. The vision
+        // path reserves against kvBudget without an activeBridges entry, so the
+        // bridge loop above misses it; on a forced unload/stop (vs. an LRU evict
+        // of idle work) the per-stream release may not have run yet, leaving a
+        // stale byte reservation + token accounting until the async stream
+        // termination fires. Mirror the activeBridges teardown. release is
+        // idempotent, so a later stream-termination release no-ops.
+        let visionIds = Array(activeVisionRequests.keys)
+        for id in visionIds {
+            await kvBudget?.release(requestID: id)
+        }
+        activeVisionRequests.removeAll()
         pendingSummaryCache = .empty
 
         modelWeightBytes = 0

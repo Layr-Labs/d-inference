@@ -173,4 +173,39 @@ struct BatchSchedulerVisionCapacityTests {
         #expect(await scheduler.activeRequestCount == 0,
             "a drain/cancelAll must release vision reservations like it does bridges")
     }
+
+    @Test("unloadModel teardown clears in-flight vision reservations")
+    func unloadModelClearsVisionRequests() async {
+        // A forced unload/stop (not an LRU evict of idle work) can run while a
+        // vision stream is still in flight; its per-stream release may not have
+        // fired yet. stopCurrentEngine() must release the kvBudget reservation
+        // and clear the token accounting, not leak it until the async
+        // termination. (No model is loaded, so stopCurrentEngine skips the MLX
+        // engine paths and exercises the teardown bookkeeping directly.)
+        let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 0) {
+            GlobalKVCacheBudget.MemorySnapshot(total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
+        }
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: budget)
+
+        for id in ["u", "v"] {
+            _ = await scheduler.reserveVisionRequest(
+                requestId: id, mediaDecodeBytes: 1024, kvTokens: 500)
+        }
+        #expect(await scheduler.activeRequestCount == 2)
+        #expect(await scheduler.activeVisionTokens == 1000)
+
+        await scheduler.unloadModel()
+        #expect(await scheduler.activeRequestCount == 0,
+            "unloadModel/stopCurrentEngine must clear in-flight vision requests")
+        #expect(await scheduler.activeVisionTokens == 0,
+            "unloadModel must zero the vision token accounting, not leak it")
+
+        // The kvBudget reservation must be freed too: a fresh reserve of the same
+        // id succeeds (reserveBytes rejects a still-held duplicate id).
+        let reReserved = await scheduler.reserveVisionRequest(
+            requestId: "u", mediaDecodeBytes: 1024, kvTokens: 500)
+        #expect(reReserved,
+            "unloadModel must release the kvBudget byte reservation, not just the local map")
+    }
 }

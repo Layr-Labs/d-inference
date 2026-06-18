@@ -276,9 +276,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					}
 					statusData, err := json.Marshal(statusMsg)
 					if err == nil {
-						writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
-						_ = conn.Write(writeCtx, websocket.MessageText, statusData)
-						writeCancel()
+						_ = provider.EnqueueText(loopCtx, statusData)
 					}
 					mismatchDetails := make([]string, 0, len(mismatches))
 					for _, m := range mismatches {
@@ -339,7 +337,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
-				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
+				s.challengeLoop(loopCtx, providerID, provider, tracker)
 			})
 
 			// Start the per-connection MDM verification loop. It runs the initial
@@ -1051,7 +1049,7 @@ func providerAttestationMatchesACMEKey(provider *registry.Provider, acmeResult *
 }
 
 // challengeLoop periodically sends attestation challenges to a provider.
-func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, providerID string, provider *registry.Provider, tracker *challengeTracker) {
+func (s *Server) challengeLoop(ctx context.Context, providerID string, provider *registry.Provider, tracker *challengeTracker) {
 	if s.skipChallenge {
 		return
 	}
@@ -1063,7 +1061,7 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 
 	// Send initial challenge immediately so the provider is routable
 	// without waiting for the first ticker interval.
-	s.sendChallenge(ctx, conn, providerID, provider, tracker)
+	s.sendChallenge(ctx, providerID, provider, tracker)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1079,7 +1077,7 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 			if provider.ChallengeShouldStop() {
 				return
 			}
-			s.sendChallenge(ctx, conn, providerID, provider, tracker)
+			s.sendChallenge(ctx, providerID, provider, tracker)
 		}
 	}
 }
@@ -1094,7 +1092,7 @@ func generateNonce() (string, error) {
 }
 
 // sendChallenge sends an attestation challenge to a provider and waits for the response.
-func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, providerID string, provider *registry.Provider, tracker *challengeTracker) {
+func (s *Server) sendChallenge(ctx context.Context, providerID string, provider *registry.Provider, tracker *challengeTracker) {
 	nonce, err := generateNonce()
 	if err != nil {
 		s.logger.Error("failed to generate challenge nonce", "provider_id", providerID, "error", err)
@@ -1125,7 +1123,7 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 
 	writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer writeCancel()
-	if err := conn.Write(writeCtx, websocket.MessageText, data); err != nil {
+	if err := provider.WriteText(writeCtx, data); err != nil {
 		s.logger.Error("failed to send challenge", "provider_id", providerID, "error", err)
 		tracker.remove(nonce)
 		return
@@ -1144,13 +1142,13 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 		tracker.remove(nonce)
 		if resp == nil {
 			// Channel closed without response
-			s.handleTransientChallengeFailure(conn, providerID, "no response")
+			s.handleTransientChallengeFailure(provider.Conn, providerID, "no response")
 			return
 		}
 		s.verifyChallengeResponse(providerID, provider, pc, resp)
 	case <-time.After(timeout):
 		tracker.remove(nonce)
-		s.handleTransientChallengeFailure(conn, providerID, "timeout")
+		s.handleTransientChallengeFailure(provider.Conn, providerID, "timeout")
 	}
 }
 
@@ -1563,9 +1561,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				}
 				statusData, err := json.Marshal(statusMsg)
 				if err == nil {
-					writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = provider.Conn.Write(writeCtx, websocket.MessageText, statusData)
-					writeCancel()
+					_ = provider.EnqueueText(context.Background(), statusData)
 				}
 			}
 			return
@@ -3264,8 +3260,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 // the WebSocket connection. This allows the provider to react — e.g. by
 // auto-reporting unified logs when it learns it is self_signed or untrusted.
 func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registry.TrustLevel, status string, reason string) {
-	conn := provider.Conn
-	if conn == nil {
+	if provider == nil || provider.Conn == nil {
 		return
 	}
 	msg := protocol.TrustStatusMessage{
@@ -3278,7 +3273,5 @@ func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registr
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = conn.Write(ctx, websocket.MessageText, data)
+	_ = provider.EnqueueText(context.Background(), data)
 }

@@ -44,7 +44,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
-	"nhooyr.io/websocket"
 )
 
 // dispatchOutcome is the result of a per-attempt dispatch phase (provider
@@ -752,7 +751,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// have been increased by reserveAdditionalForProvider. Don't overwrite.
 		data, _ := json.Marshal(wireMsg)
 		d.pr.Timing.DispatchedAt = time.Now()
-		if err := d.provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+		if err := writeProviderInferenceRequest(r.Context(), d.provider, data); err != nil {
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
 			s.refundProviderExtra(d.pr)

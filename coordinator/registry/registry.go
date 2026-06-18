@@ -335,6 +335,7 @@ type Provider struct {
 
 	Status           ProviderStatus
 	Conn             *websocket.Conn
+	writer           *providerWriter
 	LastHeartbeat    time.Time
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
@@ -2360,6 +2361,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		TemplateHashes:          CloneStringMap(msg.TemplateHashes),
 		Status:                  StatusOnline,
 		Conn:                    conn,
+		writer:                  newProviderWriter(conn),
 		LastHeartbeat:           time.Now(),
 		Reputation:              NewReputation(),
 		pendingReqs:             make(map[string]*PendingRequest),
@@ -2627,18 +2629,9 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		return fmt.Errorf("failed to marshal load_model message: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-
-	p.mu.Lock()
-	conn := p.Conn
-	p.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("provider %q has no active connection", providerID)
-	}
-
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+	if err := p.WriteText(ctx, data); err != nil {
 		return fmt.Errorf("failed to send load_model to provider %q: %w", providerID, err)
 	}
 
@@ -2675,18 +2668,9 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 		return fmt.Errorf("failed to marshal prefetch_model message: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-
-	p.mu.Lock()
-	conn := p.Conn
-	p.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("provider %q has no active connection", providerID)
-	}
-
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+	if err := p.WriteText(ctx, data); err != nil {
 		return fmt.Errorf("failed to send prefetch_model to provider %q: %w", providerID, err)
 	}
 
@@ -2733,18 +2717,9 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 		return fmt.Errorf("failed to marshal desired_models message: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-
-	p.mu.Lock()
-	conn := p.Conn
-	p.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("provider %q has no active connection", providerID)
-	}
-
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+	if err := p.WriteText(ctx, data); err != nil {
 		return fmt.Errorf("failed to send desired_models to provider %q: %w", providerID, err)
 	}
 
@@ -3347,9 +3322,7 @@ func (r *Registry) Disconnect(id string) {
 	// Disconnect runs serially in the eviction loop and Close would block ~5s
 	// waiting for a handshake the stale peer won't send. No-op if already closed;
 	// outside r.mu so it can't stall the registry.
-	if p.Conn != nil {
-		_ = p.Conn.CloseNow()
-	}
+	p.closeWriterNow()
 
 	// Close this connection's session row (async; durable uptime history).
 	// Covers both graceful disconnects and evictStale (which calls Disconnect).

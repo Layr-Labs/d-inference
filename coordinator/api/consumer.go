@@ -37,7 +37,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
-	"nhooyr.io/websocket"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 )
@@ -117,10 +116,17 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
 	defer cancel()
-	if err := provider.Conn.Write(ctx, websocket.MessageText, cancelData); err != nil {
+	if err := provider.EnqueueText(ctx, cancelData); err != nil {
 		s.logger.Debug("failed to send cancel (provider may have disconnected)",
 			"request_id", requestID, "error", err)
 	}
+}
+
+func writeProviderInferenceRequest(ctx context.Context, provider *registry.Provider, data []byte) error {
+	if provider == nil || provider.Conn == nil {
+		return errors.New("provider websocket is not connected")
+	}
+	return provider.WriteText(ctx, data)
 }
 
 // cancelDispatch cleans up a speculative dispatch participant that lost the
@@ -658,7 +664,7 @@ func (s *Server) dispatchOneProvider(
 	if pr.Timing != nil {
 		pr.Timing.DispatchedAt = time.Now()
 	}
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
 		refundExtra()
 		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
@@ -5235,7 +5241,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	data, _ := json.Marshal(wireMsg)
 	timing.DispatchedAt = time.Now()
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
 		cleanupPending()
 		refundExtra()
 		refundReservation()

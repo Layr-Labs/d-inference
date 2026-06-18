@@ -8,6 +8,12 @@
 # and NO other line (step-ca :9000, MicroMDM :9002, internal :8090 listener) is
 # mutated.
 #
+# Also covers two security/safety-critical helpers added in the Phase 2 review:
+#   - load_admin_env: PARSES (never sources) the EIGENINFERENCE_ADMIN_KEY line,
+#     incl. a regression canary proving env-file values are NOT executed.
+#   - pin_image / restore_image_pin / accept_image_pin: the image-pin rollback so
+#     an aborted deploy never leaves the shared pin file on an unaccepted image.
+#
 # Run:  ./deploy/gcp/prod/deploy_test.sh        (or: bash deploy/gcp/prod/deploy_test.sh)
 # Exit: 0 if all assertions pass, 1 otherwise.
 
@@ -51,8 +57,9 @@ ORIG="$WORK/Caddyfile.orig"
 CF="$WORK/Caddyfile"
 
 # Sample mirrors deploy/gcp/prod/Caddyfile: the snippet contains the step-ca
-# (:9000) and MicroMDM (:9002) https upstreams plus the single coordinator
-# upstream (:8080), imported by two public sites and the internal :8090 listener.
+# (:9000) and MicroMDM (:9002) https upstreams, the /dl/* static handler, and the
+# single coordinator upstream (:8080), imported by two public sites and the
+# internal :8090 listener.
 cat > "$ORIG" <<'CADDY'
 (coordinator_routes) {
 	handle /acme/* {
@@ -69,6 +76,10 @@ cat > "$ORIG" <<'CADDY'
 				tls_insecure_skip_verify
 			}
 		}
+	}
+	handle /dl/* {
+		root * /var/www/html
+		file_server
 	}
 	reverse_proxy 127.0.0.1:8080 {
 		health_uri /health
@@ -113,9 +124,10 @@ added="$(printf '%s\n' "$diffout" | grep -c '^>')"
 assert_eq "exactly one line removed by flip" "1" "$removed"
 assert_eq "exactly one line added by flip" "1" "$added"
 
-# ---- step-ca / MicroMDM / internal-listener lines untouched ----
+# ---- step-ca / MicroMDM / /dl static / internal-listener lines untouched ----
 assert_contains "step-ca upstream :9000 untouched" "$CF" "reverse_proxy https://127.0.0.1:9000"
 assert_contains "MicroMDM upstream :9002 untouched" "$CF" "reverse_proxy https://127.0.0.1:9002"
+assert_contains "/dl/* static handler untouched by flip" "$CF" "handle /dl/* {"
 assert_contains "internal webhook listener :8090 untouched" "$CF" "http://127.0.0.1:8090 {"
 
 # ---- reversible: flip back restores the file byte-for-byte ----
@@ -156,6 +168,89 @@ assert_eq "color_for_port 8080" "blue" "$(color_for_port 8080)"
 assert_eq "color_for_port 8081" "green" "$(color_for_port 8081)"
 assert_eq "other_color blue" "green" "$(other_color blue)"
 assert_eq "other_color green" "blue" "$(other_color green)"
+
+echo
+echo "# deploy_test: load_admin_env (PARSE the admin key — never source the env file)"
+
+# load_admin_env reads ONLY EIGENINFERENCE_ADMIN_KEY from a docker --env-file
+# (KEY=VALUE) file. It must NEVER source/eval it (the file holds secrets like the
+# 12-word MNEMONIC and URLs with shell metacharacters that would run AS ROOT).
+SECENV="$WORK/secrets.env"
+# shellcheck disable=SC2034  # read by load_admin_env() in the sourced deploy.sh
+DINF_ENV_FILE="$SECENV"
+
+printf 'EIGENINFERENCE_ADMIN_KEY=plainkey123\nOTHER=x\n' > "$SECENV"
+EIGENINFERENCE_ADMIN_KEY=""; load_admin_env
+assert_eq "load_admin_env reads a plain key" "plainkey123" "${EIGENINFERENCE_ADMIN_KEY:-}"
+
+printf 'EIGENINFERENCE_ADMIN_KEY=a=b=c\n' > "$SECENV"
+EIGENINFERENCE_ADMIN_KEY=""; load_admin_env
+assert_eq "load_admin_env keeps '=' chars in the value (cut -f2-)" "a=b=c" "${EIGENINFERENCE_ADMIN_KEY:-}"
+
+printf 'EIGENINFERENCE_ADMIN_KEY="quotedkey"\n' > "$SECENV"
+EIGENINFERENCE_ADMIN_KEY=""; load_admin_env
+assert_eq "load_admin_env strips surrounding double quotes" "quotedkey" "${EIGENINFERENCE_ADMIN_KEY:-}"
+
+printf "EIGENINFERENCE_ADMIN_KEY='quotedkey2'\n" > "$SECENV"
+EIGENINFERENCE_ADMIN_KEY=""; load_admin_env
+assert_eq "load_admin_env strips surrounding single quotes" "quotedkey2" "${EIGENINFERENCE_ADMIN_KEY:-}"
+
+# SECURITY REGRESSION: hostile values (command substitution) must NOT execute.
+# Sourcing the file (the bug this fixes) would run touch $CANARY; parsing must not.
+CANARY="$WORK/CANARY_EXECUTED"
+rm -f "$CANARY"
+cat > "$SECENV" <<EOF2
+MNEMONIC=word1 word2 \$(touch $CANARY) more
+EVIL=\`touch $CANARY\`
+EIGENINFERENCE_ADMIN_KEY=safekey
+EOF2
+EIGENINFERENCE_ADMIN_KEY=""; load_admin_env
+assert_eq "load_admin_env reads the key past hostile lines" "safekey" "${EIGENINFERENCE_ADMIN_KEY:-}"
+if [ ! -e "$CANARY" ]; then
+  pass "load_admin_env does NOT execute env-file values (no source/eval)"
+else
+  fail "SECURITY: env-file value was executed" "canary $CANARY exists"
+fi
+
+printf 'OTHER=x\n' > "$SECENV"
+EIGENINFERENCE_ADMIN_KEY=""; load_admin_env
+assert_eq "load_admin_env yields empty key when absent" "" "${EIGENINFERENCE_ADMIN_KEY:-}"
+
+echo
+echo "# deploy_test: image-pin rollback (pin_image / restore_image_pin / accept_image_pin)"
+
+# shellcheck disable=SC2034  # DRY_RUN read by the dry-run guards in sourced deploy.sh
+DRY_RUN=0
+PINENV="$WORK/deploy.env"
+# shellcheck disable=SC2034  # read by pin_image/restore_image_pin in sourced deploy.sh
+DINF_DEPLOY_ENV="$PINENV"
+# DINF_DEPLOY_ENV_BAK / DINF_DEPLOY_ENV_EXISTED are set by pin_image itself, so the
+# tests below intentionally do NOT pre-seed them.
+
+# (a) pin when the file did NOT exist -> restore removes it entirely.
+rm -f "$PINENV"
+pin_image "repo/coord:abc" >/dev/null 2>&1
+assert_contains "pin_image writes DINF_IMAGE" "$PINENV" "DINF_IMAGE=repo/coord:abc"
+restore_image_pin >/dev/null 2>&1
+if [ ! -f "$PINENV" ]; then pass "restore_image_pin removes a pin file created this run"; else fail "restore_image_pin should remove a newly-created pin file"; fi
+
+# (b) pin OVER an existing file -> accept keeps it (restore becomes a no-op).
+printf 'OTHER=1\n' > "$PINENV"
+pin_image "repo/coord:def" >/dev/null 2>&1
+assert_contains "pin_image preserves other keys" "$PINENV" "OTHER=1"
+assert_contains "pin_image sets the new image" "$PINENV" "DINF_IMAGE=repo/coord:def"
+accept_image_pin
+restore_image_pin >/dev/null 2>&1
+assert_contains "accept_image_pin keeps the pin (restore is a no-op)" "$PINENV" "DINF_IMAGE=repo/coord:def"
+
+# (c) pin OVER an existing pinned file -> restore brings back the original image.
+printf 'DINF_IMAGE=old/img:1\nOTHER=2\n' > "$PINENV"
+pin_image "new/img:2" >/dev/null 2>&1
+assert_contains "pin_image replaces the old image line" "$PINENV" "DINF_IMAGE=new/img:2"
+assert_absent  "pin_image drops the prior image line" "$PINENV" "DINF_IMAGE=old/img:1"
+restore_image_pin >/dev/null 2>&1
+assert_contains "restore_image_pin restores the prior image pin" "$PINENV" "DINF_IMAGE=old/img:1"
+assert_absent  "restore_image_pin drops the unaccepted image pin" "$PINENV" "DINF_IMAGE=new/img:2"
 
 echo
 echo "# deploy_test: ${PASS} passed, ${FAIL} failed"

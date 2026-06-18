@@ -93,23 +93,40 @@ from `EIGENINFERENCE_MDM_WEBHOOK_SECRET` (never stored in the Caddyfile).
 
 ## Deploy sequence (`deploy.sh`)
 
-Run on the box. `deploy.sh`:
+Run on the box. `deploy.sh` moves providers to the new color **before** draining
+and stopping the old one, so the new color never serves consumers with zero
+providers (which would 429):
 
 1. **Detect** the active color from the Caddyfile upstream port.
 2. **Pin** the new image for the idle color (`--image`, optional → `DINF_IMAGE`
-   in `/etc/d-inference/deploy.env`, read by `darkbloom-run.sh`).
-3. **Start** the idle color: `systemctl start darkbloom-coordinator@<idle>`.
+   in `/etc/d-inference/deploy.env`, read by `darkbloom-run.sh`). The pin is
+   snapshotted and rolled back if the deploy aborts before cutover; it is kept
+   once the cutover is accepted (so an aborted deploy never leaves the shared pin
+   file pointing at an unaccepted image).
+3. **Restart** the idle color: `systemctl restart darkbloom-coordinator@<idle>`
+   (**restart, not start** — a stale already-running idle container must re-exec
+   `darkbloom-run.sh` to pick up the newly pinned `DINF_IMAGE`).
 4. **Wait** for the idle color's `/health` **and** `/readyz` to return 200
    (Phase 1 endpoints).
 5. **Cut over**: `flip_upstream` the Caddy port old→new + graceful `caddy reload`.
-6. **Drain** the old color: `POST /v1/admin/drain` (Phase 1), then poll its
-   `/readyz` until `inflight == 0` (or timeout).
-7. **Stop** the old color: `systemctl stop darkbloom-coordinator@<old>`.
+6. **Going-away**: `POST /v1/admin/going-away` to the **old** color
+   (**DAR-327 Phase 3**, PR #396; admin-gated, returns `{"sent":N}`) so its
+   providers reconnect and — Caddy already flipped — land on the **new** color.
+7. **Wait for providers**: poll the new color's `/health` until its `providers`
+   count is `> 0` (the reconnects landed). Warns (does not abort) on timeout.
+8. **Drain** the old color: `POST /v1/admin/drain` (Phase 1), then poll its
+   `/readyz` until `inflight == 0`. If it does **not** drain in time the old
+   color is **not** stopped (that would cut in-flight requests) — `deploy.sh`
+   exits nonzero with the cutover already done; re-run with `--force` to stop
+   despite in-flight requests.
+9. **Stop** the old color: `systemctl stop darkbloom-coordinator@<old>`
+   (`deploy.sh` fails if the stop returns nonzero, so a still-attached old color
+   never lingers silently).
 
-Stopping the old color triggers the coordinator's `going_away` provider broadcast
-(**DAR-327 Phase 3**, separate PR) so providers reconnect to the new color
-instantly instead of waiting for a heartbeat timeout. `deploy.sh` only performs
-the graceful stop; the broadcast ships in Phase 3.
+The going-away POST in step 6 is what hands providers to the new color; steps 8–9
+then retire the old color with no capacity gap. (`going_away` is also broadcast
+when a coordinator is stopped, but step 6 triggers it explicitly and early so the
+reconnects happen *before* the drain rather than after the old color is gone.)
 
 ```bash
 # Preview everything, change nothing:
@@ -153,10 +170,43 @@ sudo ./deploy.sh --rollback --force   # DANGEROUS: may route traffic to a dead p
 
 - **Phase 1** — `GET /readyz` (exposes an `inflight` counter, e.g.
   `{"inflight":0}`) and `POST /v1/admin/drain` (admin-authenticated). Until
-  Phase 1 lands, steps 4 and 6 will not see these endpoints.
-- **Phase 3** — graceful coordinator stop broadcasts `going_away` to providers.
+  Phase 1 lands, steps 4 and 8 will not see these endpoints.
+- **Phase 3** (PR #396) — `POST /v1/admin/going-away` (admin-authenticated;
+  returns `200 {"sent":N}`) tells the old color's providers to reconnect so they
+  re-land on the already-flipped new color. (`going_away` is also broadcast on a
+  graceful coordinator stop.) Until Phase 3 lands, step 6 has no endpoint to call
+  (it warns and continues; providers still reconnect within the heartbeat
+  timeout).
 
 ## One-time install on the box
+
+> **Prerequisite units.** `darkbloom-coordinator@.service` declares
+> `Requires=docker.service cloud-sql-proxy.service`, so both must already be
+> installed and startable on the box (the coordinator reaches Cloud SQL via the
+> proxy on `127.0.0.1:5432` when `EIGENINFERENCE_DATABASE_URL` is set). Install
+> `cloud-sql-proxy.service` the same way `deploy/gcp/vm-startup.sh` does before
+> enabling a color, or the unit will refuse to start instead of crash-looping.
+
+> **PROD ENV — required before starting any service.**
+> `deploy/gcp/refresh-env.sh` (and `vm-startup.sh`) currently hardcode **DEV**
+> values into `/etc/d-inference/env`: `DOMAIN=api.dev.darkbloom.xyz`,
+> `EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz`,
+> `EIGENINFERENCE_CONSOLE_URL`/`CORS_ORIGIN=…console.dev.darkbloom.xyz`. The
+> platform passes `DOMAIN` to MicroMDM's `-server-url` and step-ca's `--dns`
+> (`start-platform.sh`), and the coordinator builds enrollment/callback URLs from
+> `EIGENINFERENCE_BASE_URL`. Starting the **prod** box with dev values mis-issues
+> the MDM server URL, ACME DNS name, and enrollment profiles. Before
+> `enable --now` below you MUST either:
+> - add a **prod** env generator (a prod variant of `refresh-env.sh`), or
+> - override `DOMAIN`, `EIGENINFERENCE_BASE_URL`, `EIGENINFERENCE_CONSOLE_URL`,
+>   and `CORS_ORIGIN` in `/etc/d-inference/env` to the prod hostnames (e.g.
+>   `api.darkbloom.dev`).
+>
+> The `/dl/*` route added to `deploy/gcp/prod/Caddyfile` serves static bundles
+> from `/var/www/html` (same as the combined `coordinator/Caddyfile`); ensure
+> that directory exists on the box and holds the published provider bundle, or the
+> release fallback URL `/dl/eigeninference-bundle-macos-arm64.tar.gz` 404s and
+> `scripts/install.sh` breaks.
 
 ```bash
 # Wrapper + units (committed, secret-free):
@@ -168,6 +218,13 @@ sudo install -m 0644 deploy/gcp/prod/darkbloom-coordinator@.service /etc/systemd
 sudo install -m 0644 deploy/gcp/prod/Caddyfile /etc/caddy/Caddyfile
 
 sudo systemctl daemon-reload
+
+# MIGRATION (existing box only): the pre-split single unit d-inference-coordinator
+# owns ports 8080 / 9000 / 9002. Disable it FIRST so the platform (9000/9002) and
+# coordinator@blue (8080) can bind those ports and Caddy stops proxying the old
+# process. Skip on a fresh box that never ran the combined unit.
+sudo systemctl disable --now d-inference-coordinator.service || true
+
 sudo systemctl enable --now darkbloom-platform.service
 sudo systemctl enable --now darkbloom-coordinator@blue   # initial active color
 sudo systemctl reload caddy
@@ -179,11 +236,16 @@ Secrets are unchanged: GCP Secret Manager → tmpfs `/etc/d-inference/env`
 service-account token from the metadata server. `/etc/d-inference/deploy.env`
 holds only the non-secret `DINF_IMAGE` pin.
 
-`deploy.sh` itself sources `EIGENINFERENCE_ADMIN_KEY` from `/etc/d-inference/env`
-(path overridable via `DINF_ENV_FILE`) **only at drain time**, to authenticate
-`POST /v1/admin/drain`. It never prints or writes secret values and skips this
-entirely under `--dry-run`. If the key is missing the drain step warns and
-continues (the graceful container stop still finishes in-flight requests).
+`deploy.sh` **parses** `EIGENINFERENCE_ADMIN_KEY` from `/etc/d-inference/env`
+(path overridable via `DINF_ENV_FILE`) **only at cutover time**, to authenticate
+the going-away and drain POSTs. It reads that single line with `grep`/`cut` and
+**never `source`s/`. `s the file** — the file is docker `--env-file` syntax
+(`KEY=VALUE`), not shell, so sourcing it would execute secret values (the 12-word
+`MNEMONIC`, `&`/URL/`$()` characters) as shell commands **as root**. The key is
+never printed or written, and is not read under `--dry-run`. If the key is missing
+the going-away/drain steps warn and continue (the explicit going-away may be
+rejected, but providers still reconnect within the heartbeat timeout; the graceful
+container stop still finishes in-flight requests).
 
 ## Manual validation (human-only, on the GCP box)
 

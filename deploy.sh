@@ -1,41 +1,52 @@
 #!/usr/bin/env bash
 # deploy.sh — DAR-327 Phase 2: true blue-green coordinator deploy orchestrator.
 #
-# Runs ON the GCE coordinator box. Performs a zero-downtime color swap:
+# Runs ON the GCE coordinator box. Performs a zero-downtime color swap. Providers
+# are moved to the new color BEFORE the old color is drained/stopped, so the new
+# color never serves consumers with zero providers (which would 429):
 #
 #   1. detect the active color from the on-box Caddyfile upstream port
-#   2. (optional) pin the new image for the idle color
-#   3. start the IDLE color           (systemctl start darkbloom-coordinator@<idle>)
+#   2. (optional) pin the new image for the idle color (rolled back if the deploy
+#      is aborted before cutover; kept once the cutover is accepted)
+#   3. restart the IDLE color         (systemctl restart darkbloom-coordinator@<idle>)
+#      — restart, NOT start, so a stale idle container re-execs with the new image
 #   4. wait for idle /health AND /readyz  (DAR-327 Phase 1 endpoints)
 #   5. flip the Caddy upstream old->new + graceful `caddy reload`  (cutover)
-#   6. drain the OLD color            (POST /v1/admin/drain, Phase 1) until inflight==0
-#   7. stop the OLD color             (systemctl stop darkbloom-coordinator@<old>)
+#   6. POST /v1/admin/going-away to the OLD color (DAR-327 Phase 3, PR #396) so its
+#      providers reconnect and — Caddy already flipped — land on the NEW color
+#   7. wait until the NEW color reports providers>0 (the reconnects landed)
+#   8. drain the OLD color            (POST /v1/admin/drain, Phase 1) until inflight==0
+#   9. stop the OLD color             (systemctl stop darkbloom-coordinator@<old>)
 #
-# Stopping the old color triggers the coordinator's `going_away` provider
-# broadcast (DAR-327 Phase 3, separate PR) so providers reconnect to the new
-# color instantly instead of waiting for a heartbeat timeout. This script only
-# performs the graceful stop; the broadcast itself ships in Phase 3.
+# Steps 6-7 explicitly hand providers to the new color via the Phase 3
+# going-away endpoint; the drain (8) and stop (9) then retire the old color with
+# no capacity gap. If the drain does not complete the old color is NOT stopped
+# (it would cut in-flight requests) unless --force is given.
 #
 # ROLLBACK (valid any time AFTER the flip and BEFORE the old color is stopped):
 #   ./deploy.sh --rollback
-# flips the Caddy upstream back to the still-running previous color and reloads.
+# flips the Caddy upstream back to the still-running previous color and reloads,
+# restoring the on-disk Caddyfile if the reload itself fails.
 #
 # SAFETY:
-#   * --dry-run prints the full plan and mutates NOTHING.
+#   * --dry-run prints the full plan (new ordering) and mutates NOTHING.
 #   * destructive steps require interactive confirmation (skip with -y/--yes).
 #   * the Caddy port flip is the self-contained, unit-tested function
 #     flip_upstream(); see deploy/gcp/prod/deploy_test.sh.
 #   * sourcing this file (e.g. from the test) defines the functions but NEVER
 #     runs main — see the BASH_SOURCE guard at the bottom.
-#   * the ONLY secret touched here is EIGENINFERENCE_ADMIN_KEY: it is sourced
-#     from /etc/d-inference/env (Secret Manager -> tmpfs -> --env-file) at drain
-#     time to authenticate POST /v1/admin/drain. It is never printed or written,
-#     and is NOT read in --dry-run. All other coordinator secrets stay in that
-#     file and are never touched here.
+#   * the ONLY secret touched here is EIGENINFERENCE_ADMIN_KEY: it is PARSED (a
+#     single grep'd line — never `source`d/`.`d) from /etc/d-inference/env
+#     (Secret Manager -> tmpfs -> --env-file) at cutover time to authenticate the
+#     admin going-away/drain POSTs. That file is docker --env-file syntax, NOT
+#     shell: sourcing it would execute secret values (e.g. the 12-word MNEMONIC,
+#     '&'/URL chars) as shell commands AS ROOT, so we never source it. The key is
+#     never printed or written, and is NOT read in --dry-run. All other
+#     coordinator secrets stay in that file and are never touched here.
 #
 # Cross-phase contracts (separate PRs; referenced, not implemented here):
 #   Phase 1 : GET /readyz  +  POST /v1/admin/drain
-#   Phase 3 : graceful coordinator stop broadcasts `going_away`
+#   Phase 3 : POST /v1/admin/going-away (admin-gated; returns 200 {"sent":N})
 
 # NOTE: shell options are set inside main() so that sourcing this file for tests
 # does not mutate the caller's shell. The functions below are written to not
@@ -52,15 +63,21 @@ HEALTH_HOST="${HEALTH_HOST:-127.0.0.1}"
 HEALTH_PATH="${HEALTH_PATH:-/health}"
 READYZ_PATH="${READYZ_PATH:-/readyz}"
 DRAIN_PATH="${DRAIN_PATH:-/v1/admin/drain}"
+# Phase 3 (PR #396) endpoint: tells the OLD color's providers to reconnect so
+# they re-land on the already-flipped NEW color. Admin-gated; returns {"sent":N}.
+GOING_AWAY_PATH="${GOING_AWAY_PATH:-/v1/admin/going-away}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
 DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-120}"
+# How long to wait for the NEW color to report providers>0 after going-away.
+PROVIDERS_TIMEOUT="${PROVIDERS_TIMEOUT:-60}"
 CADDY_BIN="${CADDY_BIN:-caddy}"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
 CURL_BIN="${CURL_BIN:-curl}"
 DINF_DEPLOY_ENV="${DINF_DEPLOY_ENV:-/etc/d-inference/deploy.env}"
 # Secrets env file (Secret Manager -> tmpfs). Holds EIGENINFERENCE_ADMIN_KEY,
-# sourced at drain time to authenticate POST /v1/admin/drain. Distinct from the
-# non-secret DINF_DEPLOY_ENV image-pin file above. Overridable for tests.
+# whose single line is PARSED (never sourced; see load_admin_env) at cutover time
+# to authenticate the admin going-away/drain POSTs. Distinct from the non-secret
+# DINF_DEPLOY_ENV image-pin file above. Overridable for tests.
 DINF_ENV_FILE="${DINF_ENV_FILE:-/etc/d-inference/env}"
 
 # Runtime flags (main overrides from CLI args).
@@ -69,6 +86,13 @@ ROLLBACK=0
 ASSUME_YES=0
 FORCE=0
 IMAGE_REF=""
+
+# Image-pin rollback state (set by pin_image, consumed by restore/accept). The
+# pin in DINF_DEPLOY_ENV is shared by BOTH colors, so an aborted deploy must
+# restore it or the still-live OLD color would pull the unaccepted image on its
+# next restart. DINF_DEPLOY_ENV_BAK="" means "no pin to roll back".
+DINF_DEPLOY_ENV_BAK=""
+DINF_DEPLOY_ENV_EXISTED=0
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -237,16 +261,31 @@ reload_caddy() {
   "$CADDY_BIN" reload --config "$CADDYFILE" --adapter caddyfile
 }
 
+# pin_image <ref> — write DINF_IMAGE=<ref> to the (shared) DINF_DEPLOY_ENV pin
+# file so the idle color re-execs with the new image. The previous pin state is
+# snapshotted first so restore_image_pin can undo it if the deploy is aborted
+# BEFORE the cutover is accepted (the OLD color shares this file and would
+# otherwise pull the unaccepted image on its next systemd restart). The pin is
+# made permanent by accept_image_pin once the cutover succeeds.
 pin_image() {
   local ref="$1"
   log "Pinning idle-color image: DINF_IMAGE=$ref -> $DINF_DEPLOY_ENV"
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "DRY-RUN: would write DINF_IMAGE=$ref to $DINF_DEPLOY_ENV (read by darkbloom-run.sh via EnvironmentFile)"
+    log "DRY-RUN: would snapshot $DINF_DEPLOY_ENV, then write DINF_IMAGE=$ref (read by darkbloom-run.sh via EnvironmentFile); the pin is rolled back if the deploy aborts before cutover, kept once cutover is accepted"
     return 0
   fi
   local dir tmp
   dir="$(dirname "$DINF_DEPLOY_ENV")"
   mkdir -p "$dir"
+  # Snapshot the current pin so an aborted/declined/unhealthy deploy can restore
+  # it. An empty backup with DINF_DEPLOY_ENV_EXISTED=0 marks "file did not exist".
+  DINF_DEPLOY_ENV_BAK="$(mktemp)" || die "mktemp failed"
+  if [ -f "$DINF_DEPLOY_ENV" ]; then
+    DINF_DEPLOY_ENV_EXISTED=1
+    cat "$DINF_DEPLOY_ENV" > "$DINF_DEPLOY_ENV_BAK"
+  else
+    DINF_DEPLOY_ENV_EXISTED=0
+  fi
   tmp="$(mktemp)" || die "mktemp failed"
   if [ -f "$DINF_DEPLOY_ENV" ]; then
     grep -v '^DINF_IMAGE=' "$DINF_DEPLOY_ENV" > "$tmp" || true
@@ -255,6 +294,32 @@ pin_image() {
   cat "$tmp" > "$DINF_DEPLOY_ENV"
   rm -f "$tmp"
   chmod 644 "$DINF_DEPLOY_ENV"
+}
+
+# restore_image_pin — undo a pin_image() write. Called on any exit BEFORE the
+# cutover is accepted (via the EXIT trap in main). No-op if nothing was pinned or
+# the pin was already accepted (accept_image_pin clears the backup).
+restore_image_pin() {
+  [ -n "${DINF_DEPLOY_ENV_BAK:-}" ] || return 0
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  if [ "${DINF_DEPLOY_ENV_EXISTED:-0}" -eq 1 ]; then
+    warn "Deploy aborted before cutover: restoring previous image pin in $DINF_DEPLOY_ENV."
+    cat "$DINF_DEPLOY_ENV_BAK" > "$DINF_DEPLOY_ENV" 2>/dev/null || warn "failed to restore $DINF_DEPLOY_ENV"
+    chmod 644 "$DINF_DEPLOY_ENV" 2>/dev/null || true
+  else
+    warn "Deploy aborted before cutover: removing image pin $DINF_DEPLOY_ENV (created this run)."
+    rm -f "$DINF_DEPLOY_ENV" 2>/dev/null || warn "failed to remove $DINF_DEPLOY_ENV"
+  fi
+  rm -f "$DINF_DEPLOY_ENV_BAK"
+  DINF_DEPLOY_ENV_BAK=""
+}
+
+# accept_image_pin — keep the pin permanently (cutover succeeded) and disarm the
+# restore_image_pin rollback by dropping the backup.
+accept_image_pin() {
+  [ -n "${DINF_DEPLOY_ENV_BAK:-}" ] || return 0
+  rm -f "$DINF_DEPLOY_ENV_BAK"
+  DINF_DEPLOY_ENV_BAK=""
 }
 
 # wait_healthy <color> <port> — poll /health AND /readyz until both 200 or timeout.
@@ -282,26 +347,36 @@ wait_healthy() {
   return 1
 }
 
-# load_admin_env — source the secrets env file so EIGENINFERENCE_ADMIN_KEY is
-# available for the authenticated drain request. `set -a` exports each assignment
-# for the duration of the source; values are NEVER printed. Called only at real
-# drain time (after the --dry-run early return) so the plan stays secret-free.
-# No-op + warning if the file is absent/unreadable (caller still warns on empty
-# key and continues).
+# load_admin_env — read ONLY the EIGENINFERENCE_ADMIN_KEY line from the secrets
+# env file into the global of the same name, for the authenticated going-away +
+# drain requests.
+#
+# SECURITY: that file is docker --env-file syntax (KEY=VALUE), NOT shell. Sourcing
+# it (`.`/`source`) would execute values — the 12-word MNEMONIC, '&', URL/`$()`
+# chars — as shell commands AS ROOT (secret leak / RCE). So we never source it; we
+# grep the single line and strip optional surrounding quotes. No eval, no source.
+# The value is never printed. Called only at real cutover time (after the
+# --dry-run early returns) so the plan stays secret-free. No-op + warning if the
+# file is absent/unreadable (caller still warns on empty key and continues).
 load_admin_env() {
   if [ -r "$DINF_ENV_FILE" ]; then
-    # Runtime secrets file (Secret Manager -> tmpfs); not present at lint time, so
-    # its source path cannot be followed by shellcheck.
-    set -a
-    # shellcheck source=/dev/null
-    . "$DINF_ENV_FILE"
-    set +a
+    # First match wins; cut -f2- keeps '=' chars in the value; 2>/dev/null + the
+    # lack of `set -e` make a no-match safely yield an empty key.
+    EIGENINFERENCE_ADMIN_KEY="$(grep -E '^EIGENINFERENCE_ADMIN_KEY=' "$DINF_ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)"
+    # Strip one pair of surrounding quotes if the value is quoted in the env file.
+    case "$EIGENINFERENCE_ADMIN_KEY" in
+      '"'*'"') EIGENINFERENCE_ADMIN_KEY="${EIGENINFERENCE_ADMIN_KEY#\"}"; EIGENINFERENCE_ADMIN_KEY="${EIGENINFERENCE_ADMIN_KEY%\"}" ;;
+      "'"*"'") EIGENINFERENCE_ADMIN_KEY="${EIGENINFERENCE_ADMIN_KEY#\'}"; EIGENINFERENCE_ADMIN_KEY="${EIGENINFERENCE_ADMIN_KEY%\'}" ;;
+    esac
   else
-    warn "secrets env file not readable at $DINF_ENV_FILE; admin key unavailable for drain auth"
+    warn "secrets env file not readable at $DINF_ENV_FILE; admin key unavailable for going-away/drain auth"
   fi
 }
 
 # drain_color <color> <port> — POST /v1/admin/drain then poll /readyz inflight==0.
+# Returns 0 once inflight==0, NON-ZERO on timeout so the caller does NOT stop a
+# color that still has in-flight requests (stopping would cut them at the SIGTERM
+# deadline). EIGENINFERENCE_ADMIN_KEY is loaded once by the caller (load_admin_env).
 drain_color() {
   local color="$1" port="$2"
   log "Draining $color (port $port): POST $DRAIN_PATH, then poll $READYZ_PATH inflight==0..."
@@ -309,13 +384,8 @@ drain_color() {
     log "DRY-RUN: would POST $DRAIN_PATH to $color:$port and poll inflight==0 (timeout ${DRAIN_TIMEOUT}s)"
     return 0
   fi
-  # Pull EIGENINFERENCE_ADMIN_KEY from the secrets env file (only now, never in
-  # --dry-run) so the drain request below is actually authenticated.
-  load_admin_env
-  if [ -z "${EIGENINFERENCE_ADMIN_KEY:-}" ]; then
-    warn "EIGENINFERENCE_ADMIN_KEY is empty (env file $DINF_ENV_FILE missing or unset); drain will likely be rejected — continuing to poll readiness."
-  fi
-  # Phase 1 contract: admin-authenticated drain endpoint.
+  # Phase 1 contract: admin-authenticated drain endpoint. The bearer key was
+  # parsed (not sourced) from the env file by the caller's load_admin_env.
   if ! "$CURL_BIN" -fsS -X POST \
         -H "Authorization: Bearer ${EIGENINFERENCE_ADMIN_KEY:-}" \
         --max-time 10 \
@@ -336,7 +406,63 @@ drain_color() {
     log "  $color inflight=${inflight:-unknown}; waiting..."
     sleep 3
   done
-  warn "$color did not reach inflight==0 within ${DRAIN_TIMEOUT}s; the graceful container stop (docker stop -t) will finish remaining requests."
+  err "$color did not reach inflight==0 within ${DRAIN_TIMEOUT}s."
+  return 1
+}
+
+# signal_going_away <color> <port> — POST /v1/admin/going-away to the OLD color so
+# its providers reconnect and (Caddy already flipped) re-land on the NEW color.
+# Phase 3 (PR #396) contract: admin-gated, returns 200 {"sent":N}. Best-effort:
+# warns and continues if it fails (providers still reconnect within the heartbeat
+# timeout, and the drain + graceful stop still finish in-flight work).
+# EIGENINFERENCE_ADMIN_KEY is loaded once by the caller (load_admin_env).
+signal_going_away() {
+  local color="$1" port="$2"
+  log "Going-away to OLD color $color (port $port): POST $GOING_AWAY_PATH (providers reconnect -> new color)..."
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "DRY-RUN: would POST $GOING_AWAY_PATH to $color:$port (admin-gated; expect 200 {\"sent\":N})"
+    return 0
+  fi
+  local body sent
+  body="$("$CURL_BIN" -fsS -X POST \
+        -H "Authorization: Bearer ${EIGENINFERENCE_ADMIN_KEY:-}" \
+        --max-time 10 \
+        "http://${HEALTH_HOST}:${port}${GOING_AWAY_PATH}" 2>/dev/null || true)"
+  # Contract response: {"sent":N}.
+  sent="$(printf '%s' "$body" | sed -n 's/.*"sent"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+  if [ -n "$sent" ]; then
+    log "going-away accepted by $color (sent=$sent; those providers will reconnect to the new color)."
+  else
+    warn "going-away to $color did not return a parseable {\"sent\":N} (continuing; providers will still reconnect within the heartbeat timeout)."
+  fi
+}
+
+# wait_for_providers <color> <port> — after going-away, poll the NEW color's
+# /health until its provider count is > 0 (reconnects have landed). /health shape
+# (coordinator api/types HealthResponse): {"status":"ok","providers":N,...}.
+# WARNS on timeout (does NOT abort): Caddy is already flipped and the old color is
+# still up, so a human can investigate without a hard failure.
+wait_for_providers() {
+  local color="$1" port="$2"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "DRY-RUN: would poll http://${HEALTH_HOST}:${port}${HEALTH_PATH} for providers>0 (timeout ${PROVIDERS_TIMEOUT}s)"
+    return 0
+  fi
+  log "Waiting for NEW color $color (port $port) to report providers>0 (timeout ${PROVIDERS_TIMEOUT}s)..."
+  local now deadline body count
+  now="$(date +%s)"
+  deadline=$(( now + PROVIDERS_TIMEOUT ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    body="$("$CURL_BIN" -fsS --max-time 5 "http://${HEALTH_HOST}:${port}${HEALTH_PATH}" 2>/dev/null || true)"
+    count="$(printf '%s' "$body" | sed -n 's/.*"providers"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+    if [ -n "$count" ] && [ "$count" -gt 0 ]; then
+      log "$color now has $count provider(s) attached."
+      return 0
+    fi
+    log "  $color providers=${count:-unknown}; waiting for reconnects..."
+    sleep 2
+  done
+  warn "$color did not report providers>0 within ${PROVIDERS_TIMEOUT}s; providers may still be reconnecting (heartbeat timeout). Proceeding to drain the old color — monitor capacity."
   return 0
 }
 
@@ -374,7 +500,16 @@ do_rollback() {
   fi
   confirm "Flip Caddy upstream $cur_port -> $target_port and reload?" || { log "Rollback aborted."; return 1; }
   flip_upstream "$CADDYFILE" "$cur_port" "$target_port" || die "flip_upstream failed (rc $?)"
-  reload_caddy || die "caddy reload failed after rollback flip"
+  # Mirror the cutover path: if the reload fails after flipping the on-disk
+  # Caddyfile, flip it BACK so on-disk state matches live Caddy (still -> $cur_color).
+  # Otherwise a later run would read the stale on-disk port and flip/stop the
+  # wrong color.
+  if ! reload_caddy; then
+    err "caddy reload failed after rollback flip; restoring Caddyfile to $cur_color ($cur_port) so on-disk state matches live Caddy."
+    flip_upstream "$CADDYFILE" "$target_port" "$cur_port" || err "restore flip ALSO failed — manual intervention required on $CADDYFILE"
+    reload_caddy || true
+    die "rollback aborted: caddy reload failed (Caddyfile restored to $cur_color)"
+  fi
   log "ROLLBACK complete: Caddy -> $target_color ($target_port)."
 }
 
@@ -399,8 +534,8 @@ Options:
   -h, --help         Show this help.
 
 Environment overrides: CADDYFILE, BLUE_PORT(8080), GREEN_PORT(8081), HEALTH_HOST,
-HEALTH_TIMEOUT, DRAIN_TIMEOUT, CADDY_BIN, SYSTEMCTL_BIN, CURL_BIN, DINF_DEPLOY_ENV,
-DINF_ENV_FILE(/etc/d-inference/env).
+HEALTH_TIMEOUT, DRAIN_TIMEOUT, PROVIDERS_TIMEOUT(60), GOING_AWAY_PATH, CADDY_BIN,
+SYSTEMCTL_BIN, CURL_BIN, DINF_DEPLOY_ENV, DINF_ENV_FILE(/etc/d-inference/env).
 USAGE
 }
 
@@ -452,16 +587,24 @@ main() {
   [ "$DRY_RUN" -eq 1 ] && log "   MODE           : DRY-RUN (no changes will be made)"
   log "=============================================================="
 
-  # 1. Pin image for the idle color (optional).
+  # Roll the image pin back automatically on ANY exit before the cutover is
+  # accepted (declined confirm, failed start, unhealthy idle, failed flip/reload).
+  # accept_image_pin() disarms this once the cutover succeeds. No-op without --image.
+  trap 'restore_image_pin' EXIT
+
+  # 1. Pin image for the idle color (optional). Snapshotted so it is rolled back
+  #    if the deploy aborts before cutover (the OLD color shares this pin file).
   if [ -n "$IMAGE_REF" ]; then
     pin_image "$IMAGE_REF"
   fi
 
-  # 2. Start the idle color. Check the start rc and fail fast: a failed unit start
-  #    would otherwise only surface after wait_healthy times out (up to ${HEALTH_TIMEOUT}s).
-  confirm "Start idle color '$idle_color'?" || die "aborted before starting idle color"
-  if ! run_cmd "$SYSTEMCTL_BIN" start "darkbloom-coordinator@${idle_color}"; then
-    die "failed to start idle color '$idle_color' ($SYSTEMCTL_BIN start darkbloom-coordinator@${idle_color} exited non-zero); Caddy untouched ($active_color still live). Inspect: $SYSTEMCTL_BIN status darkbloom-coordinator@${idle_color}"
+  # 2. Restart the idle color. RESTART (not start) so a stale already-running idle
+  #    container re-execs darkbloom-run.sh and picks up the newly pinned image.
+  #    Check the rc and fail fast: a failed unit (re)start would otherwise only
+  #    surface after wait_healthy times out (up to ${HEALTH_TIMEOUT}s).
+  confirm "Restart idle color '$idle_color' (re-exec with the pinned image)?" || die "aborted before starting idle color"
+  if ! run_cmd "$SYSTEMCTL_BIN" restart "darkbloom-coordinator@${idle_color}"; then
+    die "failed to (re)start idle color '$idle_color' ($SYSTEMCTL_BIN restart darkbloom-coordinator@${idle_color} exited non-zero); Caddy untouched ($active_color still live). Inspect: $SYSTEMCTL_BIN status darkbloom-coordinator@${idle_color}"
   fi
 
   # 3. Wait for idle health + readiness.
@@ -488,19 +631,56 @@ main() {
       die "deploy aborted: caddy reload failed (attempted rollback to $active_color)"
     fi
   fi
+  # Cutover accepted: the NEW color is live. Keep the image pin permanently and
+  # disarm the EXIT-trap rollback.
+  accept_image_pin
   log "Cutover complete: Caddy -> $idle_color ($idle_port). $active_color still running for drain."
   log "Rollback window OPEN: run '$0 --rollback' to revert to $active_color (valid until it is stopped)."
 
-  # 5. Drain the old color.
-  drain_color "$active_color" "$active_port"
+  # Parse the admin key ONCE (real run only; never in --dry-run so the plan stays
+  # secret-free) for the authenticated going-away + drain POSTs below.
+  if [ "$DRY_RUN" -ne 1 ]; then
+    load_admin_env
+    if [ -z "${EIGENINFERENCE_ADMIN_KEY:-}" ]; then
+      warn "EIGENINFERENCE_ADMIN_KEY is empty ($DINF_ENV_FILE missing or unset); going-away and drain POSTs will be unauthenticated and likely rejected — continuing."
+    fi
+  fi
 
-  # 6. Stop the old color (closes rollback window; triggers Phase 3 going_away).
-  if ! confirm "Stop old color '$active_color'? (closes rollback window; triggers Phase 3 going_away broadcast)"; then
+  # 5. Move providers to the NEW color BEFORE draining the old one: POST
+  #    going-away to the OLD color so its providers reconnect and land on the
+  #    (already-flipped) new color. Without this the new color would serve
+  #    consumers with zero providers during the drain window (429s).
+  signal_going_away "$active_color" "$active_port"
+
+  # 6. Wait until the NEW color actually has providers attached (reconnects landed).
+  wait_for_providers "$idle_color" "$idle_port"
+
+  # 7. Drain the old color. If it does NOT drain in time, do NOT stop it (stopping
+  #    would cut in-flight requests at the container SIGTERM deadline): abort with
+  #    a nonzero exit (Caddy already -> new color, old color left running) unless
+  #    --force is given.
+  if ! drain_color "$active_color" "$active_port"; then
+    if [ "$FORCE" -eq 1 ]; then
+      warn "Drain of $active_color did not complete, but --force was given; proceeding to stop it (in-flight requests may be cut at the container SIGTERM deadline)."
+    else
+      err "NOT stopping $active_color: its drain did not reach inflight==0 within ${DRAIN_TIMEOUT}s."
+      err "Caddy is already -> $idle_color; the old color stays RUNNING (rollback still possible)."
+      err "Investigate, then stop manually ('$SYSTEMCTL_BIN stop darkbloom-coordinator@${active_color}'), or re-run with --force to stop despite in-flight requests."
+      die "deploy aborted: old color drain incomplete (cutover done, $active_color left running)"
+    fi
+  fi
+
+  # 8. Stop the old color (closes the rollback window). Fail if the stop fails:
+  #    a still-running old color stays attached to providers and must not linger
+  #    silently as if the deploy succeeded.
+  if ! confirm "Stop old color '$active_color'? (closes rollback window)"; then
     warn "Old color $active_color left RUNNING. Stop later with: $SYSTEMCTL_BIN stop darkbloom-coordinator@${active_color}"
     log "Deploy finished (old color intentionally not stopped)."
     return 0
   fi
-  run_cmd "$SYSTEMCTL_BIN" stop "darkbloom-coordinator@${active_color}"
+  if ! run_cmd "$SYSTEMCTL_BIN" stop "darkbloom-coordinator@${active_color}"; then
+    die "failed to stop old color '$active_color' ($SYSTEMCTL_BIN stop darkbloom-coordinator@${active_color} exited non-zero); it may still be attached to providers — investigate: $SYSTEMCTL_BIN status darkbloom-coordinator@${active_color}"
+  fi
   log "Old color $active_color stopped. Deploy complete: $idle_color is now the sole live coordinator."
 }
 

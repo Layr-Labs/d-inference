@@ -47,6 +47,20 @@
 		}
 	}
 
+	# Static downloads (install script + provider bundles), served from the host
+	# /var/www/html — the SAME route the combined coordinator/Caddyfile serves.
+	# The coordinator has NO /dl/* handler, so without this the release fallback URL
+	# /dl/eigeninference-bundle-macos-arm64.tar.gz (api/version, consumer.go) would
+	# fall through to the coordinator and 404, breaking scripts/install.sh.
+	# ASSUMPTION: /var/www/html exists on the box and holds the published bundle
+	# (same precondition as the combined coordinator/Caddyfile setup). This is a
+	# static handler, not a reverse_proxy, so it does NOT add a second upstream
+	# swap point (deploy.sh / flip_upstream remain single-swap).
+	handle /dl/* {
+		root * /var/www/html
+		file_server
+	}
+
 	# Everything else -> coordinator (HTTP + WebSocket). Blue-green swap target.
 	# THE single upstream line flipped by deploy.sh / flip_upstream (8080<->8081).
 	reverse_proxy 127.0.0.1:8080 {

@@ -566,9 +566,29 @@ struct Start: AsyncParsableCommand {
         let selectedModelIDs: [String]
 
         if !model.isEmpty {
+            // Fail up-front on explicit user selections that are not supported.
+            // The daemon's foreground path also filters stale plist flags, but
+            // validating here prevents installing a launchd plist that is
+            // guaranteed to exit on every relaunch.
+            try validateModelSelections(against: snapshot.catalog, localModels: snapshot.models)
             selectedModelIDs = model
         } else if all {
-            selectedModelIDs = snapshot.models.map(\.id)
+            guard snapshot.catalog != nil else {
+                printError("Cannot use --all: coordinator model catalog is unavailable.")
+                printError("hint: check your network connection and coordinator URL, or retry after the coordinator is reachable.")
+                throw ExitCode.failure
+            }
+            let advertised = advertisedModels(
+                from: snapshot.models,
+                config: config,
+                catalog: snapshot.catalog,
+                includeDisabled: true
+            )
+            guard !advertised.isEmpty else {
+                printError("No supported models selected.")
+                throw ExitCode.failure
+            }
+            selectedModelIDs = advertised.map(\.id)
         } else {
             selectedModelIDs = try await interactiveCatalogPicker(
                 snapshot: snapshot,

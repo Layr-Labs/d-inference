@@ -188,4 +188,36 @@ import ProviderCore
         let advertised = localAdvertisedModels(from: local, config: config, includeDisabled: true)
         #expect(advertised.map({ $0.id }) == ["enabled", "disabled"])
     }
+
+    @Test func catalogAllowedIDs_includesModelsAndAliasLineage() {
+        let catalog = CatalogSnapshot(
+            models: [
+                CatalogModel(id: "active-a", s3Name: "active-a", displayName: "Active A", modelType: "text", sizeGb: 1.0),
+                CatalogModel(id: "active-b", s3Name: "active-b", displayName: "Active B", modelType: "text", sizeGb: 1.0)
+            ],
+            aliases: [
+                CatalogAlias(
+                    id: "alias-1",
+                    displayName: "Alias 1",
+                    desiredBuild: "active-a",
+                    previousBuild: "previous-build",
+                    retiredBuilds: ["retired-build"],
+                    primaryBuild: nil
+                )
+            ]
+        )
+        let allowed = catalogAllowedIDs(catalog: catalog)
+        #expect(allowed == Set(["active-a", "active-b", "previous-build", "retired-build"]))
+    }
+
+    @Test func catalogAllowedIDs_isEmptyWhenCatalogMissing() {
+        #expect(catalogAllowedIDs(catalog: nil).isEmpty)
+    }
+
+    @Test func catalogCachePath_scopesByCoordinatorURL() {
+        let prodPath = CatalogCache.path(for: "wss://api.darkbloom.dev/ws/provider")
+        let stagingPath = CatalogCache.path(for: "wss://api.staging.darkbloom.dev/ws/provider")
+        #expect(prodPath.lastPathComponent != stagingPath.lastPathComponent)
+        #expect(prodPath.deletingLastPathComponent() == CatalogCache.defaultDirectory())
+    }
 }

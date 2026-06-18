@@ -55,12 +55,24 @@ extension Models {
             }
 
             let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
-            let models = advertisedModels(
-                from: snapshot.models,
-                config: snapshot.config,
-                catalog: snapshot.catalog,
-                includeDisabled: all
-            )
+            // `--all` inventories every discovered local weight, bypassing both
+            // the coordinator catalog and the config enabled_models filter so
+            // operators can see (and remove) unsupported downloads.
+            let models: [ModelInfo]
+            if all {
+                models = localAdvertisedModels(
+                    from: snapshot.allModels,
+                    config: snapshot.config,
+                    includeDisabled: true
+                )
+            } else {
+                models = advertisedModels(
+                    from: snapshot.models,
+                    config: snapshot.config,
+                    catalog: snapshot.catalog,
+                    includeDisabled: false
+                )
+            }
 
             if json {
                 let payload = ModelsOutput(

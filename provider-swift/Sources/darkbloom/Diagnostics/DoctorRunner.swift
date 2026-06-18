@@ -97,9 +97,13 @@ enum DoctorRunner {
                 gpuActiveGb: gpuActiveGb,
                 gpuCacheGb: gpuCacheGb)
 
-            // Diagnose only models the coordinator currently advertises. Local
-            // weights that are not in the catalog are never served.
-            let supportedModels = catalogFilteredModels(snapshot.models, catalog: snapshot.catalog)
+            // Diagnose from the unfiltered local scan so too-large supported
+            // models are still flagged. Apply the catalog filter only after
+            // selecting candidates, so weights not in the catalog are never
+            // promoted as targets but supported-yet-oversized models are still
+            // reported.
+            let localModels = snapshot.allModels
+            let supportedModels = catalogFilteredModels(localModels, catalog: snapshot.catalog)
             let alternatives = supportedModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
@@ -123,7 +127,7 @@ enum DoctorRunner {
                 return alternatives.max(by: { $0.weightGb < $1.weightGb })?.id
             }()
 
-            if let targetID, let target = supportedModels.first(where: { $0.id == targetID }) {
+            if let targetID, let target = localModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,
                     usableGb: usableGb, alternatives: alternatives))

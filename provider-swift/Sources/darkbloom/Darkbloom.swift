@@ -100,7 +100,13 @@ struct RuntimeSnapshot {
     let config: ProviderConfig
     let hardware: HardwareInfo?
     let hardwareError: Error?
+    /// Local models that fit in currently-available memory (the provider's
+    /// actual loadable set).
     let models: [ModelInfo]
+    /// All locally-discovered models, including those too large for current
+    /// available memory. Used by diagnostics so too-large supported models are
+    /// still flagged rather than silently skipped.
+    let allModels: [ModelInfo]
     /// Coordinator catalog fetched at load time. `nil` means the catalog could
     /// not be fetched and no cached catalog was available; callers should treat
     /// it as an empty catalog (fail closed) and warn the operator.
@@ -128,7 +134,16 @@ func loadRuntimeSnapshot(configPath rawPath: String?, coordinatorURLOverride: St
         hardwareError = error
     }
 
-    let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
+    // Scan both the loadable subset and the full unfiltered local set.
+    // Diagnostics need the unfiltered list so too-large supported models are
+    // still diagnosed rather than silently skipped.
+    let allModels = hardware.map { ModelScanner.scanAllModels(hardwareInfo: $0) } ?? []
+    let models: [ModelInfo]
+    if let hardware {
+        models = allModels.filter { $0.estimatedMemoryGb <= Double(hardware.memoryAvailableGb) }
+    } else {
+        models = []
+    }
 
     // Fetch the coordinator catalog. Use the CLI-provided override if present
     // so `--coordinator-url` changes the catalog source as well as the connect
@@ -144,6 +159,7 @@ func loadRuntimeSnapshot(configPath rawPath: String?, coordinatorURLOverride: St
         hardware: hardware,
         hardwareError: hardwareError,
         models: models,
+        allModels: allModels,
         catalog: catalog
     )
 }
@@ -180,14 +196,16 @@ private func loadProviderConfig(configPath: URL, configFileExists: Bool) throws 
 
 private func fetchCatalogSnapshot(coordinatorURL: String) async -> CatalogSnapshot? {
     let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
+    let cachePath = CatalogCache.path(for: coordinatorURL)
     do {
         let snapshot = try await client.fetchCatalogSnapshot(includeAliases: true)
-        CatalogCache.write(snapshot)
+        CatalogCache.write(snapshot, to: cachePath)
         return snapshot
     } catch {
-        // Fall back to the on-disk cache so offline/briefly-unreachable
-        // commands still see the last known catalog.
-        return CatalogCache.read()
+        // Fall back to the on-disk cache scoped to this coordinator so
+        // switching between prod/staging/self-hosted coordinators does not
+        // cross-pollute offline fallback state.
+        return CatalogCache.read(from: cachePath)
     }
 }
 
@@ -339,6 +357,26 @@ func advertisedModels(
     }
     let enabled = Set(config.backend.enabledModels)
     return supported.filter { enabled.contains($0.id) }
+}
+
+/// Returns the set of model IDs that are allowed by the coordinator catalog,
+/// including active catalog models and any previous/retired members of active
+/// aliases. Providers offline through an alias rollout may only have those
+/// lineage builds locally; keeping them in the allowed set lets the foreground
+/// filter preserve stale plist `--model` flags and lets the coordinator push a
+/// `desired_models` update after registration.
+func catalogAllowedIDs(catalog: CatalogSnapshot?) -> Set<String> {
+    guard let catalog else { return [] }
+    var ids = Set(catalog.models.map(\.id))
+    for alias in catalog.aliases {
+        if let previous = alias.previousBuild {
+            ids.insert(previous)
+        }
+        for retired in alias.retiredBuilds ?? [] {
+            ids.insert(retired)
+        }
+    }
+    return ids
 }
 
 /// Local/direct-mode variant of `advertisedModels` that bypasses the

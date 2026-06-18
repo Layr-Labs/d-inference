@@ -1179,32 +1179,34 @@ struct Start: AsyncParsableCommand {
 
     // MARK: - Catalog validation
 
-    /// Reject `--model` selections that are not in the coordinator catalog.
-    /// Used for explicit user invocations (`--local`); the foreground launchd
-    /// path uses `catalogFilteredOverrides` so a stale plist does not kill the
-    /// daemon on every restart.
+    /// Reject `--model` selections that are not allowed by the coordinator
+    /// catalog (including alias previous/retired lineage builds). Used for
+    /// explicit user invocations (`--local`); the foreground launchd path uses
+    /// `catalogFilteredOverrides` so a stale plist does not kill the daemon on
+    /// every restart.
     private func validateModelSelections(against catalog: CatalogSnapshot?, localModels: [ModelInfo]) throws {
         guard !model.isEmpty else { return }
-        guard let catalog else {
+        guard catalog != nil else {
             throw ValidationError("Cannot validate --model selections: coordinator catalog is unavailable.")
         }
-        let catalogIDs = Set(catalog.models.map(\.id))
+        let allowedIDs = catalogAllowedIDs(catalog: catalog)
         for id in model {
-            guard catalogIDs.contains(id) else {
+            guard allowedIDs.contains(id) else {
                 throw ValidationError("'\(id)' is not in the coordinator model catalog; only supported models can be served.")
             }
         }
     }
 
-    /// Filter `--model` overrides to catalog-known IDs, warning about any
-    /// stale/non-catalog IDs. Returns the original array when the catalog is
-    /// unavailable so the caller's existing "no models" guard still fires.
+    /// Filter `--model` overrides to catalog-known IDs (including alias
+    /// previous/retired lineage builds), warning about any stale/non-catalog
+    /// IDs. Returns the original array when the catalog is unavailable so the
+    /// caller's existing "no models" guard still fires.
     private func catalogFilteredOverrides(_ overrides: [String], catalog: CatalogSnapshot?) -> [String] {
-        guard let catalog else { return overrides }
-        let catalogIDs = Set(catalog.models.map(\.id))
+        guard catalog != nil else { return overrides }
+        let allowedIDs = catalogAllowedIDs(catalog: catalog)
         var kept: [String] = []
         for id in overrides {
-            if catalogIDs.contains(id) {
+            if allowedIDs.contains(id) {
                 kept.append(id)
             } else {
                 printError("Ignoring --model '\(id)': not in the coordinator model catalog.")

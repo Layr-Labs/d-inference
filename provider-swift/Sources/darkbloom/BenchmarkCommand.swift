@@ -58,7 +58,15 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let models = advertisedModels(from: snapshot.models, config: snapshot.config, catalog: snapshot.catalog)
+        // Benchmarking is a local operation: if a coordinator catalog is
+        // available, filter to supported models; otherwise fall back to the
+        // local scan so offline performance experiments still work.
+        let models: [ModelInfo]
+        if snapshot.catalog != nil {
+            models = advertisedModels(from: snapshot.models, config: snapshot.config, catalog: snapshot.catalog)
+        } else {
+            models = localAdvertisedModels(from: snapshot.models, config: snapshot.config)
+        }
 
         guard let selectedModel = ModelBenchmark.selectModel(
             models: models,

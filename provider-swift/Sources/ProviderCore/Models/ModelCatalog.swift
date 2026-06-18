@@ -12,6 +12,7 @@
 /// matching what `ModelScanner` already discovers.
 
 import Foundation
+import CryptoKit
 
 // MARK: - Download progress tracking & rendering
 //
@@ -127,6 +128,22 @@ public struct CatalogAlias: Codable, Sendable, Equatable {
     public let retiredBuilds: [String]?
     public let primaryBuild: String?
 
+    public init(
+        id: String,
+        displayName: String,
+        desiredBuild: String,
+        previousBuild: String? = nil,
+        retiredBuilds: [String]? = nil,
+        primaryBuild: String? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.desiredBuild = desiredBuild
+        self.previousBuild = previousBuild
+        self.retiredBuilds = retiredBuilds
+        self.primaryBuild = primaryBuild
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case displayName = "display_name"
@@ -158,12 +175,28 @@ private struct CatalogResponse: Codable {
 /// `status`, `models list`) can still distinguish supported models from
 /// downloaded-but-unsupported weights.
 public enum CatalogCache: Sendable {
-    /// Default cache file path: `~/.cache/darkbloom/catalog.json`.
-    public static func defaultPath() -> URL {
+    /// Default cache directory: `~/.cache/darkbloom/`.
+    public static func defaultDirectory() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache", isDirectory: true)
             .appendingPathComponent("darkbloom", isDirectory: true)
-            .appendingPathComponent("catalog.json", isDirectory: false)
+    }
+
+    /// Legacy/default cache file path: `~/.cache/darkbloom/catalog.json`.
+    public static func defaultPath() -> URL {
+        defaultDirectory().appendingPathComponent("catalog.json", isDirectory: false)
+    }
+
+    /// Cache file path scoped to a coordinator base URL. Prevents a transient
+    /// fetch failure on one coordinator from falling back to a cache populated
+    /// by a different coordinator (prod vs staging vs self-hosted).
+    public static func path(for coordinatorURL: String) -> URL {
+        let base = coordinatorHTTPBase(coordinatorURL)
+        let hash = SHA256.hash(data: Data(base.utf8))
+            .compactMap { String(format: "%02x", $0) }
+            .joined()
+            .prefix(16)
+        return defaultDirectory().appendingPathComponent("catalog-\(hash).json", isDirectory: false)
     }
 
     /// Read the cached snapshot, if any. Returns `nil` when the file is missing

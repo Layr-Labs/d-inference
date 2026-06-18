@@ -33,26 +33,38 @@ enum DrainAction: Sendable {
 ///   its normal launchd path).
 func drainRunningProvider(
     action: DrainAction,
-    timeout: TimeInterval = 120.0
+    timeout: TimeInterval = 600.0
 ) async -> Bool {
     guard LaunchAgent.isAnySupportedLabelLoaded() else { return false }
 
     let state = DaemonStateFile.read()
     let now = Date().timeIntervalSince1970
-    let pid: Int32?
-    if let state, !state.isStale(now: now), ProcessLifecycle.processIsAlive(state.pid) {
-        pid = state.pid
+    let statePID: Int32?
+    if let state, !state.isStale(now: now) {
+        statePID = state.pid
     } else {
-        pid = nil
+        statePID = nil
     }
 
-    guard let pid else {
+    // Cross-check the state-file PID against the on-disk PID file to avoid
+    // signalling a PID that has been reused by another process.
+    let pidFilePID = ProcessLifecycle.readPID(at: ProcessLifecycle.defaultPIDFile())
+    let candidatePID = pidFilePID ?? statePID
+
+    guard let pid = candidatePID, pid > 0, ProcessLifecycle.processIsAlive(pid) else {
         // launchd thinks the job is loaded but we have no trustworthy live PID.
         // Fall back to the launchd-level stop/restart path.
         return false
     }
 
-    let requestCount = state?.inflightRequestCount ?? 0
+    // If both sources are available they must agree; otherwise treat the
+    // running process as untrustworthy.
+    if let statePID, let pidFilePID, statePID != pidFilePID {
+        print("Warning: daemon state PID (\(statePID)) does not match PID file (\(pidFilePID)); skipping graceful drain.")
+        return false
+    }
+
+    let requestCount = state?.inflightRequestCount ?? (state?.inferenceActive == true ? 1 : 0)
     if requestCount > 0 {
         let plural = requestCount == 1 ? "" : "s"
         print("Provider is currently serving \(requestCount) request\(plural). Waiting up to \(Int(timeout))s for them to finish before \(action.verb)...")

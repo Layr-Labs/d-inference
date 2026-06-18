@@ -26,7 +26,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var currentModel: String?
     public var warmModels: [String]
     public var inferenceActive: Bool
-    public var inflightRequestCount: Int
+    public var inflightRequestCount: Int?
     public var stats: Stats
     public var system: SystemInfo?
     public var capacity: Capacity?
@@ -114,7 +114,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         currentModel: String? = nil,
         warmModels: [String] = [],
         inferenceActive: Bool = false,
-        inflightRequestCount: Int = 0,
+        inflightRequestCount: Int? = nil,
         stats: Stats = Stats(),
         system: SystemInfo? = nil,
         capacity: Capacity? = nil,

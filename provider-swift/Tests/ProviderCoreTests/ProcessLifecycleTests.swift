@@ -109,6 +109,7 @@ struct ProcessLifecycleGracefulStopTests {
 
         #expect(outcome == .stoppedGracefully)
         #expect(!ProcessLifecycle.processIsAlive(pid))
+        process.waitUntilExit()
     }
 
     @Test("stopProcessGracefully reports force kill when SIGTERM is ignored")
@@ -129,5 +130,6 @@ struct ProcessLifecycleGracefulStopTests {
 
         #expect(outcome == .forceKilled(pid))
         #expect(!ProcessLifecycle.processIsAlive(pid))
+        process.waitUntilExit()
     }
 }

@@ -684,8 +684,9 @@ public actor ProviderLoop {
         logger.info("Coordinator client started, entering event loop")
 
         // 5. Process events. Cancellation is used by schedule enforcement
-        // and service shutdown; explicitly close the WebSocket so the stream
-        // unblocks instead of waiting for the next coordinator event.
+        // and service shutdown. On cancellation we begin a graceful shutdown
+        // that drains active inference *before* closing the coordinator socket,
+        // so in-flight responses can still reach consumers while we wind down.
         await withTaskCancellationHandler {
             for await event in events {
                 switch event {
@@ -750,11 +751,58 @@ public actor ProviderLoop {
                 }
             }
         } onCancel: {
-            Task { await coordinator.shutdown() }
+            Task { await self.beginGracefulShutdown() }
         }
 
         logger.info("Event stream ended, shutting down")
+        await completeShutdown()
+    }
+
+    /// Begin graceful shutdown: reject new work, drain active inference while
+    /// keeping the coordinator socket open, then close the socket so the event
+    /// loop in `run()` can finish. Safe to call multiple times; subsequent calls
+    /// are no-ops once `isShuttingDown` is true.
+    private func beginGracefulShutdown() async {
+        guard !isShuttingDown else { return }
         isShuttingDown = true
+        logger.info("Graceful shutdown requested; draining active inference before closing coordinator connection")
+        await cancelBackgroundWorkAndPreloads()
+        let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
+        if !drained {
+            logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
+            await cancelAllInflight()
+        }
+        await coordinatorClient?.shutdown()
+    }
+
+    /// Finish shutdown after the event stream has ended. If a graceful shutdown
+    /// has already run, this only performs the remaining cleanup (disk accountant,
+    /// model unloading). If the stream ended for another reason (e.g., disconnect),
+    /// it cancels in-flight work and runs the full teardown.
+    private func completeShutdown() async {
+        if !isShuttingDown {
+            isShuttingDown = true
+            await cancelAllInflight()
+        }
+        await cancelBackgroundWorkAndPreloads()
+        await coordinatorClient?.shutdown()
+        // Phase 3: shutdown the global disk accountant.
+        await diskAccountant.shutdown()
+        while !modelSlots.isEmpty {
+            if let unloading = modelsUnloading.first {
+                await waitForModelUnload(unloading)
+                continue
+            }
+            for modelId in Array(modelSlots.keys) {
+                await unloadModel(modelId)
+            }
+        }
+        powerAssertion.releaseAll()
+    }
+
+    /// Cancel optional background tasks and prefetch/preload work. Idempotent so
+    /// it can be called from both `beginGracefulShutdown` and `completeShutdown`.
+    private func cancelBackgroundWorkAndPreloads() async {
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
@@ -783,25 +831,6 @@ public actor ProviderLoop {
         preloadTasks.removeAll()
         preloadTaskIds.removeAll()
         preloadStatusSubscribers.removeAll()
-
-        let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
-        if !drained {
-            logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
-            await cancelAllInflight()
-        }
-        await coordinator.shutdown()
-        // Phase 3: shutdown the global disk accountant.
-        await diskAccountant.shutdown()
-        while !modelSlots.isEmpty {
-            if let unloading = modelsUnloading.first {
-                await waitForModelUnload(unloading)
-                continue
-            }
-            for modelId in Array(modelSlots.keys) {
-                await unloadModel(modelId)
-            }
-        }
-        powerAssertion.releaseAll()
     }
 
     // MARK: - Security Hardening

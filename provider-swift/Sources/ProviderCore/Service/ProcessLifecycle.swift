@@ -188,7 +188,7 @@ public enum ProcessLifecycle {
     /// - Returns: The outcome of the stop attempt.
     public static func stopProcessGracefully(
         pid: Int32,
-        timeout: TimeInterval = 120.0,
+        timeout: TimeInterval = 600.0,
         onActiveRequests: (() -> Void)? = nil
     ) async -> GracefulStopOutcome {
         guard pid > 0, processIsAlive(pid) else { return .notRunning }
@@ -226,12 +226,14 @@ public enum ProcessLifecycle {
 
     // MARK: - Internals
 
-    private static func readPID(at url: URL) -> Int32? {
+    /// Read a PID from a file, returning `nil` if the file is missing or not a valid PID.
+    public static func readPID(at url: URL) -> Int32? {
         guard let raw = try? String(contentsOf: url, encoding: .utf8) else {
             return nil
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Int32(trimmed)
+        guard let value = Int32(trimmed), value > 0 else { return nil }
+        return value
     }
 
     /// Reports whether a process with the given PID is currently alive.

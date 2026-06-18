@@ -80,6 +80,74 @@ func TestDecodeFloorHardShedReturns429UnderDefaultQueueBeforeShed(t *testing.T) 
 	}
 }
 
+// Finding-1 regression at the HTTP boundary: with decode-floor hard-shed ARMED,
+// a fast-but-budget-FULL fleet (a concurrency/memory capacity rejection, NOT a
+// throughput shed) must still QUEUE under queue-before-shed — not fast-429. The
+// pre-fix code bypassed the queue whenever DecodeFloorShedArmed() was true,
+// regardless of WHY the fleet was full, which regressed queue-before-shed for
+// healthy-but-momentarily-full fleets.
+func TestDecodeFloorShedArmedStillQueuesMemoryFullFastFleet(t *testing.T) {
+	ts, reg := setupAdaptiveCapacityIntegration(t)
+	defer ts.Close()
+
+	t.Setenv(envQueueBeforeShed, "true")
+	t.Setenv(envColdDispatch, "false")
+	reg.SetDecodeFloorShed(15, true) // shed ARMED
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	model := "gemma-fast-full-http"
+	conn := connectSlowDecodeProvider(t, ctx, ts.URL, model, 40)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	p := markOnlyProviderRoutable(t, reg)
+
+	// Budget exhausted (31.5K of 32K, a 256-max request won't fit ⇒
+	// freeMemoryAdmits fails ⇒ capacity rejection) but observed decode 40 tok/s
+	// ⇒ NOT a decode-floor shed. So decodeFloorRejections (0) < capacityRejections
+	// (1): the consumer must queue, not fast-429.
+	writeAdaptiveHeartbeat(t, ctx, conn, model, &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{{
+			Model:                 model,
+			State:                 "running",
+			MaxConcurrency:        8,
+			ActiveTokenBudgetUsed: 31_500,
+			ActiveTokenBudgetMax:  32_768,
+			ObservedDecodeTPS:     40,
+		}},
+	})
+	waitForAdaptiveCondition(t, time.Second, func() bool {
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		return p.BackendCapacity != nil &&
+			p.BackendCapacity.Slots[0].ActiveTokenBudgetUsed == 31_500
+	})
+
+	reqCtx, reqCancel := context.WithCancel(ctx)
+	defer reqCancel()
+	done := make(chan int, 1)
+	go func() {
+		status, _, _ := adaptiveChatRequest(reqCtx, ts.URL, model, 256)
+		done <- status
+	}()
+	// A fast-but-full fleet must NOT be fast-429'd by the throughput-shed path;
+	// it should queue (the matching not-shed behaviour as the disabled case).
+	select {
+	case status := <-done:
+		if status == http.StatusTooManyRequests {
+			t.Fatalf("got fast 429 for a fast-but-memory-full fleet with shed armed; want queue (queue-before-shed regression)")
+		}
+	case <-time.After(750 * time.Millisecond):
+		// Still in flight (queued) — the expected non-shed path.
+	}
+	reqCancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
+}
+
 func TestDecodeFloorShedDisabledStillQueuesSlowFleet(t *testing.T) {
 	ts, reg := setupAdaptiveCapacityIntegration(t)
 	defer ts.Close()

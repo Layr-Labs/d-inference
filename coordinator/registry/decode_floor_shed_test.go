@@ -123,6 +123,56 @@ func TestDecodeFloorShed_ZeroFloor_NoOp(t *testing.T) {
 	}
 }
 
+// Finding-1 regression: a memory/concurrency-full fleet (NOT a throughput shed)
+// must NOT be classified as a decode-floor shed, even when the shed flag is
+// armed. quickCapacityCheck folds concurrency, memory, and decode-floor failures
+// into one capacityRejections counter; decodeFloorRejections is the throughput
+// subset. The consumer bypasses queue-before-shed only when ALL rejections are
+// throughput sheds, so a fast-but-full fleet must report
+// decodeFloorRejections < capacityRejections and keep queueing.
+func TestDecodeFloorShed_MemoryFullFastFleet_NotCountedAsThroughputShed(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-fast-full"
+	// Budget exhausted (30K of 32K used; a 500+4096 request won't fit ⇒
+	// freeMemoryAdmits fails ⇒ capacityRejection) but observed decode 40 tok/s
+	// (well above any floor ⇒ NOT a decode-floor shed).
+	makeTokenBudgetProvider(t, reg, "p1", model, 200, 30_000, 32_768, 40)
+
+	reg.SetDecodeFloorShed(10, true) // shed armed
+
+	cc, capRej, _, decodeFloorRej, _, _ := reg.quickCapacityCheck(model, 500, 4096, RequestTraits{}, false)
+	if cc != 0 {
+		t.Fatalf("a budget-full provider must not be a candidate; got cc=%d", cc)
+	}
+	if capRej == 0 {
+		t.Fatalf("a budget-full provider must be a capacity rejection; got capRej=%d", capRej)
+	}
+	if decodeFloorRej != 0 {
+		t.Fatalf("a FAST-but-full fleet must report 0 decode-floor rejections (so queue-before-shed still queues), got %d of %d capacity rejections", decodeFloorRej, capRej)
+	}
+}
+
+// Mirror: a genuinely slow fleet rejected purely on throughput must report
+// decodeFloorRejections == capacityRejections, so the consumer sheds immediately.
+func TestDecodeFloorShed_SlowFleet_AllRejectionsAreThroughput(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-slow-pure"
+	// Wide-open budget (1K of 1M) so freeMemoryAdmits passes; observed 8 tok/s so
+	// the decode-floor gate is the ONLY thing that rejects.
+	slowGemmaProvider(t, reg, "p1", model, 8)
+	slowGemmaProvider(t, reg, "p2", model, 8)
+
+	reg.SetDecodeFloorShed(10, true)
+
+	cc, capRej, _, decodeFloorRej, _, _ := reg.quickCapacityCheck(model, 500, 4096, RequestTraits{}, false)
+	if cc != 0 {
+		t.Fatalf("a sub-floor fleet must be shed; got cc=%d", cc)
+	}
+	if decodeFloorRej == 0 || decodeFloorRej != capRej {
+		t.Fatalf("a pure-throughput shed must have decodeFloorRejections==capacityRejections>0; got decodeFloor=%d cap=%d", decodeFloorRej, capRej)
+	}
+}
+
 // The shed floor is DECOUPLED from the soft quality floor and defaults lower
 // (shed 10 vs soft 15). A fleet decoding in the gap between them — too slow for
 // the quality preference but not degraded enough to shed — must be admitted, not

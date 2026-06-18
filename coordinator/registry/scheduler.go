@@ -1312,20 +1312,24 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits Requ
 //     a model that will never fit (the client would retry forever) — it should
 //     surface model_too_large / 503 instead.
 func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
-	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, allowedSerials...)
+	candidateCount, capacityRejections, modelTooLarge, _, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, allowedSerials...)
 	return candidateCount, capacityRejections, modelTooLarge
 }
 
 func (r *Registry) QuickCapacityCheckForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
-	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
+	candidateCount, capacityRejections, modelTooLarge, _, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
 	return candidateCount, capacityRejections, modelTooLarge
 }
 
-func (r *Registry) QuickCapacityCheckWithTTFTForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
+// QuickCapacityCheckWithTTFTForRequest also returns decodeFloorRejections: the
+// subset of capacityRejections that are decode-floor (throughput) sheds. The
+// consumer uses it to bypass queue-before-shed ONLY when every rejection is a
+// throughput shed — a transient concurrency/memory-full fleet must still queue.
+func (r *Registry) QuickCapacityCheckWithTTFTForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections int, bestTTFT time.Duration, hasTTFT bool) {
 	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
 }
 
-func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
+func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections int, bestTTFT time.Duration, hasTTFT bool) {
 	// Use a dummy PendingRequest with the caller's actual token estimates
 	// for the admission gate (freeMemoryAdmits).
 	if estimatedPromptTokens <= 0 {
@@ -1465,9 +1469,17 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// all-slow fleet yields candidateCount==0 / capacityRejections>0 and the
 		// caller sheds with a fast 429/Retry-After instead of admit-and-stall.
 		// Throughput-only — independent of the memory cap / free_for_load gates.
+		//
+		// Tracked ALSO in decodeFloorRejections (a subset of capacityRejections)
+		// so the caller can tell a pure-throughput shed (every rejection here)
+		// from a transient concurrency/memory-full fleet that queue-before-shed
+		// should still queue. Without that split, arming the shed flag would
+		// fast-429 a momentarily-full-but-fast fleet — a queue-before-shed
+		// regression.
 		if r.decodeFloorHardShed && r.decodeFloorTPS > 0 && snap.hasBackendCapacity {
 			if projectedPerRequestDecodeTPS(snap) < r.decodeFloorTPS {
 				capacityRejections++
+				decodeFloorRejections++
 				continue
 			}
 		}
@@ -1484,9 +1496,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 	}
 	if unknownTTFTCandidate {
-		return candidateCount, capacityRejections, modelTooLarge, 0, false
+		return candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections, 0, false
 	}
-	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
+	return candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections, bestTTFT, hasTTFT
 }
 
 func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.Duration {

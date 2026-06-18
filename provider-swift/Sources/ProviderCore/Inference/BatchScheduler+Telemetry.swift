@@ -131,6 +131,24 @@ extension BatchScheduler {
             maxTokensPotential += Int64(entry.promptTokens + entry.maxTokens)
         }
 
+        // Fold in-flight VLM/media load into the token telemetry the coordinator
+        // admits on. Vision requests run on the non-batched path and never create
+        // an activeBridges entry, so without this the coordinator's
+        // freeMemoryAdmits (which keys on activeTokenBudgetUsed + maxTokensPotential
+        // when a token budget is present) is blind to media load and over-admits.
+        // We charge each request's full KV-token span (prompt + vision + output,
+        // captured at reserve time) to BOTH the used and worst-case-potential
+        // figures — a media request reserves its whole span up front, so used and
+        // potential coincide for it. This is advisory routing signal only; the
+        // authoritative OOM gate remains the byte reservation in kvBudget (the 90%
+        // unified-memory cap), which already admitted these requests.
+        var visionTokens: Int64 = 0
+        for tokens in activeVisionRequests.values {
+            visionTokens += Int64(tokens)
+        }
+        activeTokens += visionTokens
+        maxTokensPotential += visionTokens
+
         let budgetMax = Int64(tokenBudgetMax)
 
         let slot = BackendSlotCapacity(
@@ -143,7 +161,7 @@ extension BatchScheduler {
             maxConcurrency: UInt32(cap.maxConcurrent),
             observedDecodeTps: observedDecodeTpsEwma,
             observedPrefillTps: observedPrefillTpsEwma,
-            activeTokenBudgetUsed: Int64(activeTokenBudgetUsed),
+            activeTokenBudgetUsed: Int64(activeTokenBudgetUsed) + visionTokens,
             activeTokenBudgetMax: budgetMax,
             queuedTokenBudget: Int64(queuedTokenBudget),
             kvBytesPerToken: Int64(kvBytesPerToken),

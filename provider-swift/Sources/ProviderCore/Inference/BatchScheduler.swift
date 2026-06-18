@@ -175,15 +175,25 @@ public actor BatchScheduler {
     /// distinct "request timed out waiting for capacity" error string
     /// (vs. "request cancelled" for client-initiated aborts).
     var timedOutBridges: Set<String> = []
-    /// In-flight VLM/media request ids. The vision path serves through the
+    /// In-flight VLM/media requests, mapping request id → the KV-token span the
+    /// request occupies (prompt text + image/video soft tokens + generated
+    /// output, as computed at reserve time). The vision path serves through the
     /// container's non-batched prepare/generate route and reserves memory via
     /// `reserveVisionRequest` instead of inserting an `activeBridges` entry, so
-    /// without this set `capacity().activeRequests` (= `activeBridges.count`)
-    /// reports the provider as less loaded than it is. The coordinator routes on
-    /// that count, so an under-report invites over-admission of concurrent media
-    /// requests. Inserted in `reserveVisionRequest`, removed in
-    /// `releaseVisionRequest`, and cleared by `cancelAll()`.
-    var activeVisionRequests: Set<String> = []
+    /// without this map both `capacity().activeRequests` (= `activeBridges.count`)
+    /// AND the token-budget telemetry (`activeTokenBudgetUsed` /
+    /// `maxTokensPotential`, derived only from `activeBridges`) report the
+    /// provider as less loaded than it is. The coordinator routes on the count
+    /// and admits on the token budget, so the under-report invites over-admission
+    /// of concurrent media requests. Inserted in `reserveVisionRequest`, removed
+    /// in `releaseVisionRequest`, and cleared by `cancelAll()`.
+    ///
+    /// NOTE: this token figure is ADVISORY — it makes media load visible to the
+    /// coordinator's coarse token-budget admission gate. The authoritative OOM
+    /// gate is the byte reservation in `kvBudget` (the 90% unified-memory cap),
+    /// which `reserveVisionRequest` already enforces; this token accounting must
+    /// not be read as a second memory gate and does not double-charge the bytes.
+    var activeVisionRequests: [String: Int] = [:]
 
     // MARK: - Telemetry state (read by `backendCapacity`)
 
@@ -1613,9 +1623,10 @@ public actor BatchScheduler {
     ) async -> Bool {
         guard let kvBudget else {
             // Budgeting disabled (legacy "always proceed"): still track the
-            // request as in-flight so `capacity().activeRequests` reflects the
-            // concurrent media load the coordinator routes on.
-            activeVisionRequests.insert(requestId)
+            // request as in-flight so `capacity().activeRequests` and the token
+            // telemetry reflect the concurrent media load the coordinator routes
+            // and admits on.
+            activeVisionRequests[requestId] = max(0, kvTokens)
             return true
         }
         // KV bytes = kvBytesPerToken × the FULL token span the cache will hold:
@@ -1634,9 +1645,10 @@ public actor BatchScheduler {
         let reserved = await kvBudget.reserveBytes(requestID: requestId, bytes: bytes)
         // Only count the request as in-flight once the reservation succeeds: a
         // rejected reserve never starts generation, so it must not inflate the
-        // reported active count. Released via `releaseVisionRequest`.
+        // reported active count or token budget. Released via
+        // `releaseVisionRequest`.
         if reserved {
-            activeVisionRequests.insert(requestId)
+            activeVisionRequests[requestId] = max(0, kvTokens)
         }
         return reserved
     }
@@ -1651,9 +1663,9 @@ public actor BatchScheduler {
     /// Release a prior `reserveVisionRequest` reservation. Safe/no-op if unknown
     /// or budgeting is disabled. Idempotent: the VLM stream releases on normal
     /// finish, on throw, and on `onTermination`, so the same id can arrive more
-    /// than once — `Set.remove` and `kvBudget.release` both no-op on a miss.
+    /// than once — `removeValue(forKey:)` and `kvBudget.release` both no-op on a miss.
     public func releaseVisionRequest(requestId: String) async {
-        activeVisionRequests.remove(requestId)
+        activeVisionRequests.removeValue(forKey: requestId)
         await kvBudget?.release(requestID: requestId)
     }
 
@@ -2052,7 +2064,7 @@ public actor BatchScheduler {
         // Release in-flight vision reservations too; their generation tasks are
         // cancelled with everything else, and the per-stream release may not run
         // before the next capacity report. Mirrors the activeBridges teardown.
-        let visionIds = Array(activeVisionRequests)
+        let visionIds = Array(activeVisionRequests.keys)
         for id in visionIds {
             await kvBudget?.release(requestID: id)
         }
@@ -2068,6 +2080,12 @@ public actor BatchScheduler {
     /// Pure bookkeeping (no MLX/GPU access) so it is unit-testable without a
     /// loaded engine or metallib.
     var activeRequestCount: Int { activeBridges.count + activeVisionRequests.count }
+
+    /// Sum of the KV-token spans of all in-flight VLM/media requests, folded into
+    /// the heartbeat's token-budget figures so the coordinator's admission gate
+    /// sees media load (see `backendCapacity()`). Advisory routing signal only —
+    /// the byte reservation in `kvBudget` is the authoritative memory gate.
+    var activeVisionTokens: Int { activeVisionRequests.values.reduce(0, +) }
 
     public func capacity() -> SchedulerCapacity {
         SchedulerCapacity(

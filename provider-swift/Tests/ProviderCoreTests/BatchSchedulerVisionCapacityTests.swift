@@ -113,6 +113,48 @@ struct BatchSchedulerVisionCapacityTests {
             "the reported active count must be text bridges + in-flight vision, not either alone")
     }
 
+    @Test("in-flight vision tokens are tracked for the coordinator token budget")
+    func visionTokensTrackedForTokenBudget() async {
+        let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 0) {
+            GlobalKVCacheBudget.MemorySnapshot(total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
+        }
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: budget)
+
+        #expect(await scheduler.activeVisionTokens == 0)
+
+        // kvTokens is the full prompt+vision+output span the coordinator should
+        // see charged against the token budget (Finding 2).
+        _ = await scheduler.reserveVisionRequest(
+            requestId: "vlm-1", mediaDecodeBytes: 1024, kvTokens: 1200)
+        _ = await scheduler.reserveVisionRequest(
+            requestId: "vlm-2", mediaDecodeBytes: 1024, kvTokens: 800)
+        #expect(await scheduler.activeVisionTokens == 2000,
+            "the token budget must reflect the summed KV span of in-flight media")
+
+        await scheduler.releaseVisionRequest(requestId: "vlm-1")
+        #expect(await scheduler.activeVisionTokens == 800,
+            "releasing one request must subtract exactly its token span")
+
+        await scheduler.releaseVisionRequest(requestId: "vlm-2")
+        #expect(await scheduler.activeVisionTokens == 0)
+    }
+
+    @Test("a rejected vision reservation contributes no tokens")
+    func rejectedReservationContributesNoTokens() async {
+        let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 0) {
+            GlobalKVCacheBudget.MemorySnapshot(total: 2 * gib, active: 0, cache: 0, systemAvailable: 0)
+        }
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: budget)
+
+        let ok = await scheduler.reserveVisionRequest(
+            requestId: "rejected", mediaDecodeBytes: 4 * gib, kvTokens: 5000)
+        #expect(!ok)
+        #expect(await scheduler.activeVisionTokens == 0,
+            "a rejected media request never runs, so it must charge zero tokens")
+    }
+
     @Test("cancelAll clears in-flight vision reservations")
     func cancelAllClearsVisionRequests() async {
         let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 0) {

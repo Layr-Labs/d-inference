@@ -311,7 +311,7 @@ func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, 
 	if !s.registry.IsModelInCatalog(target.Previous) {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
+	candidates, rejections, tooLarge, _, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
 	if candidates <= 0 {
 		return currentModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
 	}
@@ -330,7 +330,7 @@ func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, curr
 	if !s.registry.IsModelInCatalog(target.Previous) {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
+	candidates, rejections, tooLarge, _, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
 	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 		return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
 	}
@@ -1862,11 +1862,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 503 which counts as downtime. Fast 429s also preserve our TTFT
 		// metrics. Self-route skips this fleet-wide gate — it queues on the
 		// owner's machine instead (handled below).
-		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
+		candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
 			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
+				// The fallback only switches when it found candidates (candidateCount
+				// > 0), so the shed branch below won't run; the alias path is not a
+				// throughput shed, so its decode-floor subset is zero.
+				decodeFloorRejections = 0
 				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
@@ -1940,12 +1944,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// full or the wait times out (true saturation). The reservation is
 			// kept for dispatch.
 			//
-			// EXCEPTION: when decode-floor hard-shed is armed, the capacity
-			// rejection may be a THROUGHPUT shed (no provider can decode at the
-			// floor), not transient memory pressure. Queueing a fundamentally
-			// too-slow fleet just defers the same outcome to a 120s timeout, so
-			// shed immediately instead — the whole point of the flag.
-			if s.queueBeforeShedEnabled() && !s.registry.DecodeFloorShedArmed() {
+			// EXCEPTION: shed immediately ONLY when every capacity rejection is a
+			// decode-floor (THROUGHPUT) shed — no provider can decode at the floor.
+			// Queueing a fundamentally too-slow fleet just defers the same outcome
+			// to a 120s timeout. But a concurrency- or memory-full fleet (or a mix)
+			// can be served by a slot freeing within the queue window, so it must
+			// still queue: bypassing on the global DecodeFloorShedArmed() flag alone
+			// would fast-429 a momentarily-full-but-fast fleet (a queue-before-shed
+			// regression). decodeFloorRejections is the subset of capacityRejections
+			// from the throughput gate; equality means a pure throughput shed.
+			pureThroughputShed := s.registry.DecodeFloorShedArmed() &&
+				decodeFloorRejections > 0 && decodeFloorRejections == capacityRejections
+			if s.queueBeforeShedEnabled() && !pureThroughputShed {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
 				// Legacy fast-shed: immediate 429.
@@ -4688,11 +4698,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// Prefer mode skips the public fleet pre-flight (no owner-trust
 		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
-		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
+		candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
 			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
+				// The fallback only switches when it found candidates (candidateCount
+				// > 0), so the shed branch below won't run; the alias path is not a
+				// throughput shed, so its decode-floor subset is zero.
+				decodeFloorRejections = 0
 				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
 			}
 		}
@@ -4733,9 +4747,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			// capacity right now. Fall through to the dispatch+queue path so a slot
 			// freeing — or a cold load completing — within the queue window serves
 			// it; the queue path still 429s on a full queue or wait timeout.
-			// EXCEPTION: decode-floor hard-shed armed → shed now, don't queue a
-			// too-slow fleet (see the matching note on the primary path above).
-			if s.queueBeforeShedEnabled() && !s.registry.DecodeFloorShedArmed() {
+			// EXCEPTION: shed now ONLY when every rejection is a decode-floor
+			// (throughput) shed — a concurrency/memory-full fleet still queues (see
+			// the matching note on the primary path above).
+			pureThroughputShed := s.registry.DecodeFloorShedArmed() &&
+				decodeFloorRejections > 0 && decodeFloorRejections == capacityRejections
+			if s.queueBeforeShedEnabled() && !pureThroughputShed {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
 				retryAfter := s.estimateRetryAfter(model)

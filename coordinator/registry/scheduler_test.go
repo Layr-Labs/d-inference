@@ -126,7 +126,7 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 	slow.BackendCapacity.Slots[0].MaxConcurrency = 128
 	slow.mu.Unlock()
 
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
+	candidates, rejections, tooLarge, _, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
@@ -138,7 +138,7 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 	fast.mu.Lock()
 	fast.PrefillTPS = 400
 	fast.mu.Unlock()
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT = reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
+	candidates, rejections, tooLarge, _, bestTTFT, hasTTFT = reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
 	if candidates != 2 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity with fast provider = (%d,%d,%d), want (2,0,0)", candidates, rejections, tooLarge)
 	}
@@ -160,7 +160,7 @@ func TestQuickCapacityCheckWithTTFTIncludesWaitingPrefills(t *testing.T) {
 	p.BackendCapacity.Slots[0].QueuedTokenBudget = 40_000
 	p.mu.Unlock()
 
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 2_000, 128, RequestTraits{}, false)
+	candidates, rejections, tooLarge, _, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 2_000, 128, RequestTraits{}, false)
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
@@ -179,7 +179,7 @@ func TestQuickCapacityCheckWithTTFTIgnoresActiveReservations(t *testing.T) {
 	p.BackendCapacity.Slots[0].QueuedTokenBudget = 40_000
 	p.mu.Unlock()
 
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 2048, RequestTraits{}, false)
+	candidates, rejections, tooLarge, _, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 2048, RequestTraits{}, false)
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
@@ -280,7 +280,7 @@ func TestQuickCapacityCheckTTFTUsesObservedPrefillTPS(t *testing.T) {
 	pBench.PrefillTPS = 400
 	pBench.BackendCapacity.Slots[0].MaxConcurrency = 8
 	pBench.mu.Unlock()
-	_, _, _, benchTTFT, hasBench := regBench.QuickCapacityCheckWithTTFTForRequest(model, prompt, 128, RequestTraits{}, false)
+	_, _, _, _, benchTTFT, hasBench := regBench.QuickCapacityCheckWithTTFTForRequest(model, prompt, 128, RequestTraits{}, false)
 	if !hasBench {
 		t.Fatal("expected a TTFT estimate for the benchmark-only provider")
 	}
@@ -298,7 +298,7 @@ func TestQuickCapacityCheckTTFTUsesObservedPrefillTPS(t *testing.T) {
 	pObs.BackendCapacity.Slots[0].MaxConcurrency = 8
 	pObs.BackendCapacity.Slots[0].ObservedPrefillTPS = 1600
 	pObs.mu.Unlock()
-	_, _, _, obsTTFT, hasObs := regObs.QuickCapacityCheckWithTTFTForRequest(model, prompt, 128, RequestTraits{}, false)
+	_, _, _, _, obsTTFT, hasObs := regObs.QuickCapacityCheckWithTTFTForRequest(model, prompt, 128, RequestTraits{}, false)
 	if !hasObs {
 		t.Fatal("expected a TTFT estimate for the observed-prefill provider")
 	}

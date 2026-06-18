@@ -14,14 +14,27 @@ public actor GlobalKVCacheBudget {
         public var systemAvailable: UInt64
     }
 
-    private let safetyFactor: Double
-    private let reserveBytes: UInt64
+    /// Cap fraction and activation reserve are nil → ``UnifiedMemoryCap``
+    /// defaults (0.90 / env / 3 GiB floor). Held as overrides so tests can pin
+    /// them; production uses the defaults so this budget and the load gate share
+    /// one policy.
+    private let capFraction: Double?
+    private let activationReserveBytes: UInt64?
+    /// Operator-configured reserve (`memory_reserve_gb`, in bytes). Held back by
+    /// the live KV gate just as the load gate holds it back, so runtime KV can't
+    /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
+    private let configReserveBytes: UInt64
     private let memorySnapshot: @Sendable () -> MemorySnapshot
     private var reservations: [String: UInt64] = [:]
 
-    public init(reserveBytes: UInt64 = 0, safetyFactor: Double = 0.7) {
-        self.reserveBytes = reserveBytes
-        self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
+    public init(
+        capFraction: Double? = nil,
+        activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0
+    ) {
+        self.capFraction = capFraction
+        self.activationReserveBytes = activationReserveBytes
+        self.configReserveBytes = configReserveBytes
         self.memorySnapshot = {
             MemorySnapshot(
                 total: ProcessInfo.processInfo.physicalMemory,
@@ -33,12 +46,14 @@ public actor GlobalKVCacheBudget {
     }
 
     init(
-        reserveBytes: UInt64 = 0,
-        safetyFactor: Double = 0.7,
+        capFraction: Double? = nil,
+        activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot
     ) {
-        self.reserveBytes = reserveBytes
-        self.safetyFactor = Self.clampedSafetyFactor(safetyFactor)
+        self.capFraction = capFraction
+        self.activationReserveBytes = activationReserveBytes
+        self.configReserveBytes = configReserveBytes
         self.memorySnapshot = memorySnapshot
     }
 
@@ -55,6 +70,42 @@ public actor GlobalKVCacheBudget {
 
     public func release(requestID: String) {
         reservations.removeValue(forKey: requestID)
+    }
+
+    /// Reserve an arbitrary BYTE amount against the same live cap headroom KV
+    /// uses. For non-KV unified-memory consumers that the cap would otherwise be
+    /// blind to — notably VLM media decode (CIImage rasters + Swift Data pixel
+    /// buffers live in the same unified RAM as MLX arrays but are NOT counted by
+    /// MLX.GPU.active/cache). Reserving here makes those bytes share the 90% cap:
+    /// the decode is admitted only if it fits alongside resident weights + KV +
+    /// activations, and rejected (caller surfaces 429/retry) otherwise. Returns
+    /// false if it won't fit or the id is already reserved. Pair with `release`.
+    public func reserveBytes(requestID: String, bytes: UInt64) -> Bool {
+        guard bytes > 0 else { return false }
+        guard reservations[requestID] == nil else { return false }
+        if bytes > availableReservationBytes() { return false }
+        reservations[requestID] = bytes
+        return true
+    }
+
+    /// Reserve a loading model's WEIGHT footprint for the duration of its load,
+    /// unconditionally. A model's weights are not yet visible in MLX active/cache
+    /// while `loadModelContainer` is still allocating them, so a KV reservation
+    /// granted on an ALREADY-loaded model during that window would compute its
+    /// headroom blind to the incoming weights and could push total usage past the
+    /// cap — a transient OOM on the normal serve-while-load path. Reserving the
+    /// footprint here makes those in-flight weights visible to `reserve` /
+    /// `reserveBytes`, so concurrent KV can only claim `headroom − weights`.
+    ///
+    /// Unconditional (never fails): the load gate has already admitted the model,
+    /// so this is bookkeeping for the load that WILL happen, not a second gate.
+    /// It reserves only the weight estimate, so concurrent KV that still fits
+    /// underneath is admitted; only reservations that would over-commit are
+    /// rejected (caller surfaces 429/retry). Released once the weights are
+    /// resident (and thus reflected in `mlxUsed`). Pair with `release`.
+    public func reservePendingLoad(requestID: String, bytes: UInt64) {
+        guard bytes > 0 else { return }
+        reservations[requestID] = bytes
     }
 
     /// Atomically shrink an existing reservation to a smaller byte count,
@@ -88,14 +139,20 @@ public actor GlobalKVCacheBudget {
     private func availableReservationBytes() -> UInt64 {
         let snap = memorySnapshot()
         let mlxUsed = Self.saturatingAdd(snap.active, snap.cache)
-        let mlxFree = snap.total > mlxUsed ? snap.total - mlxUsed : 0
-        // Clamp the MLX-only view (blind to other processes) to real OS-free RAM,
-        // mirroring the load gate (ModelLoadAdmission.freeForLoadGb). Without it
-        // the runtime admits against memory other apps hold → jetsam OOM.
-        let realFree = min(mlxFree, snap.systemAvailable)
-        let usable = realFree > reserveBytes ? realFree - reserveBytes : 0
-        let capped = Double(usable) * safetyFactor
-        let reservationCap = capped >= Double(UInt64.max) ? UInt64.max : UInt64(capped)
+        // Bytes still committable to KV under the 90% unified-memory cap, given
+        // current MLX usage (which already reflects ALL co-resident models'
+        // weights + KV), clamped to real OS-free RAM and net of the activation
+        // reserve. This replaces the old `(free − reserve) × 0.7` formula: the
+        // single cap + activation reserve are the only knobs, so this gate, the
+        // per-scheduler live token budget, and the load gate no longer apply
+        // three different, competing discounts.
+        let reservationCap = UnifiedMemoryCap.liveKVHeadroomBytes(
+            physicalBytes: snap.total,
+            mlxUsedBytes: mlxUsed,
+            systemAvailableBytes: snap.systemAvailable,
+            activationReserveBytes: activationReserveBytes,
+            configReserveBytes: configReserveBytes,
+            capFraction: capFraction)
         let reserved = reservations.values.reduce(UInt64(0)) { partial, value in
             let (sum, overflow) = partial.addingReportingOverflow(value)
             return overflow ? UInt64.max : sum
@@ -113,8 +170,4 @@ public actor GlobalKVCacheBudget {
         return total
     }
 
-    private static func clampedSafetyFactor(_ value: Double) -> Double {
-        guard value.isFinite else { return 0.7 }
-        return min(1.0, max(0.0, value))
-    }
 }

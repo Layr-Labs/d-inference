@@ -184,6 +184,7 @@ type Server struct {
 	profileSigner          *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	codeAttestor           apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
 	codeAttestThrottle     *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
+	trustReuseCache        *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -204,6 +205,24 @@ type Server struct {
 	// machinery is retained for drift comparison and rollback
 	// (EIGENINFERENCE_BINARYHASH_ENFORCE=true).
 	binaryHashEnforce bool
+
+	// ttftHardReject controls how the per-request TTFT admission ceiling
+	// (5s+1ms/token) behaves when the best ESTIMATED time-to-first-token exceeds
+	// it. The estimate's prefill term is not provider-measured and runs ~10x
+	// pessimistic (see resolvedPrefillTPS), which made the legacy hard gate 429
+	// the majority of serveable requests above ~550 prompt tokens. Default false:
+	// the ceiling is a SOFT routing preference — when at least one provider passed
+	// every routing and capacity gate, the request is served on the best-available
+	// provider instead of being rejected. Set true
+	// (EIGENINFERENCE_TTFT_HARD_REJECT=true) to restore the legacy hard 429.
+	ttftHardReject bool
+
+	// minDecodeTPS is the per-request sustained-decode floor (tokens/sec) passed
+	// to the scheduler as PendingRequest.MinDecodeTPS. When > 0 the router prefers
+	// providers that keep a newly admitted request at >= this rate (avoid
+	// overpacking into degraded streams). Soft: never rejects on its own. Default
+	// 0 (off). Set via EIGENINFERENCE_MIN_DECODE_TPS.
+	minDecodeTPS float64
 
 	// knownRuntimeManifest holds accepted runtime component hashes.
 	// When set, providers whose runtime hashes don't match are marked as
@@ -344,6 +363,13 @@ type Server struct {
 	// the key inherits the account-level limits. Nil disables per-key limiting.
 	keyRPMLimiter   *ratelimit.Limiter
 	keyTokenLimiter *ratelimit.KeyTokenLimiter
+
+	// routeTelemetry is the bounded, non-blocking sink that persists
+	// best-effort routing telemetry (inference-route records, outcome updates,
+	// rejection ledger rows) off the request path. It is set by NewServer; a
+	// Server built directly (e.g. &Server{} in tests) leaves it nil, and
+	// submitTelemetry falls back to a per-write saferun.Go in that case.
+	routeTelemetry *telemetrySink
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -626,9 +652,11 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		apiKeyCache:          make(map[string]apiKeyCacheEntry),
 		pendingACME:          make(map[string]*ACMEVerificationResult),
 		codeAttestThrottle:   newCodeAttestThrottle(),
+		trustReuseCache:      newTrustReuseCache(),
 		settlements:          newSettlementHolder(),
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
+		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -656,6 +684,31 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.releaseKey = cfg.ReleaseKey
 
 	return s
+}
+
+// submitTelemetry enqueues a best-effort telemetry write onto the non-blocking
+// routing-telemetry sink. It never blocks the caller (the inference request
+// path): when the sink's buffer is full the write is dropped and counted. name
+// identifies the write for panic/drop diagnostics.
+//
+// Nil-safety: a Server constructed directly (e.g. &Server{} in tests, which
+// never runs NewServer) has no sink. In that case it falls back to the previous
+// behavior — a per-write panic-safe goroutine — so those tests keep working.
+func (s *Server) submitTelemetry(name string, fn func()) {
+	if s.routeTelemetry != nil {
+		s.routeTelemetry.submit(fn)
+		return
+	}
+	saferun.Go(s.logger, name, fn)
+}
+
+// Close releases background resources owned by the Server. Currently it stops
+// the routing-telemetry sink's worker pool. It is idempotent and never blocks on
+// in-flight telemetry writes, so it is safe to defer from main's shutdown path.
+func (s *Server) Close() {
+	if s.routeTelemetry != nil {
+		s.routeTelemetry.close()
+	}
 }
 
 // SetAdminKey configures the admin API key for admin-only endpoints.
@@ -926,6 +979,23 @@ func (s *Server) invalidateCatalogCache() {
 // rollback or to test the legacy enforcement path.
 func (s *Server) SetBinaryHashEnforcement(enabled bool) {
 	s.binaryHashEnforce = enabled
+}
+
+// SetTTFTHardReject toggles the per-request TTFT admission ceiling between a
+// hard 429 (true, legacy) and a soft routing preference (false, default). See
+// the ttftHardReject field for rationale. Call before serving starts.
+func (s *Server) SetTTFTHardReject(enabled bool) {
+	s.ttftHardReject = enabled
+}
+
+// SetMinDecodeTPS sets the per-request sustained-decode floor (tokens/sec) the
+// scheduler uses as a soft routing preference. <= 0 disables it. See the
+// minDecodeTPS field. Call before serving starts.
+func (s *Server) SetMinDecodeTPS(tps float64) {
+	if tps < 0 {
+		tps = 0
+	}
+	s.minDecodeTPS = tps
 }
 
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.
@@ -1674,6 +1744,15 @@ func (s *Server) routes() {
 
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+
+	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
+	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
+	// See docs/architecture/routing-telemetry-and-calibration.md §6. Handlers
+	// enforce admin auth internally via requireAdminKey.
+	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
+	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
+	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
+	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
 
 	// Catch-all for unimplemented OpenAI-compatible endpoints.
 	// Registered last (old-style pattern) so explicit method+path routes

@@ -88,11 +88,6 @@ const (
 	// block. Using context.Background() unbounded here risks hanging the HTTP
 	// handler goroutine when a WebSocket is half-dead.
 	cancelWriteTimeout = 2 * time.Second
-
-	// openRouterTTFT429Threshold is the hard admission target for external
-	// routers: if the fastest eligible provider is already estimated to miss a
-	// 10s TTFT, return a retryable 429 instead of letting the caller time out.
-	openRouterTTFT429Threshold = 10 * time.Second
 )
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
@@ -324,7 +319,7 @@ func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, 
 	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
 }
 
-func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
+func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
 	if publicModel == "" || publicModel == currentModel {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
@@ -336,15 +331,15 @@ func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, curr
 		return currentModel, 0, 0, 0, 0, false, false
 	}
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
-	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT) {
+	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 		return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
 	}
 	parsed["model"] = target.Previous
 	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
 }
 
-func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool) bool {
-	return hasTTFT && bestTTFT > openRouterTTFT429Threshold
+func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) bool {
+	return hasTTFT && bestTTFT > threshold
 }
 
 func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateModel string, alternate time.Duration, alternateOK bool) (string, time.Duration) {
@@ -354,8 +349,8 @@ func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateMod
 	return primaryModel, primary
 }
 
-func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT time.Duration) int {
-	overage := bestTTFT - openRouterTTFT429Threshold
+func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT, threshold time.Duration) int {
+	overage := bestTTFT - threshold
 	seconds := int(math.Ceil(overage.Seconds()))
 	if base := s.estimateRetryAfter(model); seconds < base {
 		seconds = base
@@ -369,19 +364,73 @@ func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT time.Duration) in
 	return seconds
 }
 
-func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT time.Duration) {
-	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT)
+func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT, threshold time.Duration) {
+	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, threshold)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_429"})
 	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-		fmt.Sprintf("all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds", publicModel, int(openRouterTTFT429Threshold.Seconds()), bestTTFT.Seconds(), retryAfter),
+		fmt.Sprintf("all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds", publicModel, int(math.Ceil(threshold.Seconds())), bestTTFT.Seconds(), retryAfter),
 		withCode("rate_limit_exceeded")))
+}
+
+func (s *Server) triggerWarmPool() {
+	if s == nil || s.registry == nil {
+		return
+	}
+	s.registry.RequestWarmPoolTrigger()
+}
+
+func (s *Server) recordWarmPoolQueueState(model string) {
+	if s == nil || s.registry == nil || s.registry.Queue() == nil {
+		return
+	}
+	depth, oldest := s.registry.Queue().QueueStats(model)
+	if depth <= 0 {
+		s.registry.RecordWarmPoolQueueCleared(model)
+		return
+	}
+	s.registry.RecordWarmPoolQueueEnqueued(model, depth, oldest)
+	s.triggerWarmPool()
+}
+
+// ttftMsForRejection converts a pre-flight TTFT estimate to milliseconds for the
+// rejection ledger, returning 0 when the pre-flight produced no estimate.
+func ttftMsForRejection(bestTTFT time.Duration, hasTTFT bool) float64 {
+	if !hasTTFT {
+		return 0
+	}
+	return float64(bestTTFT.Milliseconds())
+}
+
+// rejectionSamplingParams captures only the non-content sampling knobs already
+// parsed from an inbound request body for the rejection ledger. It never
+// includes prompt/message/input content. Returns nil when none are present.
+func rejectionSamplingParams(parsed map[string]any) json.RawMessage {
+	if parsed == nil {
+		return nil
+	}
+	knobs := make(map[string]any, 4)
+	for _, k := range []string{"temperature", "top_p", "presence_penalty", "frequency_penalty"} {
+		if v, ok := parsed[k]; ok {
+			knobs[k] = v
+		}
+	}
+	if len(knobs) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(knobs)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // dispatchOneProvider encrypts and sends an inference request to a single
 // provider. It returns the pending request and provider on success, or an
 // error string on failure. The excludeProviders set is updated on failure.
 // selfRoutePolicy and its resolvers live in self_route.go.
+
+type routeDecisionRecorder func(*registry.Provider, *registry.PendingRequest, registry.RoutingDecision)
 
 func (s *Server) dispatchOneProvider(
 	r *http.Request,
@@ -403,6 +452,8 @@ func (s *Server) dispatchOneProvider(
 	serviceReservation bool,
 	cacheAffinityKey string,
 	excludeProviders map[string]struct{},
+	attempt int,
+	recordRoute routeDecisionRecorder,
 ) (
 	provider *registry.Provider,
 	pr *registry.PendingRequest,
@@ -412,7 +463,13 @@ func (s *Server) dispatchOneProvider(
 ) {
 	requestID := uuid.New().String()
 	pr = &registry.PendingRequest{
-		RequestID:              requestID,
+		RequestID: requestID,
+		// Attempt is stamped at construction — BEFORE the request is encrypted
+		// and sent to the provider — so a fast provider that returns
+		// inference_complete immediately is correlated to the right route row.
+		// Setting it after the send (on the dispatch goroutine) would race the
+		// provider WS reader goroutine's handleComplete read of pr.Attempt.
+		Attempt:                attempt,
 		Model:                  model,
 		PublicModel:            publicModel,
 		ConsumerKey:            consumerKey,
@@ -446,9 +503,17 @@ func (s *Server) dispatchOneProvider(
 	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
-	if !policy.enabled && !policy.prefer {
-		pr.MaxTTFTMs = openRouterTTFT429Threshold.Seconds() * 1000.0
+	// Routing v2 (P1 fix): only enforce the TTFT ceiling inside the scheduler when
+	// the HARD gate is on. In soft mode (default) MaxTTFTMs stays 0 so the primary
+	// dispatch serves the best-available provider instead of re-rejecting an
+	// over-threshold request the preflight already chose to soft-serve. (Mirrors
+	// queueMaxTTFTMs, which already returns 0 in soft mode.)
+	if !policy.enabled && !policy.prefer && s.ttftHardReject {
+		pr.MaxTTFTMs = float64(ttftDeadline(estimatedPromptTokens).Milliseconds())
 	}
+	// Routing v2 W2: soft per-request decode floor (0 = off). Applies to all
+	// routes; it only ranks providers, never rejects.
+	pr.MinDecodeTPS = s.minDecodeTPS
 
 	excludeList := func() []string {
 		ids := make([]string, 0, len(excludeProviders))
@@ -484,6 +549,9 @@ func (s *Server) dispatchOneProvider(
 	defer cleanupPending()
 	if pr.Timing != nil {
 		pr.Timing.RoutedAt = time.Now()
+	}
+	if recordRoute != nil {
+		recordRoute(provider, pr, decision)
 	}
 
 	// A request settles FREE when it's served by a machine the caller owns:
@@ -587,6 +655,9 @@ func (s *Server) dispatchOneProvider(
 		cleanupPending()
 		return nil, nil, decision, "failed to marshal request", http.StatusInternalServerError
 	}
+	if pr.Timing != nil {
+		pr.Timing.DispatchedAt = time.Now()
+	}
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		refundExtra()
 		cleanupPending()
@@ -594,9 +665,6 @@ func (s *Server) dispatchOneProvider(
 		return nil, nil, decision, "failed to send request to provider", http.StatusBadGateway
 	}
 	pendingCleanup = false
-	if pr.Timing != nil {
-		pr.Timing.DispatchedAt = time.Now()
-	}
 
 	return provider, pr, decision, "", 0
 }
@@ -689,7 +757,7 @@ func estimatePromptTokens(parsed map[string]any) int {
 		total += messagesPromptTokens(v)
 	}
 	if v, ok := parsed["input"]; ok {
-		total += approximateTokenCount(v)
+		total += inputPromptTokens(v)
 	}
 	if v, ok := parsed["prompt"]; ok {
 		total += approximateTokenCount(v)
@@ -777,7 +845,7 @@ func messageContentTokens(content any) int {
 			}
 			typ, _ := pm["type"].(string)
 			switch {
-			case typ == "text":
+			case typ == "text" || typ == "input_text":
 				if s, ok := pm["text"].(string); ok {
 					total += textTokens(s)
 				}
@@ -816,6 +884,38 @@ func messagesPromptTokens(messages any) int {
 		total += messageContentTokens(mm["content"])
 	}
 	return total
+}
+
+// inputPromptTokens estimates the Responses API `input` field. A string input
+// is plain text (len/4). Structured input is an array of message-like items with
+// `content` parts, so reuse the same media-aware content estimator as chat
+// messages instead of counting JSON wrapper bytes.
+func inputPromptTokens(input any) int {
+	switch x := input.(type) {
+	case string:
+		return approximateTokenCount(x)
+	case []any:
+		total := 0
+		for _, item := range x {
+			switch m := item.(type) {
+			case string:
+				total += approximateTokenCount(m)
+			case map[string]any:
+				content, ok := m["content"]
+				if !ok {
+					total += approximateTokenCount(m)
+					continue
+				}
+				total += 4 // role/type framing, matching messagesPromptTokens.
+				total += messageContentTokens(content)
+			default:
+				total += approximateTokenCount(item)
+			}
+		}
+		return total
+	default:
+		return approximateTokenCount(input)
+	}
 }
 
 // contentPartsHaveMedia reports whether a `content` value (a content-part array)
@@ -1467,6 +1567,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	messages, _ := parsed["messages"].([]any)
 	input := parsed["input"]
 	if len(messages) == 0 && input == nil {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "validation",
+			reasonCode:      "messages_required",
+			httpStatus:      http.StatusBadRequest,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "messages or input is required"))
 		return
 	}
@@ -1474,6 +1584,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Multiple choices per request are not supported — fail loudly instead of
 	// silently returning a single choice the consumer didn't ask for.
 	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "validation",
+			reasonCode:      "bad_param",
+			httpStatus:      http.StatusBadRequest,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			n:               copies,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
 			"n > 1 is not supported", withParam("n")))
 		return
@@ -1481,6 +1602,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
 	if err != nil {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "validation",
+			reasonCode:      "bad_param",
+			httpStatus:      http.StatusBadRequest,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
@@ -1503,6 +1634,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(
 		parsed, rawBody, model, allowedProviderSerials, policy)
 	if !ok {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "model_resolution",
+			reasonCode:      "model_unavailable",
+			httpStatus:      http.StatusServiceUnavailable,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
 		return
@@ -1564,11 +1705,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	deadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 
 	if isResponsesAPI {
 		providerParsed, err := responsesRequestToChatCompletions(parsed)
 		if err != nil {
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "validation",
+				reasonCode:            "bad_param",
+				httpStatus:            http.StatusBadRequest,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return
 		}
@@ -1601,6 +1759,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Per-key spend cap (phase 1) — checked before the reservation so a
 		// capped key never debits the account ledger.
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "balance",
+				reasonCode:            "insufficient_quota",
+				httpStatus:            http.StatusPaymentRequired,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
 			return
 		}
@@ -1608,6 +1782,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
 		if err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
+				s.recordRejection(rejectionInfo{
+					r:                     r,
+					stage:                 "balance",
+					reasonCode:            "insufficient_funds",
+					httpStatus:            http.StatusPaymentRequired,
+					keyID:                 keyIDFromContext(r.Context()),
+					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:        publicModel,
+					resolvedModel:         model,
+					stream:                stream,
+					estimatedPromptTokens: estimatedPromptTokens,
+					requestedMaxTokens:    requestedMaxTokens,
+					requiresVision:        requiresVision,
+					hasTools:              hasTools,
+					params:                rejectionSamplingParams(parsed),
+				})
 				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
@@ -1629,6 +1819,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Reject requests for models not in the catalog.
 	if !s.registry.IsModelInCatalog(model) {
 		refundReservation()
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "model_resolution",
+			reasonCode:            "model_not_found",
+			httpStatus:            http.StatusNotFound,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			params:                rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
@@ -1649,6 +1855,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// routing with a paid public fallback and the normal queue, which is the
 		// correct gate for prefer.
 	} else {
+		ttftThreshold := deadline
 		// Pre-flight capacity check: can ANY provider serve this model right
 		// now? If not, return 429 immediately rather than queueing for up to
 		// 120s. OpenRouter treats 429 as "rate limited" (no uptime penalty) vs
@@ -1665,6 +1872,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
 					if err != nil {
 						refundReservation()
+						s.recordRejection(rejectionInfo{
+							r:                     r,
+							stage:                 "validation",
+							reasonCode:            "bad_param",
+							httpStatus:            http.StatusBadRequest,
+							keyID:                 keyIDFromContext(r.Context()),
+							consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+							requestedModel:        publicModel,
+							resolvedModel:         model,
+							stream:                stream,
+							estimatedPromptTokens: estimatedPromptTokens,
+							requestedMaxTokens:    requestedMaxTokens,
+							requiresVision:        requiresVision,
+							hasTools:              hasTools,
+							params:                rejectionSamplingParams(parsed),
+						})
 						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 						return
 					}
@@ -1679,50 +1902,176 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Surface a clear 503 instead of a 429 the client would retry forever.
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "model_too_large",
+				httpStatus:              http.StatusServiceUnavailable,
+				keyID:                   keyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  stream,
+				estimatedPromptTokens:   estimatedPromptTokens,
+				requestedMaxTokens:      requestedMaxTokens,
+				requiresVision:          requiresVision,
+				hasTools:                hasTools,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
 			return
 		}
 		if candidateCount == 0 && capacityRejections > 0 {
+			// Routing v2 W3: feed the autoscaler the demand the preflight sees.
 			s.registry.RecordWarmPoolCapacityReject(model)
-			// Providers exist for this model but ALL are at capacity.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
-				withCode("rate_limit_exceeded")))
-			return
+			s.triggerWarmPool()
+			// Queue-before-shed (default on): providers exist for this model but
+			// all are at capacity right now. Rather than an immediate 429, let the
+			// request fall through to the normal dispatch+queue path so a slot
+			// freeing — or a cold load completing — within the queue window serves
+			// it. The dispatch/queue path still returns a 429 when the queue is
+			// full or the wait times out (true saturation). The reservation is
+			// kept for dispatch.
+			if s.queueBeforeShedEnabled() {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
+			} else {
+				// Legacy fast-shed: immediate 429.
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "machine_busy",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
+					withCode("rate_limit_exceeded")))
+				return
+			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
 			// No provider is even structurally eligible right now: the model's
 			// whole pool is offline/untrusted, trait-gated (below the tools floor
 			// / render-broken), or — the case the shape-keyed breaker introduces —
 			// every serving provider is in inference-error cooldown for THIS
-			// request shape. None of those clear by a slot freeing up, so queueing
-			// for up to 120s only adds misleading latency before the same 429.
-			// Fail fast with a retryable 503 + Retry-After (OpenRouter treats 503
-			// as unavailable, not a uptime-penalised error here because the body
-			// is explicit). This mirrors the trait fast-fails above for the
-			// transient-cooldown case they cannot see.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
-				withCode("model_unavailable")))
-			return
+			// request shape.
+			//
+			// Routing v2 W3 cold-dispatch (default on): before shedding, check
+			// whether an idle on-disk provider could be WARMED to serve this model
+			// (and would then pass admission for these traits). If so, spill the
+			// request into the queue instead of 503'ing — the enqueue path kicks
+			// the model-swap machinery, and the queued request drains onto the
+			// provider once the cold load completes. Note that an idle, fitting
+			// cold provider is already a scheduler candidate (slot "unknown" is
+			// eligible), so this branch usually only fires for genuinely
+			// unservable demand; it is the safety valve for the narrow window
+			// where a loadable cold provider is not yet a candidate.
+			//
+			// Feed the autoscaler the demand regardless of outcome.
+			s.registry.RecordWarmPoolCapacityReject(model)
+			s.triggerWarmPool()
+			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
+				// Fall through to dispatch+queue; reservation kept.
+			} else {
+				// None of these clear by a slot freeing up, so queueing for up to
+				// 120s only adds misleading latency before the same error. Fail
+				// fast with a retryable 503 + Retry-After (OpenRouter treats 503
+				// as unavailable, not a uptime-penalised error here because the
+				// body is explicit). This mirrors the trait fast-fails above for
+				// the transient-cooldown case they cannot see.
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "no_provider",
+					httpStatus:              http.StatusServiceUnavailable,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+					fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
+					withCode("model_unavailable")))
+				return
+			}
 		}
-		if ttftTooSlow(bestTTFT, hasTTFT) {
-			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
+			if !s.ttftHardReject {
+				// Soft TTFT gate (default): a provider passed every routing and
+				// capacity gate, and pr.MaxTTFTMs is left 0 in soft mode, so the
+				// dispatch path serves the best-available provider instead of
+				// re-rejecting (P1 fix). Do NOT divert to an older alias build here
+				// (P2 fix) — the desired build is routable. A soft-serve over the
+				// deadline is still a TTFT near-miss, so feed the autoscaler so it
+				// grows warm capacity for this model.
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
+			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
 					if err != nil {
 						refundReservation()
+						s.recordRejection(rejectionInfo{
+							r:                     r,
+							stage:                 "validation",
+							reasonCode:            "bad_param",
+							httpStatus:            http.StatusBadRequest,
+							keyID:                 keyIDFromContext(r.Context()),
+							consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+							requestedModel:        publicModel,
+							resolvedModel:         model,
+							stream:                stream,
+							estimatedPromptTokens: estimatedPromptTokens,
+							requestedMaxTokens:    requestedMaxTokens,
+							requiresVision:        requiresVision,
+							hasTools:              hasTools,
+							params:                rejectionSamplingParams(parsed),
+						})
 						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 						return
 					}
@@ -1731,9 +2080,34 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					rawBody, _ = marshalForwardBody(parsed)
 				}
 			} else {
+				// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After,
+				// and feed the autoscaler a TTFT-miss so warm capacity grows.
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
-				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT)
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "routing_ttft",
+					reasonCode:              "ttft_too_slow",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              float64(retryTTFT.Milliseconds()),
+				})
+				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
 			}
 		}
@@ -1755,8 +2129,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// commits exactly once, then writes attestation/timing headers and streams.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	deadline := ttftDeadline(estimatedPromptTokens)
-
 	// Final cap on the body we'll seal. The read cap (parseInferencePrelude)
 	// bounded the request as received, but rawBody has since been re-marshaled at
 	// several points — alias resolution, allowlist/routing-field stripping,
@@ -1771,6 +2143,23 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// at this point, so refund before returning.
 	if len(rawBody) > maxInferenceBodyBytes {
 		refundReservation()
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "validation",
+			reasonCode:            "payload_too_large",
+			httpStatus:            http.StatusRequestEntityTooLarge,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			requestBodyBytes:      len(rawBody),
+			params:                rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
 			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
 		return
@@ -1895,6 +2284,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
 						s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+						s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 						errData, _ := json.Marshal(map[string]any{
 							"error": map[string]any{
 								"message": errMsg.Error,
@@ -1909,6 +2299,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				}
 				if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
 					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
+					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
 					fmt.Fprintf(w, "data: {\"error\":{\"message\":\"provider ended without completion\",\"type\":\"provider_error\"}}\n\n")
 					flusher.Flush()
 					return
@@ -2037,6 +2428,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 			errData, _ := json.Marshal(map[string]any{
 				"error": map[string]any{
 					"message": errMsg.Error,
@@ -2050,6 +2442,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		case <-timer.C:
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
 			fmt.Fprintf(w, "data: {\"error\":{\"message\":\"request timed out\",\"type\":\"timeout\"}}\n\n")
 			flusher.Flush()
 			return
@@ -2103,6 +2496,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				}
 				if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
 					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
+					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
 					emitter.emitError("provider_error", "provider ended without completion")
 					return
 				}
@@ -2126,12 +2520,14 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 			emitter.emitError("provider_error", errMsg.Error)
 			return
 
 		case <-timer.C:
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
 			emitter.emitError("timeout", "request timed out")
 			return
 
@@ -2165,6 +2561,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					if ok && errMsg.Error != "" {
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
 						statusCode := errMsg.StatusCode
 						if statusCode == 0 {
 							statusCode = http.StatusBadGateway
@@ -2192,13 +2589,20 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 							case u, ok := <-pr.CompleteCh:
 								if !ok {
 									s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+									s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
 									writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
 									return
 								}
 								completeUsage = u
 							case <-ctx.Done():
-								s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-								writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+								if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+									s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+									s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "usage_timeout_before_response"))
+									writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+								} else {
+									s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
+									s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
+								}
 								return
 							}
 							if objType == "chat.completion" {
@@ -2255,6 +2659,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				case usage, ok := <-pr.CompleteCh:
 					if !ok {
 						s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
 						writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
 						return
 					}
@@ -2267,8 +2672,14 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					s.noteInferenceSuccess(pr)
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
-					s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-					writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+						s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "usage_timeout_before_response"))
+						writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+					} else {
+						s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
+						s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
+					}
 				}
 				return
 			}
@@ -2280,6 +2691,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+			s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
 			statusCode := errMsg.StatusCode
 			if statusCode == 0 {
 				statusCode = http.StatusBadGateway
@@ -2288,8 +2700,14 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			return
 
 		case <-ctx.Done():
-			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "request timed out"))
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+				s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "response_timeout_before_response"))
+				writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "request timed out"))
+			} else {
+				s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
+				s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
+			}
 			return
 		}
 	}
@@ -4044,6 +4462,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // It reads the raw request body, extracts model/stream, sets the endpoint field,
 // and reuses the same E2E encryption + provider routing as chat completions.
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
+	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
+
 	// Shared prelude: read body, normalize tool schemas (Anthropic /v1/messages
 	// bodies carry a top-level "tools" array too; the provider body is rebuilt
 	// from parsed below, so normalizing before the unmarshal covers it), parse,
@@ -4058,6 +4478,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
 	if err != nil {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "validation",
+			reasonCode:      "bad_param",
+			httpStatus:      http.StatusBadRequest,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
@@ -4074,6 +4504,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// from `parsed` (inferenceBody below), so rawBody isn't threaded here.
 	buildModel, publicModel, _, ok := s.resolveRequestedModel(parsed, rawBody, model, allowedProviderSerials, policy)
 	if !ok {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "model_resolution",
+			reasonCode:      "model_unavailable",
+			httpStatus:      http.StatusServiceUnavailable,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
 		return
@@ -4082,6 +4522,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	cacheAffinityKey := requestCacheAffinityKey(parsed)
 
 	if !s.registry.IsModelInCatalog(model) {
+		s.recordRejection(rejectionInfo{
+			r:               r,
+			stage:           "model_resolution",
+			reasonCode:      "model_not_found",
+			httpStatus:      http.StatusNotFound,
+			keyID:           keyIDFromContext(r.Context()),
+			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:  publicModel,
+			resolvedModel:   model,
+			params:          rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
@@ -4110,6 +4561,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	genericDeadline := ttftDeadline(estimatedPromptTokens)
+	timing.ParsedAt = time.Now()
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
@@ -4132,6 +4585,22 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		// Per-key spend cap (phase 1) — checked before the reservation.
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "balance",
+				reasonCode:            "insufficient_quota",
+				httpStatus:            http.StatusPaymentRequired,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
 			return
 		}
@@ -4139,6 +4608,22 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
 		if err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
+				s.recordRejection(rejectionInfo{
+					r:                     r,
+					stage:                 "balance",
+					reasonCode:            "insufficient_funds",
+					httpStatus:            http.StatusPaymentRequired,
+					keyID:                 keyIDFromContext(r.Context()),
+					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:        publicModel,
+					resolvedModel:         model,
+					stream:                stream,
+					estimatedPromptTokens: estimatedPromptTokens,
+					requestedMaxTokens:    requestedMaxTokens,
+					requiresVision:        requiresVision,
+					hasTools:              hasTools,
+					params:                rejectionSamplingParams(parsed),
+				})
 				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
@@ -4152,6 +4637,38 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
 		}
+	}
+	timing.ReservedAt = time.Now()
+	rejectionForGeneric := func(stage, reason string, status, retryAfterMs int) rejectionInfo {
+		return rejectionInfo{
+			r:                     r,
+			stage:                 stage,
+			reasonCode:            reason,
+			httpStatus:            status,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKey),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			selfRouteOnly:         policy.enabled,
+			preferOwner:           policy.prefer,
+			params:                rejectionSamplingParams(parsed),
+			retryAfterMs:          retryAfterMs,
+		}
+	}
+	rejectionForGenericWithDecision := func(stage, reason string, status, retryAfterMs int, decision registry.RoutingDecision) rejectionInfo {
+		info := rejectionForGeneric(stage, reason, status, retryAfterMs)
+		info.servabilityComputed = true
+		info.candidateCount = decision.CandidateCount
+		info.capacityRejections = decision.CapacityRejections
+		info.modelTooLargeRejections = decision.ModelTooLargeRejections
+		info.visionRejections = decision.VisionRejections
+		info.bestTTFTMs = decision.BestTTFTMs
+		return info
 	}
 
 	// Self-route pre-flight (precise errors, no paid fallback); otherwise the
@@ -4176,43 +4693,166 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "model_too_large",
+				httpStatus:              http.StatusServiceUnavailable,
+				keyID:                   keyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  stream,
+				estimatedPromptTokens:   estimatedPromptTokens,
+				requestedMaxTokens:      requestedMaxTokens,
+				requiresVision:          requiresVision,
+				hasTools:                hasTools,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
 			return
 		}
 		if candidateCount == 0 && capacityRejections > 0 {
+			// Routing v2 W3: feed the autoscaler the demand the preflight sees.
 			s.registry.RecordWarmPoolCapacityReject(model)
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
-				withCode("rate_limit_exceeded")))
-			return
+			s.triggerWarmPool()
+			// Queue-before-shed (default on): all providers for this model are at
+			// capacity right now. Fall through to the dispatch+queue path so a slot
+			// freeing — or a cold load completing — within the queue window serves
+			// it; the queue path still 429s on a full queue or wait timeout.
+			if s.queueBeforeShedEnabled() {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
+			} else {
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "machine_busy",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
+					withCode("rate_limit_exceeded")))
+				return
+			}
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
 			// No structurally-eligible provider right now (offline, trait-gated,
-			// or shape-cooled by the inference-error breaker). Queueing cannot help
-			// — fail fast with a retryable 503 instead of a 120s queue. Mirrors the
-			// chat-completions preflight.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
-				withCode("model_unavailable")))
-			return
+			// or shape-cooled by the inference-error breaker).
+			//
+			// Routing v2 W3 cold-dispatch (default on): if an idle on-disk provider
+			// could be warmed to serve this model (and would pass admission for
+			// these traits), spill into the queue instead of 503'ing — the enqueue
+			// path kicks the model-swap machinery and the queued request drains
+			// onto the provider once the cold load completes. Feed the autoscaler
+			// the demand regardless of outcome.
+			s.registry.RecordWarmPoolCapacityReject(model)
+			s.triggerWarmPool()
+			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
+				// Fall through to dispatch+queue; reservation kept.
+			} else {
+				// Queueing cannot help — fail fast with a retryable 503 instead of
+				// a 120s queue. Mirrors the chat-completions preflight.
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "no_provider",
+					httpStatus:              http.StatusServiceUnavailable,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+					fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
+					withCode("model_unavailable")))
+				return
+			}
 		}
-		if ttftTooSlow(bestTTFT, hasTTFT) {
-			if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+		ttftThreshold := genericDeadline
+		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
+			if !s.ttftHardReject {
+				// Soft TTFT gate (default): serve the best-available provider
+				// (MaxTTFTMs is 0 in soft mode — P1 fix); do not divert to an older
+				// alias build (P2 fix). Feed the autoscaler a near-miss to grow
+				// warm capacity for this model.
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
+			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 			} else {
+				// Hard TTFT gate, no faster alias: 429 + Retry-After, and feed the
+				// autoscaler a TTFT-miss so warm capacity grows.
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
 				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 				refundReservation()
-				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT)
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "routing_ttft",
+					reasonCode:              "ttft_too_slow",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              float64(retryTTFT.Milliseconds()),
+				})
+				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 				return
 			}
 		}
@@ -4247,15 +4887,20 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ChunkCh:              make(chan string, chunkBufferSize),
 		CompleteCh:           make(chan protocol.UsageInfo, 1),
 		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
+		Timing:               timing,
 	}
 
 	// Public inference routes (not self-route / prefer-owner) enforce the
 	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
-	if !policy.enabled && !policy.prefer {
-		pr.MaxTTFTMs = openRouterTTFT429Threshold.Seconds() * 1000.0
+	// Routing v2 (P1 fix): enforce the TTFT ceiling only in HARD mode; soft mode
+	// leaves MaxTTFTMs 0 so dispatch serves the best-available provider.
+	if !policy.enabled && !policy.prefer && s.ttftHardReject {
+		pr.MaxTTFTMs = float64(genericDeadline.Milliseconds())
 	}
+	// Routing v2 W2: soft per-request decode floor (0 = off).
+	pr.MinDecodeTPS = s.minDecodeTPS
 
 	// refundExtra credits back the provider-specific surcharge that
 	// reserveAdditionalForProvider may have added on top of the base
@@ -4326,7 +4971,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if decision.TTFTRejections > 0 {
 			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
 			refundReservation()
-			s.writeTTFTTooSlow(w, model, publicModel, bestTTFT)
+			s.writeTTFTTooSlow(w, model, publicModel, bestTTFT, genericDeadline)
 			return
 		}
 
@@ -4347,11 +4992,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			Pending:    pr,
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
+		timing.QueuedAt = time.Now()
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:over_capacity"})
+			s.recordRejection(rejectionForGenericWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision))
 			if policy.enabled {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
 					"your machine is at capacity — retry shortly", withCode("machine_busy")))
@@ -4362,20 +5009,44 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			}
 			return
 		}
-		if depth, oldest := s.registry.Queue().QueueStats(model); depth > 0 {
-			s.registry.RecordWarmPoolQueueEnqueued(model, depth, oldest)
-		}
+		s.recordWarmPoolQueueState(model)
+		// Routing v2 W3: the model now has queued demand — proactively warm a cold
+		// provider for it (TriggerModelSwaps) instead of waiting for the next
+		// heartbeat, so the queued request drains onto it sooner.
+		s.kickColdDispatch(model)
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
+		routeState := &dispatchState{
+			s:                     s,
+			r:                     r,
+			model:                 model,
+			publicModel:           publicModel,
+			consumerKey:           consumerKey,
+			consumerLocation:      consumerLocation,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			policy:                policy,
+			cacheAffinityKey:      cacheAffinityKey,
+			requestID:             requestID,
+			attempt:               pr.Attempt,
+			pr:                    pr,
+		}
+		routeState.recordRoutingDecisionFor(nil, pr, requestID, pr.Attempt, decision, "", "queued")
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
+				s.recordWarmPoolQueueState(model)
+				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 				refundReservation()
 				return
 			}
+			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "queue_timeout", http.StatusTooManyRequests))
 			retryAfter := s.estimateRetryAfter(model)
 			s.registry.RecordWarmPoolQueueTimeout(model, time.Since(queuedReq.EnqueuedAt))
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
+			s.recordRejection(rejectionForGenericWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision))
 			if policy.enabled {
 				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
 					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
@@ -4386,14 +5057,35 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			}
 			return
 		}
+		s.recordWarmPoolQueueState(model)
 		decision = queuedReq.Decision
 	}
+	timing.RoutedAt = time.Now()
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:selected"})
 	s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
 	s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
 	if decision.EffectiveTPS > 0 {
 		s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 	}
+	routeState := &dispatchState{
+		s:                     s,
+		r:                     r,
+		model:                 model,
+		publicModel:           publicModel,
+		consumerKey:           consumerKey,
+		consumerLocation:      consumerLocation,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		requiresVision:        requiresVision,
+		hasTools:              hasTools,
+		policy:                policy,
+		cacheAffinityKey:      cacheAffinityKey,
+		requestID:             requestID,
+		attempt:               pr.Attempt,
+		provider:              provider,
+		pr:                    pr,
+	}
+	routeState.recordRoutingDecisionFor(provider, pr, requestID, pr.Attempt, decision, "", "")
 	pendingCleanup := true
 	cleanupPending := func() {
 		if pendingCleanup {
@@ -4423,11 +5115,31 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundExtra()
 			refundReservation()
 			if errors.Is(err, store.ErrInsufficientBalance) {
+				s.recordRejection(rejectionInfo{
+					r:                     r,
+					stage:                 "balance",
+					reasonCode:            "insufficient_funds",
+					httpStatus:            http.StatusPaymentRequired,
+					keyID:                 keyIDFromContext(r.Context()),
+					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:        publicModel,
+					resolvedModel:         model,
+					stream:                stream,
+					estimatedPromptTokens: estimatedPromptTokens,
+					requestedMaxTokens:    requestedMaxTokens,
+					requiresVision:        requiresVision,
+					hasTools:              hasTools,
+					params:                rejectionSamplingParams(parsed),
+				})
 				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 					"your balance is too low for this provider price — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 			} else {
 				s.logger.Error("provider reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
+				s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusServiceUnavailable))
 				s.writeServiceUnavailable(w, model)
+			}
+			if errors.Is(err, store.ErrInsufficientBalance) {
+				s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "insufficient_funds", http.StatusPaymentRequired))
 			}
 			return
 		}
@@ -4444,6 +5156,24 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		cleanupPending()
 		refundExtra()
 		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "payload_too_large", http.StatusRequestEntityTooLarge))
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "validation",
+			reasonCode:            "payload_too_large",
+			httpStatus:            http.StatusRequestEntityTooLarge,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			requestBodyBytes:      len(inferenceBody),
+			params:                rejectionSamplingParams(parsed),
+		})
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
 			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
 		return
@@ -4453,6 +5183,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		cleanupPending()
 		refundExtra()
 		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "encryption_missing", http.StatusServiceUnavailable))
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
 			"no provider with E2E encryption available"))
 		return
@@ -4463,6 +5194,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		cleanupPending()
 		refundExtra()
 		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "encryption_error", http.StatusInternalServerError))
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
 		return
 	}
@@ -4472,6 +5204,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		cleanupPending()
 		refundExtra()
 		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "encryption_error", http.StatusInternalServerError))
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
 		return
 	}
@@ -4484,9 +5217,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		cleanupPending()
 		refundExtra()
 		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "encryption_error", http.StatusInternalServerError))
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
 		return
 	}
+	timing.EncryptedAt = time.Now()
 
 	wireMsg := map[string]any{
 		"type":       protocol.TypeInferenceRequest,
@@ -4498,12 +5233,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
-
 	data, _ := json.Marshal(wireMsg)
+	timing.DispatchedAt = time.Now()
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		cleanupPending()
 		refundExtra()
 		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusBadGateway))
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return
 	}
@@ -4521,7 +5257,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// before committing. This mirrors the chat completions path but without
 	// speculative dispatch (single attempt). If the provider misses the
 	// TTFT deadline, the request fails instead of streaming forever.
-	genericDeadline := ttftDeadline(estimatedPromptTokens)
 	ttftTimer := time.NewTimer(genericDeadline)
 	var firstChunk string
 	committed := false
@@ -4535,6 +5270,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ttftTimer.Stop()
 		if ok {
 			firstChunk = chunk
+			pr.MarkFirstChunkArrived()
 			committed = true
 		} else {
 			select {
@@ -4545,6 +5281,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				refundExtra()
 				refundReservation()
 				s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
+				s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 				statusCode := errMsg.StatusCode
 				if statusCode == 0 {
 					statusCode = http.StatusBadGateway
@@ -4563,6 +5300,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		refundExtra()
 		refundReservation()
 		s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
+		s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 		statusCode := errMsg.StatusCode
 		if statusCode == 0 {
 			statusCode = http.StatusBadGateway
@@ -4576,6 +5314,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		refundExtra()
 		refundReservation()
 		s.ddIncr("inference.dispatches", []string{"status:timeout"})
+		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
 		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider did not respond within TTFT deadline"))
 		return
 	case <-r.Context().Done():
@@ -4585,6 +5324,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
 		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 		return
 	}
 
@@ -4596,6 +5336,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			chunkTimer.Stop()
 			if ok {
 				firstChunk = chunk
+				pr.MarkFirstChunkArrived()
 				committed = true
 			} else {
 				select {
@@ -4606,6 +5347,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					refundExtra()
 					refundReservation()
 					s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
+					s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 					statusCode := errMsg.StatusCode
 					if statusCode == 0 {
 						statusCode = http.StatusBadGateway
@@ -4624,6 +5366,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundExtra()
 			refundReservation()
 			s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
+			s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 			statusCode := errMsg.StatusCode
 			if statusCode == 0 {
 				statusCode = http.StatusBadGateway
@@ -4641,6 +5384,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			// stalls must still accumulate into the routing cooldown).
 			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout)
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
+			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "accepted_timeout", http.StatusGatewayTimeout))
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))
 			return
 		case <-r.Context().Done():
@@ -4650,6 +5394,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
+			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 			return
 		}
 	}
@@ -4660,9 +5405,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
 		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, providerFailedPendingRouteOutcome(pr, "error", "provider_incomplete", http.StatusServiceUnavailable))
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("provider_error", "failed to get first chunk from provider"))
 		return
 	}
+	s.updateInferenceRouteOutcomeForPending(pr, committedRouteOutcome(pr))
 
 	// Free the slot, stop the provider, and preserve billing on a mid-stream
 	// disconnect (park-before-remove + post-terminal sweep; see the

@@ -244,7 +244,7 @@ public enum LaunchAgent: Sendable {
     /// Env vars passed through from the installing shell into the launchd plist's
     /// `EnvironmentVariables`. Kept to a small allowlist so the daemon's
     /// environment stays predictable; only non-empty values are forwarded.
-    static let passthroughEnvKeys = ["DARKBLOOM_PREFIX_CACHE"]
+    static let passthroughEnvKeys = ["DARKBLOOM_PREFIX_CACHE", "DARKBLOOM_MLX_RESOURCE_DEBUG"]
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)

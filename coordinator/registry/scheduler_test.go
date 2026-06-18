@@ -119,7 +119,11 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 	model := "ttft-model"
 	slow := makeSchedulerProvider(t, reg, "slow", model, 100)
 	slow.mu.Lock()
-	slow.BackendCapacity.Slots[0].MaxTokensPotential = 2_000
+	// Pin the prefill rate (== old decodeTPS*4 fallback) so the TTFT queue-math
+	// assertions here are independent of the tunable decode→prefill fallback ratio.
+	slow.PrefillTPS = 400
+	slow.BackendCapacity.Slots[0].NumWaiting = 100
+	slow.BackendCapacity.Slots[0].MaxConcurrency = 128
 	slow.mu.Unlock()
 
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
@@ -130,7 +134,10 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 		t.Fatalf("bestTTFT = %v has=%v, want above 10s with backlog", bestTTFT, hasTTFT)
 	}
 
-	makeSchedulerProvider(t, reg, "fast", model, 100)
+	fast := makeSchedulerProvider(t, reg, "fast", model, 100)
+	fast.mu.Lock()
+	fast.PrefillTPS = 400
+	fast.mu.Unlock()
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT = reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
 	if candidates != 2 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity with fast provider = (%d,%d,%d), want (2,0,0)", candidates, rejections, tooLarge)
@@ -140,44 +147,230 @@ func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {
 	}
 }
 
-func TestQuickCapacityCheckWithTTFTIncludesTokenBudgetBacklog(t *testing.T) {
+func TestQuickCapacityCheckWithTTFTIncludesWaitingPrefills(t *testing.T) {
 	reg := New(testLogger())
-	model := "ttft-token-budget-model"
-	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 1_000, 20_000, 100)
+	model := "ttft-waiting-prefill-model"
+	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 20_000, 100_000, 100)
 	p.mu.Lock()
-	p.BackendCapacity.Slots[0].QueuedTokenBudget = 2_000
+	// Pin the prefill rate (== old decodeTPS*4 fallback) so this waiting-prefill
+	// TTFT assertion is independent of the tunable decode→prefill fallback ratio.
+	p.PrefillTPS = 400
+	p.BackendCapacity.Slots[0].NumWaiting = 3
+	p.BackendCapacity.Slots[0].MaxConcurrency = 8
+	p.BackendCapacity.Slots[0].QueuedTokenBudget = 40_000
 	p.mu.Unlock()
-	p.AddPending(&PendingRequest{
-		RequestID:             "coordinator-pending",
-		Model:                 model,
-		EstimatedPromptTokens: 4_000,
-		RequestedMaxTokens:    1_000,
-	})
 
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 128, RequestTraits{}, false)
+	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 2_000, 128, RequestTraits{}, false)
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
-	if !hasTTFT || bestTTFT < 50*time.Second || bestTTFT > 51*time.Second {
-		t.Fatalf("bestTTFT = %v has=%v, want about 50s from active+queued+coordinator backlog", bestTTFT, hasTTFT)
+	if !hasTTFT || bestTTFT < 20*time.Second || bestTTFT > 21*time.Second {
+		t.Fatalf("bestTTFT = %v has=%v, want about 20s from waiting prefills plus this prefill", bestTTFT, hasTTFT)
 	}
 }
 
-func TestQuickCapacityCheckWithTTFTIncludesBackendRunningFallback(t *testing.T) {
+func TestQuickCapacityCheckWithTTFTIgnoresActiveReservations(t *testing.T) {
 	reg := New(testLogger())
-	model := "ttft-running-fallback-model"
-	p := makeSchedulerProvider(t, reg, "running", model, 100)
+	model := "ttft-active-reservation-model"
+	p := makeTokenBudgetProvider(t, reg, "running", model, 100, 80_000, 200_000, 100)
 	p.mu.Lock()
 	p.BackendCapacity.Slots[0].NumRunning = 1
-	p.BackendCapacity.Slots[0].MaxTokensPotential = 0
+	p.BackendCapacity.Slots[0].MaxTokensPotential = 100_000
+	p.BackendCapacity.Slots[0].QueuedTokenBudget = 40_000
 	p.mu.Unlock()
 
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 2048, RequestTraits{}, false)
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
-	if !hasTTFT || bestTTFT <= 20*time.Second {
-		t.Fatalf("bestTTFT = %v has=%v, want running request backlog above 20s", bestTTFT, hasTTFT)
+	if !hasTTFT || bestTTFT > time.Second {
+		t.Fatalf("bestTTFT = %v has=%v, want active reservations not to inflate first-token estimate", bestTTFT, hasTTFT)
+	}
+}
+
+func TestResolvedPrefillTPSFallbackRatio(t *testing.T) {
+	// A provider-reported prefill rate always wins.
+	if got := resolvedPrefillTPS(&Provider{PrefillTPS: 500, DecodeTPS: 50}); got != 500 {
+		t.Fatalf("reported prefill = %v, want 500", got)
+	}
+
+	// Without a reported rate, fall back to decodeTPS * the configured ratio
+	// (default 12) — not the old 4x, which under-estimated prefill ~3x and made
+	// the TTFT gate reject warm providers above ~550 prompt tokens.
+	noReport := &Provider{DecodeTPS: 50}
+	if got, want := resolvedPrefillTPS(noReport), 50*defaultPrefillToDecodeRatio; got != want {
+		t.Fatalf("fallback prefill = %v, want %v", got, want)
+	}
+
+	// Overrides are honored; non-positive values are ignored.
+	orig := prefillToDecodeRatio
+	defer func() { prefillToDecodeRatio = orig }()
+	SetPrefillToDecodeRatio(20)
+	if got := resolvedPrefillTPS(noReport); got != 50*20 {
+		t.Fatalf("overridden prefill = %v, want 1000", got)
+	}
+	SetPrefillToDecodeRatio(0)
+	SetPrefillToDecodeRatio(-5)
+	if got := resolvedPrefillTPS(noReport); got != 50*20 {
+		t.Fatalf("prefill after ignored non-positive overrides = %v, want 1000", got)
+	}
+}
+
+func TestResolvePrefillTPSPrefersObserved(t *testing.T) {
+	// No measured rate: the resolver returns the existing prefillTPS chain
+	// (resolvedPrefillTPS: benchmark → decode×12) unchanged. This is the
+	// today-fleet path and MUST be a no-op.
+	if got := resolvePrefillTPS(routingSnapshot{prefillTPS: 600}); got != 600 {
+		t.Fatalf("fallback prefill = %v, want 600 (×12 chain preserved)", got)
+	}
+	// A non-positive observed value is treated as unmeasured → fallback.
+	if got := resolvePrefillTPS(routingSnapshot{prefillTPS: 600, observedPrefillTPS: 0}); got != 600 {
+		t.Fatalf("zero observed prefill = %v, want 600 (fallback)", got)
+	}
+	// A measured per-slot prefill EWMA wins over the static chain.
+	if got := resolvePrefillTPS(routingSnapshot{prefillTPS: 600, observedPrefillTPS: 1800}); got != 1800 {
+		t.Fatalf("observed prefill = %v, want 1800 (measured preferred)", got)
+	}
+	// The result is clamped to maxPrefillTPS so one outlier heartbeat cannot
+	// collapse the TTFT estimate.
+	if got := resolvePrefillTPS(routingSnapshot{observedPrefillTPS: maxPrefillTPS * 2}); got != maxPrefillTPS {
+		t.Fatalf("clamped observed prefill = %v, want %v", got, maxPrefillTPS)
+	}
+}
+
+func TestTTFTMsFromSnapshotUsesObservedPrefillTPS(t *testing.T) {
+	const prompt = 1000
+	// Fallback path: no measured prefill → ttft uses snap.prefillTPS (the ×12
+	// chain), identical to the pre-wiring behavior. statePenalty(running)=0,
+	// queuedPrefill=0, firstDecode=1000/decode.
+	fallback := routingSnapshot{
+		hasBackendCapacity: true,
+		slotState:          "running",
+		prefillTPS:         600, // e.g. decode 50 × 12
+		decodeTPS:          50,
+	}
+	fallbackTTFT := ttftMsFromSnapshot(fallback, prompt)
+	wantFallback := float64(prompt)/600*1000 + 1000.0/50.0
+	if d := fallbackTTFT - wantFallback; d > 0.01 || d < -0.01 {
+		t.Fatalf("fallback TTFT = %.4f, want %.4f (×12 chain preserved)", fallbackTTFT, wantFallback)
+	}
+
+	// Measured path: a 3× faster observed prefill lowers only the prefill term.
+	observed := fallback
+	observed.observedPrefillTPS = 1800
+	observedTTFT := ttftMsFromSnapshot(observed, prompt)
+	wantObserved := float64(prompt)/1800*1000 + 1000.0/50.0
+	if d := observedTTFT - wantObserved; d > 0.01 || d < -0.01 {
+		t.Fatalf("observed TTFT = %.4f, want %.4f (measured prefill used)", observedTTFT, wantObserved)
+	}
+	if observedTTFT >= fallbackTTFT {
+		t.Fatalf("observed TTFT %.2f should be below fallback TTFT %.2f", observedTTFT, fallbackTTFT)
+	}
+}
+
+func TestQuickCapacityCheckTTFTUsesObservedPrefillTPS(t *testing.T) {
+	model := "ttft-observed-prefill-model"
+	const prompt = 4000
+
+	// Baseline provider: reports only the one-time registration prefill
+	// benchmark (PrefillTPS). prefill term = 4000/400 = 10s.
+	regBench := New(testLogger())
+	pBench := makeSchedulerProvider(t, regBench, "bench", model, 100)
+	pBench.mu.Lock()
+	pBench.PrefillTPS = 400
+	pBench.BackendCapacity.Slots[0].MaxConcurrency = 8
+	pBench.mu.Unlock()
+	_, _, _, benchTTFT, hasBench := regBench.QuickCapacityCheckWithTTFTForRequest(model, prompt, 128, RequestTraits{}, false)
+	if !hasBench {
+		t.Fatal("expected a TTFT estimate for the benchmark-only provider")
+	}
+	if benchTTFT <= 9*time.Second {
+		t.Fatalf("benchmark TTFT = %v, want ~10s from the ×?? benchmark prefill", benchTTFT)
+	}
+
+	// Same provider also reporting a measured prefill EWMA 4× the benchmark.
+	// prefill term = 4000/1600 = 2.5s, so the measured value must dominate and
+	// the estimate must drop well below the benchmark-only path.
+	regObs := New(testLogger())
+	pObs := makeSchedulerProvider(t, regObs, "observed", model, 100)
+	pObs.mu.Lock()
+	pObs.PrefillTPS = 400
+	pObs.BackendCapacity.Slots[0].MaxConcurrency = 8
+	pObs.BackendCapacity.Slots[0].ObservedPrefillTPS = 1600
+	pObs.mu.Unlock()
+	_, _, _, obsTTFT, hasObs := regObs.QuickCapacityCheckWithTTFTForRequest(model, prompt, 128, RequestTraits{}, false)
+	if !hasObs {
+		t.Fatal("expected a TTFT estimate for the observed-prefill provider")
+	}
+	if obsTTFT >= benchTTFT {
+		t.Fatalf("observed-prefill TTFT %v should be below benchmark-only TTFT %v", obsTTFT, benchTTFT)
+	}
+	if obsTTFT > 4*time.Second {
+		t.Fatalf("observed-prefill TTFT = %v, want ~2.5s from the measured prefill rate", obsTTFT)
+	}
+}
+
+func TestProjectedPerRequestDecodeTPS(t *testing.T) {
+	k := effectiveTPSLoadFactor
+	abs := func(x float64) float64 {
+		if x < 0 {
+			return -x
+		}
+		return x
+	}
+	approx := func(a, b float64) bool { return abs(a-b) < 0.01 }
+
+	// Static fallback (no observed rate), idle provider: rate at batch 1 = static/(1+k).
+	if got, want := projectedPerRequestDecodeTPS(routingSnapshot{decodeTPS: 25}), 25.0/(1+k); !approx(got, want) {
+		t.Fatalf("static idle projected = %.2f, want %.2f", got, want)
+	}
+	// Observed rate measured at batch 2 is unwound to a solo rate, then reapplied
+	// at batch 3 (the new request joins): solo = obs*(1+2k); proj = solo/(1+3k).
+	snap := routingSnapshot{decodeTPS: 25, observedDecodeTPS: 20, backendRunning: 2}
+	if got, want := projectedPerRequestDecodeTPS(snap), 20.0*(1+2*k)/(1+3*k); !approx(got, want) {
+		t.Fatalf("observed projected = %.2f, want %.2f", got, want)
+	}
+	// No decode info -> 0 (treated as below any positive floor).
+	if got := projectedPerRequestDecodeTPS(routingSnapshot{}); got != 0 {
+		t.Fatalf("empty snapshot projected = %.2f, want 0", got)
+	}
+}
+
+func TestReserveProviderDecodeFloorPrefersAboveFloor(t *testing.T) {
+	reg := New(testLogger())
+	model := "decode-floor-model"
+	idle := makeSchedulerProvider(t, reg, "idle", model, 30) // batch 0 -> projected ~23.6 (>= 15)
+	packed := makeSchedulerProvider(t, reg, "packed", model, 30)
+	packed.mu.Lock()
+	packed.BackendCapacity.Slots[0].NumRunning = 5        // batched (< maxConc, still a candidate)
+	packed.BackendCapacity.Slots[0].ObservedDecodeTPS = 8 // measured low under load -> projected < 15
+	packed.mu.Unlock()
+
+	req := &PendingRequest{RequestID: "floor-1", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, MinDecodeTPS: 15}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatalf("decode floor must not reject when a candidate exists: %+v", decision)
+	}
+	if selected.ID != idle.ID {
+		t.Fatalf("decode floor selected %q, want the above-floor idle provider", selected.ID)
+	}
+}
+
+func TestReserveProviderDecodeFloorNeverFailsClosed(t *testing.T) {
+	reg := New(testLogger())
+	model := "decode-floor-only-low"
+	only := makeSchedulerProvider(t, reg, "only", model, 20)
+	only.mu.Lock()
+	only.BackendCapacity.Slots[0].NumRunning = 5
+	only.BackendCapacity.Slots[0].ObservedDecodeTPS = 6 // projected well below the floor
+	only.mu.Unlock()
+
+	// Floor higher than any candidate can deliver: the gate is SOFT, so the
+	// request must still be served on the best-available provider, not rejected.
+	req := &PendingRequest{RequestID: "floor-2", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, MinDecodeTPS: 50}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatalf("decode floor is SOFT and must still serve the only (below-floor) provider: %+v", decision)
 	}
 }
 
@@ -185,13 +378,12 @@ func TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet(t *testing.T) {
 	reg := New(testLogger())
 	model := "ttft-ceiling-model"
 
-	// slow-but-cheap: moderate backlog keeps its cost below the expensive
-	// provider, but the backlog pushes its TTFT above the 10s target.
+	// slow-but-cheap: cold state keeps its cost below the expensive provider,
+	// but pushes its TTFT above the 10s target.
 	slow := makeSchedulerProvider(t, reg, "slow", model, 100)
 	slow.mu.Lock()
 	slow.PrefillTPS = 1000
-	// 5_000 tokens / 100 TPS = 50s backlog; TTFT ≈ 50s + 0.1s > 10s.
-	slow.BackendCapacity.Slots[0].MaxTokensPotential = 5_000
+	slow.BackendCapacity.Slots[0].State = "idle_shutdown"
 	slow.mu.Unlock()
 
 	// fast-but-expensive: low decode TPS inflates cost, but TTFT stays tiny.
@@ -250,7 +442,7 @@ func TestReserveProviderReturnsTTFTRejectionsWhenAllTooSlow(t *testing.T) {
 	p := makeSchedulerProvider(t, reg, "slow", model, 100)
 	p.mu.Lock()
 	p.PrefillTPS = 1000
-	p.BackendCapacity.Slots[0].MaxTokensPotential = 2_000_000
+	p.BackendCapacity.Slots[0].State = "idle_shutdown"
 	p.mu.Unlock()
 
 	req := &PendingRequest{
@@ -1420,6 +1612,126 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 	// Model already loaded, so only KV matters. Lots of free memory.
 	if !freeMemoryAdmits(snap, 100, 256) {
 		t.Fatal("should admit with plenty of free memory in legacy mode")
+	}
+}
+
+// When the provider reports freeForLoadGB, the cold-load gate uses it as the
+// single source of truth: admit iff the model's weights fit, regardless of the
+// coarse total-memory heuristic.
+func TestFreeMemoryAdmitsColdLoadUsesReportedFreeForLoad(t *testing.T) {
+	freeForLoad := 9.0 // e.g. a 24GB box reports ~9GB loadable
+	base := routingSnapshot{
+		totalMemoryGB:   64, // heuristic would happily admit; reported value must win
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+		freeForLoadGB:   &freeForLoad,
+	}
+
+	fits := base
+	fits.modelSizeGB = 8 // 8 <= 9 → admit
+	if !freeMemoryAdmits(fits, 100, 256) {
+		t.Fatal("8GB model must be admitted: fits in reported 9GB free-for-load")
+	}
+
+	tooBig := base
+	tooBig.modelSizeGB = 14 // 14 > 9 → reject, even though heuristic on 64GB would admit
+	if freeMemoryAdmits(tooBig, 100, 256) {
+		t.Fatal("14GB model must be rejected: exceeds reported 9GB free-for-load")
+	}
+}
+
+// A reported 0 ("can't load anything now") must reject any cold load, not fall
+// back to the heuristic (nil is the only fallback trigger).
+func TestFreeMemoryAdmitsColdLoadReportedZeroRejects(t *testing.T) {
+	zero := 0.0
+	snap := routingSnapshot{
+		modelSizeGB:     4,
+		totalMemoryGB:   64,
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+		freeForLoadGB:   &zero,
+	}
+	if freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("reported free-for-load 0 must reject a cold load")
+	}
+}
+
+// The cold-load gate must compare against the provider's PADDED-GiB load basis,
+// not the raw catalog size, or a near-threshold model whose raw size fits but
+// whose padded estimate doesn't gets routed and then 503'd at load (Codex #390).
+func TestFreeMemoryAdmitsColdLoadNormalizesCatalogSize(t *testing.T) {
+	free := 10.0
+	// Raw 9.5GB naively "fits" 10, but padded 9.5*1.1176≈10.6 > 10 → must reject.
+	snap := routingSnapshot{
+		modelSizeGB:     9.5,
+		totalMemoryGB:   64,
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+		freeForLoadGB:   &free,
+	}
+	if freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("near-threshold model must reject: padded estimate exceeds reported free-for-load")
+	}
+	snap.modelSizeGB = 8 // padded 8*1.1176≈8.94 <= 10 → admit
+	if !freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("8GB model must admit: padded estimate fits reported free-for-load")
+	}
+}
+
+// The cold-load *planner* (modelLoadCandidatePendingLocked, used by warm-pool /
+// queue-before-shed) must also respect free_for_load_gb, so it never sends a
+// load_model the direct gate would reject (Codex #390 P2). Mirrors the direct path.
+func TestModelLoadCandidateRespectsFreeForLoad(t *testing.T) {
+	reg := New(testLogger())
+	const model = "free-for-load-planner"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 14}})
+
+	p := registerProviderWithModel(reg, "p1", model)
+	makeProviderRoutable(p)
+	p.mu.Lock()
+	p.Hardware.MemoryGB = 64 // passes the static hardware gate
+	p.mu.Unlock()
+	now := time.Now()
+
+	setFFL := func(v *float64) {
+		p.mu.Lock()
+		p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 64, FreeForLoadGB: v}
+		p.mu.Unlock()
+	}
+
+	low := 9.0
+	setFFL(&low)
+	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); ok {
+		t.Fatal("planner must reject a 14GB model when the provider reports 9GB free-for-load")
+	}
+
+	high := 20.0
+	setFFL(&high)
+	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); !ok {
+		t.Fatal("planner must accept a 14GB model when the provider reports 20GB free-for-load")
+	}
+
+	setFFL(nil) // legacy provider → fall back to the static hardware gate (64GB box)
+	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); !ok {
+		t.Fatal("legacy provider (no free-for-load) must fall back to the static hardware gate")
+	}
+}
+
+// Legacy provider (freeForLoadGB nil) falls back to the total-memory heuristic.
+func TestFreeMemoryAdmitsColdLoadFallsBackWhenUnreported(t *testing.T) {
+	snap := routingSnapshot{
+		modelSizeGB:     16,
+		totalMemoryGB:   64, // 16 + ~0 + 4 = 20 <= 64 → admit via heuristic
+		availableOnDisk: true,
+		modelLoaded:     false,
+		totalPending:    0,
+		freeForLoadGB:   nil,
+	}
+	if !freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("legacy provider must fall back to the total-memory heuristic (admit)")
 	}
 }
 

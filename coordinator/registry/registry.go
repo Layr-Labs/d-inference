@@ -69,7 +69,11 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
-	RequestID  string
+	RequestID string
+	// Attempt is the zero-based dispatch attempt number that produced this
+	// pending request. It lets outcome telemetry correlate the final result
+	// with the routing decision record for the same attempt.
+	Attempt    int
 	ProviderID string
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
@@ -141,9 +145,16 @@ type PendingRequest struct {
 	RequestedMaxTokens int
 	// MaxTTFTMs is an optional per-request TTFT ceiling in milliseconds.
 	// When > 0, the scheduler only selects providers whose estimated TTFT is
-	// <= MaxTTFTMs. Used by public inference routes to honor the OpenRouter
-	// 10s TTFT target. Self-route / prefer-owner requests leave this at 0.
+	// <= MaxTTFTMs. Used by public inference routes to honor the public
+	// TTFT target. Self-route / prefer-owner requests leave this at 0.
 	MaxTTFTMs float64
+	// MinDecodeTPS is an optional per-request sustained-decode floor in tokens/sec
+	// (Routing v2 W2). When > 0, the scheduler PREFERS providers that would still
+	// deliver >= MinDecodeTPS to a newly admitted request (i.e. not overpack a
+	// provider into a degraded stream). It is a SOFT preference: if no candidate
+	// meets the floor, the full pool is kept so the request is still served
+	// (cold-dispatch/queue spill is a separate concern). 0 disables it.
+	MinDecodeTPS float64
 	// CacheAffinityKey is SHA256(prompt_cache_key) from the request body. Empty
 	// means no cache-affinity routing. It is scoped again by account and model in
 	// the registry tracker and is never persisted.
@@ -158,6 +169,10 @@ type PendingRequest struct {
 	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
 	SESignature    string    // SE signature over response hash
 	ResponseHash   string    // SHA-256 of response data
+	// Speculative backup telemetry. UsedBackup means a backup race was launched
+	// for this logical request; BackupWon is true only on the serving backup.
+	UsedBackup bool
+	BackupWon  bool
 
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
@@ -172,16 +187,50 @@ type PendingRequest struct {
 	BaseReservedMicroUSD int64
 	// ServiceReservation marks a trusted service account request whose pre-router
 	// admission used an in-memory hold instead of a synchronous ledger debit.
-	ServiceReservation   bool
-	reservationMu        sync.Mutex
-	reservationFinalized bool
+	ServiceReservation    bool
+	reservationMu         sync.Mutex
+	reservationFinalized  bool
+	routeOutcomeMu        sync.Mutex
+	routeOutcomeFinalized bool
 
-	// Timing fields for latency decomposition. Written and read only by the
-	// consumer/dispatch goroutine that owns the request — never shared. The
-	// reputation latency sample is therefore recorded from that goroutine at
-	// commit (see dispatch.writeCommittedResponse), never from the provider
-	// read-loop goroutine that runs handleComplete.
-	Timing *RequestTiming
+	// Timing fields for latency decomposition. Written and read by the
+	// consumer/dispatch goroutine that owns the request. The reputation latency
+	// sample is recorded from that goroutine at commit (see
+	// dispatch.writeCommittedResponse). The ONE field the provider read-loop
+	// goroutine (handleComplete) also needs — FirstChunkAt, for the routing
+	// telemetry decode-throughput metric — must be accessed via
+	// MarkFirstChunkArrived / FirstChunkAtSafe, which guard it with timingMu so
+	// that cross-goroutine access is race-free. All other Timing fields remain
+	// dispatch-goroutine-only.
+	Timing   *RequestTiming
+	timingMu sync.Mutex
+}
+
+// MarkFirstChunkArrived stamps Timing.FirstChunkAt to now exactly once, under
+// timingMu. The dispatch goroutine calls this when the first inference chunk
+// (incl. held boilerplate) arrives, so the provider read-loop goroutine can read
+// the value via FirstChunkAtSafe without a data race.
+func (pr *PendingRequest) MarkFirstChunkArrived() {
+	if pr == nil || pr.Timing == nil {
+		return
+	}
+	pr.timingMu.Lock()
+	if pr.Timing.FirstChunkAt.IsZero() {
+		pr.Timing.FirstChunkAt = time.Now()
+	}
+	pr.timingMu.Unlock()
+}
+
+// FirstChunkAtSafe returns Timing.FirstChunkAt under timingMu. It is the only
+// safe way for a goroutine other than the request owner (e.g. the provider
+// read-loop running handleComplete) to read FirstChunkAt.
+func (pr *PendingRequest) FirstChunkAtSafe() time.Time {
+	if pr == nil || pr.Timing == nil {
+		return time.Time{}
+	}
+	pr.timingMu.Lock()
+	defer pr.timingMu.Unlock()
+	return pr.Timing.FirstChunkAt
 }
 
 type TokenAdmission struct {
@@ -223,6 +272,23 @@ func (pr *PendingRequest) FinalizeReservation(settle func() error) (bool, error)
 	}
 	pr.reservationFinalized = true
 	return true, nil
+}
+
+// MarkRouteOutcomeFinalized returns true only for the first terminal route
+// outcome. Non-terminal commit updates leave this gate untouched. It prevents a
+// late provider terminal from overwriting a coordinator-side timeout/error that
+// already finalized the user-visible request outcome.
+func (pr *PendingRequest) MarkRouteOutcomeFinalized() bool {
+	if pr == nil {
+		return false
+	}
+	pr.routeOutcomeMu.Lock()
+	defer pr.routeOutcomeMu.Unlock()
+	if pr.routeOutcomeFinalized {
+		return false
+	}
+	pr.routeOutcomeFinalized = true
+	return true
 }
 
 type RequestTiming struct {
@@ -337,6 +403,24 @@ type Provider struct {
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges      int       // consecutive failed challenges
+
+	// challengeSettled is a per-connection buffered (cap 1) signal fired by the
+	// challenge path AFTER a challenge passes but the trust-reuse fast-skip did NOT
+	// grant hardware (DAR-326). It lets awaitTrustReuseGrant stop waiting
+	// immediately for a non-fast-skip provider instead of stalling up to
+	// trustReuseGrantWait before falling back to the full live MDM verify. Created
+	// fresh per Provider (so it never carries a stale signal across reconnects); a
+	// nil channel degrades safely to the timer-based wait.
+	challengeSettled chan struct{}
+
+	// untrustEpoch is bumped on every HARD untrust of this provider (DAR-326
+	// FIX A). The trust-reuse write-through (api.recordTrustReuse) captures it at
+	// grant time and re-checks it immediately before persisting; a bump in between
+	// means a hard untrust raced the grant, so the stale `hardware` row is not
+	// persisted. This closes the write-after-delete race where an async write could
+	// land AFTER the hard-untrust's synchronous delete and resurrect a row that a
+	// restart would reseed. atomic so it is read/written without p.mu.
+	untrustEpoch atomic.Uint64
 
 	// untrustedRecoverable marks an untrust as a *transient* missed-challenge
 	// deroute (timeout / no-response) that may self-recover on the next passing
@@ -477,6 +561,17 @@ func (p *Provider) GetStatus() ProviderStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Status
+}
+
+// SetACMEVerified sets the ACME-verified flag (thread-safe). Used to clear a
+// flag that applyACMETrust set optimistically (it marks the cert verified before
+// the SE-key binding completes) when a trust-reuse fast-skip grants hardware via
+// MDM-reuse and the stashed ACME never bound (DAR-326 FIX 4a) — so the attestation
+// report does not claim acme_verified for an unproven binding.
+func (p *Provider) SetACMEVerified(v bool) {
+	p.mu.Lock()
+	p.ACMEVerified = v
+	p.mu.Unlock()
 }
 
 // SetMDMFailureReason records the bucketed reason this connection's MDM
@@ -637,6 +732,52 @@ func (p *Provider) ChallengeShouldStop() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Status == StatusUntrusted && !p.untrustedRecoverable
+}
+
+// SignalChallengeSettled fires the per-connection "challenge settled without a
+// trust-reuse fast-skip grant" signal (non-blocking; buffered cap 1). The
+// mdmVerificationLoop's awaitTrustReuseGrant selects on it so a non-fast-skip
+// provider proceeds to the full live MDM verify immediately instead of stalling
+// the trust-reuse grace window (DAR-326). The channel is set once at construction
+// and never reassigned, so no lock is needed; a nil channel is a no-op.
+func (p *Provider) SignalChallengeSettled() {
+	if p.challengeSettled == nil {
+		return
+	}
+	select {
+	case p.challengeSettled <- struct{}{}:
+	default: // a prior signal is still buffered — one is enough to stop the wait
+	}
+}
+
+// ChallengeSettledChan returns the per-connection challenge-settled signal for
+// awaitTrustReuseGrant to select on. May be nil for a zero-value Provider (the
+// select then simply never fires that case and falls back to the timer).
+func (p *Provider) ChallengeSettledChan() <-chan struct{} {
+	return p.challengeSettled
+}
+
+// ResetChallengeSettled drains any buffered challenge-settled signal so a fresh
+// connection can never consume a stale one (DAR-326 FIX 4c). Register allocates a
+// fresh channel per connection, so this is also belt-and-suspenders that keeps the
+// connection-scoping invariant explicit and robust to any future Provider reuse.
+// Non-blocking; safe on a nil channel.
+func (p *Provider) ResetChallengeSettled() {
+	if p.challengeSettled == nil {
+		return
+	}
+	select {
+	case <-p.challengeSettled:
+	default:
+	}
+}
+
+// HardUntrustEpoch returns the current hard-untrust epoch (thread-safe). It is
+// bumped on every hard untrust; the trust-reuse write-through captures it at grant
+// time and re-checks it before persisting so a hard untrust that races a grant
+// cannot leave a stale, reseedable `hardware` row (DAR-326 FIX A).
+func (p *Provider) HardUntrustEpoch() uint64 {
+	return p.untrustEpoch.Load()
 }
 
 // SetAttestationResult stores a snapshot of the parsed attestation result
@@ -892,6 +1033,14 @@ type Registry struct {
 	warmPool             *warmPoolController
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
+
+	// onHardUntrust is an optional hook fired (off the registry locks) whenever a
+	// provider is HARD-untrusted (a non-recoverable security deroute). The api
+	// layer wires it to invalidate that device's trust-reuse record (DAR-326), so
+	// "hard untrust always takes effect" stays durable across coordinator
+	// restarts. Keyed by the device's Secure Enclave public key. Set once at
+	// startup; nil = no-op. Guarded by r.mu (set + read).
+	onHardUntrust func(seKey string)
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -1114,15 +1263,11 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	}
 
 	// Restore lifetime counters and the last raw session counters so future
-	// heartbeats can merge cleanly after coordinator or provider restarts.
-	p.Stats = protocol.HeartbeatStats{
-		RequestsServed:  rec.LifetimeRequestsServed,
-		TokensGenerated: rec.LifetimeTokensGenerated,
-	}
-	p.lastSessionStats = protocol.HeartbeatStats{
-		RequestsServed:  rec.LastSessionRequestsServed,
-		TokensGenerated: rec.LastSessionTokensGenerated,
-	}
+	// heartbeats can merge cleanly after coordinator or provider restarts. The
+	// legacy scalar columns keep old DB rows readable; the JSON snapshots carry
+	// newer additive heartbeat counters.
+	p.Stats = providerRecordStats(rec.LifetimeStats, rec.LifetimeRequestsServed, rec.LifetimeTokensGenerated)
+	p.lastSessionStats = providerRecordStats(rec.LastSessionStats, rec.LastSessionRequestsServed, rec.LastSessionTokensGenerated)
 
 	// Restore reputation from store
 	if r.store != nil {
@@ -1147,6 +1292,27 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 		"attested", rec.Attested,
 		"serial", rec.SerialNumber,
 	)
+}
+
+func providerRecordStats(raw json.RawMessage, requestsServed, tokensGenerated int64) protocol.HeartbeatStats {
+	stats := protocol.HeartbeatStats{
+		RequestsServed:  requestsServed,
+		TokensGenerated: tokensGenerated,
+	}
+	if len(raw) == 0 {
+		return stats
+	}
+	var decoded protocol.HeartbeatStats
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return stats
+	}
+	if decoded.RequestsServed == 0 && requestsServed != 0 {
+		decoded.RequestsServed = requestsServed
+	}
+	if decoded.TokensGenerated == 0 && tokensGenerated != 0 {
+		decoded.TokensGenerated = tokensGenerated
+	}
+	return decoded
 }
 
 // PersistProvider unconditionally persists provider state to the store.
@@ -1227,6 +1393,8 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			lc := *p.Location
 			locationCopy = &lc
 		}
+		statsJSON, _ := json.Marshal(p.Stats)
+		lastSessionStatsJSON, _ := json.Marshal(p.lastSessionStats)
 
 		rec := store.ProviderRecord{
 			ID:                         p.ID,
@@ -1254,6 +1422,8 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			LifetimeTokensGenerated:    p.Stats.TokensGenerated,
 			LastSessionRequestsServed:  p.lastSessionStats.RequestsServed,
 			LastSessionTokensGenerated: p.lastSessionStats.TokensGenerated,
+			LifetimeStats:              statsJSON,
+			LastSessionStats:           lastSessionStatsJSON,
 			RegisteredAt:               time.Now(),
 			LastSeen:                   time.Now(),
 		}
@@ -1991,6 +2161,7 @@ const (
 	maxReportedMaxConcurrency       = 24
 	maxTokensPotential              = 1_000_000
 	maxTokenBudgetCap         int64 = 10_000_000_000 // 10 billion — generous safety valve for total token budget capacity
+	maxModelLoadTimeMS        int64 = 3_600_000      // 1 hour — generous ceiling for a cold-start model load; larger is implausible/garbage
 )
 
 // clampNonNeg returns v clamped into [0, max]; NaN/negative become 0.
@@ -2030,6 +2201,18 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 	if v, changed := clampNonNeg(bc.GPUMemoryCacheGB, maxMemoryGBFloat); changed {
 		bc.GPUMemoryCacheGB = v
 	}
+	// free_for_load_gb: an out-of-range value (NaN/Inf/negative or absurdly high)
+	// is treated as NOT reported (nil) so the cold-load gate falls back to the
+	// total-memory heuristic, rather than trusting a garbage value that would
+	// over- or under-admit. A legitimate 0 ("can't load anything now") is kept.
+	if bc.FreeForLoadGB != nil {
+		v := *bc.FreeForLoadGB
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > maxMemoryGBFloat {
+			logger.Warn("provider free_for_load_gb out of range; ignoring (fall back to heuristic)",
+				"provider_id", providerID, "reported", v)
+			bc.FreeForLoadGB = nil
+		}
+	}
 	for i := range bc.Slots {
 		s := &bc.Slots[i]
 		if s.MaxTokensPotential < 0 || s.MaxTokensPotential > maxTokensPotential {
@@ -2060,6 +2243,28 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			logger.Warn("provider slot observed_decode_tps out of range, clamping",
 				"provider_id", providerID, "model", s.Model, "reported", s.ObservedDecodeTPS, "clamped", v)
 			s.ObservedDecodeTPS = v
+		}
+		// observed_prefill_tps: an out-of-range value (NaN/negative, or absurdly
+		// high — a known provider-side overflow when the admitted→first-token
+		// window collapses on a prefix-cache hit) is treated as NO measurement (0)
+		// rather than clamped to the ceiling. Clamping garbage UP to maxPrefillTPS
+		// would make the TTFT estimate over-optimistic (prefill looks instant) and
+		// the hard gate over-accept; zeroing it makes resolvePrefillTPS fall back to
+		// the conservative decode×ratio estimate until the provider reports a sane
+		// value (provider fix: only sample cold prefills).
+		if math.IsNaN(s.ObservedPrefillTPS) || s.ObservedPrefillTPS < 0 || s.ObservedPrefillTPS > maxPrefillTPS {
+			logger.Warn("provider slot observed_prefill_tps out of range; ignoring (fall back to estimate)",
+				"provider_id", providerID, "model", s.Model, "reported", s.ObservedPrefillTPS)
+			s.ObservedPrefillTPS = 0
+		}
+		if s.ModelLoadTimeMS < 0 || s.ModelLoadTimeMS > maxModelLoadTimeMS {
+			logger.Warn("provider slot model_load_time_ms out of range, clamping",
+				"provider_id", providerID, "model", s.Model, "reported", s.ModelLoadTimeMS)
+			if s.ModelLoadTimeMS < 0 {
+				s.ModelLoadTimeMS = 0
+			} else {
+				s.ModelLoadTimeMS = maxModelLoadTimeMS
+			}
 		}
 		if s.ActiveTokenBudgetUsed < 0 || s.ActiveTokenBudgetUsed > maxTokenBudgetCap {
 			if s.ActiveTokenBudgetUsed < 0 {
@@ -2158,7 +2363,13 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		LastHeartbeat:           time.Now(),
 		Reputation:              NewReputation(),
 		pendingReqs:             make(map[string]*PendingRequest),
+		challengeSettled:        make(chan struct{}, 1),
 	}
+
+	// Connection-scope the challenge-settled signal (DAR-326 FIX 4c): the channel is
+	// freshly allocated above, and draining here makes the "no stale signal carries
+	// into a new connection" invariant explicit and robust to future Provider reuse.
+	p.ResetChallengeSettled()
 
 	r.mu.Lock()
 	r.providers[id] = p
@@ -2313,9 +2524,8 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	now := time.Now()
 	prevHB := p.LastHeartbeat
 	p.LastHeartbeat = now
-	p.Stats.RequestsServed += cumulativeDelta(p.lastSessionStats.RequestsServed, msg.Stats.RequestsServed)
-	p.Stats.TokensGenerated += cumulativeDelta(p.lastSessionStats.TokensGenerated, msg.Stats.TokensGenerated)
-	p.lastSessionStats = msg.Stats
+	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)
+	p.lastSessionStats = mergeHeartbeatSessionStats(p.lastSessionStats, msg.Stats)
 	p.SystemMetrics = msg.SystemMetrics
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
@@ -2797,6 +3007,14 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
 			return 0, false
 		}
+		// Live free-capacity gate (shared helper with the direct path): don't plan
+		// a load the provider already reports it cannot fit. Mirrors freeMemoryAdmits
+		// so the warming planner can't send a load_model the provider then
+		// OOM-rejects, which would leave queued cold-dispatch requests sitting until
+		// they time out. Legacy providers (no report) fall through to the static gate.
+		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
+			return 0, false
+		}
 	}
 
 	return p.pendingCount(), true
@@ -3009,6 +3227,48 @@ func cumulativeDelta(previous, current int64) int64 {
 	return current
 }
 
+func applyHeartbeatStatsDelta(total *protocol.HeartbeatStats, previous, current protocol.HeartbeatStats) {
+	total.RequestsServed += cumulativeDelta(previous.RequestsServed, current.RequestsServed)
+	total.TokensGenerated += cumulativeDelta(previous.TokensGenerated, current.TokensGenerated)
+	total.CancellationsReceived += cumulativeDelta(previous.CancellationsReceived, current.CancellationsReceived)
+	total.CancellationsBeforeOutput += cumulativeDelta(previous.CancellationsBeforeOutput, current.CancellationsBeforeOutput)
+	total.CancellationsPartialComplete += cumulativeDelta(previous.CancellationsPartialComplete, current.CancellationsPartialComplete)
+	total.GenerationErrorsAfterOutput += cumulativeDelta(previous.GenerationErrorsAfterOutput, current.GenerationErrorsAfterOutput)
+	total.ChunkEncryptionErrors += cumulativeDelta(previous.ChunkEncryptionErrors, current.ChunkEncryptionErrors)
+	total.StreamClosedWithoutTerminal += cumulativeDelta(previous.StreamClosedWithoutTerminal, current.StreamClosedWithoutTerminal)
+	total.CancelDuringModelLoad += cumulativeDelta(previous.CancelDuringModelLoad, current.CancelDuringModelLoad)
+	total.UsageGaps += cumulativeDelta(previous.UsageGaps, current.UsageGaps)
+}
+
+func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) protocol.HeartbeatStats {
+	merged := current
+	if merged.CancellationsReceived == 0 {
+		merged.CancellationsReceived = previous.CancellationsReceived
+	}
+	if merged.CancellationsBeforeOutput == 0 {
+		merged.CancellationsBeforeOutput = previous.CancellationsBeforeOutput
+	}
+	if merged.CancellationsPartialComplete == 0 {
+		merged.CancellationsPartialComplete = previous.CancellationsPartialComplete
+	}
+	if merged.GenerationErrorsAfterOutput == 0 {
+		merged.GenerationErrorsAfterOutput = previous.GenerationErrorsAfterOutput
+	}
+	if merged.ChunkEncryptionErrors == 0 {
+		merged.ChunkEncryptionErrors = previous.ChunkEncryptionErrors
+	}
+	if merged.StreamClosedWithoutTerminal == 0 {
+		merged.StreamClosedWithoutTerminal = previous.StreamClosedWithoutTerminal
+	}
+	if merged.CancelDuringModelLoad == 0 {
+		merged.CancelDuringModelLoad = previous.CancelDuringModelLoad
+	}
+	if merged.UsageGaps == 0 {
+		merged.UsageGaps = previous.UsageGaps
+	}
+	return merged
+}
+
 // Disconnect removes a provider from the registry and cleans up pending requests.
 func (r *Registry) Disconnect(id string) {
 	r.mu.Lock()
@@ -3144,6 +3404,17 @@ func (r *Registry) CountProvidersByBinaryHash(hash string) int {
 	return count
 }
 
+// SetHardUntrustHook registers an optional callback fired whenever a provider is
+// HARD-untrusted (non-recoverable). It is invoked with the device's Secure Enclave
+// public key, off the registry locks, so the callback may do store I/O. The api
+// layer uses it to invalidate the device's trust-reuse record (DAR-326). Set once
+// at startup before providers connect; nil clears it. Thread-safe.
+func (r *Registry) SetHardUntrustHook(fn func(seKey string)) {
+	r.mu.Lock()
+	r.onHardUntrust = fn
+	r.mu.Unlock()
+}
+
 // MarkUntrusted sets a provider's status to untrusted for a hard/security
 // reason (bad encrypted chunk, MDM/MDA failure, SIP disabled, binary or model
 // hash mismatch, serial impersonation, attestation failure). The deroute is
@@ -3185,6 +3456,7 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		r.mu.Unlock()
 		return
 	}
+	hook := r.onHardUntrust // capture under r.mu (race-safe)
 
 	p.mu.Lock()
 	if p.Status != StatusUntrusted {
@@ -3198,6 +3470,11 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		p.untrustedRecoverable = false
 	}
 	failed := p.FailedChallenges // read under p.mu (the old code read this unlocked)
+	// Capture the SE key for the hard-untrust hook while we hold p.mu.
+	var seKey string
+	if !recoverable && p.AttestationResult != nil {
+		seKey = p.AttestationResult.PublicKey
+	}
 	p.mu.Unlock()
 	r.mu.Unlock()
 
@@ -3206,6 +3483,23 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		"failed_challenges", failed,
 		"recoverable", recoverable,
 	)
+
+	// A HARD untrust invalidates the device's trust-reuse record (in-memory +
+	// persisted) so a later reconnect cannot fast-skip the live MDM re-verification
+	// on a stale, pre-untrust record (DAR-326). Fired after releasing the locks; a
+	// transient (recoverable) untrust does NOT invalidate — it can self-recover via
+	// a passing challenge.
+	if !recoverable {
+		// FIX A: bump the hard-untrust epoch BEFORE firing the delete hook. A
+		// concurrent recordTrustReuse that captured the old epoch at grant time then
+		// sees the change on its pre-upsert recheck and refuses to persist a stale
+		// `hardware` row — closing the write-after-delete race (a write landing after
+		// the synchronous delete that a restart would otherwise reseed).
+		p.untrustEpoch.Add(1)
+		if hook != nil && seKey != "" {
+			hook(seKey)
+		}
+	}
 }
 
 // SetTrustLevel updates a provider's trust level (thread-safe).
@@ -4223,6 +4517,12 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					}
 					if slot.ObservedDecodeTPS > 0 {
 						snap.effectiveTPS = slot.ObservedDecodeTPS
+					}
+					// Prefer the measured per-slot prefill EWMA over the ×12
+					// fallback for the capacity TTFT estimate, mirroring the
+					// routing path (resolvePrefillTPS). 0 = unreported.
+					if slot.ObservedPrefillTPS > 0 {
+						snap.prefillTPS = slot.ObservedPrefillTPS
 					}
 					snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 					snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed

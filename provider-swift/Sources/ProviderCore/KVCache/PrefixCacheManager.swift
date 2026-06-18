@@ -1317,6 +1317,30 @@ public actor PrefixCacheManager: PrefixCacheOwner {
         }
     }
 
+    // MARK: - Purge (model unload)
+
+    /// Purge this model's KV from BOTH RAM and SSD on unload. Unlike the
+    /// warmth-preserving `flushIndexNow` + `deregisterFromAccountant` path, this
+    /// deletes the on-disk `kv/<modelKey>` directory so no KV outlives the loaded
+    /// model (restart warmth is intentionally OFF — every unload, incl. clean
+    /// shutdown, leaves nothing behind; a startup sweep handles the jetsam-crash
+    /// case). Safe because it drains in-flight writes first (so no late atomic
+    /// rename lands a file into a dir we just removed) and latches `closed` (so a
+    /// resumed stale Task no-ops). No same-modelKey reload can race it: loadModel
+    /// awaits stopCurrentEngine fully before constructing the next manager.
+    public func purgeOnUnload() async {
+        closed = true
+        await drainInFlightWrites()
+        ram.clear(modelHash: binding.modelHash)
+        if let cacheDir {
+            try? FileManager.default.removeItem(at: cacheDir)
+        }
+        if let accountant, let token = accountantToken {
+            await accountant.deregister(token)
+            accountantToken = nil
+        }
+    }
+
     // MARK: - Clear
 
     public func clearRAM() {

@@ -41,5 +41,22 @@ public enum ProviderCore {
     // manual masked-attention fallback for padded decode, and .none decode masks
     // for unpadded single-token steps; submodule pin advanced to f2f40e5
     // (mlx-swift-lm#41).
-    public static let version = "0.6.11"
+    // 0.6.12 hardens memory & reliability: a 90% unified-memory cap with KV purge
+    // on unload + serve-while-load reservation (no more byte-OOM machine crashes),
+    // a bounded checkpoint-capture pipeline (stops the Metal [metal::malloc]
+    // resource-limit 499000 leak), resumable 4-bit model downloads, default-on
+    // [rsrc] resource telemetry in reports, and no raw request-parse errors in
+    // logs (prompt-fragment privacy). Submodule pin advanced to e7af9df
+    // (mlx-swift-lm#42).
+    // 0.6.13 fixes the Gemma 4 machine-crash for good and adds Routing v2 provider
+    // support: the decode-path Metal live-resource COUNT leak is fixed (asyncEval of
+    // batchOffset/leftPadding; gemma-4-26B 53/step -> ~0.03/step, live-validated,
+    // flat bytes; DAR-325 / mlx-swift-lm#44), provider-measured prefill TPS +
+    // model-load time are reported for TTFT-accurate routing (W1), the live APNs
+    // device token rides heartbeats so code-identity re-arms without a reconnect and
+    // prefix-cache restores no longer skew the prefill EWMA (W5), and a
+    // `darkbloom benchmark --sweep` decode-bandwidth diagnostic is added (W6).
+    // Submodule pin advanced to 5d3bb51b. Additive/omitempty wire fields — fully
+    // backward-compatible with the currently-deployed coordinator.
+    public static let version = "0.6.13"
 }

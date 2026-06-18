@@ -34,7 +34,7 @@ const (
 	thermalPenaltyFairMs     = 2_000.0
 	thermalPenaltySeriousMs  = 8_000.0
 	nearTieCostWindowMs      = 3_000.0
-	challengeFreshnessMaxAge = 6 * time.Minute
+	challengeFreshnessMaxAge = 16 * time.Minute
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
 	// the free-memory admission gate.
@@ -80,12 +80,18 @@ type routingSnapshot struct {
 	systemMetrics      protocol.SystemMetrics
 	gpuMemoryActiveGB  float64
 	totalMemoryGB      float64
-	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
-	minRAMGb           int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
-	modelLoaded        bool    // true when the requested model is resident (running or idle)
-	availableOnDisk    bool    // model is in provider's Models list but not currently loaded
+	// freeForLoadGB is the provider-reported max additional model-weight (GB) it
+	// can load right now (net of cap/reserve/headroom, idle models reclaimed).
+	// When non-nil it is the authoritative cold-load gate; nil = legacy provider
+	// (fall back to the total-memory heuristic). See protocol.BackendCapacity.
+	freeForLoadGB   *float64
+	modelSizeGB     float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
+	minRAMGb        int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
+	modelLoaded     bool    // true when the requested model is resident (running or idle)
+	availableOnDisk bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
+	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
 	activeTokenBudgetUsed int64
 	activeTokenBudgetMax  int64
 	queuedTokenBudget     int64
@@ -477,6 +483,25 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 	}
 
+	// Decode-floor quality preference (SOFT, Routing v2 W2): when a per-request
+	// decode floor is set, prefer candidates that would still deliver
+	// >= MinDecodeTPS to a newly admitted request, so the router does not overpack
+	// a provider into a degraded (low tok/s) stream. Never fails closed — if no
+	// candidate clears the floor, keep the full pool so the request is still
+	// served (growing warm capacity / queueing to protect quality is handled
+	// upstream, not by dropping the request here).
+	if pr.MinDecodeTPS > 0 {
+		quality := make([]*routingCandidate, 0, len(pool))
+		for _, c := range pool {
+			if projectedPerRequestDecodeTPS(c.snapshot) >= pr.MinDecodeTPS {
+				quality = append(quality, c)
+			}
+		}
+		if len(quality) > 0 {
+			pool = quality
+		}
+	}
+
 	var best *routingCandidate
 	for _, c := range pool {
 		if best == nil || c.costMs < best.costMs {
@@ -760,6 +785,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 
 	if p.BackendCapacity != nil {
 		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
 		if p.BackendCapacity.TotalMemoryGB > 0 {
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
@@ -772,6 +798,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 			snap.backendWaiting = int(slot.NumWaiting)
 			snap.maxTokensPotential = slot.MaxTokensPotential
 			snap.observedDecodeTPS = slot.ObservedDecodeTPS
+			snap.observedPrefillTPS = slot.ObservedPrefillTPS
 			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 			snap.queuedTokenBudget = slot.QueuedTokenBudget
@@ -783,6 +810,42 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
 	return snap, true
+}
+
+// coldLoadCatalogGBToMemGiB converts a model's catalog on-disk size (decimal GB,
+// TotalSizeBytes/1e9, unpadded) into the provider's load-gate basis (padded GiB).
+// The provider's ModelLoadAdmission.canLoad weighs estimatedMemoryGb = on-disk
+// bytes × 1.2 (scanner memory-overhead) / 2^30, and free_for_load_gb is reported
+// in that same padded-GiB basis. So a raw catalog size must be padded+converted
+// the same way before comparing, or a near-threshold model whose RAW size fits
+// but whose PADDED estimate doesn't would be admitted here and then 503'd at load
+// (Codex #390). 1.2 mirrors the provider scanner's overhead factor; (1e9/2^30)
+// converts decimal GB → GiB. Conservative: if the scanner's factor ever drops,
+// this stays safe (slightly stricter); it must not be set BELOW the provider's.
+const coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30)) // ≈ 1.1176
+
+// backendFreeForLoadGB returns the provider-reported free_for_load_gb (nil-safe).
+// Caller must hold the provider lock when passing p.BackendCapacity.
+func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
+	if bc == nil {
+		return nil
+	}
+	return bc.FreeForLoadGB
+}
+
+// reportedFreeForLoadAdmits reports whether a cold load of a model with the given
+// catalog size (decimal GB) fits the provider's reported free_for_load_gb (max
+// loadable model weight, padded GiB — the provider's authoritative gate). The
+// second return is whether the provider reported the value at all; false means
+// the caller should fall back to its static hardware heuristic (legacy provider,
+// or unknown catalog size that can't be normalized). Used by every cold-load
+// decision path (direct admission, the swap planner, the warm pool, and the
+// cold-spill predicate) so they cannot drift.
+func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
+	if freeForLoadGB == nil || catalogSizeGB <= 0 {
+		return false, false
+	}
+	return catalogSizeGB*coldLoadCatalogGBToMemGiB <= *freeForLoadGB, true
 }
 
 // freeMemoryAdmits returns true when the provider has enough headroom.
@@ -821,16 +884,28 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	required += kvCacheGB
 
 	// When the model is available on disk but not currently loaded, the
-	// provider will evict idle models to make room (LRU eviction). Check
-	// whether the model individually fits in total memory (with OS/KV
-	// overhead) rather than requiring it to fit alongside existing loaded
-	// models. The provider handles the swap autonomously.
+	// provider will evict idle models to make room (LRU eviction), so we check
+	// whether the model can be loaded rather than requiring it to fit alongside
+	// existing loaded models. The provider handles the swap autonomously.
 	//
-	// However, if the provider has in-flight requests (totalPending > 0),
-	// it cannot evict the currently-serving model. In that case, fall
-	// through to the standard free-memory check which requires room
-	// alongside active models.
+	// However, if the provider has in-flight requests (totalPending > 0), it
+	// cannot evict the currently-serving model. In that case, fall through to the
+	// standard free-memory check which requires room alongside active models.
 	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
+		// Preferred: the provider reports freeForLoadGB — the max model WEIGHT it
+		// can load right now, already net of the 90% unified cap, OS/operator
+		// reserve, activation+min-KV headroom, real OS-available memory, and
+		// eviction of idle models. The single source of truth, normalized to the
+		// provider's padded-GiB load basis so it exactly mirrors the provider's own
+		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
+		// weights).
+		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
+			return admit
+		}
+		// Fallback for legacy providers that don't report freeForLoadGB: the old
+		// total-memory heuristic (provider evicts idle models, so compare against
+		// total rather than free). Coarser — can't see the unified cap or OS
+		// baseline — but only used until the fleet reports the field.
 		const osReserveGB = 4.0
 		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
 	}
@@ -947,7 +1022,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// estimated TTFT is within the per-request threshold. Providers without
 	// BackendCapacity get 0 (unreliable estimate) and are not rejected by the
 	// ceiling, matching the preflight behavior.
-	ttftMs := ttftMsFromSnapshot(snap, reqPrompt, reqMax)
+	ttftMs := ttftMsFromSnapshot(snap, reqPrompt)
 	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
 		ttftMs = 0
 	}
@@ -1039,6 +1114,26 @@ func resolveEffectiveTPS(snap routingSnapshot) float64 {
 	return effectiveDecodeTPS(snap.decodeTPS, snap.backendRunning)
 }
 
+// resolvePrefillTPS returns the best available prefill TPS estimate for TTFT.
+// Fallback chain: measured per-slot observed prefill EWMA → snap.prefillTPS (the
+// resolvedPrefillTPS chain: registration benchmark → decode×prefillToDecodeRatio
+// ×12 fallback). This mirrors how resolveEffectiveTPS prefers the measured
+// decode rate over the static estimate. The result is clamped to maxPrefillTPS
+// so a single outlier heartbeat cannot collapse the TTFT estimate.
+//
+// observedPrefillTPS stays 0 until providers ship the W1 measurement, so on
+// today's fleet this is a no-op that returns the existing ×12-chain value.
+func resolvePrefillTPS(snap routingSnapshot) float64 {
+	tps := snap.prefillTPS
+	if snap.observedPrefillTPS > 0 {
+		tps = snap.observedPrefillTPS
+	}
+	if tps > maxPrefillTPS {
+		tps = maxPrefillTPS
+	}
+	return tps
+}
+
 // effectiveDecodeTPS scales the static decode TPS down by current
 // backend batch size. Returns the static value when the load factor is
 // disabled or batch is unknown. Floored at 1 token/s to avoid divide-
@@ -1075,11 +1170,69 @@ func resolvedDecodeTPS(p *Provider) float64 {
 	return 1.0
 }
 
+// defaultPrefillToDecodeRatio is the fallback multiplier applied to a provider's
+// decode TPS to estimate its prefill TPS when the provider does not report a
+// measured prefill rate (prefill_tps). Apple-Silicon MLX prefills the prompt in
+// large parallel batches, so prefill throughput is roughly an order of magnitude
+// above decode throughput. The historical 4x was far too conservative: combined
+// with the 5s+1ms/token TTFT deadline it estimated ~100 tok/s prefill (vs the
+// ~1000 tok/s the deadline implicitly assumes), so the TTFT gate wrongly
+// rejected warm, capable providers on any prompt above ~550 tokens. No provider
+// currently reports prefill_tps, so this fallback is the production path.
+const defaultPrefillToDecodeRatio = 12.0
+
+// prefillToDecodeRatio is configured once at startup (via SetPrefillToDecodeRatio,
+// e.g. from EIGENINFERENCE_PREFILL_DECODE_RATIO) before the server begins
+// serving, then only read on routing paths.
+var prefillToDecodeRatio = defaultPrefillToDecodeRatio
+
+// SetPrefillToDecodeRatio overrides the decode→prefill fallback multiplier.
+// Values <= 0 are ignored. Must be called before serving starts (read-only after).
+func SetPrefillToDecodeRatio(ratio float64) {
+	if ratio > 0 {
+		prefillToDecodeRatio = ratio
+	}
+}
+
+// PrefillToDecodeRatio returns the current decode→prefill fallback multiplier
+// (the value used by resolvedPrefillTPS when a provider does not report a
+// measured prefill rate). Exposed for the routing simulation harness.
+func PrefillToDecodeRatio() float64 {
+	return prefillToDecodeRatio
+}
+
 func resolvedPrefillTPS(p *Provider) float64 {
 	if p.PrefillTPS > 0 {
 		return p.PrefillTPS
 	}
-	return resolvedDecodeTPS(p) * 4.0
+	return resolvedDecodeTPS(p) * prefillToDecodeRatio
+}
+
+// projectedPerRequestDecodeTPS estimates the decode tokens/sec a NEWLY admitted
+// request would receive on this snapshot's provider once it joins the batch
+// (backendRunning+1 concurrent). Continuous batching is memory-bandwidth bound,
+// so per-request decode degrades with batch size by the same effectiveTPSLoadFactor
+// model used elsewhere: rate(b) = solo / (1 + k·b). The measured observed decode
+// rate (when present) is unwound from the current batch to a solo rate and then
+// reapplied at b+1; otherwise the static benchmark is the solo proxy. Used by the
+// decode-floor quality preference (PendingRequest.MinDecodeTPS).
+func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
+	k := effectiveTPSLoadFactor
+	if k < 0 {
+		k = 0
+	}
+	b := snap.backendRunning
+	if b < 0 {
+		b = 0
+	}
+	solo := snap.decodeTPS
+	if snap.observedDecodeTPS > 0 {
+		solo = snap.observedDecodeTPS * (1 + k*float64(b)) // unwind measured@b to solo (b=0)
+	}
+	if solo <= 0 {
+		return 0
+	}
+	return solo / (1 + k*float64(b+1))
 }
 
 func providerModelIDs(p *Provider) []string {
@@ -1255,6 +1408,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 		if snap.hasBackendCapacity {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+			snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
 			if p.BackendCapacity.TotalMemoryGB > 0 {
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}
@@ -1266,6 +1420,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.backendRunning = int(slot.NumRunning)
 				snap.backendWaiting = int(slot.NumWaiting)
 				snap.observedDecodeTPS = slot.ObservedDecodeTPS
+				snap.observedPrefillTPS = slot.ObservedPrefillTPS
 				snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 				snap.queuedTokenBudget = slot.QueuedTokenBudget
@@ -1302,7 +1457,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		candidateCount++
 		if snap.hasBackendCapacity {
-			ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens, requestedMaxTokens)
+			ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens)
 			if !hasTTFT || ttft < bestTTFT {
 				bestTTFT = ttft
 				hasTTFT = true
@@ -1317,8 +1472,8 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
 }
 
-func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) time.Duration {
-	ttftMs := ttftMsFromSnapshot(snap, reqPromptTokens, reqMaxTokens)
+func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.Duration {
+	ttftMs := ttftMsFromSnapshot(snap, reqPromptTokens)
 	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
 		return 0
 	}
@@ -1330,7 +1485,15 @@ func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxToke
 // (QuickCapacityCheckWithTTFTForRequest) and the scheduler
 // (buildCandidateWithReason) so the two paths cannot drift on what "TTFT"
 // means.
-func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) float64 {
+//
+// Token-budget fields are admission/memory reservations, not decode work that
+// must fully drain before this request can emit a first token. Continuous
+// batching lets a newly-admitted request join the decode loop once its prefill
+// completes; existing active max-output reservations only slow the next decode
+// step, which is already reflected by effectiveTPS. Count waiting prefills ahead
+// and this request's own prefill instead of treating active_token_budget_used as
+// a serial decode backlog.
+func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	if !snap.hasBackendCapacity {
 		return 0
 	}
@@ -1338,10 +1501,7 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int)
 	if reqPromptTokens < 0 {
 		reqPromptTokens = 0
 	}
-	if reqMaxTokens <= 0 {
-		reqMaxTokens = defaultRequestedMaxTokens
-	}
-	prefillTPS := snap.prefillTPS
+	prefillTPS := resolvePrefillTPS(snap)
 	if prefillTPS <= 0 {
 		prefillTPS = 1.0
 	}
@@ -1350,28 +1510,25 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens, reqMaxTokens int)
 		effectiveTPS = 1.0
 	}
 
-	var backlogMs float64
-	if snap.activeTokenBudgetMax > 0 {
-		tokensAhead := float64(snap.activeTokenBudgetUsed) + float64(snap.queuedTokenBudget)
-		coordinatorExtra := float64(snap.pendingMaxTokens) - float64(committedTokenBudget(snap))
-		if coordinatorExtra > 0 {
-			tokensAhead += coordinatorExtra
-		}
-		backlogMs = tokensAhead / effectiveTPS * 1000.0
-	} else {
-		runningBacklogTokens := float64(snap.maxTokensPotential)
-		if runningBacklogTokens <= 0 && snap.backendRunning > 0 {
-			runningBacklogTokens = float64(snap.backendRunning * reqMaxTokens)
-		}
-		waitingBacklogTokens := float64(snap.backendWaiting * reqMaxTokens)
-		unaccountedPendingTokens := float64(snap.pendingMaxTokens) - runningBacklogTokens - waitingBacklogTokens
-		if unaccountedPendingTokens < 0 {
-			unaccountedPendingTokens = 0
-		}
-		backlogMs = (runningBacklogTokens + waitingBacklogTokens + unaccountedPendingTokens) / effectiveTPS * 1000.0
-	}
+	queuedPrefillMs := queuedPrefillTokensAhead(snap, reqPromptTokens) / prefillTPS * 1000.0
+	thisPrefillMs := float64(reqPromptTokens) / prefillTPS * 1000.0
+	firstDecodeMs := 1000.0 / effectiveTPS
+	return statePenalty + queuedPrefillMs + thisPrefillMs + firstDecodeMs
+}
 
-	return statePenalty + backlogMs + float64(reqPromptTokens)/prefillTPS*1000.0
+func queuedPrefillTokensAhead(snap routingSnapshot, reqPromptTokens int) float64 {
+	if reqPromptTokens <= 0 {
+		return 0
+	}
+	waiting := snap.backendWaiting
+	reflected := snap.backendRunning + snap.backendWaiting
+	if extraPending := snap.pendingForModel - reflected; extraPending > 0 {
+		waiting += extraPending
+	}
+	if waiting <= 0 {
+		return 0
+	}
+	return float64(waiting * reqPromptTokens)
 }
 
 // DrainQueuedRequestsForModel attempts to assign queued requests for a

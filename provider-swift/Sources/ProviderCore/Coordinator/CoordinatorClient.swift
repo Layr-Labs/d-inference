@@ -41,6 +41,13 @@ public enum CoordinatorEvent: Sendable {
 public final class AtomicProviderStats: Sendable {
     private let _requestsServed = ManagedAtomic<UInt64>(0)
     private let _tokensGenerated = ManagedAtomic<UInt64>(0)
+    private let _cancellationsReceived = ManagedAtomic<UInt64>(0)
+    private let _cancellationsBeforeOutput = ManagedAtomic<UInt64>(0)
+    private let _cancellationsPartialComplete = ManagedAtomic<UInt64>(0)
+    private let _generationErrorsAfterOutput = ManagedAtomic<UInt64>(0)
+    private let _chunkEncryptionErrors = ManagedAtomic<UInt64>(0)
+    private let _streamClosedWithoutTerminal = ManagedAtomic<UInt64>(0)
+    private let _cancelDuringModelLoad = ManagedAtomic<UInt64>(0)
     // Count of completed requests whose usage chunk was missing/zero. Surfaced
     // in the daemon state file so `doctor` can flag a billing under-count.
     private let _usageGaps = ManagedAtomic<UInt64>(0)
@@ -62,6 +69,41 @@ public final class AtomicProviderStats: Sendable {
         set { _usageGaps.store(newValue) }
     }
 
+    public var cancellationsReceived: UInt64 {
+        get { _cancellationsReceived.load() }
+        set { _cancellationsReceived.store(newValue) }
+    }
+
+    public var cancellationsBeforeOutput: UInt64 {
+        get { _cancellationsBeforeOutput.load() }
+        set { _cancellationsBeforeOutput.store(newValue) }
+    }
+
+    public var cancellationsPartialComplete: UInt64 {
+        get { _cancellationsPartialComplete.load() }
+        set { _cancellationsPartialComplete.store(newValue) }
+    }
+
+    public var generationErrorsAfterOutput: UInt64 {
+        get { _generationErrorsAfterOutput.load() }
+        set { _generationErrorsAfterOutput.store(newValue) }
+    }
+
+    public var chunkEncryptionErrors: UInt64 {
+        get { _chunkEncryptionErrors.load() }
+        set { _chunkEncryptionErrors.store(newValue) }
+    }
+
+    public var streamClosedWithoutTerminal: UInt64 {
+        get { _streamClosedWithoutTerminal.load() }
+        set { _streamClosedWithoutTerminal.store(newValue) }
+    }
+
+    public var cancelDuringModelLoad: UInt64 {
+        get { _cancelDuringModelLoad.load() }
+        set { _cancelDuringModelLoad.store(newValue) }
+    }
+
     public func incrementRequestsServed() {
         _requestsServed.add(1)
     }
@@ -72,6 +114,49 @@ public final class AtomicProviderStats: Sendable {
 
     public func incrementUsageGaps() {
         _usageGaps.add(1)
+    }
+
+    public func incrementCancellationsReceived() {
+        _cancellationsReceived.add(1)
+    }
+
+    public func incrementCancellationsBeforeOutput() {
+        _cancellationsBeforeOutput.add(1)
+    }
+
+    public func incrementCancellationsPartialComplete() {
+        _cancellationsPartialComplete.add(1)
+    }
+
+    public func incrementGenerationErrorsAfterOutput() {
+        _generationErrorsAfterOutput.add(1)
+    }
+
+    public func incrementChunkEncryptionErrors() {
+        _chunkEncryptionErrors.add(1)
+    }
+
+    public func incrementStreamClosedWithoutTerminal() {
+        _streamClosedWithoutTerminal.add(1)
+    }
+
+    public func incrementCancelDuringModelLoad() {
+        _cancelDuringModelLoad.add(1)
+    }
+
+    public func snapshot() -> ProviderStats {
+        ProviderStats(
+            requestsServed: requestsServed,
+            tokensGenerated: tokensGenerated,
+            cancellationsReceived: cancellationsReceived,
+            cancellationsBeforeOutput: cancellationsBeforeOutput,
+            cancellationsPartialComplete: cancellationsPartialComplete,
+            generationErrorsAfterOutput: generationErrorsAfterOutput,
+            chunkEncryptionErrors: chunkEncryptionErrors,
+            streamClosedWithoutTerminal: streamClosedWithoutTerminal,
+            cancelDuringModelLoad: cancelDuringModelLoad,
+            usageGaps: usageGaps
+        )
     }
 }
 
@@ -447,6 +532,15 @@ public actor CoordinatorClient {
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
     private var apnsTokenOverride: String?
 
+    /// Live APNs device-token source, read by every heartbeat. Defaults to the
+    /// process-wide ``APNsBridge`` so a token that ROTATES after registration is
+    /// reflected in the next heartbeat — `apnsTokenOverride`/`config` only hold the
+    /// value captured at startup, and the late-token watcher in `ProviderLoop`
+    /// stops after the first token, so a rotation would otherwise keep the
+    /// coordinator pushing code-identity challenges to the dead token until a
+    /// reconnect. Injectable so unit tests drive rotation deterministically.
+    private let liveAPNsToken: @Sendable () -> String?
+
     /// Live per-model weight hashes pushed by the provider loop when a model
     /// (re)load discovers the on-disk weights changed (model re-published while
     /// the daemon runs). Once set, every (re)registration patches
@@ -467,12 +561,14 @@ public actor CoordinatorClient {
     public init(
         config: CoordinatorClientConfig,
         stats: AtomicProviderStats,
-        state: ProviderState
+        state: ProviderState,
+        liveAPNsToken: (@Sendable () -> String?)? = nil
     ) {
         self.config = config
         self.stats = stats
         self.state = state
         self.advertisedModelStore = AdvertisedModelStore(config.models)
+        self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
     }
 
     /// Add a runtime-verified build to the advertised set so the coordinator
@@ -889,23 +985,42 @@ public actor CoordinatorClient {
 
     // MARK: - Heartbeat
 
-    private func buildHeartbeatJSON() -> String {
+    func buildHeartbeatJSON() -> String {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
         let warmModels = state.warmModels
         let capacity = state.backendCapacity
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
 
+        // Carry the APNs device token in every heartbeat (W5 Fix 2) so the
+        // coordinator can re-arm a code-identity challenge WITHOUT a reconnect when
+        // the token arrived after registration or rotated. Prefer the LIVE token
+        // from the APNs bridge: on a post-registration rotation the bridge is
+        // updated immediately, but `apnsTokenOverride`/`config` still hold the
+        // value captured at startup, so reading them would keep pushing challenges
+        // to the dead token until a reconnect. Fall back to the late-arrival
+        // override, then the startup config value, when the bridge has none
+        // (headless / no-GUI boxes never get a bridge token). nil when there is no
+        // token at all, so token-less providers keep the wire shape unchanged
+        // (encodeIfPresent omits the fields).
+        let liveToken = liveAPNsToken()
+        let effectiveToken = liveToken ?? apnsTokenOverride ?? config.apnsDeviceToken
+        // Env mirrors the registration path: a dynamically-sourced token (live
+        // bridge or late override) defaults to "production" when config carried no
+        // environment; a config-only token keeps config's environment as-is.
+        let effectiveEnv: String? = (liveToken != nil || apnsTokenOverride != nil)
+            ? (config.apnsEnvironment ?? "production")
+            : config.apnsEnvironment
+
         let message = CoordinatorClientCodec.heartbeatMessage(
             status: isActive ? .serving : .idle,
             activeModel: activeModel,
             warmModels: warmModels,
-            stats: ProviderStats(
-                requestsServed: stats.requestsServed,
-                tokensGenerated: stats.tokensGenerated
-            ),
+            stats: stats.snapshot(),
             systemMetrics: metrics,
-            backendCapacity: capacity
+            backendCapacity: capacity,
+            apnsDeviceToken: effectiveToken,
+            apnsEnvironment: effectiveEnv
         )
 
         guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),

@@ -143,6 +143,17 @@ extension ProviderLoop {
         )
     }
 
+    /// True only after the stream has produced visible assistant output
+    /// (content, reasoning content, or tool calls). Role/lifecycle/usage-only
+    /// preamble frames are emitted to the coordinator but must not count as
+    /// output for cancellation/error outcome counters.
+    internal static func hasVisibleStreamOutput(
+        contentFrameCount: Int,
+        fullResponseText: String
+    ) -> Bool {
+        contentFrameCount > 0 || !fullResponseText.isEmpty
+    }
+
     /// Inject `usage.completion_tokens_details.reasoning_tokens` into a
     /// final SSE chunk that already carries a `usage` block.
     ///

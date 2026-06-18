@@ -76,13 +76,16 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	if s.settlements == nil {
 		// Defensive: a Server built without newSettlementHolder still refunds
 		// rather than leaking the reservation.
-		s.refundReservedBalance(pr, "no_terminal_after_cancel:"+pr.RequestID)
+		if s.refundReservedBalance(pr, "no_terminal_after_cancel:"+pr.RequestID) {
+			s.updateInferenceRouteOutcomeForPending(pr, noTerminalAfterCancelOutcome(pr))
+		}
 		return
 	}
 	s.settlements.hold(pr, s.terminalSettleGrace(), func(expired *registry.PendingRequest) {
 		// Log only if this actually refunded — a request already settled by
 		// handleComplete leaves a dup here whose refund no-ops (FinalizeReservation).
 		if s.refundReservedBalance(expired, "no_terminal_after_cancel:"+expired.RequestID) {
+			s.updateInferenceRouteOutcomeForPending(expired, noTerminalAfterCancelOutcome(expired))
 			s.logger.Warn("no terminal from provider after cancel — refunded reservation",
 				"request_id", expired.RequestID,
 			)

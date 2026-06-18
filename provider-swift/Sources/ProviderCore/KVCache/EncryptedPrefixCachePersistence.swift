@@ -84,6 +84,17 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     /// executor as register/deregister, so no race on the accountant itself).
     private var accountantToken: AccountantToken?
 
+    #if DEBUG
+    /// Test-only seam (DEBUG builds ONLY — never compiled into the shipped
+    /// release binary, so it exports no production surface): invoked inside
+    /// `saveBlock` AFTER the entry `closed` guard passes but BEFORE `writeSync`,
+    /// letting a test simulate an unload (`purgeDir()` → closed + removeItem(dir))
+    /// racing this in-flight write. The subsequent writeSync then re-creates the
+    /// dir and lands the file (the exact production race), and the post-write
+    /// `closed` re-check must clean it up. Mirrors the checkpoint tier's seam.
+    var _beforeWriteHookForTest: (@Sendable () -> Void)?
+    #endif
+
     public init(
         kekKey: SymmetricKey, dir: URL, binding: PrefixCacheModelBinding,
         diskBudgetBytes: Int = 0,
@@ -137,7 +148,22 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
                 chunkPlaintextSizes: chunks.map { $0.count }
             )
             let url = fileURL(blockHash)
+            #if DEBUG
+            _beforeWriteHookForTest?()  // test seam (DEBUG only): simulate unload racing this write
+            #endif
             try EncryptedKVStore.writeSync(to: url, metadata: meta, chunks: chunks, kekKey: kekKey)
+            // Post-write closed re-check (Phase 4): the entry guard can pass, then
+            // purgeDir() runs on unload (closed=true + removeItem(dir)) while this
+            // synchronous saveBlock is mid-flight — `EngineCore.stop()` does not
+            // fence an already-dispatched engineQueue step. writeSync's atomic
+            // writer RE-CREATES the just-deleted dir via ensureDirectory and lands
+            // the file, so without this the block survives the unload (restart
+            // warmth is OFF, so nothing reclaims it). If we closed during the
+            // write, delete the file we just wrote and skip the usage push.
+            if isClosed() {
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
             let written = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
             // When accountant != nil, push usage to the accountant
             // (debounced) so enforceIfOverBudget can signal evictForGlobalBudget.
@@ -356,6 +382,24 @@ public final class EncryptedPrefixCachePersistence: PrefixCachePersistence, Pref
     private func isClosed() -> Bool {
         sweepLock.lock(); defer { sweepLock.unlock() }
         return closed
+    }
+
+    /// Purge this owner's on-disk `kv/<modelKey>` directory on model unload, so
+    /// no KV outlives the loaded model (restart warmth is intentionally OFF; a
+    /// startup sweep covers the jetsam-crash case). Latches `closed` FIRST, then
+    /// removes the directory. A `saveBlock` that already passed its entry guard
+    /// can still be mid-write here (`EngineCore.stop()` doesn't fence the engine
+    /// queue) and its atomic writer would re-create the dir — but `saveBlock`'s
+    /// post-write `closed` re-check deletes the file it just wrote, so at worst an
+    /// empty dir lingers (harmless; reclaimed by the next load's createDirectory
+    /// or the next startup sweep). Idempotent; thread-safe via sweepLock.
+    /// BatchScheduler calls this INSTEAD of `close()` when tearing the model down.
+    public func purgeDir() {
+        sweepLock.lock()
+        closed = true
+        let dir = self.dir
+        sweepLock.unlock()
+        try? FileManager.default.removeItem(at: dir)
     }
 
     /// Evict oldest `.darkbloom-kv` files (by modification time) until the

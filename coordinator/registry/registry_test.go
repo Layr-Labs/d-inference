@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -387,7 +388,18 @@ func TestHeartbeat(t *testing.T) {
 	hb := &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
-		Stats:  protocol.HeartbeatStats{RequestsServed: 5, TokensGenerated: 1000},
+		Stats: protocol.HeartbeatStats{
+			RequestsServed:               5,
+			TokensGenerated:              1000,
+			CancellationsReceived:        1,
+			CancellationsBeforeOutput:    2,
+			CancellationsPartialComplete: 3,
+			GenerationErrorsAfterOutput:  4,
+			ChunkEncryptionErrors:        5,
+			StreamClosedWithoutTerminal:  6,
+			CancelDuringModelLoad:        7,
+			UsageGaps:                    8,
+		},
 	}
 
 	reg.Heartbeat("p1", hb)
@@ -398,6 +410,30 @@ func TestHeartbeat(t *testing.T) {
 	}
 	if p.Stats.TokensGenerated != 1000 {
 		t.Errorf("tokens_generated = %d, want 1000", p.Stats.TokensGenerated)
+	}
+	if p.Stats.CancellationsReceived != 1 {
+		t.Errorf("cancellations_received = %d, want 1", p.Stats.CancellationsReceived)
+	}
+	if p.Stats.CancellationsBeforeOutput != 2 {
+		t.Errorf("cancellations_before_output = %d, want 2", p.Stats.CancellationsBeforeOutput)
+	}
+	if p.Stats.CancellationsPartialComplete != 3 {
+		t.Errorf("cancellations_partial_complete = %d, want 3", p.Stats.CancellationsPartialComplete)
+	}
+	if p.Stats.GenerationErrorsAfterOutput != 4 {
+		t.Errorf("generation_errors_after_output = %d, want 4", p.Stats.GenerationErrorsAfterOutput)
+	}
+	if p.Stats.ChunkEncryptionErrors != 5 {
+		t.Errorf("chunk_encryption_errors = %d, want 5", p.Stats.ChunkEncryptionErrors)
+	}
+	if p.Stats.StreamClosedWithoutTerminal != 6 {
+		t.Errorf("stream_closed_without_terminal = %d, want 6", p.Stats.StreamClosedWithoutTerminal)
+	}
+	if p.Stats.CancelDuringModelLoad != 7 {
+		t.Errorf("cancel_during_model_load = %d, want 7", p.Stats.CancelDuringModelLoad)
+	}
+	if p.Stats.UsageGaps != 8 {
+		t.Errorf("usage_gaps = %d, want 8", p.Stats.UsageGaps)
 	}
 }
 
@@ -456,6 +492,21 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
+	lifetimeStats := protocol.HeartbeatStats{
+		RequestsServed:               100,
+		TokensGenerated:              2000,
+		CancellationsReceived:        7,
+		CancellationsBeforeOutput:    3,
+		CancellationsPartialComplete: 2,
+		GenerationErrorsAfterOutput:  4,
+		ChunkEncryptionErrors:        1,
+		StreamClosedWithoutTerminal:  5,
+		CancelDuringModelLoad:        6,
+		UsageGaps:                    8,
+	}
+	lastSessionStats := lifetimeStats
+	lifetimeJSON, _ := json.Marshal(lifetimeStats)
+	lastSessionJSON, _ := json.Marshal(lastSessionStats)
 
 	reg.RestoreProviderState(p, &store.ProviderRecord{
 		ID:                         "persisted-p1",
@@ -465,6 +516,8 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 		LifetimeTokensGenerated:    2000,
 		LastSessionRequestsServed:  100,
 		LastSessionTokensGenerated: 2000,
+		LifetimeStats:              lifetimeJSON,
+		LastSessionStats:           lastSessionJSON,
 	})
 
 	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
@@ -479,11 +532,19 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	if p.Stats.TokensGenerated != 2000 {
 		t.Fatalf("tokens_generated after coordinator restart = %d, want 2000", p.Stats.TokensGenerated)
 	}
+	if p.Stats.CancellationsReceived != 7 || p.Stats.UsageGaps != 8 {
+		t.Fatalf("restored outcome counters = %+v, want persisted heartbeat stats", p.Stats)
+	}
 
 	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
-		Stats:  protocol.HeartbeatStats{RequestsServed: 105, TokensGenerated: 2300},
+		Stats: protocol.HeartbeatStats{
+			RequestsServed:        105,
+			TokensGenerated:       2300,
+			CancellationsReceived: 9,
+			UsageGaps:             11,
+		},
 	})
 
 	if p.Stats.RequestsServed != 105 {
@@ -492,11 +553,19 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	if p.Stats.TokensGenerated != 2300 {
 		t.Fatalf("tokens_generated after new work = %d, want 2300", p.Stats.TokensGenerated)
 	}
+	if p.Stats.CancellationsReceived != 9 || p.Stats.UsageGaps != 11 {
+		t.Fatalf("outcome counters after new work = %+v, want updated counters", p.Stats)
+	}
 
 	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
-		Stats:  protocol.HeartbeatStats{RequestsServed: 2, TokensGenerated: 40},
+		Stats: protocol.HeartbeatStats{
+			RequestsServed:        2,
+			TokensGenerated:       40,
+			CancellationsReceived: 1,
+			UsageGaps:             1,
+		},
 	})
 
 	if p.Stats.RequestsServed != 107 {
@@ -504,6 +573,9 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	}
 	if p.Stats.TokensGenerated != 2340 {
 		t.Fatalf("tokens_generated after provider restart = %d, want 2340", p.Stats.TokensGenerated)
+	}
+	if p.Stats.CancellationsReceived != 10 || p.Stats.UsageGaps != 12 {
+		t.Fatalf("outcome counters after provider restart = %+v, want accumulated counters", p.Stats)
 	}
 }
 
@@ -946,6 +1018,96 @@ func TestMarkUntrusted(t *testing.T) {
 	p := reg.GetProvider("p1")
 	if p.Status != StatusUntrusted {
 		t.Errorf("status = %q, want %q", p.Status, StatusUntrusted)
+	}
+}
+
+// TestHardUntrustHook proves the DAR-326 invalidation hook fires with the
+// device's SE public key on a HARD untrust, but NOT on a transient (recoverable)
+// untrust — so a missed-challenge deroute that can self-recover does not drop the
+// trust-reuse record, while a real security deroute durably invalidates it.
+func TestHardUntrustHook(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.mu.Lock()
+	p.AttestationResult = &attestation.VerificationResult{PublicKey: "se-key-1"}
+	p.mu.Unlock()
+
+	var mu sync.Mutex
+	var fired []string
+	reg.SetHardUntrustHook(func(seKey string) {
+		mu.Lock()
+		fired = append(fired, seKey)
+		mu.Unlock()
+	})
+
+	// A transient untrust must NOT fire the hook.
+	reg.MarkUntrustedTransient("p1")
+	mu.Lock()
+	if len(fired) != 0 {
+		t.Fatalf("transient untrust must not fire the hard-untrust hook, got %v", fired)
+	}
+	mu.Unlock()
+
+	// A hard untrust must fire the hook with the device's SE key.
+	reg.MarkUntrusted("p1")
+	mu.Lock()
+	if len(fired) != 1 || fired[0] != "se-key-1" {
+		t.Fatalf("hard untrust must fire the hook with the SE key, got %v", fired)
+	}
+	mu.Unlock()
+}
+
+// TestHardUntrustEpoch proves the DAR-326 FIX A epoch counter: it starts at 0,
+// bumps on every HARD untrust, and does NOT bump on a transient untrust (which can
+// self-recover). recordTrustReuse captures + re-checks this epoch to refuse a
+// stale write that races a hard untrust.
+func TestHardUntrustEpoch(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	if e := p.HardUntrustEpoch(); e != 0 {
+		t.Fatalf("fresh provider epoch = %d, want 0", e)
+	}
+
+	// A transient untrust must NOT bump the epoch.
+	reg.MarkUntrustedTransient("p1")
+	if e := p.HardUntrustEpoch(); e != 0 {
+		t.Fatalf("transient untrust must not bump the epoch, got %d", e)
+	}
+
+	// Each hard untrust bumps it (monotonic).
+	reg.MarkUntrusted("p1")
+	if e := p.HardUntrustEpoch(); e != 1 {
+		t.Fatalf("epoch after first hard untrust = %d, want 1", e)
+	}
+	reg.MarkUntrusted("p1")
+	if e := p.HardUntrustEpoch(); e != 2 {
+		t.Fatalf("epoch after second hard untrust = %d, want 2", e)
+	}
+}
+
+// TestResetChallengeSettledDrainsStaleSignal proves DAR-326 FIX 4c: a freshly
+// registered provider carries no settled signal, and ResetChallengeSettled drains a
+// buffered one so a new connection cannot consume a stale signal.
+func TestResetChallengeSettledDrainsStaleSignal(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	// A freshly-registered provider's signal is empty (Register resets it).
+	select {
+	case <-p.ChallengeSettledChan():
+		t.Fatal("a freshly-registered provider must have no buffered settled signal")
+	default:
+	}
+
+	// Buffer a (stale) signal, then reset → drained.
+	p.SignalChallengeSettled()
+	p.ResetChallengeSettled()
+	select {
+	case <-p.ChallengeSettledChan():
+		t.Fatal("ResetChallengeSettled must drain the buffered signal")
+	default:
 	}
 }
 

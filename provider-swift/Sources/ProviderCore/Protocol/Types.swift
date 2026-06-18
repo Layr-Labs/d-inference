@@ -162,15 +162,88 @@ public struct ModelInfo: Codable, Sendable, Equatable {
 public struct ProviderStats: Codable, Sendable, Equatable {
     public var requestsServed: UInt64
     public var tokensGenerated: UInt64
+    public var cancellationsReceived: UInt64
+    public var cancellationsBeforeOutput: UInt64
+    public var cancellationsPartialComplete: UInt64
+    public var generationErrorsAfterOutput: UInt64
+    public var chunkEncryptionErrors: UInt64
+    public var streamClosedWithoutTerminal: UInt64
+    public var cancelDuringModelLoad: UInt64
+    public var usageGaps: UInt64
 
     enum CodingKeys: String, CodingKey {
         case requestsServed = "requests_served"
         case tokensGenerated = "tokens_generated"
+        case cancellationsReceived = "cancellations_received"
+        case cancellationsBeforeOutput = "cancellations_before_output"
+        case cancellationsPartialComplete = "cancellations_partial_complete"
+        case generationErrorsAfterOutput = "generation_errors_after_output"
+        case chunkEncryptionErrors = "chunk_encryption_errors"
+        case streamClosedWithoutTerminal = "stream_closed_without_terminal"
+        case cancelDuringModelLoad = "cancel_during_model_load"
+        case usageGaps = "usage_gaps"
     }
 
-    public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0) {
+    public init(
+        requestsServed: UInt64 = 0,
+        tokensGenerated: UInt64 = 0,
+        cancellationsReceived: UInt64 = 0,
+        cancellationsBeforeOutput: UInt64 = 0,
+        cancellationsPartialComplete: UInt64 = 0,
+        generationErrorsAfterOutput: UInt64 = 0,
+        chunkEncryptionErrors: UInt64 = 0,
+        streamClosedWithoutTerminal: UInt64 = 0,
+        cancelDuringModelLoad: UInt64 = 0,
+        usageGaps: UInt64 = 0
+    ) {
         self.requestsServed = requestsServed
         self.tokensGenerated = tokensGenerated
+        self.cancellationsReceived = cancellationsReceived
+        self.cancellationsBeforeOutput = cancellationsBeforeOutput
+        self.cancellationsPartialComplete = cancellationsPartialComplete
+        self.generationErrorsAfterOutput = generationErrorsAfterOutput
+        self.chunkEncryptionErrors = chunkEncryptionErrors
+        self.streamClosedWithoutTerminal = streamClosedWithoutTerminal
+        self.cancelDuringModelLoad = cancelDuringModelLoad
+        self.usageGaps = usageGaps
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.requestsServed = try c.decodeIfPresent(UInt64.self, forKey: .requestsServed) ?? 0
+        self.tokensGenerated = try c.decodeIfPresent(UInt64.self, forKey: .tokensGenerated) ?? 0
+        self.cancellationsReceived = try c.decodeIfPresent(UInt64.self, forKey: .cancellationsReceived) ?? 0
+        self.cancellationsBeforeOutput = try c.decodeIfPresent(UInt64.self, forKey: .cancellationsBeforeOutput) ?? 0
+        self.cancellationsPartialComplete = try c.decodeIfPresent(UInt64.self, forKey: .cancellationsPartialComplete) ?? 0
+        self.generationErrorsAfterOutput = try c.decodeIfPresent(UInt64.self, forKey: .generationErrorsAfterOutput) ?? 0
+        self.chunkEncryptionErrors = try c.decodeIfPresent(UInt64.self, forKey: .chunkEncryptionErrors) ?? 0
+        self.streamClosedWithoutTerminal = try c.decodeIfPresent(UInt64.self, forKey: .streamClosedWithoutTerminal) ?? 0
+        self.cancelDuringModelLoad = try c.decodeIfPresent(UInt64.self, forKey: .cancelDuringModelLoad) ?? 0
+        self.usageGaps = try c.decodeIfPresent(UInt64.self, forKey: .usageGaps) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(requestsServed, forKey: .requestsServed)
+        try c.encode(tokensGenerated, forKey: .tokensGenerated)
+        try encodeIfNonZero(cancellationsReceived, to: &c, forKey: .cancellationsReceived)
+        try encodeIfNonZero(cancellationsBeforeOutput, to: &c, forKey: .cancellationsBeforeOutput)
+        try encodeIfNonZero(cancellationsPartialComplete, to: &c, forKey: .cancellationsPartialComplete)
+        try encodeIfNonZero(generationErrorsAfterOutput, to: &c, forKey: .generationErrorsAfterOutput)
+        try encodeIfNonZero(chunkEncryptionErrors, to: &c, forKey: .chunkEncryptionErrors)
+        try encodeIfNonZero(streamClosedWithoutTerminal, to: &c, forKey: .streamClosedWithoutTerminal)
+        try encodeIfNonZero(cancelDuringModelLoad, to: &c, forKey: .cancelDuringModelLoad)
+        try encodeIfNonZero(usageGaps, to: &c, forKey: .usageGaps)
+    }
+
+    private func encodeIfNonZero(
+        _ value: UInt64,
+        to container: inout KeyedEncodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws {
+        if value != 0 {
+            try container.encode(value, forKey: key)
+        }
     }
 }
 
@@ -300,11 +373,13 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var activeTokens: Int64
     public var maxTokensPotential: Int64
     public var observedDecodeTps: Double
+    public var observedPrefillTps: Double
     public var activeTokenBudgetUsed: Int64
     public var activeTokenBudgetMax: Int64
     public var queuedTokenBudget: Int64
     public var kvBytesPerToken: Int64
     public var maxConcurrency: UInt32
+    public var modelLoadTimeMs: Int64
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -314,11 +389,13 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case activeTokens = "active_tokens"
         case maxTokensPotential = "max_tokens_potential"
         case observedDecodeTps = "observed_decode_tps"
+        case observedPrefillTps = "observed_prefill_tps"
         case activeTokenBudgetUsed = "active_token_budget_used"
         case activeTokenBudgetMax = "active_token_budget_max"
         case queuedTokenBudget = "queued_token_budget"
         case kvBytesPerToken = "kv_bytes_per_token"
         case maxConcurrency = "max_concurrency"
+        case modelLoadTimeMs = "model_load_time_ms"
     }
 
     public init(
@@ -330,10 +407,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         maxTokensPotential: Int64,
         maxConcurrency: UInt32 = 0,
         observedDecodeTps: Double = 0,
+        observedPrefillTps: Double = 0,
         activeTokenBudgetUsed: Int64 = 0,
         activeTokenBudgetMax: Int64 = 0,
         queuedTokenBudget: Int64 = 0,
-        kvBytesPerToken: Int64 = 0
+        kvBytesPerToken: Int64 = 0,
+        modelLoadTimeMs: Int64 = 0
     ) {
         self.model = model
         self.state = state
@@ -343,10 +422,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.maxTokensPotential = maxTokensPotential
         self.maxConcurrency = maxConcurrency
         self.observedDecodeTps = observedDecodeTps
+        self.observedPrefillTps = observedPrefillTps
         self.activeTokenBudgetUsed = activeTokenBudgetUsed
         self.activeTokenBudgetMax = activeTokenBudgetMax
         self.queuedTokenBudget = queuedTokenBudget
         self.kvBytesPerToken = kvBytesPerToken
+        self.modelLoadTimeMs = modelLoadTimeMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -359,10 +440,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         maxTokensPotential = try container.decodeIfPresent(Int64.self, forKey: .maxTokensPotential) ?? 0
         maxConcurrency = try container.decodeIfPresent(UInt32.self, forKey: .maxConcurrency) ?? 0
         observedDecodeTps = try container.decodeIfPresent(Double.self, forKey: .observedDecodeTps) ?? 0
+        observedPrefillTps = try container.decodeIfPresent(Double.self, forKey: .observedPrefillTps) ?? 0
         activeTokenBudgetUsed = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetUsed) ?? 0
         activeTokenBudgetMax = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetMax) ?? 0
         queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
         kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
+        modelLoadTimeMs = try container.decodeIfPresent(Int64.self, forKey: .modelLoadTimeMs) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -375,10 +458,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try container.encode(maxTokensPotential, forKey: .maxTokensPotential)
         try encodeIfNonZero(maxConcurrency, forKey: .maxConcurrency, into: &container)
         try encodeIfNonZero(observedDecodeTps, forKey: .observedDecodeTps, into: &container)
+        try encodeIfNonZero(observedPrefillTps, forKey: .observedPrefillTps, into: &container)
         try encodeIfNonZero(activeTokenBudgetUsed, forKey: .activeTokenBudgetUsed, into: &container)
         try encodeIfNonZero(activeTokenBudgetMax, forKey: .activeTokenBudgetMax, into: &container)
         try encodeIfNonZero(queuedTokenBudget, forKey: .queuedTokenBudget, into: &container)
         try encodeIfNonZero(kvBytesPerToken, forKey: .kvBytesPerToken, into: &container)
+        try encodeIfNonZero(modelLoadTimeMs, forKey: .modelLoadTimeMs, into: &container)
     }
 
     private func encodeIfNonZero<T: BinaryInteger & Encodable>(
@@ -408,6 +493,14 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public var gpuMemoryPeakGb: Double
     public var gpuMemoryCacheGb: Double
     public var totalMemoryGb: Double
+    /// Max additional model-WEIGHT footprint (GB) the provider can load right
+    /// now, accounting for the 90% unified cap, OS/operator reserve, load
+    /// headroom, real OS-available memory, and eviction of idle resident models
+    /// (see `ModelLoadAdmission.maxLoadableWeightGb`). The coordinator consumes
+    /// this as the single source of truth for cold-load routing instead of
+    /// re-deriving free memory from the gpu/total figures. 0 means "cannot load
+    /// anything new right now".
+    public var freeForLoadGb: Double
 
     enum CodingKeys: String, CodingKey {
         case slots
@@ -415,6 +508,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case gpuMemoryPeakGb = "gpu_memory_peak_gb"
         case gpuMemoryCacheGb = "gpu_memory_cache_gb"
         case totalMemoryGb = "total_memory_gb"
+        case freeForLoadGb = "free_for_load_gb"
     }
 
     public init(
@@ -422,13 +516,27 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         gpuMemoryActiveGb: Double,
         gpuMemoryPeakGb: Double,
         gpuMemoryCacheGb: Double,
-        totalMemoryGb: Double
+        totalMemoryGb: Double,
+        freeForLoadGb: Double = 0
     ) {
         self.slots = slots
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
         self.gpuMemoryPeakGb = gpuMemoryPeakGb
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
         self.totalMemoryGb = totalMemoryGb
+        self.freeForLoadGb = freeForLoadGb
+    }
+
+    // Explicit decode so older payloads without `free_for_load_gb` still decode
+    // (defaults to 0). Encoding stays synthesized and always emits the field.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
+        self.gpuMemoryActiveGb = try c.decode(Double.self, forKey: .gpuMemoryActiveGb)
+        self.gpuMemoryPeakGb = try c.decode(Double.self, forKey: .gpuMemoryPeakGb)
+        self.gpuMemoryCacheGb = try c.decode(Double.self, forKey: .gpuMemoryCacheGb)
+        self.totalMemoryGb = try c.decode(Double.self, forKey: .totalMemoryGb)
+        self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
     }
 }
 

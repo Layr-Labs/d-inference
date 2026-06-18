@@ -110,7 +110,8 @@ public actor StandaloneServer {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
         self.diskAccountant = GlobalDiskAccountant(
             kvRoot: kvRoot,
-            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling())
+            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling(),
+            sweepOnInit: true)  // wipe stale KV from a prior crash before any load
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
         MLXMemoryGuard.configureOnce()
@@ -210,6 +211,9 @@ public actor StandaloneServer {
         for cached in schedulers.values {
             await cached.scheduler.unloadModel()
         }
+        // Return the freed weights to the OS so a later StandaloneServer in the
+        // same process (e.g. across tests) sees real free memory.
+        MLX.Memory.clearCache()
         schedulers.removeAll()
         schedulerReservations.removeAll()
     }
@@ -244,7 +248,13 @@ public actor StandaloneServer {
 
     // MARK: - Model lifecycle (LRU + memory headroom + reservation)
 
-    private func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
+    /// Build + load a scheduler and return it WITHOUT publishing it into
+    /// `schedulers`. The caller runs the post-load KV-headroom guard and only
+    /// publishes (`schedulers[modelId] = …`) if it passes — so a concurrent
+    /// request can never route to a model that's about to be rejected/unloaded.
+    private func buildLoadedScheduler(
+        _ modelId: String, container: MLXLMCommon.ModelContainer
+    ) async -> CachedScheduler {
         let scheduler = BatchScheduler(
             maxConcurrentRequests: Self.schedulerMaxConcurrent,
             pendingTimeout: Self.schedulerPendingTimeout,
@@ -257,7 +267,7 @@ public actor StandaloneServer {
             TokenizerHandle(ctx.tokenizer)
         }
         let modelType = models.first(where: { $0.id == modelId })?.modelType
-        schedulers[modelId] = CachedScheduler(
+        return CachedScheduler(
             scheduler: scheduler,
             tokenizer: tokenizer,
             modelType: modelType,
@@ -310,6 +320,11 @@ public actor StandaloneServer {
         if schedulers[evictKey]?.scheduler === evicted.scheduler {
             schedulers.removeValue(forKey: evictKey)
         }
+        // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
+        // availableMemoryGb / GlobalKVCacheBudget now count as used — without this
+        // the next load's gate and the surviving model's KV budget don't see the
+        // freed memory. Mirrors ProviderLoop.unloadModel.
+        MLX.Memory.clearCache()
         standaloneLogger.info("Evicted LRU model: \(evictKey)")
         return true
     }
@@ -342,12 +357,16 @@ public actor StandaloneServer {
     /// `ModelLoadAdmission` for the rationale.
     private func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
+        // Honor the 90% unified cap here too: with no configured reserve in
+        // standalone mode, the cap-implied reserve (physical − cap) is what holds
+        // memory back so a load can't push past the cap.
+        let reserve = UnifiedMemoryCap.loadReserveBytes(configReserveBytes: 0)
         return ModelLoadAdmission.freeForLoadGb(
             totalBytes: ProcessInfo.processInfo.physicalMemory,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: 0,
+            reserveBytes: reserve,
             outstandingReservationBytes: outstanding)
     }
 
@@ -521,7 +540,9 @@ public actor StandaloneServer {
             try await ensureMemoryHeadroomForLoad(
                 requiredGb: ModelLoadAdmission.requiredToLoadGb(
                     weightsGb: modelInfo.estimatedMemoryGb,
-                    headroomGb: ModelLoadAdmission.defaultLoadHeadroomGb)
+                    // Cap-aware: activation reserve + min serveable KV, so a model
+                    // that loads can actually serve (matches the runtime KV gate).
+                    headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
             )
             try Task.checkCancellation()
             let container = try await LLMModelFactory.shared.loadContainer(
@@ -529,11 +550,39 @@ public actor StandaloneServer {
                 using: LocalTokenizerLoader()
             )
             try Task.checkCancellation()
-            await loadModel(modelId, container: container)
-            if Task.isCancelled, let cached = schedulers.removeValue(forKey: modelId) {
+            // Build + load the scheduler WITHOUT publishing it, so a concurrent
+            // request can't route to a model the guard is about to reject.
+            let cached = await buildLoadedScheduler(modelId, container: container)
+            if Task.isCancelled {
                 await cached.scheduler.unloadModel()
+                MLX.Memory.clearCache()
                 throw CancellationError()
             }
+            // Trim the cold-load buffer pool BEFORE measuring: a fresh load leaves
+            // transient buffers in MLX cacheMemory (no forward pass has trimmed
+            // them yet), which would otherwise inflate "used" and false-reject a
+            // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
+            // clearCache-then-measure self-heal.
+            MLX.Memory.clearCache()
+            // Post-load measured-headroom guard (mirrors ProviderLoop): the load
+            // gate admitted on an estimate; now that weights are resident, reject
+            // a model with no serveable KV headroom under the cap rather than
+            // publish a "loaded but every request rejected" model. Serialized by
+            // isLoadingAny, so the MLX measurement reflects this load.
+            if !(await cached.scheduler.hasServeableKVHeadroom()) {
+                let headroomGb = String(
+                    format: "%.1f",
+                    Double(await cached.scheduler.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                let minGb = String(
+                    format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
+                await cached.scheduler.unloadModel()
+                MLX.Memory.clearCache()
+                throw StandaloneServerError.capacityUnavailable(
+                    "Model '\(modelId)' loaded but has insufficient KV headroom under the memory cap "
+                    + "(\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded")
+            }
+            // Guard passed — NOW publish the slot.
+            schedulers[modelId] = cached
             standaloneLogger.info("Lazy-loaded model: \(modelId)")
 
             modelsLoading.remove(modelId)

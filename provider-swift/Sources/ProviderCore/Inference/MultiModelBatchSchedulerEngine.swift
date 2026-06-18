@@ -200,14 +200,51 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // the coordinator WebSocket path, surface the correct 4xx instead of a
             // 200 with a truncated/error stream body. (Deferring the decode into
             // the generation task would let the HTTP layer commit a 200 first.)
+            // Reserve this vision request's unified memory against the 90% cap
+            // BEFORE rasterizing. The vision path bypasses the batched
+            // `submitTokenized` reservation, so it commits two kinds of memory the
+            // cap would otherwise track only reactively: (1) the media-decode RAM
+            // — CIImage rasters + Swift Data pixel buffers, which are NOT MLX
+            // arrays and so are invisible to the cap's live MLX counters; (2) the
+            // generation KV cache (kvBytesPerToken × maxOutputTokens), which IS
+            // MLXArray-backed but grows in a detached decode task with no
+            // per-request reservation, so N concurrent media requests can
+            // over-commit it against unreserved headroom. Reserving both up front
+            // gives the vision path the same preemptive gate the batched path has;
+            // if it won't fit we reject with a retryable error instead of OOMing.
+            // Released on every exit.
+            let mediaReqId = "vlm-\(UUID().uuidString.prefix(12))"
+            let projectedBytes = VLMRequestInference.projectedDecodeBytes(request)
+            // Full KV-token span the vision cache will hold: prompt text + image/
+            // video soft tokens + generated output (clamped to the context). The
+            // vision path bypasses the batched KV reservation, so charging only the
+            // output tokens would under-count the prompt + vision tokens that also
+            // occupy KV.
+            let kvTokens = VLMRequestInference.projectedKVTokens(
+                request, defaultMaxTokens: defaultMaxTokens,
+                contextLength: await scheduler.contextLength())
+            let mediaReserved = await scheduler.reserveVisionRequest(
+                requestId: mediaReqId, mediaDecodeBytes: projectedBytes,
+                kvTokens: kvTokens)
+            if !mediaReserved {
+                await releaseBox.fire()
+                let mib = projectedBytes / (1024 * 1024)
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                    "insufficient global kv cache headroom for vision request "
+                    + "(media decode ~\(mib) MiB + generation KV) — retry after capacity frees")
+            }
             do {
                 try await VLMRequestInference.validateMedia(request)
             } catch {
+                await scheduler.releaseVisionRequest(requestId: mediaReqId)
                 await releaseBox.fire()
                 throw error
             }
             let vlmStream = VLMRequestInference.stream(
                 container: container, request: request, defaultMaxTokens: defaultMaxTokens)
+            // Capture the scheduler so the stream task can release the media
+            // reservation; `scheduler` is Sendable (an actor reference).
+            let mediaReleaseScheduler = scheduler
             return AsyncThrowingStream { continuation in
                 let task = Task {
                     do {
@@ -215,16 +252,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             if Task.isCancelled { break }
                             continuation.yield(event)
                         }
+                        await mediaReleaseScheduler.releaseVisionRequest(requestId: mediaReqId)
                         await releaseBox.fire()
                         continuation.finish()
                     } catch {
+                        await mediaReleaseScheduler.releaseVisionRequest(requestId: mediaReqId)
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
                     }
                 }
                 continuation.onTermination = { @Sendable _ in
                     task.cancel()
-                    Task { await releaseBox.fire() }
+                    Task {
+                        await mediaReleaseScheduler.releaseVisionRequest(requestId: mediaReqId)
+                        await releaseBox.fire()
+                    }
                 }
             }
         }

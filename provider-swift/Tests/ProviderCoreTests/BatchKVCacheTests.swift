@@ -326,6 +326,59 @@ struct BatchKVCacheTests {
         }
     }
 
+    @Test("rotating decode stays unmasked after trimming past the window (negative padding)")
+    func rotatingUnmaskedAfterWindowTrim() {
+        // A rotating cache that generates past its window trims slots and
+        // subtracts the trim from leftPadding, so unpadded rows go NEGATIVE.
+        // The decode-mask fast path must treat negative padding as unpadded
+        // (<= 0), or every long (> window) Gemma 4 decode falls back to the
+        // explicit-mask path on each sliding layer (the mlx#3384 slow/divergent
+        // path the repetition fix avoids).
+        let cache = BatchRotatingKVCache(maxSize: 3, leftPadding: [0, 0])
+        _ = cache.update(  // prefill 4 > window 3 -> trims, leftPadding goes negative
+            keys: MLXArray.zeros([2, 1, 4, 1]), values: MLXArray.zeros([2, 1, 4, 1]))
+        _ = cache.update(  // one decode step
+            keys: MLXArray.zeros([2, 1, 1, 1]), values: MLXArray.zeros([2, 1, 1, 1]))
+        // Precondition that makes this a real regression test: rows are now
+        // negatively padded, so a `== 0` guard would (wrongly) mask.
+        #expect(cache.leftPadding.max().item(Int32.self) < 0)
+        let mask = cache.makeMask(n: 1, windowSize: 3, returnArray: true)
+        guard case .none = mask else {
+            Issue.record("expected .none for unpadded rotating decode past window, got \(mask)")
+            return
+        }
+    }
+
+    @Test("rotating decode keeps the window mask at the boundary when window < cache size")
+    func rotatingMaskedAtWindowBoundary() {
+        // When windowSize < maxCacheSize the buffer can hold keys older than the
+        // active window. makeMask runs BEFORE update, which appends the new token
+        // and trims only at maxCacheSize, so at `_idx == windowSize` the
+        // post-update cache holds windowSize + 1 keys. Returning .none there would
+        // let the new query attend one token PAST the window, so the windowed mask
+        // must be kept. (Gemma is unaffected: there window == maxCacheSize, so the
+        // trim already bounds the cache and the fast path stays on — see above.)
+        let boundary = BatchRotatingKVCache(maxSize: 8, leftPadding: [0, 0])
+        _ = boundary.update(  // _idx = 4 == window; 4 < maxCacheSize 8 => no trim
+            keys: MLXArray.zeros([2, 1, 4, 1]), values: MLXArray.zeros([2, 1, 4, 1]))
+        #expect(boundary.leftPadding.max().item(Int32.self) == 0)  // unpadded boundary
+        guard case .array = boundary.makeMask(n: 1, windowSize: 4, returnArray: true) else {
+            Issue.record("expected .array at the window boundary (window < cache); .none over-attends")
+            return
+        }
+
+        // Below the boundary the unmasked fast path is still taken: the post-update
+        // length (_idx + 1) still fits the window, so the tighter guard must NOT
+        // regress the fast path here.
+        let below = BatchRotatingKVCache(maxSize: 8, leftPadding: [0, 0])
+        _ = below.update(
+            keys: MLXArray.zeros([2, 1, 2, 1]), values: MLXArray.zeros([2, 1, 2, 1]))
+        guard case .none = below.makeMask(n: 1, windowSize: 4, returnArray: true) else {
+            Issue.record("expected .none below the window boundary (post-update still fits)")
+            return
+        }
+    }
+
     // MARK: - dynamicRoll helper
 
     @Test("dynamicRoll shifts each row by its own amount along axis")

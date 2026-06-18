@@ -43,7 +43,7 @@ func TTFTDeadline(promptTokens int) time.Duration {
 // modelTooLarge / no-provider cases collapse into the served default here; a
 // well-formed fleet never produces them.
 func ClassifyWithGate(reg *registry.Registry, a Arrival, softTTFT bool) Outcome {
-	candidateCount, capacityRejections, _, bestTTFT, hasTTFT :=
+	candidateCount, capacityRejections, _, _, bestTTFT, hasTTFT :=
 		reg.QuickCapacityCheckWithTTFTForRequest(a.Model, a.PromptTokens, a.MaxTokens, registry.RequestTraits{}, false)
 
 	if candidateCount == 0 && capacityRejections > 0 {

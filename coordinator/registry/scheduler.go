@@ -1217,6 +1217,33 @@ func resolvedPrefillTPS(p *Provider) float64 {
 // reapplied at b+1; otherwise the static benchmark is the solo proxy. Used by the
 // decode-floor quality preference (PendingRequest.MinDecodeTPS).
 func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
+	return projectedPerRequestDecodeTPSAtBatch(snap, snap.backendRunning+1)
+}
+
+// queuedStartBatchSizeForCapacityRelease estimates the batch size a queued
+// request would see after model capacity frees. Unlike the immediate-admit
+// projection, it does not add one on top of the current batch: the request starts
+// by replacing capacity that just completed/freed. Waiting provider-side work is
+// included because a request queued behind it can still enter at the model cap.
+func queuedStartBatchSizeForCapacityRelease(snap routingSnapshot, modelMaxConcurrency int) int {
+	batch := snap.backendRunning + snap.backendWaiting
+	if batch < 1 {
+		batch = 1
+	}
+	if modelMaxConcurrency > 0 && batch > modelMaxConcurrency {
+		batch = modelMaxConcurrency
+	}
+	return batch
+}
+
+func projectedQueuedStartDecodeTPS(snap routingSnapshot, modelMaxConcurrency int) float64 {
+	return projectedPerRequestDecodeTPSAtBatch(
+		snap,
+		queuedStartBatchSizeForCapacityRelease(snap, modelMaxConcurrency),
+	)
+}
+
+func projectedPerRequestDecodeTPSAtBatch(snap routingSnapshot, targetBatchSize int) float64 {
 	k := effectiveTPSLoadFactor
 	if k < 0 {
 		k = 0
@@ -1225,6 +1252,9 @@ func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
 	if b < 0 {
 		b = 0
 	}
+	if targetBatchSize < 1 {
+		targetBatchSize = 1
+	}
 	solo := snap.decodeTPS
 	if snap.observedDecodeTPS > 0 {
 		solo = snap.observedDecodeTPS * (1 + k*float64(b)) // unwind measured@b to solo (b=0)
@@ -1232,7 +1262,7 @@ func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
 	if solo <= 0 {
 		return 0
 	}
-	return solo / (1 + k*float64(b+1))
+	return solo / (1 + k*float64(targetBatchSize))
 }
 
 func providerModelIDs(p *Provider) []string {
@@ -1312,20 +1342,24 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits Requ
 //     a model that will never fit (the client would retry forever) — it should
 //     surface model_too_large / 503 instead.
 func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
-	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, allowedSerials...)
+	candidateCount, capacityRejections, modelTooLarge, _, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, allowedSerials...)
 	return candidateCount, capacityRejections, modelTooLarge
 }
 
 func (r *Registry) QuickCapacityCheckForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
-	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
+	candidateCount, capacityRejections, modelTooLarge, _, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
 	return candidateCount, capacityRejections, modelTooLarge
 }
 
-func (r *Registry) QuickCapacityCheckWithTTFTForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
+// QuickCapacityCheckWithTTFTForRequest also returns decodeFloorRejections: the
+// subset of capacityRejections that are decode-floor (throughput) sheds. The
+// consumer uses it to bypass queue-before-shed ONLY when every rejection is a
+// throughput shed — a transient concurrency/memory-full fleet must still queue.
+func (r *Registry) QuickCapacityCheckWithTTFTForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections int, bestTTFT time.Duration, hasTTFT bool) {
 	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
 }
 
-func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
+func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections int, bestTTFT time.Duration, hasTTFT bool) {
 	// Use a dummy PendingRequest with the caller's actual token estimates
 	// for the admission gate (freeMemoryAdmits).
 	if estimatedPromptTokens <= 0 {
@@ -1378,14 +1412,12 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 
-		// Concurrency gate.
-		if !p.hasConcurrencyHeadroomForModelLocked(model) {
-			p.mu.Unlock()
-			capacityRejections++
-			continue
-		}
-
 		// Build a snapshot for the admission gate (slot state + free memory).
+		// Built BEFORE the concurrency gate so a concurrency-full provider can
+		// still be classified against the decode floor below: a full-AND-slow
+		// fleet must fast-429 (queueing only defers the same too-slow outcome),
+		// while a full-but-FAST fleet stays a plain concurrency rejection that
+		// queue-before-shed still queues (a slot frees and serves quickly).
 		snap := routingSnapshot{
 			provider:           p,
 			model:              model,
@@ -1431,6 +1463,18 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+		// Capture concurrency headroom under the lock (the gate is applied after
+		// unlock, below, so a full-but-slow provider is still classified against
+		// the decode floor instead of short-circuiting as a plain capacity full).
+		// Keep per-model and global headroom separate: if the model slot itself is
+		// full, queue-before-shed would wait for a model slot to free, so the
+		// decode-floor projection must use the queued-start batch size. If only the
+		// provider-wide/global cap is full but this model has headroom, the request
+		// will join this model's batch after an unrelated slot frees, so the normal
+		// immediate b+1 projection is still the right throughput check.
+		modelMaxConcurrency := p.maxConcurrencyForModelLocked(model)
+		hasModelHeadroom := p.pendingLoadForModelLocked(model) < modelMaxConcurrency
+		hasHeadroom := hasModelHeadroom && p.pendingCount() < p.maxConcurrency()
 
 		p.mu.Unlock()
 
@@ -1449,9 +1493,65 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 
+		// Decode-floor classification, applied BEFORE the concurrency and memory
+		// gates so full/slow providers are still recognized as throughput-slow.
+		// Use two projections because the capacity failure mode matters:
+		// immediate-admit requests join the current batch (b+1), while queued
+		// requests caused by concurrency or token-budget pressure start only after
+		// capacity frees/replaces existing work. freeMemoryAdmits keys on KV
+		// memory, which a bandwidth-bound model (e.g. gemma-4 under load) never
+		// exhausts, so without this throughput gate the preflight over-admits
+		// requests that then queue and time out.
+		immediateProjectedDecodeTPS := projectedPerRequestDecodeTPS(snap)
+		queuedProjectedDecodeTPS := projectedQueuedStartDecodeTPS(snap, modelMaxConcurrency)
+		belowImmediateDecodeFloor := r.decodeFloorHardShed && r.decodeFloorTPS > 0 &&
+			snap.hasBackendCapacity && immediateProjectedDecodeTPS < r.decodeFloorTPS
+		belowQueuedDecodeFloor := r.decodeFloorHardShed && r.decodeFloorTPS > 0 &&
+			snap.hasBackendCapacity && queuedProjectedDecodeTPS < r.decodeFloorTPS
+
+		// Concurrency gate. A full provider is a capacity rejection. CRUCIAL: if
+		// it is ALSO below the decode floor, count it in decodeFloorRejections too
+		// — a full+slow fleet must fast-429 (queueing only defers the same
+		// too-slow outcome to a 120s timeout), whereas a full+FAST fleet stays a
+		// plain capacity rejection that queue-before-shed still queues because a
+		// slot will free and serve at an acceptable rate.
+		if !hasHeadroom {
+			capacityRejections++
+			belowDecodeFloor := belowImmediateDecodeFloor
+			if !hasModelHeadroom {
+				belowDecodeFloor = belowQueuedDecodeFloor
+			}
+			if belowDecodeFloor {
+				decodeFloorRejections++
+			}
+			continue
+		}
+
 		// Free memory / token budget admission gate.
 		if !freeMemoryAdmits(snap, dummyPR.EstimatedPromptTokens, dummyPR.RequestedMaxTokens) {
 			capacityRejections++
+			if belowQueuedDecodeFloor {
+				decodeFloorRejections++
+			}
+			continue
+		}
+
+		// Decode-floor SHED gate (opt-in, EIGENINFERENCE_DECODE_FLOOR_HARD_SHED).
+		// A provider with headroom and free memory but projecting below the floor
+		// is shed on THROUGHPUT alone, so an all-slow fleet yields
+		// candidateCount==0 / capacityRejections>0 (all decodeFloorRejections) and
+		// the caller sheds with a fast 429/Retry-After instead of admit-and-stall.
+		// Independent of the memory cap / free_for_load gates.
+		//
+		// decodeFloorRejections is a subset of capacityRejections so the caller
+		// can tell a pure-throughput shed (every rejection is below-floor) from a
+		// transient concurrency/memory-full-but-FAST fleet that queue-before-shed
+		// should still queue. Without that split, arming the shed flag would
+		// fast-429 a momentarily-full-but-fast fleet — a queue-before-shed
+		// regression.
+		if belowImmediateDecodeFloor {
+			capacityRejections++
+			decodeFloorRejections++
 			continue
 		}
 
@@ -1467,9 +1567,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 	}
 	if unknownTTFTCandidate {
-		return candidateCount, capacityRejections, modelTooLarge, 0, false
+		return candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections, 0, false
 	}
-	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
+	return candidateCount, capacityRejections, modelTooLarge, decodeFloorRejections, bestTTFT, hasTTFT
 }
 
 func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.Duration {

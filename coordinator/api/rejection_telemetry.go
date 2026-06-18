@@ -123,7 +123,7 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	s.submitTelemetry("recordRejection", func() {
 		if computeServability {
 			traits := registry.RequestTraits{HasTools: hasTools}
-			cc, capRej, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(
+			cc, capRej, tooLarge, _, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(
 				resolvedModel, estPrompt, reqMax, traits, requiresVision,
 			)
 			rec.CandidateCount = cc

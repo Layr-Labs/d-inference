@@ -1031,6 +1031,27 @@ type Registry struct {
 	cacheAffinity        *cacheAffinityTracker
 	cacheAffinityBonusMs float64
 	warmPool             *warmPoolController
+
+	// decodeFloorTPS / decodeFloorHardShed control whether the capacity
+	// preflight (quickCapacityCheck) SHEDS load when no provider can sustain the
+	// per-request decode floor, instead of merely re-ranking at dispatch time.
+	//
+	// Routing v2's W2 decode floor is purely advisory in selectBestCandidate
+	// LockedFull ("never fails closed — keep the full pool"), and the preflight
+	// did not apply it at all — so a bandwidth-bound model whose providers all
+	// decode below the floor (e.g. gemma-4 under load) still counted every
+	// provider as an admissible candidate. The coordinator then admitted far more
+	// requests than the fleet could serve at usable speed; they queued and timed
+	// out rather than being shed up front. When decodeFloorHardShed is true and
+	// decodeFloorTPS > 0, a provider whose PROJECTED per-request decode TPS (with
+	// this request added) falls below the floor is counted as a capacity
+	// rejection in the preflight, so an all-slow fleet yields candidateCount==0 /
+	// capacityRejections>0 and the existing capacity-shed path returns a fast
+	// 429/Retry-After. Default OFF (advisory, pre-fix behavior) — opt in via
+	// EIGENINFERENCE_DECODE_FLOOR_HARD_SHED=true. This sheds on THROUGHPUT only;
+	// it does not touch the memory cap / free_for_load_gb / resource-count gates.
+	decodeFloorTPS      float64
+	decodeFloorHardShed bool
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
 
@@ -1094,6 +1115,29 @@ func (r *Registry) ConfigureCacheAffinity(cfg CacheAffinityConfig) {
 	}
 	r.cacheAffinity = newCacheAffinityTracker(cfg.TTL)
 	r.cacheAffinityBonusMs = cfg.BonusMs
+}
+
+// SetDecodeFloorShed configures the preflight throughput-shed gate. `tps` is the
+// per-request decode floor (tokens/sec; typically the same value as the
+// per-request MinDecodeTPS quality bar) and `hardShed` enables shedding in the
+// capacity preflight when no provider can sustain it. When hardShed is false
+// (default) the preflight is unchanged and the floor stays advisory at dispatch.
+func (r *Registry) SetDecodeFloorShed(tps float64, hardShed bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.decodeFloorTPS = tps
+	r.decodeFloorHardShed = hardShed
+}
+
+// DecodeFloorShedArmed reports whether the preflight throughput-shed gate is
+// active (hardShed on AND a positive floor). The consumer uses this to bypass
+// queue-before-shed for a decode-floor capacity rejection: a fundamentally
+// too-slow fleet does not get faster by waiting in the queue, so it must 429
+// immediately rather than queue-then-timeout.
+func (r *Registry) DecodeFloorShedArmed() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.decodeFloorHardShed && r.decodeFloorTPS > 0
 }
 
 func (r *Registry) CacheAffinityConfigSnapshot() CacheAffinityConfig {

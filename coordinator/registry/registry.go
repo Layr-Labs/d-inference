@@ -1129,6 +1129,17 @@ func (r *Registry) SetDecodeFloorShed(tps float64, hardShed bool) {
 	r.decodeFloorHardShed = hardShed
 }
 
+// DecodeFloorShedArmed reports whether the preflight throughput-shed gate is
+// active (hardShed on AND a positive floor). The consumer uses this to bypass
+// queue-before-shed for a decode-floor capacity rejection: a fundamentally
+// too-slow fleet does not get faster by waiting in the queue, so it must 429
+// immediately rather than queue-then-timeout.
+func (r *Registry) DecodeFloorShedArmed() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.decodeFloorHardShed && r.decodeFloorTPS > 0
+}
+
 func (r *Registry) CacheAffinityConfigSnapshot() CacheAffinityConfig {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

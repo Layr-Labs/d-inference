@@ -81,6 +81,32 @@ func TestDecodeFloorShed_On_StillAdmitsFastFleet(t *testing.T) {
 	if cc == 0 {
 		t.Fatalf("a fast fleet must remain admissible with shed ON; got cc=0 capRej=%d", capRej)
 	}
+	// And it must not be a PARTIAL shed (both fast providers stay candidates,
+	// zero capacity rejections) — catches a subtly-wrong projection.
+	if capRej != 0 {
+		t.Fatalf("a fast fleet must have 0 capacity rejections with shed ON; got capRej=%d", capRej)
+	}
+	if cc != 2 {
+		t.Fatalf("both fast providers must be candidates; got cc=%d", cc)
+	}
+}
+
+// A freshly-warm provider that has not yet completed a request reports
+// observedDecodeTPS==0; the projection then falls back to the STATIC benchmark
+// decodeTPS. A healthy static TPS (here 200) must keep it above the floor — the
+// shed gate must NOT punish a provider merely for having no observed sample yet.
+func TestDecodeFloorShed_On_DoesNotShedFreshWarmProvider(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-fresh"
+	// observedTPS 0 ⇒ projection uses static decodeTPS=200 (set by makeScheduler
+	// Provider inside slowGemmaProvider) ⇒ ~157 tok/s projected, well above 15.
+	slowGemmaProvider(t, reg, "p1", model, 0)
+	reg.SetDecodeFloorShed(15, true)
+
+	cc, _, _ := reg.QuickCapacityCheck(model, 500, 4096, RequestTraits{})
+	if cc == 0 {
+		t.Fatalf("a fresh-warm provider (observed=0, static=200) must NOT be shed; got cc=0")
+	}
 }
 
 func TestDecodeFloorShed_ZeroFloor_NoOp(t *testing.T) {

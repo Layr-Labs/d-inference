@@ -1939,7 +1939,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// it. The dispatch/queue path still returns a 429 when the queue is
 			// full or the wait times out (true saturation). The reservation is
 			// kept for dispatch.
-			if s.queueBeforeShedEnabled() {
+			//
+			// EXCEPTION: when decode-floor hard-shed is armed, the capacity
+			// rejection may be a THROUGHPUT shed (no provider can decode at the
+			// floor), not transient memory pressure. Queueing a fundamentally
+			// too-slow fleet just defers the same outcome to a 120s timeout, so
+			// shed immediately instead — the whole point of the flag.
+			if s.queueBeforeShedEnabled() && !s.registry.DecodeFloorShedArmed() {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
 				// Legacy fast-shed: immediate 429.
@@ -4727,7 +4733,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			// capacity right now. Fall through to the dispatch+queue path so a slot
 			// freeing — or a cold load completing — within the queue window serves
 			// it; the queue path still 429s on a full queue or wait timeout.
-			if s.queueBeforeShedEnabled() {
+			// EXCEPTION: decode-floor hard-shed armed → shed now, don't queue a
+			// too-slow fleet (see the matching note on the primary path above).
+			if s.queueBeforeShedEnabled() && !s.registry.DecodeFloorShedArmed() {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
 				retryAfter := s.estimateRetryAfter(model)

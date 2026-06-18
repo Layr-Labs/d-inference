@@ -152,6 +152,36 @@ func TestDecodeFloorShed_MemoryFullFastFleet_NotCountedAsThroughputShed(t *testi
 	}
 }
 
+// Boundary: token-budget-full providers also queue until capacity frees. The
+// throughput check must therefore use the replacement/queued-start batch, not
+// the immediate "add one more request now" projection. Here the model still has
+// concurrency headroom, but token budget is full. Observed 11 tok/s at one
+// active request is above a 10 tok/s shed floor; adding one more immediately
+// would project below 10, but that immediate b+1 state is not what the queued
+// request will run at after token budget frees.
+func TestDecodeFloorShed_MemoryFullProviderUsesQueuedStartProjection(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-memory-full-boundary"
+	p := makeTokenBudgetProvider(t, reg, "p1", model, 200, 30_000, 32_768, 11)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].NumRunning = 1
+	p.BackendCapacity.Slots[0].MaxConcurrency = 8
+	p.mu.Unlock()
+
+	reg.SetDecodeFloorShed(10, true)
+
+	cc, capRej, _, decodeFloorRej, _, _ := reg.quickCapacityCheck(model, 500, 4096, RequestTraits{}, false)
+	if cc != 0 {
+		t.Fatalf("a token-budget-full provider must have no candidates; got cc=%d", cc)
+	}
+	if capRej == 0 {
+		t.Fatalf("a token-budget-full provider must be a capacity rejection; got capRej=%d", capRej)
+	}
+	if decodeFloorRej != 0 {
+		t.Fatalf("a token-budget-full provider above the shed floor after budget frees must queue, not throughput-shed; got decodeFloor=%d of %d", decodeFloorRej, capRej)
+	}
+}
+
 // setSlotFull marks a provider's slot concurrency-full so the concurrency gate
 // rejects it (MaxConcurrency=1, NumRunning=1 ⇒ no headroom).
 func setSlotFull(t *testing.T, p *Provider) {

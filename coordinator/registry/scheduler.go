@@ -1220,16 +1220,27 @@ func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
 	return projectedPerRequestDecodeTPSAtBatch(snap, snap.backendRunning+1)
 }
 
-// projectedQueuedStartDecodeTPS estimates the per-request decode TPS a queued
-// request would see after this model's slot frees. Unlike the immediate-admit
-// projection above, it does NOT add one on top of the already-full batch: the
-// request starts by replacing a completed/waiting slot, so the relevant batch is
-// the model's concurrency cap.
-func projectedQueuedStartDecodeTPS(snap routingSnapshot, modelMaxConcurrency int) float64 {
-	if modelMaxConcurrency < 1 {
-		modelMaxConcurrency = 1
+// queuedStartBatchSizeForCapacityRelease estimates the batch size a queued
+// request would see after model capacity frees. Unlike the immediate-admit
+// projection, it does not add one on top of the current batch: the request starts
+// by replacing capacity that just completed/freed. Waiting provider-side work is
+// included because a request queued behind it can still enter at the model cap.
+func queuedStartBatchSizeForCapacityRelease(snap routingSnapshot, modelMaxConcurrency int) int {
+	batch := snap.backendRunning + snap.backendWaiting
+	if batch < 1 {
+		batch = 1
 	}
-	return projectedPerRequestDecodeTPSAtBatch(snap, modelMaxConcurrency)
+	if modelMaxConcurrency > 0 && batch > modelMaxConcurrency {
+		batch = modelMaxConcurrency
+	}
+	return batch
+}
+
+func projectedQueuedStartDecodeTPS(snap routingSnapshot, modelMaxConcurrency int) float64 {
+	return projectedPerRequestDecodeTPSAtBatch(
+		snap,
+		queuedStartBatchSizeForCapacityRelease(snap, modelMaxConcurrency),
+	)
 }
 
 func projectedPerRequestDecodeTPSAtBatch(snap routingSnapshot, targetBatchSize int) float64 {
@@ -1483,20 +1494,20 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 
 		// Decode-floor classification, applied BEFORE the concurrency and memory
-		// gates so a full/slow provider is still recognized as throughput-slow.
-		// belowDecodeFloor is true when the shed is armed and this provider's
-		// PROJECTED per-request decode TPS (with this request added) is under the
-		// floor — i.e. queueing for a slot here would still serve below the
-		// quality bar. freeMemoryAdmits keys on KV memory, which a bandwidth-bound
-		// model (e.g. gemma-4 under load) never exhausts, so without this gate the
-		// preflight counts every such provider as admissible and over-admits
+		// gates so full/slow providers are still recognized as throughput-slow.
+		// Use two projections because the capacity failure mode matters:
+		// immediate-admit requests join the current batch (b+1), while queued
+		// requests caused by concurrency or token-budget pressure start only after
+		// capacity frees/replaces existing work. freeMemoryAdmits keys on KV
+		// memory, which a bandwidth-bound model (e.g. gemma-4 under load) never
+		// exhausts, so without this throughput gate the preflight over-admits
 		// requests that then queue and time out.
-		projectedDecodeTPS := projectedPerRequestDecodeTPS(snap)
-		if !hasModelHeadroom {
-			projectedDecodeTPS = projectedQueuedStartDecodeTPS(snap, modelMaxConcurrency)
-		}
-		belowDecodeFloor := r.decodeFloorHardShed && r.decodeFloorTPS > 0 &&
-			snap.hasBackendCapacity && projectedDecodeTPS < r.decodeFloorTPS
+		immediateProjectedDecodeTPS := projectedPerRequestDecodeTPS(snap)
+		queuedProjectedDecodeTPS := projectedQueuedStartDecodeTPS(snap, modelMaxConcurrency)
+		belowImmediateDecodeFloor := r.decodeFloorHardShed && r.decodeFloorTPS > 0 &&
+			snap.hasBackendCapacity && immediateProjectedDecodeTPS < r.decodeFloorTPS
+		belowQueuedDecodeFloor := r.decodeFloorHardShed && r.decodeFloorTPS > 0 &&
+			snap.hasBackendCapacity && queuedProjectedDecodeTPS < r.decodeFloorTPS
 
 		// Concurrency gate. A full provider is a capacity rejection. CRUCIAL: if
 		// it is ALSO below the decode floor, count it in decodeFloorRejections too
@@ -1506,6 +1517,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// slot will free and serve at an acceptable rate.
 		if !hasHeadroom {
 			capacityRejections++
+			belowDecodeFloor := belowImmediateDecodeFloor
+			if !hasModelHeadroom {
+				belowDecodeFloor = belowQueuedDecodeFloor
+			}
 			if belowDecodeFloor {
 				decodeFloorRejections++
 			}
@@ -1515,7 +1530,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// Free memory / token budget admission gate.
 		if !freeMemoryAdmits(snap, dummyPR.EstimatedPromptTokens, dummyPR.RequestedMaxTokens) {
 			capacityRejections++
-			if belowDecodeFloor {
+			if belowQueuedDecodeFloor {
 				decodeFloorRejections++
 			}
 			continue
@@ -1534,7 +1549,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// should still queue. Without that split, arming the shed flag would
 		// fast-429 a momentarily-full-but-fast fleet — a queue-before-shed
 		// regression.
-		if belowDecodeFloor {
+		if belowImmediateDecodeFloor {
 			capacityRejections++
 			decodeFloorRejections++
 			continue

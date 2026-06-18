@@ -237,9 +237,11 @@ func TestReadyz_ReflectsDrainState(t *testing.T) {
 	}
 }
 
-// (c) GET /health is drain-aware: 200/"ok" normally, 503/draining:true while
-// draining. EigenCloud's Caddy health-checks /health, so it must flip to
-// not-ready during drain or the load balancer keeps routing to this instance.
+// (c) GET /health is a LIVENESS probe: it stays 200 even while draining (it just
+// reports draining:true in the body). It must NOT flip to 503, because EigenCloud's
+// Caddy health-checks its single coordinator upstream on /health — a 503 would mark
+// the only backend down and make the admin/rollback endpoints and /readyz
+// unreachable. Drain/readiness is exposed on /readyz (see above), not /health.
 func TestHealth_ReflectsDrainState(t *testing.T) {
 	srv, _ := testServer(t)
 
@@ -259,11 +261,11 @@ func TestHealth_ReflectsDrainState(t *testing.T) {
 		t.Fatalf("health = %+v, want {status:ok, draining:false}", h)
 	}
 
-	// Draining: 503 + draining:true.
+	// Draining: stays 200 (liveness) but reports draining:true for observability.
 	srv.SetDraining(true)
 	w = doReq(srv, http.MethodGet, "/health", "", "")
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("draining health status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	if w.Code != http.StatusOK {
+		t.Fatalf("draining health status = %d, want %d (liveness must stay up)", w.Code, http.StatusOK)
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &h); err != nil {
 		t.Fatalf("unmarshal health (draining): %v", err)

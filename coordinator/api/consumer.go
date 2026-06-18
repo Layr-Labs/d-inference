@@ -4354,24 +4354,19 @@ func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
 // Returns the coordinator's status and the number of connected providers.
 // This endpoint does not require authentication.
 //
-// Drain-aware: while the coordinator is draining for a restart/upgrade it returns
-// 503 with draining=true. EigenCloud's Caddy health-checks /health, so a 200 while
-// draining would keep this instance marked ready and the load balancer would keep
-// routing here — clients would then hit the drain gate's 429s. Returning 503 marks
-// the instance not-ready so traffic shifts to the next (non-draining) color, which
-// returns 200 normally. This mirrors /readyz (handleReadyz), which load balancers
-// and the deploy script also consult.
+// /health is a LIVENESS probe: it returns 200 whenever the process is up, INCLUDING
+// while draining. This is deliberate. EigenCloud's Caddy health-checks its single
+// coordinator upstream on /health with health_status 200, so returning 503 here
+// would mark the only backend down and make the admin/rollback endpoints
+// (POST /v1/admin/drain {"draining":false}) and /readyz unreachable through the
+// public URL — you could not undo a drain remotely. Drain/readiness lives on
+// /readyz (handleReadyz, 503 while draining), which the deploy script and
+// multi-backend load balancers consult to shift traffic. The body still reports
+// draining=true for observability, but the status code stays 200.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	draining := s.IsDraining()
-	status := http.StatusOK
-	statusText := "ok"
-	if draining {
-		status = http.StatusServiceUnavailable
-		statusText = "draining"
-	}
-	writeJSON(w, status, types.HealthResponse{
-		Status:      statusText,
-		Draining:    draining,
+	writeJSON(w, http.StatusOK, types.HealthResponse{
+		Status:      "ok",
+		Draining:    s.IsDraining(),
 		Providers:   s.registry.ProviderCount(),
 		Version:     BuildVersion,
 		BuildCommit: BuildCommit,

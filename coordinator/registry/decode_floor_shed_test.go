@@ -18,11 +18,11 @@ import "testing"
 // slowGemmaProvider: huge KV budget headroom (freeMemoryAdmits passes) but an
 // observed decode TPS so low that the projected per-request rate is below the
 // floor even with zero concurrent streams.
-func slowGemmaProvider(t *testing.T, reg *Registry, id, model string, observedTPS float64) {
+func slowGemmaProvider(t *testing.T, reg *Registry, id, model string, observedTPS float64) *Provider {
 	t.Helper()
 	// decodeTPS (static) high so only the OBSERVED rate drives the projection;
 	// budget 1K used of 1M max ⇒ KV gate wide open (the gemma "never exhausts KV").
-	makeTokenBudgetProvider(t, reg, id, model, 200, 1_000, 1_000_000, observedTPS)
+	return makeTokenBudgetProvider(t, reg, id, model, 200, 1_000, 1_000_000, observedTPS)
 }
 
 func TestDecodeFloorShed_OffByDefault_AdmitsSlowFleet(t *testing.T) {
@@ -149,6 +149,95 @@ func TestDecodeFloorShed_MemoryFullFastFleet_NotCountedAsThroughputShed(t *testi
 	}
 	if decodeFloorRej != 0 {
 		t.Fatalf("a FAST-but-full fleet must report 0 decode-floor rejections (so queue-before-shed still queues), got %d of %d capacity rejections", decodeFloorRej, capRej)
+	}
+}
+
+// setSlotFull marks a provider's slot concurrency-full so the concurrency gate
+// rejects it (MaxConcurrency=1, NumRunning=1 ⇒ no headroom).
+func setSlotFull(t *testing.T, p *Provider) {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.BackendCapacity.Slots[0].MaxConcurrency = 1
+	p.BackendCapacity.Slots[0].NumRunning = 1
+}
+
+// Finding regression: a fleet that is BOTH concurrency-full AND below the decode
+// floor must fast-429, not queue. The concurrency gate runs before the decode
+// floor; if a full provider short-circuited as a plain capacity rejection
+// without decode-floor classification, decodeFloorRejections would be 0 <
+// capacityRejections and the consumer would queue the request for 120s — exactly
+// the stall this shed is meant to prevent under peak saturation. The fix
+// classifies a full provider against the floor too, so a full+slow fleet reports
+// decodeFloorRejections == capacityRejections and sheds immediately.
+func TestDecodeFloorShed_FullAndSlowFleet_ShedsNotQueues(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-full-slow"
+	// Wide-open budget (so freeMemoryAdmits would pass) but observed 8 tok/s
+	// (below the floor) AND concurrency-full.
+	p1 := slowGemmaProvider(t, reg, "p1", model, 8)
+	p2 := slowGemmaProvider(t, reg, "p2", model, 8)
+	setSlotFull(t, p1)
+	setSlotFull(t, p2)
+
+	reg.SetDecodeFloorShed(10, true)
+
+	cc, capRej, _, decodeFloorRej, _, _ := reg.quickCapacityCheck(model, 500, 4096, RequestTraits{}, false)
+	if cc != 0 {
+		t.Fatalf("a full+slow fleet must have no candidates; got cc=%d", cc)
+	}
+	if decodeFloorRej == 0 || decodeFloorRej != capRej {
+		t.Fatalf("a full+slow fleet must be a pure throughput shed (decodeFloorRejections==capacityRejections>0) so the consumer fast-429s instead of queueing 120s; got decodeFloor=%d cap=%d", decodeFloorRej, capRej)
+	}
+}
+
+// Counterpart: a fleet that is concurrency-full but FAST must NOT be a throughput
+// shed — a slot will free and serve at an acceptable rate, so queue-before-shed
+// must still queue it (decodeFloorRejections < capacityRejections).
+func TestDecodeFloorShed_FullButFastFleet_StillQueues(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-full-fast"
+	p1 := slowGemmaProvider(t, reg, "p1", model, 40) // 40 tok/s observed ⇒ above floor
+	p2 := slowGemmaProvider(t, reg, "p2", model, 40)
+	setSlotFull(t, p1)
+	setSlotFull(t, p2)
+
+	reg.SetDecodeFloorShed(10, true)
+
+	cc, capRej, _, decodeFloorRej, _, _ := reg.quickCapacityCheck(model, 500, 4096, RequestTraits{}, false)
+	if cc != 0 {
+		t.Fatalf("a concurrency-full fleet must have no candidates; got cc=%d", cc)
+	}
+	if capRej == 0 {
+		t.Fatalf("a full fleet must be a capacity rejection; got capRej=%d", capRej)
+	}
+	if decodeFloorRej != 0 {
+		t.Fatalf("a full-but-FAST fleet must report 0 decode-floor rejections so queue-before-shed still queues (a slot will free and serve fast); got decodeFloor=%d of %d", decodeFloorRej, capRej)
+	}
+}
+
+// A MIXED fleet (one full+slow, one full+fast) must queue: because the fast
+// provider's slot can free and serve at an acceptable rate, the request is worth
+// queueing. decodeFloorRejections (1) < capacityRejections (2).
+func TestDecodeFloorShed_MixedFullFleet_Queues(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-mixed-full"
+	slow := slowGemmaProvider(t, reg, "slow", model, 8)  // below floor
+	fast := slowGemmaProvider(t, reg, "fast", model, 40) // above floor
+	setSlotFull(t, slow)
+	setSlotFull(t, fast)
+
+	reg.SetDecodeFloorShed(10, true)
+
+	cc, capRej, _, decodeFloorRej, _, _ := reg.quickCapacityCheck(model, 500, 4096, RequestTraits{}, false)
+	if cc != 0 {
+		t.Fatalf("both providers full ⇒ no candidates; got cc=%d", cc)
+	}
+	if capRej != 2 {
+		t.Fatalf("both full providers must be capacity rejections; got capRej=%d", capRej)
+	}
+	if decodeFloorRej != 1 {
+		t.Fatalf("only the slow provider is below floor, so decodeFloorRejections must be 1 (< capRej) and the request queues; got decodeFloor=%d", decodeFloorRej)
 	}
 }
 

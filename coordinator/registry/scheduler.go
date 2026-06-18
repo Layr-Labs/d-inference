@@ -1382,14 +1382,12 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 
-		// Concurrency gate.
-		if !p.hasConcurrencyHeadroomForModelLocked(model) {
-			p.mu.Unlock()
-			capacityRejections++
-			continue
-		}
-
 		// Build a snapshot for the admission gate (slot state + free memory).
+		// Built BEFORE the concurrency gate so a concurrency-full provider can
+		// still be classified against the decode floor below: a full-AND-slow
+		// fleet must fast-429 (queueing only defers the same too-slow outcome),
+		// while a full-but-FAST fleet stays a plain concurrency rejection that
+		// queue-before-shed still queues (a slot frees and serves quickly).
 		snap := routingSnapshot{
 			provider:           p,
 			model:              model,
@@ -1435,6 +1433,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+		// Capture concurrency headroom under the lock (the gate is applied after
+		// unlock, below, so a full-but-slow provider is still classified against
+		// the decode floor instead of short-circuiting as a plain capacity full).
+		hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(model)
 
 		p.mu.Unlock()
 
@@ -1453,35 +1455,58 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 
+		// Decode-floor classification, applied BEFORE the concurrency and memory
+		// gates so a full/slow provider is still recognized as throughput-slow.
+		// belowDecodeFloor is true when the shed is armed and this provider's
+		// PROJECTED per-request decode TPS (with this request added) is under the
+		// floor — i.e. queueing for a slot here would still serve below the
+		// quality bar. freeMemoryAdmits keys on KV memory, which a bandwidth-bound
+		// model (e.g. gemma-4 under load) never exhausts, so without this gate the
+		// preflight counts every such provider as admissible and over-admits
+		// requests that then queue and time out.
+		belowDecodeFloor := r.decodeFloorHardShed && r.decodeFloorTPS > 0 &&
+			snap.hasBackendCapacity && projectedPerRequestDecodeTPS(snap) < r.decodeFloorTPS
+
+		// Concurrency gate. A full provider is a capacity rejection. CRUCIAL: if
+		// it is ALSO below the decode floor, count it in decodeFloorRejections too
+		// — a full+slow fleet must fast-429 (queueing only defers the same
+		// too-slow outcome to a 120s timeout), whereas a full+FAST fleet stays a
+		// plain capacity rejection that queue-before-shed still queues because a
+		// slot will free and serve at an acceptable rate.
+		if !hasHeadroom {
+			capacityRejections++
+			if belowDecodeFloor {
+				decodeFloorRejections++
+			}
+			continue
+		}
+
 		// Free memory / token budget admission gate.
 		if !freeMemoryAdmits(snap, dummyPR.EstimatedPromptTokens, dummyPR.RequestedMaxTokens) {
 			capacityRejections++
+			if belowDecodeFloor {
+				decodeFloorRejections++
+			}
 			continue
 		}
 
 		// Decode-floor SHED gate (opt-in, EIGENINFERENCE_DECODE_FLOOR_HARD_SHED).
-		// freeMemoryAdmits keys on KV memory, which a bandwidth-bound model (e.g.
-		// gemma-4 under load) never exhausts — so the preflight would count every
-		// provider as admissible even when none can decode at usable speed,
-		// over-admitting requests that then queue and time out. When enabled, a
-		// provider whose PROJECTED per-request decode TPS (with this request
-		// added) falls below the floor is counted as a capacity rejection, so an
-		// all-slow fleet yields candidateCount==0 / capacityRejections>0 and the
-		// caller sheds with a fast 429/Retry-After instead of admit-and-stall.
-		// Throughput-only — independent of the memory cap / free_for_load gates.
+		// A provider with headroom and free memory but projecting below the floor
+		// is shed on THROUGHPUT alone, so an all-slow fleet yields
+		// candidateCount==0 / capacityRejections>0 (all decodeFloorRejections) and
+		// the caller sheds with a fast 429/Retry-After instead of admit-and-stall.
+		// Independent of the memory cap / free_for_load gates.
 		//
-		// Tracked ALSO in decodeFloorRejections (a subset of capacityRejections)
-		// so the caller can tell a pure-throughput shed (every rejection here)
-		// from a transient concurrency/memory-full fleet that queue-before-shed
+		// decodeFloorRejections is a subset of capacityRejections so the caller
+		// can tell a pure-throughput shed (every rejection is below-floor) from a
+		// transient concurrency/memory-full-but-FAST fleet that queue-before-shed
 		// should still queue. Without that split, arming the shed flag would
 		// fast-429 a momentarily-full-but-fast fleet — a queue-before-shed
 		// regression.
-		if r.decodeFloorHardShed && r.decodeFloorTPS > 0 && snap.hasBackendCapacity {
-			if projectedPerRequestDecodeTPS(snap) < r.decodeFloorTPS {
-				capacityRejections++
-				decodeFloorRejections++
-				continue
-			}
+		if belowDecodeFloor {
+			capacityRejections++
+			decodeFloorRejections++
+			continue
 		}
 
 		candidateCount++

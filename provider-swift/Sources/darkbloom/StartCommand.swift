@@ -84,7 +84,10 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
+        // Pass the explicit --coordinator-url override (if any) into the
+        // snapshot loader so the catalog is fetched from the same coordinator
+        // the daemon will connect to.
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions, coordinatorURLOverride: coordinatorURL)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         if let idleTimeout {
@@ -125,20 +128,32 @@ struct Start: AsyncParsableCommand {
         config: ProviderConfig,
         hardware: HardwareInfo
     ) async throws {
-        guard snapshot.catalog != nil else {
-            printError("Cannot start: coordinator model catalog is unavailable.")
-            printError("hint: check your network connection and coordinator URL, or retry after the coordinator is reachable.")
-            throw ExitCode.failure
+        // `--local` is coordinator-less by design. If we have a catalog, filter
+        // against it (same behavior as daemon mode). If the catalog is
+        // unavailable, fall back to local model selection so airgapped/trusted
+        // use is still possible.
+        let catalog = snapshot.catalog
+        if catalog != nil {
+            try validateModelSelections(against: catalog, localModels: snapshot.models)
         }
-        try validateModelSelections(against: snapshot.catalog, localModels: snapshot.models)
 
-        let advertised = advertisedModels(
-            from: snapshot.models,
-            config: config,
-            catalog: snapshot.catalog,
-            modelOverrides: model,
-            includeDisabled: all
-        )
+        let advertised: [ModelInfo]
+        if let catalog {
+            advertised = advertisedModels(
+                from: snapshot.models,
+                config: config,
+                catalog: catalog,
+                modelOverrides: model,
+                includeDisabled: all
+            )
+        } else {
+            advertised = localAdvertisedModels(
+                from: snapshot.models,
+                config: config,
+                modelOverrides: model,
+                includeDisabled: all
+            )
+        }
 
         guard !advertised.isEmpty else {
             printError("No supported models selected.")
@@ -246,8 +261,17 @@ struct Start: AsyncParsableCommand {
         let effectiveOverrides = catalogFilteredOverrides(model, catalog: snapshot.catalog)
 
         let selectedModels: [ModelInfo]
-        if !effectiveOverrides.isEmpty {
-            selectedModels = advertisedModels(from: snapshot.models, config: config, catalog: snapshot.catalog, modelOverrides: effectiveOverrides)
+        let hadExplicitOverrides = !model.isEmpty
+        if hadExplicitOverrides {
+            // If the operator explicitly pinned models, keep that intent: an
+            // empty filtered override set means none of the pinned models are
+            // supported, so advertise nothing rather than falling through to
+            // --all or the default enabled set.
+            if effectiveOverrides.isEmpty {
+                selectedModels = []
+            } else {
+                selectedModels = advertisedModels(from: snapshot.models, config: config, catalog: snapshot.catalog, modelOverrides: effectiveOverrides)
+            }
         } else if all {
             selectedModels = catalogFilteredModels(snapshot.models, catalog: snapshot.catalog)
         } else {
@@ -352,8 +376,7 @@ struct Start: AsyncParsableCommand {
             runtimeHashes: runtimeHashes,
             modelHashes: modelHashes,
             modelHashFingerprints: modelHashFingerprints,
-            localEndpoint: localEndpointConfig,
-            catalog: snapshot.catalog
+            localEndpoint: localEndpointConfig
         )
 
         do {

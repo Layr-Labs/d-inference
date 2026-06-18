@@ -107,12 +107,12 @@ struct RuntimeSnapshot {
     let catalog: CatalogSnapshot?
 }
 
-func loadRuntimeSnapshot(configOptions: ConfigOptions) async throws -> RuntimeSnapshot {
+func loadRuntimeSnapshot(configOptions: ConfigOptions, coordinatorURLOverride: String? = nil) async throws -> RuntimeSnapshot {
     Darkbloom.ensureLogging()
-    return try await loadRuntimeSnapshot(configPath: configOptions.config)
+    return try await loadRuntimeSnapshot(configPath: configOptions.config, coordinatorURLOverride: coordinatorURLOverride)
 }
 
-func loadRuntimeSnapshot(configPath rawPath: String?) async throws -> RuntimeSnapshot {
+func loadRuntimeSnapshot(configPath rawPath: String?, coordinatorURLOverride: String? = nil) async throws -> RuntimeSnapshot {
     let configPath = try resolveConfigPath(rawPath)
     let configFileExists = FileManager.default.fileExists(atPath: configPath.path)
 
@@ -130,9 +130,12 @@ func loadRuntimeSnapshot(configPath rawPath: String?) async throws -> RuntimeSna
 
     let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
 
-    // Fetch the coordinator catalog. A cached snapshot is used as a fallback
-    // so offline commands can still distinguish supported models.
-    let catalog = try? await fetchCatalogSnapshot(coordinatorURL: config.coordinator.url)
+    // Fetch the coordinator catalog. Use the CLI-provided override if present
+    // so `--coordinator-url` changes the catalog source as well as the connect
+    // target. A cached snapshot is used as a fallback so offline commands can
+    // still distinguish supported models.
+    let catalogURL = coordinatorURLOverride ?? config.coordinator.url
+    let catalog = await fetchCatalogSnapshot(coordinatorURL: catalogURL)
 
     return RuntimeSnapshot(
         configPath: configPath,
@@ -336,6 +339,28 @@ func advertisedModels(
     }
     let enabled = Set(config.backend.enabledModels)
     return supported.filter { enabled.contains($0.id) }
+}
+
+/// Local/direct-mode variant of `advertisedModels` that bypasses the
+/// coordinator catalog. Used when `--local` is requested and the catalog is
+/// unavailable (offline/airgapped), so the user can still serve downloaded
+/// weights. `enabledModels` and explicit `--model` / `--all` flags are still
+/// honored.
+func localAdvertisedModels(
+    from models: [ModelInfo],
+    config: ProviderConfig,
+    modelOverrides: [String] = [],
+    includeDisabled: Bool = false
+) -> [ModelInfo] {
+    if !modelOverrides.isEmpty {
+        let byID = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0) })
+        return modelOverrides.compactMap { byID[$0] }
+    }
+    guard !includeDisabled, !config.backend.enabledModels.isEmpty else {
+        return models
+    }
+    let enabled = Set(config.backend.enabledModels)
+    return models.filter { enabled.contains($0.id) }
 }
 
 func attachWeightHashes(to models: [ModelInfo]) -> (

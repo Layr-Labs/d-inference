@@ -125,9 +125,6 @@ public struct ProviderLoopConfig: Sendable {
     /// endpoint off the SAME loaded models it serves to the coordinator
     /// (unified mode). nil = coordinator-only (the default).
     public let localEndpoint: LocalInferenceHTTPConfig?
-    /// Coordinator catalog snapshot captured at startup. Used to gate runtime
-    /// prefetch advertising so only supported builds are ever announced.
-    public let catalog: CatalogSnapshot?
 
     public init(
         coordinatorURL: String,
@@ -138,8 +135,7 @@ public struct ProviderLoopConfig: Sendable {
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
         modelHashFingerprints: [String: String] = [:],
-        localEndpoint: LocalInferenceHTTPConfig? = nil,
-        catalog: CatalogSnapshot? = nil
+        localEndpoint: LocalInferenceHTTPConfig? = nil
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
@@ -150,7 +146,6 @@ public struct ProviderLoopConfig: Sendable {
         self.modelHashes = modelHashes
         self.modelHashFingerprints = modelHashFingerprints
         self.localEndpoint = localEndpoint
-        self.catalog = catalog
     }
 }
 
@@ -1763,18 +1758,12 @@ public actor ProviderLoop {
             return
         }
 
-        // Refuse to advertise a build that is not in the coordinator catalog.
-        // The coordinator already rejects unknown builds in models_update, but
-        // dropping it here prevents the provider from raising its slot cap or
-        // performing a hard-swap for a build it should never serve.
-        if let catalog = loopConfig.catalog {
-            let catalogIDs = Set(catalog.models.map(\.id))
-            guard catalogIDs.contains(modelId) else {
-                desiredSwapDrop.removeValue(forKey: modelId)
-                logger.error("Prefetch verified \(modelId) but it is not in the coordinator catalog; not advertising")
-                return
-            }
-        }
+        // Note: we intentionally do NOT re-check the startup catalog here.
+        // `CatalogModelPrefetcher` already resolves desired builds against the
+        // live coordinator catalog before downloading, and the coordinator's
+        // `models_update` gate is the authoritative backstop. Gating on a stale
+        // startup snapshot would break live alias repoints / new build rollouts
+        // that happen while the provider is already connected.
 
         // Compute ModelInfo + weight hash off-actor (CPU/IO heavy for big
         // builds). The prefetcher already aggregate-verified the snapshot, so

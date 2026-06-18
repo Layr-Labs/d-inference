@@ -102,4 +102,90 @@ import ProviderCore
         )
         #expect(advertised.map({ $0.id }) == ["supported"])
     }
+
+    @Test func localAdvertisedModels_bypassesCatalogFilter() {
+        let local = [
+            makeModel(id: "supported"),
+            makeModel(id: "unsupported")
+        ]
+        let config = ProviderConfig.defaultForHardware(HardwareInfo(
+            machineModel: "Mac16,1",
+            chipName: "Apple M1",
+            chipFamily: .m1,
+            chipTier: .base,
+            memoryGb: 16,
+            memoryAvailableGb: 12,
+            cpuCores: CpuCores(total: 8, performance: 4, efficiency: 4),
+            gpuCores: 8,
+            memoryBandwidthGbs: 50
+        ))
+
+        let advertised = localAdvertisedModels(from: local, config: config)
+        #expect(advertised.map({ $0.id }) == ["supported", "unsupported"])
+    }
+
+    @Test func localAdvertisedModels_honorsEnabledModels() {
+        let local = [
+            makeModel(id: "enabled"),
+            makeModel(id: "disabled")
+        ]
+        var config = ProviderConfig.defaultForHardware(HardwareInfo(
+            machineModel: "Mac16,1",
+            chipName: "Apple M1",
+            chipFamily: .m1,
+            chipTier: .base,
+            memoryGb: 16,
+            memoryAvailableGb: 12,
+            cpuCores: CpuCores(total: 8, performance: 4, efficiency: 4),
+            gpuCores: 8,
+            memoryBandwidthGbs: 50
+        ))
+        config.backend.enabledModels = ["enabled"]
+
+        let advertised = localAdvertisedModels(from: local, config: config)
+        #expect(advertised.map({ $0.id }) == ["enabled"])
+    }
+
+    @Test func localAdvertisedModels_honorsModelOverrides() {
+        let local = [
+            makeModel(id: "a"),
+            makeModel(id: "b")
+        ]
+        let config = ProviderConfig.defaultForHardware(HardwareInfo(
+            machineModel: "Mac16,1",
+            chipName: "Apple M1",
+            chipFamily: .m1,
+            chipTier: .base,
+            memoryGb: 16,
+            memoryAvailableGb: 12,
+            cpuCores: CpuCores(total: 8, performance: 4, efficiency: 4),
+            gpuCores: 8,
+            memoryBandwidthGbs: 50
+        ))
+
+        let advertised = localAdvertisedModels(from: local, config: config, modelOverrides: ["b"])
+        #expect(advertised.map({ $0.id }) == ["b"])
+    }
+
+    @Test func localAdvertisedModels_allFlagIgnoresEnabledList() {
+        let local = [
+            makeModel(id: "enabled"),
+            makeModel(id: "disabled")
+        ]
+        var config = ProviderConfig.defaultForHardware(HardwareInfo(
+            machineModel: "Mac16,1",
+            chipName: "Apple M1",
+            chipFamily: .m1,
+            chipTier: .base,
+            memoryGb: 16,
+            memoryAvailableGb: 12,
+            cpuCores: CpuCores(total: 8, performance: 4, efficiency: 4),
+            gpuCores: 8,
+            memoryBandwidthGbs: 50
+        ))
+        config.backend.enabledModels = ["enabled"]
+
+        let advertised = localAdvertisedModels(from: local, config: config, includeDisabled: true)
+        #expect(advertised.map({ $0.id }) == ["enabled", "disabled"])
+    }
 }

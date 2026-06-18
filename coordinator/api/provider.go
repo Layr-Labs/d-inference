@@ -133,13 +133,20 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // filterRegistrationModels returns the subset of provider-reported models that
-// are in the coordinator catalog, plus a list of any dropped IDs. A nil catalog
-// (dev/test) disables the gate and keeps all models.
+// are in the coordinator catalog or are a previous/retired member of an active
+// alias lineage, plus a list of any dropped IDs. A nil catalog (dev/test)
+// disables the gate and keeps all models.
+//
+// Retired alias builds are intentionally kept: a provider that was offline
+// through the end of an alias rollout may only advertise a retired build.
+// DesiredModelsForProvider uses that retired lineage to recognize the provider
+// as part of the alias fleet and push the current desired build. Dropping the
+// retired build here would strand that provider with no desired_models update.
 func (s *Server) filterRegistrationModels(models []protocol.ModelInfo) ([]protocol.ModelInfo, []string) {
 	var filtered []protocol.ModelInfo
 	var dropped []string
 	for _, m := range models {
-		if s.registry.IsModelInCatalog(m.ID) {
+		if s.registry.IsModelInCatalog(m.ID) || s.registry.IsAliasLineageBuild(m.ID) {
 			filtered = append(filtered, m)
 		} else {
 			dropped = append(dropped, m.ID)

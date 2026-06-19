@@ -31,6 +31,12 @@ public actor GlobalKVCacheBudget {
     /// Below this, a flush frees too little to change an admission decision, so the
     /// heal is skipped — the case when active memory (not the pool) is what's full.
     private static let minReclaimableForHealBytes: UInt64 = 256 * 1024 * 1024
+    /// Rate-limit the self-heal flush to at most once per this interval. The flush
+    /// blocks on a GPU sync, so this bounds how often a flood of near-miss
+    /// admissions can chain GPU syncs on the actor and stall other reservations.
+    private var lastSelfHealAt: ContinuousClock.Instant?
+    private let selfHealMinInterval: Duration
+    private static let defaultSelfHealMinInterval: Duration = .seconds(1)
 
     public init(
         capFraction: Double? = nil,
@@ -40,6 +46,7 @@ public actor GlobalKVCacheBudget {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
+        self.selfHealMinInterval = Self.defaultSelfHealMinInterval
         // Fence async GPU completion before freeing buffers, matching the engine's
         // own reclaim paths (avoids the IOKit completeMemory race seen on M4).
         self.clearCache = {
@@ -61,11 +68,13 @@ public actor GlobalKVCacheBudget {
         activationReserveBytes: UInt64? = nil,
         configReserveBytes: UInt64 = 0,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot,
-        clearCache: @escaping @Sendable () -> Void = {}
+        clearCache: @escaping @Sendable () -> Void = {},
+        selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval
     ) {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
+        self.selfHealMinInterval = selfHealMinInterval
         self.memorySnapshot = memorySnapshot
         self.clearCache = clearCache
     }
@@ -158,13 +167,17 @@ public actor GlobalKVCacheBudget {
         return true
     }
 
-    /// One-shot reclaim for the admission self-heal. Returns true if it actually
-    /// flushed the pool (so the caller should resample). Skips the flush when the
-    /// reclaimable pool is already small — e.g. when active memory (not the pool)
-    /// is what's full, so a flush frees nothing — to avoid thrashing the pool (and
-    /// stalling on its GPU sync) on every rejected admission under sustained load.
+    /// One-shot, rate-limited reclaim for the admission self-heal. Returns true if
+    /// it actually flushed the pool (so the caller should resample). Two guards:
+    /// skip when the reclaimable pool is already small (a flush would free nothing,
+    /// e.g. when active memory is what's full), and skip when a flush ran within
+    /// `selfHealMinInterval` — the flush blocks on a GPU sync, so this bounds how
+    /// often a flood of near-miss admissions can chain syncs and stall the actor.
     private func selfHealClear() -> Bool {
         guard memorySnapshot().cache >= Self.minReclaimableForHealBytes else { return false }
+        let now = ContinuousClock.now
+        if let last = lastSelfHealAt, now - last < selfHealMinInterval { return false }
+        lastSelfHealAt = now
         clearCache()
         return true
     }

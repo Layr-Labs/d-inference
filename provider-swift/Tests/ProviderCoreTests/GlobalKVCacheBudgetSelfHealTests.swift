@@ -64,6 +64,25 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(memory.clearCount == 0)   // pool too small to be worth flushing
 }
 
+@Test func globalKVCacheBudgetRateLimitsRepeatedSelfHealFlushes() async {
+    // A large pool that the fake clear doesn't shrink (cacheAfterClear == cache,
+    // simulating immediate refill), so both near-miss admissions pass the pool-size
+    // gate. With a long interval injected, the second flush is rate-limited — the
+    // blocking GPU sync runs at most once per window, not once per admission.
+    let memory = MutableMemorySnapshot(
+        total: 8 * gib, active: 5 * gib, cache: 2 * gib, cacheAfterClear: 2 * gib)
+    let budget = GlobalKVCacheBudget(
+        capFraction: 1.0,
+        activationReserveBytes: 0,
+        memorySnapshot: { memory.snapshot() },
+        clearCache: { memory.clearCache() },
+        selfHealMinInterval: .seconds(3600))
+
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: 1, tokenCount: Int(2 * gib))))
+    #expect(!(await budget.reserve(requestID: "b", kvBytesPerToken: 1, tokenCount: Int(2 * gib))))
+    #expect(memory.clearCount == 1)   // second flush rate-limited within the window
+}
+
 /// Lock-guarded so @Sendable closures can mutate fake MLX cache state safely.
 private final class MutableMemorySnapshot: @unchecked Sendable {
     private let lock = NSLock()

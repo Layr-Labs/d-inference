@@ -655,6 +655,45 @@ func (p *Provider) SetCodeAttested(v bool) {
 	p.CodeAttested = v
 }
 
+// CodeIdentityState is the live code-identity snapshot a reuse decision evaluates.
+// APNsDeviceToken/Version can rotate concurrently (maybeRearmCodeAttest), so the
+// decision must use these, not values captured earlier.
+type CodeIdentityState struct {
+	APNsDeviceToken        string
+	Version                string
+	SEPublicKey            string
+	AttestationValid       bool
+	RuntimeVerified        bool
+	RuntimeManifestChecked bool
+	ChallengeVerifiedSIP   bool
+}
+
+// GrantCodeAttestedIf runs `decide` against the live state and sets
+// CodeAttested=true iff it returns true — atomically under the provider lock, so a
+// concurrent token rotation can't interleave between the decision and the grant
+// (closes the rotation TOCTOU). `decide` must not take this provider's lock; it
+// may take others (e.g. the throttle) — lock order is always provider → throttle.
+func (p *Provider) GrantCodeAttestedIf(decide func(CodeIdentityState) bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	st := CodeIdentityState{
+		APNsDeviceToken:        p.APNsDeviceToken,
+		Version:                p.Version,
+		AttestationValid:       p.AttestationResult != nil && p.AttestationResult.Valid,
+		RuntimeVerified:        p.RuntimeVerified,
+		RuntimeManifestChecked: p.RuntimeManifestChecked,
+		ChallengeVerifiedSIP:   p.ChallengeVerifiedSIP,
+	}
+	if p.AttestationResult != nil {
+		st.SEPublicKey = p.AttestationResult.PublicKey
+	}
+	if !decide(st) {
+		return false
+	}
+	p.CodeAttested = true
+	return true
+}
+
 // GetCodeAttested reports whether this connection passed code-identity
 // attestation (thread-safe).
 func (p *Provider) GetCodeAttested() bool {

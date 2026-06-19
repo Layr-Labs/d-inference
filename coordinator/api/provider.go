@@ -506,6 +506,61 @@ func (s *Server) codeAttestMetric(outcome string) {
 // Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
 // GUI session) can never attest, so the loop exits immediately — they are derouted
 // once enforcement begins, the intended "everyone must update" outcome.
+// tryCrossVersionReuse rides a recent same-device, same-token attestation across a
+// binary VERSION change so a healthy update isn't forced into a fresh APNs round-
+// trip (which would deroute the provider for the whole re-attest window). Reuse
+// fires only behind ALL fences: valid registration attestation, runtime + manifest
+// verified, SIP-verified challenge, a non-empty version at/above MIN_PROVIDER_VERSION,
+// and the same non-empty APNs token. The SE key + token alone are too weak
+// (NodeKeyPair rotates per startup), so the fences are what prove the current
+// binary is legitimate. Decision + grant run atomically via GrantCodeAttestedIf
+// against the LIVE state, so a concurrent token rotation can't slip a stale-token
+// proof past the gate. Returns true (and drains) when reuse fired.
+func (s *Server) tryCrossVersionReuse(providerID string, provider *registry.Provider) bool {
+	// blockedBy names the first fence that prevented reuse, for forensic debugging
+	// of a provider stuck re-challenging instead of reusing (set inside the locked
+	// decision; read only after it returns).
+	blockedBy := ""
+	granted := provider.GrantCodeAttestedIf(func(st registry.CodeIdentityState) bool {
+		// An empty version never satisfies a configured floor (version is optional
+		// on the wire); only treat the floor as cleared when there is no floor.
+		aboveMinVersion := s.minProviderVersion == "" ||
+			(st.Version != "" && !semverLess(st.Version, s.minProviderVersion))
+		switch {
+		case !st.AttestationValid:
+			blockedBy = "attestation_invalid"
+		case !st.RuntimeVerified:
+			blockedBy = "runtime_unverified"
+		case !st.RuntimeManifestChecked:
+			blockedBy = "runtime_manifest_unchecked"
+		case !st.ChallengeVerifiedSIP:
+			blockedBy = "sip_challenge_pending" // armed concurrently; the loop re-checks
+		case !aboveMinVersion:
+			blockedBy = "below_min_version"
+		default:
+			// reuseAttestationCrossVersion takes the throttle lock; the lock order is
+			// always provider → throttle (throttle methods never touch a provider),
+			// so calling it from inside the provider-locked decision is deadlock-safe.
+			if !s.codeAttestThrottle.reuseAttestationCrossVersion(st.SEPublicKey, st.APNsDeviceToken) {
+				blockedBy = "no_fresh_same_token_proof"
+				return false
+			}
+			return true
+		}
+		return false
+	})
+	if !granted {
+		s.logger.Debug("code-attest: cross-version reuse not taken; will challenge/poll",
+			"provider_id", providerID, "blocked_by", blockedBy)
+		return false
+	}
+	s.registry.DrainQueuedRequestsForProvider(provider)
+	s.codeAttestMetric("reused_cross_version")
+	s.logger.Info("code-attest: reused a recent attestation across a version change (fenced: attestation+runtime+SIP+min-version verified; no push)",
+		"provider_id", providerID)
+	return true
+}
+
 func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider *registry.Provider) {
 	if s.codeAttestor == nil || provider == nil {
 		return
@@ -538,6 +593,13 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		return
 	}
 
+	// Cross-version reuse (every update bumps the version, missing the same-version
+	// reuse above). Try up front; the loop also re-checks since the fences arm
+	// concurrently on a fresh connection.
+	if s.tryCrossVersionReuse(providerID, provider) {
+		return
+	}
+
 	// Alert delivery is not background-throttled, so it may retry on a far shorter
 	// push budget than background (Fix 3). Detected via the attestor seam.
 	alertMode := false
@@ -553,6 +615,12 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		}
 		if provider.ChallengeShouldStop() {
 			return // hard (non-recoverable) untrust — stop challenging
+		}
+
+		// Re-check each iteration: the fences arm concurrently, so a connection that
+		// missed up front may reuse now instead of burning a push.
+		if s.tryCrossVersionReuse(providerID, provider) {
+			return
 		}
 
 		// Push when the per-device budget permits. A budget cooldown elapsing

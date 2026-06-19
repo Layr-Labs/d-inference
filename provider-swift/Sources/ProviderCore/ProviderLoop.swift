@@ -805,20 +805,26 @@ public actor ProviderLoop {
         isShuttingDown = true
         if drainInflight {
             logger.info("Graceful shutdown requested; draining active inference before closing coordinator connection")
-            // Cancel background work first, but keep the coordinator socket open
-            // so in-flight responses can still be delivered while we drain.
-            await cancelBackgroundWorkAndPreloads()
+            // Cancel background work + preloads first, but keep the coordinator
+            // socket open so in-flight responses can still be delivered while we
+            // drain. `sparingInflightLoads: true` lets a request that was still
+            // cold-loading when shutdown began finish its load (only background
+            // preloads are cancelled), so it can drain instead of erroring.
+            await cancelBackgroundWorkAndPreloads(sparingInflightLoads: true)
             let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
             if !drained {
                 logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
                 await cancelAllInflight()
+                // The drain window is over: abort any loads that were spared above
+                // but never finished, so suspended load tasks unwind.
+                cancelLoadWaiters()
             }
         } else {
             // The event stream ended without a controlled drain (e.g. coordinator
             // disconnect): the connection is already gone, so cancel in-flight
             // work rather than waiting on responses that can't be delivered.
             await cancelAllInflight()
-            await cancelBackgroundWorkAndPreloads()
+            await cancelBackgroundWorkAndPreloads(sparingInflightLoads: false)
         }
 
         // Drain (if any) is complete: now it is safe to close the transport and
@@ -840,8 +846,10 @@ public actor ProviderLoop {
 
     /// Cancel optional background tasks and prefetch/preload work. Idempotent so
     /// it can be called from both the drain and non-drain branches of
-    /// `runShutdownSequence`.
-    private func cancelBackgroundWorkAndPreloads() async {
+    /// `runShutdownSequence`. `sparingInflightLoads` is forwarded to
+    /// `cancelLoadWaiters`: during a graceful drain we spare loads backing an
+    /// accepted request so they can finish.
+    private func cancelBackgroundWorkAndPreloads(sparingInflightLoads: Bool) async {
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
@@ -862,7 +870,7 @@ public actor ProviderLoop {
         }
         let preloads = Array(preloadTasks.values)
         for task in preloads { task.cancel() }
-        cancelLoadWaiters()
+        cancelLoadWaiters(sparingInflightRequests: sparingInflightLoads)
         let preloadsFinished = await waitForPreloads(preloads, timeout: Self.preloadShutdownTimeout)
         if !preloadsFinished {
             logger.warning("Timed out waiting for coordinator-driven preloads to cancel during shutdown")
@@ -1187,8 +1195,20 @@ public actor ProviderLoop {
         // request consuming the last slot or free memory between accept and
         // load). Map the failure to a status code so capacity errors reroute
         // (503) and missing models 404 instead of always counting as a fault.
+        //
+        // Run the load in a DETACHED task. `handleInferenceRequest` is awaited
+        // inline from the run loop, so it inherits the run task — which a stop/
+        // restart cancels. Detaching means a graceful drain lets this
+        // already-accepted request (it has `inference_accepted` + a
+        // `requestToModel` entry) finish its cold load instead of aborting it
+        // via `Task.checkCancellation()`. The detached task is not cancelled, so
+        // those gates (which exist to abort *background preloads*) don't fire for
+        // it; shutdown still aborts it only if no in-flight request needs the
+        // model (`shutdownShouldAbortLoad`). Awaiting `.value` from a cancelled
+        // run task does not throw — it waits for the load to finish.
+        let loadSelf = self
         do {
-            try await ensureModelLoaded(modelId: modelId)
+            try await Task.detached { try await loadSelf.ensureModelLoaded(modelId: modelId) }.value
         } catch {
             if requestToModel.removeValue(forKey: requestId) != nil {
                 powerAssertion.release()
@@ -2189,9 +2209,22 @@ public actor ProviderLoop {
         }
     }
 
-    private func cancelLoadWaiters() {
-        for waiters in loadingWaiters.values {
-            for waiter in waiters { waiter.resume(throwing: CancellationError()) }
+    /// Resume everyone suspended in the load path. With
+    /// `sparingInflightRequests: true` (graceful drain), waiters whose model
+    /// still backs an accepted request are resumed WITHOUT an error so their
+    /// load keeps going and the request can drain — only background-preload
+    /// waiters are cancelled. Gate waiters are always resumed (no error); each
+    /// resumed task re-checks `Task.isCancelled` / `shutdownShouldAbortLoad`, so
+    /// preloads still abort while spared in-flight loads continue. The final
+    /// teardown / post-drain-timeout path passes `false` to abort everything.
+    private func cancelLoadWaiters(sparingInflightRequests: Bool = false) {
+        let inflightModels = sparingInflightRequests ? Set(requestToModel.values) : Set<String>()
+        for (modelId, waiters) in loadingWaiters {
+            if inflightModels.contains(modelId) {
+                for waiter in waiters { waiter.resume() }
+            } else {
+                for waiter in waiters { waiter.resume(throwing: CancellationError()) }
+            }
         }
         loadingWaiters.removeAll()
         releaseLoadGateWaiters()
@@ -2606,7 +2639,7 @@ public actor ProviderLoop {
             return (fingerprint, WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId), false)
         }.value
         try Task.checkCancellation()
-        if isShuttingDown { throw CancellationError() }
+        if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
 
         // Record the fingerprint ONLY when we have a hash that corresponds to it
         // (fresh or skip-confirmed). Caching it after a FAILED re-hash would make
@@ -2643,14 +2676,30 @@ public actor ProviderLoop {
         )
     }
 
+    /// During a graceful drain we still finish model loads that an
+    /// already-accepted coordinator request is waiting on — its `modelId` is
+    /// present in `requestToModel` (set, with `inference_accepted` already sent,
+    /// in the same actor-atomic step before the load begins). Only pure
+    /// background preloads (no in-flight request for the model) abort early. This
+    /// lets `darkbloom stop`/`restart` drain a request that was still
+    /// cold-loading when shutdown began instead of aborting it with an error.
+    ///
+    /// Local-endpoint requests are intentionally NOT spared: new local work is
+    /// already refused on shutdown (`throwIfRefusingNewLocalWork`) both before
+    /// and after the load, so sparing the load would only load a model the
+    /// request is about to be rejected for.
+    private func shutdownShouldAbortLoad(_ modelId: String) -> Bool {
+        isShuttingDown && !requestToModel.values.contains(modelId)
+    }
+
     private func ensureModelLoaded(modelId: String) async throws {
-        if isShuttingDown {
+        if shutdownShouldAbortLoad(modelId) {
             throw CancellationError()
         }
 
         while modelsUnloading.contains(modelId) {
             await waitForModelUnload(modelId)
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
         }
 
         if modelSlots[modelId] != nil {
@@ -2662,10 +2711,10 @@ public actor ProviderLoop {
                 loadingWaiters[modelId, default: []].append(cont)
             }
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             while modelsUnloading.contains(modelId) {
                 await waitForModelUnload(modelId)
-                if isShuttingDown { throw CancellationError() }
+                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             }
             if modelSlots[modelId] != nil { return }
             try await ensureModelLoaded(modelId: modelId)
@@ -2692,10 +2741,10 @@ public actor ProviderLoop {
             // Honor cancellation (e.g. shutdown cancelled this preload task
             // while it was suspended at the gate).
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             while modelsUnloading.contains(modelId) {
                 await waitForModelUnload(modelId)
-                if isShuttingDown { throw CancellationError() }
+                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             }
             if modelSlots[modelId] != nil { return }
         }
@@ -2726,7 +2775,7 @@ public actor ProviderLoop {
         modelsLoading.insert(modelId)
         do {
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
 
             // Load gate: require room for the WEIGHTS plus headroom for ONE
             // request, not a full-concurrency multiple. Concurrency beyond one
@@ -2751,7 +2800,7 @@ public actor ProviderLoop {
                 throw InferenceError.modelLoadFailed(message)
             }
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
 
             // Q6: reserve this load's weight footprint in the shared KV budget so
             // a concurrent KV reservation on an already-loaded model can't grant
@@ -2775,11 +2824,11 @@ public actor ProviderLoop {
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
                 try Task.checkCancellation()
-                if isShuttingDown { throw CancellationError() }
+                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             }
             let container = try await loadModelContainer(from: modelPath)
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
 
             // TOCTOU guard: the hash above was computed BEFORE loadModelContainer
             // read the weights. If a re-download landed in that window,
@@ -2815,7 +2864,7 @@ public actor ProviderLoop {
             // concurrent KV reservations see the weights from here on. (Also
             // released in catch for the error paths above.)
             await kvBudget.release(requestID: pendingLoadID)
-            if isShuttingDown || Task.isCancelled {
+            if shutdownShouldAbortLoad(modelId) || Task.isCancelled {
                 await scheduler.unloadModel()
                 MLX.Memory.clearCache()
                 throw CancellationError()

@@ -156,22 +156,23 @@ public actor GlobalKVCacheBudget {
     private func commit(requestID: String, bytes: UInt64) -> Bool {
         var available = availableReservationBytes()
         if bytes > available {
-            if selfHealClear(toCover: bytes - available) { available = availableReservationBytes() }
+            if reclaimForShortfall(bytes - available) { available = availableReservationBytes() }
             if bytes > available { return false }
         }
         reservations[requestID] = bytes
         return true
     }
 
-    /// One-shot, rate-limited reclaim for the admission self-heal. Returns true if
-    /// it actually flushed the pool (so the caller should resample). Two guards:
-    /// skip when the reclaimable pool can't cover `shortfall` (the bytes the request
-    /// is short by) — a flush would still leave it rejected, e.g. when active memory
-    /// rather than the pool is what's full; and skip when a flush ran within
-    /// `selfHealMinInterval` — the flush blocks on a GPU sync, so this bounds how
-    /// often a flood of near-miss admissions can chain syncs and stall the actor.
-    private func selfHealClear(toCover shortfall: UInt64) -> Bool {
-        guard memorySnapshot().cache >= shortfall else { return false }
+    /// Rate-limited pool reclaim for the admission self-heal, shared by the live KV
+    /// reservation gate (`commit`) and the scheduler's token-budget gate. Returns
+    /// true if it actually flushed the pool (so the caller should resample). Two
+    /// guards: skip when the reclaimable pool can't cover `shortfall` (the bytes the
+    /// request is short by — a flush would still leave it rejected, e.g. when active
+    /// memory rather than the pool is what's full); and skip when a flush ran within
+    /// `selfHealMinInterval` (the flush blocks on a GPU sync, so this bounds how
+    /// often a flood of near-miss admissions can chain syncs and stall the actor).
+    public func reclaimForShortfall(_ shortfall: UInt64) -> Bool {
+        guard shortfall > 0, memorySnapshot().cache >= shortfall else { return false }
         let now = ContinuousClock.now
         if let last = lastSelfHealAt, now - last < selfHealMinInterval { return false }
         lastSelfHealAt = now

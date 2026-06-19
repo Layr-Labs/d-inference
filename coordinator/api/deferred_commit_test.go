@@ -238,7 +238,7 @@ func TestStreamingFirstChunksEmittedInOrder(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{roleChunk, "data: [DONE]", contentChunk})
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{roleChunk, "data: [DONE]", contentChunk}, false)
 
 	body := rec.Body.String()
 	roleIdx := strings.Index(body, `"role":"assistant"`)

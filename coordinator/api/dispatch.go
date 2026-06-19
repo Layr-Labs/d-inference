@@ -110,14 +110,18 @@ type dispatchState struct {
 	refundReservation func()
 
 	// ---- mutable per-request state ----
-	provider          *registry.Provider
-	pr                *registry.PendingRequest
-	requestID         string
-	firstChunk        string
-	heldChunks        []string
-	lastErr           string
-	lastErrCode       int
-	committed         bool
+	provider    *registry.Provider
+	pr          *registry.PendingRequest
+	requestID   string
+	firstChunk  string
+	heldChunks  []string
+	lastErr     string
+	lastErrCode int
+	committed   bool
+	// keepalive emits SSE keepalive comments during a long prefill once the
+	// request has been dispatched, committing HTTP 200 early so the consumer
+	// connection does not time out. nil when disabled or non-streaming.
+	keepalive         *prefillKeepaliver
 	lastFailedVersion string
 	excludeProviders  map[string]struct{}
 
@@ -1790,6 +1794,10 @@ func (d *dispatchState) run() {
 	s := d.s
 	w, r := d.w, d.r
 
+	// Stop any prefill keepalive goroutine on every exit path. Idempotent and
+	// nil-safe (no-op when keepalives are disabled or the writer already took over).
+	defer func() { d.keepalive.takeOver() }()
+
 	for attempt := range maxDispatchAttempts {
 		d.attempt = attempt
 		// Each attempt holds preamble chunks from its own provider only.
@@ -1812,6 +1820,16 @@ func (d *dispatchState) run() {
 		// so it is never written here, where it would race handleComplete.
 		if d.timing.RoutedAt.IsZero() {
 			d.timing.RoutedAt = time.Now()
+		}
+
+		// Now that the request is dispatched to a provider, start prefill SSE
+		// keepalives for streaming requests so a long prefill does not leave the
+		// consumer connection idle (OpenRouter's fetch timeout would otherwise fire
+		// and fail us over). Started once; it persists across retries/speculation
+		// and is taken over by the response writer when the first chunk commits.
+		if d.stream && d.keepalive == nil && s.prefillKeepaliveInterval > 0 {
+			d.keepalive = s.newPrefillKeepaliver(w, d.requestID)
+			d.keepalive.start(r.Context())
 		}
 		s.ddIncr("routing.decisions", []string{"model:" + d.model, "outcome:selected"})
 		s.ddIncr("routing.provider_selected", []string{"provider_id:" + d.provider.ID, "model:" + d.model})
@@ -1853,7 +1871,12 @@ func (d *dispatchState) run() {
 exhausted:
 	if !d.committed {
 		d.refundReservation()
+		// Stop any prefill keepalive and learn whether it already committed HTTP
+		// 200. Once committed, a status-coded error can no longer be sent — the
+		// failure goes out in-band as an SSE error event instead.
+		keepaliveCommitted := d.keepalive.takeOver()
 		statusCode := d.lastErrCode
+		reason := "dispatch_exhausted"
 		if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
@@ -1863,6 +1886,16 @@ exhausted:
 			} else {
 				statusCode = http.StatusServiceUnavailable
 			}
+		} else if statusCode >= 500 && isUnservableProviderError(d.lastErr) {
+			// Backstop (always on): the provider admitted the request then
+			// rejected it because (prompt+max_tokens) overflowed its token budget /
+			// KV / context — a capacity condition, not a server fault. Return an
+			// uptime-neutral 429 (OpenRouter fails over) instead of the raw 5xx,
+			// which would count against our uptime. Fires only on a real provider
+			// rejection, so it cannot over-reject servable traffic.
+			statusCode = http.StatusTooManyRequests
+			reason = "unservable_token_budget"
+			s.ddIncr("routing.unservable_reclassified", []string{"model:" + d.model})
 		}
 		s.emitRequest(r.Context(), protocol.SeverityError, d.requestID,
 			fmt.Sprintf("inference failed after %d attempt(s)", maxDispatchAttempts),
@@ -1876,12 +1909,33 @@ exhausted:
 			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
 		}
 		s.ddIncr("inference.dispatches", []string{"status:failure"})
+		// OR-uptime outcome for a dispatched-but-failed request (exactly once;
+		// pre-dispatch rejections emit from recordRejection instead). A failure
+		// after a keepalive committed HTTP 200 is a mid-stream error to the client.
+		if keepaliveCommitted {
+			s.recordRequestOutcome(d.model, orClassMidStream)
+		} else {
+			s.recordRequestOutcome(d.model, classifyOutcomeByCode(statusCode))
+		}
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			s.recordRejection(d.rejectionInfo("dispatch", "dispatch_exhausted", statusCode, retryAfter*1000))
+			s.recordRejection(d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000))
 		} else {
-			s.recordRejection(d.rejectionInfo("dispatch", "dispatch_exhausted", statusCode, 0))
+			s.recordRejection(d.rejectionInfo("dispatch", reason, statusCode, 0))
+		}
+		if keepaliveCommitted {
+			// HTTP 200 was already sent by a prefill keepalive; the status code is
+			// frozen, so surface the terminal failure in-band as an SSE error event.
+			if statusCode == http.StatusTooManyRequests {
+				writeSSEErrorEvent(w, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers at capacity after %d attempt(s): %s", maxDispatchAttempts, d.lastErr),
+					withCode("rate_limit_exceeded")))
+			} else {
+				writeSSEErrorEvent(w, errorResponse("provider_error",
+					fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, d.lastErr)))
+			}
+			return
 		}
 		if statusCode == http.StatusTooManyRequests {
 			writeJSON(w, statusCode, errorResponse("rate_limit_exceeded",
@@ -1897,6 +1951,12 @@ exhausted:
 		s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "success"})
 	}
 	s.ddIncr("inference.dispatches", []string{"status:success"})
+	// OR-uptime outcome for a committed request (the consumer got content).
+	// Commit-time approximation — a later post-commit mid-stream failure
+	// is counted here as success; /v1/admin/uptime is the exact, post-commit-aware
+	// view. Emitted exactly once per dispatched request (disjoint from the
+	// exhausted branch above and from pre-dispatch rejections).
+	s.recordRequestOutcome(d.model, orClassSuccess)
 
 	d.writeCommittedResponse()
 }
@@ -1948,6 +2008,13 @@ func (d *dispatchState) writeCommittedResponse() {
 	s := d.s
 	w, r := d.w, d.r
 	provider, pr, requestID := d.provider, d.pr, d.requestID
+
+	// Stop any prefill keepalive FIRST, before touching the response-header map
+	// below: the keepalive goroutine writes headers via writeSSEResponseHeader, so
+	// taking over here guarantees this goroutine is the sole writer (no concurrent
+	// map write). headerWritten reports whether a keepalive already committed the
+	// SSE 200, in which case the streaming writer skips re-writing it.
+	headerWritten := d.keepalive.takeOver()
 
 	// Record the provider responsiveness sample here, in the goroutine that OWNS
 	// pr.Timing. handleComplete runs in the provider read-loop goroutine and could
@@ -2084,7 +2151,9 @@ func (d *dispatchState) writeCommittedResponse() {
 		firstChunks = append(firstChunks, d.firstChunk)
 	}
 	if d.stream {
-		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
+		// headerWritten (from the keepalive takeOver at the top) tells the writer
+		// to skip re-committing the SSE 200 if a keepalive already did.
+		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks, headerWritten)
 	} else {
 		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 	}

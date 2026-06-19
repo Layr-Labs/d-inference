@@ -380,6 +380,36 @@ func main() {
 	srv.SetMinDecodeTPS(minDecodeTPS)
 	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
+	// Smart early-429 admission gate. OFF by default (behavior-neutral).
+	// When enabled, a request whose (prompt+max_tokens) cannot fit the model
+	// context window or any provider's structural token budget is rejected with an
+	// uptime-neutral 429 at preflight instead of being admitted and 5xx'ing on the
+	// provider. The always-on dispatch-exhausted reclassification of a provider
+	// token-budget 5xx → 429 is independent of this flag.
+	if v := os.Getenv("EIGENINFERENCE_SERVABILITY_GATE"); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil && on {
+			srv.SetServabilityGate(true)
+			logger.Info("smart servability gate ENABLED via EIGENINFERENCE_SERVABILITY_GATE (unservable long prompts → early 429)")
+		} else if err != nil {
+			logger.Warn("invalid EIGENINFERENCE_SERVABILITY_GATE; gate stays off", "value", v)
+		}
+	}
+
+	// SSE keepalives during long prefill. OFF by default (0 disables;
+	// behavior-neutral — deferred-commit / invisible-failover preserved). Set a Go
+	// duration (e.g. 5s): a STREAMING request that has been dispatched but not yet
+	// produced its first content chunk commits HTTP 200 and emits ": keepalive"
+	// comments every interval so OpenRouter's fetch timeout does not fire and fail
+	// us over mid-prefill.
+	if v := os.Getenv("EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			srv.SetPrefillKeepaliveInterval(d)
+			logger.Info("prefill SSE keepalives ENABLED via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL", "interval", d.String())
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL; keepalives stay off (want a Go duration like 5s)", "value", v)
+		}
+	}
+
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from
 	// routing (but not disconnected) and receive feedback about mismatches.

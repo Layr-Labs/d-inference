@@ -1728,6 +1728,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Inject model-specific defaults from the registry: reasoning_parser
 	// and max_tokens bound. Single DB lookup (cached for platform prices).
 	maxOutputBound := defaultMaxOutputTokens
+	// modelMaxContext is the model's max context window (0 = unknown), used by the
+	// servability gate. Lifted out of the record block so it is in scope at the
+	// preflight below.
+	modelMaxContext := 0
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		// Reasoning parser from runtime_parameters.
 		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
@@ -1743,6 +1747,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if rec.MaxOutputLength > 0 {
 			maxOutputBound = rec.MaxOutputLength
 		}
+		modelMaxContext = rec.MaxContextLength
 	}
 
 	// Bound the generation so the pre-flight reservation covers it. If the
@@ -1920,6 +1925,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// metrics. Self-route skips this fleet-wide gate — it queues on the
 		// owner's machine instead (handled below).
 		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
+		// Smart early-429 for structurally-unservable long prompts
+		// (prompt+max_tokens beyond the model context window or any provider's
+		// token budget). Gated (default off) and fail-open. Runs before the
+		// capacity/queue ladder so an unservable request is rejected with an
+		// uptime-neutral 429 (OpenRouter fails over) instead of being admitted
+		// and 5xx'ing on the provider.
+		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
+			return
+		}
 		if candidateCount == 0 && capacityRejections > 0 {
 			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
@@ -2257,9 +2271,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // Any firstChunks (held preamble + first content chunk) are written in order
 // before reading further chunks from the channel. This allows the dispatch
 // loop to "peek" at chunks for retry decisions without losing them.
-func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
+func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string, headerWritten bool) {
 	if pr.IsResponsesAPI {
-		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
+		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunks, headerWritten)
 		return
 	}
 
@@ -2269,16 +2283,12 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	// X-Request-ID is set by the logging middleware to the trace ID. The
-	// internal pr.RequestID is the per-attempt provider job UUID and may
-	// change across retries — exposing it as X-Request-ID would diverge
-	// from the access log. Surface the provider job UUID under its own
-	// header for callers who need to correlate to provider-side logs.
-	w.Header().Set("X-Inference-Job-ID", pr.RequestID)
-	w.WriteHeader(http.StatusOK)
+	// When a prefill keepalive already committed the SSE 200 header, skip the
+	// header write (a second WriteHeader would be superfluous) and stream straight
+	// into the held first chunks; otherwise write it now.
+	if !headerWritten {
+		writeSSEResponseHeader(w, pr.RequestID)
+	}
 	flusher.Flush()
 
 	// Detect Responses API format to skip appending chat-completions-style
@@ -2510,18 +2520,17 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	}
 }
 
-func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
+func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string, headerWritten bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Inference-Job-ID", pr.RequestID)
-	w.WriteHeader(http.StatusOK)
+	// Skip the header write when a prefill keepalive already committed the SSE 200.
+	if !headerWritten {
+		writeSSEResponseHeader(w, pr.RequestID)
+	}
 
 	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
 	createdAt := time.Now().Unix()
@@ -4609,8 +4618,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// max_output_tokens, which is Responses API only). Inject a default if
 	// unset so the pre-flight reservation bounds the generation.
 	genericMaxOutput := defaultMaxOutputTokens
-	if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec.MaxOutputLength > 0 {
-		genericMaxOutput = rec.MaxOutputLength
+	modelMaxContext := 0
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		if rec.MaxOutputLength > 0 {
+			genericMaxOutput = rec.MaxOutputLength
+		}
+		modelMaxContext = rec.MaxContextLength
 	}
 	ensureMaxTokensBound(parsed, false, genericMaxOutput)
 
@@ -4743,6 +4756,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
 		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
+		// Smart early-429 for structurally-unservable long prompts
+		// (mirrors handleChatCompletions). Gated (default off), fail-open.
+		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
+			return
+		}
 		if candidateCount == 0 && capacityRejections > 0 {
 			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
@@ -5496,7 +5514,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		firstChunks = []string{firstChunk}
 	}
 	if stream {
-		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
+		// The generic (/v1/completions, /v1/messages) path does not run prefill
+		// keepalives, so the SSE header has not been written yet.
+		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks, false)
 	} else {
 		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 	}

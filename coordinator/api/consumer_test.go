@@ -1802,7 +1802,7 @@ func TestStreamingChatReasoningTokensInUsage(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"reasoning_tokens":8`) {
@@ -1843,7 +1843,7 @@ func TestStreamingChatUsageOnlyFirstChunk(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{firstChunk})
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{firstChunk}, false)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"reasoning_tokens":8`) {
@@ -1886,7 +1886,7 @@ func TestStreamingChatSingleDoneSignatureBeforeIt(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
 
 	body := rec.Body.String()
 	if got := strings.Count(body, "data: [DONE]"); got != 1 {
@@ -1946,7 +1946,7 @@ func TestStreamingChatSignatureRidesUsageChunk(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
 
 	body := rec.Body.String()
 	if got := strings.Count(body, "data: [DONE]"); got != 1 {

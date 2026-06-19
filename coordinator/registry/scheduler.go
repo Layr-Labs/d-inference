@@ -95,8 +95,14 @@ type routingSnapshot struct {
 	activeTokenBudgetUsed int64
 	activeTokenBudgetMax  int64
 	queuedTokenBudget     int64
-	fleetMedianTPS        float64
-	hasBackendCapacity    bool // provider reports BackendCapacity; TTFT estimates are reliable
+	// kvBytesPerToken is the provider-reported per-token KV-cache cost (bytes)
+	// for THIS model's slot (BackendSlotCapacity.KVBytesPerToken). 0 = unreported
+	// (callers fall back to the kvCacheBytesPerToken default). Used by the
+	// servability predictor to estimate a cold provider's post-load token budget
+	// the same way the provider does, instead of the fixed default.
+	kvBytesPerToken    int64
+	fleetMedianTPS     float64
+	hasBackendCapacity bool // provider reports BackendCapacity; TTFT estimates are reliable
 }
 
 type routingCandidate struct {
@@ -802,6 +808,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 			snap.queuedTokenBudget = slot.QueuedTokenBudget
+			snap.kvBytesPerToken = slot.KVBytesPerToken
 			break
 		}
 	}
@@ -1557,6 +1564,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 				snap.queuedTokenBudget = slot.QueuedTokenBudget
 				snap.maxTokensPotential = slot.MaxTokensPotential
+				snap.kvBytesPerToken = slot.KVBytesPerToken
 				break
 			}
 		}

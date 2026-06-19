@@ -37,38 +37,33 @@ func drainRunningProvider(
 ) async -> Bool {
     guard LaunchAgent.isAnySupportedLabelLoaded() else { return false }
 
+    // Authoritative drain target: the PID launchd reports for the loaded
+    // service. This ties the drain to the launchd-managed daemon, so a
+    // standalone `start --local` server — which also writes the shared
+    // `~/.darkbloom/provider.pid` lock file — is never the one we signal on
+    // `stop`/`restart`/replacement `start`.
+    guard let pid = LaunchAgent.loadedServicePID(), pid > 0, ProcessLifecycle.processIsAlive(pid) else {
+        // The job is loaded but launchd has no live PID for it (e.g. installed
+        // but not yet kickstarted). Fall back to the launchd-level path.
+        return false
+    }
+
+    // Read the daemon state for the user-facing in-flight count. If the freshest
+    // state describes a *different* process than the one launchd is running, the
+    // state file is stale/foreign — don't risk a confusing message, but still
+    // drain launchd's actual PID.
     let state = DaemonStateFile.read()
     let now = Date().timeIntervalSince1970
-    let statePID: Int32?
-    if let state, !state.isStale(now: now) {
-        statePID = state.pid
-    } else {
-        statePID = nil
-    }
+    let freshState: DaemonState? = {
+        guard let state, !state.isStale(now: now) else { return nil }
+        return state.pid == pid ? state : nil
+    }()
 
-    // Cross-check the state-file PID against the on-disk PID file to avoid
-    // signalling a PID that has been reused by another process.
-    let pidFilePID = ProcessLifecycle.readPID(at: ProcessLifecycle.defaultPIDFile())
-    let candidatePID = pidFilePID ?? statePID
-
-    guard let pid = candidatePID, pid > 0, ProcessLifecycle.processIsAlive(pid) else {
-        // launchd thinks the job is loaded but we have no trustworthy live PID.
-        // Fall back to the launchd-level stop/restart path.
-        return false
-    }
-
-    // If both sources are available they must agree; otherwise treat the
-    // running process as untrustworthy.
-    if let statePID, let pidFilePID, statePID != pidFilePID {
-        print("Warning: daemon state PID (\(statePID)) does not match PID file (\(pidFilePID)); skipping graceful drain.")
-        return false
-    }
-
-    let requestCount = state?.inflightRequestCount ?? (state?.inferenceActive == true ? 1 : 0)
+    let requestCount = freshState?.inflightRequestCount ?? (freshState?.inferenceActive == true ? 1 : 0)
     if requestCount > 0 {
         let plural = requestCount == 1 ? "" : "s"
         print("Provider is currently serving \(requestCount) request\(plural). Waiting up to \(Int(timeout))s for them to finish before \(action.verb)...")
-    } else if state?.inferenceActive == true {
+    } else if freshState?.inferenceActive == true {
         print("Provider is currently serving requests. Waiting up to \(Int(timeout))s for them to finish before \(action.verb)...")
     }
 

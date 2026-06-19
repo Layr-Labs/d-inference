@@ -68,6 +68,58 @@ public enum LaunchAgent: Sendable {
         }
     }
 
+    /// The PID launchd currently reports for the loaded provider service (the
+    /// canonical label, or the first loaded legacy label). Returns `nil` if no
+    /// supported label is loaded, or the job is loaded but not currently running
+    /// a process (e.g. installed-but-not-yet-kickstarted).
+    ///
+    /// This is the authoritative drain target: it ties a PID to the
+    /// launchd-managed daemon. Unlike the shared `~/.darkbloom/provider.pid`
+    /// lock file (which a standalone `start --local` server also writes), this
+    /// can never resolve to a non-launchd process.
+    public static func loadedServicePID() -> Int32? {
+        for candidate in supportedLabels {
+            if let pid = servicePID(label: candidate) {
+                return pid
+            }
+        }
+        return nil
+    }
+
+    /// Parse the `pid = N` field from `launchctl print gui/<uid>/<label>`.
+    /// Returns `nil` when the label is not loaded or has no running PID.
+    private static func servicePID(label: String) -> Int32? {
+        let target = "gui/\(getuid())/\(label)"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", target]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        // Read to EOF before waiting so a large `launchctl print` dump can't
+        // deadlock on a full pipe buffer.
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+
+        // launchctl prints a `\tpid = 12345` line only while the job is running.
+        for rawLine in text.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("pid ") || line.hasPrefix("pid=") else { continue }
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            if let pid = Int32(value), pid > 0 { return pid }
+        }
+        return nil
+    }
+
     // MARK: - Install & Start
 
     /// Write the plist, load the service, and kickstart the process.

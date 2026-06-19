@@ -1925,15 +1925,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// metrics. Self-route skips this fleet-wide gate — it queues on the
 		// owner's machine instead (handled below).
 		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
-		// Smart early-429 for structurally-unservable long prompts
-		// (prompt+max_tokens beyond the model context window or any provider's
-		// token budget). Gated (default off) and fail-open. Runs before the
-		// capacity/queue ladder so an unservable request is rejected with an
-		// uptime-neutral 429 (OpenRouter fails over) instead of being admitted
-		// and 5xx'ing on the provider.
-		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
-			return
-		}
 		if candidateCount == 0 && capacityRejections > 0 {
 			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
@@ -1967,6 +1958,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					rawBody, _ = marshalForwardBody(parsed)
 				}
 			}
+		}
+		// Smart early-429 for structurally-unservable long prompts
+		// (prompt+max_tokens beyond the model context window or any provider's
+		// token budget). Gated (default off) and fail-open. Runs AFTER the alias
+		// capacity fallback so an alias whose Previous build still has capacity
+		// fails over first; an unservable request is then rejected with an
+		// uptime-neutral 429 (OpenRouter fails over) instead of admit→5xx.
+		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
+			return
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			// Providers serve this model but none can ever fit it — non-retryable.
@@ -4756,17 +4756,18 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
 	} else {
 		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
-		// Smart early-429 for structurally-unservable long prompts
-		// (mirrors handleChatCompletions). Gated (default off), fail-open.
-		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
-			return
-		}
 		if candidateCount == 0 && capacityRejections > 0 {
 			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
 			}
+		}
+		// Smart early-429 for structurally-unservable long prompts (mirrors
+		// handleChatCompletions): runs AFTER the alias capacity fallback. Gated
+		// (default off), fail-open.
+		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
+			return
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			refundReservation()

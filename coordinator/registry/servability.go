@@ -203,10 +203,14 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, requeste
 	verdict.FleetMaxBudget = fleetMax
 	verdict.ProviderCount = providerCount
 
-	// Reject on the budget tier only when EVERY eligible provider had a known
-	// budget and none can hold the request. Any unknown (or zero eligible
-	// providers — a different rejection path owns that) → fail open.
-	if providerCount > 0 && !sawUnknown && fleetMax > 0 && int64(requestTokens) > fleetMax {
+	// Reject on the budget tier only when EVERY eligible provider had a KNOWN
+	// budget and none can hold the request. A known budget of 0 (a cold provider
+	// whose weights leave no KV headroom) is a real "cannot serve", so it must
+	// reject too — we gate on !sawUnknown, not fleetMax > 0, otherwise an
+	// all-zero-budget fleet would fail open and dispatch into a guaranteed
+	// provider-side token/KV rejection. Any unknown budget, or zero eligible
+	// providers (a different rejection path owns that), still fails open.
+	if providerCount > 0 && !sawUnknown && int64(requestTokens) > fleetMax {
 		verdict.Servable = false
 		verdict.Reason = ServabilityPromptTooLong
 		return verdict

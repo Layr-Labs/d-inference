@@ -151,3 +151,26 @@ func TestWriteSSEErrorEvent(t *testing.T) {
 		t.Errorf("data: [DONE] must follow the error event; body=%q", body)
 	}
 }
+
+// TestWriteResponsesSSEErrorEvent confirms the Responses-API-shaped terminal
+// error is emitted as an `event: error` SSE event carrying the error type and
+// message, with NO data: [DONE] terminator (strict Responses clients end on the
+// error event, unlike the chat-completions shape).
+func TestWriteResponsesSSEErrorEvent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeResponsesSSEErrorEvent(rec, "provider_error", "boom")
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Errorf("body missing event: error line: %q", body)
+	}
+	if !strings.Contains(body, "provider_error") {
+		t.Errorf("body missing provider_error error type: %q", body)
+	}
+	if !strings.Contains(body, "boom") {
+		t.Errorf("body missing boom error message: %q", body)
+	}
+	if strings.Contains(body, "[DONE]") {
+		t.Errorf("Responses error event must not emit [DONE]; body=%q", body)
+	}
+}

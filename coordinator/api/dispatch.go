@@ -1926,14 +1926,21 @@ exhausted:
 		}
 		if keepaliveCommitted {
 			// HTTP 200 was already sent by a prefill keepalive; the status code is
-			// frozen, so surface the terminal failure in-band as an SSE error event.
-			if statusCode == http.StatusTooManyRequests {
-				writeSSEErrorEvent(w, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers at capacity after %d attempt(s): %s", maxDispatchAttempts, d.lastErr),
-					withCode("rate_limit_exceeded")))
+			// frozen, so surface the terminal failure in-band. Responses streams use
+			// a different error shape (event: error, no [DONE]) than chat completions.
+			rateLimited := statusCode == http.StatusTooManyRequests
+			capMsg := fmt.Sprintf("all providers at capacity after %d attempt(s): %s", maxDispatchAttempts, d.lastErr)
+			errMsg := fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, d.lastErr)
+			if d.isResponsesAPI {
+				if rateLimited {
+					writeResponsesSSEErrorEvent(w, "rate_limit_exceeded", capMsg)
+				} else {
+					writeResponsesSSEErrorEvent(w, "provider_error", errMsg)
+				}
+			} else if rateLimited {
+				writeSSEErrorEvent(w, errorResponse("rate_limit_exceeded", capMsg, withCode("rate_limit_exceeded")))
 			} else {
-				writeSSEErrorEvent(w, errorResponse("provider_error",
-					fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, d.lastErr)))
+				writeSSEErrorEvent(w, errorResponse("provider_error", errMsg))
 			}
 			return
 		}
@@ -1951,12 +1958,17 @@ exhausted:
 		s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "success"})
 	}
 	s.ddIncr("inference.dispatches", []string{"status:success"})
-	// OR-uptime outcome for a committed request (the consumer got content).
-	// Commit-time approximation — a later post-commit mid-stream failure is counted
-	// here as success; the persisted route-outcome rows (/v1/admin/routes) hold the
-	// exact post-commit breakdown. Emitted exactly once per dispatched request
-	// (disjoint from the exhausted branch above and from pre-dispatch rejections).
-	s.recordRequestOutcome(d.model, orClassSuccess)
+	// OR-uptime outcome. For STREAMING this is a commit-time approximation (the
+	// consumer got content; a later post-commit mid-stream failure is still counted
+	// as success — the persisted route-outcome rows hold the exact breakdown). For
+	// NON-streaming, "committed" only means a provider chunk arrived and the writer
+	// can still fail with a 5xx/504, so the outcome is recorded in
+	// writeCommittedResponse from the status it actually writes. Emitted exactly
+	// once per dispatched request (disjoint from the exhausted branch above and
+	// from pre-dispatch rejections).
+	if d.stream {
+		s.recordRequestOutcome(d.model, orClassSuccess)
+	}
 
 	d.writeCommittedResponse()
 }
@@ -2155,6 +2167,19 @@ func (d *dispatchState) writeCommittedResponse() {
 		// to skip re-committing the SSE 200 if a keepalive already did.
 		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks, headerWritten)
 	} else {
-		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
+		// Record the OR-uptime outcome from the status the non-streaming writer
+		// actually emits: it can still return a 5xx/504 after commit, and a
+		// client-gone exit writes no status (0 → not counted, cancelled is excluded).
+		// statusWriter (server.go) captures the WriteHeader code and transparently
+		// delegates Flush/Hijack/Unwrap, so wrapping preserves the writer's
+		// capabilities; zero-valued status starts at 0 (uncounted).
+		sw := &statusWriter{ResponseWriter: w}
+		s.handleNonStreamingResponseWithFirstChunk(sw, r, pr, firstChunks)
+		switch {
+		case sw.status == http.StatusOK:
+			s.recordRequestOutcome(d.model, orClassSuccess)
+		case sw.status > 0:
+			s.recordRequestOutcome(d.model, classifyOutcomeByCode(sw.status))
+		}
 	}
 }

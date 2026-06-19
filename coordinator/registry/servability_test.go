@@ -108,6 +108,13 @@ func TestSnapshotStructuralBudget(t *testing.T) {
 	if budget, known := snapshotStructuralBudget(routingSnapshot{totalMemoryGB: 64}); known || budget != 0 {
 		t.Fatalf("cold-missing-size = (%d, %v), want (0, false)", budget, known)
 	}
+
+	// Cold with memory + size data but NO post-load KV headroom (weights ~fill the
+	// node): the estimate is 0 yet it is a KNOWN budget, not "unknown" — so the
+	// gate can confidently reject rather than fail open.
+	if budget, known := snapshotStructuralBudget(routingSnapshot{totalMemoryGB: 16, modelSizeGB: 14}); !known || budget != 0 {
+		t.Fatalf("cold-no-headroom = (%d, %v), want (0, true)", budget, known)
+	}
 }
 
 // TestPredictServableContextTier covers tier 1 (model context window), which is
@@ -213,6 +220,35 @@ func TestPredictServableFailsOpenOnUnknownBudget(t *testing.T) {
 	}
 	if huge.ProviderCount != 2 {
 		t.Fatalf("ProviderCount = %d, want 2", huge.ProviderCount)
+	}
+}
+
+// TestPredictServableKnownZeroColdBudgetUnservable proves the fail-open guard is
+// keyed on UNKNOWN budgets, not on a zero ceiling: a fleet whose only eligible
+// provider is a cold node with no post-load KV headroom (a KNOWN budget of 0) is
+// rejected as prompt_too_long. Otherwise the request would be admitted into a
+// guaranteed provider-side token/KV rejection.
+func TestPredictServableKnownZeroColdBudgetUnservable(t *testing.T) {
+	reg := New(testLogger())
+	model := "zero-budget-model"
+	// 14 GB weights (padded ~15.6 GiB) + the activation reserve exceed 90% of a
+	// 16 GB node, so coldTokenBudgetEstimate is 0 (a known zero). MinRAMGB 14 <= 16
+	// keeps it past the hardware-fit gate (counted, not model_too_large).
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 14, MinRAMGB: 14}})
+	makeWarmPoolColdProvider(t, reg, "tight", model, 80, 16, 0)
+
+	v := reg.PredictServable(model, 1000, 256, 0, RequestTraits{}, false)
+	if v.Servable {
+		t.Fatalf("known-zero-budget fleet reported servable (must reject, not fail open): %+v", v)
+	}
+	if v.Reason != ServabilityPromptTooLong {
+		t.Fatalf("reason = %q, want %q", v.Reason, ServabilityPromptTooLong)
+	}
+	if v.ProviderCount != 1 {
+		t.Fatalf("ProviderCount = %d, want 1 (cold node fits hardware, counted)", v.ProviderCount)
+	}
+	if v.FleetMaxBudget != 0 {
+		t.Fatalf("FleetMaxBudget = %d, want 0 (known-zero cold budget)", v.FleetMaxBudget)
 	}
 }
 

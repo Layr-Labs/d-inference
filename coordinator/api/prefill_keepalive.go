@@ -163,3 +163,30 @@ func writeSSEErrorEvent(w http.ResponseWriter, resp any) {
 		f.Flush()
 	}
 }
+
+// writeResponsesSSEErrorEvent emits an OpenAI Responses-API-shaped terminal error
+// event (event: error, no [DONE]) to an already-committed SSE stream. Used when a
+// prefill keepalive has committed HTTP 200 for a /v1/responses request and it then
+// fails: the chat-completions-shaped writeSSEErrorEvent would not parse for strict
+// Responses clients. Mirrors responsesStreamEmitter.emitError / emit in
+// responses_stream.go.
+func writeResponsesSSEErrorEvent(w http.ResponseWriter, errType, message string) {
+	payload := map[string]any{
+		"type":            "error",
+		"sequence_number": 0,
+		"error": map[string]any{
+			"type":    errType,
+			"code":    errType,
+			"message": message,
+			"param":   nil,
+		},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(w, "event: error\ndata: %s\n\n", b)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}

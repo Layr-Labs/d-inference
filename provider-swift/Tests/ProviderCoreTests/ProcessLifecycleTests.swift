@@ -100,16 +100,25 @@ struct ProcessLifecycleGracefulStopTests {
         try process.run()
         let pid = Int32(process.processIdentifier)
 
+        // Reap the child as soon as it exits. `processIsAlive` is `kill(pid, 0)`,
+        // which still succeeds for an un-reaped zombie — so without an active
+        // `waitpid`, a SIGTERM'd `/bin/sleep` would look "alive" for the full
+        // timeout and `stopProcessGracefully` would escalate to SIGKILL and
+        // report `.forceKilled`. Blocking a background task on `waitUntilExit()`
+        // keeps a reaper running so liveness reflects the real process state.
+        let reaper = Task.detached { process.waitUntilExit() }
+        defer { reaper.cancel() }
+
         // Give the kernel a moment to register the process.
         try? await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(ProcessLifecycle.processIsAlive(pid))
 
         let outcome = await ProcessLifecycle.stopProcessGracefully(pid: pid, timeout: 2.0)
+        await reaper.value
 
         #expect(outcome == .stoppedGracefully)
         #expect(!ProcessLifecycle.processIsAlive(pid))
-        process.waitUntilExit()
     }
 
     @Test("stopProcessGracefully reports force kill when SIGTERM is ignored")
@@ -123,13 +132,18 @@ struct ProcessLifecycleGracefulStopTests {
         try process.run()
         let pid = Int32(process.processIdentifier)
 
+        // Reap the child once SIGKILL lands so the post-kill liveness check sees
+        // ESRCH instead of a lingering zombie (see the graceful-stop test above).
+        let reaper = Task.detached { process.waitUntilExit() }
+        defer { reaper.cancel() }
+
         try? await Task.sleep(nanoseconds: 50_000_000)
         #expect(ProcessLifecycle.processIsAlive(pid))
 
         let outcome = await ProcessLifecycle.stopProcessGracefully(pid: pid, timeout: 0.5)
+        await reaper.value
 
         #expect(outcome == .forceKilled(pid))
         #expect(!ProcessLifecycle.processIsAlive(pid))
-        process.waitUntilExit()
     }
 }

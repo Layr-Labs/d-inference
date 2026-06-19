@@ -239,7 +239,14 @@ public enum ProcessLifecycle {
     /// Reports whether a process with the given PID is currently alive.
     /// `kill(pid, 0)` returns 0 if we have permission to signal the process,
     /// even though signal 0 is a no-op. `ESRCH` means the process is gone.
+    ///
+    /// Rejects nonpositive PIDs up front: `kill(0, …)` targets the caller's whole
+    /// process group and `kill(-1, …)` targets every process the user may signal.
+    /// This helper is fed by on-disk PID / daemon-state files, so a corrupt `0` or
+    /// `-1` must never be treated as "a live process" (and must never reach a real
+    /// `kill` via callers that gate on this result).
     public static func processIsAlive(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
         let rc = kill(pid, 0)
         if rc == 0 { return true }
         return errno != ESRCH

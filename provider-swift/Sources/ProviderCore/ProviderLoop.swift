@@ -215,6 +215,13 @@ public actor ProviderLoop {
     private var isLoadingAny: Bool = false
     private var isShuttingDown: Bool = false
 
+    /// Memoized graceful-shutdown task. Both the run-task cancellation handler
+    /// and the run-loop fall-through funnel through `startShutdown(drainInflight:)`
+    /// so they share ONE shutdown sequence instead of racing each other. Without
+    /// this, the fall-through could close the coordinator socket and unload
+    /// models while the drain task was still waiting for in-flight streams.
+    private var shutdownTask: Task<Void, Never>?
+
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`
     /// we refuse new requests (503 reroute) so in-flight work can finish before
     /// the hot-swap restart. See `AutoUpdateController`.
@@ -751,40 +758,71 @@ public actor ProviderLoop {
                 }
             }
         } onCancel: {
-            Task { await self.beginGracefulShutdown() }
+            // SIGTERM / `darkbloom stop` / schedule-close cancels the run task.
+            // Kick off the shared graceful shutdown, which drains in-flight
+            // inference *before* the transport is torn down. The fall-through
+            // below awaits the same memoized task, so the coordinator socket and
+            // loaded models stay alive until the drain completes. The drain runs
+            // inside an unstructured Task (created by `startShutdown`) that does
+            // NOT inherit this cancellation, so `waitForInflightDrain` keeps
+            // polling instead of bailing on `Task.isCancelled`.
+            Task { await self.startShutdown(drainInflight: true).value }
         }
 
+        // The event stream ended. If the run task was cancelled (user stop /
+        // restart / schedule close) we drain in-flight inference first; otherwise
+        // (coordinator disconnect, stream finished on its own) we cancel promptly
+        // because responses can no longer be delivered. Either way we await the
+        // SINGLE shared shutdown task, so transport teardown and model unloading
+        // happen only after the drain — never racing it.
+        let runTaskCancelled = Task.isCancelled
         logger.info("Event stream ended, shutting down")
-        await completeShutdown()
+        await startShutdown(drainInflight: runTaskCancelled).value
     }
 
-    /// Begin graceful shutdown: reject new work, drain active inference while
-    /// keeping the coordinator socket open, then close the socket so the event
-    /// loop in `run()` can finish. Safe to call multiple times; subsequent calls
-    /// are no-ops once `isShuttingDown` is true.
-    private func beginGracefulShutdown() async {
-        guard !isShuttingDown else { return }
+    /// Start (once) the graceful-shutdown sequence and return the shared task so
+    /// every caller awaits the same drain + teardown. The first caller fixes
+    /// `drainInflight`; later callers receive the in-progress task. This memo is
+    /// what prevents the cancellation handler and the run-loop fall-through from
+    /// running two competing shutdowns.
+    @discardableResult
+    private func startShutdown(drainInflight: Bool) -> Task<Void, Never> {
+        if let shutdownTask { return shutdownTask }
+        let task = Task { await self.runShutdownSequence(drainInflight: drainInflight) }
+        shutdownTask = task
+        return task
+    }
+
+    /// The single graceful-shutdown sequence (runs exactly once via the
+    /// `startShutdown` memo):
+    ///   1. Mark `isShuttingDown` so new work is refused (503 reroute).
+    ///   2. Either drain in-flight inference while keeping the coordinator socket
+    ///      OPEN (so chunks + final completions still reach consumers), or — when
+    ///      the connection is already gone — cancel in-flight work outright.
+    ///   3. Only AFTER the drain completes, tear down the transport, the disk
+    ///      accountant, and unload models, then release power assertions.
+    private func runShutdownSequence(drainInflight: Bool) async {
         isShuttingDown = true
-        logger.info("Graceful shutdown requested; draining active inference before closing coordinator connection")
-        await cancelBackgroundWorkAndPreloads()
-        let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
-        if !drained {
-            logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
+        if drainInflight {
+            logger.info("Graceful shutdown requested; draining active inference before closing coordinator connection")
+            // Cancel background work first, but keep the coordinator socket open
+            // so in-flight responses can still be delivered while we drain.
+            await cancelBackgroundWorkAndPreloads()
+            let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
+            if !drained {
+                logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
+                await cancelAllInflight()
+            }
+        } else {
+            // The event stream ended without a controlled drain (e.g. coordinator
+            // disconnect): the connection is already gone, so cancel in-flight
+            // work rather than waiting on responses that can't be delivered.
             await cancelAllInflight()
+            await cancelBackgroundWorkAndPreloads()
         }
-        await coordinatorClient?.shutdown()
-    }
 
-    /// Finish shutdown after the event stream has ended. If a graceful shutdown
-    /// has already run, this only performs the remaining cleanup (disk accountant,
-    /// model unloading). If the stream ended for another reason (e.g., disconnect),
-    /// it cancels in-flight work and runs the full teardown.
-    private func completeShutdown() async {
-        if !isShuttingDown {
-            isShuttingDown = true
-            await cancelAllInflight()
-        }
-        await cancelBackgroundWorkAndPreloads()
+        // Drain (if any) is complete: now it is safe to close the transport and
+        // release GPU/model resources.
         await coordinatorClient?.shutdown()
         // Phase 3: shutdown the global disk accountant.
         await diskAccountant.shutdown()
@@ -801,7 +839,8 @@ public actor ProviderLoop {
     }
 
     /// Cancel optional background tasks and prefetch/preload work. Idempotent so
-    /// it can be called from both `beginGracefulShutdown` and `completeShutdown`.
+    /// it can be called from both the drain and non-drain branches of
+    /// `runShutdownSequence`.
     private func cancelBackgroundWorkAndPreloads() async {
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
@@ -1113,12 +1152,24 @@ public actor ProviderLoop {
         }
 
         // 4. Authoritative drain re-check. `await fastAdmissionReject` above is a
-        // suspension point, so draining could have begun (and the drain snapshot
-        // taken) while this request was parked — letting it slip past the early
-        // gate. There is NO `await` between this check and the `requestToModel`
-        // registration below, so on the actor it is atomic: either we reject now,
-        // or the request is counted in `hasInflightWork` before any drain
-        // snapshot can miss it.
+        // suspension point, so a shutdown or update-drain could have begun (and
+        // its drain snapshot taken) while this request was parked — letting it
+        // slip past the early gates at the top of this method. There is NO
+        // `await` between these checks and the `requestToModel` registration
+        // below, so on the actor they are atomic: either we reject now, or the
+        // request is counted in `hasInflightWork` before any drain snapshot can
+        // miss it. The shutdown re-check must come first — without it, a request
+        // suspended in `fastAdmissionReject` when SIGTERM arrives would send
+        // `inference_accepted` and then be dropped as the socket/models tear
+        // down, instead of cleanly returning 503 so the coordinator reroutes.
+        if isShuttingDown {
+            send.send(.inferenceError(
+                requestId: requestId,
+                error: "provider is shutting down",
+                statusCode: 503
+            ))
+            return
+        }
         if rejectIfDrainingForUpdate(requestId: requestId, send: send) { return }
 
         // 5. Send inference_accepted

@@ -47,10 +47,10 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(memory.clearCount == 1)
 }
 
-@Test func globalKVCacheBudgetSkipsHealWhenReclaimablePoolIsTiny() async {
-    // Active-dominated near-cap with only a tiny reclaimable pool (100 MiB, below
-    // the heal threshold): a flush would free almost nothing, so the self-heal is
-    // skipped entirely (no clear, no GPU sync) and the request is rejected.
+@Test func globalKVCacheBudgetSkipsHealWhenPoolCannotCoverShortfall() async {
+    // Active-dominated near-cap: the reclaimable pool (100 MiB) can't cover the
+    // 1 GiB the request is short by, so flushing it wouldn't admit the request —
+    // the self-heal is skipped (no clear, no GPU sync) and the request is rejected.
     let mib: UInt64 = 1024 * 1024
     let memory = MutableMemorySnapshot(
         total: 8 * gib, active: 6 * gib, cache: 100 * mib, cacheAfterClear: 0)
@@ -81,6 +81,24 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: 1, tokenCount: Int(2 * gib))))
     #expect(!(await budget.reserve(requestID: "b", kvBytesPerToken: 1, tokenCount: Int(2 * gib))))
     #expect(memory.clearCount == 1)   // second flush rate-limited within the window
+}
+
+@Test func globalKVCacheBudgetHealsSmallShortfallFromSmallPool() async {
+    // The gate is shortfall-based, not an absolute pool floor: a small pool
+    // (200 MiB) that covers a small shortfall must still heal. cap = 6 GiB;
+    // active 6000 MiB + cache 200 MiB > cap → 0 free; the request is short by
+    // 64 MiB, which the 200 MiB pool covers, so the flush frees ~144 MiB and admits.
+    let mib: UInt64 = 1024 * 1024
+    let memory = MutableMemorySnapshot(
+        total: 8 * gib, active: 6000 * mib, cache: 200 * mib, cacheAfterClear: 0)
+    let budget = GlobalKVCacheBudget(
+        capFraction: 1.0,
+        activationReserveBytes: 0,
+        memorySnapshot: { memory.snapshot() },
+        clearCache: { memory.clearCache() })
+
+    #expect(await budget.reserveBytes(requestID: "small", bytes: 64 * mib))
+    #expect(memory.clearCount == 1)
 }
 
 /// Lock-guarded so @Sendable closures can mutate fake MLX cache state safely.

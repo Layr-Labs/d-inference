@@ -27,10 +27,6 @@ public actor GlobalKVCacheBudget {
     private let memorySnapshot: @Sendable () -> MemorySnapshot
     private let clearCache: @Sendable () -> Void
     private var reservations: [String: UInt64] = [:]
-    /// Minimum reclaimable MLX pool worth flushing on the admission self-heal.
-    /// Below this, a flush frees too little to change an admission decision, so the
-    /// heal is skipped — the case when active memory (not the pool) is what's full.
-    private static let minReclaimableForHealBytes: UInt64 = 256 * 1024 * 1024
     /// Rate-limit the self-heal flush to at most once per this interval. The flush
     /// blocks on a GPU sync, so this bounds how often a flood of near-miss
     /// admissions can chain GPU syncs on the actor and stall other reservations.
@@ -160,7 +156,7 @@ public actor GlobalKVCacheBudget {
     private func commit(requestID: String, bytes: UInt64) -> Bool {
         var available = availableReservationBytes()
         if bytes > available {
-            if selfHealClear() { available = availableReservationBytes() }
+            if selfHealClear(toCover: bytes - available) { available = availableReservationBytes() }
             if bytes > available { return false }
         }
         reservations[requestID] = bytes
@@ -169,12 +165,13 @@ public actor GlobalKVCacheBudget {
 
     /// One-shot, rate-limited reclaim for the admission self-heal. Returns true if
     /// it actually flushed the pool (so the caller should resample). Two guards:
-    /// skip when the reclaimable pool is already small (a flush would free nothing,
-    /// e.g. when active memory is what's full), and skip when a flush ran within
+    /// skip when the reclaimable pool can't cover `shortfall` (the bytes the request
+    /// is short by) — a flush would still leave it rejected, e.g. when active memory
+    /// rather than the pool is what's full; and skip when a flush ran within
     /// `selfHealMinInterval` — the flush blocks on a GPU sync, so this bounds how
     /// often a flood of near-miss admissions can chain syncs and stall the actor.
-    private func selfHealClear() -> Bool {
-        guard memorySnapshot().cache >= Self.minReclaimableForHealBytes else { return false }
+    private func selfHealClear(toCover shortfall: UInt64) -> Bool {
+        guard memorySnapshot().cache >= shortfall else { return false }
         let now = ContinuousClock.now
         if let last = lastSelfHealAt, now - last < selfHealMinInterval { return false }
         lastSelfHealAt = now

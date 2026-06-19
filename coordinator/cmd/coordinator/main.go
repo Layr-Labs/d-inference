@@ -303,6 +303,23 @@ func main() {
 		logger.Warn("TTFT hard-reject ENABLED via EIGENINFERENCE_TTFT_HARD_REJECT (legacy 429-on-slow-estimate; soft preference is the default)")
 	}
 
+	// Routing: deterministic per-model shed list. These requested aliases/resolved
+	// builds return 429 + Retry-After at admission, before rate-limit/billing/routing.
+	// Use this for unhealthy models (e.g. Gemma 4) while keeping TTFT hard-reject
+	// disabled globally so healthy models like gpt-oss can keep flowing.
+	if v := os.Getenv("EIGENINFERENCE_REJECT_MODELS"); v != "" {
+		shed := map[string]bool{}
+		for _, name := range strings.Split(v, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				shed[name] = true
+			}
+		}
+		if len(shed) > 0 {
+			srv.SetRejectModels(shed)
+			logger.Warn("model shed ENABLED via EIGENINFERENCE_REJECT_MODELS (429 at admission)", "models", v)
+		}
+	}
+
 	// Routing: decode→prefill ratio fallback, used to estimate prefill TPS when a
 	// provider does not report a measured prefill_tps. Defaults to
 	// registry.defaultPrefillToDecodeRatio.

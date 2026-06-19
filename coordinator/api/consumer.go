@@ -100,6 +100,48 @@ func ttftDeadline(estimatedPromptTokens int) time.Duration {
 	return base + perToken
 }
 
+// shedIfModelRejected answers a public/prefer-owner request with 429 +
+// Retry-After when its requested alias or resolved build is in the operator
+// reject set (EIGENINFERENCE_REJECT_MODELS). This is a deterministic
+// per-model circuit breaker: it takes an unhealthy model out of rotation before
+// rate-limit, reservation, or routing work, so aggregators see rate limiting
+// rather than dropped/cancelled streams. Exclusive self-route bypasses the shed
+// because it never falls back to the public fleet.
+func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, parsed map[string]any, policy selfRoutePolicy, publicModel, model string, stream bool, estimatedPromptTokens, requestedMaxTokens int, requiresVision, hasTools bool) bool {
+	if policy.enabled || !s.modelShed(model, publicModel) {
+		return false
+	}
+	retryAfter := s.estimateRetryAfter(model)
+	if retryAfter <= 0 {
+		retryAfter = 30
+	}
+	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_shed"})
+	s.recordRejection(rejectionInfo{
+		r:                     r,
+		stage:                 "model_shed",
+		reasonCode:            "model_shed",
+		httpStatus:            http.StatusTooManyRequests,
+		keyID:                 keyIDFromContext(r.Context()),
+		consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+		requestedModel:        publicModel,
+		resolvedModel:         model,
+		stream:                stream,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		requiresVision:        requiresVision,
+		hasTools:              hasTools,
+		selfRouteOnly:         policy.enabled,
+		preferOwner:           policy.prefer,
+		retryAfterMs:          retryAfter * 1000,
+		params:                rejectionSamplingParams(parsed),
+	})
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+		fmt.Sprintf("model %q is temporarily rate-limited — retry after %ds", publicModel, retryAfter),
+		withCode("rate_limit_exceeded")))
+	return true
+}
+
 // sendProviderCancel sends a Cancel message for the given request to the
 // provider with a bounded timeout so a half-dead WebSocket doesn't hang the
 // caller. Errors are logged at debug level because a disconnect race is the
@@ -314,6 +356,9 @@ func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, 
 	if !ok || target.Desired != currentModel || target.Previous == "" {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
+	if s.modelShed(target.Previous, publicModel) {
+		return currentModel, 0, 0, 0, 0, false, false
+	}
 	if !s.registry.IsModelInCatalog(target.Previous) {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
@@ -331,6 +376,9 @@ func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, curr
 	}
 	target, ok := s.registry.AliasTarget(publicModel)
 	if !ok || target.Desired != currentModel || target.Previous == "" {
+		return currentModel, 0, 0, 0, 0, false, false
+	}
+	if s.modelShed(target.Previous, publicModel) {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
 	if !s.registry.IsModelInCatalog(target.Previous) {
@@ -1713,6 +1761,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
+		return
+	}
 
 	if isResponsesAPI {
 		providerParsed, err := responsesRequestToChatCompletions(parsed)
@@ -4569,6 +4620,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	genericDeadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
+		return
+	}
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint

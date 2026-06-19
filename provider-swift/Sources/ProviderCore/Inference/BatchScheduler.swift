@@ -2057,11 +2057,19 @@ public actor BatchScheduler {
 
         if let engine = self.engine {
             _ = engine.core.abortAllRequests()
-            await engine.stop()
+            // Stop the loop AND wait for it to fully exit: this fences any in-flight
+            // step's MLX work and releases the loop's hold on the engine, so the
+            // teardown reclaim below is both safe and actually frees the batch KV.
+            await engine.core.stopAndWait()
         }
         self.engine = nil
         modelContainer = nil
         tokenizer = nil
+        // The engine chain is released above, so the batch KV is now in the
+        // reclaimable pool. Fence any async GPU completion before clearing, to
+        // avoid the M4 IOKit race.
+        MLX.Stream().synchronize()
+        MLX.Memory.clearCache()
         // Drain the bounded capture pipeline FIRST (#374): the engine is stopped
         // (no more capture hooks fire), so finish the stream and cancel the
         // consumer. This releases retained KV snapshots and stops an in-flight

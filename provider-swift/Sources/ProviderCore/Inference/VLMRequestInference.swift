@@ -95,11 +95,81 @@ public enum VLMRequestInference {
     /// effect on image/video (VLM) requests, matching the text/batched engine.
     /// The penalty processors apply only for non-identity values (repetition ≠ 1,
     /// presence/frequency ≠ 0); identities are no-ops.
+    /// The max output-token bound this request will actually generate with —
+    /// the consumer's `max_tokens` if set, else the model's default. The KV
+    /// reservation for the vision path sizes the generation cache from this, so
+    /// it must match what `generateParameters` feeds the generator exactly.
+    static func resolveMaxOutputTokens(
+        for request: OpenAIChatCompletionRequest, defaultMaxTokens: Int
+    ) -> Int {
+        request.maxTokens ?? defaultMaxTokens
+    }
+
+    /// Conservative per-image soft-token allotment for the KV-token estimate.
+    /// Gemma-4 pools every image to a FIXED `vision_soft_tokens_per_image` (256)
+    /// regardless of resolution; other VLMs run higher. 1024 (4× Gemma) is a
+    /// generous model-agnostic upper bound that is still bounded by the model's
+    /// context window via the clamp in `projectedKVTokens`.
+    static let visionTokensPerImage = 1024
+    /// A video samples multiple frames, each contributing image-like soft tokens.
+    /// Charge a larger fixed allotment per video; still clamped to the context.
+    static let visionTokensPerVideo = 4096
+    /// Conservative chars→tokens divisor for the text prompt estimate. Real
+    /// tokenizers average ~4 chars/token; dividing by 3 OVER-estimates the token
+    /// count (the safe direction for a reservation).
+    static let textCharsPerToken = 3
+
+    /// Conservative upper bound on the number of tokens the vision generation's
+    /// KV cache will hold: prompt text + image/video soft tokens + generated
+    /// output. The vision path bypasses the batched `submitTokenized` reservation
+    /// (which reserves `promptTokenCount + maxTokens`), so without this the cap
+    /// would charge only the output tokens and badly under-count — a single image
+    /// expands to hundreds of vision tokens that all occupy KV.
+    ///
+    /// Prompt + vision is clamped to `contextLength` when known: the model can't
+    /// attend beyond its context window, so the cache never holds more than that
+    /// many input tokens. Output tokens are added on top (the generation extends
+    /// past the prompt up to `maxOutputTokens`), mirroring the batched path's
+    /// `promptTokenCount + maxTokens`. Saturating; never traps.
+    static func projectedKVTokens(
+        _ request: OpenAIChatCompletionRequest,
+        defaultMaxTokens: Int,
+        contextLength: Int
+    ) -> Int {
+        var promptTokens = 0
+        func add(_ n: Int) {
+            let (s, o) = promptTokens.addingReportingOverflow(max(0, n))
+            promptTokens = o ? Int.max : s
+        }
+        for message in request.messages {
+            switch message.content {
+            case .text(let s):
+                add(s.utf8.count / textCharsPerToken)
+            case .parts(let parts):
+                for part in parts {
+                    switch part {
+                    case .text(let s): add(s.utf8.count / textCharsPerToken)
+                    case .imageURL: add(visionTokensPerImage)
+                    case .videoURL: add(visionTokensPerVideo)
+                    case .unsupported: continue
+                    }
+                }
+            case .null:
+                continue
+            }
+        }
+        // The KV cache can't hold more input tokens than the context window.
+        if contextLength > 0 { promptTokens = min(promptTokens, contextLength) }
+        let maxOutput = max(0, resolveMaxOutputTokens(for: request, defaultMaxTokens: defaultMaxTokens))
+        let (total, overflow) = promptTokens.addingReportingOverflow(maxOutput)
+        return overflow ? Int.max : total
+    }
+
     static func generateParameters(
         for request: OpenAIChatCompletionRequest, defaultMaxTokens: Int
     ) -> GenerateParameters {
         GenerateParameters(
-            maxTokens: request.maxTokens ?? defaultMaxTokens,
+            maxTokens: resolveMaxOutputTokens(for: request, defaultMaxTokens: defaultMaxTokens),
             temperature: request.temperature ?? 0,
             topP: request.topP ?? 1.0,
             topK: request.topK ?? 0,
@@ -511,6 +581,82 @@ public enum VLMRequestInference {
     /// — no raster decode (proven O(header): ~0 MB RSS even for a gigapixel
     /// bomb). Returns `nil` if ImageIO can't size the data (truncated/unknown
     /// format), in which case `CIImage(data:)` fails closed downstream.
+    /// Decode-overhead multiplier over the raw RGBA raster (W*H*4). `CIImage`
+    /// rasterization + the intermediate Swift `Data` in `MediaProcessing
+    /// .asMLXArray` + the resampled MLX pixel-values tensor coexist briefly, so
+    /// peak transient RAM is a few times the final raster. 4x is a conservative
+    /// upper bound measured against the decode-bomb repro (16000^2 -> ~1.78 GB
+    /// peak for a 256 MP = 1 GB raster ~= 1.7x; 4x leaves generous margin).
+    static let decodeOverheadFactor = 4
+
+    /// Projected PEAK unified-memory bytes the media decode of `request` will
+    /// transiently consume, so the caller can RESERVE it against the 90% cap
+    /// (GlobalKVCacheBudget) before rasterizing — these CIImage/Data buffers are
+    /// NOT MLX arrays and are otherwise invisible to the cap. Estimated from
+    /// HEADER pixel counts (no decode); when a header is unreadable the per-image
+    /// cap is used as the worst case the media caps still admit.
+    ///
+    /// The estimate is clamped to the SAME ceilings `validateMedia` enforces, so
+    /// it can never exceed what a maximally-large *valid* request consumes:
+    ///   • image pixels are summed but clamped to the aggregate image cap
+    ///     (`maxRequestImagePixels`) — a single oversized image, or many
+    ///     unreadable-header images, can't project past the request-wide image
+    ///     ceiling validation guarantees;
+    ///   • videos are charged the aggregate per-request video-frame cap ONCE if
+    ///     any video is present — NOT per video. `validateMedia` bounds the SUM
+    ///     of all videos' frame pixels by `maxRequestVideoFramePixels`, so
+    ///     charging it per-video would over-reserve by the video count and could
+    ///     falsely 503 a valid multi-video request.
+    /// Consequently an oversized/invalid request projects no more than a max
+    /// valid one: on a saturated box both get a retryable 503 (and the invalid
+    /// one resolves to its deterministic 400 once capacity frees), rather than
+    /// the invalid request being singled out for a permanent 503.
+    /// Saturating; never traps. Returns 0 for a request with no media.
+    public static func projectedDecodeBytes(
+        _ request: OpenAIChatCompletionRequest,
+        maxImagePixels: Int = Self.maxImagePixels,
+        maxRequestImagePixels: Int = Self.maxRequestImagePixels,
+        maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
+    ) -> UInt64 {
+        var imagePixels: UInt64 = 0
+        var hasVideo = false
+        func addImagePixels(_ p: Int) {
+            let (s, o) = imagePixels.addingReportingOverflow(UInt64(max(0, p)))
+            imagePixels = o ? .max : s
+        }
+        for message in request.messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                switch part {
+                case .imageURL(let uri):
+                    // Header read is O(header), ~0 RSS; fall back to the per-image
+                    // cap (the worst case the existing caps admit) if unreadable.
+                    if let data = try? dataFromDataURI(uri) {
+                        addImagePixels(imagePixelCount(data) ?? maxImagePixels)
+                    } else {
+                        addImagePixels(maxImagePixels)
+                    }
+                case .videoURL:
+                    hasVideo = true
+                case .text, .unsupported:
+                    continue
+                }
+            }
+        }
+        // Clamp images to the request-wide aggregate cap, then add the video
+        // aggregate once. Both mirror validateMedia's ceilings exactly.
+        var pixels = min(imagePixels, UInt64(max(0, maxRequestImagePixels)))
+        if hasVideo {
+            let (s, o) = pixels.addingReportingOverflow(UInt64(max(0, maxRequestVideoFramePixels)))
+            pixels = o ? .max : s
+        }
+        // RGBA (4 bytes/px) x decode overhead. Saturating.
+        let (rgba, o1) = pixels.multipliedReportingOverflow(by: 4)
+        let bytes = o1 ? UInt64.max : rgba
+        let (total, o2) = bytes.multipliedReportingOverflow(by: UInt64(decodeOverheadFactor))
+        return o2 ? UInt64.max : total
+    }
+
     static func imagePixelCount(_ data: Data) -> Int? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil),
             let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],

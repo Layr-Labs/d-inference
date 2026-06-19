@@ -22,6 +22,26 @@ import MLXLMCommon
 
 extension BatchScheduler {
 
+    // MARK: - Prefill-EWMA sampling bounds
+    //
+    // `observed_prefill_tps` feeds the coordinator's routing-v2 TTFT estimate, so
+    // a single bogus sample skews routing for later cold prompts. We therefore
+    // sample ONLY a genuine cold prefill and drop implausible measurements.
+
+    /// Minimum admitted→first-token window (seconds) for a prefill sample to
+    /// count. A prefix-cache HIT restores the KV and emits the first token almost
+    /// instantly, collapsing the window toward ~0; dividing a positive prompt
+    /// length by a near-zero denominator produced the "billions of tok/s" readings
+    /// the coordinator clamped to 5000. 1ms is far below any real cold prefill yet
+    /// rejects that near-zero-window artifact.
+    static let minPrefillWindowSeconds = 0.001
+
+    /// Upper plausibility bound (tok/s) for a prefill sample. Set above the
+    /// coordinator's 5000 clamp so a legitimately fast cold prefill still
+    /// registers, while clearly impossible rates are dropped (defense in depth
+    /// behind the cold-only + window-floor guards).
+    static let maxPlausiblePrefillTps = 8000.0
+
     // MARK: - Bridge runner (called from `submit` in the main file)
 
     /// Spin up the per-request stream consumer that translates
@@ -231,6 +251,50 @@ extension BatchScheduler {
             recordBatchPerformance(observedBatchSize: max(1, runningRows), tps: tps)
         }
 
+        // Prefill rate: prompt tokens processed between engine admission and the
+        // first generated token, measured with the same wall-clock methodology as
+        // the decode EWMA above (an OBSERVED effective rate under co-resident batch
+        // load, not an isolated kernel rate). routing-v2 consumes this EWMA for
+        // TTFT estimates, so a single bogus sample skews TTFT for later cold
+        // prompts. Sample ONLY a genuine COLD prefill, and reject implausible ones:
+        //   * restoredPrefixTokens == 0 — a prefix-cache restore materializes the
+        //     prefix KV and emits the first token almost instantly, so the
+        //     admitted→first-token window covers only the uncached suffix and is
+        //     NOT representative of a cold prefill. The near-zero window also
+        //     collapses the denominator and explodes tps to billions (which the
+        //     coordinator then clamps to 5000, corrupting its TTFT estimate). Skip
+        //     cache hits entirely rather than recording an unrepresentative rate.
+        //   * !enginePrefixCacheActive — the engine-tier (in-GPU) prefix cache
+        //     restores a matched prefix WITHOUT surfacing a per-request
+        //     restored-token count, so restoredPrefixTokens stays 0 even on a hit
+        //     and the bullet above can't catch it. Pure-attention (.engine) models
+        //     therefore skip prefill sampling entirely; checkpoint-tier models
+        //     (Gemma-4, GPT-OSS) DO set restoredPrefixTokens on a hit and are
+        //     unaffected. (Long-term: have the engine report reused tokens so cold
+        //     engine prefills can be sampled too — tracked as a follow-up.)
+        //   * prefilledTokens > 0 — need a real prompt to have prefilled.
+        //   * prefillSeconds >= minPrefillWindowSeconds — floor the denominator so
+        //     a near-zero window can't manufacture an absurd rate.
+        //   * tps finite and <= maxPlausiblePrefillTps — defense in depth: drop any
+        //     surviving implausible sample instead of poisoning the EWMA.
+        if success,
+            let admittedAt = bridge.admittedAt,
+            let firstTokenAt = bridge.firstTokenAt,
+            bridge.restoredPrefixTokens == 0,
+            !enginePrefixCacheActive {
+            let prefillElapsed = firstTokenAt - admittedAt
+            let prefillSeconds = Double(prefillElapsed.components.seconds)
+                + Double(prefillElapsed.components.attoseconds) / 1e18
+            // Cold prefill ⇒ restoredPrefixTokens == 0, so this is the full prompt.
+            let prefilledTokens = finalPrompt - bridge.restoredPrefixTokens
+            if prefilledTokens > 0, prefillSeconds >= Self.minPrefillWindowSeconds {
+                let tps = Double(prefilledTokens) / prefillSeconds
+                if tps.isFinite, tps <= Self.maxPlausiblePrefillTps {
+                    updatePrefillTpsEwma(tps: tps)
+                }
+            }
+        }
+
         await releaseKVReservation(requestID: requestId)
         if let planner = self.planner {
             // `cancel` (not `complete`): the planner removes the entry
@@ -396,7 +460,8 @@ extension BatchScheduler {
         promptTokens: Int,
         maxTokens: Int,
         admitted: Bool = false,
-        reservedTokens: Int? = nil
+        reservedTokens: Int? = nil,
+        restoredPrefixTokens: Int = 0
     ) {
         var bridge = BridgeState(
             requestId: id,
@@ -405,6 +470,7 @@ extension BatchScheduler {
             submittedAt: .now
         )
         bridge.reservedTokens = reservedTokens
+        bridge.restoredPrefixTokens = restoredPrefixTokens
         if admitted { bridge.admittedAt = .now }
         activeBridges[id] = bridge
     }

@@ -133,3 +133,87 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         outstandingReservationBytes: 0)
     #expect(ok, "the core fix must still hold under the OOM-safety clamps")
 }
+
+// MARK: - maxLoadableWeightGb (heartbeat free_for_load_gb the coordinator consumes)
+
+// Idle resident models are reclaimable: the provider LRU-evicts them on a cold
+// load, so the loadable headroom is computed as if that memory were free.
+@Test func maxLoadableWeightReclaimsIdleModels() {
+    // 64 GB box, 30 GB idle model resident, sysAvail unknown (.max):
+    // reclaimable = min(64, 30) = ... actually min(total, sysAvail+mlxUsed) with
+    // sysAvail=.max → min(64, .max)=64; minus 4 reserve minus 4 headroom = 56.
+    let w = ModelLoadAdmission.maxLoadableWeightGb(
+        totalBytes: 64 * gib, mlxUsedBytes: 30 * gib, reserveBytes: 4 * gib, headroomGb: 4.0)
+    #expect(abs(w - 56.0) < 0.001, "idle weights must be reclaimed (got \(w))")
+}
+
+// The OS-available clamp still binds — evicting our own MLX adds back only our
+// usage, not memory other processes hold.
+@Test func maxLoadableWeightClampsToSystemAvailable() {
+    // OS reports 10 GB available; evicting our 5 GB MLX → 15 reclaimable.
+    // min(64, 10+5)=15; minus 4 reserve minus 4 headroom = 7.
+    let w = ModelLoadAdmission.maxLoadableWeightGb(
+        totalBytes: 64 * gib, systemAvailableBytes: 10 * gib,
+        mlxUsedBytes: 5 * gib, reserveBytes: 4 * gib, headroomGb: 4.0)
+    #expect(abs(w - 7.0) < 0.001, "must clamp to OS-available + reclaimable MLX (got \(w))")
+}
+
+@Test func maxLoadableWeightFloorsAtZero() {
+    let w = ModelLoadAdmission.maxLoadableWeightGb(
+        totalBytes: 8 * gib, systemAvailableBytes: 2 * gib,
+        mlxUsedBytes: 0, reserveBytes: 4 * gib, headroomGb: 4.0)
+    #expect(w == 0, "never negative")
+}
+
+// KV already promised to in-flight requests (coordinator or local streams) must
+// be held back, exactly as the real load gate does (Codex #390).
+@Test func maxLoadableWeightSubtractsOutstandingReservations() {
+    // 64 GB idle, 4 GB reserve, 4 GB headroom, 6 GB outstanding KV:
+    // reclaimable = 64; minus (4 + 6) committed = 54; minus 4 headroom = 50.
+    let w = ModelLoadAdmission.maxLoadableWeightGb(
+        totalBytes: 64 * gib, mlxUsedBytes: 0, reserveBytes: 4 * gib,
+        headroomGb: 4.0, outstandingReservationBytes: 6 * gib)
+    #expect(abs(w - 50.0) < 0.001, "outstanding KV must be subtracted (got \(w))")
+}
+
+// THE INVARIANT the coordinator relies on: for an idle box (gpuActive≈0), the
+// reported max-loadable-weight equals the largest weight the provider's own
+// canLoad gate would accept. So `modelSizeGB <= free_for_load_gb` on the
+// coordinator is exactly the provider's load decision — no over/under-admit.
+@Test func maxLoadableWeightMirrorsCanLoadWhenIdle() {
+    let total: UInt64 = 24 * gib
+    let sysAvail: UInt64 = 22 * gib
+    let reserve: UInt64 = 4 * gib
+    let headroom = 4.0
+    let maxW = ModelLoadAdmission.maxLoadableWeightGb(
+        totalBytes: total, systemAvailableBytes: sysAvail,
+        mlxUsedBytes: 0, reserveBytes: reserve, headroomGb: headroom)
+    #expect(ModelLoadAdmission.canLoad(
+        weightsGb: maxW, headroomGb: headroom, totalBytes: total,
+        systemAvailableBytes: sysAvail, gpuActiveBytes: 0, gpuCacheBytes: 0, reserveBytes: reserve),
+        "a model at the reported max must load")
+    #expect(!ModelLoadAdmission.canLoad(
+        weightsGb: maxW + 0.1, headroomGb: headroom, totalBytes: total,
+        systemAvailableBytes: sysAvail, gpuActiveBytes: 0, gpuCacheBytes: 0, reserveBytes: reserve),
+        "a model just above the reported max must be rejected")
+}
+
+// MARK: - BackendCapacity wire compatibility
+
+@Test func backendCapacityRoundTripsFreeForLoad() throws {
+    let cap = BackendCapacity(
+        slots: [], gpuMemoryActiveGb: 1, gpuMemoryPeakGb: 2,
+        gpuMemoryCacheGb: 0.5, totalMemoryGb: 64, freeForLoadGb: 17.5)
+    let data = try JSONEncoder().encode(cap)
+    #expect(String(decoding: data, as: UTF8.self).contains("free_for_load_gb"))
+    let decoded = try JSONDecoder().decode(BackendCapacity.self, from: data)
+    #expect(decoded == cap)
+    #expect(abs(decoded.freeForLoadGb - 17.5) < 0.001)
+}
+
+@Test func backendCapacityDecodesLegacyWithoutFreeForLoad() throws {
+    let legacy = #"{"slots":[],"gpu_memory_active_gb":1,"gpu_memory_peak_gb":2,"gpu_memory_cache_gb":0.5,"total_memory_gb":64}"#
+    let decoded = try JSONDecoder().decode(BackendCapacity.self, from: Data(legacy.utf8))
+    #expect(decoded.freeForLoadGb == 0, "legacy payload defaults to 0, no throw")
+    #expect(abs(decoded.totalMemoryGb - 64) < 0.001)
+}

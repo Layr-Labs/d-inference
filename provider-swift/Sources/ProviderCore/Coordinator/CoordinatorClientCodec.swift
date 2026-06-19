@@ -83,7 +83,9 @@ public enum CoordinatorClientCodec {
         warmModels: [String],
         stats: ProviderStats,
         systemMetrics: SystemMetrics,
-        backendCapacity: BackendCapacity?
+        backendCapacity: BackendCapacity?,
+        apnsDeviceToken: String? = nil,
+        apnsEnvironment: String? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -91,7 +93,9 @@ public enum CoordinatorClientCodec {
             warmModels: warmModels,
             stats: stats,
             systemMetrics: systemMetrics,
-            backendCapacity: backendCapacity
+            backendCapacity: backendCapacity,
+            apnsDeviceToken: apnsDeviceToken,
+            apnsEnvironment: apnsEnvironment
         ))
     }
 

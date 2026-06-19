@@ -517,6 +517,51 @@ import Testing
     #expect(!runtimeJSON.contains("mismatches"))
 }
 
+@Test func providerStatsOutcomeCountersRoundTripAndOmitZeroes() throws {
+    let stats = ProviderStats(
+        requestsServed: 11,
+        tokensGenerated: 22,
+        cancellationsReceived: 3,
+        cancellationsBeforeOutput: 4,
+        cancellationsPartialComplete: 5,
+        generationErrorsAfterOutput: 6,
+        chunkEncryptionErrors: 7,
+        streamClosedWithoutTerminal: 8,
+        cancelDuringModelLoad: 9,
+        usageGaps: 10
+    )
+
+    let data = try JSONEncoder().encode(stats)
+    let object = try jsonObject(data)
+
+    #expect(object["requests_served"] as? Int == 11)
+    #expect(object["tokens_generated"] as? Int == 22)
+    #expect(object["cancellations_received"] as? Int == 3)
+    #expect(object["cancellations_before_output"] as? Int == 4)
+    #expect(object["cancellations_partial_complete"] as? Int == 5)
+    #expect(object["generation_errors_after_output"] as? Int == 6)
+    #expect(object["chunk_encryption_errors"] as? Int == 7)
+    #expect(object["stream_closed_without_terminal"] as? Int == 8)
+    #expect(object["cancel_during_model_load"] as? Int == 9)
+    #expect(object["usage_gaps"] as? Int == 10)
+    #expect(try JSONDecoder().decode(ProviderStats.self, from: data) == stats)
+
+    let zeroObject = try jsonObject(JSONEncoder().encode(ProviderStats()))
+    #expect(zeroObject["requests_served"] as? Int == 0)
+    #expect(zeroObject["tokens_generated"] as? Int == 0)
+    #expect(zeroObject["cancellations_received"] == nil)
+    #expect(zeroObject["cancellations_before_output"] == nil)
+    #expect(zeroObject["cancellations_partial_complete"] == nil)
+    #expect(zeroObject["generation_errors_after_output"] == nil)
+    #expect(zeroObject["chunk_encryption_errors"] == nil)
+    #expect(zeroObject["stream_closed_without_terminal"] == nil)
+    #expect(zeroObject["cancel_during_model_load"] == nil)
+    #expect(zeroObject["usage_gaps"] == nil)
+
+    let legacy = try JSONDecoder().decode(ProviderStats.self, from: Data(#"{}"#.utf8))
+    #expect(legacy == ProviderStats())
+}
+
 @Test func backendSlotCapacityRoundTripsAdaptiveBatchingFields() throws {
     let slot = BackendSlotCapacity(
         model: "mlx-community/Qwen2.5-7B-4bit",
@@ -527,20 +572,24 @@ import Testing
         maxTokensPotential: 12_000,
         maxConcurrency: 6,
         observedDecodeTps: 85.5,
+        observedPrefillTps: 412.0,
         activeTokenBudgetUsed: 28_000,
         activeTokenBudgetMax: 32_768,
         queuedTokenBudget: 4_096,
-        kvBytesPerToken: 393_216
+        kvBytesPerToken: 393_216,
+        modelLoadTimeMs: 9_300
     )
 
     let data = try JSONEncoder().encode(slot)
     let object = try jsonObject(data)
     #expect(object["max_concurrency"] as? Int == 6)
     #expect(object["observed_decode_tps"] as? Double == 85.5)
+    #expect(object["observed_prefill_tps"] as? Double == 412.0)
     #expect(object["active_token_budget_used"] as? Int == 28_000)
     #expect(object["active_token_budget_max"] as? Int == 32_768)
     #expect(object["queued_token_budget"] as? Int == 4_096)
     #expect(object["kv_bytes_per_token"] as? Int == 393_216)
+    #expect(object["model_load_time_ms"] as? Int == 9_300)
 
     let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: data)
     #expect(decoded == slot)
@@ -561,10 +610,12 @@ import Testing
     #expect(decoded.numRunning == 2)
     #expect(decoded.maxConcurrency == 0)
     #expect(decoded.observedDecodeTps == 0)
+    #expect(decoded.observedPrefillTps == 0)
     #expect(decoded.activeTokenBudgetUsed == 0)
     #expect(decoded.activeTokenBudgetMax == 0)
     #expect(decoded.queuedTokenBudget == 0)
     #expect(decoded.kvBytesPerToken == 0)
+    #expect(decoded.modelLoadTimeMs == 0)
 }
 
 @Test func backendSlotCapacityDecodesMaxConcurrencyZero() throws {
@@ -584,10 +635,12 @@ import Testing
         maxTokensPotential: 0,
         maxConcurrency: 0,
         observedDecodeTps: 0,
+        observedPrefillTps: 0,
         activeTokenBudgetUsed: 0,
         activeTokenBudgetMax: 0,
         queuedTokenBudget: 0,
-        kvBytesPerToken: 0
+        kvBytesPerToken: 0,
+        modelLoadTimeMs: 0
     )
 
     let object = try jsonObject(JSONEncoder().encode(slot))
@@ -596,10 +649,12 @@ import Testing
     #expect(object["max_tokens_potential"] as? Int == 0)
     #expect(object["max_concurrency"] == nil)
     #expect(object["observed_decode_tps"] == nil)
+    #expect(object["observed_prefill_tps"] == nil)
     #expect(object["active_token_budget_used"] == nil)
     #expect(object["active_token_budget_max"] == nil)
     #expect(object["queued_token_budget"] == nil)
     #expect(object["kv_bytes_per_token"] == nil)
+    #expect(object["model_load_time_ms"] == nil)
 }
 
 @Test func privacyCapabilitiesDecodesMissingHypervisorActiveAsFalse() throws {
@@ -625,10 +680,12 @@ import Testing
                 maxTokensPotential: 8000,
                 maxConcurrency: 4,
                 observedDecodeTps: 90,
+                observedPrefillTps: 360,
                 activeTokenBudgetUsed: 5000,
                 activeTokenBudgetMax: 12000,
                 queuedTokenBudget: 7000,
-                kvBytesPerToken: 262144
+                kvBytesPerToken: 262144,
+                modelLoadTimeMs: 8200
             )],
             gpuMemoryActiveGb: 5.5,
             gpuMemoryPeakGb: 6.5,
@@ -652,10 +709,42 @@ import Testing
     #expect(slot?["max_tokens_potential"] as? Int == 8000)
     #expect(slot?["max_concurrency"] as? Int == 4)
     #expect(slot?["observed_decode_tps"] as? Double == 90)
+    #expect(slot?["observed_prefill_tps"] as? Double == 360)
     #expect(slot?["active_token_budget_used"] as? Int == 5000)
     #expect(slot?["active_token_budget_max"] as? Int == 12000)
     #expect(slot?["queued_token_budget"] as? Int == 7000)
     #expect(slot?["kv_bytes_per_token"] as? Int == 262144)
+    #expect(slot?["model_load_time_ms"] as? Int == 8200)
+}
+
+@Test func heartbeatAPNsTokenRoundTripsAndOmitsWhenAbsent() throws {
+    // W5 Fix 2: with a token, the snake_case fields are present and round-trip.
+    let withToken = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
+        apnsDeviceToken: "cb1ceb489ec9",
+        apnsEnvironment: "production"
+    ))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(withToken)
+    let object = try jsonObject(data)
+    #expect(object["apns_device_token"] as? String == "cb1ceb489ec9")
+    #expect(object["apns_environment"] as? String == "production")
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: data) == withToken)
+
+    // Without a token (steady state / legacy): both fields omitted — omitempty
+    // parity with the Go HeartbeatMessage, or the symmetry tests drift.
+    let noToken = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal)
+    ))
+    let noTokenJSON = String(
+        data: try ProviderProtocolCodec.encodeProviderMessage(noToken),
+        encoding: .utf8
+    ) ?? ""
+    #expect(!noTokenJSON.contains("apns_device_token"))
+    #expect(!noTokenJSON.contains("apns_environment"))
 }
 
 private func sampleHardware() -> HardwareInfo {

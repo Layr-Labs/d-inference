@@ -357,6 +357,107 @@ struct BatchSchedulerBudgetTests {
             "P2: queued-not-admitted bridges must NOT inflate observedBatchSize")
     }
 
+    // MARK: - Prefill EWMA samples cold prefills only (routing-v2 TTFT correctness)
+
+    /// `observed_prefill_tps` = prefilledTokens / (firstToken − admitted) feeds
+    /// routing-v2's TTFT estimate. A prefix-cache RESTORE window is NOT
+    /// representative of a cold prefill: the engine emits the first token almost
+    /// instantly (KV already materialized), so the window covers only the uncached
+    /// suffix and the near-zero denominator explodes tps to the "billions" the
+    /// coordinator clamps to 5000. `recordFinish` must skip cache hits entirely
+    /// (cold-only) and sample only a genuine cold prefill.
+    @Test("recordFinish samples a cold prefill but skips a cache-restore window")
+    func prefillEwmaSamplesColdPrefillOnly() async {
+        // Cold prefill: all 1000 tokens prefilled in 1s → ~1000 tok/s. Explicit
+        // instants make the window deterministic (no wall-clock flake).
+        let cold = BatchScheduler()
+        await cold._testSeedBridge(id: "cold", promptTokens: 1000, maxTokens: 16)
+        let c0 = ContinuousClock.now
+        await cold.recordAdmission(requestId: "cold", at: c0.advanced(by: .seconds(-2)))
+        await cold.recordFirstToken(requestId: "cold", at: c0.advanced(by: .seconds(-1)))
+        _ = await cold.recordFinish(
+            requestId: "cold", promptTokens: 1000, completionTokens: 8, success: true)
+        let coldTps = await cold.observedPrefillTpsEwma
+        let coldInitialized = await cold.prefillEwmaInitialized
+
+        // Restore hit: 900 of the 1000 prompt tokens came from the checkpoint
+        // cache, so the admitted→first-token window is unrepresentative of a cold
+        // prefill. NO sample is recorded — the EWMA stays at its 0 default.
+        let restore = BatchScheduler()
+        await restore._testSeedBridge(
+            id: "warm", promptTokens: 1000, maxTokens: 16, restoredPrefixTokens: 900)
+        let r0 = ContinuousClock.now
+        await restore.recordAdmission(requestId: "warm", at: r0.advanced(by: .seconds(-2)))
+        await restore.recordFirstToken(requestId: "warm", at: r0.advanced(by: .seconds(-1)))
+        _ = await restore.recordFinish(
+            requestId: "warm", promptTokens: 1000, completionTokens: 8, success: true)
+        let restoreTps = await restore.observedPrefillTpsEwma
+        let restoreInitialized = await restore.prefillEwmaInitialized
+
+        #expect(coldInitialized,
+            "cold prefill must record a prefill-EWMA sample")
+        #expect(abs(coldTps - 1000) < 1.0,
+            "cold prefill: full 1000-token prompt over 1s ≈ 1000 tok/s (got \(coldTps))")
+        #expect(!restoreInitialized,
+            "a prefix-cache restore must NOT record a prefill-EWMA sample")
+        #expect(restoreTps == 0,
+            "restore window is unrepresentative; EWMA stays at its 0 default (got \(restoreTps))")
+    }
+
+    /// The production bug: on a near-instant first token the admitted→first-token
+    /// window collapses toward ~0, so prefilledTokens / ~0 explodes to billions of
+    /// tok/s (which the coordinator clamps to 5000, corrupting its TTFT estimate).
+    /// A sub-millisecond window must be rejected even on the cold path
+    /// (restoredPrefixTokens == 0) so the EWMA is never poisoned.
+    @Test("recordFinish rejects a sub-millisecond prefill window (overflow guard)")
+    func prefillEwmaRejectsNearZeroWindow() async {
+        let s = BatchScheduler()
+        await s._testSeedBridge(id: "tiny", promptTokens: 1000, maxTokens: 16)
+        let t0 = ContinuousClock.now
+        await s.recordAdmission(requestId: "tiny", at: t0)
+        // 50µs window: well under the 1ms floor. Pre-fix this yielded ~2e7 tok/s.
+        await s.recordFirstToken(requestId: "tiny", at: t0.advanced(by: .microseconds(50)))
+        _ = await s.recordFinish(
+            requestId: "tiny", promptTokens: 1000, completionTokens: 8, success: true)
+        let tps = await s.observedPrefillTpsEwma
+        let initialized = await s.prefillEwmaInitialized
+
+        #expect(!initialized,
+            "a sub-millisecond prefill window must NOT record a sample")
+        #expect(tps == 0,
+            "near-zero window must not poison the EWMA; stays at 0 default (got \(tps))")
+    }
+
+    /// Engine-tier (in-GPU) prefix cache: the engine restores a matched prefix
+    /// WITHOUT surfacing a per-request restored-token count, so a cache hit
+    /// leaves `restoredPrefixTokens == 0` and would be misread as a cold prefill
+    /// — recording fullPrompt / collapsed-window and re-poisoning the very EWMA
+    /// the cold-only guard protects (the gap Codex flagged on the #388 fix).
+    /// While an engine-tier prefix cache is active, `recordFinish` must skip
+    /// prefill sampling entirely, even for a window that LOOKS like a clean cold
+    /// prefill (we can't prove it wasn't a hit).
+    @Test("recordFinish skips prefill sampling for engine-tier prefix-cache models")
+    func prefillEwmaSkipsEngineTierCache() async {
+        let s = BatchScheduler()
+        await s._setEnginePrefixCacheActiveForTest(true)
+        await s._testSeedBridge(id: "engine", promptTokens: 1000, maxTokens: 16)
+        let t0 = ContinuousClock.now
+        // A perfectly representative-looking cold window (1000 tok over 1s, well
+        // above the 1ms floor and below the 8000 cap): the ONLY reason to skip is
+        // that an engine-tier hit is indistinguishable from a cold prefill.
+        await s.recordAdmission(requestId: "engine", at: t0.advanced(by: .seconds(-2)))
+        await s.recordFirstToken(requestId: "engine", at: t0.advanced(by: .seconds(-1)))
+        _ = await s.recordFinish(
+            requestId: "engine", promptTokens: 1000, completionTokens: 8, success: true)
+        let tps = await s.observedPrefillTpsEwma
+        let initialized = await s.prefillEwmaInitialized
+
+        #expect(!initialized,
+            "engine-tier prefix cache active ⇒ no prefill-EWMA sample (hit vs cold ambiguous)")
+        #expect(tps == 0,
+            "engine-tier sampling skipped; EWMA stays at its 0 default (got \(tps))")
+    }
+
     // MARK: - Billing-zero leak: terminal must not zero observed tokens
 
     /// Regression for the revenue leak: when the engine's terminal
@@ -652,13 +753,15 @@ struct BatchSchedulerBudgetTests {
     /// and the outcome can no longer distinguish restore from cold → fails.
     @Test("a reserve downgrade reports .coldReserved and holds only the cold footprint")
     func reserveDowngradeReportsColdReservedAndHoldsColdBytes() async {
-        // total memory fits the cold reservation (120 * 1024 = 122_880 B) but not
-        // the restore-sized one (500 * 1024 = 512_000 B). safetyFactor 1.0,
-        // reserveBytes 0, active/cache 0 → availableReservationBytes() == total.
+        // Headroom fits the cold reservation (120 * 1024 = 122_880 B) but not the
+        // restore-sized one (500 * 1024 = 512_000 B). `total` clears the 2 GiB
+        // hardCap floor; the binding headroom is the 200_000 B `systemAvailable`
+        // (with capFraction 1.0 / activationReserve 0, availableReservationBytes
+        // == min(cap − 0, systemAvailable) == 200_000).
         let kvBudget = GlobalKVCacheBudget(
-            reserveBytes: 0,
-            safetyFactor: 1.0,
-            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 200_000, active: 0, cache: 0, systemAvailable: .max) }
+            capFraction: 1.0,
+            activationReserveBytes: 0,
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 8 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: 200_000) }
         )
         let scheduler = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
@@ -710,10 +813,12 @@ struct BatchSchedulerBudgetTests {
     /// over-eager downgrade that would turn every restore into a cold prefill.
     @Test("a restore that fits reports .restoreReserved and holds the restore footprint")
     func reserveThatFitsReportsRestoreReserved() async {
+        // `total` clears the 2 GiB hardCap floor; 1_000_000 B `systemAvailable` is
+        // the binding headroom, ample for the 500-token (512_000 B) restore.
         let kvBudget = GlobalKVCacheBudget(
-            reserveBytes: 0,
-            safetyFactor: 1.0,
-            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000_000, active: 0, cache: 0, systemAvailable: .max) }
+            capFraction: 1.0,
+            activationReserveBytes: 0,
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 8 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: 1_000_000) }
         )
         let scheduler = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: kvBudget)
@@ -744,9 +849,11 @@ struct BatchSchedulerBudgetTests {
     /// reserve reports `.failed`.
     @Test("a plain cold request reports .coldReserved on success and .failed on overflow")
     func plainColdRequestOutcomes() async {
+        // `total` clears the 2 GiB hardCap floor; 1_000_000 B `systemAvailable` is
+        // the binding headroom, ample for the 120-token (122_880 B) cold reserve.
         let fits = GlobalKVCacheBudget(
-            reserveBytes: 0, safetyFactor: 1.0,
-            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000_000, active: 0, cache: 0, systemAvailable: .max) })
+            capFraction: 1.0, activationReserveBytes: 0,
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 8 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: 1_000_000) })
         let schedulerFits = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: fits)
         await schedulerFits._setKvBytesPerTokenForTest(1024)
@@ -760,10 +867,11 @@ struct BatchSchedulerBudgetTests {
             "the cold reservation must be exactly the request footprint")
 
         // Tiny budget → even the cold reservation fails → .failed (no restore to
-        // downgrade to). Mirrors the old `false` return.
+        // downgrade to). Mirrors the old `false` return. 1 KB `systemAvailable`
+        // is far below the 122_880 B cold footprint, so the reserve is rejected.
         let tiny = GlobalKVCacheBudget(
-            reserveBytes: 0, safetyFactor: 1.0,
-            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 1_000, active: 0, cache: 0, systemAvailable: .max) })
+            capFraction: 1.0, activationReserveBytes: 0,
+            memorySnapshot: { GlobalKVCacheBudget.MemorySnapshot(total: 8 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: 1_000) })
         let schedulerTiny = BatchScheduler(
             maxConcurrentRequests: 4, defaultMaxTokens: 4096, kvBudget: tiny)
         await schedulerTiny._setKvBytesPerTokenForTest(1024)

@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -160,6 +161,11 @@ func main() {
 	}
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
+	// Stop the routing-telemetry sink's worker pool on shutdown. Deferred so it
+	// runs after the HTTP server has drained (no in-flight request can still be
+	// submitting telemetry); Close is idempotent and never blocks on in-flight
+	// writes, so it cannot stall shutdown.
+	defer srv.Close()
 
 	// Per-account rate limiter on consumer (inference) endpoints. The default
 	// is intentionally generous (20 rps / burst 120) — the fleet token-budget
@@ -286,6 +292,44 @@ func main() {
 		srv.SetBinaryHashEnforcement(true)
 		logger.Warn("binaryHash enforcement ENABLED via EIGENINFERENCE_BINARYHASH_ENFORCE (legacy; APNs code-identity is the real signal)")
 	}
+
+	// Routing: TTFT admission ceiling mode. Default is a SOFT routing preference
+	// (serve the best-available provider when one passes every routing/capacity
+	// gate). Set this to restore the legacy HARD 429 when the best estimated TTFT
+	// exceeds the 5s+1ms/token deadline. The estimate's prefill term is not
+	// provider-measured, so the hard gate over-rejected serveable requests.
+	if os.Getenv("EIGENINFERENCE_TTFT_HARD_REJECT") == "true" {
+		srv.SetTTFTHardReject(true)
+		logger.Warn("TTFT hard-reject ENABLED via EIGENINFERENCE_TTFT_HARD_REJECT (legacy 429-on-slow-estimate; soft preference is the default)")
+	}
+
+	// Routing: decode→prefill ratio fallback, used to estimate prefill TPS when a
+	// provider does not report a measured prefill_tps. Defaults to
+	// registry.defaultPrefillToDecodeRatio.
+	if v := os.Getenv("EIGENINFERENCE_PREFILL_DECODE_RATIO"); v != "" {
+		if ratio, err := strconv.ParseFloat(v, 64); err == nil && ratio > 0 {
+			registry.SetPrefillToDecodeRatio(ratio)
+			logger.Info("prefill/decode ratio override via EIGENINFERENCE_PREFILL_DECODE_RATIO", "ratio", ratio)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PREFILL_DECODE_RATIO; ignoring", "value", v)
+		}
+	}
+
+	// Routing: per-request sustained-decode floor (tokens/sec). The quality bar is
+	// ON BY DEFAULT (15 tok/s) so the scheduler won't pack a provider into a
+	// degraded stream; it softly prefers providers that keep a newly admitted
+	// request at >= this rate (never rejects on its own — falls back to
+	// best-available). Set EIGENINFERENCE_MIN_DECODE_TPS to override; 0 disables.
+	minDecodeTPS := 15.0 // default quality bar
+	if v := os.Getenv("EIGENINFERENCE_MIN_DECODE_TPS"); v != "" {
+		if tps, err := strconv.ParseFloat(v, 64); err == nil && tps >= 0 {
+			minDecodeTPS = tps
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_MIN_DECODE_TPS; using default", "value", v, "default", minDecodeTPS)
+		}
+	}
+	srv.SetMinDecodeTPS(minDecodeTPS)
+	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from
@@ -469,6 +513,12 @@ func main() {
 	// grace window to update to 0.6.0 and attest. Absent config leaves it disabled.
 	if attestor := loadAPNsAttestor(logger); attestor != nil {
 		srv.SetCodeAttestor(attestor)
+		// W5 Fix 2 (2b): seed the code-identity reuse cache from the store (and
+		// wire write-through) so a blue-green deploy / restart doesn't wipe it and
+		// re-push the whole fleet against Apple's ~3/hour/device budget. Durable in
+		// prod (Postgres store; see the store selection above); a no-op only under
+		// the in-memory store fallback.
+		srv.SeedCodeAttestCache(ctx)
 		deadline, err := parseAPNsEnforceAfter()
 		if err != nil {
 			// A non-empty but malformed APNS_ENFORCE_AFTER is an operator error on a
@@ -494,6 +544,16 @@ func main() {
 		logger.Info("APNs code-identity attestation not configured — providers route without code-identity proof")
 	}
 
+	// DAR-326 Phase 0: seed the provider trust-reuse cache from the store (and wire
+	// write-through + the hard-untrust invalidation hook). This lets a planned
+	// coordinator restart / blue-green swap skip a fleet-wide live MDM SecurityInfo
+	// + APNs re-verification herd: a reconnecting, recently-fully-verified provider
+	// is granted hardware from its record once a fresh live SE challenge re-proves
+	// identity + posture. Durable in prod (Postgres store; see the store selection
+	// above); a no-op only under the in-memory store fallback. Independent of the
+	// APNs attestor — MDM verification runs whenever an MDM client is configured.
+	srv.SeedTrustReuseCache(ctx)
+
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
 
@@ -503,13 +563,27 @@ func main() {
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)
 
+	// Flag any model decoding far below its active-param/hardware class (W8 —
+	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
+	srv.StartThroughputAnomalyDetector(ctx)
+
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
-		Addr:         ":" + cfg.ServerConfig.Port,
-		Handler:      srv.Handler(),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 0, // SSE streaming requires no write timeout
-		IdleTimeout:  120 * time.Second,
+		Addr:    ":" + cfg.ServerConfig.Port,
+		Handler: srv.Handler(),
+		// ReadHeaderTimeout bounds the request-header read phase independently of
+		// the body, closing the slow-header (Slowloris) DoS window: a client that
+		// trickles or never finishes its header block is dropped at 5s instead of
+		// tying up a connection/goroutine. Kept shorter than ReadTimeout so header
+		// hardening doesn't constrain legitimate (larger) request bodies.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      0, // SSE streaming requires no write timeout
+		IdleTimeout:       120 * time.Second,
+		// MaxHeaderBytes caps per-connection header memory at 64 KB (Go's default
+		// is 1 MB), bounding what an attacker can force the server to buffer for
+		// headers and rejecting abusive oversized-header requests early.
+		MaxHeaderBytes: 64 << 10,
 	}
 
 	// Start listening.

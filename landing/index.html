@@ -1138,6 +1138,11 @@
   <!-- Live figures sourced from the coordinator's public /v1/stats endpoint.
        The Network power tile is hidden when neither active_power_watts nor a
        providers[] array is available. See network-stats.js. -->
+  <!-- TEMP: live network strip disabled — /v1/stats CORS allowance (PR #350) is
+       merged but not yet deployed to the prod coordinator, so the browser fetch
+       from www.darkbloom.dev is blocked. Re-enable once the coordinator deploy
+       lands (header returns Access-Control-Allow-Origin: *). -->
+  <!--
   <section id="network" data-section="live-network">
     <div class="container">
       <div class="netstat-grid rv" aria-live="polite">
@@ -1161,6 +1166,7 @@
       </div>
     </div>
   </section>
+  -->
 
   <div class="container"><div class="rule"></div></div>
 
@@ -1499,7 +1505,8 @@ response = client.chat.completions.create(
 <script src="earn-calculator.js"></script>
 
 <!-- ============ LIVE NETWORK (/v1/stats) ============ -->
-<script src="network-stats.js"></script>
+<!-- TEMP: disabled until /v1/stats CORS fix (PR #350) is deployed to prod coordinator. -->
+<!-- <script src="network-stats.js"></script> -->
 
 <!-- ============ LIVE MODEL LINEUP + PRICING ============ -->
 <!-- Sources the pricing table from the coordinator's public, registry-backed

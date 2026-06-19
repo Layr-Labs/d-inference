@@ -25,19 +25,26 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// fakeCodeAttestor simulates the FULL APNs round-trip in-process — no real APNs.
-// On SendCodeChallenge it (1) builds the REAL E_K(nonce) payload exactly as the
-// production APNsPushAttestor would (exercising the coordinator encrypt path),
-// then (2) simulates the genuine provider: decrypts with K, signs the recovered
-// nonce with the SE key, and delivers a code_attestation_response into the
-// tracker exactly as the WebSocket read loop does on a real reply.
+// fakeCodeAttestor simulates APNs in-process — no real Apple push. onSend is
+// invoked synchronously by sendCodeIdentityChallenge with the SAME args the
+// production APNsPushAttestor would receive; a test supplies an onSend that either
+// drops the challenge (to model a lost/late push) or completes the round-trip by
+// feeding a code_attestation_response into the coordinator's read-loop delivery
+// path (handleCodeAttestationResponse), exactly as a real WebSocket reply would.
+//
+// mode lets a test exercise the loop's mode-aware budget selection (Fix 3): the
+// loop type-asserts Mode() on the attestor to choose the alert vs background push
+// cooldown.
 type fakeCodeAttestor struct {
 	onSend func(deviceToken, env, pubKeyB64, nonceB64 string) error
+	mode   apns.Mode
 }
 
 func (f *fakeCodeAttestor) SendCodeChallenge(_ context.Context, deviceToken, env, pubKeyB64, nonceB64 string) error {
 	return f.onSend(deviceToken, env, pubKeyB64, nonceB64)
 }
+
+func (f *fakeCodeAttestor) Mode() apns.Mode { return f.mode }
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -93,47 +100,52 @@ func newCodeAttestProvider(kPubB64, sePubB64 string) *registry.Provider {
 	}
 }
 
-// TestCodeIdentityRoundTripEndToEnd is the Phase 3 correctness gate: the full
-// crypto round-trip — coordinator generates a nonce → real E_K(nonce) encrypt →
-// genuine-provider decrypt with K → Sign_SE over the recovered nonce → WS reply →
-// coordinator verifies (nonce match + SE signature) → CodeAttested flips true.
+// completeRoundTrip performs the REAL coordinator-side encrypt + genuine-provider
+// decrypt + SE-sign for a pushed nonce, then feeds the reply into the read-loop
+// delivery path exactly as a WebSocket code_attestation_response would arrive.
+// signKey is the SE key the provider signs with (the genuine key for a passing
+// round-trip; a different key to model a fork). deliverTo is the connection that
+// the reply lands on (the same provider normally, a DIFFERENT one for reconnect).
+func completeRoundTrip(t *testing.T, srv *Server, deliverTo *registry.Provider, deliverID string, kPriv [32]byte, signKey *ecdsa.PrivateKey, pubKeyB64, nonceB64 string) error {
+	t.Helper()
+	payload, err := apns.BuildCodeChallengePayload(nonceB64, pubKeyB64, apns.ModeBackground)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		CodeChallenge e2e.EncryptedPayload `json:"code_challenge"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return err
+	}
+	recovered, err := e2e.DecryptWithPrivateKey(&body.CodeChallenge, kPriv)
+	if err != nil {
+		return err
+	}
+	srv.handleCodeAttestationResponse(deliverID, deliverTo, &protocol.CodeAttestationResponseMessage{
+		Type:      protocol.TypeCodeAttestationResponse,
+		Nonce:     string(recovered),
+		Signature: signSEOverString(t, signKey, string(recovered)),
+	})
+	return nil
+}
+
+// TestCodeIdentityRoundTripEndToEnd is the correctness gate: the full crypto
+// round-trip — coordinator generates a nonce → real E_K(nonce) encrypt → genuine-
+// provider decrypt with K → Sign_SE over the recovered nonce → WS reply verified
+// in the read-loop delivery path → CodeAttested flips true.
 func TestCodeIdentityRoundTripEndToEnd(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
-	ct := newCodeAttestTracker()
-
-	fake := &fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
-		// (1) Real coordinator-side build: E_K(nonce) via the inference E2E path.
-		payload, err := apns.BuildCodeChallengePayload(nonceB64, pubKeyB64, apns.ModeBackground)
-		if err != nil {
-			return err
-		}
-		// (2) Genuine provider sim: decrypt code_challenge with K's private key.
-		var body struct {
-			CodeChallenge e2e.EncryptedPayload `json:"code_challenge"`
-		}
-		if err := json.Unmarshal(payload, &body); err != nil {
-			return err
-		}
-		recovered, err := e2e.DecryptWithPrivateKey(&body.CodeChallenge, kPriv)
-		if err != nil {
-			return err
-		}
-		// Sign the recovered nonce with the SE key and reply over the WS (tracker).
-		sig := signSEOverString(t, seKey, string(recovered))
-		go ct.deliver(&protocol.CodeAttestationResponseMessage{
-			Type:      protocol.TypeCodeAttestationResponse,
-			Nonce:     string(recovered),
-			Signature: sig,
-		})
-		return nil
-	}}
-	srv.SetCodeAttestor(fake)
-
 	provider := newCodeAttestProvider(kPubB64, sePubB64)
-	srv.sendCodeIdentityChallenge(context.Background(), "p1", provider, ct)
+
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
+
+	srv.sendCodeIdentityChallenge(context.Background(), "p1", provider)
 
 	if !provider.GetCodeAttested() {
 		t.Fatal("expected CodeAttested=true after a valid end-to-end round-trip")
@@ -141,9 +153,9 @@ func TestCodeIdentityRoundTripEndToEnd(t *testing.T) {
 }
 
 // TestCodeIdentityRejectsWrongSEKey proves fail-closed: a response whose nonce
-// decrypts correctly (proving K) but is signed by a DIFFERENT SE key (not the
-// one bound at registration) must NOT attest — defending against a fork that
-// received a relayed challenge but holds its own SE key.
+// decrypts correctly (proving K) but is signed by a DIFFERENT SE key (not the one
+// bound at registration) must NOT attest — defending against a fork that received
+// a relayed challenge but holds its own SE key.
 func TestCodeIdentityRejectsWrongSEKey(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
@@ -153,130 +165,78 @@ func TestCodeIdentityRejectsWrongSEKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gen wrong SE: %v", err)
 	}
-	ct := newCodeAttestTracker()
-
-	fake := &fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
-		payload, err := apns.BuildCodeChallengePayload(nonceB64, pubKeyB64, apns.ModeBackground)
-		if err != nil {
-			return err
-		}
-		var body struct {
-			CodeChallenge e2e.EncryptedPayload `json:"code_challenge"`
-		}
-		if err := json.Unmarshal(payload, &body); err != nil {
-			return err
-		}
-		recovered, err := e2e.DecryptWithPrivateKey(&body.CodeChallenge, kPriv)
-		if err != nil {
-			return err
-		}
-		// Signed by the WRONG SE key — must fail verification.
-		sig := signSEOverString(t, wrongSE, string(recovered))
-		go ct.deliver(&protocol.CodeAttestationResponseMessage{
-			Type:      protocol.TypeCodeAttestationResponse,
-			Nonce:     string(recovered),
-			Signature: sig,
-		})
-		return nil
-	}}
-	srv.SetCodeAttestor(fake)
-
 	provider := newCodeAttestProvider(kPubB64, sePubB64) // bound to the REAL SE key
-	srv.sendCodeIdentityChallenge(context.Background(), "p1", provider, ct)
+
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		// Decrypts fine (proves K), but signs with the WRONG SE key.
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, wrongSE, pubKeyB64, nonceB64)
+	}})
+
+	srv.sendCodeIdentityChallenge(context.Background(), "p1", provider)
 
 	if provider.GetCodeAttested() {
 		t.Fatal("CodeAttested must stay false when the SE signature is from the wrong key")
 	}
 }
 
-// fullCodeAttestRoundTrip returns an onSend that completes a valid challenge
-// round-trip (decrypt the nonce, SE-sign it, deliver the response), counting the
-// pushes it actually sends into `pushes`.
-func fullCodeAttestRoundTrip(t *testing.T, kPriv [32]byte, seKey *ecdsa.PrivateKey, ct *codeAttestTracker, pushes *int32) func(_, _, _, _ string) error {
-	return func(_, _, pubKeyB64, nonceB64 string) error {
-		atomic.AddInt32(pushes, 1)
-		payload, err := apns.BuildCodeChallengePayload(nonceB64, pubKeyB64, apns.ModeBackground)
-		if err != nil {
-			return err
-		}
-		var body struct {
-			CodeChallenge e2e.EncryptedPayload `json:"code_challenge"`
-		}
-		if err := json.Unmarshal(payload, &body); err != nil {
-			return err
-		}
-		recovered, err := e2e.DecryptWithPrivateKey(&body.CodeChallenge, kPriv)
-		if err != nil {
-			return err
-		}
-		sig := signSEOverString(t, seKey, string(recovered))
-		go ct.deliver(&protocol.CodeAttestationResponseMessage{
-			Type:      protocol.TypeCodeAttestationResponse,
-			Nonce:     string(recovered),
-			Signature: sig,
-		})
-		return nil
-	}
-}
-
-// TestCodeAttestLoopHealsDroppedPushWithBoundedRetry proves a single dropped
-// background push doesn't strand a capable provider: the first push fails and the
-// loop retries (spaced by the per-device cooldown — NOT a fixed 5-min ticker) and
-// attests. It must stay within the push budget (bounded by maxAttempts).
+// TestCodeAttestLoopHealsDroppedPushWithBoundedRetry proves a single dropped push
+// doesn't strand a capable provider: the first push fails and the loop retries
+// (spaced by the per-device budget — NOT a fixed ticker) and attests, staying
+// within the push budget (bounded by maxAttempts).
 func TestCodeAttestLoopHealsDroppedPushWithBoundedRetry(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	srv.codeAttestThrottle.pushCooldown = time.Millisecond // fast retry spacing for the test
+	srv.codeAttestThrottle.backgroundPushCooldown = time.Millisecond // fast budget for the test
+	srv.codeAttestThrottle.retrySpacing = time.Millisecond           // fast poll cadence
+	srv.codeAttestThrottle.retryJitter = 0
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
-	ct := newCodeAttestTracker()
+	provider := newCodeAttestProvider(kPubB64, sePubB64)
 
-	var attempts int32
-	roundTrip := fullCodeAttestRoundTrip(t, kPriv, seKey, ct, &attempts)
-	fake := &fakeCodeAttestor{onSend: func(a, b, pubKeyB64, nonceB64 string) error {
-		if atomic.LoadInt32(&attempts) == 0 {
-			atomic.AddInt32(&attempts, 1)
+	var pushes int32
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		if atomic.AddInt32(&pushes, 1) == 1 {
 			return errors.New("transient push send failure") // first push fails
 		}
-		return roundTrip(a, b, pubKeyB64, nonceB64)
-	}}
-	srv.SetCodeAttestor(fake)
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
 
-	provider := newCodeAttestProvider(kPubB64, sePubB64)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	go srv.codeAttestLoop(ctx, "p1", provider, ct)
+	srv.codeAttestLoop(ctx, "p1", provider)
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && !provider.GetCodeAttested() {
-		time.Sleep(5 * time.Millisecond)
-	}
 	if !provider.GetCodeAttested() {
 		t.Fatal("expected CodeAttested=true after a bounded retry healed the dropped first push")
 	}
-	if got := atomic.LoadInt32(&attempts); got < 2 || got > int32(srv.codeAttestThrottle.maxAttempts) {
-		t.Fatalf("expected 2..%d attempts, got %d", srv.codeAttestThrottle.maxAttempts, got)
+	if got := atomic.LoadInt32(&pushes); got < 2 || got > int32(srv.codeAttestThrottle.maxAttempts) {
+		t.Fatalf("expected 2..%d pushes, got %d", srv.codeAttestThrottle.maxAttempts, got)
 	}
 }
 
 // TestCodeAttestLoopReusesRecentAttestation proves a reconnect from the same
-// device (same SE key + binary version) within the reuse window inherits the
-// proof with NO additional push — respecting Apple's ~3/hour background-push
-// budget instead of re-challenging on every connection.
+// device (same SE key + binary version) within the reuse window inherits the proof
+// with NO additional push — respecting Apple's ~3/hour background-push budget.
 func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv.codeAttestThrottle.retrySpacing = time.Millisecond
+	srv.codeAttestThrottle.retryJitter = 0
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
-	ct := newCodeAttestTracker()
 
 	var pushes int32
-	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: fullCodeAttestRoundTrip(t, kPriv, seKey, ct, &pushes)})
+	// onSend completes the round-trip for whichever provider is currently attesting.
+	var current *registry.Provider
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		atomic.AddInt32(&pushes, 1)
+		return completeRoundTrip(t, srv, current, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
 
 	// Connection 1: a real round-trip → exactly one push, attested.
 	p1 := newCodeAttestProvider(kPubB64, sePubB64)
 	p1.Version = "0.6.0"
-	srv.codeAttestLoop(context.Background(), "p1", p1, ct)
+	current = p1
+	srv.codeAttestLoop(context.Background(), "p1", p1)
 	if !p1.GetCodeAttested() {
 		t.Fatal("connection 1 should attest")
 	}
@@ -288,7 +248,8 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	// must REUSE the recent attestation — attested without another push.
 	p2 := newCodeAttestProvider(kPubB64, sePubB64)
 	p2.Version = "0.6.0"
-	srv.codeAttestLoop(context.Background(), "p1", p2, ct)
+	current = p2
+	srv.codeAttestLoop(context.Background(), "p1", p2)
 	if !p2.GetCodeAttested() {
 		t.Fatal("connection 2 should inherit the recent attestation (reuse)")
 	}
@@ -297,41 +258,188 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	}
 }
 
-// TestCodeAttestThrottleBudgetAndReuse covers the rate-limit + reuse logic with a
-// fake clock: pushes are blocked within the cooldown, and a recent attestation is
-// reused only within the window and only for the same binary version.
-func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
+// TestCodeAttestLateReplyOnLiveConnectionStillAttests proves Fix 1 + Fix 5: a
+// reply arriving long after the old 90s blocking wait — but on a live connection
+// and within the (widened) challenge validity window — still attests, because
+// verification now happens in the read-loop delivery path rather than a goroutine
+// that times out at 90s. The complementary case proves the validity bound stays
+// fail-closed: a reply past the window is rejected.
+func TestCodeAttestLateReplyOnLiveConnectionStillAttests(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+
 	cur := time.Unix(1_700_000_000, 0)
-	th := newCodeAttestThrottle()
-	th.now = func() time.Time { return cur }
-	const se = "se-key-1"
+	srv.codeAttestThrottle.now = func() time.Time { return cur }
 
-	if !th.allowPush(se) {
-		t.Fatal("first push should be allowed")
-	}
-	if th.reuseAttestation(se, "0.6.0") {
-		t.Fatal("no attestation yet → no reuse")
-	}
-	th.recordPush(se)
+	kPubB64, _, seKey, sePubB64 := providerKeyMaterial(t)
 
-	cur = cur.Add(th.pushCooldown - time.Minute) // still inside the cooldown
-	if th.allowPush(se) {
-		t.Fatal("a push within the cooldown must be blocked (background-push budget)")
+	// Capture the pushed nonce; do NOT deliver during the push (model a sleepy
+	// device that answers later).
+	var pushedNonce string
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, nonceB64 string) error {
+		pushedNonce = nonceB64
+		return nil
+	}})
+
+	// Case A: reply 91s later (was > the old 90s wait) but inside the 300s window.
+	provider := newCodeAttestProvider(kPubB64, sePubB64)
+	srv.sendCodeIdentityChallenge(context.Background(), "p1", provider)
+	if provider.GetCodeAttested() {
+		t.Fatal("must not attest before any reply arrives")
 	}
-	cur = cur.Add(2 * time.Minute) // now just past the cooldown
-	if !th.allowPush(se) {
-		t.Fatal("a push after the cooldown should be allowed")
+	cur = cur.Add(91 * time.Second)
+	srv.handleCodeAttestationResponse("p1", provider, &protocol.CodeAttestationResponseMessage{
+		Type:      protocol.TypeCodeAttestationResponse,
+		Nonce:     pushedNonce,
+		Signature: signSEOverString(t, seKey, pushedNonce),
+	})
+	if !provider.GetCodeAttested() {
+		t.Fatal("a reply 91s later on a live connection must still attest (Fix 1 + Fix 5)")
 	}
 
-	th.recordAttested(se, "0.6.0")
-	if !th.reuseAttestation(se, "0.6.0") {
-		t.Fatal("should reuse a fresh, same-version attestation")
+	// Case B: a reply past the validity window must be rejected (fail-closed).
+	cur = cur.Add(time.Hour)
+	late := newCodeAttestProvider(kPubB64, sePubB64)
+	srv.sendCodeIdentityChallenge(context.Background(), "p1", late)
+	cur = cur.Add(srv.codeAttestThrottle.challengeValidity + time.Second)
+	srv.handleCodeAttestationResponse("p1", late, &protocol.CodeAttestationResponseMessage{
+		Type:      protocol.TypeCodeAttestationResponse,
+		Nonce:     pushedNonce,
+		Signature: signSEOverString(t, seKey, pushedNonce),
+	})
+	if late.GetCodeAttested() {
+		t.Fatal("a reply past the challenge validity window must not attest (fail-closed staleness)")
 	}
-	if th.reuseAttestation(se, "0.6.1") {
-		t.Fatal("must NOT reuse across a binary version change")
+}
+
+// TestCodeAttestReconnectMidFlightDoesNotStrand proves Fix 1 kills the connection-
+// scoped strand: a challenge pushed on connection 1 is verified when its reply
+// lands on connection 2 (a reconnect from the SAME device), with NO second push —
+// because the pushed nonce is tracked per-device (by SE key), not per-connection.
+func TestCodeAttestReconnectMidFlightDoesNotStrand(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+
+	kPubB64, _, seKey, sePubB64 := providerKeyMaterial(t)
+
+	var pushes int32
+	var pushedNonce string
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, nonceB64 string) error {
+		atomic.AddInt32(&pushes, 1)
+		pushedNonce = nonceB64 // push goes out, but conn 1 drops before replying
+		return nil
+	}})
+
+	// Connection 1 pushes a challenge, then "drops" before the reply.
+	conn1 := newCodeAttestProvider(kPubB64, sePubB64)
+	srv.sendCodeIdentityChallenge(context.Background(), "conn1", conn1)
+	if conn1.GetCodeAttested() {
+		t.Fatal("conn1 must not be attested (it dropped before replying)")
 	}
-	cur = cur.Add(th.reuseWindow) // window elapsed
-	if th.reuseAttestation(se, "0.6.0") {
-		t.Fatal("reuse must expire after the window")
+
+	// Connection 2 is a fresh connection from the SAME device (same SE key). The
+	// provider's reply to conn1's challenge now lands here.
+	conn2 := newCodeAttestProvider(kPubB64, sePubB64)
+	srv.handleCodeAttestationResponse("conn2", conn2, &protocol.CodeAttestationResponseMessage{
+		Type:      protocol.TypeCodeAttestationResponse,
+		Nonce:     pushedNonce,
+		Signature: signSEOverString(t, seKey, pushedNonce),
+	})
+
+	if !conn2.GetCodeAttested() {
+		t.Fatal("a reply on a reconnected socket must attest the live connection (no strand)")
+	}
+	if got := atomic.LoadInt32(&pushes); got != 1 {
+		t.Fatalf("reconnect must NOT burn another push; pushes=%d", got)
+	}
+}
+
+// TestCodeAttestNoTokenNeverAttests is the fail-closed gate for a provider with no
+// APNs device token (legacy/headless): the loop exits immediately, never pushes,
+// and the connection never attests.
+func TestCodeAttestNoTokenNeverAttests(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+
+	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
+	provider := newCodeAttestProvider(kPubB64, sePubB64)
+	provider.APNsDeviceToken = "" // no token → cannot be challenged
+
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
+		t.Fatal("must not push when the provider has no APNs token")
+		return nil
+	}})
+
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+	if provider.GetCodeAttested() {
+		t.Fatal("a provider with no APNs token must never attest (fail-closed)")
+	}
+}
+
+// TestCodeAttestTimeoutNeverAttests is the fail-closed gate for a delivered push
+// that is never answered: the loop pushes up to maxAttempts and gives up without
+// attesting.
+func TestCodeAttestTimeoutNeverAttests(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv.codeAttestThrottle.maxAttempts = 2
+	srv.codeAttestThrottle.backgroundPushCooldown = time.Millisecond
+	srv.codeAttestThrottle.retrySpacing = time.Millisecond
+	srv.codeAttestThrottle.retryJitter = 0
+
+	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
+	provider := newCodeAttestProvider(kPubB64, sePubB64)
+
+	var pushes int32
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
+		atomic.AddInt32(&pushes, 1) // push accepted, but the provider never replies
+		return nil
+	}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	srv.codeAttestLoop(ctx, "p1", provider)
+
+	if provider.GetCodeAttested() {
+		t.Fatal("an unanswered challenge must never attest (fail-closed)")
+	}
+	if got := atomic.LoadInt32(&pushes); got != int32(srv.codeAttestThrottle.maxAttempts) {
+		t.Fatalf("expected exactly maxAttempts=%d pushes, got %d", srv.codeAttestThrottle.maxAttempts, got)
+	}
+}
+
+// TestCodeAttestLoopAlertModeUsesShortBudget proves Fix 3: in alert mode the loop
+// retries on the (short) alert push budget, not the (long) background budget. The
+// background budget is set to an hour and the alert budget to ~nothing; if the loop
+// used the background budget it could never heal the dropped first push within the
+// test deadline.
+func TestCodeAttestLoopAlertModeUsesShortBudget(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv.codeAttestThrottle.alertPushCooldown = time.Millisecond
+	srv.codeAttestThrottle.backgroundPushCooldown = time.Hour // would strand if used
+	srv.codeAttestThrottle.retrySpacing = time.Millisecond
+	srv.codeAttestThrottle.retryJitter = 0
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	provider := newCodeAttestProvider(kPubB64, sePubB64)
+
+	var pushes int32
+	srv.SetCodeAttestor(&fakeCodeAttestor{
+		mode: apns.ModeAlert,
+		onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+			if atomic.AddInt32(&pushes, 1) == 1 {
+				return errors.New("transient push send failure") // first push fails
+			}
+			return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	srv.codeAttestLoop(ctx, "p1", provider)
+
+	if !provider.GetCodeAttested() {
+		t.Fatal("alert mode must retry on the short alert budget and heal within the deadline")
 	}
 }

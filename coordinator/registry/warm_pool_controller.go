@@ -2,10 +2,17 @@ package registry
 
 import (
 	"context"
-	"math"
 	"sort"
 	"sync"
 	"time"
+)
+
+// Service-time (E[S]) clamps for the Little's Law target. A near-zero or absurdly
+// large per-request rate must not let the demand-to-concurrency conversion produce
+// a runaway or zero target.
+const (
+	warmPoolMinServiceTime = 500 * time.Millisecond
+	warmPoolMaxServiceTime = 2 * time.Minute
 )
 
 type warmPoolController struct {
@@ -13,6 +20,8 @@ type warmPoolController struct {
 	config   WarmPoolConfig
 	state    *warmPoolState
 	queueMu  syncQueuePressure
+	tickMu   sync.Mutex
+	triggerC chan struct{}
 }
 
 type syncQueuePressure struct {
@@ -41,13 +50,33 @@ type WarmPoolSnapshot struct {
 	LoadDurationEWMA   time.Duration
 	ObserveOnly        bool
 	Actions            []modelLoadAction
+
+	// Little's Law diagnostics (Layer 3, routing-v2.md). DemandConcurrency is
+	// L = λ·E[S]; QualityConcurrency is the per-provider batch ceiling at the
+	// decode floor; SpillArrivalRate is the EWMA arrivals/sec the pool shed.
+	RunningRequests    int
+	WaitingRequests    int
+	SpillArrivalRate   float64
+	ServiceTime        time.Duration
+	QualityConcurrency int
+	DemandConcurrency  float64
 }
 
 type warmPoolModelSnapshot struct {
 	model         string
 	warm          int
 	warmSaturated int
-	eligibleCold  []warmPoolCandidate
+	// running / waiting are the in-flight load summed across warm providers'
+	// backend slots for this model (the observable L in Little's Law).
+	running int
+	waiting int
+	// soloDecodeTPS / prefillTPS / maxProviderConc are representative (median)
+	// rates and the per-provider concurrency cap across providers serving the
+	// model, used for quality concurrency and the E[S] service-time estimate.
+	soloDecodeTPS   float64
+	prefillTPS      float64
+	maxProviderConc int
+	eligibleCold    []warmPoolCandidate
 }
 
 type warmPoolCandidate struct {
@@ -61,6 +90,7 @@ func newWarmPoolController(r *Registry, cfg WarmPoolConfig) *warmPoolController 
 		config:   cfg,
 		state:    newWarmPoolState(),
 		queueMu:  syncQueuePressure{models: make(map[string]warmPoolQueuePressure)},
+		triggerC: make(chan struct{}, 1),
 	}
 }
 
@@ -87,6 +117,38 @@ func (r *Registry) StartWarmPoolController(ctx context.Context, cfg WarmPoolConf
 	return cancel
 }
 
+// RequestWarmPoolTrigger coalesces a hot-path warm-pool kick into the
+// controller's single run goroutine. It never blocks callers: if a trigger is
+// already queued or a tick is in progress, that pending pass is enough to observe
+// the latest queue/capacity pressure.
+func (r *Registry) RequestWarmPoolTrigger() bool {
+	r.mu.RLock()
+	controller := r.warmPool
+	r.mu.RUnlock()
+	if controller == nil || !controller.config.Enabled || controller.config.ObserveOnly {
+		return false
+	}
+	select {
+	case controller.triggerC <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// TriggerWarmPool runs one active warm-pool planning pass immediately. It is a
+// used by tests and administrative callers that need the resulting snapshots.
+// Hot request paths should use RequestWarmPoolTrigger so bursts are coalesced.
+func (r *Registry) TriggerWarmPool() []WarmPoolSnapshot {
+	r.mu.RLock()
+	controller := r.warmPool
+	r.mu.RUnlock()
+	if controller == nil || !controller.config.Enabled || controller.config.ObserveOnly {
+		return nil
+	}
+	return controller.tick(time.Now())
+}
+
 func (c *warmPoolController) run(ctx context.Context) {
 	interval := c.config.Interval
 	if interval <= 0 {
@@ -98,6 +160,8 @@ func (c *warmPoolController) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.triggerC:
+			c.tick(time.Now())
 		case <-ticker.C:
 			c.tick(time.Now())
 		}
@@ -108,6 +172,8 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 	if c == nil || c.registry == nil {
 		return nil
 	}
+	c.tickMu.Lock()
+	defer c.tickMu.Unlock()
 	snapshots := c.plan(now)
 	for _, snap := range snapshots {
 		if c.registry.logger != nil {
@@ -116,8 +182,14 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 				"target_warm", snap.TargetWarm,
 				"warm", snap.WarmProviders,
 				"eligible_cold", snap.EligibleCold,
+				"running", snap.RunningRequests,
+				"waiting", snap.WaitingRequests,
 				"queue_depth", snap.QueueDepth,
 				"oldest_queue_age_ms", snap.OldestQueueAge.Milliseconds(),
+				"spill_arrival_rate", snap.SpillArrivalRate,
+				"service_time_ms", snap.ServiceTime.Milliseconds(),
+				"quality_concurrency", snap.QualityConcurrency,
+				"demand_concurrency", snap.DemandConcurrency,
 				"capacity_rejects", snap.CapacityRejects,
 				"ttft_misses", snap.TTFTMisses,
 				"speculative_started", snap.SpeculativeStarted,
@@ -147,6 +219,10 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	if stateWindow < time.Minute {
 		stateWindow = time.Minute
 	}
+	// Fold accumulated spill arrivals into the per-model EWMA before snapshotting
+	// so the Little's Law target tracks demand. Gate folds at half the control
+	// interval so coalesced hot-path trigger ticks don't spike the rate.
+	c.state.foldArrivalRates(now, c.config.Interval/2, warmPoolArrivalEWMAAlpha)
 	pressure := c.state.snapshot(now, stateWindow)
 	queue := c.queueSnapshot(now, stateWindow)
 	fleet := c.registry.warmPoolFleetSnapshot(now)
@@ -166,12 +242,18 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	for model := range models {
 		ordered = append(ordered, model)
 	}
-	sort.Strings(ordered)
+	sort.Slice(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		lp := c.hasDemandPressure(fleet[left], pressure[left], queue[left])
+		rp := c.hasDemandPressure(fleet[right], pressure[right], queue[right])
+		if lp != rp {
+			return lp
+		}
+		return left < right
+	})
 
-	loadsRemaining := c.config.MaxLoadsPerTick
-	if loadsRemaining < 0 {
-		loadsRemaining = 0
-	}
+	perTickCeiling := c.config.perTickCeiling()
+	loadsRemaining := perTickCeiling
 	globalPendingRemaining := c.config.MaxGlobalPendingLoads - c.registry.pendingModelLoadCount(now)
 	if globalPendingRemaining < loadsRemaining {
 		loadsRemaining = globalPendingRemaining
@@ -180,21 +262,31 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		loadsRemaining = 0
 	}
 
+	params := c.targetParams()
 	var out []WarmPoolSnapshot
 	for _, model := range ordered {
 		p := pressure[model]
 		q := queue[model]
 		f := fleet[model]
-		target := c.targetWarm(f, p, q, now)
-		need := target - f.warm
-		if need < 0 {
-			need = 0
+		svc := estimateServiceTime(f.prefillTPS, f.soloDecodeTPS, params)
+		target := c.targetWarm(f, p, q, params, svc, now)
+
+		gap := target - f.warm
+		if gap < 0 {
+			gap = 0
 		}
+		// Demand-scaled, bounded per-tick ramp: close a fraction of the gap, at
+		// least MaxLoadsPerTick, capped by the per-tick ceiling, then by what we
+		// can actually warm (eligible cold) and the global pending budget.
+		need := rampLoadsThisTick(gap, c.config.MaxLoadsPerTick, perTickCeiling, c.config.RampGapFraction)
 		if need > len(f.eligibleCold) {
 			need = len(f.eligibleCold)
 		}
 		if need > loadsRemaining {
 			need = loadsRemaining
+		}
+		if need < 0 {
+			need = 0
 		}
 		actions := make([]modelLoadAction, 0, need)
 		for i := 0; i < need; i++ {
@@ -220,6 +312,12 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			LoadDurationEWMA:   p.loadDurationEWMA,
 			ObserveOnly:        c.config.ObserveOnly,
 			Actions:            actions,
+			RunningRequests:    f.running,
+			WaitingRequests:    f.waiting,
+			SpillArrivalRate:   p.arrivalRateEWMA,
+			ServiceTime:        svc,
+			QualityConcurrency: qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency),
+			DemandConcurrency:  demandConcurrency(c.targetInputs(f, p, q), svc),
 		})
 	}
 	return out
@@ -229,59 +327,93 @@ func (c *warmPoolController) reserveActions(actions []modelLoadAction, now time.
 	return c.registry.reservePendingModelLoads(actions, now)
 }
 
-func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure, now time.Time) int {
-	target := fleet.warm
-	add := 0
+// targetParams snapshots the controller config into the pure warmTargetParams
+// consumed by the Little's Law math in warm_pool_target.go.
+func (c *warmPoolController) targetParams() warmTargetParams {
+	return warmTargetParams{
+		DecodeFloorTPS:             c.config.DecodeFloorTPS,
+		LoadFactorK:                effectiveTPSLoadFactor,
+		BurstBuffer:                c.config.BurstBuffer,
+		FallbackQualityConcurrency: c.config.FallbackQualityConcurrency,
+		AssumedPromptTokens:        c.config.AssumedPromptTokens,
+		AssumedCompletionTokens:    c.config.AssumedCompletionTokens,
+		MinServiceTime:             warmPoolMinServiceTime,
+		MaxServiceTime:             warmPoolMaxServiceTime,
+	}
+}
+
+// targetInputs assembles the measured per-model inputs for the Little's Law
+// target from the fleet, pressure, and queue snapshots.
+func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) warmTargetInputs {
+	return warmTargetInputs{
+		Warm:             fleet.warm,
+		EligibleCold:     len(fleet.eligibleCold),
+		RunningRequests:  fleet.running,
+		WaitingRequests:  fleet.waiting,
+		QueueDepth:       queue.Depth,
+		SpillArrivalRate: pressure.arrivalRateEWMA,
+		SoloDecodeTPS:    fleet.soloDecodeTPS,
+		PrefillTPS:       fleet.prefillTPS,
+		MaxProviderConc:  fleet.maxProviderConc,
+		DemandPressure:   c.hasDemandPressure(fleet, pressure, queue),
+	}
+}
+
+// hasDemandPressure reports whether any pressure signal crossed its threshold
+// this window. It consumes ALL signals fed to the controller — capacity rejects,
+// TTFT misses, cold dispatches, speculative starts/wins (now including the W3
+// preflight-fed near-misses), an aged coordinator queue, and a saturated warm set
+// under any external pressure. With no demand pressure the pool is left as-is.
+func (c *warmPoolController) hasDemandPressure(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) bool {
+	if pressure.capacityRejects >= c.config.CapacityRejectThreshold ||
+		pressure.ttftMisses >= c.config.TTFTMissThreshold ||
+		pressure.coldDispatches >= c.config.ColdDispatchThreshold ||
+		pressure.speculativeStarted >= c.config.SpeculativeStartThreshold ||
+		pressure.speculativeWon >= c.config.SpeculativeWinThreshold {
+		return true
+	}
 	if queue.Depth > 0 && queue.OldestAge >= c.config.QueueAgeThreshold {
-		add++
-		if queue.Depth > 1 {
-			add += int(math.Ceil(float64(queue.Depth-1) / 4.0))
-		}
+		return true
 	}
-	if pressure.capacityRejects >= c.config.CapacityRejectThreshold {
-		add++
+	externalPressure := queue.Depth > 0 || pressure.capacityRejects > 0 || pressure.ttftMisses > 0 ||
+		pressure.speculativeStarted > 0 || pressure.speculativeWon > 0 || pressure.coldDispatches > 0
+	if fleet.warm > 0 && externalPressure && c.config.WarmSaturationThreshold > 0 &&
+		float64(fleet.warmSaturated)/float64(fleet.warm) >= c.config.WarmSaturationThreshold {
+		return true
 	}
-	if pressure.ttftMisses >= c.config.TTFTMissThreshold {
-		add++
-	}
-	if pressure.speculativeStarted >= c.config.SpeculativeStartThreshold {
-		add++
-	}
-	if pressure.speculativeWon >= c.config.SpeculativeWinThreshold {
-		add++
-	}
-	if pressure.coldDispatches >= c.config.ColdDispatchThreshold {
-		add++
-	}
-	if pressure.loadDurationEWMA >= c.config.LoadDurationThreshold && pressure.coldDispatches > 0 {
-		add++
-	}
-	externalPressure := queue.Depth > 0 || pressure.capacityRejects > 0 || pressure.ttftMisses > 0 || pressure.speculativeStarted > 0 || pressure.speculativeWon > 0 || pressure.coldDispatches > 0
-	if fleet.warm > 0 && externalPressure && float64(fleet.warmSaturated)/float64(fleet.warm) >= c.config.WarmSaturationThreshold {
-		add++
-	}
-	target += add
-	if target < 0 {
-		target = 0
-	}
-	if target > fleet.warm+len(fleet.eligibleCold) {
-		target = fleet.warm + len(fleet.eligibleCold)
-	}
+	return false
+}
+
+// targetWarm computes the Little's Law warm-provider target for a model, then
+// applies the dwell guard so a transient demand dip cannot shrink the pool before
+// MinDwell elapses (anti-flap).
+func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure, params warmTargetParams, svc time.Duration, now time.Time) int {
+	target := warmTarget(c.targetInputs(fleet, pressure, queue), params, svc)
 	if c.config.MinDwell > 0 && pressure.lastTarget > target && now.Sub(pressure.lastTargetChangedAt) < c.config.MinDwell {
 		target = pressure.lastTarget
+		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
+			target = maxReachable
+		}
+	}
+	if floor := c.config.MinWarmByModel[fleet.model]; floor > target {
+		target = floor
+		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
+			target = maxReachable
+		}
 	}
 	return target
 }
 
 func (c *warmPoolController) recordQueuePressure(model string, depth int, oldestAge time.Duration, now time.Time) {
-	if depth < 0 {
-		depth = 0
+	c.queueMu.mu.Lock()
+	defer c.queueMu.mu.Unlock()
+	if depth <= 0 {
+		delete(c.queueMu.models, model)
+		return
 	}
 	if oldestAge < 0 {
 		oldestAge = 0
 	}
-	c.queueMu.mu.Lock()
-	defer c.queueMu.mu.Unlock()
 	c.queueMu.models[model] = warmPoolQueuePressure{Depth: depth, OldestAge: oldestAge, UpdatedAt: now}
 }
 
@@ -303,6 +435,11 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make(map[string]warmPoolModelSnapshot)
+	// Per-model rate samples (from every eligible provider serving the model,
+	// warm or warmable) collapsed to a representative median at the end.
+	decodeSamples := make(map[string][]float64)
+	prefillSamples := make(map[string][]float64)
+	concSamples := make(map[string][]float64)
 	for _, p := range r.providers {
 		p.mu.Lock()
 		models := make([]string, 0, len(p.Models))
@@ -317,10 +454,17 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 				s := out[model]
 				s.model = model
 				s.warm++
+				running, waiting := warmPoolModelLoadLocked(p, model)
+				s.running += running
+				s.waiting += waiting
 				if !p.hasConcurrencyHeadroomForModelLocked(model) || warmPoolBackendSlotBusyLocked(p) {
 					s.warmSaturated++
 				}
 				out[model] = s
+				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
+				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
+				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 				continue
 			}
 			if candidate, ok := r.warmPoolCandidateLocked(p, model, now); ok {
@@ -328,15 +472,37 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 				s.model = model
 				s.eligibleCold = append(s.eligibleCold, candidate)
 				out[model] = s
+				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
+				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
+				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 			}
 		}
 		p.mu.Unlock()
 	}
 	for model, s := range out {
 		sort.Slice(s.eligibleCold, func(i, j int) bool { return s.eligibleCold[i].score > s.eligibleCold[j].score })
+		s.soloDecodeTPS = medianFloat(decodeSamples[model])
+		s.prefillTPS = medianFloat(prefillSamples[model])
+		s.maxProviderConc = int(medianFloat(concSamples[model]))
 		out[model] = s
 	}
 	return out
+}
+
+// warmPoolModelLoadLocked returns the in-flight (NumRunning) and provider-queued
+// (NumWaiting) request counts for the model on this provider, read from the
+// authoritative BackendCapacity slot. Caller must hold p.mu.
+func warmPoolModelLoadLocked(p *Provider, model string) (running, waiting int) {
+	if p.BackendCapacity == nil {
+		return 0, 0
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model == model {
+			return slot.NumRunning, slot.NumWaiting
+		}
+	}
+	return 0, 0
 }
 
 func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, bool) {
@@ -370,6 +536,13 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 		gpuActiveGB = p.BackendCapacity.GPUMemoryActiveGB
 	}
 	if !modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemoryGB) {
+		return warmPoolCandidate{}, false
+	}
+	// Live free-capacity gate (shared helper with the direct/planner paths): don't
+	// pick a warm-pool target the provider already reports it cannot fit, or the
+	// warm pool issues a load_model the provider rejects (failed warm + pending-load
+	// cooldown) instead of choosing a truly loadable node (#390).
+	if admit, reported := reportedFreeForLoadAdmits(r.catalogSizeGBLocked(model), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
 		return warmPoolCandidate{}, false
 	}
 	freeGB := totalMemoryGB - gpuActiveGB

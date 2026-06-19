@@ -39,18 +39,42 @@ extension BatchScheduler {
             return staticBudget
         }
 
-        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
-        let osReserve = 4 * 1024 * 1024 * 1024
-        let safetyMargin = totalMemory / 10
-        let globalUsed = Int(MLX.GPU.activeMemory) + Int(MLX.GPU.cacheMemory)
-        let mlxFree = max(0, totalMemory - globalUsed)
-        // Clamp the MLX-only view to real OS-free RAM (other processes' usage),
-        // same as the load gate / GlobalKVCacheBudget; else we OOM on shared boxes.
-        let osAvailable = SystemMemory.availableBytes().map { Int(min($0, UInt64(Int.max))) } ?? Int.max
-        let realFree = min(mlxFree, osAvailable)
-        let availableHeadroom = max(0, realFree - osReserve - safetyMargin)
+        // Live KV headroom under the unified 90% cap, given current MLX usage
+        // (which reflects every co-resident model's weights + KV) clamped to real
+        // OS-free RAM and net of the activation reserve. Same helper as
+        // GlobalKVCacheBudget, so the per-scheduler budget and the shared
+        // reservation gate share one ceiling instead of competing reserves.
+        let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+        let headroomBytes = UnifiedMemoryCap.liveKVHeadroomBytes(
+            mlxUsedBytes: mlxUsed,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max)
+        let availableHeadroom = Int(min(headroomBytes, UInt64(Int.max)))
         let liveBudget = activeTokenBudgetUsed + (availableHeadroom / kvBytesPerToken)
         return max(1024, min(staticBudget, liveBudget))
+    }
+
+    /// MEASURED live KV headroom in bytes right now — `liveKVHeadroomBytes`
+    /// computed from actual MLX usage (`active + cache`, reflecting this model's
+    /// just-loaded weights plus any co-resident model). Unlike ``tokenBudgetMax``
+    /// this applies NO 1024-token floor, so it reports a true zero when the cap is
+    /// already exhausted. Used by the post-load guard to reject a model that
+    /// loaded but has no room to serve (the load gate admits on an ESTIMATE, so a
+    /// model whose real residency exceeds the estimate can land here with no KV).
+    var measuredLiveKVHeadroomBytes: UInt64 {
+        let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+        return UnifiedMemoryCap.liveKVHeadroomBytes(
+            mlxUsedBytes: mlxUsed,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max)
+    }
+
+    /// Post-load guard: true iff this freshly-loaded model has at least the
+    /// minimum serveable KV headroom under the cap. When false, the caller must
+    /// unload + clearCache + reject — keeping the model resident would just
+    /// reject every request at the KV-reservation gate (a "loaded but
+    /// unserveable" model). Catches the case where measured residency exceeds the
+    /// load gate's `estimatedMemoryGb` estimate.
+    func hasServeableKVHeadroom() -> Bool {
+        UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes)
     }
 
     /// Sum of `(promptTokens + maxTokens)` across active bridges. This
@@ -118,10 +142,12 @@ extension BatchScheduler {
             maxTokensPotential: maxTokensPotential,
             maxConcurrency: UInt32(cap.maxConcurrent),
             observedDecodeTps: observedDecodeTpsEwma,
+            observedPrefillTps: observedPrefillTpsEwma,
             activeTokenBudgetUsed: Int64(activeTokenBudgetUsed),
             activeTokenBudgetMax: budgetMax,
             queuedTokenBudget: Int64(queuedTokenBudget),
-            kvBytesPerToken: Int64(kvBytesPerToken)
+            kvBytesPerToken: Int64(kvBytesPerToken),
+            modelLoadTimeMs: lastModelLoadMs
         )
         return BackendCapacity(
             slots: [slot],
@@ -168,6 +194,18 @@ extension BatchScheduler {
         } else {
             observedDecodeTpsEwma = tps
             ewmaInitialized = true
+        }
+    }
+
+    /// EWMA update for `observedPrefillTpsEwma`. Mirrors `updateDecodeTpsEwma`
+    /// (same alpha) for the prefill rate measured in `recordFinish`.
+    func updatePrefillTpsEwma(tps: Double) {
+        let alpha = 0.3
+        if prefillEwmaInitialized {
+            observedPrefillTpsEwma = alpha * tps + (1 - alpha) * observedPrefillTpsEwma
+        } else {
+            observedPrefillTpsEwma = tps
+            prefillEwmaInitialized = true
         }
     }
 

@@ -615,14 +615,20 @@ func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store
 // Public endpoint — returns active models for providers and the install script.
 // Cached for 60s — the underlying DB query is fast but this endpoint is hit
 // by every provider heartbeat and install script poll.
+func modelCatalogCacheKey(typeFilter string, includeAliases bool) string {
+	return "models:catalog:type=" + typeFilter + ":include_aliases=" + strconv.FormatBool(includeAliases)
+}
+
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	// Optional filter: ?type=text
-	typeFilter := r.URL.Query().Get("type")
-
-	cacheKey := "models:catalog"
-	if typeFilter != "" {
-		cacheKey = "models:catalog:" + typeFilter
+	typeFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("type")))
+	if typeFilter != "" && typeFilter != "text" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "unsupported catalog type", withParam("type")))
+		return
 	}
+	includeAliases := r.URL.Query().Get("include_aliases") == "1" || strings.EqualFold(r.URL.Query().Get("include_aliases"), "true")
+
+	cacheKey := modelCatalogCacheKey(typeFilter, includeAliases)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
@@ -642,6 +648,14 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	response := map[string]any{"models": models}
+	if includeAliases {
+		aliases, err := s.store.ListModelAliases()
+		if err != nil {
+			s.logger.Warn("model registry: failed to list aliases for catalog response", "error", err)
+		} else {
+			response["aliases"] = catalogAliasesForResponse(models, aliases)
+		}
+	}
 
 	body, err := json.Marshal(response)
 	if err != nil {

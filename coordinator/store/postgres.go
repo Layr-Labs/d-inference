@@ -136,7 +136,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			lifetime_requests_served BIGINT NOT NULL DEFAULT 0,
 			lifetime_tokens_generated BIGINT NOT NULL DEFAULT 0,
 			last_session_requests_served BIGINT NOT NULL DEFAULT 0,
-			last_session_tokens_generated BIGINT NOT NULL DEFAULT 0
+			last_session_tokens_generated BIGINT NOT NULL DEFAULT 0,
+			lifetime_stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+			last_session_stats JSONB NOT NULL DEFAULT '{}'::jsonb
 		)`,
 		// Migrate existing providers table: add new columns if upgrading from previous schema
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS location JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
@@ -160,6 +162,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS lifetime_tokens_generated BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_requests_served BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_tokens_generated BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS lifetime_stats JSONB NOT NULL DEFAULT '{}'::jsonb; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_stats JSONB NOT NULL DEFAULT '{}'::jsonb; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_providers_serial ON providers(serial_number) WHERE serial_number != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_providers_account ON providers(account_id, last_seen DESC) WHERE account_id != ''`,
 
@@ -260,6 +264,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id, created_at DESC)`,
+		// Partial index for the public leaderboard/network-totals reward scans,
+		// which filter ledger_entries by reward entry_type across all accounts.
+		// Without it, each cache miss seq-scans the whole (multi-million-row)
+		// ledger to find the handful of reward rows. Predicate is derived from
+		// RewardLedgerTypes so it matches the query's IN-list exactly.
+		`CREATE INDEX IF NOT EXISTS idx_ledger_reward ON ledger_entries(account_id, created_at DESC) WHERE entry_type IN (` + rewardLedgerTypesSQLList() + `)`,
 
 		// Referral system tables
 		`CREATE TABLE IF NOT EXISTS referrers (
@@ -728,6 +738,209 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Partial index over still-open sessions — speeds the online-now count and
 		// the startup reconcile. (session_id lookups use the UNIQUE index.)
 		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_open ON provider_sessions(connected_at) WHERE disconnected_at IS NULL`,
+
+		// Inference routing telemetry — per-request scheduler decisions and outcomes.
+		// Contains no prompt or response content.
+		`CREATE TABLE IF NOT EXISTS inference_routes (
+			id BIGSERIAL PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			attempt INTEGER NOT NULL DEFAULT 0,
+			provider_id TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL,
+			public_model TEXT NOT NULL DEFAULT '',
+			consumer_key_hash TEXT NOT NULL DEFAULT '',
+			key_id TEXT NOT NULL DEFAULT '',
+			outcome TEXT NOT NULL DEFAULT '',
+			cost_ms DOUBLE PRECISION,
+			state_ms DOUBLE PRECISION,
+			queue_ms DOUBLE PRECISION,
+			pending_ms DOUBLE PRECISION,
+			backlog_ms DOUBLE PRECISION,
+			this_req_ms DOUBLE PRECISION,
+			health_ms DOUBLE PRECISION,
+			ttft_ms DOUBLE PRECISION,
+			best_ttft_ms DOUBLE PRECISION,
+			effective_queue INTEGER,
+			candidate_count INTEGER,
+			capacity_rejections INTEGER,
+			model_too_large_rejections INTEGER,
+			vision_rejections INTEGER,
+			ttft_rejections INTEGER,
+			effective_tps DOUBLE PRECISION,
+			static_tps DOUBLE PRECISION,
+			provider_status TEXT,
+			provider_trust_level TEXT,
+			provider_version TEXT,
+			hardware_chip TEXT,
+			hardware_chip_family TEXT,
+			hardware_tier TEXT,
+			memory_gb INTEGER,
+			gpu_cores INTEGER,
+			cpu_cores INTEGER,
+			system_memory_pressure DOUBLE PRECISION,
+			system_cpu_usage DOUBLE PRECISION,
+			system_thermal_state TEXT,
+			gpu_memory_active_gb DOUBLE PRECISION,
+			gpu_memory_peak_gb DOUBLE PRECISION,
+			gpu_memory_cache_gb DOUBLE PRECISION,
+			slot_state TEXT,
+			backend_running INTEGER,
+			backend_waiting INTEGER,
+			active_token_budget_used BIGINT,
+			active_token_budget_max BIGINT,
+			queued_token_budget BIGINT,
+			estimated_prompt_tokens INTEGER,
+			requested_max_tokens INTEGER,
+			requires_vision BOOLEAN NOT NULL DEFAULT FALSE,
+			has_tools BOOLEAN NOT NULL DEFAULT FALSE,
+			self_route_only BOOLEAN NOT NULL DEFAULT FALSE,
+			prefer_owner BOOLEAN NOT NULL DEFAULT FALSE,
+			cache_affinity_key TEXT NOT NULL DEFAULT '',
+			final_status TEXT NOT NULL DEFAULT '',
+			error_code INTEGER,
+			error_class TEXT,
+			prompt_tokens INTEGER,
+			completion_tokens INTEGER,
+			reasoning_tokens INTEGER,
+			cost_micro_usd BIGINT,
+			actual_ttft_ms DOUBLE PRECISION,
+			dispatch_to_first_chunk_ms DOUBLE PRECISION,
+			total_duration_ms DOUBLE PRECISION,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			provider_region TEXT,
+			consumer_region TEXT,
+			parse_ms DOUBLE PRECISION,
+			reserve_ms DOUBLE PRECISION,
+			route_ms DOUBLE PRECISION,
+			encrypt_ms DOUBLE PRECISION,
+			queue_wait_ms DOUBLE PRECISION,
+			dispatch_ms DOUBLE PRECISION,
+			actual_decode_tps DOUBLE PRECISION,
+			admitted_but_failed BOOL,
+			used_backup BOOL,
+			backup_won BOOL,
+			UNIQUE(request_id, attempt)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_inference_routes_created ON inference_routes(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_inference_routes_provider ON inference_routes(provider_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_inference_routes_model ON inference_routes(model, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_inference_routes_request ON inference_routes(request_id)`,
+		// Phase 1 additions to inference_routes: coarse geo, coordinator-side
+		// latency decomposition, measured decode TPS, and admission/backup-race
+		// outcome flags. Added idempotently so a dev DB that already created the
+		// Phase 0 table picks them up. New columns are appended AFTER updated_at
+		// in the CREATE TABLE above so fresh and ALTER'd DBs share one column
+		// order (InferenceRouteRecordsSince scans `SELECT *` positionally).
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS provider_region TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS consumer_region TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS parse_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS reserve_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS route_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS encrypt_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS queue_wait_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS dispatch_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS actual_decode_tps DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS admitted_but_failed BOOL`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS used_backup BOOL`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS backup_won BOOL`,
+
+		// Rejected inbound inference requests (4xx/5xx) at any pipeline stage,
+		// with the request shape and a counterfactual servability snapshot
+		// ("could the fleet have served it?"). Contains no prompt or response
+		// content.
+		`CREATE TABLE IF NOT EXISTS request_rejections (
+			id BIGSERIAL PRIMARY KEY,
+			request_id TEXT,
+			endpoint TEXT,
+			stage TEXT,
+			reason_code TEXT,
+			http_status INT,
+			consumer_key_hash TEXT,
+			key_id TEXT,
+			client_class TEXT,
+			requested_model TEXT,
+			resolved_model TEXT,
+			stream BOOL,
+			n INT,
+			estimated_prompt_tokens INT,
+			requested_max_tokens INT,
+			requires_vision BOOL,
+			has_image BOOL,
+			has_audio BOOL,
+			has_tools BOOL,
+			tool_count INT,
+			response_format TEXT,
+			self_route_only BOOL,
+			prefer_owner BOOL,
+			params JSONB,
+			request_body_bytes INT,
+			retry_after_ms INT,
+			could_have_served BOOL,
+			candidate_count INT,
+			capacity_rejections INT,
+			model_too_large_rejections INT,
+			vision_rejections INT,
+			warm_provider_existed BOOL,
+			best_ttft_ms DOUBLE PRECISION,
+			shortfall_micro_usd BIGINT,
+			limit_kind TEXT,
+			over_by BIGINT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_rejections_created ON request_rejections(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_rejections_reason ON request_rejections(reason_code, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_rejections_model ON request_rejections(resolved_model, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_rejections_status ON request_rejections(http_status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_rejections_servable ON request_rejections(could_have_served, created_at DESC) WHERE could_have_served = true`,
+
+		// APNs code-identity attestation reuse cache (W5 Fix 2). Persists the
+		// in-memory reuse cache so a blue-green deploy / restart does not wipe it
+		// and provoke a fleet-wide push storm against Apple's ~3/hour/device push
+		// budget. One row per device (keyed by Secure Enclave public key). The
+		// row records that the device completed a FULL code-identity round-trip at
+		// attested_at on binary version; the freshness + version gate is applied on
+		// READ (in the coordinator), so a stale/wrong-version row never extends
+		// trust — it only lets the coordinator skip a redundant push.
+		`CREATE TABLE IF NOT EXISTS code_attestations (
+			se_pubkey TEXT PRIMARY KEY,
+			version TEXT NOT NULL DEFAULT '',
+			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			apns_token TEXT NOT NULL DEFAULT ''
+		)`,
+		// Token-binding column for reuse (Codex #7): additive for DBs whose
+		// code_attestations table predates it (the CREATE above is a no-op there).
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
+
+		// Provider trust-reuse cache (DAR-326 Phase 0). Mirrors code_attestations.
+		// Persists the in-memory trust-reuse cache so a blue-green deploy / restart
+		// does not wipe it and provoke a fleet-wide live MDM SecurityInfo + APNs
+		// re-verification herd. One row per device (keyed by Secure Enclave public
+		// key). The row records that the device completed a FULL live MDM
+		// verification at verified_at (proven serial, binary hash, SIP, Secure
+		// Boot). The identity + binary + fresh-posture + freshness gate is applied
+		// on READ (in the coordinator, behind a live SE challenge), so a
+		// stale/wrong-binary/expired row never extends trust — it only lets the
+		// coordinator skip a redundant live MDM round-trip.
+		//
+		// SECURITY-SENSITIVE (Threat-Model #5): a row here grants a hardware
+		// fast-skip, so write access must be guarded like the payment ledger — only
+		// the coordinator writes it, and only after a verified live MDM pass.
+		// SeedTrustReuseCache TRUSTS this table's contents on restart; that trust is
+		// bounded by the always-run live SE challenge on read (re-proving posture +
+		// binary + identity) plus future-date rejection, so a tampered/stale row
+		// still falls through to a full live MDM verification rather than silently
+		// granting hardware.
+		`CREATE TABLE IF NOT EXISTS provider_trust_reuse (
+			se_pubkey TEXT PRIMARY KEY,
+			serial TEXT NOT NULL DEFAULT '',
+			trust_level TEXT NOT NULL DEFAULT '',
+			binary_hash TEXT NOT NULL DEFAULT '',
+			sip_enabled BOOL NOT NULL DEFAULT FALSE,
+			secure_boot_full BOOL NOT NULL DEFAULT FALSE,
+			mda_udid TEXT NOT NULL DEFAULT '',
+			verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -743,6 +956,9 @@ func hashKey(key string) string {
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:])
 }
+
+// HashKey returns the SHA-256 hex digest of the given API key.
+func HashKey(key string) string { return hashKey(key) }
 
 // apiKeyColumns is the canonical SELECT list for reading an api_keys row into
 // an APIKey via scanAPIKeyRow.
@@ -1258,6 +1474,395 @@ func (s *PostgresStore) RecordUsageFullWithPublicModel(providerID, consumerKey, 
 	)
 }
 
+// RecordInferenceRoute writes the routing decision snapshot for a request
+// attempt. Best-effort; failures are discarded and never block inference.
+func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
+	if record == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+	createdAt := record.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := record.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+
+	_, _ = s.pool.Exec(ctx,
+		`INSERT INTO inference_routes (
+			request_id, attempt, provider_id, model, public_model, consumer_key_hash, key_id, outcome,
+			cost_ms, state_ms, queue_ms, pending_ms, backlog_ms, this_req_ms, health_ms, ttft_ms, best_ttft_ms,
+			effective_queue, candidate_count, capacity_rejections, model_too_large_rejections, vision_rejections, ttft_rejections,
+			effective_tps, static_tps, provider_status, provider_trust_level, provider_version,
+			hardware_chip, hardware_chip_family, hardware_tier, memory_gb, gpu_cores, cpu_cores,
+			system_memory_pressure, system_cpu_usage, system_thermal_state,
+			gpu_memory_active_gb, gpu_memory_peak_gb, gpu_memory_cache_gb,
+			slot_state, backend_running, backend_waiting,
+			active_token_budget_used, active_token_budget_max, queued_token_budget,
+			estimated_prompt_tokens, requested_max_tokens,
+			requires_vision, has_tools, self_route_only, prefer_owner, cache_affinity_key,
+			created_at, updated_at,
+			provider_region, consumer_region
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8,
+			$9, $10, $11, $12, $13, $14, $15, $16, $17,
+			$18, $19, $20, $21, $22, $23,
+			$24, $25, $26, $27, $28,
+			$29, $30, $31, $32, $33, $34,
+			$35, $36, $37,
+			$38, $39, $40,
+			$41, $42, $43,
+			$44, $45, $46,
+			$47, $48,
+			$49, $50, $51, $52, $53,
+			$54, $55,
+			$56, $57
+		) ON CONFLICT (request_id, attempt) DO UPDATE SET
+			provider_id = EXCLUDED.provider_id,
+			model = EXCLUDED.model,
+			public_model = EXCLUDED.public_model,
+			consumer_key_hash = EXCLUDED.consumer_key_hash,
+			key_id = EXCLUDED.key_id,
+			outcome = EXCLUDED.outcome,
+			cost_ms = EXCLUDED.cost_ms,
+			state_ms = EXCLUDED.state_ms,
+			queue_ms = EXCLUDED.queue_ms,
+			pending_ms = EXCLUDED.pending_ms,
+			backlog_ms = EXCLUDED.backlog_ms,
+			this_req_ms = EXCLUDED.this_req_ms,
+			health_ms = EXCLUDED.health_ms,
+			ttft_ms = EXCLUDED.ttft_ms,
+			best_ttft_ms = EXCLUDED.best_ttft_ms,
+			effective_queue = EXCLUDED.effective_queue,
+			candidate_count = EXCLUDED.candidate_count,
+			capacity_rejections = EXCLUDED.capacity_rejections,
+			model_too_large_rejections = EXCLUDED.model_too_large_rejections,
+			vision_rejections = EXCLUDED.vision_rejections,
+			ttft_rejections = EXCLUDED.ttft_rejections,
+			effective_tps = EXCLUDED.effective_tps,
+			static_tps = EXCLUDED.static_tps,
+			provider_status = EXCLUDED.provider_status,
+			provider_trust_level = EXCLUDED.provider_trust_level,
+			provider_version = EXCLUDED.provider_version,
+			hardware_chip = EXCLUDED.hardware_chip,
+			hardware_chip_family = EXCLUDED.hardware_chip_family,
+			hardware_tier = EXCLUDED.hardware_tier,
+			memory_gb = EXCLUDED.memory_gb,
+			gpu_cores = EXCLUDED.gpu_cores,
+			cpu_cores = EXCLUDED.cpu_cores,
+			system_memory_pressure = EXCLUDED.system_memory_pressure,
+			system_cpu_usage = EXCLUDED.system_cpu_usage,
+			system_thermal_state = EXCLUDED.system_thermal_state,
+			gpu_memory_active_gb = EXCLUDED.gpu_memory_active_gb,
+			gpu_memory_peak_gb = EXCLUDED.gpu_memory_peak_gb,
+			gpu_memory_cache_gb = EXCLUDED.gpu_memory_cache_gb,
+			slot_state = EXCLUDED.slot_state,
+			backend_running = EXCLUDED.backend_running,
+			backend_waiting = EXCLUDED.backend_waiting,
+			active_token_budget_used = EXCLUDED.active_token_budget_used,
+			active_token_budget_max = EXCLUDED.active_token_budget_max,
+			queued_token_budget = EXCLUDED.queued_token_budget,
+			estimated_prompt_tokens = EXCLUDED.estimated_prompt_tokens,
+			requested_max_tokens = EXCLUDED.requested_max_tokens,
+			requires_vision = EXCLUDED.requires_vision,
+			has_tools = EXCLUDED.has_tools,
+			self_route_only = EXCLUDED.self_route_only,
+			prefer_owner = EXCLUDED.prefer_owner,
+			cache_affinity_key = EXCLUDED.cache_affinity_key,
+			provider_region = EXCLUDED.provider_region,
+			consumer_region = EXCLUDED.consumer_region,
+			updated_at = EXCLUDED.updated_at`,
+		record.RequestID, record.Attempt, record.ProviderID, record.Model, record.PublicModel, record.ConsumerKeyHash, record.KeyID, record.Outcome,
+		record.CostMs, record.StateMs, record.QueueMs, record.PendingMs, record.BacklogMs, record.ThisReqMs, record.HealthMs, record.TTFTMs, record.BestTTFTMs,
+		record.EffectiveQueue, record.CandidateCount, record.CapacityRejections, record.ModelTooLargeRejections, record.VisionRejections, record.TTFTRejections,
+		record.EffectiveTPS, record.StaticTPS, record.ProviderStatus, record.ProviderTrustLevel, record.ProviderVersion,
+		record.HardwareChip, record.HardwareChipFamily, record.HardwareTier, record.MemoryGB, record.GPUCores, record.CPUCores,
+		record.SystemMemoryPressure, record.SystemCPUUsage, record.SystemThermalState,
+		record.GPUMemoryActiveGB, record.GPUMemoryPeakGB, record.GPUMemoryCacheGB,
+		record.SlotState, record.BackendRunning, record.BackendWaiting,
+		record.ActiveTokenBudgetUsed, record.ActiveTokenBudgetMax, record.QueuedTokenBudget,
+		record.EstimatedPromptTokens, record.RequestedMaxTokens,
+		record.RequiresVision, record.HasTools, record.SelfRouteOnly, record.PreferOwner, record.CacheAffinityKey,
+		createdAt, updatedAt,
+		record.ProviderRegion, record.ConsumerRegion,
+	)
+	return nil
+}
+
+// UpdateInferenceRouteOutcome updates the attempt with final outcome data
+// (tokens, timing, error). Best-effort; failures are discarded.
+func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error {
+	if outcome == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _ = s.pool.Exec(ctx,
+		`UPDATE inference_routes SET
+			final_status = COALESCE(NULLIF($3, ''), final_status),
+			error_code = CASE WHEN $4 <> 0 THEN $4 ELSE error_code END,
+			error_class = COALESCE(NULLIF($5, ''), error_class),
+			prompt_tokens = CASE WHEN $6 <> 0 THEN $6 ELSE prompt_tokens END,
+			completion_tokens = CASE WHEN $7 <> 0 THEN $7 ELSE completion_tokens END,
+			reasoning_tokens = CASE WHEN $8 <> 0 THEN $8 ELSE reasoning_tokens END,
+			cost_micro_usd = CASE WHEN $9 <> 0 THEN $9 ELSE cost_micro_usd END,
+			actual_ttft_ms = CASE WHEN $10 <> 0 THEN $10 ELSE actual_ttft_ms END,
+			dispatch_to_first_chunk_ms = CASE WHEN $11 <> 0 THEN $11 ELSE dispatch_to_first_chunk_ms END,
+			total_duration_ms = CASE WHEN $12 <> 0 THEN $12 ELSE total_duration_ms END,
+			parse_ms = CASE WHEN $13 <> 0 THEN $13 ELSE parse_ms END,
+			reserve_ms = CASE WHEN $14 <> 0 THEN $14 ELSE reserve_ms END,
+			route_ms = CASE WHEN $15 <> 0 THEN $15 ELSE route_ms END,
+			encrypt_ms = CASE WHEN $16 <> 0 THEN $16 ELSE encrypt_ms END,
+			queue_wait_ms = CASE WHEN $17 <> 0 THEN $17 ELSE queue_wait_ms END,
+			dispatch_ms = CASE WHEN $18 <> 0 THEN $18 ELSE dispatch_ms END,
+			actual_decode_tps = CASE WHEN $19 <> 0 THEN $19 ELSE actual_decode_tps END,
+			admitted_but_failed = COALESCE(admitted_but_failed, FALSE) OR $20,
+			used_backup = COALESCE(used_backup, FALSE) OR $21,
+			backup_won = COALESCE(backup_won, FALSE) OR $22,
+			updated_at = NOW()
+		 WHERE request_id = $1 AND attempt = $2`,
+		requestID, attempt,
+		outcome.FinalStatus, outcome.ErrorCode, outcome.ErrorClass, outcome.PromptTokens, outcome.CompletionTokens, outcome.ReasoningTokens,
+		outcome.CostMicroUSD, outcome.ActualTTFTMs, outcome.DispatchToFirstChunkMs, outcome.TotalDurationMs,
+		outcome.ParseMs, outcome.ReserveMs, outcome.RouteMs, outcome.EncryptMs, outcome.QueueWaitMs, outcome.DispatchMs, outcome.ActualDecodeTPS,
+		outcome.AdmittedButFailed, outcome.UsedBackup, outcome.BackupWon,
+	)
+	return nil
+}
+
+// InferenceRouteRecordsSince returns routing records created at or after the
+// given time. Zero since returns all records.
+func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT * FROM inference_routes WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2`,
+		since, maxTelemetryReadRows)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var records []InferenceRouteRecord
+	for rows.Next() {
+		var r InferenceRouteRecord
+		var id int64
+		var finalStatus string
+		var errorCode *int
+		var errorClass *string
+		var promptTokens *int
+		var completionTokens *int
+		var reasoningTokens *int
+		var costMicroUSD *int64
+		var actualTTFTMs *float64
+		var dispatchToFirstChunkMs *float64
+		var totalDurationMs *float64
+		var providerRegion *string
+		var consumerRegion *string
+		var parseMs *float64
+		var reserveMs *float64
+		var routeMs *float64
+		var encryptMs *float64
+		var queueWaitMs *float64
+		var dispatchMs *float64
+		var actualDecodeTPS *float64
+		var admittedButFailed *bool
+		var usedBackup *bool
+		var backupWon *bool
+
+		if err := rows.Scan(
+			&id,
+			&r.RequestID, &r.Attempt, &r.ProviderID, &r.Model, &r.PublicModel, &r.ConsumerKeyHash, &r.KeyID, &r.Outcome,
+			&r.CostMs, &r.StateMs, &r.QueueMs, &r.PendingMs, &r.BacklogMs, &r.ThisReqMs, &r.HealthMs, &r.TTFTMs, &r.BestTTFTMs,
+			&r.EffectiveQueue, &r.CandidateCount, &r.CapacityRejections, &r.ModelTooLargeRejections, &r.VisionRejections, &r.TTFTRejections,
+			&r.EffectiveTPS, &r.StaticTPS, &r.ProviderStatus, &r.ProviderTrustLevel, &r.ProviderVersion,
+			&r.HardwareChip, &r.HardwareChipFamily, &r.HardwareTier, &r.MemoryGB, &r.GPUCores, &r.CPUCores,
+			&r.SystemMemoryPressure, &r.SystemCPUUsage, &r.SystemThermalState,
+			&r.GPUMemoryActiveGB, &r.GPUMemoryPeakGB, &r.GPUMemoryCacheGB,
+			&r.SlotState, &r.BackendRunning, &r.BackendWaiting,
+			&r.ActiveTokenBudgetUsed, &r.ActiveTokenBudgetMax, &r.QueuedTokenBudget,
+			&r.EstimatedPromptTokens, &r.RequestedMaxTokens,
+			&r.RequiresVision, &r.HasTools, &r.SelfRouteOnly, &r.PreferOwner, &r.CacheAffinityKey,
+			&finalStatus, &errorCode, &errorClass, &promptTokens, &completionTokens, &reasoningTokens, &costMicroUSD,
+			&actualTTFTMs, &dispatchToFirstChunkMs, &totalDurationMs,
+			&r.CreatedAt, &r.UpdatedAt,
+			&providerRegion, &consumerRegion,
+			&parseMs, &reserveMs, &routeMs, &encryptMs, &queueWaitMs, &dispatchMs, &actualDecodeTPS,
+			&admittedButFailed, &usedBackup, &backupWon,
+		); err != nil {
+			continue
+		}
+		if providerRegion != nil {
+			r.ProviderRegion = *providerRegion
+		}
+		if consumerRegion != nil {
+			r.ConsumerRegion = *consumerRegion
+		}
+		outcome := InferenceRouteOutcome{FinalStatus: finalStatus}
+		if errorCode != nil {
+			outcome.ErrorCode = *errorCode
+		}
+		if errorClass != nil {
+			outcome.ErrorClass = *errorClass
+		}
+		if promptTokens != nil {
+			outcome.PromptTokens = *promptTokens
+		}
+		if completionTokens != nil {
+			outcome.CompletionTokens = *completionTokens
+		}
+		if reasoningTokens != nil {
+			outcome.ReasoningTokens = *reasoningTokens
+		}
+		if costMicroUSD != nil {
+			outcome.CostMicroUSD = *costMicroUSD
+		}
+		if actualTTFTMs != nil {
+			outcome.ActualTTFTMs = *actualTTFTMs
+		}
+		if dispatchToFirstChunkMs != nil {
+			outcome.DispatchToFirstChunkMs = *dispatchToFirstChunkMs
+		}
+		if totalDurationMs != nil {
+			outcome.TotalDurationMs = *totalDurationMs
+		}
+		if parseMs != nil {
+			outcome.ParseMs = *parseMs
+		}
+		if reserveMs != nil {
+			outcome.ReserveMs = *reserveMs
+		}
+		if routeMs != nil {
+			outcome.RouteMs = *routeMs
+		}
+		if encryptMs != nil {
+			outcome.EncryptMs = *encryptMs
+		}
+		if queueWaitMs != nil {
+			outcome.QueueWaitMs = *queueWaitMs
+		}
+		if dispatchMs != nil {
+			outcome.DispatchMs = *dispatchMs
+		}
+		if actualDecodeTPS != nil {
+			outcome.ActualDecodeTPS = *actualDecodeTPS
+		}
+		if admittedButFailed != nil {
+			outcome.AdmittedButFailed = *admittedButFailed
+		}
+		if usedBackup != nil {
+			outcome.UsedBackup = *usedBackup
+		}
+		if backupWon != nil {
+			outcome.BackupWon = *backupWon
+		}
+		applyInferenceRouteOutcomeToRecord(&r, outcome)
+		records = append(records, r)
+	}
+	return records
+}
+
+// RecordRejection writes a rejected-request record with its counterfactual
+// servability snapshot. Best-effort; failures are discarded and never block
+// the request path.
+func (s *PostgresStore) RecordRejection(record *RejectionRecord) error {
+	if record == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	createdAt := record.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	// Mirror marshalProviderLocation's JSONB handling: pass nil (→ SQL NULL)
+	// when there are no params so we never write an invalid empty JSONB value.
+	var params json.RawMessage
+	if len(record.Params) > 0 {
+		params = record.Params
+	}
+
+	_, _ = s.pool.Exec(ctx,
+		`INSERT INTO request_rejections (
+			request_id, endpoint, stage, reason_code, http_status, consumer_key_hash, key_id, client_class,
+			requested_model, resolved_model, stream, n, estimated_prompt_tokens, requested_max_tokens,
+			requires_vision, has_image, has_audio, has_tools, tool_count, response_format, self_route_only, prefer_owner,
+			params, request_body_bytes, retry_after_ms,
+			could_have_served, candidate_count, capacity_rejections, model_too_large_rejections, vision_rejections,
+			warm_provider_existed, best_ttft_ms, shortfall_micro_usd, limit_kind, over_by,
+			created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8,
+			$9, $10, $11, $12, $13, $14,
+			$15, $16, $17, $18, $19, $20, $21, $22,
+			$23, $24, $25,
+			$26, $27, $28, $29, $30,
+			$31, $32, $33, $34, $35,
+			$36
+		)`,
+		record.RequestID, record.Endpoint, record.Stage, record.ReasonCode, record.HTTPStatus, record.ConsumerKeyHash, record.KeyID, record.ClientClass,
+		record.RequestedModel, record.ResolvedModel, record.Stream, record.N, record.EstimatedPromptTokens, record.RequestedMaxTokens,
+		record.RequiresVision, record.HasImage, record.HasAudio, record.HasTools, record.ToolCount, record.ResponseFormat, record.SelfRouteOnly, record.PreferOwner,
+		params, record.RequestBodyBytes, record.RetryAfterMs,
+		record.CouldHaveServed, record.CandidateCount, record.CapacityRejections, record.ModelTooLargeRejections, record.VisionRejections,
+		record.WarmProviderExisted, record.BestTTFTMs, record.ShortfallMicroUSD, record.LimitKind, record.OverBy,
+		createdAt,
+	)
+	return nil
+}
+
+// RejectionRecordsSince returns rejection records created at or after the given
+// time. Zero since returns all records.
+func (s *PostgresStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT * FROM request_rejections WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2`,
+		since, maxTelemetryReadRows)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var records []RejectionRecord
+	for rows.Next() {
+		var r RejectionRecord
+		var id int64
+		var paramsRaw []byte
+
+		if err := rows.Scan(
+			&id,
+			&r.RequestID, &r.Endpoint, &r.Stage, &r.ReasonCode, &r.HTTPStatus, &r.ConsumerKeyHash, &r.KeyID, &r.ClientClass,
+			&r.RequestedModel, &r.ResolvedModel, &r.Stream, &r.N, &r.EstimatedPromptTokens, &r.RequestedMaxTokens,
+			&r.RequiresVision, &r.HasImage, &r.HasAudio, &r.HasTools, &r.ToolCount, &r.ResponseFormat, &r.SelfRouteOnly, &r.PreferOwner,
+			&paramsRaw, &r.RequestBodyBytes, &r.RetryAfterMs,
+			&r.CouldHaveServed, &r.CandidateCount, &r.CapacityRejections, &r.ModelTooLargeRejections, &r.VisionRejections,
+			&r.WarmProviderExisted, &r.BestTTFTMs, &r.ShortfallMicroUSD, &r.LimitKind, &r.OverBy,
+			&r.CreatedAt,
+		); err != nil {
+			continue
+		}
+		if len(paramsRaw) > 0 {
+			r.Params = paramsRaw
+		}
+		records = append(records, r)
+	}
+	return records
+}
+
 // UsageLocationBuckets aggregates usage by approximate request origin.
 func (s *PostgresStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1458,9 +2063,30 @@ func (s *PostgresStore) UsageTimeSeries(since time.Time) []UsageBucket {
 	return buckets
 }
 
+// rewardLedgerTypesSQLList renders RewardLedgerTypes as a comma-separated list
+// of single-quoted SQL string literals (e.g. "'referral_reward','admin_reward'")
+// for use in an IN (...) clause. The values are package constants, never user
+// input, so literal interpolation here is safe from SQL injection.
+func rewardLedgerTypesSQLList() string {
+	out := ""
+	for i, t := range RewardLedgerTypes {
+		if i > 0 {
+			out += ","
+		}
+		out += "'" + string(t) + "'"
+	}
+	return out
+}
+
 // Leaderboard returns the top N accounts ranked by the given metric over the
 // given time window. Zero `since` means all-time. The ranking is computed in
-// SQL via aggregation on provider_earnings — no per-row wire transfer.
+// SQL — no per-row wire transfer. Only providers (accounts with inference work
+// in the window) are ranked: the query LEFT JOINs reward ledger entries
+// (referral_reward, admin_reward) onto provider_earnings so reward earnings are
+// credited to providers, while reward-only accounts (e.g. consumer-only
+// referrers) never appear on the provider leaderboard. The "earnings" metric
+// ranks by the combined total (work + reward); a deterministic account_id
+// tiebreaker keeps ordering stable.
 func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1469,29 +2095,50 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 		limit = 50
 	}
 
-	orderBy := "earnings_micro_usd DESC"
+	orderCol := "earnings_micro_usd"
 	switch metric {
 	case LeaderboardTokens:
-		orderBy = "tokens DESC"
+		orderCol = "tokens"
 	case LeaderboardJobs:
-		orderBy = "jobs DESC"
+		orderCol = "jobs"
 	}
 
-	// account_id != '' filters out unassigned earnings (e.g. legacy wallet-only).
-	q := `SELECT account_id,
-	             COALESCE(SUM(amount_micro_usd), 0)               AS earnings_micro_usd,
-	             COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
-	             COUNT(*)                                          AS jobs
-	      FROM provider_earnings
-	      WHERE account_id != ''`
+	// `since` is bound once as $1 and referenced in both CTEs; `limit` is the
+	// final positional arg. account_id != '' filters out unassigned earnings.
 	args := []any{}
+	workSince := ""
+	rewardSince := ""
 	if !since.IsZero() {
-		q += ` AND created_at >= $1`
 		args = append(args, since)
+		workSince = ` AND created_at >= $1`
+		rewardSince = ` AND created_at >= $1`
 	}
-	q += `
-	      GROUP BY account_id
-	      ORDER BY ` + orderBy + `
+
+	q := `WITH work AS (
+	          SELECT account_id,
+	                 SUM(amount_micro_usd)                  AS work_micro,
+	                 SUM(prompt_tokens + completion_tokens) AS tokens,
+	                 COUNT(*)                               AS jobs
+	          FROM provider_earnings
+	          WHERE account_id != ''` + workSince + `
+	          GROUP BY account_id
+	      ),
+	      reward AS (
+	          SELECT account_id,
+	                 SUM(amount_micro_usd) AS reward_micro
+	          FROM ledger_entries
+	          WHERE account_id != '' AND entry_type IN (` + rewardLedgerTypesSQLList() + `)` + rewardSince + `
+	          GROUP BY account_id
+	      )
+	      SELECT w.account_id                            AS account_id,
+	             w.work_micro + COALESCE(r.reward_micro,0) AS earnings_micro_usd,
+	             w.work_micro                            AS work_micro_usd,
+	             COALESCE(r.reward_micro,0)              AS reward_micro_usd,
+	             w.tokens                                AS tokens,
+	             w.jobs                                  AS jobs
+	      FROM work w
+	      LEFT JOIN reward r ON w.account_id = r.account_id
+	      ORDER BY ` + orderCol + ` DESC, account_id ASC
 	      LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
 
@@ -1504,7 +2151,7 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 	out := make([]LeaderboardRow, 0, limit)
 	for rows.Next() {
 		var r LeaderboardRow
-		if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.WorkEarningsMicroUSD, &r.RewardEarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
 			continue
 		}
 		out = append(out, r)
@@ -1513,25 +2160,52 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 }
 
 // NetworkTotals returns aggregated metrics across all earnings for the given
-// time window. Zero `since` means all-time.
+// time window. Zero `since` means all-time. Totals combine inference work
+// (provider_earnings) with non-inference reward ledger entries (referral_reward,
+// admin_reward), but rewards are only counted for provider accounts (those with
+// inference work in the window) so consumer-only reward recipients don't inflate
+// network provider totals. ActiveAccounts counts distinct provider accounts.
 func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	q := `SELECT COALESCE(SUM(amount_micro_usd), 0),
-	             COALESCE(SUM(prompt_tokens + completion_tokens), 0),
-	             COUNT(*),
-	             COUNT(DISTINCT account_id) FILTER (WHERE account_id != '')
-	      FROM provider_earnings`
+	// `since`, when set, is bound once as $1 and referenced in the work,
+	// providers, and reward subqueries.
 	args := []any{}
+	workWhere := ""
+	providerSince := ""
+	rewardSince := ""
 	if !since.IsZero() {
-		q += ` WHERE created_at >= $1`
 		args = append(args, since)
+		workWhere = ` WHERE created_at >= $1`
+		providerSince = ` AND created_at >= $1`
+		rewardSince = ` AND le.created_at >= $1`
 	}
+
+	rewardTypes := rewardLedgerTypesSQLList()
+	q := `WITH work AS (
+	          SELECT COALESCE(SUM(amount_micro_usd),0)                  AS work_micro,
+	                 COALESCE(SUM(prompt_tokens + completion_tokens),0) AS tokens,
+	                 COUNT(*)                                           AS jobs
+	          FROM provider_earnings` + workWhere + `
+	      ),
+	      providers AS (
+	          SELECT DISTINCT account_id FROM provider_earnings WHERE account_id != ''` + providerSince + `
+	      ),
+	      reward AS (
+	          SELECT COALESCE(SUM(le.amount_micro_usd),0) AS reward_micro
+	          FROM ledger_entries le
+	          JOIN providers p ON p.account_id = le.account_id
+	          WHERE le.entry_type IN (` + rewardTypes + `)` + rewardSince + `
+	      )
+	      SELECT work.work_micro + reward.reward_micro AS earnings_micro,
+	             work.work_micro, reward.reward_micro, work.tokens, work.jobs,
+	             (SELECT COUNT(*) FROM providers)        AS active_accounts
+	      FROM work, reward`
 
 	var t NetworkTotalsRow
 	_ = s.pool.QueryRow(ctx, q, args...).
-		Scan(&t.EarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
+		Scan(&t.EarningsMicroUSD, &t.WorkEarningsMicroUSD, &t.RewardEarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
 	return t
 }
 
@@ -3240,6 +3914,13 @@ func unmarshalProviderLocation(raw []byte) *ProviderLocation {
 	return &loc
 }
 
+func providerStatsJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
+
 func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -3253,6 +3934,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
+			lifetime_stats, last_session_stats,
 			registered_at, last_seen, public_key
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
@@ -3261,7 +3943,8 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			$14, $15, $16, $17,
 			$18, $19, $20,
 			$21, $22, $23, $24,
-			$25, $26, $27
+			$25, $26,
+			$27, $28, $29
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			hardware = $2, models = $3, backend = $4, location = $5,
@@ -3272,7 +3955,8 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			last_challenge_verified = $18, failed_challenges = $19, account_id = $20,
 			lifetime_requests_served = $21, lifetime_tokens_generated = $22,
 			last_session_requests_served = $23, last_session_tokens_generated = $24,
-			last_seen = $26, public_key = $27`,
+			lifetime_stats = $25, last_session_stats = $26,
+			last_seen = $28, public_key = $29`,
 		p.ID, p.Hardware, p.Models, p.Backend,
 		marshalProviderLocation(p.Location),
 		p.TrustLevel, p.Attested,
@@ -3282,6 +3966,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 		p.LastChallengeVerified, p.FailedChallenges, p.AccountID,
 		p.LifetimeRequestsServed, p.LifetimeTokensGenerated,
 		p.LastSessionRequestsServed, p.LastSessionTokensGenerated,
+		providerStatsJSON(p.LifetimeStats), providerStatsJSON(p.LastSessionStats),
 		p.RegisteredAt, p.LastSeen, p.PublicKey,
 	)
 	if err != nil {
@@ -3304,6 +3989,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
+			lifetime_stats, last_session_stats,
 			registered_at, last_seen, public_key
 		 FROM providers WHERE id = $1`, id,
 	).Scan(
@@ -3316,6 +4002,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+		&p.LifetimeStats, &p.LastSessionStats,
 		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 	)
 	if err != nil {
@@ -3339,6 +4026,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
+			lifetime_stats, last_session_stats,
 			registered_at, last_seen, public_key
 		 FROM providers WHERE serial_number = $1 AND serial_number != ''
 		 ORDER BY last_seen DESC LIMIT 1`, serial,
@@ -3352,6 +4040,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+		&p.LifetimeStats, &p.LastSessionStats,
 		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 	)
 	if err != nil {
@@ -3373,6 +4062,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
+			lifetime_stats, last_session_stats,
 			registered_at, last_seen, public_key
 		 FROM providers ORDER BY last_seen DESC`,
 	)
@@ -3395,6 +4085,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+			&p.LifetimeStats, &p.LastSessionStats,
 			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 		); err != nil {
 			continue
@@ -3433,6 +4124,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
+			lifetime_stats, last_session_stats,
 			registered_at, last_seen, public_key
 		 FROM providers
 		 WHERE account_id = $1
@@ -3461,6 +4153,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+			&p.LifetimeStats, &p.LastSessionStats,
 			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 		); err != nil {
 			continue
@@ -3645,6 +4338,126 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		return nil, fmt.Errorf("store: reputation not found: %w", err)
 	}
 	return &rep, nil
+}
+
+// --- APNs code-identity attestation reuse cache (W5 Fix 2) ---
+
+func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttestation, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT se_pubkey, version, attested_at, apns_token FROM code_attestations`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list code attestations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CodeAttestation
+	for rows.Next() {
+		var rec CodeAttestation
+		if err := rows.Scan(&rec.SEPubKey, &rec.Version, &rec.AttestedAt, &rec.APNsToken); err != nil {
+			return nil, fmt.Errorf("store: scan code attestation: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate code attestations: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttestation) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO code_attestations (se_pubkey, version, attested_at, apns_token)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (se_pubkey) DO UPDATE SET
+			version = $2, attested_at = $3, apns_token = $4`,
+		rec.SEPubKey, rec.Version, rec.AttestedAt, rec.APNsToken,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert code attestation: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteCodeAttestation(ctx context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `DELETE FROM code_attestations WHERE se_pubkey = $1`, seKey); err != nil {
+		return fmt.Errorf("store: delete code attestation: %w", err)
+	}
+	return nil
+}
+
+// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+
+func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderTrustReuse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at FROM provider_trust_reuse`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list provider trust reuse: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ProviderTrustReuse
+	for rows.Next() {
+		var rec ProviderTrustReuse
+		if err := rows.Scan(&rec.SEPubKey, &rec.Serial, &rec.TrustLevel, &rec.BinaryHash, &rec.SIPEnabled, &rec.SecureBootFull, &rec.MDAUDID, &rec.VerifiedAt); err != nil {
+			return nil, fmt.Errorf("store: scan provider trust reuse: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider trust reuse: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_trust_reuse (se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 ON CONFLICT (se_pubkey) DO UPDATE SET
+			serial = $2, trust_level = $3, binary_hash = $4, sip_enabled = $5, secure_boot_full = $6, mda_udid = $7, verified_at = $8`,
+		rec.SEPubKey, rec.Serial, rec.TrustLevel, rec.BinaryHash, rec.SIPEnabled, rec.SecureBootFull, rec.MDAUDID, rec.VerifiedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert provider trust reuse: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteProviderTrustReuse(ctx context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `DELETE FROM provider_trust_reuse WHERE se_pubkey = $1`, seKey); err != nil {
+		return fmt.Errorf("store: delete provider trust reuse: %w", err)
+	}
+	return nil
 }
 
 // --- Provider Log Reports ---

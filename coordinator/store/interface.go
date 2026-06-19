@@ -110,6 +110,27 @@ type Store interface {
 	// plus the optional consumer-facing model name returned by usage history.
 	RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
 
+	// RecordInferenceRoute writes or refreshes the routing decision snapshot for a
+	// request attempt. Best-effort; failures must not block inference.
+	RecordInferenceRoute(record *InferenceRouteRecord) error
+
+	// UpdateInferenceRouteOutcome updates the attempt with final outcome data
+	// (tokens, timing, error). Best-effort; failures must not block inference.
+	UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error
+
+	// InferenceRouteRecords returns routing records created at or after the
+	// given time. Zero since returns all records.
+	InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord
+
+	// RecordRejection writes a rejected-request record (4xx/5xx) with its
+	// counterfactual servability snapshot. Best-effort; failures must not block
+	// the request path.
+	RecordRejection(record *RejectionRecord) error
+
+	// RejectionRecordsSince returns rejection records created at or after the
+	// given time. Zero since returns all records.
+	RejectionRecordsSince(since time.Time) []RejectionRecord
+
 	// RecordPayment records a settled payment between consumer and provider.
 	RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error
 
@@ -497,6 +518,67 @@ type Store interface {
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
 
+	// --- APNs code-identity attestation reuse cache (survives deploys) ---
+	//
+	// These persist the in-memory reuse cache used by the APNs code-identity
+	// flow (W5 Fix 2) so a blue-green deploy / coordinator restart does not wipe
+	// it and trigger a fleet-wide push storm against Apple's ~3/hour/device push
+	// budget. SECURITY: a persisted row records that a device (keyed by its Secure
+	// Enclave public key) completed a FULL code-identity round-trip at AttestedAt
+	// running binary Version. It NEVER by itself grants CodeAttested — it only lets
+	// the coordinator skip RE-PUSHING within the same-version, bounded reuse window
+	// (api.codeAttestThrottle.reuseAttestation re-checks version + freshness on
+	// read, so a stale / wrong-version / expired persisted row falls through to a
+	// real challenge).
+
+	// ListCodeAttestations returns all persisted code-identity attestation
+	// records (for seeding the in-memory reuse cache at startup).
+	ListCodeAttestations(ctx context.Context) ([]CodeAttestation, error)
+
+	// UpsertCodeAttestation creates or updates the attestation record for a
+	// device (keyed by SEPubKey). Called after a successful code-identity
+	// round-trip; best-effort, must not block the read loop.
+	UpsertCodeAttestation(ctx context.Context, rec CodeAttestation) error
+
+	// DeleteCodeAttestation removes a device's persisted attestation record
+	// (keyed by SEPubKey). Called when the device's APNs token CHANGES so a later
+	// coordinator restart cannot reseed and reuse the pre-rotation proof — keeping
+	// the "token change forces a real re-challenge" invariant durable across
+	// restarts. Best-effort; must not block the read loop.
+	DeleteCodeAttestation(ctx context.Context, seKey string) error
+
+	// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+	//
+	// These mirror the code-identity reuse cache above. A persisted row records
+	// that a device (keyed by its Secure Enclave public key) completed a FULL live
+	// MDM SecurityInfo verification at VerifiedAt — proven SIP/Secure-Boot posture,
+	// serial, and binary hash. It lets a planned coordinator restart/blue-green
+	// swap skip a fleet-wide live MDM SecurityInfo + APNs re-verification HERD: on
+	// reconnect, once the live SE challenge re-proves identity + posture, a fresh
+	// record short-circuits the (otherwise immediate) live MDM round-trip.
+	//
+	// SECURITY: a persisted row NEVER by itself grants hardware trust. The reuse
+	// decision (api.trustReuseCache.reuseTrust) re-applies, on every read, a live
+	// SE challenge, a serial+SE-key identity match, a binary-hash match, a fresh
+	// good-posture check, and the freshness window — so a stale / wrong-binary /
+	// expired / hard-untrusted row falls through to the full live MDM verification.
+
+	// ListProviderTrustReuse returns all persisted trust-reuse records (for
+	// seeding the in-memory reuse cache at startup).
+	ListProviderTrustReuse(ctx context.Context) ([]ProviderTrustReuse, error)
+
+	// UpsertProviderTrustReuse creates or updates the trust-reuse record for a
+	// device (keyed by SEPubKey). Called after a successful live MDM verification;
+	// best-effort, must not block the read loop.
+	UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse) error
+
+	// DeleteProviderTrustReuse removes a device's persisted trust-reuse record
+	// (keyed by SEPubKey). Called when the provider is HARD-untrusted so a later
+	// coordinator restart cannot reseed and fast-skip on a stale pre-untrust
+	// record — keeping "hard untrust always takes effect" durable across restarts.
+	// Best-effort; must not block the read loop.
+	DeleteProviderTrustReuse(ctx context.Context, seKey string) error
+
 	// --- Provider Log Reports ---
 
 	// StoreLogReport stores a provider log report.
@@ -548,6 +630,183 @@ type UsageRecord struct {
 	RequestID        string            `json:"request_id,omitempty"`
 	CostMicroUSD     int64             `json:"cost_micro_usd,omitempty"`
 	CreatedAt        time.Time         `json:"created_at,omitempty"`
+}
+
+// maxTelemetryReadRows is the hard upper bound on rows returned by the routing
+// telemetry readers (InferenceRouteRecordsSince / RejectionRecordsSince). These
+// tables grow unbounded over time, so the readers always cap the result set
+// (newest-first) to keep an admin query — or a wide `since` window — from
+// loading the whole table into memory. Narrow the time window to see older rows.
+const maxTelemetryReadRows = 50000
+
+// InferenceRouteRecord captures a single routing decision and the provider
+// snapshot at the moment the scheduler made the choice. It contains no user
+// prompt or response content.
+type InferenceRouteRecord struct {
+	RequestID               string  `json:"request_id"`
+	Attempt                 int     `json:"attempt"`
+	ProviderID              string  `json:"provider_id"`
+	Model                   string  `json:"model"`
+	PublicModel             string  `json:"public_model"`
+	ConsumerKeyHash         string  `json:"consumer_key_hash"`
+	KeyID                   string  `json:"key_id"`
+	Outcome                 string  `json:"outcome"`
+	CostMs                  float64 `json:"cost_ms"`
+	StateMs                 float64 `json:"state_ms"`
+	QueueMs                 float64 `json:"queue_ms"`
+	PendingMs               float64 `json:"pending_ms"`
+	BacklogMs               float64 `json:"backlog_ms"`
+	ThisReqMs               float64 `json:"this_req_ms"`
+	HealthMs                float64 `json:"health_ms"`
+	TTFTMs                  float64 `json:"ttft_ms"`
+	BestTTFTMs              float64 `json:"best_ttft_ms"`
+	EffectiveQueue          int     `json:"effective_queue"`
+	CandidateCount          int     `json:"candidate_count"`
+	CapacityRejections      int     `json:"capacity_rejections"`
+	ModelTooLargeRejections int     `json:"model_too_large_rejections"`
+	VisionRejections        int     `json:"vision_rejections"`
+	TTFTRejections          int     `json:"ttft_rejections"`
+	EffectiveTPS            float64 `json:"effective_tps"`
+	StaticTPS               float64 `json:"static_tps"`
+
+	ProviderStatus        string  `json:"provider_status"`
+	ProviderTrustLevel    string  `json:"provider_trust_level"`
+	ProviderVersion       string  `json:"provider_version"`
+	HardwareChip          string  `json:"hardware_chip"`
+	HardwareChipFamily    string  `json:"hardware_chip_family"`
+	HardwareTier          string  `json:"hardware_tier"`
+	MemoryGB              int     `json:"memory_gb"`
+	GPUCores              int     `json:"gpu_cores"`
+	CPUCores              int     `json:"cpu_cores"`
+	SystemMemoryPressure  float64 `json:"system_memory_pressure"`
+	SystemCPUUsage        float64 `json:"system_cpu_usage"`
+	SystemThermalState    string  `json:"system_thermal_state"`
+	GPUMemoryActiveGB     float64 `json:"gpu_memory_active_gb"`
+	GPUMemoryPeakGB       float64 `json:"gpu_memory_peak_gb"`
+	GPUMemoryCacheGB      float64 `json:"gpu_memory_cache_gb"`
+	SlotState             string  `json:"slot_state"`
+	BackendRunning        int     `json:"backend_running"`
+	BackendWaiting        int     `json:"backend_waiting"`
+	ActiveTokenBudgetUsed int64   `json:"active_token_budget_used"`
+	ActiveTokenBudgetMax  int64   `json:"active_token_budget_max"`
+	QueuedTokenBudget     int64   `json:"queued_token_budget"`
+
+	EstimatedPromptTokens int    `json:"estimated_prompt_tokens"`
+	RequestedMaxTokens    int    `json:"requested_max_tokens"`
+	RequiresVision        bool   `json:"requires_vision"`
+	HasTools              bool   `json:"has_tools"`
+	SelfRouteOnly         bool   `json:"self_route_only"`
+	PreferOwner           bool   `json:"prefer_owner"`
+	CacheAffinityKey      string `json:"cache_affinity_key"`
+
+	// Geo (coarse region of provider/consumer; no raw IPs). Optional.
+	ProviderRegion string `json:"provider_region,omitempty"`
+	ConsumerRegion string `json:"consumer_region,omitempty"`
+
+	// Final outcome data, merged from InferenceRouteOutcome updates.
+	FinalStatus            string  `json:"final_status"`
+	ErrorCode              int     `json:"error_code"`
+	ErrorClass             string  `json:"error_class"`
+	PromptTokens           int     `json:"prompt_tokens"`
+	CompletionTokens       int     `json:"completion_tokens"`
+	ReasoningTokens        int     `json:"reasoning_tokens"`
+	CostMicroUSD           int64   `json:"cost_micro_usd"`
+	ActualTTFTMs           float64 `json:"actual_ttft_ms"`
+	DispatchToFirstChunkMs float64 `json:"dispatch_to_first_chunk_ms"`
+	TotalDurationMs        float64 `json:"total_duration_ms"`
+	ParseMs                float64 `json:"parse_ms"`
+	ReserveMs              float64 `json:"reserve_ms"`
+	RouteMs                float64 `json:"route_ms"`
+	EncryptMs              float64 `json:"encrypt_ms"`
+	QueueWaitMs            float64 `json:"queue_wait_ms"`
+	DispatchMs             float64 `json:"dispatch_ms"`
+	ActualDecodeTPS        float64 `json:"actual_decode_tps"`
+	AdmittedButFailed      bool    `json:"admitted_but_failed"`
+	UsedBackup             bool    `json:"used_backup"`
+	BackupWon              bool    `json:"backup_won"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// InferenceRouteOutcome carries the final result of a routed request attempt.
+type InferenceRouteOutcome struct {
+	FinalStatus            string  `json:"final_status"`
+	ErrorCode              int     `json:"error_code"`
+	ErrorClass             string  `json:"error_class"`
+	PromptTokens           int     `json:"prompt_tokens"`
+	CompletionTokens       int     `json:"completion_tokens"`
+	ReasoningTokens        int     `json:"reasoning_tokens"`
+	CostMicroUSD           int64   `json:"cost_micro_usd"`
+	ActualTTFTMs           float64 `json:"actual_ttft_ms"`
+	DispatchToFirstChunkMs float64 `json:"dispatch_to_first_chunk_ms"`
+	TotalDurationMs        float64 `json:"total_duration_ms"`
+
+	// Coordinator-side latency decomposition (ms). Zero = not measured.
+	ParseMs     float64 `json:"parse_ms"`
+	ReserveMs   float64 `json:"reserve_ms"`
+	RouteMs     float64 `json:"route_ms"`
+	EncryptMs   float64 `json:"encrypt_ms"`
+	QueueWaitMs float64 `json:"queue_wait_ms"` // measured enqueue -> dispatch
+	DispatchMs  float64 `json:"dispatch_ms"`
+
+	// Measured decode throughput for the completed request (tokens/s).
+	ActualDecodeTPS float64 `json:"actual_decode_tps"`
+
+	// AdmittedButFailed is true when the coordinator admitted the request but the
+	// provider failed it (OOM / load failure) — the admission-gate mismatch.
+	AdmittedButFailed bool `json:"admitted_but_failed"`
+	// Speculative/backup-race dispatch outcome.
+	UsedBackup bool `json:"used_backup"`
+	BackupWon  bool `json:"backup_won"`
+}
+
+// RejectionRecord captures a single rejected inbound inference request (4xx/5xx)
+// at any stage of the pipeline, with the request's parameters and a
+// counterfactual servability snapshot ("could the fleet have served it?"). It
+// contains no prompt or response content.
+type RejectionRecord struct {
+	RequestID       string `json:"request_id,omitempty"`
+	Endpoint        string `json:"endpoint"`
+	Stage           string `json:"stage"`       // auth, validation, model_resolution, balance, rate_limit, preflight_capacity, routing_ttft
+	ReasonCode      string `json:"reason_code"` // e.g. model_not_found, machine_busy, insufficient_funds
+	HTTPStatus      int    `json:"http_status"`
+	ConsumerKeyHash string `json:"consumer_key_hash,omitempty"`
+	KeyID           string `json:"key_id,omitempty"`
+	ClientClass     string `json:"client_class,omitempty"` // e.g. openrouter, direct
+
+	// Request shape / params (non-private — no content).
+	RequestedModel        string          `json:"requested_model"` // raw, as the client sent it
+	ResolvedModel         string          `json:"resolved_model,omitempty"`
+	Stream                bool            `json:"stream"`
+	N                     int             `json:"n,omitempty"`
+	EstimatedPromptTokens int             `json:"estimated_prompt_tokens"`
+	RequestedMaxTokens    int             `json:"requested_max_tokens"`
+	RequiresVision        bool            `json:"requires_vision"`
+	HasImage              bool            `json:"has_image"`
+	HasAudio              bool            `json:"has_audio"`
+	HasTools              bool            `json:"has_tools"`
+	ToolCount             int             `json:"tool_count,omitempty"`
+	ResponseFormat        string          `json:"response_format,omitempty"`
+	SelfRouteOnly         bool            `json:"self_route_only"`
+	PreferOwner           bool            `json:"prefer_owner"`
+	Params                json.RawMessage `json:"params,omitempty"` // non-content knobs (temperature, top_p, …)
+	RequestBodyBytes      int             `json:"request_body_bytes,omitempty"`
+	RetryAfterMs          int             `json:"retry_after_ms,omitempty"`
+
+	// Counterfactual servability — "could it have produced output?"
+	CouldHaveServed         bool    `json:"could_have_served"`
+	CandidateCount          int     `json:"candidate_count"`
+	CapacityRejections      int     `json:"capacity_rejections"`
+	ModelTooLargeRejections int     `json:"model_too_large_rejections"`
+	VisionRejections        int     `json:"vision_rejections"`
+	WarmProviderExisted     bool    `json:"warm_provider_existed"`
+	BestTTFTMs              float64 `json:"best_ttft_ms,omitempty"`
+	ShortfallMicroUSD       int64   `json:"shortfall_micro_usd,omitempty"` // for 402
+	LimitKind               string  `json:"limit_kind,omitempty"`          // for 429 rate-limit
+	OverBy                  int64   `json:"over_by,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // UsageTotals aggregates the entire usage table.
@@ -614,22 +873,43 @@ const (
 	LeaderboardJobs     LeaderboardMetric = "jobs"
 )
 
-// LeaderboardRow is a single account's aggregate across provider_earnings.
+// LeaderboardRow is a single account's aggregate across provider_earnings
+// (inference work) combined with reward ledger entries (referral_reward and
+// admin_reward). EarningsMicroUSD is the combined total of work + reward.
 // Pseudonyms are computed at the API layer from AccountID, never returned
 // from the store directly.
 type LeaderboardRow struct {
-	AccountID        string `json:"account_id"`
-	EarningsMicroUSD int64  `json:"earnings_micro_usd"`
-	Tokens           int64  `json:"tokens"`
-	Jobs             int64  `json:"jobs"`
+	AccountID              string `json:"account_id"`
+	EarningsMicroUSD       int64  `json:"earnings_micro_usd"`        // total = work + reward
+	WorkEarningsMicroUSD   int64  `json:"work_earnings_micro_usd"`   // inference payouts
+	RewardEarningsMicroUSD int64  `json:"reward_earnings_micro_usd"` // referral_reward + admin_reward
+	Tokens                 int64  `json:"tokens"`
+	Jobs                   int64  `json:"jobs"`
 }
 
 // NetworkTotalsRow holds aggregated network metrics for homepage stats.
 type NetworkTotalsRow struct {
-	EarningsMicroUSD int64 `json:"earnings_micro_usd"`
-	Tokens           int64 `json:"tokens"`
-	Jobs             int64 `json:"jobs"`
-	ActiveAccounts   int64 `json:"active_accounts"`
+	EarningsMicroUSD       int64 `json:"earnings_micro_usd"` // total = work + reward
+	WorkEarningsMicroUSD   int64 `json:"work_earnings_micro_usd"`
+	RewardEarningsMicroUSD int64 `json:"reward_earnings_micro_usd"`
+	Tokens                 int64 `json:"tokens"`
+	Jobs                   int64 `json:"jobs"`
+	ActiveAccounts         int64 `json:"active_accounts"`
+}
+
+// RewardLedgerTypes are the ledger entry types that represent non-inference
+// "reward" earnings (network participation incentives) counted on the
+// leaderboard separately from inference work earnings.
+var RewardLedgerTypes = []LedgerEntryType{LedgerReferralReward, LedgerAdminReward}
+
+// IsRewardLedgerType reports whether t is counted as reward earnings.
+func IsRewardLedgerType(t LedgerEntryType) bool {
+	for _, rt := range RewardLedgerTypes {
+		if t == rt {
+			return true
+		}
+	}
+	return false
 }
 
 // LedgerEntryType categorizes balance changes.
@@ -1087,6 +1367,8 @@ type ProviderRecord struct {
 	LifetimeTokensGenerated    int64           `json:"lifetime_tokens_generated"`
 	LastSessionRequestsServed  int64           `json:"last_session_requests_served"`
 	LastSessionTokensGenerated int64           `json:"last_session_tokens_generated"`
+	LifetimeStats              json.RawMessage `json:"lifetime_stats,omitempty"`
+	LastSessionStats           json.RawMessage `json:"last_session_stats,omitempty"`
 	RegisteredAt               time.Time       `json:"registered_at"`
 	LastSeen                   time.Time       `json:"last_seen"`
 }
@@ -1145,4 +1427,46 @@ type ReputationRecord struct {
 	AvgResponseTimeMs  int64 `json:"avg_response_time_ms"`
 	ChallengesPassed   int   `json:"challenges_passed"`
 	ChallengesFailed   int   `json:"challenges_failed"`
+}
+
+// CodeAttestation is the persistent representation of one device's most recent
+// successful APNs code-identity attestation (W5 Fix 2). It is the durable form
+// of api.codeAttestRecord. Keyed by the Secure Enclave public key — the stable
+// per-device identity that survives reconnects AND coordinator restarts.
+//
+// SECURITY: the row is written ONLY after a full, verified code-identity
+// round-trip; it is never created from an unverified heartbeat token. On read,
+// the reuse decision still re-applies the version gate and freshness window, so a
+// persisted row can only ever let the coordinator skip a redundant push — never
+// extend or fabricate trust.
+type CodeAttestation struct {
+	SEPubKey   string    `json:"se_pubkey"`   // base64 Secure Enclave P-256 public key (bound at registration)
+	Version    string    `json:"version"`     // provider binary version that attested
+	AttestedAt time.Time `json:"attested_at"` // instant of the successful round-trip
+	APNsToken  string    `json:"apns_token"`  // APNs device token the proof was bound to; reuse requires it to match the new registration token (Codex #7). "" = legacy row from before token-binding.
+}
+
+// ProviderTrustReuse is the persistent representation of one device's most recent
+// successful FULL live MDM SecurityInfo verification (DAR-326 Phase 0). It is the
+// durable form of api.trustReuseRecord. Keyed by the Secure Enclave public key —
+// the stable per-device identity that survives reconnects AND coordinator
+// restarts. It mirrors CodeAttestation: persistence lets a planned coordinator
+// restart/blue-green swap skip a fleet-wide live MDM SecurityInfo + APNs
+// re-verification herd.
+//
+// SECURITY: the row is written ONLY after a full, verified live MDM
+// verification; it is never created from an unverified heartbeat or self-report.
+// On read, the reuse decision still re-applies a live SE challenge, a serial+SE
+// identity match, a binary-hash match, a fresh good-posture check, and the
+// freshness window, so a persisted row can only ever let the coordinator skip a
+// redundant live MDM round-trip — never extend or fabricate trust.
+type ProviderTrustReuse struct {
+	SEPubKey       string    `json:"se_pubkey"`        // base64 Secure Enclave P-256 public key (bound at registration)
+	Serial         string    `json:"serial"`           // device serial number proven by the SE attestation at last verification
+	TrustLevel     string    `json:"trust_level"`      // trust level earned at last verification (only "hardware" is reusable)
+	BinaryHash     string    `json:"binary_hash"`      // provider binary SHA-256 at last verification; reuse requires the fresh signed challenge to match
+	SIPEnabled     bool      `json:"sip_enabled"`      // SIP posture confirmed by MDM at last verification
+	SecureBootFull bool      `json:"secure_boot_full"` // Secure Boot (full) confirmed by MDM at last verification
+	MDAUDID        string    `json:"mda_udid"`         // MDM/MDA device UDID at last verification (diagnostics)
+	VerifiedAt     time.Time `json:"verified_at"`      // instant of the successful live MDM verification
 }

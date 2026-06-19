@@ -188,6 +188,19 @@ type HeartbeatMessage struct {
 	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
 	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
 	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+
+	// APNs code-identity attestation (W5 Fix 2): a provider that only obtained
+	// its APNs device token AFTER registration (headless/late-token Mac) — or
+	// whose token rotated mid-connection — carries it here so the coordinator can
+	// re-arm a code-identity challenge WITHOUT forcing a reconnect. Mirrors
+	// RegisterMessage.APNsDeviceToken/APNsEnvironment. omitempty so providers that
+	// never have a token (and the steady state) keep the wire shape unchanged; nil
+	// when absent. SECURITY: the token here only lets the coordinator SEND a
+	// challenge — it NEVER by itself grants CodeAttested. Attestation still
+	// requires the full E_K(nonce) round-trip verified against the SE key bound at
+	// registration (see api.handleCodeAttestationResponse).
+	APNsDeviceToken string `json:"apns_device_token,omitempty"` // hex device token from registerForRemoteNotifications
+	APNsEnvironment string `json:"apns_environment,omitempty"`  // "production" | "development" (selects the APNs host)
 }
 
 // BackendSlotCapacity describes the capacity state of a single backend slot
@@ -202,10 +215,12 @@ type BackendSlotCapacity struct {
 	MaxTokensPotential int64  `json:"max_tokens_potential"`      // sum of max_tokens across running requests (worst-case growth)
 
 	ObservedDecodeTPS     float64 `json:"observed_decode_tps,omitempty"`      // EWMA of measured per-request decode TPS
+	ObservedPrefillTPS    float64 `json:"observed_prefill_tps,omitempty"`     // EWMA of measured per-request prefill TPS (admission→first token); omitted when unmeasured
 	ActiveTokenBudgetUsed int64   `json:"active_token_budget_used,omitempty"` // tokens reserved by active requests (prompt + max_output)
 	ActiveTokenBudgetMax  int64   `json:"active_token_budget_max,omitempty"`  // maximum token budget for this slot
 	QueuedTokenBudget     int64   `json:"queued_token_budget,omitempty"`      // tokens reserved by queued requests
 	KVBytesPerToken       int64   `json:"kv_bytes_per_token,omitempty"`       // per-token KV cache memory cost in bytes (provider-side only)
+	ModelLoadTimeMS       int64   `json:"model_load_time_ms,omitempty"`       // measured cold-start load time (ms) for the model in this slot; omitted when unmeasured
 }
 
 // BackendCapacity describes the aggregate capacity across all backend slots
@@ -217,6 +232,14 @@ type BackendCapacity struct {
 	GPUMemoryPeakGB   float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
 	GPUMemoryCacheGB  float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
 	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
+	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
+	// provider can load right now: net of the 90% unified-memory cap, OS/operator
+	// reserve, and activation+min-KV load headroom, clamped to real OS-available
+	// memory, and treating idle resident models as evictable. It is the single
+	// source of truth for cold-load admission (the coordinator no longer
+	// re-derives free memory). A pointer so a legacy provider that doesn't report
+	// it is nil (→ coordinator falls back to the total-memory heuristic).
+	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.
@@ -228,8 +251,16 @@ type SystemMetrics struct {
 
 // HeartbeatStats contains counters reported in heartbeats.
 type HeartbeatStats struct {
-	RequestsServed  int64 `json:"requests_served"`
-	TokensGenerated int64 `json:"tokens_generated"`
+	RequestsServed               int64 `json:"requests_served"`
+	TokensGenerated              int64 `json:"tokens_generated"`
+	CancellationsReceived        int64 `json:"cancellations_received,omitempty"`
+	CancellationsBeforeOutput    int64 `json:"cancellations_before_output,omitempty"`
+	CancellationsPartialComplete int64 `json:"cancellations_partial_complete,omitempty"`
+	GenerationErrorsAfterOutput  int64 `json:"generation_errors_after_output,omitempty"`
+	ChunkEncryptionErrors        int64 `json:"chunk_encryption_errors,omitempty"`
+	StreamClosedWithoutTerminal  int64 `json:"stream_closed_without_terminal,omitempty"`
+	CancelDuringModelLoad        int64 `json:"cancel_during_model_load,omitempty"`
+	UsageGaps                    int64 `json:"usage_gaps,omitempty"`
 }
 
 // InferenceAcceptedMessage signals the provider accepted the request and is

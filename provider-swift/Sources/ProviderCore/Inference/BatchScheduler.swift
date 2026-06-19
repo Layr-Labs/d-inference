@@ -83,6 +83,12 @@ public actor BatchScheduler {
     var checkpointBoundaries: [Int] = []
     /// Per-layer cache class/window signature for restore validation.
     var checkpointLayerSignatures: [CheckpointLayerSignature] = []
+    /// Bounded, single-consumer pipeline that drains checkpoint KV snapshots
+    /// into `checkpointManager`. Caps the number of live KV snapshots retained
+    /// in flight so a busy manager can't drive the live Metal buffer count to
+    /// the 499000 ceiling (the Gemma-4 leak). Built with the engine; shut down
+    /// in `stopCurrentEngine`. nil ⇒ feature off / no checkpoint manager.
+    var capturePipeline: CheckpointCapturePipeline<CheckpointCapture>?
 
     /// Engine-tier owner (EncryptedPrefixCachePersistence) for pure-
     /// attention models. Non-nil only when the model classifies as `.engine` AND
@@ -90,6 +96,32 @@ public actor BatchScheduler {
     /// deregistered at stopCurrentEngine.
     var engineTierOwner: EncryptedPrefixCachePersistence?
     var engineTierAccountantToken: AccountantToken?
+
+    /// Test-only override backing `enginePrefixCacheActive`, set via
+    /// `_setEnginePrefixCacheActiveForTest` so tests can exercise the engine-tier
+    /// prefill-sampling skip without constructing a real
+    /// `EncryptedPrefixCachePersistence`. Production code leaves this false and
+    /// the gate derives solely from `engineTierOwner`.
+    private var _forceEnginePrefixCacheActiveForTest = false
+
+    /// True when an engine-tier (in-GPU block) prefix cache is active for the
+    /// loaded model. The engine restores a matched prefix internally and does
+    /// NOT surface a per-request restored-token count, so `restoredPrefixTokens`
+    /// stays 0 even on a cache hit — a hit is therefore indistinguishable from a
+    /// cold prefill. `recordFinish` skips prefill-EWMA sampling while this is
+    /// active so an unrepresentative cache-hit window can't poison routing-v2's
+    /// TTFT estimate. Single source of truth: `engineTierOwner` (set when the
+    /// engine-tier cache is built, cleared on teardown). Checkpoint-tier models
+    /// (Gemma-4, GPT-OSS) are unaffected — their `restoredPrefixTokens` IS set
+    /// on a hit, so the cold-only guard already excludes their restores.
+    var enginePrefixCacheActive: Bool {
+        engineTierOwner != nil || _forceEnginePrefixCacheActiveForTest
+    }
+
+    /// Test seam: force `enginePrefixCacheActive` without a real engine-tier owner.
+    func _setEnginePrefixCacheActiveForTest(_ active: Bool) {
+        _forceEnginePrefixCacheActiveForTest = active
+    }
 
     /// Admission control + token budget tracking. `nil` until `loadModel()`.
     var planner: BatchQueuePlanner?
@@ -148,6 +180,14 @@ public actor BatchScheduler {
 
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// EWMA of measured per-request prefill TPS (prompt tokens processed
+    /// between engine admission and the first generated token). Same wall-clock
+    /// methodology — and the same batch-load sensitivity — as the decode EWMA.
+    var observedPrefillTpsEwma: Double = 0
+    var prefillEwmaInitialized = false
+    /// Measured cold-start load time (ms) for the currently-loaded model. Set at
+    /// the end of `loadModel`; 0 until a load completes (omitted on the wire).
+    var lastModelLoadMs: Int64 = 0
     /// Per-batch-size TPS samples that drive `AdaptiveBatchCapPolicy`.
     var performanceByBatchSize: [Int: AdaptiveBatchPerformanceBucket] = [:]
     var lastBatchSampleAt: ContinuousClock.Instant = .now
@@ -206,6 +246,11 @@ public actor BatchScheduler {
 
         await stopCurrentEngine()
         let loadEpoch = generationEpoch
+        // Cold-start load timing: measured from here (after any prior model is
+        // unloaded) to the end of a successful load. Reported per-slot as
+        // `model_load_time_ms`. Superseded loads return early below and never
+        // set `lastModelLoadMs`, so a losing race never reports a bogus time.
+        let loadStartedAt = ContinuousClock.now
 
         let snapshot = await Self.snapshotContainer(container)
         // Detect concurrent reload that won the race; bail before we
@@ -240,6 +285,7 @@ public actor BatchScheduler {
         self.checkpointBoundaries = build.checkpointBoundaries
         self.checkpointLayerSignatures = build.checkpointLayerSignatures
         self.engineTierOwner = build.engineTierOwner
+        self.capturePipeline = build.capturePipeline
         await engine.start()
         // Final epoch check after start() — start can suspend too.
         // Identity-checked cleanup — only nil self.engine if it's
@@ -251,6 +297,7 @@ public actor BatchScheduler {
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
             if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
             if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+            if self.capturePipeline === build.capturePipeline { self.capturePipeline?.shutdown(); self.capturePipeline = nil }
             await engine.stop()
             return
         }
@@ -294,6 +341,7 @@ public actor BatchScheduler {
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
             if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
             if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+            if self.capturePipeline === build.capturePipeline { self.capturePipeline?.shutdown(); self.capturePipeline = nil }
             await engine.stop()
             return
         }
@@ -333,6 +381,7 @@ public actor BatchScheduler {
                     if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
                     if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
                     if self.engineTierOwner === build.engineTierOwner { self.engineTierOwner = nil }
+                    if self.capturePipeline === build.capturePipeline { self.capturePipeline?.shutdown(); self.capturePipeline = nil }
                     await engine.stop()
                     return
                 }
@@ -353,6 +402,13 @@ public actor BatchScheduler {
         // Steady-state TTL sweep for the checkpoint SSD tier (no-op when TTL
         // disabled or engine-tier model). Cancelled in stopCurrentEngine.
         startTTLReaper()
+
+        // Record the measured cold-start load time for this slot's heartbeat
+        // telemetry. Only reached on a fully successful, non-superseded load.
+        let loadElapsed = ContinuousClock.now - loadStartedAt
+        let loadMs = Double(loadElapsed.components.seconds) * 1000.0
+            + Double(loadElapsed.components.attoseconds) / 1e15
+        lastModelLoadMs = Int64(max(0, loadMs.rounded()))
     }
 
     /// Snapshot model bytes + tokenizer + architecture out of the
@@ -479,6 +535,16 @@ public actor BatchScheduler {
         }
 
         req.restoredCheckpoint = (caches: hit.caches, tokenCount: hit.tokenCount)
+        // Record the restored prefix length on the bridge so `recordFinish`
+        // excludes it from the prefill-rate EWMA: the admitted→first-token window
+        // only covers prefilling the UNCACHED suffix, so dividing the FULL prompt
+        // by it would inflate `observed_prefill_tps` far above the true
+        // cold-prefill rate (now consumed by routing-v2 for TTFT estimates).
+        // The bridge is guaranteed present here (checked above, no awaits since).
+        if var bridge = activeBridges[req.requestId] {
+            bridge.restoredPrefixTokens = hit.tokenCount
+            activeBridges[req.requestId] = bridge
+        }
         return true
     }
 
@@ -818,11 +884,12 @@ public actor BatchScheduler {
             )
         } ?? []
         engine?.core.scheduler.checkpointBoundaries = boundaries
-        engine?.core.scheduler.onCheckpointCapture = { prefixTokens, length, caches in
-            let box = SendableKVCaches(caches)
-            // TB-016 sub-feature B: test seam also RAM-only (no eager flush).
-            Task { await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box) }
-        }
+        // Same bounded + admission-gated wiring production uses, so the test
+        // seam exercises the real backpressure path (not the old unbounded one).
+        self.capturePipeline?.shutdown()
+        let wiring = Self.makeCheckpointCaptureWiring(manager: mgr)
+        self.capturePipeline = wiring.pipeline
+        engine?.core.scheduler.onCheckpointCapture = wiring.hook
     }
 
     /// TEST SEAM: drive the real `finalizeRestore` fallback path without a live
@@ -956,6 +1023,9 @@ public actor BatchScheduler {
         let checkpointBoundaries: [Int]
         let checkpointLayerSignatures: [CheckpointLayerSignature]
         let engineTierOwner: EncryptedPrefixCachePersistence?
+        /// Bounded capture pipeline (non-nil iff `checkpointManager` is). The
+        /// caller stores it on the actor and shuts it down at teardown.
+        let capturePipeline: CheckpointCapturePipeline<CheckpointCapture>?
     }
 
     private static func makeBatchedEngine(
@@ -1001,6 +1071,7 @@ public actor BatchScheduler {
 
             var enginePrefixCache: PrefixCache? = nil
             var checkpointManager: PrefixCacheManager? = nil
+            var capturePipeline: CheckpointCapturePipeline<CheckpointCapture>? = nil
             var boundaries: [Int] = []
             var checkpointLayerSignatures: [CheckpointLayerSignature] = []
             // Capture the engine-tier owner for accountant registration.
@@ -1112,16 +1183,14 @@ public actor BatchScheduler {
             // when a manager exists, so .engine/.none models are untouched.
             if let mgr = checkpointManager {
                 scheduler.checkpointBoundaries = boundaries
-                scheduler.onCheckpointCapture = { prefixTokens, length, caches in
-                    let box = SendableKVCaches(caches)
-                    // TB-016 sub-feature B: capture = RAM-ONLY. Store to RAM
-                    // (fast); 2nd-use promotion handles SSD persistence when the
-                    // prefix is re-accessed (RAM-first admission stops the write
-                    // storm). No eager flushToSSD.
-                    Task {
-                        await mgr.store(tokens: prefixTokens, checkpointLength: length, caches: box)
-                    }
-                }
+                // Bound the capture pipeline: at most `max-in-flight` live KV
+                // snapshots retained while the manager actor is busy (crypto +
+                // fsync), dropping the surplus rather than queuing it. This is
+                // the fix for the Gemma-4 Metal live-resource (499000) leak — the
+                // old `Task { await mgr.store(...) }` per boundary was unbounded.
+                let wiring = Self.makeCheckpointCaptureWiring(manager: mgr)
+                capturePipeline = wiring.pipeline
+                scheduler.onCheckpointCapture = wiring.hook
             }
             return EngineBuild(
                 engine: BatchedEngine(
@@ -1139,7 +1208,8 @@ public actor BatchScheduler {
                 checkpointManager: checkpointManager,
                 checkpointBoundaries: boundaries,
                 checkpointLayerSignatures: checkpointLayerSignatures,
-                engineTierOwner: engineTierOwner
+                engineTierOwner: engineTierOwner,
+                capturePipeline: capturePipeline
             )
         }
     }
@@ -1471,12 +1541,16 @@ public actor BatchScheduler {
             architecture: snapshot.architecture,
             weightBytes: snapshot.bytes
         )
-        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
-        let osReserve = 4 * 1024 * 1024 * 1024
-        let safetyMargin = totalMemory / 10
-        let availableForKV = totalMemory - snapshot.bytes - osReserve - safetyMargin
+        // Static upper-bound budget from the unified 90% cap minus THIS model's
+        // measured resident weights (snapshot.bytes) and the activation reserve.
+        // Only the per-model clamp; cross-model headroom (other resident models'
+        // weights/KV) is handled live by tokenBudgetMax / the shared
+        // GlobalKVCacheBudget, which read process-global MLX usage.
+        let availableForKV = UnifiedMemoryCap.kvBudgetBytes(
+            residentWeightBytes: UInt64(max(0, snapshot.bytes)))
         if availableForKV > 0 && kvBytesPerToken > 0 {
-            self.dynamicTokenBudgetMax = max(availableForKV / kvBytesPerToken, 1024)
+            let availInt = Int(min(availableForKV, UInt64(Int.max)))
+            self.dynamicTokenBudgetMax = max(availInt / kvBytesPerToken, 1024)
         } else {
             self.dynamicTokenBudgetMax = 1024
         }
@@ -1498,6 +1572,64 @@ public actor BatchScheduler {
 
     public func unloadModel() async {
         await stopCurrentEngine()
+    }
+
+    /// Reserve unified memory for a VLM (vision-path) request against the shared
+    /// 90% cap, via the process-wide GlobalKVCacheBudget this scheduler holds. A
+    /// vision request bypasses the batched `submitTokenized` reservation entirely
+    /// — it streams through `container.generate` directly — so without this it
+    /// commits TWO kinds of memory the cap would otherwise track only reactively:
+    ///
+    /// 1. `mediaDecodeBytes` — the transient CIImage rasters + Swift `Data` pixel
+    ///    buffers from media decode. These are NOT MLXArrays, so they are
+    ///    invisible to the cap's live MLX counters (the original blind spot).
+    /// 2. The generation KV cache — `kvBytesPerToken × maxOutputTokens`. This IS
+    ///    MLXArray-backed (eventually visible to the live counters), but the
+    ///    vision path's decode loop runs in a detached task with no per-request
+    ///    reservation, so N concurrent media requests can grow KV simultaneously
+    ///    against headroom none of them reserved — a transient over-commit the
+    ///    cap would otherwise catch only on the NEXT admission. Reserving it up
+    ///    front makes the vision path share the same preemptive 90% gate the
+    ///    batched path gets from `reserveKVForRequest`.
+    ///
+    /// Both are charged to ONE reservation id and released together when the
+    /// stream ends (decode buffers are actually freed after `prepare`, so holding
+    /// them for the whole stream is conservative — never an under-reservation).
+    /// Returns true if it fits (and was reserved) or budgeting is disabled
+    /// (nil budget, legacy "always proceed"); false if it would exceed the cap,
+    /// in which case the caller surfaces a retryable 503. Pair with
+    /// `releaseVisionRequest`. Saturating; never traps.
+    public func reserveVisionRequest(
+        requestId: String, mediaDecodeBytes: UInt64, kvTokens: Int
+    ) async -> Bool {
+        guard let kvBudget else { return true }
+        // KV bytes = kvBytesPerToken × the FULL token span the cache will hold:
+        // prompt text + image/video soft tokens + generated output (the caller
+        // computes that conservative total). Reserving only the output tokens
+        // would badly under-count — a single image expands to hundreds of vision
+        // tokens, all of which occupy KV.
+        var genKVBytes: UInt64 = 0
+        if kvBytesPerToken > 0, kvTokens > 0 {
+            let (b, overflow) = UInt64(kvBytesPerToken)
+                .multipliedReportingOverflow(by: UInt64(kvTokens))
+            genKVBytes = overflow ? .max : b
+        }
+        let (total, overflow) = mediaDecodeBytes.addingReportingOverflow(genKVBytes)
+        let bytes = overflow ? UInt64.max : total
+        return await kvBudget.reserveBytes(requestID: requestId, bytes: bytes)
+    }
+
+    /// The model's configured context window (`max_position_embeddings`), or 0 if
+    /// unknown. The KV cache can never hold more than this many prompt+vision
+    /// tokens, so the vision-path reservation clamps its prompt+vision estimate to
+    /// it (output tokens are added on top, matching the batched path's
+    /// `promptTokenCount + maxTokens`).
+    public func contextLength() -> Int { maxContextLength }
+
+    /// Release a prior `reserveVisionRequest` reservation. Safe/no-op if unknown
+    /// or budgeting is disabled.
+    public func releaseVisionRequest(requestId: String) async {
+        await kvBudget?.release(requestID: requestId)
     }
 
     // MARK: - Submit / cancel
@@ -1930,12 +2062,19 @@ public actor BatchScheduler {
         self.engine = nil
         modelContainer = nil
         tokenizer = nil
-        // Persist any coalesced index writes before dropping the manager, so
-        // checkpoints written since the last coalesced save survive restart.
+        // Drain the bounded capture pipeline FIRST (#374): the engine is stopped
+        // (no more capture hooks fire), so finish the stream and cancel the
+        // consumer. This releases retained KV snapshots and stops an in-flight
+        // `mgr.store` from racing the purge below.
+        capturePipeline?.shutdown()
+        capturePipeline = nil
+        // Then purge this model's KV from BOTH RAM and SSD on unload (#363) —
+        // restart warmth is intentionally OFF, so no KV (memory or disk) outlives
+        // the loaded model. purgeOnUnload drains in-flight writes, clears the RAM
+        // tier, deletes the kv/<modelKey> dir, and deregisters the accountant
+        // (subsumes the old flushIndexNow + deregisterFromAccountant).
         if let mgr = checkpointManager {
-            await mgr.flushIndexNow()
-            // Phase 3: deregister from the accountant before dropping the manager.
-            await mgr.deregisterFromAccountant()
+            await mgr.purgeOnUnload()
         }
         // Drop the checkpoint manager so a stale one can't serve the next
         // model (the new model's loadModel reinstalls its own, or nil).
@@ -1943,13 +2082,11 @@ public actor BatchScheduler {
         checkpointBoundaries = []
         checkpointLayerSignatures = []
 
-        // Close the engine-tier owner FIRST (before deregister) so no disk
-        // mutation slips through between deregistration and the dir being handed
-        // to a reloaded same-modelKey owner: a stale engine step finishing after
-        // `engine.stop()` (which doesn't fence an in-flight engineQueue step) or
-        // a late accountant eviction signal will now no-op. `engine.stop()` was
-        // already awaited above, so the GPU step loop is winding down by here.
-        engineTierOwner?.close()
+        // Purge the engine-tier owner's on-disk dir too (same kv/<modelKey> dir;
+        // whichever tier ran first already removed it, so this no-ops then).
+        // purgeDir latches `closed` first so any in-flight engine-step save that
+        // resumes after `engine.stop()` no-ops at its post-write bail.
+        engineTierOwner?.purgeDir()
         // Deregister the engine-tier owner from the accountant.
         if let accountant = diskAccountant, let token = engineTierAccountantToken {
             await accountant.deregister(token)
@@ -1976,6 +2113,9 @@ public actor BatchScheduler {
         planner = nil
         observedDecodeTpsEwma = 0
         ewmaInitialized = false
+        observedPrefillTpsEwma = 0
+        prefillEwmaInitialized = false
+        lastModelLoadMs = 0
         performanceByBatchSize.removeAll()
         dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
     }

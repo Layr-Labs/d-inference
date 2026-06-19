@@ -25,7 +25,11 @@ public enum ModelFitDiagnostic {
     /// requirement. `estimatedMemoryGb` is the scanner's overhead-included size
     /// (the same value the runtime passes), not the raw on-disk bytes.
     public static func requiredGb(estimatedMemoryGb: Double) -> Double {
-        ModelLoadAdmission.requiredToLoadGb(weightsGb: estimatedMemoryGb)
+        // Cap-aware headroom (activation reserve + min serveable KV) so the
+        // doctor's "needs ~X GB" matches what the runtime load gate requires.
+        ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: estimatedMemoryGb,
+            headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
     }
 
     /// The memory (GB) the provider would actually have free to load a model,
@@ -44,12 +48,18 @@ public enum ModelFitDiagnostic {
         gpuActiveGb: Double = 0,
         gpuCacheGb: Double = 0
     ) -> Double {
-        ModelLoadAdmission.freeForLoadGb(
-            totalBytes: bytes(totalGb),
+        let totalBytes = bytes(totalGb)
+        // Same cap-implied reserve the running gate uses (max(configReserve,
+        // physical − 90% cap)), so the doctor verdict matches what the daemon
+        // actually enforces and never reports "fits" for a model the cap refuses.
+        let reserve = UnifiedMemoryCap.loadReserveBytes(
+            physicalBytes: totalBytes, configReserveBytes: bytes(reserveGb))
+        return ModelLoadAdmission.freeForLoadGb(
+            totalBytes: totalBytes,
             systemAvailableBytes: systemAvailableGb.map(bytes) ?? .max,
             gpuActiveBytes: bytes(gpuActiveGb),
             gpuCacheBytes: bytes(gpuCacheGb),
-            reserveBytes: bytes(reserveGb),
+            reserveBytes: reserve,
             outstandingReservationBytes: 0)
     }
 

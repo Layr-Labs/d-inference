@@ -36,6 +36,15 @@ struct LaunchAgentEnvironmentTests {
         #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
         #expect(LaunchAgent.passthroughEnvironment(from: ["DARKBLOOM_PREFIX_CACHE": ""]).isEmpty)
     }
+
+    @Test func forwardsResourceDebugOptOutToDaemon() {
+        // The MLX resource telemetry is default-on; its documented opt-out
+        // (DARKBLOOM_MLX_RESOURCE_DEBUG=0) only works on the launchd service if it
+        // is forwarded into the plist. Without this, the daemon can't be quieted.
+        let out = LaunchAgent.passthroughEnvironment(
+            from: ["DARKBLOOM_MLX_RESOURCE_DEBUG": "0", "PATH": "/usr/bin"])
+        #expect(out == ["DARKBLOOM_MLX_RESOURCE_DEBUG": "0"])
+    }
 }
 
 @Suite("LaunchAgent service plist")

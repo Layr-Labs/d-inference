@@ -80,6 +80,42 @@ func parseStreamChunkExtractsRoleOnlyOpeningFrame() throws {
     #expect(parsed.finishReason == nil)
 }
 
+@Test("visible-output signal ignores role-only preamble frames")
+func visibleOutputSignalIgnoresRoleOnlyPreamble() throws {
+    let frame = try encodeChunk(role: "assistant")
+    let parsed = try #require(ProviderLoop.parseStreamChunk(frame))
+    var contentFrameCount = 0
+    var fullResponseText = ""
+
+    if let content = parsed.contentDelta, !content.isEmpty {
+        fullResponseText += content
+        contentFrameCount += 1
+    }
+
+    #expect(!ProviderLoop.hasVisibleStreamOutput(
+        contentFrameCount: contentFrameCount,
+        fullResponseText: fullResponseText
+    ))
+}
+
+@Test("visible-output signal counts content frames")
+func visibleOutputSignalCountsContentFrames() throws {
+    let frame = try encodeChunk(content: "hello")
+    let parsed = try #require(ProviderLoop.parseStreamChunk(frame))
+    var contentFrameCount = 0
+    var fullResponseText = ""
+
+    if let content = parsed.contentDelta, !content.isEmpty {
+        fullResponseText += content
+        contentFrameCount += 1
+    }
+
+    #expect(ProviderLoop.hasVisibleStreamOutput(
+        contentFrameCount: contentFrameCount,
+        fullResponseText: fullResponseText
+    ))
+}
+
 @Test("parseStreamChunk extracts content delta")
 func parseStreamChunkExtractsContentDelta() throws {
     let frame = try encodeChunk(content: "hello")

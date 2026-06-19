@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -111,6 +112,18 @@ type MemoryStore struct {
 	reputationRecords  map[string]*ReputationRecord // providerID → reputation
 	serialToProviderID map[string]string            // serialNumber → providerID
 
+	// APNs code-identity attestation reuse cache (W5 Fix 2). Keyed by SE pubkey.
+	// In the memory store this is lost on restart (same as the in-memory throttle
+	// it backs), but the methods exist so the store seam is uniform and Postgres
+	// persists for real once it is the production backend.
+	codeAttestations map[string]CodeAttestation
+
+	// Provider trust-reuse cache (DAR-326 Phase 0). Keyed by SE pubkey. Mirrors
+	// codeAttestations: lost on restart in the memory store (same as the in-memory
+	// cache it backs), but the methods exist so the store seam is uniform and
+	// Postgres persists for real as the production backend.
+	providerTrustReuse map[string]ProviderTrustReuse
+
 	// Provider log reports
 	logReports   []LogReport
 	logReportSeq int64
@@ -118,6 +131,14 @@ type MemoryStore struct {
 	// Provider sessions (connect→disconnect uptime history)
 	providerSessions   []ProviderSession
 	providerSessionSeq int64
+
+	// Inference routing telemetry
+	inferenceRoutes        []InferenceRouteRecord
+	inferenceRouteIndex    map[string]int // request_id/attempt -> index in inferenceRoutes
+	inferenceRouteOutcomes map[string]InferenceRouteOutcome
+
+	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
+	inferenceRejections []RejectionRecord
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -164,6 +185,12 @@ func NewMemory(scfg Config) *MemoryStore {
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
+		codeAttestations:              make(map[string]CodeAttestation),
+		providerTrustReuse:            make(map[string]ProviderTrustReuse),
+		inferenceRoutes:               make([]InferenceRouteRecord, 0),
+		inferenceRouteIndex:           make(map[string]int),
+		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
+		inferenceRejections:           make([]RejectionRecord, 0),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{
@@ -660,7 +687,13 @@ func (s *MemoryStore) UsageTimeSeries(since time.Time) []UsageBucket {
 	return out
 }
 
-// Leaderboard ranks accounts by the chosen metric across provider_earnings.
+// Leaderboard ranks accounts by the chosen metric, combining inference work
+// (provider_earnings) with non-inference reward ledger entries (referral_reward,
+// admin_reward). EarningsMicroUSD is the combined total (work + reward) and is
+// the ranking key for the earnings metric. Only providers (accounts with
+// inference work in the window) are ranked; reward earnings are credited to
+// those providers, while reward-only accounts (e.g. consumer-only referrers) do
+// not appear. A deterministic account_id tiebreaker keeps ordering stable.
 func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -668,6 +701,15 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 		limit = 50
 	}
 	agg := make(map[string]*LeaderboardRow)
+	rowFor := func(accountID string) *LeaderboardRow {
+		row, ok := agg[accountID]
+		if !ok {
+			row = &LeaderboardRow{AccountID: accountID}
+			agg[accountID] = row
+		}
+		return row
+	}
+	// Inference work earnings.
 	for _, e := range s.providerEarnings {
 		if e.AccountID == "" {
 			continue
@@ -675,28 +717,47 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 		if !since.IsZero() && e.CreatedAt.Before(since) {
 			continue
 		}
-		row, ok := agg[e.AccountID]
-		if !ok {
-			row = &LeaderboardRow{AccountID: e.AccountID}
-			agg[e.AccountID] = row
-		}
-		row.EarningsMicroUSD += e.AmountMicroUSD
+		row := rowFor(e.AccountID)
+		row.WorkEarningsMicroUSD += e.AmountMicroUSD
 		row.Tokens += int64(e.PromptTokens + e.CompletionTokens)
 		row.Jobs++
 	}
+	// Non-inference reward earnings — credited only to provider accounts (those
+	// that already have inference work above). Reward-only accounts (e.g.
+	// consumer-only referrers) are intentionally not added to the provider
+	// leaderboard.
+	for _, e := range s.ledgerEntries {
+		if e.AccountID == "" || !IsRewardLedgerType(e.Type) {
+			continue
+		}
+		if !since.IsZero() && e.CreatedAt.Before(since) {
+			continue
+		}
+		if row, ok := agg[e.AccountID]; ok {
+			row.RewardEarningsMicroUSD += e.AmountMicroUSD
+		}
+	}
 	rows := make([]LeaderboardRow, 0, len(agg))
 	for _, r := range agg {
+		r.EarningsMicroUSD = r.WorkEarningsMicroUSD + r.RewardEarningsMicroUSD
 		rows = append(rows, *r)
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		switch metric {
 		case LeaderboardTokens:
-			return rows[i].Tokens > rows[j].Tokens
+			if rows[i].Tokens != rows[j].Tokens {
+				return rows[i].Tokens > rows[j].Tokens
+			}
 		case LeaderboardJobs:
-			return rows[i].Jobs > rows[j].Jobs
+			if rows[i].Jobs != rows[j].Jobs {
+				return rows[i].Jobs > rows[j].Jobs
+			}
 		default:
-			return rows[i].EarningsMicroUSD > rows[j].EarningsMicroUSD
+			if rows[i].EarningsMicroUSD != rows[j].EarningsMicroUSD {
+				return rows[i].EarningsMicroUSD > rows[j].EarningsMicroUSD
+			}
 		}
+		return rows[i].AccountID < rows[j].AccountID
 	})
 	if len(rows) > limit {
 		rows = rows[:limit]
@@ -704,26 +765,41 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 	return rows
 }
 
-// NetworkTotals aggregates metrics across all earnings.
+// NetworkTotals aggregates metrics across all earnings, combining inference
+// work (provider_earnings) with non-inference reward ledger entries
+// (referral_reward, admin_reward). Rewards are only counted for provider
+// accounts (those with inference work in the window), so consumer-only reward
+// recipients do not inflate the totals. EarningsMicroUSD is the combined total
+// and ActiveAccounts counts distinct provider accounts.
 func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t NetworkTotalsRow
-	seen := make(map[string]struct{})
+	providers := make(map[string]struct{})
 	for _, e := range s.providerEarnings {
 		if !since.IsZero() && e.CreatedAt.Before(since) {
 			continue
 		}
-		t.EarningsMicroUSD += e.AmountMicroUSD
+		t.WorkEarningsMicroUSD += e.AmountMicroUSD
 		t.Tokens += int64(e.PromptTokens + e.CompletionTokens)
 		t.Jobs++
 		if e.AccountID != "" {
-			if _, ok := seen[e.AccountID]; !ok {
-				seen[e.AccountID] = struct{}{}
-				t.ActiveAccounts++
-			}
+			providers[e.AccountID] = struct{}{}
 		}
 	}
+	for _, e := range s.ledgerEntries {
+		if !IsRewardLedgerType(e.Type) {
+			continue
+		}
+		if !since.IsZero() && e.CreatedAt.Before(since) {
+			continue
+		}
+		if _, ok := providers[e.AccountID]; ok {
+			t.RewardEarningsMicroUSD += e.AmountMicroUSD
+		}
+	}
+	t.EarningsMicroUSD = t.WorkEarningsMicroUSD + t.RewardEarningsMicroUSD
+	t.ActiveAccounts = int64(len(providers))
 	return t
 }
 
@@ -783,6 +859,131 @@ func (s *MemoryStore) RecordUsageFullWithPublicModel(providerID, consumerKey, ke
 	if keyID != "" && costMicroUSD > 0 {
 		s.addKeySpendLocked(keyID, costMicroUSD, now)
 	}
+}
+
+// RecordInferenceRoute writes the routing decision snapshot for a request
+// attempt. Best-effort; failures are discarded.
+func (s *MemoryStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
+	if record == nil {
+		return nil
+	}
+
+	now := time.Now()
+	rec := *record
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = now
+	}
+	if rec.UpdatedAt.IsZero() {
+		rec.UpdatedAt = now
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := record.RequestID + "/" + strconv.Itoa(record.Attempt)
+	if idx, ok := s.inferenceRouteIndex[key]; ok {
+		rec.CreatedAt = s.inferenceRoutes[idx].CreatedAt
+		if rec.UpdatedAt.IsZero() {
+			rec.UpdatedAt = now
+		}
+		s.inferenceRoutes[idx] = rec
+		return nil
+	}
+	s.inferenceRoutes = append(s.inferenceRoutes, rec)
+	s.inferenceRouteIndex[key] = len(s.inferenceRoutes) - 1
+	return nil
+}
+
+// UpdateInferenceRouteOutcome updates the attempt with final outcome data.
+// Best-effort; failures are discarded.
+func (s *MemoryStore) UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error {
+	if outcome == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := requestID + "/" + strconv.Itoa(attempt)
+	idx, ok := s.inferenceRouteIndex[key]
+	if !ok {
+		return nil
+	}
+
+	merged := s.inferenceRouteOutcomes[key]
+	mergeInferenceRouteOutcome(&merged, outcome)
+	s.inferenceRouteOutcomes[key] = merged
+	s.inferenceRoutes[idx].UpdatedAt = time.Now()
+	return nil
+}
+
+// InferenceRouteRecordsSince returns routing records created at or after the
+// given time. Zero since returns all records.
+func (s *MemoryStore) InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]InferenceRouteRecord, 0, len(s.inferenceRoutes))
+	for i := len(s.inferenceRoutes) - 1; i >= 0; i-- {
+		r := s.inferenceRoutes[i]
+		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		key := r.RequestID + "/" + strconv.Itoa(r.Attempt)
+		if outcome, ok := s.inferenceRouteOutcomes[key]; ok {
+			applyInferenceRouteOutcomeToRecord(&r, outcome)
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	if out == nil {
+		return []InferenceRouteRecord{}
+	}
+	return out
+}
+
+// RecordRejection writes a rejected-request record with its counterfactual
+// servability snapshot. Best-effort; failures are discarded.
+func (s *MemoryStore) RecordRejection(record *RejectionRecord) error {
+	if record == nil {
+		return nil
+	}
+
+	rec := *record
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = time.Now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.inferenceRejections = append(s.inferenceRejections, rec)
+	return nil
+}
+
+// RejectionRecordsSince returns rejection records created at or after the
+// given time. Zero since returns all records.
+func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]RejectionRecord, 0, len(s.inferenceRejections))
+	for i := len(s.inferenceRejections) - 1; i >= 0; i-- {
+		r := s.inferenceRejections[i]
+		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	if out == nil {
+		return []RejectionRecord{}
+	}
+	return out
 }
 
 // addKeySpendLocked increments the per-key spend accumulator. Caller holds s.mu.
@@ -2670,6 +2871,74 @@ func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*Repu
 	}
 	cp := *rep
 	return &cp, nil
+}
+
+// --- APNs code-identity attestation reuse cache (W5 Fix 2) ---
+
+func (s *MemoryStore) ListCodeAttestations(_ context.Context) ([]CodeAttestation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]CodeAttestation, 0, len(s.codeAttestations))
+	for _, rec := range s.codeAttestations {
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec CodeAttestation) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.codeAttestations[rec.SEPubKey] = rec
+	return nil
+}
+
+func (s *MemoryStore) DeleteCodeAttestation(_ context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.codeAttestations, seKey)
+	return nil
+}
+
+// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+
+func (s *MemoryStore) ListProviderTrustReuse(_ context.Context) ([]ProviderTrustReuse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ProviderTrustReuse, 0, len(s.providerTrustReuse))
+	for _, rec := range s.providerTrustReuse {
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertProviderTrustReuse(_ context.Context, rec ProviderTrustReuse) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.providerTrustReuse[rec.SEPubKey] = rec
+	return nil
+}
+
+func (s *MemoryStore) DeleteProviderTrustReuse(_ context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.providerTrustReuse, seKey)
+	return nil
 }
 
 // --- Provider Log Reports ---

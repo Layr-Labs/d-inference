@@ -88,6 +88,15 @@ public enum ProviderMessage: Sendable, Equatable {
         public var stats: ProviderStats
         public var systemMetrics: SystemMetrics
         public var backendCapacity: BackendCapacity?
+        /// APNs code-identity attestation (W5 Fix 2). Carries the device token (and
+        /// its APNs environment) in the heartbeat so a coordinator can re-arm a
+        /// code-identity challenge WITHOUT a reconnect when the token arrived after
+        /// registration (headless/late-token Mac) or rotated mid-connection.
+        /// Mirrors HeartbeatMessage.APNsDeviceToken/APNsEnvironment (Go). nil/omitted
+        /// in the steady state. The token never grants attestation on its own — it
+        /// only lets the coordinator send a challenge.
+        public var apnsDeviceToken: String?
+        public var apnsEnvironment: String?
 
         public init(
             status: ProviderStatus,
@@ -95,7 +104,9 @@ public enum ProviderMessage: Sendable, Equatable {
             warmModels: [String] = [],
             stats: ProviderStats,
             systemMetrics: SystemMetrics,
-            backendCapacity: BackendCapacity? = nil
+            backendCapacity: BackendCapacity? = nil,
+            apnsDeviceToken: String? = nil,
+            apnsEnvironment: String? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -103,6 +114,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.stats = stats
             self.systemMetrics = systemMetrics
             self.backendCapacity = backendCapacity
+            self.apnsDeviceToken = apnsDeviceToken
+            self.apnsEnvironment = apnsEnvironment
         }
     }
 
@@ -398,6 +411,9 @@ extension ProviderMessage: Codable {
             try container.encode(h.stats, forKey: .stats)
             try container.encode(h.systemMetrics, forKey: .systemMetrics)
             try container.encodeIfPresent(h.backendCapacity, forKey: .backendCapacity)
+            // omitempty parity with Go: nil token/env emit nothing (steady state).
+            try container.encodeIfPresent(h.apnsDeviceToken, forKey: .apnsDeviceToken)
+            try container.encodeIfPresent(h.apnsEnvironment, forKey: .apnsEnvironment)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -510,7 +526,9 @@ extension ProviderMessage: Codable {
                 warmModels: try container.decodeIfPresent([String].self, forKey: .warmModels) ?? [],
                 stats: try container.decode(ProviderStats.self, forKey: .stats),
                 systemMetrics: try container.decode(SystemMetrics.self, forKey: .systemMetrics),
-                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity)
+                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity),
+                apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
+                apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment)
             ))
 
         case .inferenceAccepted:

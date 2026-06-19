@@ -45,6 +45,7 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 | Doc | Topic |
 |---|---|
 | [inference.md](inference.md) | How inference requests are decoded, batched, and served |
+| [request-outcome-observability.md](request-outcome-observability.md) | Request outcome taxonomy across client, provider, and billing paths |
 | [storage.md](storage.md) | KV cache, prefix cache, and on-disk model storage |
 | [payments.md](payments.md) | Payments architecture (Stripe Connect, ledger, withdrawals) |
 | [hardware-support.md](hardware-support.md) | Supported Apple Silicon tiers and capability mapping |

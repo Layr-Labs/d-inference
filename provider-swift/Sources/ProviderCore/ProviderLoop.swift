@@ -439,15 +439,22 @@ public actor ProviderLoop {
         // floor consistent with what is actually advertised.
         self.configuredMaxModelSlots = max(1, Int(config.config.backend.maxModelSlots))
         self.startupModelCount = max(1, advertised.count)
-        let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
-        self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
+        // KV budget derives its ceiling from the unified 90% cap + activation
+        // reserve (UnifiedMemoryCap). It ALSO honors the operator-configured
+        // `memory_reserve_gb` — the same reserve the model LOAD gate applies
+        // (loadReserveBytes = max(configReserve, physical − cap)) — so runtime KV
+        // can't grow into memory the operator explicitly reserved once a model is
+        // loaded. No-op when the configured reserve is ≤ the cap's implied reserve.
+        self.kvBudget = GlobalKVCacheBudget(
+            configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
         // Phase 3: construct the global disk accountant (one per host).
         let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("darkbloom/kv", isDirectory: true)
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
         self.diskAccountant = GlobalDiskAccountant(
             kvRoot: kvRoot,
-            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling())
+            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling(),
+            sweepOnInit: true)  // wipe stale KV from a prior crash before any load
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
@@ -1032,8 +1039,16 @@ public actor ProviderLoop {
         do {
             chatRequest = try Self.decodeOpenAIRequest(decryptedData)
         } catch {
-            logger.error("[\(requestId)] Failed to parse chat request: \(error)")
-            send.send(.inferenceError(requestId: requestId, error: "invalid request body: \(error.localizedDescription)", statusCode: 400))
+            // Privacy: the provider logger renders the whole message `.public`, and
+            // reports collect this subsystem — so never interpolate the raw decode
+            // error, which on a malformed body can carry a fragment of the (now
+            // decrypted) request, i.e. user prompt content. Log only the error TYPE.
+            // The requester-facing string below is likewise kept generic: it transits
+            // the coordinator in plaintext and is logged server-side, so interpolating
+            // the raw error could resurface a prompt fragment in coordinator logs
+            // (defense-in-depth for the "coordinator never sees plaintext" invariant).
+            logger.error("[\(requestId)] Failed to parse chat request (\(type(of: error)))")
+            send.send(.inferenceError(requestId: requestId, error: "invalid request body", statusCode: 400))
             return
         }
 
@@ -1177,6 +1192,7 @@ public actor ProviderLoop {
                     )
                 } catch {
                     log.error("[\(requestId)] Chunk encryption failed: \(error)")
+                    providerStats.incrementChunkEncryptionErrors()
                     send.send(.inferenceError(
                         requestId: requestId,
                         error: "response encryption failed",
@@ -1372,6 +1388,15 @@ public actor ProviderLoop {
                     cancelledMidStream = true
                 } else {
                     log.error("[\(requestId)] Generation error: \(error)")
+                    if Self.hasVisibleStreamOutput(
+                        contentFrameCount: contentFrameCount,
+                        fullResponseText: fullResponseText
+                    ) {
+                        providerStats.incrementGenerationErrorsAfterOutput()
+                    }
+                    if Self.isStreamClosedWithoutTerminal(error) {
+                        providerStats.incrementStreamClosedWithoutTerminal()
+                    }
                     let statusCode = Self.mapInferenceErrorToStatus(error)
                     send.send(.inferenceError(
                         requestId: requestId,
@@ -1385,6 +1410,7 @@ public actor ProviderLoop {
 
             // Cancelled with nothing delivered: 499 so the coordinator refunds.
             if cancelledMidStream && contentFrameCount == 0 && fullResponseText.isEmpty {
+                providerStats.incrementCancellationsBeforeOutput()
                 send.send(.inferenceError(
                     requestId: requestId,
                     error: "request cancelled",
@@ -1447,6 +1473,10 @@ public actor ProviderLoop {
                 if !cancelledMidStream {
                     providerStats.incrementUsageGaps()
                 }
+            }
+
+            if cancelledMidStream {
+                providerStats.incrementCancellationsPartialComplete()
             }
 
             // Update stats
@@ -2608,6 +2638,10 @@ public actor ProviderLoop {
             }
         }
 
+        // Q6 (serve-while-load): id for the pending-load reservation placed in
+        // kvBudget once the gate passes and released once the weights are
+        // resident. Declared out here so the catch can release it on any path.
+        let pendingLoadID = "pending-load:\(modelId)"
         modelsLoading.insert(modelId)
         do {
             try Task.checkCancellation()
@@ -2637,6 +2671,17 @@ public actor ProviderLoop {
             }
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+
+            // Q6: reserve this load's weight footprint in the shared KV budget so
+            // a concurrent KV reservation on an already-loaded model can't grant
+            // headroom that, plus these incoming (not-yet-in-mlxUsed) weights,
+            // blows the unified-memory cap. Released once the weights are resident.
+            let pendingLoadGiB = modelInfo.estimatedMemoryGb * 1_073_741_824
+            let pendingLoadBytes: UInt64 =
+                pendingLoadGiB.isFinite && pendingLoadGiB > 0
+                ? (pendingLoadGiB >= Double(UInt64.max) ? .max : UInt64(pendingLoadGiB))
+                : 0
+            await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
 
@@ -2684,10 +2729,45 @@ public actor ProviderLoop {
                 modelId: modelId,
                 weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash
             )
+            // Weights are resident now (reflected in MLX active/cache), so hand
+            // off from the pending-load reservation to the live mlxUsed view —
+            // concurrent KV reservations see the weights from here on. (Also
+            // released in catch for the error paths above.)
+            await kvBudget.release(requestID: pendingLoadID)
             if isShuttingDown || Task.isCancelled {
                 await scheduler.unloadModel()
                 MLX.Memory.clearCache()
                 throw CancellationError()
+            }
+
+            // Post-load measured-headroom guard: the load gate admitted on an
+            // ESTIMATE (estimatedMemoryGb = on-disk × 1.2). Now that the weights
+            // are actually resident, check the MEASURED live KV headroom under the
+            // cap — if the real footprint exceeded the estimate there may be no
+            // room to serve, and keeping the model would just reject every request
+            // at the KV gate. Unload + reclaim + reject so the coordinator
+            // reroutes, instead of advertising a dead model. Safe to measure here:
+            // we're inside the `isLoadingAny` critical section, so MLX usage
+            // reflects this load and no concurrent load/unload can race it.
+            //
+            // Trim the cold-load buffer pool FIRST: a fresh load leaves transient
+            // buffers in MLX cacheMemory (no forward pass has trimmed them yet),
+            // which the measurement counts as "used" and would false-reject a
+            // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
+            // clearCache-then-measure self-heal.
+            MLX.Memory.clearCache()
+            if !(await scheduler.hasServeableKVHeadroom()) {
+                let headroomGb = String(
+                    format: "%.1f",
+                    Double(await scheduler.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                let minGb = String(
+                    format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
+                await scheduler.unloadModel()
+                MLX.Memory.clearCache()
+                let message = "Model '\(modelId)' loaded but has insufficient KV headroom "
+                    + "under the memory cap (\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded"
+                recordModelLoadError(model: modelId, message: message)
+                throw InferenceError.modelLoadFailed(message)
             }
 
             let tokenizer: TokenizerHandle = await container.perform { ctx in
@@ -2715,6 +2795,9 @@ public actor ProviderLoop {
         } catch {
             modelsLoading.remove(modelId)
             isLoadingAny = false
+            // Release the pending-load reservation on every failure path (no-op
+            // if it was never placed, or already released on the success path).
+            await kvBudget.release(requestID: pendingLoadID)
             // Release pool buffers a failed load left behind (same wedge as unload).
             MLX.Memory.clearCache()
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
@@ -2808,18 +2891,27 @@ public actor ProviderLoop {
     /// what this method enforces at load time.
     private func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
+        // Hold back enough to honor the 90% unified cap: max(configured reserve,
+        // physical − cap). Without this the free-memory gate would load models
+        // until only `configReserve` (4 GiB) remained — past the cap on big boxes.
+        let reserve = UnifiedMemoryCap.loadReserveBytes(
+            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
         return ModelLoadAdmission.freeForLoadGb(
             totalBytes: ProcessInfo.processInfo.physicalMemory,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB),
+            reserveBytes: reserve,
             outstandingReservationBytes: outstanding)
     }
 
-    /// Headroom (GB) reserved above the weights at load time for ONE request.
-    /// Concurrency beyond that is grown dynamically by the runtime token budget.
-    static let loadHeadroomGb = ModelLoadAdmission.defaultLoadHeadroomGb
+    /// Headroom (GB) reserved above the weights at load time. Must be at least
+    /// the runtime activation reserve + a minimum serveable KV, or the gate would
+    /// admit a near-cap model that GlobalKVCacheBudget then rejects every request
+    /// for (the old flat 2 GiB was LESS than the 3 GiB activation reserve). Sized
+    /// from UnifiedMemoryCap so the load gate and the runtime KV path agree.
+    static let loadHeadroomGb =
+        Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0)
 
     private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
         var total: UInt64 = 0
@@ -2987,8 +3079,13 @@ public actor ProviderLoop {
 
     // MARK: - Cancellation
 
-    private func handleCancellation(requestId: String) async {
+    private func handleCancellation(requestId: String, receivedFromCoordinator: Bool = true) async {
         logger.info("Cancelling request: \(requestId)")
+        let hadInflightTask = inflightTasks[requestId] != nil
+        let hadModelReservation = requestToModel[requestId] != nil
+        if receivedFromCoordinator && (hadInflightTask || hadModelReservation) {
+            stats.incrementCancellationsReceived()
+        }
 
         // P1 #1 (CRITICAL): do NOT call `scheduler.cancel(requestId:)`
         // directly here. After the MLXLMServer adoption,
@@ -3021,6 +3118,9 @@ public actor ProviderLoop {
         await cancellationRegistry.cancel(requestId: requestId)
 
         if requestToModel.removeValue(forKey: requestId) != nil {
+            if !hadInflightTask {
+                stats.incrementCancelDuringModelLoad()
+            }
             powerAssertion.release()
         }
 
@@ -3035,7 +3135,7 @@ public actor ProviderLoop {
     private func cancelAllInflight() async {
         let requestIds = Array(inflightTasks.keys)
         for requestId in requestIds {
-            await handleCancellation(requestId: requestId)
+            await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
         }
         inflightTasks.removeAll()
         completedBeforeTaskRegistration.removeAll()
@@ -3099,12 +3199,42 @@ public actor ProviderLoop {
 
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let totalMem = ProcessInfo.processInfo.physicalMemory
+
+        // Max model weight we could load right now (single source of truth for
+        // the coordinator's cold-load routing). Holds back the same load reserve
+        // the load gate uses, so it enforces the 90% cap.
+        //
+        // Eviction handling: current MLX usage may be reclaimed by evicting idle
+        // models on a cold load — BUT ONLY when nothing is being served. MLX
+        // memory is global (it also covers the local inference endpoint, whose
+        // streams are tracked by localReservations, not modelSlots), so a model
+        // serving a local request is NOT evictable. `hasInflightWork` is the
+        // comprehensive signal (coordinator inflight + local streams): when work
+        // is in flight we treat NOTHING as reclaimable (conservative, never
+        // advertises an actively-served model's weights as free); only when fully
+        // idle do we assume idle models can be evicted.
+        let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+        let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
+        let loadReserve = UnifiedMemoryCap.loadReserveBytes(
+            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
+        // Subtract KV already promised to in-flight requests (coordinator + local
+        // streams), exactly as the real load gate (availableMemoryGb) does, so the
+        // heartbeat can't advertise reserved-but-not-yet-allocated bytes as loadable.
+        let outstandingKV = await kvBudget.outstandingReservedBytes()
+        let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
+            totalBytes: totalMem,
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            mlxUsedBytes: reclaimableMlx,
+            reserveBytes: loadReserve,
+            outstandingReservationBytes: outstandingKV)
+
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,
             gpuMemoryPeakGb: Double(MLX.GPU.peakMemory) / gbDivisor,
             gpuMemoryCacheGb: Double(MLX.GPU.cacheMemory) / gbDivisor,
-            totalMemoryGb: Double(totalMem) / gbDivisor
+            totalMemoryGb: Double(totalMem) / gbDivisor,
+            freeForLoadGb: freeForLoadGb
         )
         state.inferenceActive = totalActive > 0
     }

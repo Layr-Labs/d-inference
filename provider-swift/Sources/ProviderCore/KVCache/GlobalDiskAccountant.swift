@@ -129,6 +129,7 @@ public actor GlobalDiskAccountant {
         kvRoot: URL,
         configuredCeiling: Int = 0,
         tickSeconds: Int = 30,
+        sweepOnInit: Bool = false,
         now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970) },
         freeBytes: @escaping @Sendable (URL) -> Int = { url in
             // Production: statvfs to read free disk.
@@ -142,8 +143,20 @@ public actor GlobalDiskAccountant {
         self.tickSeconds = max(1, tickSeconds)
         self.now = now
         self.freeBytes = freeBytes
-        // Ensure kvRoot exists.
-        try? FileManager.default.createDirectory(at: kvRoot, withIntermediateDirectories: true)
+        // Startup sweep: wipe ALL on-disk KV under kvRoot. Restart warmth is
+        // intentionally OFF — a clean unload purges each model's dir, but a jetsam
+        // SIGKILL (the "invisible OOM") can't run a clean purge, so any per-model
+        // dirs present at process start are stale crash leftovers. Done here in
+        // init (synchronously, before any owner registers) so it can never race a
+        // live owner's files. Production passes sweepOnInit: true; tests default
+        // off so they don't wipe their own fixtures.
+        let fm = FileManager.default
+        if sweepOnInit, let entries = try? fm.contentsOfDirectory(
+            at: kvRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for url in entries { try? fm.removeItem(at: url) }
+        }
+        // Ensure kvRoot exists (and re-create it if the sweep removed it).
+        try? fm.createDirectory(at: kvRoot, withIntermediateDirectories: true)
     }
 
     // MARK: - Registration

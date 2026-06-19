@@ -73,11 +73,20 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	if pr == nil {
 		return
 	}
+	// This is the single chokepoint for post-commit consumer disconnects: the
+	// request committed (streamed at least the first chunk) and the consumer-side
+	// handler returned while a provider terminal was still outstanding. Count it
+	// as an after_commit client cancellation regardless of how it later settles
+	// (provider completes → partial_success; provider errors → refund; grace
+	// expires → no_terminal_after_cancel). The before_first_token phase is emitted
+	// by the pre-commit client-gone paths (DAR-330), keeping this metric splittable.
+	s.recordClientCancellation(pr.Model, clientCancelPhaseAfterCommit)
 	if s.settlements == nil {
 		// Defensive: a Server built without newSettlementHolder still refunds
 		// rather than leaking the reservation.
 		if s.refundReservedBalance(pr, "no_terminal_after_cancel:"+pr.RequestID) {
 			s.updateInferenceRouteOutcomeForPending(pr, noTerminalAfterCancelOutcome(pr))
+			s.recordNoTerminalAfterCancel(pr.Model)
 		}
 		return
 	}
@@ -86,6 +95,9 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 		// handleComplete leaves a dup here whose refund no-ops (FinalizeReservation).
 		if s.refundReservedBalance(expired, "no_terminal_after_cancel:"+expired.RequestID) {
 			s.updateInferenceRouteOutcomeForPending(expired, noTerminalAfterCancelOutcome(expired))
+			// Payout-gap edge: no provider terminal arrived within the grace, so the
+			// reservation is refunded and the provider is never paid. Make it visible.
+			s.recordNoTerminalAfterCancel(expired.Model)
 			s.logger.Warn("no terminal from provider after cancel — refunded reservation",
 				"request_id", expired.RequestID,
 			)

@@ -2315,6 +2315,14 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		})
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
+		// Split the partial case out of the (intentionally unchanged) completions
+		// counter: the provider completed and billing settled, but the consumer had
+		// already disconnected after commit. Same money path as a clean success, so
+		// it is NOT a provider failure — but operationally distinct, and invisible on
+		// dashboards without its own counter (DAR-332).
+		if consumerGone {
+			s.recordPartialSuccessCompletion(pr.Model, errorClassClientGoneAfterCommitCompleted)
+		}
 		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})

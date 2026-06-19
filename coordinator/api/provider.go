@@ -49,6 +49,17 @@ import (
 )
 
 const (
+	// providerPreRegisterReadLimitBytes bounds unauthenticated provider frames.
+	// The first message must be a compact RegisterMessage; keep this small so
+	// unauthenticated sockets cannot each pin a full encrypted-inference frame.
+	providerPreRegisterReadLimitBytes = 1 * 1024 * 1024
+
+	// providerRegisteredReadLimitBytes bounds a single registered
+	// provider→coordinator WebSocket frame. It matches the Swift provider's
+	// coordinator→provider inbound cap so either direction has the same envelope
+	// budget for encrypted inference chunks.
+	providerRegisteredReadLimitBytes = 32 * 1024 * 1024
+
 	// DefaultChallengeInterval is how often the coordinator challenges providers.
 	DefaultChallengeInterval = 5 * time.Minute
 
@@ -117,9 +128,9 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Raise the read limit to 10 MB. The default 32 KB is too small for
-	// large inference responses.
-	conn.SetReadLimit(10 * 1024 * 1024)
+	// Keep the pre-register cap small because this socket is unauthenticated.
+	// Raise it only after the first valid RegisterMessage is parsed.
+	conn.SetReadLimit(providerPreRegisterReadLimitBytes)
 
 	providerID := uuid.New().String()
 	s.logger.Info("provider websocket connected", "provider_id", providerID, "remote", r.RemoteAddr)
@@ -136,6 +147,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult, r *http.Request) {
 	var provider *registry.Provider
+	registered := false
 	tracker := newChallengeTracker()
 
 	// Cancel context for cleanup of the challenge loop goroutine.
@@ -203,167 +215,181 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		switch msg.Type {
 		case protocol.TypeRegister:
-			regMsg := msg.Payload.(*protocol.RegisterMessage)
-			provider = s.registry.Register(providerID, conn, regMsg)
-			s.attachProviderLocation(providerID, provider, r)
-			s.verifyProviderAttestation(providerID, provider, regMsg)
-
-			// Record registration outcome metrics + telemetry.
-			if s.metrics != nil {
-				s.metrics.IncCounter("provider_registrations_total",
-					MetricLabel{"trust_level", string(provider.TrustLevel)},
-				)
+			if registered {
+				s.logger.Warn("duplicate register on provider websocket; closing", "provider_id", providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "duplicate register")
+				return
 			}
-			s.ddIncr("providers.registrations", []string{"trust_level:" + string(provider.TrustLevel)})
-			s.emit(context.Background(), protocol.SeverityInfo, protocol.KindLog,
-				"provider registered",
-				map[string]any{
-					"provider_id":   providerID,
-					"trust_level":   string(provider.TrustLevel),
-					"hardware_chip": regMsg.Hardware.ChipName,
-					"memory_gb":     regMsg.Hardware.MemoryGB,
-				})
+			releaseRegister, ok := s.acquireProviderRegisterSlot(loopCtx)
+			if !ok {
+				return
+			}
+			func() {
+				defer releaseRegister()
+				registered = true
+				conn.SetReadLimit(providerRegisteredReadLimitBytes)
+				regMsg := msg.Payload.(*protocol.RegisterMessage)
+				provider = s.registry.Register(providerID, conn, regMsg)
+				s.attachProviderLocation(providerID, provider, r)
+				s.verifyProviderAttestation(providerID, provider, regMsg)
 
-			// Resolve auth token → account linkage.
-			if regMsg.AuthToken != "" {
-				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
-				if err != nil {
-					s.logger.Warn("provider auth token invalid",
-						"provider_id", providerID,
-						"error", err,
+				// Record registration outcome metrics + telemetry.
+				if s.metrics != nil {
+					s.metrics.IncCounter("provider_registrations_total",
+						MetricLabel{"trust_level", string(provider.TrustLevel)},
 					)
-				} else {
+				}
+				s.ddIncr("providers.registrations", []string{"trust_level:" + string(provider.TrustLevel)})
+				s.emit(context.Background(), protocol.SeverityInfo, protocol.KindLog,
+					"provider registered",
+					map[string]any{
+						"provider_id":   providerID,
+						"trust_level":   string(provider.TrustLevel),
+						"hardware_chip": regMsg.Hardware.ChipName,
+						"memory_gb":     regMsg.Hardware.MemoryGB,
+					})
+
+				// Resolve auth token → account linkage.
+				if regMsg.AuthToken != "" {
+					pt, err := s.store.GetProviderToken(regMsg.AuthToken)
+					if err != nil {
+						s.logger.Warn("provider auth token invalid",
+							"provider_id", providerID,
+							"error", err,
+						)
+					} else {
+						provider.Mu().Lock()
+						provider.AccountID = pt.AccountID
+						provider.Mu().Unlock()
+						s.logger.Info("provider linked to account",
+							"provider_id", providerID,
+							"account_id", pt.AccountID,
+							"token_label", pt.Label,
+						)
+					}
+				}
+
+				// Store provider version.
+				if regMsg.Version != "" {
 					provider.Mu().Lock()
-					provider.AccountID = pt.AccountID
+					provider.Version = regMsg.Version
 					provider.Mu().Unlock()
-					s.logger.Info("provider linked to account",
-						"provider_id", providerID,
-						"account_id", pt.AccountID,
-						"token_label", pt.Label,
-					)
 				}
-			}
 
-			// Store provider version.
-			if regMsg.Version != "" {
-				provider.Mu().Lock()
-				provider.Version = regMsg.Version
-				provider.Mu().Unlock()
-			}
+				// Verify runtime integrity against the known-good manifest. Swift
+				// providers omit Python/vllm hashes, but they still report external
+				// runtime assets such as mlx.metallib under template_hashes.
+				if s.knownRuntimeManifest != nil {
+					runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
+						regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
+					provider.Mu().Lock()
+					provider.RuntimeVerified = runtimeOK
+					provider.RuntimeManifestChecked = runtimeOK
+					provider.PythonHash = regMsg.PythonHash
+					provider.RuntimeHash = regMsg.RuntimeHash
+					provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
+					provider.Mu().Unlock()
 
-			// Verify runtime integrity against the known-good manifest. Swift
-			// providers omit Python/vllm hashes, but they still report external
-			// runtime assets such as mlx.metallib under template_hashes.
-			if s.knownRuntimeManifest != nil {
-				runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-					regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
-				provider.Mu().Lock()
-				provider.RuntimeVerified = runtimeOK
-				provider.RuntimeManifestChecked = runtimeOK
-				provider.PythonHash = regMsg.PythonHash
-				provider.RuntimeHash = regMsg.RuntimeHash
-				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
-				provider.Mu().Unlock()
-
-				if !runtimeOK {
-					// Send runtime status feedback only on mismatch so the
-					// provider can self-heal. Skip the message when everything
-					// matches — it would only add noise on the WebSocket.
-					statusMsg := protocol.RuntimeStatusMessage{
-						Type:       protocol.TypeRuntimeStatus,
-						Verified:   false,
-						Mismatches: mismatches,
+					if !runtimeOK {
+						// Send runtime status feedback only on mismatch so the
+						// provider can self-heal. Skip the message when everything
+						// matches — it would only add noise on the WebSocket.
+						statusMsg := protocol.RuntimeStatusMessage{
+							Type:       protocol.TypeRuntimeStatus,
+							Verified:   false,
+							Mismatches: mismatches,
+						}
+						statusData, err := json.Marshal(statusMsg)
+						if err == nil {
+							writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
+							_ = provider.Write(writeCtx, websocket.MessageText, statusData)
+							writeCancel()
+						}
+						mismatchDetails := make([]string, 0, len(mismatches))
+						for _, m := range mismatches {
+							mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
+						}
+						s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
+							"provider_id", providerID,
+							"mismatches", len(mismatches),
+							"details", mismatchDetails,
+							"backend", regMsg.Backend,
+						)
+					} else {
+						s.logger.Info("provider runtime integrity verified",
+							"provider_id", providerID,
+							"python_hash", regMsg.PythonHash,
+							"runtime_hash", regMsg.RuntimeHash,
+						)
 					}
-					statusData, err := json.Marshal(statusMsg)
-					if err == nil {
-						writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
-						_ = conn.Write(writeCtx, websocket.MessageText, statusData)
-						writeCancel()
-					}
-					mismatchDetails := make([]string, 0, len(mismatches))
-					for _, m := range mismatches {
-						mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
-					}
-					s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
-						"provider_id", providerID,
-						"mismatches", len(mismatches),
-						"details", mismatchDetails,
-						"backend", regMsg.Backend,
-					)
 				} else {
-					s.logger.Info("provider runtime integrity verified",
+					// No manifest configured — fail-closed for routing.
+					provider.Mu().Lock()
+					provider.RuntimeVerified = true
+					provider.RuntimeManifestChecked = false
+					provider.Mu().Unlock()
+				}
+
+				// Version cutoff check — runs AFTER runtime check so it takes precedence.
+				// If version is below minimum, override RuntimeVerified to false.
+				if s.minProviderVersion != "" && regMsg.Version != "" && semverLess(regMsg.Version, s.minProviderVersion) {
+					s.logger.Warn("provider version below minimum — excluded from routing",
 						"provider_id", providerID,
-						"python_hash", regMsg.PythonHash,
-						"runtime_hash", regMsg.RuntimeHash,
+						"version", regMsg.Version,
+						"min_version", s.minProviderVersion,
 					)
+					s.ddIncr("provider_version_below_minimum", []string{"gate:registration", "version:" + regMsg.Version})
+					provider.Mu().Lock()
+					provider.RuntimeVerified = false
+					provider.RuntimeManifestChecked = false
+					provider.Mu().Unlock()
 				}
-			} else {
-				// No manifest configured — fail-closed for routing.
-				provider.Mu().Lock()
-				provider.RuntimeVerified = true
-				provider.RuntimeManifestChecked = false
-				provider.Mu().Unlock()
-			}
 
-			// Version cutoff check — runs AFTER runtime check so it takes precedence.
-			// If version is below minimum, override RuntimeVerified to false.
-			if s.minProviderVersion != "" && regMsg.Version != "" && semverLess(regMsg.Version, s.minProviderVersion) {
-				s.logger.Warn("provider version below minimum — excluded from routing",
-					"provider_id", providerID,
-					"version", regMsg.Version,
-					"min_version", s.minProviderVersion,
-				)
-				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", "version:" + regMsg.Version})
-				provider.Mu().Lock()
-				provider.RuntimeVerified = false
-				provider.RuntimeManifestChecked = false
-				provider.Mu().Unlock()
-			}
+				s.applyACMETrust(providerID, provider, acmeResult)
 
-			s.applyACMETrust(providerID, provider, acmeResult)
-
-			// Declaratively tell the provider the desired build per alias it
-			// already serves, so a fresh/reconnected provider converges without a
-			// separate catalog pull. Sent even when EMPTY: a provider that
-			// reconnects (same process, prefetch state intact) after the alias it
-			// was converging to was deleted/repointed must learn that nothing is
-			// desired anymore, or its in-flight prefetch would hard-swap anyway.
-			// Gated on Swift backend + feature version: a pre-feature provider's
-			// strict decoder throws on unknown types.
-			if s.providerSupportsDesiredModels(regMsg.Backend, regMsg.Version) {
-				if err := s.registry.SendDesiredModels(providerID, s.registry.DesiredModelsForProvider(providerID)); err != nil {
-					s.logger.Warn("failed to send desired_models after register",
-						"provider_id", providerID, "error", err)
+				// Declaratively tell the provider the desired build per alias it
+				// already serves, so a fresh/reconnected provider converges without a
+				// separate catalog pull. Sent even when EMPTY: a provider that
+				// reconnects (same process, prefetch state intact) after the alias it
+				// was converging to was deleted/repointed must learn that nothing is
+				// desired anymore, or its in-flight prefetch would hard-swap anyway.
+				// Gated on Swift backend + feature version: a pre-feature provider's
+				// strict decoder throws on unknown types.
+				if s.providerSupportsDesiredModels(regMsg.Backend, regMsg.Version) {
+					if err := s.registry.SendDesiredModels(providerID, s.registry.DesiredModelsForProvider(providerID)); err != nil {
+						s.logger.Warn("failed to send desired_models after register",
+							"provider_id", providerID, "error", err)
+					}
 				}
-			}
 
-			// Start challenge loop after registration
-			saferun.Go(s.logger, "challengeLoop", func() {
-				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
-			})
-
-			// Start the per-connection MDM verification loop. It runs the initial
-			// SecurityInfo check + a bounded, push-budget-aware retry, decoupled
-			// from the 5-minute challenge ticker. No-op when no MDM client is
-			// configured or the attestation carried no serial.
-			saferun.Go(s.logger, "mdmVerificationLoop", func() {
-				s.mdmVerificationLoop(loopCtx, providerID, provider)
-			})
-
-			// v0.6.0: APNs code-identity attestation. Runs only when an attestor is
-			// configured; otherwise the provider simply never becomes CodeAttested
-			// (fail-closed at the routing chokepoint once enforcement begins). The
-			// code-identity proof and the SIP/liveness pillar compose at the routing
-			// gate (providerSupportsPrivateTextLocked requires both). The loop pushes
-			// (within the per-device budget) and polls; verification of the reply
-			// happens in the read-loop delivery path (handleCodeAttestationResponse),
-			// so a single dropped/late background push doesn't strand a capable
-			// provider, and a reply on a reconnected socket still attests (Fix 1).
-			if s.codeAttestor != nil {
-				saferun.Go(s.logger, "codeAttest", func() {
-					s.codeAttestLoop(loopCtx, providerID, provider)
+				// Start challenge loop after registration
+				saferun.Go(s.logger, "challengeLoop", func() {
+					s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
 				})
-			}
+
+				// Start the per-connection MDM verification loop. It runs the initial
+				// SecurityInfo check + a bounded, push-budget-aware retry, decoupled
+				// from the 5-minute challenge ticker. No-op when no MDM client is
+				// configured or the attestation carried no serial.
+				saferun.Go(s.logger, "mdmVerificationLoop", func() {
+					s.mdmVerificationLoop(loopCtx, providerID, provider)
+				})
+
+				// v0.6.0: APNs code-identity attestation. Runs only when an attestor is
+				// configured; otherwise the provider simply never becomes CodeAttested
+				// (fail-closed at the routing chokepoint once enforcement begins). The
+				// code-identity proof and the SIP/liveness pillar compose at the routing
+				// gate (providerSupportsPrivateTextLocked requires both). The loop pushes
+				// (within the per-device budget) and polls; verification of the reply
+				// happens in the read-loop delivery path (handleCodeAttestationResponse),
+				// so a single dropped/late background push doesn't strand a capable
+				// provider, and a reply on a reconnected socket still attests (Fix 1).
+				if s.codeAttestor != nil {
+					saferun.Go(s.logger, "codeAttest", func() {
+						s.codeAttestLoop(loopCtx, providerID, provider)
+					})
+				}
+			}()
 
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
@@ -574,7 +600,13 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 				return
 			}
 			s.codeAttestThrottle.recordPush(seKey)
-			prevSent = s.sendCodeIdentityChallenge(ctx, providerID, provider)
+			sent := false
+			if !s.runProviderVerifyWork(ctx, "code_attest", func() {
+				sent = s.sendCodeIdentityChallenge(ctx, providerID, provider)
+			}) {
+				return
+			}
+			prevSent = sent
 			pushes++
 		}
 
@@ -1125,7 +1157,7 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 
 	writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer writeCancel()
-	if err := conn.Write(writeCtx, websocket.MessageText, data); err != nil {
+	if err := provider.Write(writeCtx, websocket.MessageText, data); err != nil {
 		s.logger.Error("failed to send challenge", "provider_id", providerID, "error", err)
 		tracker.remove(nonce)
 		return
@@ -1555,18 +1587,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			// Send status feedback but do NOT fail the challenge or mark untrusted.
 			// The provider remains connected but is excluded from routing until
 			// it reports matching hashes.
-			if provider.Conn != nil {
-				statusMsg := protocol.RuntimeStatusMessage{
-					Type:       protocol.TypeRuntimeStatus,
-					Verified:   false,
-					Mismatches: mismatches,
-				}
-				statusData, err := json.Marshal(statusMsg)
-				if err == nil {
-					writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = provider.Conn.Write(writeCtx, websocket.MessageText, statusData)
-					writeCancel()
-				}
+			statusMsg := protocol.RuntimeStatusMessage{
+				Type:       protocol.TypeRuntimeStatus,
+				Verified:   false,
+				Mismatches: mismatches,
+			}
+			statusData, err := json.Marshal(statusMsg)
+			if err == nil {
+				writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = provider.Write(writeCtx, websocket.MessageText, statusData)
+				writeCancel()
 			}
 			return
 		}
@@ -1721,7 +1751,7 @@ func (s *Server) handleTransientChallengeFailure(conn *websocket.Conn, providerI
 	}
 	// Closing the conn unblocks providerReadLoop's conn.Read, which cancels the
 	// loop context (stopping this challenge loop) and runs registry.Disconnect.
-	_ = conn.Close(websocket.StatusPolicyViolation, "attestation unresponsive — reconnect required")
+	conn.CloseNow()
 }
 
 // handleChallengeFailure records a failed challenge and marks the provider
@@ -1780,9 +1810,23 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// gone / already settled), burning its GPU and token-budget admission.
 		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
 		// the provider with cancels.
-		if s.zombieCanceller.shouldCancel(msg.RequestID, time.Now()) {
+		action := s.zombieCanceller.record(msg.RequestID, time.Now())
+		if action.sendCancel {
 			s.sendProviderCancel(provider, msg.RequestID)
 			s.ddIncr("inference.zombie_stream_cancel", []string{})
+		}
+		if action.forceReconnect {
+			s.logger.Warn("provider kept streaming an abandoned request after repeated cancels — forcing reconnect",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+			)
+			s.ddIncr("inference.zombie_stream_force_reconnect", []string{})
+			provider.Mu().Lock()
+			conn := provider.Conn
+			provider.Mu().Unlock()
+			if conn != nil {
+				conn.CloseNow()
+			}
 		}
 		return
 	}
@@ -1802,11 +1846,52 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		})
 		return
 	}
-	// Non-blocking send — if consumer is gone the chunk is dropped.
+	delivered, closed := deliverChunkWithBackpressure(pr, chunkData)
+	if delivered {
+		return
+	}
+	if closed {
+		// The consumer already closed out this request. Tell the provider to
+		// stop generating so it does not burn GPU up to max_tokens.
+		s.logger.Warn("chunk channel closed before provider stopped streaming",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+		)
+		s.sendProviderCancel(provider, msg.RequestID)
+		s.ddIncr("inference.chunk_channel_closed", []string{})
+		return
+	}
+
+	s.logger.Warn("consumer chunk channel backpressure exceeded; failing request",
+		"provider_id", providerID,
+		"request_id", msg.RequestID,
+	)
+	s.ddIncr("inference.chunk_backpressure_full", []string{})
+	s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+		Type:       protocol.TypeInferenceError,
+		RequestID:  msg.RequestID,
+		Error:      "consumer stream backpressure exceeded",
+		StatusCode: http.StatusBadGateway,
+	})
+	s.sendProviderCancel(provider, msg.RequestID)
+}
+
+func deliverChunkWithBackpressure(pr *registry.PendingRequest, chunkData string) (delivered bool, closed bool) {
+	if pr == nil || pr.ChunkCh == nil {
+		return false, true
+	}
+	defer func() {
+		if recover() != nil {
+			delivered = false
+			closed = true
+		}
+	}()
+
 	select {
 	case pr.ChunkCh <- chunkData:
+		return true, false
 	default:
-		s.logger.Warn("dropped chunk, consumer channel full", "request_id", msg.RequestID)
+		return false, false
 	}
 }
 
@@ -2987,7 +3072,13 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 		if provider.ChallengeShouldStop() {
 			return
 		}
-		switch s.verifyProviderViaMDM(ctx, providerID, provider, *result) {
+		var outcome mdmVerifyOutcome
+		if !s.runProviderVerifyWork(ctx, "mdm", func() {
+			outcome = s.verifyProviderViaMDM(ctx, providerID, provider, *result)
+		}) {
+			return
+		}
+		switch outcome {
 		case mdmVerifyGranted, mdmVerifyTerminal:
 			return
 		}
@@ -3264,10 +3355,6 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 // the WebSocket connection. This allows the provider to react — e.g. by
 // auto-reporting unified logs when it learns it is self_signed or untrusted.
 func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registry.TrustLevel, status string, reason string) {
-	conn := provider.Conn
-	if conn == nil {
-		return
-	}
 	msg := protocol.TrustStatusMessage{
 		Type:       protocol.TypeTrustStatus,
 		TrustLevel: string(trustLevel),
@@ -3280,5 +3367,5 @@ func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registr
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = conn.Write(ctx, websocket.MessageText, data)
+	_ = provider.Write(ctx, websocket.MessageText, data)
 }

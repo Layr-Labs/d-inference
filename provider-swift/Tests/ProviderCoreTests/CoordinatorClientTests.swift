@@ -379,6 +379,11 @@ import Testing
     #expect(ws.maximumMessageSize >= 22 * 1024 * 1024)
 }
 
+@Test func outboundMessageLimitStaysBelowCoordinatorReadLimit() {
+    #expect(CoordinatorClient.maxOutboundMessageBytes < CoordinatorClient.maxInboundMessageBytes)
+    #expect(CoordinatorClient.maxOutboundMessageBytes >= 20 * 1024 * 1024)
+}
+
 private func clientSampleHardware() -> HardwareInfo {
     HardwareInfo(
         machineModel: "Mac16,5",

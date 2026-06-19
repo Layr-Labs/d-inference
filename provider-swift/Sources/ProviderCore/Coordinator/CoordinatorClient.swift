@@ -503,6 +503,11 @@ public actor CoordinatorClient {
     /// after base64 expansion (×4/3 ≈ 21.3 MiB).
     static let maxInboundMessageBytes = 32 * 1024 * 1024
 
+    /// Keep provider→coordinator frames below the coordinator's 32 MiB read
+    /// limit. One oversized encrypted SSE chunk should fail that request, not
+    /// close the shared provider WebSocket and kill every in-flight request.
+    static let maxOutboundMessageBytes = 30 * 1024 * 1024
+
     /// Raise a task's inbound message limit to ``maxInboundMessageBytes``. Factored
     /// out so a unit test can assert the limit is applied without opening a live
     /// socket.
@@ -760,6 +765,10 @@ public actor CoordinatorClient {
                     let shutting = await self.shutdownRequested
                     if shutting { break }
                     let json = await self.encodeOutbound(msg)
+                    guard json.utf8.count <= Self.maxOutboundMessageBytes else {
+                        await self.handleOversizedOutboundFrame(msg, byteCount: json.utf8.count, ws: ws)
+                        continue
+                    }
                     try await ws.send(.string(json))
                 }
             }
@@ -1034,6 +1043,21 @@ public actor CoordinatorClient {
 
     private func encodeOutbound(_ msg: OutboundMessage) -> String {
         (try? CoordinatorClientCodec.encodeOutboundMessageString(msg)) ?? "{}"
+    }
+
+    private func handleOversizedOutboundFrame(_ msg: OutboundMessage, byteCount: Int, ws: URLSessionWebSocketTask) async {
+        logger.error("Outbound WebSocket frame too large: \(byteCount) bytes")
+        switch msg {
+        case .inferenceChunk(let requestId, _, _):
+            let errorJSON = encodeInferenceError(
+                requestId: requestId,
+                error: "response chunk exceeded transport frame limit",
+                statusCode: 502
+            )
+            try? await ws.send(.string(errorJSON))
+        default:
+            ws.cancel(with: .messageTooBig, reason: nil)
+        }
     }
 
     private func encodeInferenceError(requestId: String, error: String, statusCode: UInt16) -> String {

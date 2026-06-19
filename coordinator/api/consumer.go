@@ -129,7 +129,7 @@ func providerDispatchWriteTimeout(frameBytes int) time.Duration {
 // caller. Errors are logged at debug level because a disconnect race is the
 // expected case — the provider may already be gone.
 func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string) {
-	if provider == nil || provider.Conn == nil {
+	if provider == nil {
 		return
 	}
 	cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
@@ -140,31 +140,49 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
 	defer cancel()
-	if err := provider.Conn.Write(ctx, websocket.MessageText, cancelData); err != nil {
+	if err := provider.Write(ctx, websocket.MessageText, cancelData); err != nil {
 		s.logger.Debug("failed to send cancel (provider may have disconnected)",
 			"request_id", requestID, "error", err)
 	}
 }
 
 func writeProviderInferenceRequest(_ context.Context, provider *registry.Provider, data []byte) error {
-	if provider == nil || provider.Conn == nil {
+	if provider == nil {
 		return errors.New("provider websocket is not connected")
 	}
+	timeout := providerDispatchWriteTimeout(len(data))
+	gateCtx, cancelGate := context.WithTimeout(context.Background(), timeout)
+	defer cancelGate()
 	done := make(chan error, 1)
 	go func() {
 		// Do not pass the consumer request context (or any timeout context) to
 		// nhooyr.Conn.Write: any cancellation/expiration passed to nhooyr can close
-		// the shared provider socket. Keep the timeout outside the Write call.
-		done <- provider.Conn.Write(context.Background(), websocket.MessageText, data)
+		// the shared provider socket. The gate wait is bounded separately.
+		done <- provider.WriteWithContexts(gateCtx, context.Background(), websocket.MessageText, data)
 	}()
-	timer := time.NewTimer(providerDispatchWriteTimeout(len(data)))
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case err := <-done:
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			closeProviderConnNow(provider)
+		}
 		return err
 	case <-timer.C:
-		_ = provider.Conn.CloseNow()
+		closeProviderConnNow(provider)
 		return errors.New("provider websocket write timeout")
+	}
+}
+
+func closeProviderConnNow(provider *registry.Provider) {
+	if provider == nil {
+		return
+	}
+	provider.Mu().Lock()
+	conn := provider.Conn
+	provider.Mu().Unlock()
+	if conn != nil {
+		conn.CloseNow()
 	}
 }
 

@@ -99,6 +99,69 @@ func TestProviderWebSocketConnect(t *testing.T) {
 	}
 }
 
+func TestProviderWebSocketReadLimitRaisesAfterRegister(t *testing.T) {
+	if providerPreRegisterReadLimitBytes >= providerRegisteredReadLimitBytes {
+		t.Fatalf("pre-register read limit %d must be below registered limit %d",
+			providerPreRegisterReadLimitBytes, providerRegisteredReadLimitBytes)
+	}
+	if providerPreRegisterReadLimitBytes > 2*1024*1024 {
+		t.Fatalf("pre-register read limit %d is too large for unauthenticated sockets",
+			providerPreRegisterReadLimitBytes)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	regMsg := protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			MachineModel: "Mac15,8",
+			ChipName:     "Apple M3 Max",
+			MemoryGB:     64,
+		},
+		Models:  []protocol.ModelInfo{{ID: "test-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"}},
+		Backend: "mlx-swift",
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if reg.ProviderCount() != 1 {
+		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
+	}
+
+	oversizedPreRegisterFrame := strings.Repeat("{", providerPreRegisterReadLimitBytes+1024)
+	if err := conn.Write(ctx, websocket.MessageText, []byte(oversizedPreRegisterFrame)); err != nil {
+		t.Fatalf("write post-register oversized frame: %v", err)
+	}
+
+	hbMsg := protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{RequestsServed: 1, TokensGenerated: 100},
+	}
+	hbData, _ := json.Marshal(hbMsg)
+	if err := conn.Write(ctx, websocket.MessageText, hbData); err != nil {
+		t.Fatalf("write heartbeat after oversized post-register frame: %v", err)
+	}
+}
+
 func TestProviderWebSocketMultiple(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})

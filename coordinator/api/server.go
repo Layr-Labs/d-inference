@@ -62,6 +62,17 @@ type apiKeyCacheEntry struct {
 const (
 	apiKeyCacheTTL     = 60 * time.Second
 	apiKeyCacheMaxSize = 1000
+
+	// providerVerifyConcurrency caps the number of concurrent post-register
+	// verification workers that can hit MDM/APNs. Provider reconnects still
+	// register immediately; expensive trust/code-identity work queues behind
+	// this lane so a coordinator restart does not fan out an unbounded herd.
+	providerVerifyConcurrency = 32
+
+	// providerRegisterConcurrency caps the short synchronous register path
+	// (state creation, attestation parse, initial commands). Connections beyond
+	// this wait on their own read loop instead of stampeding the coordinator.
+	providerRegisterConcurrency = 128
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -185,6 +196,8 @@ type Server struct {
 	codeAttestor           apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
 	codeAttestThrottle     *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
 	trustReuseCache        *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	providerRegisterSem    chan struct{}             // bounds concurrent first-register processing during reconnect storms
+	providerVerifySem      chan struct{}             // bounds concurrent MDM/APNs verification work during reconnect storms
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -653,6 +666,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		pendingACME:          make(map[string]*ACMEVerificationResult),
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		trustReuseCache:      newTrustReuseCache(),
+		providerRegisterSem:  make(chan struct{}, providerRegisterConcurrency),
+		providerVerifySem:    make(chan struct{}, providerVerifyConcurrency),
 		settlements:          newSettlementHolder(),
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),

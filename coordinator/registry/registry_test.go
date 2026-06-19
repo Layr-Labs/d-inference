@@ -3,9 +3,13 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +17,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
 )
 
 func testLogger() *slog.Logger {
@@ -66,6 +71,46 @@ func testMakeTextRoutable(p *Provider) {
 	p.ChallengeVerifiedSIP = true
 	p.RuntimeManifestChecked = true
 	p.ChallengeVerifiedSIP = true
+}
+
+func TestProviderWriteWithContextsTimesOutWaitingForGate(t *testing.T) {
+	serverConnCh := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		serverConnCh <- conn
+	}))
+	defer server.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDial()
+	clientConn, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer clientConn.Close(websocket.StatusNormalClosure, "done")
+
+	var serverConn *websocket.Conn
+	select {
+	case serverConn = <-serverConnCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for server websocket")
+	}
+	defer serverConn.Close(websocket.StatusNormalClosure, "done")
+
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	provider := &Provider{ID: "p1", Conn: serverConn, writeGate: gate}
+
+	gateCtx, cancelGate := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancelGate()
+	err = provider.WriteWithContexts(gateCtx, context.Background(), websocket.MessageText, []byte("blocked"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WriteWithContexts error = %v, want context deadline exceeded", err)
+	}
 }
 
 // TestCodeAttestationGate verifies the v0.6.0 APNs code-identity gate at the

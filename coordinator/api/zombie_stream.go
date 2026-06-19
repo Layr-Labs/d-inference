@@ -12,6 +12,17 @@ import (
 // actually listening, and harmless against one that isn't.
 const zombieCancelThrottle = 10 * time.Second
 const zombieCancelMaxEntries = 4096
+const zombieCancelForceReconnectAttempts = 3
+
+type zombieCancelRecord struct {
+	last     time.Time
+	attempts int
+}
+
+type zombieCancelAction struct {
+	sendCancel     bool
+	forceReconnect bool
+}
 
 // zombieStreamCanceller throttles cancels sent for chunks that arrive for a
 // request the coordinator no longer tracks (consumer gone / already settled).
@@ -20,44 +31,52 @@ const zombieCancelMaxEntries = 4096
 // throttle window per request.
 type zombieStreamCanceller struct {
 	mu   sync.Mutex
-	sent map[string]time.Time
+	sent map[string]zombieCancelRecord
 }
 
 func newZombieStreamCanceller() *zombieStreamCanceller {
-	return &zombieStreamCanceller{sent: make(map[string]time.Time)}
+	return &zombieStreamCanceller{sent: make(map[string]zombieCancelRecord)}
 }
 
-// shouldCancel reports whether to send a cancel for requestID now, recording
-// the send. Returns false within zombieCancelThrottle of the last send for that
-// id. Opportunistically sweeps expired entries so the map stays bounded.
-func (z *zombieStreamCanceller) shouldCancel(requestID string, now time.Time) bool {
+// record records an unknown-request chunk and returns what recovery action the
+// caller should take. After repeated throttled cancel attempts, forceReconnect
+// asks the caller to cycle the provider connection: either the provider never
+// received our cancels or its generation loop ignored them, and letting it run
+// to max_tokens burns fleet capacity.
+func (z *zombieStreamCanceller) record(requestID string, now time.Time) zombieCancelAction {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 
-	if t, ok := z.sent[requestID]; ok {
-		if now.Sub(t) < zombieCancelThrottle {
-			return false
+	rec, ok := z.sent[requestID]
+	if ok {
+		if now.Sub(rec.last) < zombieCancelThrottle {
+			return zombieCancelAction{}
 		}
-		delete(z.sent, requestID)
 	}
 
-	if len(z.sent) >= zombieCancelMaxEntries {
+	if !ok && len(z.sent) >= zombieCancelMaxEntries {
 		var oldestID string
-		var oldest time.Time
-		for id, t := range z.sent {
-			if now.Sub(t) > zombieCancelThrottle {
+		var oldest zombieCancelRecord
+		for id, rec := range z.sent {
+			if now.Sub(rec.last) > zombieCancelThrottle {
 				delete(z.sent, id)
 				continue
 			}
-			if oldestID == "" || t.Before(oldest) {
+			if oldestID == "" || rec.last.Before(oldest.last) {
 				oldestID = id
-				oldest = t
+				oldest = rec
 			}
 		}
 		if len(z.sent) >= zombieCancelMaxEntries && oldestID != "" {
 			delete(z.sent, oldestID)
 		}
 	}
-	z.sent[requestID] = now
-	return true
+
+	rec.last = now
+	rec.attempts++
+	z.sent[requestID] = rec
+	return zombieCancelAction{
+		sendCancel:     true,
+		forceReconnect: rec.attempts >= zombieCancelForceReconnectAttempts,
+	}
 }

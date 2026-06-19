@@ -438,7 +438,52 @@ type Provider struct {
 	CodeAttested bool
 
 	mu          sync.Mutex
+	writeGate   chan struct{}
 	pendingReqs map[string]*PendingRequest
+}
+
+// Write sends one WebSocket message to the provider, serializing all coordinator
+// writers before they enter nhooyr's connection-level write path. This matters
+// because nhooyr closes the whole connection when a write context expires; a
+// caller timing out while merely queued behind another writer must not kill the
+// provider socket.
+func (p *Provider) Write(ctx context.Context, typ websocket.MessageType, data []byte) error {
+	return p.WriteWithContexts(ctx, ctx, typ, data)
+}
+
+// WriteWithContexts is Write with separate contexts for waiting on the
+// coordinator-side serialization gate and for the actual nhooyr write. This is
+// needed for request dispatch: timeout while queued behind another coordinator
+// writer must not pass a cancelled context into nhooyr.Conn.Write, because
+// nhooyr treats write-context expiry as connection-fatal.
+func (p *Provider) WriteWithContexts(gateCtx context.Context, writeCtx context.Context, typ websocket.MessageType, data []byte) error {
+	if gateCtx == nil {
+		gateCtx = context.Background()
+	}
+	if writeCtx == nil {
+		writeCtx = context.Background()
+	}
+
+	p.mu.Lock()
+	conn := p.Conn
+	if p.writeGate == nil {
+		p.writeGate = make(chan struct{}, 1)
+	}
+	gate := p.writeGate
+	p.mu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("provider %q has no active connection", p.ID)
+	}
+
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-gateCtx.Done():
+		return gateCtx.Err()
+	}
+
+	return conn.Write(writeCtx, typ, data)
 }
 
 // providerSupportsPrivateTextLocked is the SINGLE routing chokepoint for
@@ -2362,6 +2407,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Conn:                    conn,
 		LastHeartbeat:           time.Now(),
 		Reputation:              NewReputation(),
+		writeGate:               make(chan struct{}, 1),
 		pendingReqs:             make(map[string]*PendingRequest),
 		challengeSettled:        make(chan struct{}, 1),
 	}
@@ -2630,15 +2676,7 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	p.mu.Lock()
-	conn := p.Conn
-	p.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("provider %q has no active connection", providerID)
-	}
-
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+	if err := p.Write(ctx, websocket.MessageText, data); err != nil {
 		return fmt.Errorf("failed to send load_model to provider %q: %w", providerID, err)
 	}
 
@@ -2678,15 +2716,7 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	p.mu.Lock()
-	conn := p.Conn
-	p.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("provider %q has no active connection", providerID)
-	}
-
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+	if err := p.Write(ctx, websocket.MessageText, data); err != nil {
 		return fmt.Errorf("failed to send prefetch_model to provider %q: %w", providerID, err)
 	}
 
@@ -2736,15 +2766,7 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	p.mu.Lock()
-	conn := p.Conn
-	p.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("provider %q has no active connection", providerID)
-	}
-
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+	if err := p.Write(ctx, websocket.MessageText, data); err != nil {
 		return fmt.Errorf("failed to send desired_models to provider %q: %w", providerID, err)
 	}
 

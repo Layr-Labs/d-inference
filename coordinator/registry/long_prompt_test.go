@@ -1,50 +1,64 @@
 package registry
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // TestLongPromptPrefillPenalty exercises the pure penalty helper across every
-// behavior-preserving guard and the active amplification case.
+// behavior-preserving guard and the active amplification case. The helper now
+// amplifies a supplied first-token-blocking time (ttftBlockMs) rather than a raw
+// prefill rate, so the caller can fold in cold-load latency for unloaded boxes.
 func TestLongPromptPrefillPenalty(t *testing.T) {
 	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
 	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
 
-	// Disabled (threshold 0): always 0, even for an enormous prompt.
+	// Disabled (threshold 0): always 0, even for an enormous prompt / blocking time.
 	longPromptThresholdTokens = 0
 	longPromptPrefillWeight = 2.0
-	if got := longPromptPrefillPenalty(100_000, 500); got != 0 {
+	if got := longPromptPenalty(100_000, 24_000); got != 0 {
 		t.Fatalf("disabled penalty = %v, want 0", got)
 	}
 
 	// Enabled but prompt below the threshold: 0 (short prompts unaffected).
 	longPromptThresholdTokens = 8_000
-	if got := longPromptPrefillPenalty(4_000, 500); got != 0 {
+	if got := longPromptPenalty(4_000, 24_000); got != 0 {
 		t.Fatalf("below-threshold penalty = %v, want 0", got)
 	}
 
-	// At the threshold: extra = (weight-1) * prompt/prefillTPS*1000.
-	// 8000/500*1000 = 16000ms; (2-1)*16000 = 16000ms.
-	if got, want := longPromptPrefillPenalty(8_000, 500), 16_000.0; got != want {
+	// At/above the threshold: extra = (weight-1) * ttftBlockMs.
+	// (2-1)*24000 = 24000ms.
+	if got, want := longPromptPenalty(8_000, 24_000), 24_000.0; got != want {
 		t.Fatalf("at-threshold penalty = %v, want %v", got, want)
 	}
 
-	// The whole point: a faster-prefill provider gets a proportionally SMALLER
-	// penalty for the same long prompt, biasing selection to the fastest tier.
-	slow := longPromptPrefillPenalty(12_000, 500)   // 12000/500*1000=24000 -> 24000
-	fast := longPromptPrefillPenalty(12_000, 1_000) // 12000/1000*1000=12000 -> 12000
-	if !(fast < slow) {
-		t.Fatalf("faster-prefill penalty %v should be < slower-prefill penalty %v", fast, slow)
+	// The amplified quantity is the FULL first-token-blocking time, so a candidate
+	// with a larger ttftBlockMs gets a proportionally LARGER penalty. A cold box
+	// (fast prefill but a ~30s load) therefore carries MORE penalty than the same
+	// prefill alone — the cold-load latency is no longer amplified away. The delta
+	// is exactly the amplified statePenalty.
+	prefillOnly := longPromptPenalty(12_000, 6_000)                          // warm-style: prefill only
+	withColdLoad := longPromptPenalty(12_000, 6_000+slotStatePenaltyUnknown) // cold: prefill + load
+	if !(withColdLoad > prefillOnly) {
+		t.Fatalf("cold-load ttft penalty %v should exceed prefill-only penalty %v", withColdLoad, prefillOnly)
+	}
+	if diff, want := withColdLoad-prefillOnly, (2.0-1.0)*slotStatePenaltyUnknown; diff != want {
+		t.Fatalf("cold-load penalty delta = %v, want %v (the amplified statePenalty)", diff, want)
 	}
 
 	// Neutral weight (<=1) disables amplification even when the threshold is met.
 	longPromptPrefillWeight = 1.0
-	if got := longPromptPrefillPenalty(12_000, 500); got != 0 {
+	if got := longPromptPenalty(12_000, 24_000); got != 0 {
 		t.Fatalf("neutral-weight penalty = %v, want 0", got)
 	}
 
-	// Unknown prefill rate: 0 (no divide-by-zero, no penalty).
+	// Non-positive blocking time: 0 (no penalty; guards the zero/garbage TTFT case).
 	longPromptPrefillWeight = 2.0
-	if got := longPromptPrefillPenalty(12_000, 0); got != 0 {
-		t.Fatalf("zero-prefill penalty = %v, want 0", got)
+	if got := longPromptPenalty(12_000, 0); got != 0 {
+		t.Fatalf("zero-ttft penalty = %v, want 0", got)
+	}
+	if got := longPromptPenalty(12_000, -5); got != 0 {
+		t.Fatalf("negative-ttft penalty = %v, want 0", got)
 	}
 }
 
@@ -74,6 +88,26 @@ func TestLongPromptSettersClampAndDefaults(t *testing.T) {
 	SetLongPromptPrefillWeight(0.5) // sub-1 clamps to 1.0 (neutral)
 	if LongPromptPrefillWeight() != 1.0 {
 		t.Fatalf("weight = %v, want 1.0 after sub-1 clamp", LongPromptPrefillWeight())
+	}
+
+	// Non-finite weights (NaN/±Inf — e.g. EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT
+	// =NaN/Inf) MUST NOT slip through the `< 1` clamp: NaN/Inf comparisons are
+	// always false, so a stored NaN/Inf would yield a NaN/Inf penalty that poisons
+	// every candidate cost and breaks the scheduler's `<`/near-tie comparisons.
+	// They reset to the finite default so the weight is always well-defined.
+	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		SetLongPromptPrefillWeight(bad)
+		w := LongPromptPrefillWeight()
+		if math.IsNaN(w) || math.IsInf(w, 0) {
+			t.Fatalf("weight = %v after Set(%v), want a FINITE value", w, bad)
+		}
+		if w != defaultLongPromptPrefillWeight {
+			t.Fatalf("weight = %v after Set(%v), want default %v", w, bad, defaultLongPromptPrefillWeight)
+		}
+	}
+	// The default the non-finite guard restores must itself be the finite 2.0.
+	if defaultLongPromptPrefillWeight != 2.0 {
+		t.Fatalf("defaultLongPromptPrefillWeight = %v, want 2.0", defaultLongPromptPrefillWeight)
 	}
 }
 
@@ -208,5 +242,107 @@ func TestLongPromptPrefersObservedOverStaticPrefill(t *testing.T) {
 	if sel.ID != observedFast.ID {
 		t.Fatalf("selected %q, want observed-fastest %q — the penalty must rank on resolvePrefillTPS, not static prefillTPS; decision=%+v",
 			sel.ID, observedFast.ID, dec)
+	}
+}
+
+// TestReserveProviderLongPromptColdLoadNotAmplifiedAway is the regression test for
+// the cold-load bug: the long-prompt bias must amplify the FULL time-to-first-token
+// (cold-load latency + prefill), not prefill alone. A COLD provider (model not
+// loaded, "unknown" slot) with very fast prefill must NOT win a long prompt over a
+// resident WARM provider whose slower prefill is still faster end-to-end once the
+// cold box's ~30s load is counted.
+//
+// Numbers (threshold 8000, weight 2.0, 12k-token prompt, 256 max, decode 100,
+// slotStatePenaltyUnknown 30000, health 550):
+//
+//	WARM (PrefillTPS 500, "running"): thisReq = 24000 prefill + 2560 decode +
+//	    (2-1)*24000 penalty = 50560; +state 0 +health 550 => cost 51110.
+//	COLD (PrefillTPS 2000, "unknown"): thisReq = 6000 prefill + 2560 decode +
+//	    (2-1)*(6000+30000) penalty = 44560; +state 30000 +health 550 => cost 75110.
+//
+// Before the fix the cold penalty was only (2-1)*6000 and its 30000 load sat
+// UN-amplified, so cold cost was 45110 < warm 51110 and the cold box wrongly won.
+func TestReserveProviderLongPromptColdLoadNotAmplifiedAway(t *testing.T) {
+	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
+	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
+	SetLongPromptThreshold(8_000)
+	SetLongPromptPrefillWeight(2.0)
+
+	const (
+		model          = "long-prompt-cold-load-model"
+		reqPrompt      = 12_000
+		reqMax         = 256
+		warmPrefillTPS = 500.0
+		coldPrefillTPS = 2_000.0
+		decodeTPS      = 100.0
+	)
+	// Build a fresh warm+cold pair. Reservation mutates per-provider state, so each
+	// route gets its own registry. The two differ only in prefill rate and whether
+	// the model is resident: the WARM box is slower-prefill but loaded; the COLD
+	// box is 4x faster-prefill but unloaded (an "unknown" slot => ~30s load).
+	build := func(t *testing.T) (reg *Registry, warmID, coldID string) {
+		t.Helper()
+		reg = New(testLogger())
+		warm := makeTokenBudgetProvider(t, reg, "warm-resident-slow-prefill", model, decodeTPS, 0, 200_000, decodeTPS)
+		warm.mu.Lock()
+		warm.PrefillTPS = warmPrefillTPS
+		warm.BackendCapacity.Slots[0].State = "running" // model RESIDENT
+		warm.mu.Unlock()
+		cold := makeTokenBudgetProvider(t, reg, "cold-unloaded-fast-prefill", model, decodeTPS, 0, 200_000, decodeTPS)
+		cold.mu.Lock()
+		cold.PrefillTPS = coldPrefillTPS
+		cold.BackendCapacity.Slots[0].State = "unknown" // model NOT loaded (~30s cold load)
+		cold.mu.Unlock()
+		return reg, warm.ID, cold.ID
+	}
+
+	// 1) End-to-end: the resident warm box wins the long prompt. CandidateCount == 2
+	//    proves the cold box is a genuine, routable competitor (else this would be
+	//    vacuously satisfied by the cold box being rejected outright).
+	reg, warmID, _ := build(t)
+	sel, dec := reg.ReserveProviderEx(model, &PendingRequest{
+		RequestID: "long-cold-vs-warm", Model: model, EstimatedPromptTokens: reqPrompt, RequestedMaxTokens: reqMax,
+	})
+	if sel == nil {
+		t.Fatalf("returned nil provider; decision=%+v", dec)
+	}
+	if dec.CandidateCount != 2 {
+		t.Fatalf("CandidateCount=%d, want 2 (cold box must be a real competitor, else the test is vacuous); decision=%+v", dec.CandidateCount, dec)
+	}
+	if sel.ID != warmID {
+		t.Fatalf("long prompt selected %q, want resident warm %q — a cold box's fast prefill must not win once its ~30s load is amplified too; decision=%+v", sel.ID, warmID, dec)
+	}
+	if dec.StateMs != 0 {
+		t.Fatalf("warm StateMs=%v, want 0 (resident box pays no cold-load penalty)", dec.StateMs)
+	}
+
+	// 2) Cost-level proof: route the cold box in isolation (exclude warm) and show
+	//    its long-prompt cost now carries the AMPLIFIED cold-load term.
+	regC, warmC, _ := build(t)
+	coldSel, coldDec := regC.ReserveProviderEx(model, &PendingRequest{
+		RequestID: "long-cold-only", Model: model, EstimatedPromptTokens: reqPrompt, RequestedMaxTokens: reqMax,
+	}, warmC) // exclude warm => cold is the only candidate
+	if coldSel == nil {
+		t.Fatalf("cold-only route returned nil; decision=%+v", coldDec)
+	}
+	if coldDec.StateMs != slotStatePenaltyUnknown {
+		t.Fatalf("cold StateMs=%v, want %v (unknown-slot cold-load penalty)", coldDec.StateMs, slotStatePenaltyUnknown)
+	}
+	coldPrefillMs := float64(reqPrompt) / coldPrefillTPS * 1000.0
+	coldDecodeMs := float64(reqMax) / decodeTPS * 1000.0
+	// With the fix the penalty amplifies prefill + cold load; pre-fix it amplified
+	// prefill only (the 30000 load sat un-amplified in StateMs).
+	wantColdThisReq := coldPrefillMs + coldDecodeMs + (2.0-1.0)*(coldPrefillMs+slotStatePenaltyUnknown)
+	buggyColdThisReq := coldPrefillMs + coldDecodeMs + (2.0-1.0)*coldPrefillMs
+	if math.Abs(coldDec.ThisReqMs-wantColdThisReq) > 0.001 {
+		t.Fatalf("cold ThisReqMs=%v, want %v (prefill + decode + amplified full TTFT incl. cold load)", coldDec.ThisReqMs, wantColdThisReq)
+	}
+	if got, want := coldDec.ThisReqMs-buggyColdThisReq, (2.0-1.0)*slotStatePenaltyUnknown; math.Abs(got-want) > 0.001 {
+		t.Fatalf("cold-load contribution to ThisReqMs = %v, want %v (the amplified statePenalty); pre-fix this was 0 and the cold box won", got, want)
+	}
+	// Cost-breakdown invariant still holds with the penalty folded into ThisReqMs.
+	sum := coldDec.StateMs + coldDec.QueueMs + coldDec.PendingMs + coldDec.BacklogMs + coldDec.ThisReqMs + coldDec.HealthMs
+	if math.Abs(sum-coldDec.CostMs) > 0.001 {
+		t.Fatalf("cold breakdown sum %v != CostMs %v", sum, coldDec.CostMs)
 	}
 }

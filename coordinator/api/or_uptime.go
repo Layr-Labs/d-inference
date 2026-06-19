@@ -26,15 +26,16 @@ import "net/http"
 //
 // These two sets are disjoint (a request is either dispatched or rejected before
 // dispatch), so there is no double counting and no per-attempt / speculative
-// inflation. A committed request that later fails mid-stream is counted here as
-// success (commit-time approximation); the exact, post-commit-aware view is the
-// /v1/admin/uptime aggregation over stored route+rejection records.
+// inflation. A committed request that later fails mid-stream is counted as success
+// (commit-time approximation); the exact post-commit breakdown is available from
+// the persisted route-outcome rows (GET /v1/admin/routes, filter by final_status)
+// and the rejection ledger (GET /v1/admin/rejections).
 //
 // Scope: dispatched-request outcomes are emitted on the /v1/chat/completions
 // (+ Responses) path, which is what OpenRouter scores us on. The inline
 // /v1/completions + /v1/messages path emits only its pre-dispatch rejections
-// (via recordRejection); its dispatched successes/failures are not counted here. The classes
-// rate_limited / cancelled / client_error are tracked but EXCLUDED from the
+// (via recordRejection); its dispatched successes/failures are not counted here.
+// The classes rate_limited / client_error are tracked but EXCLUDED from the
 // formula above, matching OpenRouter's denominator.
 
 const metricRequestOutcome = "inference.request_outcome"
@@ -48,7 +49,6 @@ const (
 	orClassMidStream   = "mid_stream"   // denominator (failure)
 	orClassTimeout     = "timeout"      // denominator (failure)
 	orClassRateLimited = "rate_limited" // EXCLUDED (429, OpenRouter rate-limit)
-	orClassCancelled   = "cancelled"    // EXCLUDED (client disconnected)
 	orClassClientError = "client_error" // EXCLUDED (4xx client request error)
 )
 
@@ -61,34 +61,6 @@ func (s *Server) recordRequestOutcome(model, class string) {
 		model = "unknown"
 	}
 	s.ddIncr(metricRequestOutcome, []string{"model:" + model, "class:" + class})
-}
-
-// orUptimeClass maps a stored route outcome (final_status + error_class + HTTP
-// error code) to an OR-uptime class. Used by the /v1/admin/uptime aggregation.
-func orUptimeClass(finalStatus, errorClass string, errorCode int) string {
-	switch finalStatus {
-	case "success":
-		return orClassSuccess
-	case "partial_success":
-		// A consumer that disconnected after commit (provider then completed) is
-		// the client's cancellation, not our failure — exclude it. Every other
-		// partial_success is a real post-commit provider failure (mid-stream).
-		if errorClass == errorClassClientGoneAfterCommitCompleted {
-			return orClassCancelled
-		}
-		return orClassMidStream
-	case "cancelled":
-		return orClassCancelled
-	case "timeout":
-		// queue_timeout returns HTTP 429 (rate-limit, excluded); coordinator
-		// first-chunk / stream timeouts are real fetch-timeout failures.
-		if errorCode == http.StatusTooManyRequests {
-			return orClassRateLimited
-		}
-		return orClassTimeout
-	default: // "error" and anything unexpected: classify by HTTP status.
-		return classifyOutcomeByCode(errorCode)
-	}
 }
 
 // orUptimeClassForRejection maps a rejection's HTTP status to an OR-uptime class.

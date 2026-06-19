@@ -202,22 +202,20 @@ keep working.
 
 | Metric | Tags | Emitted from | Meaning |
 |---|---|---|---|
-| `d_inference.inference.request_outcome` | `model`, `class` | `api/dispatch.go` `run()` tail (committed → `success`, exhausted → failure-by-status) and `recordRejection` for pre-dispatch stages | Exactly one emit per client request. `class` ∈ {`success`, `provider_5xx`, `mid_stream`, `timeout`, `rate_limited`, `cancelled`, `client_error`}. Drives the live OpenRouter-formula uptime panel. |
+| `d_inference.inference.request_outcome` | `model`, `class` | `api/dispatch.go` `run()` tail (committed → `success`, exhausted → failure-by-status) and `recordRejection` for pre-dispatch stages | Exactly one emit per client request. `class` ∈ {`success`, `provider_5xx`, `mid_stream`, `timeout`, `rate_limited`, `client_error`}. Drives the live OpenRouter-formula uptime panel. |
 | `d_inference.routing.unservable_reclassified` | `model` | `api/dispatch.go` dispatch-exhausted backstop | A provider token-budget / KV / context 5xx that the dispatch path reclassified into an uptime-neutral 429. Always on (not gated). |
 
 The OpenRouter-formula uptime is `success / (success + provider_5xx + mid_stream + timeout)`.
-`rate_limited`, `cancelled`, and `client_error` are tracked on the same counter but
-**excluded** from that formula, mirroring OpenRouter excluding 429s, client
-cancellations, and 4xx client errors from its provider uptime number.
+`rate_limited` and `client_error` are tracked on the same counter but **excluded**
+from that formula, mirroring OpenRouter excluding 429s and 4xx client errors from
+its provider uptime number. Client cancellations (before first token) are not
+emitted on this counter — they are tracked on `routing.client_gone`.
 
 The emit is taken at the `run()` tail, so it is a commit-time approximation: a stream
-that fails *after* the response was already committed is counted live as `success`.
-The exact post-commit view — which reclassifies committed-then-failed streams as
-`mid_stream` — is served by `GET /v1/admin/uptime` (`coordinator/api/admin_uptime.go`,
-admin-gated), computed from the persisted route-outcome and rejection rows rather
-than from the live counter. It reduces a request's attempts to one terminal outcome
-(a failover success outranks a failed sibling attempt) and reports
-`success / (success + provider_5xx + mid_stream + timeout)` per model.
+that fails *after* the response was already committed is counted as `success`. For the
+exact post-commit breakdown (committed-then-failed streams classified as
+`partial_success`), query the persisted route-outcome rows via `GET /v1/admin/routes`
+(filter `final_status`) and the rejection ledger via `GET /v1/admin/rejections`.
 
 Smart admission also adds reason codes to the rejection ledger (surfaced via
 `routing.decisions{outcome:...}` and `/v1/admin/rejections`):
@@ -231,13 +229,12 @@ Smart admission also adds reason codes to the rejection ledger (surfaced via
 These preflight/backstop 429s also introduce the `routing.decisions` outcome tag
 value `unservable_429`.
 
-Two new env flags gate the behavior, both defaulting OFF so the rollout is
-behavior-neutral:
+Two env flags tune the behavior:
 
 | Env flag | Type | Default | Effect |
 |---|---|---|---|
 | `EIGENINFERENCE_SERVABILITY_GATE` | bool | off | Enables the proactive preflight servability 429 gate (`context_exceeded` / `prompt_too_long`). When off, nothing is preflight-rejected; the always-on dispatch backstop still reclassifies unservable 5xx. |
-| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | off (unset / `0`) | DAR-334 SSE prefill keepalives during long prefill. When off, no keepalive frames are sent. |
+| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | `10s` (on) | SSE prefill keepalives during long prefill. ON by default; the first keepalive fires one interval in, so only long prefills commit HTTP 200 early. Set `0` to disable; tune below OpenRouter's fetch timeout. |
 
 Both new counters keep the metadata-only, low-cardinality invariant: `request_outcome`
 carries only `model` + `class`, and `unservable_reclassified` only `model`. No

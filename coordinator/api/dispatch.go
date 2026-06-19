@@ -1952,10 +1952,10 @@ exhausted:
 	}
 	s.ddIncr("inference.dispatches", []string{"status:success"})
 	// OR-uptime outcome for a committed request (the consumer got content).
-	// Commit-time approximation — a later post-commit mid-stream failure
-	// is counted here as success; /v1/admin/uptime is the exact, post-commit-aware
-	// view. Emitted exactly once per dispatched request (disjoint from the
-	// exhausted branch above and from pre-dispatch rejections).
+	// Commit-time approximation — a later post-commit mid-stream failure is counted
+	// here as success; the persisted route-outcome rows (/v1/admin/routes) hold the
+	// exact post-commit breakdown. Emitted exactly once per dispatched request
+	// (disjoint from the exhausted branch above and from pre-dispatch rejections).
 	s.recordRequestOutcome(d.model, orClassSuccess)
 
 	d.writeCommittedResponse()

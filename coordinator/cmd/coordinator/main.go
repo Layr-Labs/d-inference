@@ -53,6 +53,12 @@ import (
 	ddtracer "gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
+// defaultPrefillKeepaliveInterval is the on-by-default cadence for SSE prefill
+// keepalives. Chosen to sit below typical fetch timeouts while keeping the
+// early-commit blast radius to genuinely long prefills; tune via
+// EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (0 disables).
+const defaultPrefillKeepaliveInterval = 10 * time.Second
+
 func main() {
 	// Structured JSON logging. When Datadog is active, we wrap the handler
 	// with trace context injection so logs correlate with APM traces.
@@ -395,19 +401,27 @@ func main() {
 		}
 	}
 
-	// SSE keepalives during long prefill. OFF by default (0 disables;
-	// behavior-neutral — deferred-commit / invisible-failover preserved). Set a Go
-	// duration (e.g. 5s): a STREAMING request that has been dispatched but not yet
-	// produced its first content chunk commits HTTP 200 and emits ": keepalive"
-	// comments every interval so OpenRouter's fetch timeout does not fire and fail
-	// us over mid-prefill.
+	// SSE keepalives during long prefill. ON by default at a 10s cadence so a long
+	// prefill never leaves the consumer connection idle long enough for OpenRouter's
+	// fetch timeout to fire and fail us over mid-prefill. The first keepalive fires
+	// one interval in, so a STREAMING request that produces its first token quickly
+	// keeps clean deferred-commit / invisible-failover — only genuinely long
+	// prefills commit HTTP 200 early and emit ": keepalive" comments. Override the
+	// cadence (or set 0 to disable) via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a
+	// Go duration); tune it below OpenRouter's fetch timeout.
+	prefillKeepalive := defaultPrefillKeepaliveInterval
 	if v := os.Getenv("EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			srv.SetPrefillKeepaliveInterval(d)
-			logger.Info("prefill SSE keepalives ENABLED via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL", "interval", d.String())
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			prefillKeepalive = d
 		} else {
-			logger.Warn("invalid EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL; keepalives stay off (want a Go duration like 5s)", "value", v)
+			logger.Warn("invalid EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL; using default (want a Go duration like 5s, or 0 to disable)", "value", v, "default", defaultPrefillKeepaliveInterval.String())
 		}
+	}
+	srv.SetPrefillKeepaliveInterval(prefillKeepalive)
+	if prefillKeepalive > 0 {
+		logger.Info("prefill SSE keepalives enabled", "interval", prefillKeepalive.String())
+	} else {
+		logger.Info("prefill SSE keepalives disabled")
 	}
 
 	// Load runtime template manifest from environment variable (optional override).

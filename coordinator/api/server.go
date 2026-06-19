@@ -248,10 +248,11 @@ type Server struct {
 	// when > 0, a STREAMING request that has been dispatched but not yet produced
 	// its first content chunk commits HTTP 200 and emits ": keepalive" SSE comments
 	// every interval until the first chunk or a terminal error, so OpenRouter's
-	// fetch timeout does not fire and fail us over mid-prefill. 0 (default)
-	// disables it (behavior-neutral: deferred-commit / invisible-failover is fully
-	// preserved). Set via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration,
-	// e.g. 5s). See prefill_keepalive.go.
+	// fetch timeout does not fire and fail us over mid-prefill. The zero value
+	// disables it; production sets it ON (defaultPrefillKeepaliveInterval, 10s, in
+	// cmd/coordinator). 0 keeps the deferred-commit / invisible-failover behavior.
+	// Set via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration). See
+	// prefill_keepalive.go.
 	prefillKeepaliveInterval time.Duration
 
 	// knownRuntimeManifest holds accepted runtime component hashes.
@@ -1067,8 +1068,8 @@ func (s *Server) SetServabilityGate(enabled bool) {
 }
 
 // SetPrefillKeepaliveInterval sets the prefill SSE keepalive cadence.
-// <= 0 disables it (the default, behavior-neutral). See the
-// prefillKeepaliveInterval field. Call before serving starts.
+// <= 0 disables it. Production enables it by default (see cmd/coordinator). See
+// the prefillKeepaliveInterval field. Call before serving starts.
 func (s *Server) SetPrefillKeepaliveInterval(d time.Duration) {
 	if d < 0 {
 		d = 0
@@ -1851,7 +1852,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
 	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
 	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
-	s.mux.HandleFunc("GET /v1/admin/uptime", s.handleAdminUptime)
 
 	// Catch-all for unimplemented OpenAI-compatible endpoints.
 	// Registered last (old-style pattern) so explicit method+path routes

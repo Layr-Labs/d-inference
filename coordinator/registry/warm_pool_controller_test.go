@@ -218,6 +218,78 @@ func TestWarmPoolNoPressureForLongActiveDecodeAlone(t *testing.T) {
 	}
 }
 
+func TestWarmPoolMinWarmFloorLoadsWithoutPressure(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-min-floor"
+	makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold-a", model, 80, 64, 8)
+	makeWarmPoolColdProvider(t, reg, "cold-b", model, 80, 64, 8)
+	cfg := testWarmPoolConfig()
+	cfg.MinWarmByModel = map[string]int{model: 3}
+	reg.ConfigureWarmPool(cfg)
+	sent := captureWarmPoolLoads(reg)
+
+	snaps := reg.warmPool.tick(time.Now())
+
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snaps))
+	}
+	if snaps[0].TargetWarm != 3 {
+		t.Fatalf("TargetWarm = %d, want min floor 3", snaps[0].TargetWarm)
+	}
+	if len(*sent) != 1 {
+		t.Fatalf("sent loads = %d, want 1 (bounded by MaxLoadsPerTick)", len(*sent))
+	}
+}
+
+func TestWarmPoolMinWarmFloorCapsAtReachable(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-min-floor-cap"
+	makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold", model, 80, 64, 8)
+	cfg := testWarmPoolConfig()
+	cfg.MinWarmByModel = map[string]int{model: 5}
+	reg.ConfigureWarmPool(cfg)
+
+	snaps := reg.warmPool.tick(time.Now())
+
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snaps))
+	}
+	if snaps[0].TargetWarm != 2 {
+		t.Fatalf("TargetWarm = %d, want reachable cap 2", snaps[0].TargetWarm)
+	}
+}
+
+func TestWarmPoolPressureLoadsBeforeMinWarmFloor(t *testing.T) {
+	reg := New(testLogger())
+	floorModel := "aaa-floor-model"
+	pressureModel := "zzz-pressure-model"
+	makeSchedulerProvider(t, reg, "floor-warm", floorModel, 80)
+	floorCold := makeWarmPoolColdProvider(t, reg, "floor-cold", floorModel, 80, 64, 8)
+	makeSchedulerProvider(t, reg, "pressure-warm", pressureModel, 80)
+	pressureCold := makeWarmPoolColdProvider(t, reg, "pressure-cold", pressureModel, 80, 64, 8)
+	cfg := testWarmPoolConfig()
+	cfg.MaxLoadsPerTick = 1
+	cfg.MaxLoadsPerTickCeiling = 1
+	cfg.MinWarmByModel = map[string]int{floorModel: 2}
+	reg.ConfigureWarmPool(cfg)
+	sent := captureWarmPoolLoads(reg)
+	reg.RecordWarmPoolCapacityReject(pressureModel)
+
+	reg.warmPool.tick(time.Now())
+
+	if len(*sent) != 1 {
+		t.Fatalf("sent loads = %d, want 1", len(*sent))
+	}
+	if (*sent)[0].providerID != pressureCold.ID || (*sent)[0].modelID != pressureModel {
+		t.Fatalf("sent %+v, want pressure model/provider", (*sent)[0])
+	}
+	if (*sent)[0].providerID == floorCold.ID {
+		t.Fatal("floor-only warmup consumed pressure load budget")
+	}
+}
+
 func TestWarmPoolFleetSnapshotUsesObservedSlotTPS(t *testing.T) {
 	reg := New(testLogger())
 	model := "warm-pool-observed-tps"

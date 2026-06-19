@@ -42,6 +42,7 @@ import {
 } from "@/lib/cert-verify";
 import { formatPower } from "@/lib/format-power";
 import { activeNetworkPowerWatts } from "@/lib/network-power";
+import { formatEarningsBreakdown, rewardToneClass } from "./leaderboard/format";
 
 const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 
@@ -226,7 +227,9 @@ type ActiveModelInventory = ModelInventory & {
 interface LeaderboardEntry {
   rank: number;
   pseudonym: string;
-  earnings_micro_usd: number;
+  earnings_micro_usd: number; // TOTAL = work + reward
+  work_earnings_micro_usd: number; // inference work
+  reward_earnings_micro_usd: number; // non-inference network rewards
   tokens: number;
   jobs: number;
 }
@@ -240,7 +243,9 @@ interface LeaderboardResponse {
 
 interface NetworkTotalsResponse {
   window: LeaderboardWindow;
-  earnings_micro_usd: number;
+  earnings_micro_usd: number; // TOTAL = work + reward
+  work_earnings_micro_usd: number; // inference work
+  reward_earnings_micro_usd: number; // non-inference network rewards
   tokens: number;
   jobs: number;
   active_accounts: number;
@@ -2244,8 +2249,11 @@ function LeaderboardSection() {
               <h2 className="text-sm font-semibold text-text-primary">Provider Earnings Leaderboard</h2>
             </div>
             <p className="mt-1 max-w-2xl text-xs text-text-tertiary">
-              Pseudonymized provider accounts ranked from the coordinator leaderboard. Each
-              window is a <span className="text-text-secondary">rolling lookback</span> ending now
+              Pseudonymized provider accounts ranked from the coordinator leaderboard. Earnings
+              combine <span className="text-text-secondary">inference work</span> (serving requests)
+              and <span className="text-accent-amber">network rewards</span> (incentives the network
+              pays providers for participation). Each window is a{" "}
+              <span className="text-text-secondary">rolling lookback</span> ending now
               (e.g. 24h = the last 24 hours), not a fixed calendar day.
             </p>
             <p className="mt-2 max-w-2xl rounded-lg border border-border-dim bg-bg-secondary px-3 py-2 text-xs text-text-tertiary">
@@ -2286,8 +2294,17 @@ function LeaderboardSection() {
         <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
           <LeaderboardTotal
             icon={<CircleDollarSign size={14} />}
-            label="Provider earnings"
+            label="Total earnings"
             value={totals ? formatUSDFromMicro(totals.earnings_micro_usd) : "--"}
+            sub={
+              totals
+                ? formatEarningsBreakdown(
+                    totals.work_earnings_micro_usd,
+                    totals.reward_earnings_micro_usd,
+                    formatUSDFromMicro,
+                  )
+                : undefined
+            }
           />
           <LeaderboardTotal
             icon={<BarChart3 size={14} />}
@@ -2354,23 +2371,33 @@ function LeaderboardSection() {
             </div>
 
             <div className="mt-5 overflow-x-auto rounded-xl border border-border-dim">
-              <div className="min-w-[620px]">
-                <div className="grid grid-cols-[64px_minmax(0,1fr)_120px_100px_90px] gap-3 bg-bg-secondary px-4 py-2.5 text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
+              <div className="min-w-[760px]">
+                <div className="grid grid-cols-[56px_minmax(0,1fr)_110px_110px_110px_96px_72px] gap-3 bg-bg-secondary px-4 py-2.5 text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
                   <span>Rank</span>
                   <span>Provider</span>
                   <span className="text-right">Earnings</span>
+                  <span className="text-right">Work</span>
+                  <span className="text-right">Rewards</span>
                   <span className="text-right">Tokens</span>
                   <span className="text-right">Jobs</span>
                 </div>
                 {entries.map((entry) => (
                   <div
                     key={`${entry.rank}-${entry.pseudonym}`}
-                    className="grid grid-cols-[64px_minmax(0,1fr)_120px_100px_90px] gap-3 border-t border-border-dim px-4 py-3 text-sm"
+                    className="grid grid-cols-[56px_minmax(0,1fr)_110px_110px_110px_96px_72px] gap-3 border-t border-border-dim px-4 py-3 text-sm"
                   >
                     <span className="font-mono font-semibold text-text-primary">#{entry.rank}</span>
                     <span className="truncate font-mono text-text-secondary">{entry.pseudonym}</span>
                     <span className="text-right font-mono font-semibold text-text-primary">
                       {formatUSDFromMicro(entry.earnings_micro_usd)}
+                    </span>
+                    <span className="text-right font-mono text-text-secondary">
+                      {formatUSDFromMicro(entry.work_earnings_micro_usd)}
+                    </span>
+                    <span
+                      className={`text-right font-mono ${rewardToneClass(entry.reward_earnings_micro_usd)}`}
+                    >
+                      {formatUSDFromMicro(entry.reward_earnings_micro_usd)}
                     </span>
                     <span className="text-right font-mono text-text-secondary">{formatNumber(entry.tokens)}</span>
                     <span className="text-right font-mono text-text-secondary">{formatNumber(entry.jobs)}</span>
@@ -2389,10 +2416,12 @@ function LeaderboardTotal({
   icon,
   label,
   value,
+  sub,
 }: {
   icon: ReactNode;
   label: string;
   value: string;
+  sub?: ReactNode;
 }) {
   return (
     <div className="rounded-xl border border-border-dim bg-bg-secondary px-4 py-3">
@@ -2401,6 +2430,9 @@ function LeaderboardTotal({
         <p className="text-[10px] font-mono uppercase tracking-wider">{label}</p>
       </div>
       <p className="mt-2 text-xl font-mono font-bold text-text-primary">{value}</p>
+      {sub ? (
+        <p className="mt-0.5 truncate text-[11px] font-mono text-text-tertiary">{sub}</p>
+      ) : null}
     </div>
   );
 }
@@ -2429,6 +2461,13 @@ function LeaderboardPodiumCard({
           </p>
           <p className="mt-1 text-xs font-mono text-text-tertiary">
             {formatUSDFromMicro(entry.earnings_micro_usd)} / {formatNumber(entry.tokens)} tokens
+          </p>
+          <p className="mt-0.5 text-[10px] font-mono text-text-tertiary">
+            {formatEarningsBreakdown(
+              entry.work_earnings_micro_usd,
+              entry.reward_earnings_micro_usd,
+              formatUSDFromMicro,
+            )}
           </p>
         </div>
         <span className={`rounded-lg border px-2 py-1 text-xs font-mono font-bold ${rankTone}`}>

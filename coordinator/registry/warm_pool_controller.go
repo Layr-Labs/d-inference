@@ -242,7 +242,15 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	for model := range models {
 		ordered = append(ordered, model)
 	}
-	sort.Strings(ordered)
+	sort.Slice(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		lp := c.hasDemandPressure(fleet[left], pressure[left], queue[left])
+		rp := c.hasDemandPressure(fleet[right], pressure[right], queue[right])
+		if lp != rp {
+			return lp
+		}
+		return left < right
+	})
 
 	perTickCeiling := c.config.perTickCeiling()
 	loadsRemaining := perTickCeiling
@@ -383,6 +391,12 @@ func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure wa
 	target := warmTarget(c.targetInputs(fleet, pressure, queue), params, svc)
 	if c.config.MinDwell > 0 && pressure.lastTarget > target && now.Sub(pressure.lastTargetChangedAt) < c.config.MinDwell {
 		target = pressure.lastTarget
+		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
+			target = maxReachable
+		}
+	}
+	if floor := c.config.MinWarmByModel[fleet.model]; floor > target {
+		target = floor
 		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
 			target = maxReachable
 		}

@@ -2236,3 +2236,51 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 		t.Fatalf("bestTTFT = %v has=%v, want within threshold", bestTTFT, hasTTFT)
 	}
 }
+
+func TestMaybeFallbackAliasTTFTSkipsRejectedPrevious(t *testing.T) {
+	srv, _ := testServer(t)
+	publicModel := "public-ttft-shed-alias"
+	desired := "desired-ttft-shed-build"
+	previous := "previous-ttft-shed-build"
+	srv.SetRejectModels(map[string]bool{previous: true})
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{
+		{ID: desired, SizeGB: 1, MinRAMGB: 24},
+		{ID: previous, SizeGB: 1, MinRAMGB: 24},
+	})
+	srv.registry.SetModelAliases(map[string]registry.AliasTarget{
+		publicModel: {Desired: desired, Previous: previous},
+	})
+	registerBuildsProvider(srv, "previous-fast-shed", previous)
+	parsed := map[string]any{"model": desired}
+
+	fallbackModel, _, _, _, _, _, switched := srv.maybeFallbackAliasTTFT(
+		parsed, publicModel, desired, 100, 128, ttftDeadline(100), registry.RequestTraits{}, false, nil)
+
+	if switched || fallbackModel != desired || parsed["model"] != desired {
+		t.Fatalf("fallback switched to rejected previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)
+	}
+}
+
+func TestMaybeFallbackAliasCapacitySkipsRejectedPrevious(t *testing.T) {
+	srv, _ := testServer(t)
+	publicModel := "public-capacity-shed-alias"
+	desired := "desired-capacity-shed-build"
+	previous := "previous-capacity-shed-build"
+	srv.SetRejectModels(map[string]bool{previous: true})
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{
+		{ID: desired, SizeGB: 1, MinRAMGB: 24},
+		{ID: previous, SizeGB: 1, MinRAMGB: 24},
+	})
+	srv.registry.SetModelAliases(map[string]registry.AliasTarget{
+		publicModel: {Desired: desired, Previous: previous},
+	})
+	registerBuildsProvider(srv, "previous-capacity-shed", previous)
+	parsed := map[string]any{"model": desired}
+
+	fallbackModel, _, _, _, _, _, switched := srv.maybeFallbackAliasCapacity(
+		parsed, publicModel, desired, 100, 128, registry.RequestTraits{}, false, nil)
+
+	if switched || fallbackModel != desired || parsed["model"] != desired {
+		t.Fatalf("capacity fallback switched to rejected previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)
+	}
+}

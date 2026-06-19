@@ -22,6 +22,7 @@ func clearWarmPoolEnv(t *testing.T) {
 		"WARM_POOL_SPECULATIVE_WIN_THRESHOLD",
 		"WARM_POOL_COLD_DISPATCH_THRESHOLD",
 		"WARM_POOL_LOAD_DURATION_THRESHOLD",
+		"WARM_POOL_MIN_WARM",
 		"WARM_POOL_MAX_LOADS_PER_TICK",
 		"WARM_POOL_MAX_GLOBAL_PENDING_LOADS",
 	}
@@ -51,6 +52,25 @@ func TestReadConfigWarmPoolDefaultsActive(t *testing.T) {
 	}
 	if cfg.MaxGlobalPendingLoads != 16 {
 		t.Fatalf("MaxGlobalPendingLoads = %d, want 16", cfg.MaxGlobalPendingLoads)
+	}
+}
+
+func TestReadConfigWarmPoolMinWarmByModel(t *testing.T) {
+	clearWarmPoolEnv(t)
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_MIN_WARM", "gpt-oss-20b=4, bad, gemma=0, other=-1, qwen=2")
+
+	got := ReadConfig().WarmPool.MinWarmByModel
+	if got["gpt-oss-20b"] != 4 {
+		t.Fatalf("gpt-oss floor = %d, want 4", got["gpt-oss-20b"])
+	}
+	if got["qwen"] != 2 {
+		t.Fatalf("qwen floor = %d, want 2", got["qwen"])
+	}
+	if _, ok := got["gemma"]; ok {
+		t.Fatal("zero min-warm entry should be ignored")
+	}
+	if _, ok := got["other"]; ok {
+		t.Fatal("negative min-warm entry should be ignored")
 	}
 }
 

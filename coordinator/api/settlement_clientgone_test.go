@@ -437,3 +437,57 @@ func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
 		t.Errorf("consumer-gone completion should also emit inference.completions; packets=%v", gonePackets)
 	}
 }
+
+// TestHandleInferenceErrorEmitsAfterCommitClientGone pins that a provider error
+// AFTER the consumer disconnected post-commit is counted on
+// routing.client_gone{phase=after_commit}. Without this, the after_commit phase
+// only reflected provider-completed disconnects (handleComplete) and undercounted
+// the provider-error case.
+func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
+	srv, _, ledger := billingTestServer(t)
+	srv.settleGrace = 5 * time.Second
+
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	dd := newTestDD(t, collector)
+	defer dd.Close()
+	srv.SetDatadog(dd)
+
+	model := "after-commit-error-model"
+	provider := srv.registry.Register("after-commit-error-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	consumerID := testConsumerID
+	const reserved int64 = 1_000_000
+	if err := ledger.Charge(consumerID, reserved, "reserve:after-commit-error"); err != nil {
+		t.Fatalf("reserve balance: %v", err)
+	}
+	pr := &registry.PendingRequest{
+		RequestID:             "after-commit-error",
+		Model:                 model,
+		ConsumerKey:           consumerID,
+		ReservedMicroUSD:      reserved,
+		EstimatedPromptTokens: 5000, // 4-8k bucket
+	}
+	parkConsumerGone(srv, provider, pr)
+
+	srv.handleInferenceError(provider.ID, provider, &protocol.InferenceErrorMessage{
+		Type:       protocol.TypeInferenceError,
+		RequestID:  pr.RequestID,
+		Error:      "backend crashed mid-generation",
+		StatusCode: 500,
+	})
+
+	_ = dd.Statsd.Flush()
+	packets := collector.drain()
+	cg := findMetrics(packets, "routing.client_gone")
+	if len(cg) == 0 {
+		t.Fatalf("provider error after commit must emit routing.client_gone; packets=%v", packets)
+	}
+	if !hasMetric(cg, "phase:"+phaseAfterCommit) {
+		t.Errorf("routing.client_gone missing phase:after_commit; got %v", cg)
+	}
+	if !hasMetric(cg, "model:"+model) || !hasMetric(cg, "prompt_bucket:4-8k") {
+		t.Errorf("routing.client_gone missing model/bucket tags; got %v", cg)
+	}
+}

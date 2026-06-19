@@ -430,11 +430,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// Foundation bridge ("other"), but dashboards still get the
 				// draining vs descriptive classes, and the short backoff below
 				// does NOT depend on this classification.
+				reason := classifyLoadFailure(statusMsg.Error)
 				s.ddIncr("routing.load_model_rejects", []string{
 					"model:" + statusMsg.ModelID,
-					"reason:" + classifyLoadFailure(statusMsg.Error),
+					"reason:" + reason,
 				})
-				if statusMsg.Error == protocol.ProviderDrainingForUpdate {
+				switch {
+				case statusMsg.Error == protocol.ProviderDrainingForUpdate:
 					// Transient: the provider refused only because it is
 					// draining ahead of an auto-update restart. Shorten the
 					// cooldown so a failed restart (provider resumes serving)
@@ -445,8 +447,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.pending_load_backoff", []string{
 						"model:" + statusMsg.ModelID, "kind:drain",
 					})
-				} else {
-					// A non-draining load failure is dominated by
+				case loadFailureIsPermanent(reason):
+					// Permanent: the provider does not have this model, so a
+					// fast retry just re-fails. Keep the full TTL cooldown set
+					// when the load was planned (do NOT apply the short memory
+					// backoff) so TriggerModelSwaps does not re-attempt the
+					// unservable load every ~30s within the 120s queue window.
+					// Still reject queued waiters that nothing can serve.
+					s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)
+				default:
+					// A non-draining, non-permanent load failure is dominated by
 					// transient memory pressure that frees in seconds. Re-stamp
 					// the pending entry to the short memory backoff (~30s)
 					// instead of leaving the full 2-min TTL — that window ≈ the
@@ -2508,6 +2518,12 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		} else if providerDisconnectedError(msg.Error, msg.StatusCode) {
 			errorClass = "client_gone_after_commit_provider_disconnected"
 		}
+		// After-commit client cancellation: the provider terminated (error /
+		// cancel / disconnect) after the consumer had already gone. Count it on
+		// routing.client_gone so the after_commit phase reflects ALL post-commit
+		// disconnects, not just provider-completed ones (handleComplete). A
+		// no-terminal disconnect is counted by the settlement grace path.
+		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
 		outcome := pendingRouteOutcome(pr, status, errorClass, msg.StatusCode)
 		if !cancelTerminal {
 			outcome.AdmittedButFailed = true

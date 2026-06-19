@@ -77,3 +77,22 @@ func TestClassifyLoadFailureLowCardinality(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadFailureIsPermanent pins the gating that decides short memory backoff
+// vs. full TTL cooldown: only model_not_found is permanent (keeps full TTL); the
+// transient classes AND the opaque "other" bucket (where real memory pressure
+// lands as a bridged generic string) take the short backoff.
+func TestLoadFailureIsPermanent(t *testing.T) {
+	cases := map[string]bool{
+		loadFailureModelNotFound:      true,
+		loadFailureInsufficientMemory: false,
+		loadFailureSlotCap:            false,
+		loadFailureDraining:           false,
+		loadFailureOther:              false,
+	}
+	for reason, want := range cases {
+		if got := loadFailureIsPermanent(reason); got != want {
+			t.Errorf("loadFailureIsPermanent(%q) = %v, want %v", reason, got, want)
+		}
+	}
+}

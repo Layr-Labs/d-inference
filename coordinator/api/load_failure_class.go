@@ -69,6 +69,18 @@ func classifyLoadFailure(errStr string) string {
 	}
 }
 
+// loadFailureIsPermanent reports whether a load-failure reason will NOT recover
+// when memory frees, so the pending entry should keep its full TTL cooldown
+// rather than the short memory backoff. Only model_not_found qualifies today:
+// the provider does not have the model, so re-attempting the load every ~30s
+// inside the queue window just re-fails. Transient classes (insufficient_memory,
+// slot_cap) and opaque/generic strings ("other" — which is where the proactive
+// path's bridged localizedDescription for real memory pressure lands) take the
+// short backoff so a provider whose memory frees is reconsidered quickly.
+func loadFailureIsPermanent(reason string) bool {
+	return reason == loadFailureModelNotFound
+}
+
 // containsWord reports whether word appears in s delimited by non-alphanumeric
 // boundaries, so a short token like "oom" matches "gpu oom" but not "boom" or
 // "room". word is assumed lowercase and alphanumeric; s is already lowercased.

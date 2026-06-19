@@ -3,6 +3,8 @@ package registry
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -50,6 +52,10 @@ type WarmPoolConfig struct {
 	FallbackQualityConcurrency int
 	AssumedPromptTokens        int
 	AssumedCompletionTokens    int
+	// MinWarmByModel is an operator floor for concrete model IDs, e.g.
+	// EIGENINFERENCE_WARM_POOL_MIN_WARM="gpt-oss-20b=4,gemma-4-26b-qat-4bit=2".
+	// Floors are capped by warm+eligibleCold and still obey load throttles.
+	MinWarmByModel map[string]int
 
 	// Ramp shaping. MaxLoadsPerTick is the baseline per-tick load burst;
 	// RampGapFraction scales the burst up with the remaining target gap, bounded
@@ -98,6 +104,7 @@ func ReadConfig() Config {
 			FallbackQualityConcurrency: env.EnvInt(env.EnvPrefix+"_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY", 4),
 			AssumedPromptTokens:        env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_PROMPT_TOKENS", 512),
 			AssumedCompletionTokens:    env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_COMPLETION_TOKENS", 256),
+			MinWarmByModel:             envModelIntMap(env.EnvPrefix + "_WARM_POOL_MIN_WARM"),
 
 			MaxLoadsPerTick:        env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_LOADS_PER_TICK", 4),
 			MaxLoadsPerTickCeiling: env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_LOADS_PER_TICK_CEILING", 16),
@@ -151,6 +158,37 @@ func (c CacheAffinityConfig) Check() error {
 		return fmt.Errorf("registry: cache affinity bonus must be <= 10000ms")
 	}
 	return nil
+}
+
+func envModelIntMap(key string) map[string]int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	out := make(map[string]int)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		model, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n <= 0 {
+			continue
+		}
+		out[model] = n
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (c WarmPoolConfig) Check() error {

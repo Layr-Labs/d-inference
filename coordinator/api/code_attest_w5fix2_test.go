@@ -362,9 +362,13 @@ func TestSeededStalePersistedRowForcesRealChallenge(t *testing.T) {
 	}
 }
 
-// TestSeededWrongVersionRowForcesRealChallenge proves the version gate survives
-// persistence: a seeded row for a DIFFERENT binary version must not be reused; the
-// connection must run a real challenge.
+// TestSeededWrongVersionRowForcesRealChallenge proves the SAME-VERSION reuse gate
+// survives persistence AND that an unfenced cross-version reconnect still forces a
+// real challenge: a seeded row for a DIFFERENT binary version is not reusable via
+// reuseAttestation, and codeAttestLoop falls through to a push because this
+// provider does not satisfy the cross-version fences (RuntimeVerified /
+// RuntimeManifestChecked / ChallengeVerifiedSIP are unset). The fenced
+// cross-version reuse path is covered by TestCrossVersionReuse* below.
 func TestSeededWrongVersionRowForcesRealChallenge(t *testing.T) {
 	logger := quietLogger()
 	st := store.NewMemory(store.Config{})
@@ -399,6 +403,244 @@ func TestSeededWrongVersionRowForcesRealChallenge(t *testing.T) {
 	}
 	if !provider.GetCodeAttested() {
 		t.Fatal("the real challenge round-trip should attest")
+	}
+}
+
+// crossVersionProvider builds a fully-fenced provider running newVersion: valid
+// attestation, runtime+manifest verified, SIP-verified challenge, same SE key +
+// APNs token. This is the case cross-version reuse is allowed to ride.
+func crossVersionProvider(kPubB64, sePubB64, newVersion string) *registry.Provider {
+	p := newCodeAttestProvider(kPubB64, sePubB64)
+	p.Version = newVersion
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	return p
+}
+
+// seedFreshAttestation records a recent same-device, same-token proof under
+// oldVersion so a reconnect at a different version can attempt cross-version reuse.
+func seedFreshAttestation(srv *Server, seKey, oldVersion, token string) {
+	srv.codeAttestThrottle.recordAttested(seKey, oldVersion, token)
+}
+
+// TestCrossVersionReuseAboveFloorSameTokenReuses: a healthy update (version bump,
+// same SE key + token, all binary-identity fences satisfied, at/above the
+// min-version floor) must RIDE the recent proof across the version change — no
+// push — so the provider is not derouted for a re-attest window on every update.
+func TestCrossVersionReuseAboveFloorSameTokenReuses(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+
+	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
+	// Proof recorded under the OLD version, same token ("devtok").
+	seedFreshAttestation(srv, sePubB64, "0.6.13", "devtok")
+
+	var pushes int32
+	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14") // bumped, above floor
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
+		atomic.AddInt32(&pushes, 1)
+		return nil
+	}})
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+
+	if atomic.LoadInt32(&pushes) != 0 {
+		t.Fatal("a fenced same-token version bump must reuse across versions (NO push)")
+	}
+	if !provider.GetCodeAttested() {
+		t.Fatal("cross-version reuse must set CodeAttested so the provider keeps routing through the update")
+	}
+}
+
+// TestCrossVersionReuseBelowFloorForcesChallenge: a version BELOW the min-provider
+// -version floor (a downgrade / disallowed build) must NOT ride the proof — the
+// fence closes the downgrade-attestation hole and forces a real challenge.
+func TestCrossVersionReuseBelowFloorForcesChallenge(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.10"
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	seedFreshAttestation(srv, sePubB64, "0.6.13", "devtok")
+
+	var pushes int32
+	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.0") // DOWNGRADE, below floor
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		atomic.AddInt32(&pushes, 1)
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+
+	if atomic.LoadInt32(&pushes) == 0 {
+		t.Fatal("a below-min-version (downgrade) build must NOT reuse across versions; it must force a real challenge")
+	}
+}
+
+// TestCrossVersionReuseTokenChangeForcesChallenge: even fully fenced and above the
+// floor, a CHANGED APNs token must fail closed (the recorded proof was bound to the
+// old token) and force a real challenge.
+func TestCrossVersionReuseTokenChangeForcesChallenge(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	// Proof bound to the OLD token; the reconnect carries a DIFFERENT token.
+	seedFreshAttestation(srv, sePubB64, "0.6.13", "oldtok")
+
+	var pushes int32
+	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14")
+	provider.APNsDeviceToken = "newtok" // rotated token
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		atomic.AddInt32(&pushes, 1)
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+
+	if atomic.LoadInt32(&pushes) == 0 {
+		t.Fatal("a rotated APNs token must fail closed across versions and force a real challenge")
+	}
+}
+
+// TestCrossVersionReuseUnfencedForcesChallenge: a version bump WITHOUT the binary
+// -identity fences (runtime/manifest/SIP unset) must NOT ride the proof — the SE
+// key + token alone are too weak (NodeKeyPair rotates per startup).
+func TestCrossVersionReuseUnfencedForcesChallenge(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	seedFreshAttestation(srv, sePubB64, "0.6.13", "devtok")
+
+	var pushes int32
+	// newCodeAttestProvider sets AttestationResult.Valid but leaves
+	// RuntimeVerified / RuntimeManifestChecked / ChallengeVerifiedSIP false.
+	provider := newCodeAttestProvider(kPubB64, sePubB64)
+	provider.Version = "0.6.14"
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		atomic.AddInt32(&pushes, 1)
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+
+	if atomic.LoadInt32(&pushes) == 0 {
+		t.Fatal("an unfenced (runtime/SIP unverified) version bump must NOT cross-version reuse; it must force a real challenge")
+	}
+}
+
+// TestCrossVersionReuseEmptyVersionForcesChallenge: an UNVERSIONED provider
+// (version optional on the wire) must NOT satisfy a configured MIN_PROVIDER_VERSION
+// floor — empty version is treated as below-floor, forcing a real challenge.
+func TestCrossVersionReuseEmptyVersionForcesChallenge(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	seedFreshAttestation(srv, sePubB64, "0.6.13", "devtok")
+
+	var pushes int32
+	provider := crossVersionProvider(kPubB64, sePubB64, "") // NO version reported
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		atomic.AddInt32(&pushes, 1)
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+
+	if atomic.LoadInt32(&pushes) == 0 {
+		t.Fatal("an unversioned provider must NOT satisfy a configured min-version floor; it must force a real challenge")
+	}
+}
+
+// TestCrossVersionReuseSIPArmedMidLoopReuses pins the race fix: the binary-identity
+// fences (notably ChallengeVerifiedSIP) are armed CONCURRENTLY on a fresh
+// post-update connection, so they may be false when codeAttestLoop first runs. The
+// loop must RE-CHECK each iteration and reuse once they flip — not burn the full
+// push budget. Here the provider starts SIP=false (cross-version reuse can't fire
+// up front) and a background goroutine flips it true shortly after; the loop must
+// then reuse with NO completed push round-trip.
+func TestCrossVersionReuseSIPArmedMidLoopReuses(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+
+	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
+	seedFreshAttestation(srv, sePubB64, "0.6.13", "devtok")
+
+	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14")
+	provider.ChallengeVerifiedSIP = false // not yet armed at loop entry (the race)
+
+	// The challenge path would arm SIP after the first push goes out. Model that
+	// deterministically: arm SIP from inside the push callback (as the real
+	// challenge-response handler would), WITHOUT completing the round-trip — so the
+	// only way CodeAttested can flip true is the loop's next-iteration re-check of
+	// cross-version reuse, not a completed challenge.
+	var pushes int32
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
+		atomic.AddInt32(&pushes, 1)
+		provider.SetChallengeVerifiedSIP(true)
+		return nil
+	}})
+
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+
+	if !provider.GetCodeAttested() {
+		t.Fatal("once SIP arms mid-loop, the re-checked cross-version reuse must attest without a completed round-trip")
+	}
+	// Exactly one push should have gone out before the re-check caught the armed
+	// fence — proving the loop reused rather than burning the whole push budget.
+	if got := atomic.LoadInt32(&pushes); got != 1 {
+		t.Fatalf("expected 1 push before cross-version reuse fired, got %d (loop should reuse on the next iteration after SIP arms)", got)
+	}
+}
+
+// TestCrossVersionReuseUsesLiveTokenNotCaptured pins the rotation TOCTOU fix:
+// cross-version reuse must evaluate the LIVE APNs token under the provider lock,
+// not a value captured at loop start. Here the reuse record is bound to the OLD
+// token, but the provider's live token has already rotated to a NEW one (as
+// maybeRearmCodeAttest publishes under the lock). The grant must NOT fire — the
+// old-token proof can't attest the rotated token — so the loop falls through to a
+// real challenge. (tryCrossVersionReuse reads st.APNsDeviceToken from the locked
+// snapshot, so even if an old loop still holds the stale "oldtok", the decision
+// uses the live "newtok" and the reuse match fails.)
+func TestCrossVersionReuseUsesLiveTokenNotCaptured(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
+	// Recent proof bound to the OLD token.
+	seedFreshAttestation(srv, sePubB64, "0.6.13", "oldtok")
+
+	var pushes int32
+	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14")
+	provider.APNsDeviceToken = "newtok" // live token already rotated (rotation won the lock)
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		atomic.AddInt32(&pushes, 1)
+		return completeRoundTrip(t, srv, provider, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+	}})
+
+	// Directly exercise the grant decision: it must refuse on the live (new) token.
+	if srv.tryCrossVersionReuse("p1", provider) {
+		t.Fatal("cross-version reuse must NOT grant on a record bound to a token different from the LIVE provider token")
+	}
+	if provider.GetCodeAttested() {
+		t.Fatal("CodeAttested must not be set when the live token does not match the reuse record")
+	}
+
+	// And the full loop must force a real challenge to attest the new token.
+	srv.codeAttestLoop(context.Background(), "p1", provider)
+	if atomic.LoadInt32(&pushes) == 0 {
+		t.Fatal("a rotated live token must force a real challenge (no cross-version bypass on the old-token proof)")
 	}
 }
 

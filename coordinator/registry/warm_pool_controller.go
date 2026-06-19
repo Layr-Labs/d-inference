@@ -22,6 +22,15 @@ type warmPoolController struct {
 	queueMu  syncQueuePressure
 	tickMu   sync.Mutex
 	triggerC chan struct{}
+
+	// lastMu guards the most recent set of per-model snapshots produced by tick.
+	// They are cached read-only so observability paths (network utilization
+	// gauges, /v1/stats, /v1/admin/utilization) can read the Little's Law
+	// diagnostics the controller already computes without re-running a planning
+	// pass (which has model-load side effects).
+	lastMu      sync.RWMutex
+	lastSnaps   []WarmPoolSnapshot
+	lastSnapsAt time.Time
 }
 
 type syncQueuePressure struct {
@@ -149,6 +158,42 @@ func (r *Registry) TriggerWarmPool() []WarmPoolSnapshot {
 	return controller.tick(time.Now())
 }
 
+// LatestWarmPoolSnapshots returns a copy of the most recent per-model warm-pool
+// snapshots produced by the controller's last planning tick, along with the time
+// they were produced. It is read-only and side-effect free (unlike
+// TriggerWarmPool), so observability paths can consume the Little's Law
+// diagnostics (DemandConcurrency, QualityConcurrency, WarmProviders, ...) safely.
+// Returns nil when the controller is disabled or has not yet ticked.
+func (r *Registry) LatestWarmPoolSnapshots() ([]WarmPoolSnapshot, time.Time) {
+	r.mu.RLock()
+	controller := r.warmPool
+	r.mu.RUnlock()
+	if controller == nil {
+		return nil, time.Time{}
+	}
+	return controller.latestSnapshots()
+}
+
+func (c *warmPoolController) storeSnapshots(snaps []WarmPoolSnapshot, now time.Time) {
+	cp := make([]WarmPoolSnapshot, len(snaps))
+	copy(cp, snaps)
+	c.lastMu.Lock()
+	c.lastSnaps = cp
+	c.lastSnapsAt = now
+	c.lastMu.Unlock()
+}
+
+func (c *warmPoolController) latestSnapshots() ([]WarmPoolSnapshot, time.Time) {
+	c.lastMu.RLock()
+	defer c.lastMu.RUnlock()
+	if len(c.lastSnaps) == 0 {
+		return nil, c.lastSnapsAt
+	}
+	cp := make([]WarmPoolSnapshot, len(c.lastSnaps))
+	copy(cp, c.lastSnaps)
+	return cp, c.lastSnapsAt
+}
+
 func (c *warmPoolController) run(ctx context.Context) {
 	interval := c.config.Interval
 	if interval <= 0 {
@@ -175,6 +220,7 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 	c.tickMu.Lock()
 	defer c.tickMu.Unlock()
 	snapshots := c.plan(now)
+	c.storeSnapshots(snapshots, now)
 	for _, snap := range snapshots {
 		if c.registry.logger != nil {
 			c.registry.logger.Info("warm_pool_tick",
@@ -242,7 +288,15 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	for model := range models {
 		ordered = append(ordered, model)
 	}
-	sort.Strings(ordered)
+	sort.Slice(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		lp := c.hasDemandPressure(fleet[left], pressure[left], queue[left])
+		rp := c.hasDemandPressure(fleet[right], pressure[right], queue[right])
+		if lp != rp {
+			return lp
+		}
+		return left < right
+	})
 
 	perTickCeiling := c.config.perTickCeiling()
 	loadsRemaining := perTickCeiling
@@ -387,6 +441,12 @@ func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure wa
 			target = maxReachable
 		}
 	}
+	if floor := c.config.MinWarmByModel[fleet.model]; floor > target {
+		target = floor
+		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
+			target = maxReachable
+		}
+	}
 	return target
 }
 
@@ -447,8 +507,9 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 					s.warmSaturated++
 				}
 				out[model] = s
-				decodeSamples[model] = append(decodeSamples[model], resolvedDecodeTPS(p))
-				prefillSamples[model] = append(prefillSamples[model], resolvedPrefillTPS(p))
+				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
+				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
 				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 				continue
 			}
@@ -457,8 +518,9 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 				s.model = model
 				s.eligibleCold = append(s.eligibleCold, candidate)
 				out[model] = s
-				decodeSamples[model] = append(decodeSamples[model], resolvedDecodeTPS(p))
-				prefillSamples[model] = append(prefillSamples[model], resolvedPrefillTPS(p))
+				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
+				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
 				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 			}
 		}
@@ -563,6 +625,7 @@ func (r *Registry) pendingModelLoadCount(now time.Time) int {
 	for key, expiresAt := range r.pendingModelLoads {
 		if now.After(expiresAt) {
 			delete(r.pendingModelLoads, key)
+			delete(r.pendingModelLoadStarted, key)
 			continue
 		}
 		count++

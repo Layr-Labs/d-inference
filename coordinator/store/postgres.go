@@ -264,6 +264,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id, created_at DESC)`,
+		// Partial index for the public leaderboard/network-totals reward scans,
+		// which filter ledger_entries by reward entry_type across all accounts.
+		// Without it, each cache miss seq-scans the whole (multi-million-row)
+		// ledger to find the handful of reward rows. Predicate is derived from
+		// RewardLedgerTypes so it matches the query's IN-list exactly.
+		`CREATE INDEX IF NOT EXISTS idx_ledger_reward ON ledger_entries(account_id, created_at DESC) WHERE entry_type IN (` + rewardLedgerTypesSQLList() + `)`,
 
 		// Referral system tables
 		`CREATE TABLE IF NOT EXISTS referrers (
@@ -2057,9 +2063,30 @@ func (s *PostgresStore) UsageTimeSeries(since time.Time) []UsageBucket {
 	return buckets
 }
 
+// rewardLedgerTypesSQLList renders RewardLedgerTypes as a comma-separated list
+// of single-quoted SQL string literals (e.g. "'referral_reward','admin_reward'")
+// for use in an IN (...) clause. The values are package constants, never user
+// input, so literal interpolation here is safe from SQL injection.
+func rewardLedgerTypesSQLList() string {
+	out := ""
+	for i, t := range RewardLedgerTypes {
+		if i > 0 {
+			out += ","
+		}
+		out += "'" + string(t) + "'"
+	}
+	return out
+}
+
 // Leaderboard returns the top N accounts ranked by the given metric over the
 // given time window. Zero `since` means all-time. The ranking is computed in
-// SQL via aggregation on provider_earnings — no per-row wire transfer.
+// SQL — no per-row wire transfer. Only providers (accounts with inference work
+// in the window) are ranked: the query LEFT JOINs reward ledger entries
+// (referral_reward, admin_reward) onto provider_earnings so reward earnings are
+// credited to providers, while reward-only accounts (e.g. consumer-only
+// referrers) never appear on the provider leaderboard. The "earnings" metric
+// ranks by the combined total (work + reward); a deterministic account_id
+// tiebreaker keeps ordering stable.
 func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2068,29 +2095,50 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 		limit = 50
 	}
 
-	orderBy := "earnings_micro_usd DESC"
+	orderCol := "earnings_micro_usd"
 	switch metric {
 	case LeaderboardTokens:
-		orderBy = "tokens DESC"
+		orderCol = "tokens"
 	case LeaderboardJobs:
-		orderBy = "jobs DESC"
+		orderCol = "jobs"
 	}
 
-	// account_id != '' filters out unassigned earnings (e.g. legacy wallet-only).
-	q := `SELECT account_id,
-	             COALESCE(SUM(amount_micro_usd), 0)               AS earnings_micro_usd,
-	             COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
-	             COUNT(*)                                          AS jobs
-	      FROM provider_earnings
-	      WHERE account_id != ''`
+	// `since` is bound once as $1 and referenced in both CTEs; `limit` is the
+	// final positional arg. account_id != '' filters out unassigned earnings.
 	args := []any{}
+	workSince := ""
+	rewardSince := ""
 	if !since.IsZero() {
-		q += ` AND created_at >= $1`
 		args = append(args, since)
+		workSince = ` AND created_at >= $1`
+		rewardSince = ` AND created_at >= $1`
 	}
-	q += `
-	      GROUP BY account_id
-	      ORDER BY ` + orderBy + `
+
+	q := `WITH work AS (
+	          SELECT account_id,
+	                 SUM(amount_micro_usd)                  AS work_micro,
+	                 SUM(prompt_tokens + completion_tokens) AS tokens,
+	                 COUNT(*)                               AS jobs
+	          FROM provider_earnings
+	          WHERE account_id != ''` + workSince + `
+	          GROUP BY account_id
+	      ),
+	      reward AS (
+	          SELECT account_id,
+	                 SUM(amount_micro_usd) AS reward_micro
+	          FROM ledger_entries
+	          WHERE account_id != '' AND entry_type IN (` + rewardLedgerTypesSQLList() + `)` + rewardSince + `
+	          GROUP BY account_id
+	      )
+	      SELECT w.account_id                            AS account_id,
+	             w.work_micro + COALESCE(r.reward_micro,0) AS earnings_micro_usd,
+	             w.work_micro                            AS work_micro_usd,
+	             COALESCE(r.reward_micro,0)              AS reward_micro_usd,
+	             w.tokens                                AS tokens,
+	             w.jobs                                  AS jobs
+	      FROM work w
+	      LEFT JOIN reward r ON w.account_id = r.account_id
+	      ORDER BY ` + orderCol + ` DESC, account_id ASC
 	      LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
 
@@ -2103,7 +2151,7 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 	out := make([]LeaderboardRow, 0, limit)
 	for rows.Next() {
 		var r LeaderboardRow
-		if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.WorkEarningsMicroUSD, &r.RewardEarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
 			continue
 		}
 		out = append(out, r)
@@ -2112,25 +2160,52 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 }
 
 // NetworkTotals returns aggregated metrics across all earnings for the given
-// time window. Zero `since` means all-time.
+// time window. Zero `since` means all-time. Totals combine inference work
+// (provider_earnings) with non-inference reward ledger entries (referral_reward,
+// admin_reward), but rewards are only counted for provider accounts (those with
+// inference work in the window) so consumer-only reward recipients don't inflate
+// network provider totals. ActiveAccounts counts distinct provider accounts.
 func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	q := `SELECT COALESCE(SUM(amount_micro_usd), 0),
-	             COALESCE(SUM(prompt_tokens + completion_tokens), 0),
-	             COUNT(*),
-	             COUNT(DISTINCT account_id) FILTER (WHERE account_id != '')
-	      FROM provider_earnings`
+	// `since`, when set, is bound once as $1 and referenced in the work,
+	// providers, and reward subqueries.
 	args := []any{}
+	workWhere := ""
+	providerSince := ""
+	rewardSince := ""
 	if !since.IsZero() {
-		q += ` WHERE created_at >= $1`
 		args = append(args, since)
+		workWhere = ` WHERE created_at >= $1`
+		providerSince = ` AND created_at >= $1`
+		rewardSince = ` AND le.created_at >= $1`
 	}
+
+	rewardTypes := rewardLedgerTypesSQLList()
+	q := `WITH work AS (
+	          SELECT COALESCE(SUM(amount_micro_usd),0)                  AS work_micro,
+	                 COALESCE(SUM(prompt_tokens + completion_tokens),0) AS tokens,
+	                 COUNT(*)                                           AS jobs
+	          FROM provider_earnings` + workWhere + `
+	      ),
+	      providers AS (
+	          SELECT DISTINCT account_id FROM provider_earnings WHERE account_id != ''` + providerSince + `
+	      ),
+	      reward AS (
+	          SELECT COALESCE(SUM(le.amount_micro_usd),0) AS reward_micro
+	          FROM ledger_entries le
+	          JOIN providers p ON p.account_id = le.account_id
+	          WHERE le.entry_type IN (` + rewardTypes + `)` + rewardSince + `
+	      )
+	      SELECT work.work_micro + reward.reward_micro AS earnings_micro,
+	             work.work_micro, reward.reward_micro, work.tokens, work.jobs,
+	             (SELECT COUNT(*) FROM providers)        AS active_accounts
+	      FROM work, reward`
 
 	var t NetworkTotalsRow
 	_ = s.pool.QueryRow(ctx, q, args...).
-		Scan(&t.EarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
+		Scan(&t.EarningsMicroUSD, &t.WorkEarningsMicroUSD, &t.RewardEarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
 	return t
 }
 

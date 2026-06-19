@@ -303,6 +303,23 @@ func main() {
 		logger.Warn("TTFT hard-reject ENABLED via EIGENINFERENCE_TTFT_HARD_REJECT (legacy 429-on-slow-estimate; soft preference is the default)")
 	}
 
+	// Routing: deterministic per-model shed list. These requested aliases/resolved
+	// builds return 429 + Retry-After at admission, before rate-limit/billing/routing.
+	// Use this for unhealthy models (e.g. Gemma 4) while keeping TTFT hard-reject
+	// disabled globally so healthy models like gpt-oss can keep flowing.
+	if v := os.Getenv("EIGENINFERENCE_REJECT_MODELS"); v != "" {
+		shed := map[string]bool{}
+		for _, name := range strings.Split(v, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				shed[name] = true
+			}
+		}
+		if len(shed) > 0 {
+			srv.SetRejectModels(shed)
+			logger.Warn("model shed ENABLED via EIGENINFERENCE_REJECT_MODELS (429 at admission)", "models", v)
+		}
+	}
+
 	// Routing: decode→prefill ratio fallback, used to estimate prefill TPS when a
 	// provider does not report a measured prefill_tps. Defaults to
 	// registry.defaultPrefillToDecodeRatio.
@@ -312,6 +329,38 @@ func main() {
 			logger.Info("prefill/decode ratio override via EIGENINFERENCE_PREFILL_DECODE_RATIO", "ratio", ratio)
 		} else {
 			logger.Warn("invalid EIGENINFERENCE_PREFILL_DECODE_RATIO; ignoring", "value", v)
+		}
+	}
+
+	// Routing: long-prompt fastest-tier preference. Very long prompts
+	// have a long prefill window that drives pre-first-token client cancellations
+	// (client_gone). When EIGENINFERENCE_LONG_PROMPT_TOKENS is set, the scheduler
+	// biases requests whose estimated prompt is at/above that count toward the
+	// fastest-prefill (== fastest chip tier) warm provider. Unset/<=0 keeps the
+	// routing cost behavior-neutral. SOFT ranking bias only — it never adds a hard
+	// TTFT 429. The optional EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT (default
+	// 2.0; >1 amplifies, <1 clamps to neutral) tunes how strong the bias is.
+	if v := os.Getenv("EIGENINFERENCE_LONG_PROMPT_TOKENS"); v != "" {
+		if tokens, err := strconv.Atoi(v); err == nil && tokens > 0 {
+			srv.SetLongPromptThreshold(tokens)
+			weight := registry.LongPromptPrefillWeight() // sensible default unless overridden
+			if wv := os.Getenv("EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT"); wv != "" {
+				if w, werr := strconv.ParseFloat(wv, 64); werr == nil {
+					// Pass any parsed float to the setter, which clamps values
+					// below 1.0 to the neutral 1.0 — so an operator can set 0 or
+					// 0.5 to disable the bias (as the comment above documents)
+					// instead of having it silently fall back to the strong
+					// default. Read the effective (clamped) value back for the log.
+					srv.SetLongPromptPrefillWeight(w)
+					weight = registry.LongPromptPrefillWeight()
+				} else {
+					logger.Warn("invalid EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT; using default", "value", wv, "default", weight)
+				}
+			}
+			logger.Info("long-prompt fastest-tier routing preference ENABLED via EIGENINFERENCE_LONG_PROMPT_TOKENS",
+				"threshold_tokens", tokens, "prefill_weight", weight)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_LONG_PROMPT_TOKENS; ignoring (preference stays off)", "value", v)
 		}
 	}
 

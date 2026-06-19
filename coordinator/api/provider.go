@@ -276,9 +276,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					}
 					statusData, err := json.Marshal(statusMsg)
 					if err == nil {
-						writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
-						_ = conn.Write(writeCtx, websocket.MessageText, statusData)
-						writeCancel()
+						_ = provider.EnqueueText(loopCtx, statusData)
 					}
 					mismatchDetails := make([]string, 0, len(mismatches))
 					for _, m := range mismatches {
@@ -339,7 +337,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
-				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
+				s.challengeLoop(loopCtx, providerID, provider, tracker)
 			})
 
 			// Start the per-connection MDM verification loop. It runs the initial
@@ -426,7 +424,19 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			case protocol.LoadModelStatusFailed:
 				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
-				if statusMsg.Error == protocol.ProviderDrainingForUpdate {
+				// Quantify WHY proactive loads are rejected. The reason
+				// is derived only from the existing error string (no new wire
+				// field). The proactive path's string is often a generic
+				// Foundation bridge ("other"), but dashboards still get the
+				// draining vs descriptive classes, and the short backoff below
+				// does NOT depend on this classification.
+				reason := classifyLoadFailure(statusMsg.Error)
+				s.ddIncr("routing.load_model_rejects", []string{
+					"model:" + statusMsg.ModelID,
+					"reason:" + reason,
+				})
+				switch {
+				case statusMsg.Error == protocol.ProviderDrainingForUpdate:
 					// Transient: the provider refused only because it is
 					// draining ahead of an auto-update restart. Shorten the
 					// cooldown so a failed restart (provider resumes serving)
@@ -434,8 +444,31 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					// rejected — the provider is back within the queue window
 					// and other providers remain plannable.
 					s.registry.BackoffPendingModelLoadForDrain(providerID, statusMsg.ModelID)
-				} else {
-					// Keep the pending entry (TTL cooldown suppresses retry storms).
+					s.ddIncr("routing.pending_load_backoff", []string{
+						"model:" + statusMsg.ModelID, "kind:drain",
+					})
+				case loadFailureIsPermanent(reason):
+					// Permanent: the provider does not have this model, so a
+					// fast retry just re-fails. Keep the full TTL cooldown set
+					// when the load was planned (do NOT apply the short memory
+					// backoff) so TriggerModelSwaps does not re-attempt the
+					// unservable load every ~30s within the 120s queue window.
+					// Still reject queued waiters that nothing can serve.
+					s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)
+				default:
+					// A non-draining, non-permanent load failure is dominated by
+					// transient memory pressure that frees in seconds. Re-stamp
+					// the pending entry to the short memory backoff (~30s)
+					// instead of leaving the full 2-min TTL — that window ≈ the
+					// 120s queue timeout, so a request queued right after the
+					// failure would time out before this provider (whose memory
+					// may already have freed) is reconsidered by
+					// TriggerModelSwaps. The ~10s warm-pool sweep reaps the short
+					// entry deterministically.
+					s.registry.BackoffPendingModelLoadForMemory(providerID, statusMsg.ModelID)
+					s.ddIncr("routing.pending_load_backoff", []string{
+						"model:" + statusMsg.ModelID, "kind:memory",
+					})
 					// If no other provider can serve this model, reject queued
 					// requests immediately rather than making them wait 120s.
 					s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)
@@ -508,6 +541,61 @@ func (s *Server) codeAttestMetric(outcome string) {
 // Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
 // GUI session) can never attest, so the loop exits immediately — they are derouted
 // once enforcement begins, the intended "everyone must update" outcome.
+// tryCrossVersionReuse rides a recent same-device, same-token attestation across a
+// binary VERSION change so a healthy update isn't forced into a fresh APNs round-
+// trip (which would deroute the provider for the whole re-attest window). Reuse
+// fires only behind ALL fences: valid registration attestation, runtime + manifest
+// verified, SIP-verified challenge, a non-empty version at/above MIN_PROVIDER_VERSION,
+// and the same non-empty APNs token. The SE key + token alone are too weak
+// (NodeKeyPair rotates per startup), so the fences are what prove the current
+// binary is legitimate. Decision + grant run atomically via GrantCodeAttestedIf
+// against the LIVE state, so a concurrent token rotation can't slip a stale-token
+// proof past the gate. Returns true (and drains) when reuse fired.
+func (s *Server) tryCrossVersionReuse(providerID string, provider *registry.Provider) bool {
+	// blockedBy names the first fence that prevented reuse, for forensic debugging
+	// of a provider stuck re-challenging instead of reusing (set inside the locked
+	// decision; read only after it returns).
+	blockedBy := ""
+	granted := provider.GrantCodeAttestedIf(func(st registry.CodeIdentityState) bool {
+		// An empty version never satisfies a configured floor (version is optional
+		// on the wire); only treat the floor as cleared when there is no floor.
+		aboveMinVersion := s.minProviderVersion == "" ||
+			(st.Version != "" && !semverLess(st.Version, s.minProviderVersion))
+		switch {
+		case !st.AttestationValid:
+			blockedBy = "attestation_invalid"
+		case !st.RuntimeVerified:
+			blockedBy = "runtime_unverified"
+		case !st.RuntimeManifestChecked:
+			blockedBy = "runtime_manifest_unchecked"
+		case !st.ChallengeVerifiedSIP:
+			blockedBy = "sip_challenge_pending" // armed concurrently; the loop re-checks
+		case !aboveMinVersion:
+			blockedBy = "below_min_version"
+		default:
+			// reuseAttestationCrossVersion takes the throttle lock; the lock order is
+			// always provider → throttle (throttle methods never touch a provider),
+			// so calling it from inside the provider-locked decision is deadlock-safe.
+			if !s.codeAttestThrottle.reuseAttestationCrossVersion(st.SEPublicKey, st.APNsDeviceToken) {
+				blockedBy = "no_fresh_same_token_proof"
+				return false
+			}
+			return true
+		}
+		return false
+	})
+	if !granted {
+		s.logger.Debug("code-attest: cross-version reuse not taken; will challenge/poll",
+			"provider_id", providerID, "blocked_by", blockedBy)
+		return false
+	}
+	s.registry.DrainQueuedRequestsForProvider(provider)
+	s.codeAttestMetric("reused_cross_version")
+	s.logger.Info("code-attest: reused a recent attestation across a version change (fenced: attestation+runtime+SIP+min-version verified; no push)",
+		"provider_id", providerID)
+	return true
+}
+
 func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider *registry.Provider) {
 	if s.codeAttestor == nil || provider == nil {
 		return
@@ -540,6 +628,13 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		return
 	}
 
+	// Cross-version reuse (every update bumps the version, missing the same-version
+	// reuse above). Try up front; the loop also re-checks since the fences arm
+	// concurrently on a fresh connection.
+	if s.tryCrossVersionReuse(providerID, provider) {
+		return
+	}
+
 	// Alert delivery is not background-throttled, so it may retry on a far shorter
 	// push budget than background (Fix 3). Detected via the attestor seam.
 	alertMode := false
@@ -555,6 +650,12 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 		}
 		if provider.ChallengeShouldStop() {
 			return // hard (non-recoverable) untrust — stop challenging
+		}
+
+		// Re-check each iteration: the fences arm concurrently, so a connection that
+		// missed up front may reuse now instead of burning a push.
+		if s.tryCrossVersionReuse(providerID, provider) {
+			return
 		}
 
 		// Push when the per-device budget permits. A budget cooldown elapsing
@@ -1051,7 +1152,7 @@ func providerAttestationMatchesACMEKey(provider *registry.Provider, acmeResult *
 }
 
 // challengeLoop periodically sends attestation challenges to a provider.
-func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, providerID string, provider *registry.Provider, tracker *challengeTracker) {
+func (s *Server) challengeLoop(ctx context.Context, providerID string, provider *registry.Provider, tracker *challengeTracker) {
 	if s.skipChallenge {
 		return
 	}
@@ -1063,7 +1164,7 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 
 	// Send initial challenge immediately so the provider is routable
 	// without waiting for the first ticker interval.
-	s.sendChallenge(ctx, conn, providerID, provider, tracker)
+	s.sendChallenge(ctx, providerID, provider, tracker)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1079,7 +1180,7 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 			if provider.ChallengeShouldStop() {
 				return
 			}
-			s.sendChallenge(ctx, conn, providerID, provider, tracker)
+			s.sendChallenge(ctx, providerID, provider, tracker)
 		}
 	}
 }
@@ -1094,7 +1195,7 @@ func generateNonce() (string, error) {
 }
 
 // sendChallenge sends an attestation challenge to a provider and waits for the response.
-func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, providerID string, provider *registry.Provider, tracker *challengeTracker) {
+func (s *Server) sendChallenge(ctx context.Context, providerID string, provider *registry.Provider, tracker *challengeTracker) {
 	nonce, err := generateNonce()
 	if err != nil {
 		s.logger.Error("failed to generate challenge nonce", "provider_id", providerID, "error", err)
@@ -1125,7 +1226,7 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 
 	writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer writeCancel()
-	if err := conn.Write(writeCtx, websocket.MessageText, data); err != nil {
+	if err := provider.WriteText(writeCtx, data); err != nil {
 		s.logger.Error("failed to send challenge", "provider_id", providerID, "error", err)
 		tracker.remove(nonce)
 		return
@@ -1144,13 +1245,13 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 		tracker.remove(nonce)
 		if resp == nil {
 			// Channel closed without response
-			s.handleTransientChallengeFailure(conn, providerID, "no response")
+			s.handleTransientChallengeFailure(provider.Conn, providerID, "no response")
 			return
 		}
 		s.verifyChallengeResponse(providerID, provider, pc, resp)
 	case <-time.After(timeout):
 		tracker.remove(nonce)
-		s.handleTransientChallengeFailure(conn, providerID, "timeout")
+		s.handleTransientChallengeFailure(provider.Conn, providerID, "timeout")
 	}
 }
 
@@ -1563,9 +1664,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				}
 				statusData, err := json.Marshal(statusMsg)
 				if err == nil {
-					writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = provider.Conn.Write(writeCtx, websocket.MessageText, statusData)
-					writeCancel()
+					_ = provider.EnqueueText(context.Background(), statusData)
 				}
 			}
 			return
@@ -1896,6 +1995,13 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// the pending map and the holder) — sending would panic. Billing still
 	// settles below; only the consumer signaling is skipped.
 	consumerGone := parked != nil
+	// After-commit client cancellation telemetry. The provider finished
+	// but the consumer had already disconnected mid-stream (partial_success /
+	// client_gone_after_commit). Metric-emit only — billing/settlement below is
+	// unchanged.
+	if consumerGone {
+		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
+	}
 
 	// Store SE signature for the consumer response headers.
 	pr.SESignature = msg.SESignature
@@ -2226,6 +2332,14 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		})
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
+		// Split the partial case out of the (intentionally unchanged) completions
+		// counter: the provider completed and billing settled, but the consumer had
+		// already disconnected after commit. Same money path as a clean success, so
+		// it is NOT a provider failure — but operationally distinct, and invisible on
+		// dashboards without its own counter.
+		if consumerGone {
+			s.recordPartialSuccessCompletion(pr.Model, errorClassClientGoneAfterCommitCompleted)
+		}
 		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
@@ -2404,6 +2518,12 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		} else if providerDisconnectedError(msg.Error, msg.StatusCode) {
 			errorClass = "client_gone_after_commit_provider_disconnected"
 		}
+		// After-commit client cancellation: the provider terminated (error /
+		// cancel / disconnect) after the consumer had already gone. Count it on
+		// routing.client_gone so the after_commit phase reflects ALL post-commit
+		// disconnects, not just provider-completed ones (handleComplete). A
+		// no-terminal disconnect is counted by the settlement grace path.
+		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
 		outcome := pendingRouteOutcome(pr, status, errorClass, msg.StatusCode)
 		if !cancelTerminal {
 			outcome.AdmittedButFailed = true
@@ -3264,8 +3384,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 // the WebSocket connection. This allows the provider to react — e.g. by
 // auto-reporting unified logs when it learns it is self_signed or untrusted.
 func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registry.TrustLevel, status string, reason string) {
-	conn := provider.Conn
-	if conn == nil {
+	if provider == nil || provider.Conn == nil {
 		return
 	}
 	msg := protocol.TrustStatusMessage{
@@ -3278,7 +3397,5 @@ func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registr
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = conn.Write(ctx, websocket.MessageText, data)
+	_ = provider.EnqueueText(context.Background(), data)
 }

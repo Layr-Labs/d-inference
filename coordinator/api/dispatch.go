@@ -44,7 +44,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
-	"nhooyr.io/websocket"
 )
 
 // dispatchOutcome is the result of a per-attempt dispatch phase (provider
@@ -454,6 +453,16 @@ func (d *dispatchState) updateSpeculativeClientGone(pr *registry.PendingRequest)
 	d.s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 }
 
+// emitClientGone records a before-first-token cancellation on the
+// d_inference.routing.client_gone counter for this attempt. It reads
+// the current candidate's chip family (or "unknown" when no provider is selected
+// yet, e.g. a queue-wait cancel) and the estimated prompt-token bucket. Called
+// once per logical client_gone at the central classification sites so speculative
+// backup bookkeeping (updateSpeculativeClientGone) never double-counts.
+func (d *dispatchState) emitClientGone(phase string) {
+	d.s.emitClientGone(d.model, d.estimatedPromptTokens, providerChipFamily(d.provider), phase)
+}
+
 // dispatchPrimary selects (and, when no idle provider exists on the first
 // attempt, queues + dispatches) the primary provider for this attempt. It is the
 // extraction of the original loop's dispatch-primary block (incl. the queue path).
@@ -616,6 +625,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				s.recordWarmPoolQueueState(d.model)
+				d.emitClientGone(phaseBeforeFirstToken)
 				d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
 				d.refundReservation()
 				return outcomeClientGone
@@ -752,7 +762,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// have been increased by reserveAdditionalForProvider. Don't overwrite.
 		data, _ := json.Marshal(wireMsg)
 		d.pr.Timing.DispatchedAt = time.Now()
-		if err := d.provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+		if err := writeProviderInferenceRequest(r.Context(), d.provider, data); err != nil {
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
 			s.refundProviderExtra(d.pr)
@@ -799,6 +809,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 				d.updateRoutingOutcome(d.providerFailedRoutingOutcome())
 			}
 		case outcomeClientGone:
+			d.emitClientGone(phaseBeforeFirstToken)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
 		}
 	}()
@@ -1639,6 +1650,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 				d.updateRoutingOutcome(d.providerFailedRoutingOutcome())
 			}
 		case outcomeClientGone:
+			d.emitClientGone(phaseBeforeFirstToken)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
 		}
 	}()

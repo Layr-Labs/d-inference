@@ -73,20 +73,24 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	rows := s.store.Leaderboard(metric, since, limit)
 
 	type entry struct {
-		Rank             int    `json:"rank"`
-		Pseudonym        string `json:"pseudonym"`
-		EarningsMicroUSD int64  `json:"earnings_micro_usd"`
-		Tokens           int64  `json:"tokens"`
-		Jobs             int64  `json:"jobs"`
+		Rank                   int    `json:"rank"`
+		Pseudonym              string `json:"pseudonym"`
+		EarningsMicroUSD       int64  `json:"earnings_micro_usd"`
+		WorkEarningsMicroUSD   int64  `json:"work_earnings_micro_usd"`
+		RewardEarningsMicroUSD int64  `json:"reward_earnings_micro_usd"`
+		Tokens                 int64  `json:"tokens"`
+		Jobs                   int64  `json:"jobs"`
 	}
 	entries := make([]entry, 0, len(rows))
 	for i, r := range rows {
 		entries = append(entries, entry{
-			Rank:             i + 1,
-			Pseudonym:        pseudonym(r.AccountID),
-			EarningsMicroUSD: r.EarningsMicroUSD,
-			Tokens:           r.Tokens,
-			Jobs:             r.Jobs,
+			Rank:                   i + 1,
+			Pseudonym:              pseudonym(r.AccountID),
+			EarningsMicroUSD:       r.EarningsMicroUSD,
+			WorkEarningsMicroUSD:   r.WorkEarningsMicroUSD,
+			RewardEarningsMicroUSD: r.RewardEarningsMicroUSD,
+			Tokens:                 r.Tokens,
+			Jobs:                   r.Jobs,
 		})
 	}
 
@@ -132,12 +136,14 @@ func (s *Server) handleNetworkTotals(w http.ResponseWriter, r *http.Request) {
 
 	totals := s.store.NetworkTotals(since)
 	resp := map[string]any{
-		"window":             windowParamOrDefault(windowParam),
-		"earnings_micro_usd": totals.EarningsMicroUSD,
-		"tokens":             totals.Tokens,
-		"jobs":               totals.Jobs,
-		"active_accounts":    totals.ActiveAccounts,
-		"updated_at":         time.Now().UTC().Format(time.RFC3339),
+		"window":                    windowParamOrDefault(windowParam),
+		"earnings_micro_usd":        totals.EarningsMicroUSD,
+		"work_earnings_micro_usd":   totals.WorkEarningsMicroUSD,
+		"reward_earnings_micro_usd": totals.RewardEarningsMicroUSD,
+		"tokens":                    totals.Tokens,
+		"jobs":                      totals.Jobs,
+		"active_accounts":           totals.ActiveAccounts,
+		"updated_at":                time.Now().UTC().Format(time.RFC3339),
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {

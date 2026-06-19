@@ -217,6 +217,15 @@ type Server struct {
 	// (EIGENINFERENCE_TTFT_HARD_REJECT=true) to restore the legacy hard 429.
 	ttftHardReject bool
 
+	// rejectModels are requested aliases or resolved model IDs the coordinator
+	// takes out of public/prefer-owner routing: every matching request is answered
+	// with 429 + Retry-After at admission instead of being routed. This is a
+	// deterministic per-model circuit breaker for unhealthy models (for example,
+	// keep Gemma shed while allowing gpt-oss traffic with TTFT_HARD_REJECT=false).
+	// Exclusive self-route bypasses this because it never falls back to the public
+	// fleet and is useful for owner debugging. nil/empty = none.
+	rejectModels map[string]bool
+
 	// minDecodeTPS is the per-request sustained-decode floor (tokens/sec) passed
 	// to the scheduler as PendingRequest.MinDecodeTPS. When > 0 the router prefers
 	// providers that keep a newly admitted request at >= this rate (avoid
@@ -988,6 +997,38 @@ func (s *Server) SetTTFTHardReject(enabled bool) {
 	s.ttftHardReject = enabled
 }
 
+// SetRejectModels sets the requested/resolved model IDs to 429 at public
+// admission. Call before serving starts.
+func (s *Server) SetRejectModels(models map[string]bool) {
+	if len(models) == 0 {
+		s.rejectModels = nil
+		return
+	}
+	copy := make(map[string]bool, len(models))
+	for model, reject := range models {
+		if !reject {
+			continue
+		}
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		copy[model] = true
+	}
+	if len(copy) == 0 {
+		s.rejectModels = nil
+		return
+	}
+	s.rejectModels = copy
+}
+
+func (s *Server) modelShed(resolved, requested string) bool {
+	if len(s.rejectModels) == 0 {
+		return false
+	}
+	return s.rejectModels[resolved] || s.rejectModels[requested]
+}
+
 // SetMinDecodeTPS sets the per-request sustained-decode floor (tokens/sec) the
 // scheduler uses as a soft routing preference. <= 0 disables it. See the
 // minDecodeTPS field. Call before serving starts.
@@ -996,6 +1037,22 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 		tps = 0
 	}
 	s.minDecodeTPS = tps
+}
+
+// SetLongPromptThreshold configures the estimated-prompt-token count at/above
+// which the scheduler applies the long-prompt fastest-tier routing preference.
+// 0 disables it (behavior-neutral). It is a package-level scheduler knob (like
+// the prefill/decode ratio), so this delegates to the registry. Call before
+// serving starts. SOFT bias only — no TTFT 429 is introduced.
+func (s *Server) SetLongPromptThreshold(tokens int) {
+	registry.SetLongPromptThreshold(tokens)
+}
+
+// SetLongPromptPrefillWeight configures the prefill-term multiplier the scheduler
+// applies to long prompts. Values < 1 clamp to 1.0 (no amplification).
+// Delegates to the registry; call before serving starts.
+func (s *Server) SetLongPromptPrefillWeight(weight float64) {
+	registry.SetLongPromptPrefillWeight(weight)
 }
 
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.
@@ -1745,6 +1802,10 @@ func (s *Server) routes() {
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
 
+	// Network utilization snapshot (admin only) — handler enforces admin auth
+	// internally via requireAdminKey.
+	s.mux.HandleFunc("GET /v1/admin/utilization", s.handleAdminUtilization)
+
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
 	// See docs/architecture/routing-telemetry-and-calibration.md §6. Handlers
@@ -1821,6 +1882,20 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			}
 			if q := s.registry.Queue(); q != nil {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+			}
+			// Network utilization — demand/capacity across the warm-serving and
+			// token-budget axes, plus a per-model breakdown.
+			util := s.registry.NetworkUtilizationSnapshot()
+			s.ddGauge("utilization.network", util.Utilization, nil)
+			s.ddGauge("utilization.warm", util.WarmUtilization, nil)
+			s.ddGauge("utilization.token_budget", util.TokenBudgetUtilization, nil)
+			s.ddGauge("utilization.bottleneck", util.BottleneckUtilization, nil)
+			s.ddGauge("capacity.tps", util.CapacityTPS, nil)
+			s.ddGauge("capacity.demand_concurrency", util.DemandConcurrency, nil)
+			s.ddGauge("capacity.serving_capacity", util.ServingCapacity, nil)
+			s.ddGauge("capacity.spill_arrival_rate", util.SpillArrivalRate, nil)
+			for _, m := range util.Models {
+				s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
 			}
 		}
 	}

@@ -256,6 +256,15 @@ func (pr *PendingRequest) MarkReservationFinalized() bool {
 	return ok
 }
 
+// IsReservationFinalized reports whether the reservation has already been
+// settled or refunded (so a late terminal must not re-settle or be counted
+// as a fresh client cancellation).
+func (pr *PendingRequest) IsReservationFinalized() bool {
+	pr.reservationMu.Lock()
+	defer pr.reservationMu.Unlock()
+	return pr.reservationFinalized
+}
+
 // FinalizeReservation runs settle while holding the reservation finalization
 // lock and marks the reservation finalized only if settle succeeds. It returns
 // false when another terminal path already finalized the reservation.

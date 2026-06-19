@@ -480,3 +480,69 @@ func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
 		t.Errorf("routing.client_gone missing model/bucket tags; got %v", cg)
 	}
 }
+
+// TestHoldForSettlementSkipsAlreadyFinalizedReservation pins the fix for the
+// timeout-mislabeled-as-client-gone bug: a request whose reservation was already
+// refunded by a provider-timeout/error relay branch (refundReservedBalance
+// finalizes the reservation but does NOT RemovePending, so the deferred cleanup
+// still reaches holdForSettlement) must NOT be parked. Parking it would let a
+// late provider terminal see consumerGone and mislabel a timeout/error as an
+// after-commit client cancellation (routing.client_gone / partial_success).
+func TestHoldForSettlementSkipsAlreadyFinalizedReservation(t *testing.T) {
+	srv, _, _ := billingTestServer(t)
+	// Long grace so nothing fires mid-test even if (incorrectly) parked.
+	srv.settleGrace = 10 * time.Second
+
+	pr := &registry.PendingRequest{
+		RequestID:        "finalized-not-parked",
+		Model:            "skip-park-model",
+		ConsumerKey:      testConsumerID,
+		ReservedMicroUSD: 1_000_000,
+	}
+
+	// Simulate the provider-timeout relay branch that already refunded the
+	// reservation (finalizes it, but leaves it in the deferred cleanup path).
+	if !srv.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID) {
+		t.Fatalf("precondition: refundReservedBalance should finalize the reservation")
+	}
+	if !pr.IsReservationFinalized() {
+		t.Fatalf("precondition: reservation should be finalized after refund")
+	}
+
+	srv.holdForSettlement(pr)
+
+	if got := srv.claimSettlement(pr.RequestID); got != nil {
+		t.Errorf("already-refunded request was parked for settlement; want skipped (nil), got %q", got.RequestID)
+	}
+}
+
+// TestHoldForSettlementParksNonFinalizedReservation is the companion: a genuine
+// after-commit client disconnect returns WITHOUT refunding, so its reservation is
+// NOT finalized at park time. holdForSettlement must still park it so a late
+// provider terminal can settle it and it is correctly counted as client-gone.
+func TestHoldForSettlementParksNonFinalizedReservation(t *testing.T) {
+	srv, _, _ := billingTestServer(t)
+	// Long grace so the expiry timer does not fire and consume the parked record
+	// before we assert it is present.
+	srv.settleGrace = 10 * time.Second
+
+	pr := &registry.PendingRequest{
+		RequestID:        "nonfinalized-parked",
+		Model:            "park-model",
+		ConsumerKey:      testConsumerID,
+		ReservedMicroUSD: 1_000_000,
+	}
+	if pr.IsReservationFinalized() {
+		t.Fatalf("precondition: a fresh reservation must not be finalized")
+	}
+
+	srv.holdForSettlement(pr)
+
+	got := srv.claimSettlement(pr.RequestID)
+	if got == nil {
+		t.Fatal("genuine after-commit client-gone request was not parked; want parked (non-nil)")
+	}
+	if got.RequestID != pr.RequestID {
+		t.Errorf("claimed wrong record: got %q, want %q", got.RequestID, pr.RequestID)
+	}
+}

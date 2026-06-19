@@ -73,6 +73,16 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	if pr == nil {
 		return
 	}
+	// Skip requests whose reservation was already settled/refunded before this
+	// deferred park (e.g. a provider timeout or error that the relay already
+	// refunded — refundReservedBalance finalizes but does not RemovePending, so the
+	// cleanup still reaches here). Parking them would let a late provider terminal
+	// see consumerGone and mislabel a timeout/error as an after-commit client
+	// cancellation. A genuine after-commit client disconnect returns WITHOUT
+	// refunding, so it is not yet finalized and is still parked + counted.
+	if pr.IsReservationFinalized() {
+		return
+	}
 	// Single chokepoint for post-commit consumer disconnects: the request
 	// committed (streamed at least the first chunk) and the consumer-side handler
 	// returned while a provider terminal was still outstanding. The after_commit

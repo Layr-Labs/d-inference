@@ -2,8 +2,8 @@ package api
 
 import "strings"
 
-// Load-failure reason buckets for the routing.load_model_rejects counter
-// (DAR-331). The reason is derived ENTIRELY from the provider's
+// Load-failure reason buckets for the routing.load_model_rejects counter.
+// The reason is derived ENTIRELY from the provider's
 // load_model_status error string (protocol.LoadModelStatusMessage.Error): that
 // wire message carries no status code and we deliberately add no new
 // provider→coordinator field. Keep this low-cardinality set in sync with the

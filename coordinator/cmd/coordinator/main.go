@@ -332,7 +332,7 @@ func main() {
 		}
 	}
 
-	// Routing: long-prompt fastest-tier preference (DAR-330). Very long prompts
+	// Routing: long-prompt fastest-tier preference. Very long prompts
 	// have a long prefill window that drives pre-first-token client cancellations
 	// (client_gone). When EIGENINFERENCE_LONG_PROMPT_TOKENS is set, the scheduler
 	// biases requests whose estimated prompt is at/above that count toward the

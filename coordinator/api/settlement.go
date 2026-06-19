@@ -79,7 +79,7 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	// as an after_commit client cancellation regardless of how it later settles
 	// (provider completes → partial_success; provider errors → refund; grace
 	// expires → no_terminal_after_cancel). The before_first_token phase is emitted
-	// by the pre-commit client-gone paths (DAR-330), keeping this metric splittable.
+	// by the pre-commit client-gone paths, keeping this metric splittable.
 	s.recordClientCancellation(pr.Model, clientCancelPhaseAfterCommit)
 	if s.settlements == nil {
 		// Defensive: a Server built without newSettlementHolder still refunds

@@ -1,6 +1,6 @@
 package api
 
-// Telemetry for the "client gone after commit" outcome family (DAR-332).
+// Telemetry for the "client gone after commit" outcome family.
 //
 // A successful provider completion and a completion delivered after the consumer
 // already disconnected are billed and credited identically — provider paid,
@@ -19,10 +19,10 @@ package api
 //   - d_inference.inference.client_cancellations{model,phase}
 //       the broad client-cancellation counter, split by phase. The after_commit
 //       phase is emitted at the single post-commit-disconnect chokepoint
-//       (holdForSettlement). The before_first_token phase is intentionally left to
-//       the pre-commit client-gone paths (api/dispatch.go, api/consumer.go) owned
-//       by DAR-330's routing.client_gone work, so the two tickets do not edit the
-//       same files; the tag schema here reserves that phase value.
+//       (holdForSettlement). The before_first_token phase is emitted by the
+//       pre-commit client-gone paths (api/dispatch.go, api/consumer.go) that drive
+//       the routing.client_gone counter; the tag schema here reserves that phase
+//       value.
 //   - d_inference.inference.no_terminal_after_cancel{model}
 //       emitted when a post-commit disconnect's settlement grace expires with no
 //       provider terminal (payout-gap edge): the reservation is refunded and the

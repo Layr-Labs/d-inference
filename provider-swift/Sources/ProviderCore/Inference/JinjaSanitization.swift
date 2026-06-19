@@ -17,7 +17,7 @@
 //     chunks that never arrived).
 //
 // See `ProviderCoreFoundation/JinjaSanitization.swift` for the root cause
-// (DAR-329) and the recursive null/Optional-stripping policy. The core
+// and the recursive null/Optional-stripping policy. The core
 // lives in the lower target so the scan-time render self-check
 // (`TemplateRenderCheck`) shares the exact same normalization.
 

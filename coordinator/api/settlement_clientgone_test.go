@@ -1,7 +1,7 @@
 package api
 
 // Regression tests for the "client gone after commit, provider completed"
-// outcome (DAR-332).
+// outcome.
 //
 // When a consumer disconnects AFTER the response committed (first token sent)
 // and the provider then COMPLETES, the request is settled from the parked
@@ -48,7 +48,7 @@ func findRouteRecord(st *store.MemoryStore, requestID string) *store.InferenceRo
 	return nil
 }
 
-// TestHandleCompleteClientGoneAfterCommitSettlesAndPays is the core DAR-332
+// TestHandleCompleteClientGoneAfterCommitSettlesAndPays is the core
 // regression test: a parked (consumer-gone) request that the provider completes
 // must pay the provider, charge the consumer exactly the actual cost, count as a
 // job SUCCESS (never a failure), and record a partial_success route outcome.

@@ -4,7 +4,7 @@
 // (`swift-jinja`'s `Value.init(any:)`) cannot represent, BEFORE they reach
 // a chat-template render.
 //
-// Background (DAR-329): `Jinja.Value.init(any:)` is null-blind. Its switch
+// Background: `Jinja.Value.init(any:)` is null-blind. Its switch
 // handles `Value`, `nil`, `String`, `Int`, `Double`, `Float`, `Bool`,
 // `[Any?]`, `[String: Any?]`, and `Macro`; EVERYTHING else hits the
 // `default` branch and throws
@@ -45,8 +45,8 @@
 // `ProviderCore/Inference` AND the scan-time render self-check
 // (`TemplateRenderCheck`, same target) share ONE implementation. Keeping
 // "renders in the self-check" == "renders at request time" is exactly the
-// invariant whose violation let DAR-329 escape the guard, so the sanitizer
-// must not be duplicated across the two layers.
+// invariant whose violation let the original null-bridge crash escape the
+// guard, so the sanitizer must not be duplicated across the two layers.
 
 import Foundation
 

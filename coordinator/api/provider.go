@@ -424,7 +424,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			case protocol.LoadModelStatusFailed:
 				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
-				// DAR-331: quantify WHY proactive loads are rejected. The reason
+				// Quantify WHY proactive loads are rejected. The reason
 				// is derived only from the existing error string (no new wire
 				// field). The proactive path's string is often a generic
 				// Foundation bridge ("other"), but dashboards still get the
@@ -446,7 +446,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						"model:" + statusMsg.ModelID, "kind:drain",
 					})
 				} else {
-					// DAR-331: a non-draining load failure is dominated by
+					// A non-draining load failure is dominated by
 					// transient memory pressure that frees in seconds. Re-stamp
 					// the pending entry to the short memory backoff (~30s)
 					// instead of leaving the full 2-min TTL — that window ≈ the
@@ -1985,10 +1985,10 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// the pending map and the holder) — sending would panic. Billing still
 	// settles below; only the consumer signaling is skipped.
 	consumerGone := parked != nil
-	// DAR-330: after-commit client cancellation telemetry. The provider finished
+	// After-commit client cancellation telemetry. The provider finished
 	// but the consumer had already disconnected mid-stream (partial_success /
 	// client_gone_after_commit). Metric-emit only — billing/settlement below is
-	// owned by another ticket and is unchanged.
+	// unchanged.
 	if consumerGone {
 		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
 	}
@@ -2326,7 +2326,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// counter: the provider completed and billing settled, but the consumer had
 		// already disconnected after commit. Same money path as a clean success, so
 		// it is NOT a provider failure — but operationally distinct, and invisible on
-		// dashboards without its own counter (DAR-332).
+		// dashboards without its own counter.
 		if consumerGone {
 			s.recordPartialSuccessCompletion(pr.Model, errorClassClientGoneAfterCommitCompleted)
 		}

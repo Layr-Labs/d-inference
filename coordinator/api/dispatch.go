@@ -454,7 +454,7 @@ func (d *dispatchState) updateSpeculativeClientGone(pr *registry.PendingRequest)
 }
 
 // emitClientGone records a before-first-token cancellation on the
-// d_inference.routing.client_gone counter for this attempt (DAR-330). It reads
+// d_inference.routing.client_gone counter for this attempt. It reads
 // the current candidate's chip family (or "unknown" when no provider is selected
 // yet, e.g. a queue-wait cancel) and the estimated prompt-token bucket. Called
 // once per logical client_gone at the central classification sites so speculative

@@ -109,7 +109,7 @@ extension ProviderLoop {
         let toolSpecs = request.tools?.map { $0.toolSpec() }
         let additionalContext: [String: any Sendable]? =
             reasoningEffort.map { ["reasoning_effort": $0] }
-        // DAR-329: must mirror the production tokenize path (sanitize JSON
+        // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.
         guard let ids = try? tokenizer.inner.applyChatTemplate(

@@ -1014,7 +1014,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	}
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
-	// Long-prompt fastest-tier preference (DAR-330): amplify the prefill term for
+	// Long-prompt fastest-tier preference: amplify the prefill term for
 	// very long prompts so the fastest-prefill warm provider is strongly preferred,
 	// reducing pre-first-token client_gone. Folded into thisReqMs so the cost
 	// breakdown invariant (sum of terms == Total) holds. Returns 0 — and so leaves
@@ -1234,7 +1234,7 @@ func PrefillToDecodeRatio() float64 {
 }
 
 // defaultLongPromptThresholdTokens gates the long-prompt fastest-tier routing
-// preference (DAR-330). 0 disables it entirely (behavior-neutral): the routing
+// preference. 0 disables it entirely (behavior-neutral): the routing
 // cost is unchanged for every request, short or long. A positive value turns the
 // preference ON for requests whose estimated prompt is at or above the threshold.
 const defaultLongPromptThresholdTokens = 0

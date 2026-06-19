@@ -6,9 +6,9 @@ import ProviderCoreFoundation
 
 @testable import ProviderCore
 
-/// DAR-329: a chat-completions request carrying JSON `null` inside a tool's
+/// A chat-completions request carrying JSON `null` inside a tool's
 /// `function.parameters` schema or an assistant message's
-/// `tool_calls[].function.arguments` reached `applyChatTemplate`
+/// `tool_calls[].function.arguments` previously reached `applyChatTemplate`
 /// un-normalized and crashed `Jinja.Value(any:)`
 /// (`Cannot convert value of type … to Jinja Value`), surfacing as a 500.
 ///

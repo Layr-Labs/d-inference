@@ -195,7 +195,7 @@ public enum TemplateRenderCheck {
         specialTokens: [String: Value]
     ) throws -> [String: Value] {
         var context: [String: Value] = specialTokens
-        // DAR-329: strip JSON `null` / `Optional` leaves exactly as the
+        // Strip JSON `null` / `Optional` leaves exactly as the
         // runtime tokenize chokepoints now do (`sanitizeJinjaMessages` /
         // `sanitizeJinjaTools`) before `Value(any:)`. Without this the
         // null-bearing fixtures below would throw here at render time and
@@ -331,7 +331,7 @@ public enum TemplateRenderCheck {
         )
     }
 
-    /// (c′) DAR-329: a tool flow carrying literal JSON `null` leaves — the
+    /// (c′) A tool flow carrying literal JSON `null` leaves — the
     /// shapes that crashed `Jinja.Value(any:)` at request time before the
     /// sanitizer landed. The assistant tool call's decoded `arguments`
     /// carries a `null` value (`unit`); the tool's `parameters` schema
@@ -436,7 +436,7 @@ public enum TemplateRenderCheck {
         ]
     }
 
-    /// DAR-329 variant of `canonicalTool` carrying literal JSON `null`
+    /// Variant of `canonicalTool` carrying literal JSON `null`
     /// leaves inside the `function.parameters` schema: a `"default": null`
     /// on a property and a `null` element inside an `enum`. `NSNull()` is
     /// the literal JSON-null sentinel. Every node still carries a string

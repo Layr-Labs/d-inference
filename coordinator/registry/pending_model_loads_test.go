@@ -83,10 +83,10 @@ func TestDrainBackoffAppliesWithoutPriorReservation(t *testing.T) {
 	}
 }
 
-// DAR-331: a non-draining load failure (insufficient memory et al.) must
-// shorten the pending cooldown from the full 2-min TTL to the short memory
-// backoff so a provider whose memory frees in seconds is reconsidered well
-// inside the 120s queue window.
+// TestMemoryBackoffShortensPendingLoadCooldown checks that a non-draining load
+// failure (insufficient memory et al.) shortens the pending cooldown from the
+// full 2-min TTL to the short memory backoff so a provider whose memory frees in
+// seconds is reconsidered well inside the 120s queue window.
 func TestMemoryBackoffShortensPendingLoadCooldown(t *testing.T) {
 	r := New(testLogger())
 	r.reservePendingModelLoads([]modelLoadAction{{providerID: "p1", modelID: "m1"}}, time.Now())

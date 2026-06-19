@@ -2,7 +2,7 @@ package api
 
 import "github.com/eigeninference/d-inference/coordinator/registry"
 
-// Client-gone (cancellation) telemetry helpers (DAR-330).
+// Client-gone (cancellation) telemetry helpers.
 //
 // Long-prompt gpt-oss requests are admitted and served under the soft TTFT gate,
 // but their long prefill makes clients time out and disconnect before the first

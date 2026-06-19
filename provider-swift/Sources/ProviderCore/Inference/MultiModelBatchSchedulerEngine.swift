@@ -298,7 +298,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
         let promptTokens: [Int]
         do {
-            // DAR-329: strip JSON `null` / `Optional` leaves (NSNull, the
+            // Strip JSON `null` / `Optional` leaves (NSNull, the
             // private JSONNull from tool-parameter schemas, boxed Optionals)
             // that `Jinja.Value(any:)` cannot represent. Sanitize the copies
             // handed to the template only — `toolSpecs` keeps its raw shape
@@ -462,7 +462,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let tokenizer = try await resolveTokenizer(modelId: request.model)
         let messages = request.messages.map { $0.templateMessageDict() }
         let tools = request.tools?.map { $0.toolSpec() }
-        // DAR-329: drop JSON `null` / `Optional` leaves the Jinja bridge
+        // Drop JSON `null` / `Optional` leaves the Jinja bridge
         // can't convert before rendering (mirrors `streamChatCompletion`).
         let tokens = try tokenizer.inner.applyChatTemplate(
             messages: sanitizeJinjaMessages(messages),

@@ -3,7 +3,7 @@ package registry
 import "testing"
 
 // TestLongPromptPrefillPenalty exercises the pure penalty helper across every
-// behavior-preserving guard and the active amplification case (DAR-330).
+// behavior-preserving guard and the active amplification case.
 func TestLongPromptPrefillPenalty(t *testing.T) {
 	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
 	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
@@ -104,7 +104,7 @@ func longPromptScenarioRegistry(t *testing.T) (reg *Registry, model, fastID, slo
 }
 
 // TestReserveProviderLongPromptPrefersFasterPrefill proves the long-prompt
-// fastest-tier preference (DAR-330):
+// fastest-tier preference:
 //  1. short prompts are unaffected (idle slow box still wins),
 //  2. with the preference OFF a long prompt keeps the baseline winner, and
 //  3. with the preference ON the same long prompt flips to the fastest-prefill box.

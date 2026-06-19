@@ -25,7 +25,12 @@ public actor GlobalKVCacheBudget {
     /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
     private let configReserveBytes: UInt64
     private let memorySnapshot: @Sendable () -> MemorySnapshot
+    private let clearCache: @Sendable () -> Void
     private var reservations: [String: UInt64] = [:]
+    /// Minimum reclaimable MLX pool worth flushing on the admission self-heal.
+    /// Below this, a flush frees too little to change an admission decision, so the
+    /// heal is skipped — the case when active memory (not the pool) is what's full.
+    private static let minReclaimableForHealBytes: UInt64 = 256 * 1024 * 1024
 
     public init(
         capFraction: Double? = nil,
@@ -35,6 +40,12 @@ public actor GlobalKVCacheBudget {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
+        // Fence async GPU completion before freeing buffers, matching the engine's
+        // own reclaim paths (avoids the IOKit completeMemory race seen on M4).
+        self.clearCache = {
+            MLX.Stream().synchronize()
+            MLX.Memory.clearCache()
+        }
         self.memorySnapshot = {
             MemorySnapshot(
                 total: ProcessInfo.processInfo.physicalMemory,
@@ -49,12 +60,14 @@ public actor GlobalKVCacheBudget {
         capFraction: Double? = nil,
         activationReserveBytes: UInt64? = nil,
         configReserveBytes: UInt64 = 0,
-        memorySnapshot: @escaping @Sendable () -> MemorySnapshot
+        memorySnapshot: @escaping @Sendable () -> MemorySnapshot,
+        clearCache: @escaping @Sendable () -> Void = {}
     ) {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
         self.memorySnapshot = memorySnapshot
+        self.clearCache = clearCache
     }
 
     public func reserve(requestID: String, kvBytesPerToken: Int, tokenCount: Int) -> Bool {
@@ -62,10 +75,7 @@ public actor GlobalKVCacheBudget {
         guard reservations[requestID] == nil else { return false }
         let (bytesNeeded, overflow) = UInt64(kvBytesPerToken).multipliedReportingOverflow(by: UInt64(tokenCount))
         if overflow { return false }
-        let available = availableReservationBytes()
-        if bytesNeeded > available { return false }
-        reservations[requestID] = bytesNeeded
-        return true
+        return commit(requestID: requestID, bytes: bytesNeeded)
     }
 
     public func release(requestID: String) {
@@ -83,9 +93,7 @@ public actor GlobalKVCacheBudget {
     public func reserveBytes(requestID: String, bytes: UInt64) -> Bool {
         guard bytes > 0 else { return false }
         guard reservations[requestID] == nil else { return false }
-        if bytes > availableReservationBytes() { return false }
-        reservations[requestID] = bytes
-        return true
+        return commit(requestID: requestID, bytes: bytes)
     }
 
     /// Reserve a loading model's WEIGHT footprint for the duration of its load,
@@ -134,6 +142,31 @@ public actor GlobalKVCacheBudget {
             let (sum, overflow) = partial.addingReportingOverflow(value)
             return overflow ? UInt64.max : sum
         }
+    }
+
+    /// Reserve `bytes` against current live headroom. The headroom math counts the
+    /// reclaimable MLX pool as used, so on a near-miss we flush that pool and
+    /// resample once before denying — otherwise we'd reject a request the box can
+    /// actually serve. Caller has validated `bytes > 0` and no existing reservation.
+    private func commit(requestID: String, bytes: UInt64) -> Bool {
+        var available = availableReservationBytes()
+        if bytes > available {
+            if selfHealClear() { available = availableReservationBytes() }
+            if bytes > available { return false }
+        }
+        reservations[requestID] = bytes
+        return true
+    }
+
+    /// One-shot reclaim for the admission self-heal. Returns true if it actually
+    /// flushed the pool (so the caller should resample). Skips the flush when the
+    /// reclaimable pool is already small — e.g. when active memory (not the pool)
+    /// is what's full, so a flush frees nothing — to avoid thrashing the pool (and
+    /// stalling on its GPU sync) on every rejected admission under sustained load.
+    private func selfHealClear() -> Bool {
+        guard memorySnapshot().cache >= Self.minReclaimableForHealBytes else { return false }
+        clearCache()
+        return true
     }
 
     private func availableReservationBytes() -> UInt64 {

@@ -316,6 +316,17 @@ func rewriteChunkModel(chunk string, pr *registry.PendingRequest) string {
 	return chunk
 }
 
+// writeSSEFrame writes an already-serialized SSE frame followed by the event
+// terminator ("\n\n"). It is the hot-path equivalent of
+// fmt.Fprintf(w, "%s\n\n", frame) but avoids the reflection-based formatting
+// and the intermediate buffer allocation fmt incurs on every streamed token.
+// Write errors are intentionally ignored, matching the fmt.Fprintf call sites
+// it replaces — a broken client connection surfaces on the following Flush.
+func writeSSEFrame(w io.Writer, frame string) {
+	_, _ = io.WriteString(w, frame)
+	_, _ = io.WriteString(w, "\n\n")
+}
+
 // resolveRequestedModel maps the consumer-requested model — which may be a
 // public alias like "gemma-4-26b" — to the concrete build id used for routing,
 // billing, and serving, returning the public name to echo back to the consumer.
@@ -2331,7 +2342,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				firstChunk = normalizeSSEChunk(firstChunk)
 			}
 			firstChunk = rewriteChunkModel(firstChunk, pr)
-			fmt.Fprintf(w, "%s\n\n", firstChunk)
+			writeSSEFrame(w, firstChunk)
 			flusher.Flush()
 		}
 	}
@@ -2398,7 +2409,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 					}
 					if pendingFinish != nil {
 						if out := finalizeFinishChunk(pendingFinish, usage, pr); out != "" {
-							fmt.Fprintf(w, "%s\n\n", out)
+							writeSSEFrame(w, out)
 							flusher.Flush()
 						}
 					}
@@ -2411,7 +2422,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 							pendingUsage["response_hash"] = pr.ResponseHash
 						}
 						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
-							fmt.Fprintf(w, "%s\n\n", out)
+							writeSSEFrame(w, out)
 							flusher.Flush()
 						}
 					} else if pr.SESignature != "" {
@@ -2485,7 +2496,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				}
 			}
 			chunk = rewriteChunkModel(chunk, pr)
-			fmt.Fprintf(w, "%s\n\n", chunk)
+			writeSSEFrame(w, chunk)
 			flusher.Flush()
 
 		case errMsg, ok := <-pr.ErrorCh:

@@ -1014,6 +1014,12 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	}
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
+	// Long-prompt fastest-tier preference (DAR-330): amplify the prefill term for
+	// very long prompts so the fastest-prefill warm provider is strongly preferred,
+	// reducing pre-first-token client_gone. Folded into thisReqMs so the cost
+	// breakdown invariant (sum of terms == Total) holds. Returns 0 — and so leaves
+	// the cost byte-for-byte unchanged — for short prompts and when the knob is off.
+	thisReqMs += longPromptPrefillPenalty(reqPrompt, snap.prefillTPS)
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
 
@@ -1225,6 +1231,80 @@ func SetPrefillToDecodeRatio(ratio float64) {
 // measured prefill rate). Exposed for the routing simulation harness.
 func PrefillToDecodeRatio() float64 {
 	return prefillToDecodeRatio
+}
+
+// defaultLongPromptThresholdTokens gates the long-prompt fastest-tier routing
+// preference (DAR-330). 0 disables it entirely (behavior-neutral): the routing
+// cost is unchanged for every request, short or long. A positive value turns the
+// preference ON for requests whose estimated prompt is at or above the threshold.
+const defaultLongPromptThresholdTokens = 0
+
+// defaultLongPromptPrefillWeight is the multiplier applied to the prefill term of
+// the routing cost for long prompts. 1.0 is behavior-neutral; >1 amplifies the
+// prefill component so the fastest-prefill (== fastest chip tier) warm provider is
+// strongly preferred once the prompt is long enough that prefill dominates TTFT.
+const defaultLongPromptPrefillWeight = 2.0
+
+// longPromptThresholdTokens / longPromptPrefillWeight are configured once at
+// startup (via SetLongPromptThreshold / SetLongPromptPrefillWeight, e.g. from
+// EIGENINFERENCE_LONG_PROMPT_TOKENS) before serving begins, then only read on the
+// routing path. Default-off so the scheduler is byte-for-byte unchanged unless an
+// operator opts in.
+var (
+	longPromptThresholdTokens = defaultLongPromptThresholdTokens
+	longPromptPrefillWeight   = defaultLongPromptPrefillWeight
+)
+
+// SetLongPromptThreshold sets the estimated-prompt-token count at/above which the
+// long-prompt fastest-tier routing preference activates. A value <= 0 disables the
+// preference (behavior-neutral). Must be called before serving starts.
+func SetLongPromptThreshold(tokens int) {
+	if tokens < 0 {
+		tokens = 0
+	}
+	longPromptThresholdTokens = tokens
+}
+
+// LongPromptThreshold returns the current long-prompt token threshold (0 = off).
+func LongPromptThreshold() int {
+	return longPromptThresholdTokens
+}
+
+// SetLongPromptPrefillWeight overrides the prefill-term multiplier used for long
+// prompts. Values < 1 are clamped to 1.0 (no amplification). Must be called before
+// serving starts.
+func SetLongPromptPrefillWeight(w float64) {
+	if w < 1.0 {
+		w = 1.0
+	}
+	longPromptPrefillWeight = w
+}
+
+// LongPromptPrefillWeight returns the current long-prompt prefill-term multiplier.
+func LongPromptPrefillWeight() float64 {
+	return longPromptPrefillWeight
+}
+
+// longPromptPrefillPenalty returns the EXTRA prefill cost (ms) added to a
+// candidate's per-request cost so very long prompts prefer the fastest-prefill
+// provider. It amplifies the existing prefill term by (weight-1): a provider with
+// twice the prefill throughput sees half the penalty, so the fastest-prefill (and,
+// because prefill TPS scales with the chip, the fastest chip-tier) warm provider
+// wins decisively instead of being edged out by a marginally-less-loaded slow box.
+//
+// Returns 0 (fully behavior-preserving) when the preference is disabled
+// (threshold <= 0), the prompt is below the threshold (short prompts unaffected),
+// the weight is neutral (<= 1), or the prefill rate is unknown. It is a SOFT
+// ranking bias only: no candidate is dropped and no TTFT 429 is introduced.
+func longPromptPrefillPenalty(reqPromptTokens int, prefillTPS float64) float64 {
+	if longPromptThresholdTokens <= 0 || reqPromptTokens < longPromptThresholdTokens {
+		return 0
+	}
+	if prefillTPS <= 0 || longPromptPrefillWeight <= 1.0 {
+		return 0
+	}
+	prefillMs := float64(reqPromptTokens) / prefillTPS * 1000.0
+	return (longPromptPrefillWeight - 1.0) * prefillMs
 }
 
 func resolvedPrefillTPS(p *Provider) float64 {

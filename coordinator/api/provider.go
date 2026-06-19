@@ -1985,6 +1985,13 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// the pending map and the holder) — sending would panic. Billing still
 	// settles below; only the consumer signaling is skipped.
 	consumerGone := parked != nil
+	// DAR-330: after-commit client cancellation telemetry. The provider finished
+	// but the consumer had already disconnected mid-stream (partial_success /
+	// client_gone_after_commit). Metric-emit only — billing/settlement below is
+	// owned by another ticket and is unchanged.
+	if consumerGone {
+		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
+	}
 
 	// Store SE signature for the consumer response headers.
 	pr.SESignature = msg.SESignature

@@ -5097,6 +5097,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				s.recordWarmPoolQueueState(model)
+				s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
 				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 				refundReservation()
 				return
@@ -5384,6 +5385,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
 		refundReservation()
+		s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
 		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 		return
 	}
@@ -5454,6 +5456,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
+			s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 			return
 		}

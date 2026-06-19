@@ -114,19 +114,71 @@ func (n NetworkUtilization) Public() PublicNetworkUtilization {
 	}
 }
 
+// FleetCapacity is the provider-deduped aggregate throughput and KV/token budget
+// of the routable public fleet. It is computed by counting each provider once,
+// which avoids the multi-model double-counting that arises from summing
+// per-model ModelCapacity rows (a provider advertising N models appears in N
+// rows, and slots on one machine share a single memory pool).
+type FleetCapacity struct {
+	DecodeTPS   float64 // Σ per-provider rated decode tok/s (counted once)
+	BudgetUsed  int64   // Σ per-provider used+queued token budget
+	BudgetTotal int64   // Σ per-provider token budget (largest slot per provider)
+}
+
+// FleetCapacitySnapshot returns the provider-deduped fleet capacity using the
+// same public routing gates as ModelCapacitySnapshot. Read-only.
+func (r *Registry) FleetCapacitySnapshot() FleetCapacity {
+	now := time.Now()
+	var fc FleetCapacity
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+		if !r.publiclyRoutableLocked(p, now) {
+			p.mu.Unlock()
+			continue
+		}
+		fc.DecodeTPS += resolvedDecodeTPS(p)
+		// Slots on one machine share a single unified-memory pool, so the
+		// provider's budget is the largest slot's max (not the sum), while used
+		// reservations across its slots do add up (capped at that max).
+		if p.BackendCapacity != nil {
+			var provMax, provUsed int64
+			for _, slot := range p.BackendCapacity.Slots {
+				if slot.ActiveTokenBudgetMax > provMax {
+					provMax = slot.ActiveTokenBudgetMax
+				}
+				provUsed += slot.ActiveTokenBudgetUsed + slot.QueuedTokenBudget
+			}
+			if provUsed > provMax {
+				provUsed = provMax
+			}
+			fc.BudgetTotal += provMax
+			fc.BudgetUsed += provUsed
+		}
+		p.mu.Unlock()
+	}
+	return fc
+}
+
 // NetworkUtilizationSnapshot computes the fleet-wide utilization summary by
-// joining the capacity snapshot (token budgets, warm/cold counts, aggregate TPS)
-// with the warm-pool controller's last Little's Law diagnostics. It is read-only
-// and side-effect free.
+// joining the capacity snapshot (warm/cold counts, per-model token budgets) and
+// the provider-deduped fleet capacity (throughput, aggregate token budget) with
+// the warm-pool controller's last Little's Law diagnostics. It is read-only and
+// side-effect free.
 func (r *Registry) NetworkUtilizationSnapshot() NetworkUtilization {
 	caps := r.ModelCapacitySnapshot()
 	snaps, snapAt := r.LatestWarmPoolSnapshots()
-	return computeNetworkUtilization(caps, snaps, snapAt, time.Now())
+	fleet := r.FleetCapacitySnapshot()
+	return computeNetworkUtilization(caps, snaps, fleet, snapAt, time.Now())
 }
 
 // computeNetworkUtilization is the pure core, split out for unit testing without
-// a live Registry.
-func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, snapAt, now time.Time) NetworkUtilization {
+// a live Registry. fleet carries the provider-deduped throughput and token
+// budget; per-model token budgets in caps are used only for the per-model rows
+// and the bottleneck, never summed network-wide (that would double-count
+// multi-model providers).
+func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, fleet FleetCapacity, snapAt, now time.Time) NetworkUtilization {
 	bySnap := make(map[string]WarmPoolSnapshot, len(snaps))
 	for _, s := range snaps {
 		bySnap[s.Model] = s
@@ -144,7 +196,6 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, s
 	}
 
 	var sumDemand, sumServing float64
-	var sumBudgetUsed, sumBudgetTotal int64
 
 	for _, c := range caps {
 		mu := ModelUtilization{
@@ -158,9 +209,9 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, s
 			TokenBudgetTotal: c.TokenBudgetTotal,
 		}
 
-		// Token-budget axis. Only models that actually report a budget
-		// (Total > 0) contribute to the numerator and denominator, so a
-		// degenerate row can't inflate the aggregate ratio.
+		// Token-budget axis (per-model row only). The network-wide aggregate is
+		// taken from the provider-deduped fleet figures below, not summed across
+		// model rows, so multi-slot providers aren't double-counted.
 		if c.TokenBudgetTotal > 0 {
 			used := c.TokenBudgetTotal - c.TokenBudgetRemaining
 			if used < 0 {
@@ -168,8 +219,6 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, s
 			}
 			mu.TokenBudgetUsed = used
 			mu.TokenBudgetUtilization = clamp01(float64(used) / float64(c.TokenBudgetTotal))
-			sumBudgetUsed += used
-			sumBudgetTotal += c.TokenBudgetTotal
 		}
 
 		// Warm serving-capacity axis (Little's Law), if the controller has data.
@@ -211,12 +260,17 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, s
 			out.BottleneckModel = c.ModelID
 		}
 
-		out.CapacityTPS += c.AggregateTPS
+		// ActiveRequests/QueuedRequests are per-model (each request belongs to
+		// one model) so summing them does not double-count.
 		out.ActiveRequests += c.ActiveRequests
 		out.QueuedRequests += c.QueuedRequests
 		out.Models = append(out.Models, mu)
 	}
 
+	// Network-wide throughput and token budget come from the provider-deduped
+	// fleet figures, NOT from summing per-model rows (which over-counts any
+	// provider advertising more than one model).
+	out.CapacityTPS = nonNeg(fleet.DecodeTPS)
 	out.DemandConcurrency = sumDemand
 	out.ServingCapacity = sumServing
 	switch {
@@ -228,8 +282,12 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, s
 		// rule so the headline doesn't read 0% during a cold-start storm.
 		out.WarmUtilization = 1
 	}
-	if sumBudgetTotal > 0 {
-		out.TokenBudgetUtilization = clamp01(float64(sumBudgetUsed) / float64(sumBudgetTotal))
+	if fleet.BudgetTotal > 0 {
+		used := fleet.BudgetUsed
+		if used < 0 {
+			used = 0
+		}
+		out.TokenBudgetUtilization = clamp01(float64(used) / float64(fleet.BudgetTotal))
 	}
 	// Headline: the binding axis network-wide (max of the two aggregates), clamped.
 	out.Utilization = clamp01(math.Max(out.WarmUtilization, out.TokenBudgetUtilization))

@@ -4407,6 +4407,33 @@ type providerCapSnap struct {
 	queuedTokenBudget     int64
 }
 
+// publiclyRoutableLocked reports whether a provider passes the public routing
+// gates (status, privacy, trust, runtime, private-text support, challenge
+// freshness). The caller must hold r.mu (read) and p.mu. It is shared by
+// ModelCapacitySnapshot and FleetCapacitySnapshot so both count the same set of
+// providers.
+func (r *Registry) publiclyRoutableLocked(p *Provider, now time.Time) bool {
+	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if p.PrivateOnly {
+		return false
+	}
+	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+		return false
+	}
+	if !p.RuntimeVerified {
+		return false
+	}
+	if !r.providerSupportsPrivateTextLocked(p) {
+		return false
+	}
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		return false
+	}
+	return true
+}
+
 // ModelCapacitySnapshot returns a capacity snapshot for every model served
 // by at least one provider. Providers must pass the same routing gates as
 // snapshotProviderLocked (status, trust, runtime, privacy, challenge
@@ -4424,27 +4451,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// Apply the same gates as snapshotProviderLocked. Private-only machines
 		// never serve the public fleet, so they do not count toward public
 		// model capacity.
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
-			p.mu.Unlock()
-			continue
-		}
-		if p.PrivateOnly {
-			p.mu.Unlock()
-			continue
-		}
-		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-			p.mu.Unlock()
-			continue
-		}
-		if !p.RuntimeVerified {
-			p.mu.Unlock()
-			continue
-		}
-		if !r.providerSupportsPrivateTextLocked(p) {
-			p.mu.Unlock()
-			continue
-		}
-		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		if !r.publiclyRoutableLocked(p, now) {
 			p.mu.Unlock()
 			continue
 		}

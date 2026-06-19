@@ -186,6 +186,11 @@ final class JinjaSanitizationTests: XCTestCase {
         XCTAssertEqual(unit?["type"] as? String, "string")
         XCTAssertNil(unit?["default"])
         let enumValues = unit?["enum"] as? [any Sendable]
+        // Assert the element COUNT (not just the String-filtered view): the null
+        // element must actually be removed, so a regression that left an
+        // unrepresentable leaf in the array would fail here rather than be
+        // silently hidden by the `as? String` cast below.
+        XCTAssertEqual(enumValues?.count, 2)
         XCTAssertEqual(enumValues?.compactMap { $0 as? String }, ["celsius", "fahrenheit"])
     }
 

@@ -346,3 +346,94 @@ func TestPartialSuccessMetricNamesAndTags(t *testing.T) {
 	srv.recordClientCancellation("m", clientCancelPhaseAfterCommit)
 	srv.recordNoTerminalAfterCancel("m")
 }
+
+// TestHandleCompleteEmitsPartialSuccessMetric pins the headline observability
+// deliverable: handleComplete emits inference.partial_success (in addition to
+// inference.completions) ONLY when the consumer was gone at completion time, and
+// a clean completion emits inference.completions WITHOUT partial_success. It uses
+// a real DogStatsD client over a local UDP collector so that deleting the emit
+// (or making it unconditional) fails the test. Negative case runs first so its
+// "no partial_success" assertion cannot be contaminated by the positive case.
+func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
+	srv, _, ledger := billingTestServer(t)
+	srv.settleGrace = 5 * time.Second
+
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
+	consumerID := testConsumerID
+
+	newPR := func(reqID, model string, cost int64) *registry.PendingRequest {
+		if err := ledger.Charge(consumerID, cost, "reserve:"+reqID); err != nil {
+			t.Fatalf("reserve balance: %v", err)
+		}
+		return &registry.PendingRequest{
+			RequestID:        reqID,
+			Model:            model,
+			ConsumerKey:      consumerID,
+			ReservedMicroUSD: cost,
+			ChunkCh:          make(chan string, 1),
+			CompleteCh:       make(chan protocol.UsageInfo, 1),
+			ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		}
+	}
+
+	// --- Negative: consumer PRESENT (not parked) → no partial_success. ---
+	cleanCollector := newUDPCollector(t)
+	defer cleanCollector.Close()
+	cleanDD := newTestDD(t, cleanCollector)
+	defer cleanDD.Close()
+	srv.SetDatadog(cleanDD)
+
+	cleanModel := "partial-metric-clean-model"
+	cleanProvider := srv.registry.Register("partial-metric-clean-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: cleanModel, ModelType: "chat", Quantization: "4bit"}},
+	})
+	cleanPR := newPR("partial-metric-clean", cleanModel, payments.CalculateCost(cleanModel, usage.PromptTokens, usage.CompletionTokens))
+	cleanProvider.AddPending(cleanPR) // present at completion → consumerGone == false
+	srv.handleComplete(cleanProvider.ID, cleanProvider, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: cleanPR.RequestID,
+		Usage:     usage,
+	})
+	_ = cleanDD.Statsd.Flush()
+	cleanPackets := cleanCollector.drain()
+	if !hasMetric(cleanPackets, "inference.completions") {
+		t.Errorf("clean completion should emit inference.completions; packets=%v", cleanPackets)
+	}
+	if hasMetric(cleanPackets, "inference.partial_success") {
+		t.Errorf("clean completion must NOT emit inference.partial_success; packets=%v", cleanPackets)
+	}
+
+	// --- Positive: consumer GONE (parked) → partial_success with tags. ---
+	goneCollector := newUDPCollector(t)
+	defer goneCollector.Close()
+	goneDD := newTestDD(t, goneCollector)
+	defer goneDD.Close()
+	srv.SetDatadog(goneDD)
+
+	goneModel := "partial-metric-gone-model"
+	goneProvider := srv.registry.Register("partial-metric-gone-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: goneModel, ModelType: "chat", Quantization: "4bit"}},
+	})
+	gonePR := newPR("partial-metric-gone", goneModel, payments.CalculateCost(goneModel, usage.PromptTokens, usage.CompletionTokens))
+	parkConsumerGone(srv, goneProvider, gonePR)
+	srv.handleComplete(goneProvider.ID, goneProvider, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: gonePR.RequestID,
+		Usage:     usage,
+	})
+	_ = goneDD.Statsd.Flush()
+	gonePackets := goneCollector.drain()
+	partial := findMetrics(gonePackets, "inference.partial_success")
+	if len(partial) == 0 {
+		t.Fatalf("consumer-gone completion must emit inference.partial_success; packets=%v", gonePackets)
+	}
+	if !hasMetric(partial, "model:"+goneModel) {
+		t.Errorf("partial_success missing model tag; got %v", partial)
+	}
+	if !hasMetric(partial, "error_class:"+errorClassClientGoneAfterCommitCompleted) {
+		t.Errorf("partial_success missing error_class tag; got %v", partial)
+	}
+	if !hasMetric(gonePackets, "inference.completions") {
+		t.Errorf("consumer-gone completion should also emit inference.completions; packets=%v", gonePackets)
+	}
+}

@@ -2046,6 +2046,14 @@ public actor BatchScheduler {
 
     private func stopCurrentEngine() async {
         generationEpoch &+= 1
+        // Detach the engine synchronously, before any suspension below. The teardown
+        // awaits (stats logging, stopAndWait) let a submit interleave on the actor;
+        // if self.engine still pointed at the stopping engine it would pass
+        // engineStillCurrent (epoch already bumped, identity still matches) and get
+        // enqueued onto an engine being torn down. Nil'ing it now makes those
+        // submits fail the guard and reject/retry against the next model instead.
+        let stoppingEngine = self.engine
+        self.engine = nil
         pendingTimeoutTask?.cancel()
         pendingTimeoutTask = nil
         // Log a final stats line before teardown, then stop the periodic logger.
@@ -2055,14 +2063,13 @@ public actor BatchScheduler {
         ttlReapTask?.cancel()
         ttlReapTask = nil
 
-        if let engine = self.engine {
+        if let engine = stoppingEngine {
             _ = engine.core.abortAllRequests()
             // Stop the loop AND wait for it to fully exit: this fences any in-flight
             // step's MLX work and releases the loop's hold on the engine, so the
             // teardown reclaim below is both safe and actually frees the batch KV.
             await engine.core.stopAndWait()
         }
-        self.engine = nil
         modelContainer = nil
         tokenizer = nil
         // The engine chain is released above, so the batch KV is now in the

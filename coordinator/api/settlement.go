@@ -73,14 +73,13 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	if pr == nil {
 		return
 	}
-	// This is the single chokepoint for post-commit consumer disconnects: the
-	// request committed (streamed at least the first chunk) and the consumer-side
-	// handler returned while a provider terminal was still outstanding. Count it
-	// as an after_commit client cancellation regardless of how it later settles
-	// (provider completes → partial_success; provider errors → refund; grace
-	// expires → no_terminal_after_cancel). The before_first_token phase is emitted
-	// by the pre-commit client-gone paths, keeping this metric splittable.
-	s.recordClientCancellation(pr.Model, clientCancelPhaseAfterCommit)
+	// Single chokepoint for post-commit consumer disconnects: the request
+	// committed (streamed at least the first chunk) and the consumer-side handler
+	// returned while a provider terminal was still outstanding. The after_commit
+	// client-gone count is emitted at each terminal (handleComplete, handle-
+	// InferenceError, and the grace-expiry path below) on routing.client_gone —
+	// the single client-gone metric, with both phases plus prompt-size/chip
+	// dimensions — so it is not duplicated here.
 	if s.settlements == nil {
 		// Defensive: a Server built without newSettlementHolder still refunds
 		// rather than leaking the reservation.

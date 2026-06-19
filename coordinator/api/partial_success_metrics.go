@@ -16,17 +16,15 @@ package api
 //   - d_inference.inference.partial_success{model,error_class}
 //       emitted IN ADDITION to inference.completions when the consumer was gone at
 //       completion time (handleComplete, consumerGone == true).
-//   - d_inference.inference.client_cancellations{model,phase}
-//       the broad client-cancellation counter, split by phase. The after_commit
-//       phase is emitted at the single post-commit-disconnect chokepoint
-//       (holdForSettlement). The before_first_token phase is emitted by the
-//       pre-commit client-gone paths (api/dispatch.go, api/consumer.go) that drive
-//       the routing.client_gone counter; the tag schema here reserves that phase
-//       value.
 //   - d_inference.inference.no_terminal_after_cancel{model}
 //       emitted when a post-commit disconnect's settlement grace expires with no
 //       provider terminal (payout-gap edge): the reservation is refunded and the
 //       provider is never paid for whatever it may have produced.
+//
+// The broad "how many clients went away, by phase" signal is NOT duplicated here:
+// it lives on d_inference.routing.client_gone{model,prompt_bucket,chip_family,phase},
+// which already carries both the before_first_token (pre-commit) and after_commit
+// (provider terminal) phases plus prompt-size and chip dimensions.
 //
 // All counters go through the existing DogStatsD wrappers (ddIncr), which no-op
 // when Datadog is not configured (e.g. in tests). The "d_inference." namespace is
@@ -35,15 +33,7 @@ package api
 // Metric names (without the "d_inference." namespace prefix added by the client).
 const (
 	metricPartialSuccess        = "inference.partial_success"
-	metricClientCancellations   = "inference.client_cancellations"
 	metricNoTerminalAfterCancel = "inference.no_terminal_after_cancel"
-)
-
-// Phases for the metricClientCancellations "phase" tag. The two values split a
-// client cancellation by whether any response had been committed to the client.
-const (
-	clientCancelPhaseBeforeFirstToken = "before_first_token"
-	clientCancelPhaseAfterCommit      = "after_commit"
 )
 
 // errorClassClientGoneAfterCommitCompleted is the route-outcome error_class for a
@@ -58,23 +48,12 @@ func partialSuccessTags(model, errorClass string) []string {
 	return []string{"model:" + model, "error_class:" + errorClass}
 }
 
-// clientCancellationTags builds the tag set for metricClientCancellations.
-func clientCancellationTags(model, phase string) []string {
-	return []string{"model:" + model, "phase:" + phase}
-}
-
 // recordPartialSuccessCompletion emits the partial_success counter for a request
 // that the provider COMPLETED (and was billed/paid for) after the consumer had
 // already disconnected. Call this in addition to — never instead of — the
 // existing inference.completions emit.
 func (s *Server) recordPartialSuccessCompletion(model, errorClass string) {
 	s.ddIncr(metricPartialSuccess, partialSuccessTags(model, errorClass))
-}
-
-// recordClientCancellation emits the client-cancellation counter for the given
-// phase (before_first_token | after_commit).
-func (s *Server) recordClientCancellation(model, phase string) {
-	s.ddIncr(metricClientCancellations, clientCancellationTags(model, phase))
 }
 
 // recordNoTerminalAfterCancel emits the no-terminal-after-cancel counter: a

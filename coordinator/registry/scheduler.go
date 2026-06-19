@@ -1016,10 +1016,14 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	// Long-prompt fastest-tier preference: amplify the prefill term for
 	// very long prompts so the fastest-prefill warm provider is strongly preferred,
-	// reducing pre-first-token client_gone. Folded into thisReqMs so the cost
-	// breakdown invariant (sum of terms == Total) holds. Returns 0 — and so leaves
-	// the cost byte-for-byte unchanged — for short prompts and when the knob is off.
-	thisReqMs += longPromptPrefillPenalty(reqPrompt, snap.prefillTPS)
+	// reducing pre-first-token client_gone. Uses resolvePrefillTPS (the live,
+	// observed-preferred prefill signal) — not the static rate — so the bias
+	// follows real measured prefill and does not favor a box whose static rate
+	// looks good but whose measured prefill is degraded. Folded into thisReqMs so
+	// the cost breakdown invariant (sum of terms == Total) holds. Returns 0 — and
+	// so leaves the cost byte-for-byte unchanged — for short prompts and when the
+	// knob is off.
+	thisReqMs += longPromptPrefillPenalty(reqPrompt, resolvePrefillTPS(snap))
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
 

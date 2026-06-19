@@ -319,31 +319,20 @@ func TestPartialSuccessMetricNamesAndTags(t *testing.T) {
 	if metricPartialSuccess != "inference.partial_success" {
 		t.Errorf("metricPartialSuccess = %q", metricPartialSuccess)
 	}
-	if metricClientCancellations != "inference.client_cancellations" {
-		t.Errorf("metricClientCancellations = %q", metricClientCancellations)
-	}
 	if metricNoTerminalAfterCancel != "inference.no_terminal_after_cancel" {
 		t.Errorf("metricNoTerminalAfterCancel = %q", metricNoTerminalAfterCancel)
 	}
 	if errorClassClientGoneAfterCommitCompleted != "client_gone_after_commit_provider_completed" {
 		t.Errorf("errorClassClientGoneAfterCommitCompleted = %q", errorClassClientGoneAfterCommitCompleted)
 	}
-	if clientCancelPhaseBeforeFirstToken != "before_first_token" || clientCancelPhaseAfterCommit != "after_commit" {
-		t.Errorf("phase constants = %q/%q", clientCancelPhaseBeforeFirstToken, clientCancelPhaseAfterCommit)
-	}
 
 	if got := partialSuccessTags("m", "c"); !reflect.DeepEqual(got, []string{"model:m", "error_class:c"}) {
 		t.Errorf("partialSuccessTags = %v", got)
-	}
-	if got := clientCancellationTags("m", clientCancelPhaseAfterCommit); !reflect.DeepEqual(got, []string{"model:m", "phase:after_commit"}) {
-		t.Errorf("clientCancellationTags = %v", got)
 	}
 
 	// Nil-safety: no Datadog client configured in tests; helpers must not panic.
 	srv, _, _ := billingTestServer(t)
 	srv.recordPartialSuccessCompletion("m", errorClassClientGoneAfterCommitCompleted)
-	srv.recordClientCancellation("m", clientCancelPhaseBeforeFirstToken)
-	srv.recordClientCancellation("m", clientCancelPhaseAfterCommit)
 	srv.recordNoTerminalAfterCancel("m")
 }
 

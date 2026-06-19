@@ -92,6 +92,10 @@ func longPromptScenarioRegistry(t *testing.T) (reg *Registry, model, fastID, slo
 	t.Helper()
 	reg = New(testLogger())
 	model = "long-prompt-route-model"
+	// observedTPS here is observed DECODE (pinned equal at 100); observed PREFILL
+	// is left unset (0), so resolvePrefillTPS falls back to the static PrefillTPS
+	// set below. Observed-vs-static prefill preference is covered separately by
+	// TestLongPromptPrefersObservedOverStaticPrefill.
 	fast := makeTokenBudgetProvider(t, reg, "fast-prefill", model, 100, 1_800, 200_000, 100)
 	fast.mu.Lock()
 	fast.PrefillTPS = 1_000
@@ -165,5 +169,44 @@ func TestReserveProviderLongPromptPrefersFasterPrefill(t *testing.T) {
 		if diff := sum - dec.CostMs; diff > 0.001 || diff < -0.001 {
 			t.Fatalf("breakdown sum %f != CostMs %f (penalty must fold into ThisReqMs)", sum, dec.CostMs)
 		}
+	}
+}
+
+// TestLongPromptPrefersObservedOverStaticPrefill proves the long-prompt penalty
+// ranks on resolvePrefillTPS (the observed-preferred live signal), not the static
+// rate. A box with a fast STATIC prefill but degraded MEASURED prefill must lose
+// a long prompt to a box with a slower static rate but faster measured prefill —
+// exactly the misroute the static version would cause.
+func TestLongPromptPrefersObservedOverStaticPrefill(t *testing.T) {
+	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
+	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
+	SetLongPromptThreshold(8_000)
+	SetLongPromptPrefillWeight(2.0)
+
+	reg := New(testLogger())
+	model := "long-prompt-observed-model"
+	// Static says A is the fast box; the live measured PREFILL says A is degraded
+	// (200) and B is fast (2000). Both idle and equal on decode, so only the
+	// prefill signal differs. observedTPS arg (observed decode) is pinned equal.
+	staticFast := makeTokenBudgetProvider(t, reg, "static-fast-observed-slow", model, 100, 0, 200_000, 100)
+	staticFast.mu.Lock()
+	staticFast.PrefillTPS = 2_000
+	staticFast.BackendCapacity.Slots[0].ObservedPrefillTPS = 200 // degraded live prefill
+	staticFast.mu.Unlock()
+	observedFast := makeTokenBudgetProvider(t, reg, "static-slow-observed-fast", model, 100, 0, 200_000, 100)
+	observedFast.mu.Lock()
+	observedFast.PrefillTPS = 400
+	observedFast.BackendCapacity.Slots[0].ObservedPrefillTPS = 2_000 // fast live prefill
+	observedFast.mu.Unlock()
+
+	sel, dec := reg.ReserveProviderEx(model, &PendingRequest{
+		RequestID: "long-observed", Model: model, EstimatedPromptTokens: 12_000, RequestedMaxTokens: 256,
+	})
+	if sel == nil {
+		t.Fatalf("returned nil provider; decision=%+v", dec)
+	}
+	if sel.ID != observedFast.ID {
+		t.Fatalf("selected %q, want observed-fastest %q — the penalty must rank on resolvePrefillTPS, not static prefillTPS; decision=%+v",
+			sel.ID, observedFast.ID, dec)
 	}
 }

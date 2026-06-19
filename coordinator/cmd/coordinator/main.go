@@ -345,9 +345,14 @@ func main() {
 			srv.SetLongPromptThreshold(tokens)
 			weight := registry.LongPromptPrefillWeight() // sensible default unless overridden
 			if wv := os.Getenv("EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT"); wv != "" {
-				if w, werr := strconv.ParseFloat(wv, 64); werr == nil && w >= 1.0 {
+				if w, werr := strconv.ParseFloat(wv, 64); werr == nil {
+					// Pass any parsed float to the setter, which clamps values
+					// below 1.0 to the neutral 1.0 — so an operator can set 0 or
+					// 0.5 to disable the bias (as the comment above documents)
+					// instead of having it silently fall back to the strong
+					// default. Read the effective (clamped) value back for the log.
 					srv.SetLongPromptPrefillWeight(w)
-					weight = w
+					weight = registry.LongPromptPrefillWeight()
 				} else {
 					logger.Warn("invalid EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT; using default", "value", wv, "default", weight)
 				}

@@ -625,6 +625,7 @@ func (r *Registry) pendingModelLoadCount(now time.Time) int {
 	for key, expiresAt := range r.pendingModelLoads {
 		if now.After(expiresAt) {
 			delete(r.pendingModelLoads, key)
+			delete(r.pendingModelLoadStarted, key)
 			continue
 		}
 		count++

@@ -332,6 +332,38 @@ func main() {
 		}
 	}
 
+	// Routing: long-prompt fastest-tier preference. Very long prompts
+	// have a long prefill window that drives pre-first-token client cancellations
+	// (client_gone). When EIGENINFERENCE_LONG_PROMPT_TOKENS is set, the scheduler
+	// biases requests whose estimated prompt is at/above that count toward the
+	// fastest-prefill (== fastest chip tier) warm provider. Unset/<=0 keeps the
+	// routing cost behavior-neutral. SOFT ranking bias only — it never adds a hard
+	// TTFT 429. The optional EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT (default
+	// 2.0; >1 amplifies, <1 clamps to neutral) tunes how strong the bias is.
+	if v := os.Getenv("EIGENINFERENCE_LONG_PROMPT_TOKENS"); v != "" {
+		if tokens, err := strconv.Atoi(v); err == nil && tokens > 0 {
+			srv.SetLongPromptThreshold(tokens)
+			weight := registry.LongPromptPrefillWeight() // sensible default unless overridden
+			if wv := os.Getenv("EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT"); wv != "" {
+				if w, werr := strconv.ParseFloat(wv, 64); werr == nil {
+					// Pass any parsed float to the setter, which clamps values
+					// below 1.0 to the neutral 1.0 — so an operator can set 0 or
+					// 0.5 to disable the bias (as the comment above documents)
+					// instead of having it silently fall back to the strong
+					// default. Read the effective (clamped) value back for the log.
+					srv.SetLongPromptPrefillWeight(w)
+					weight = registry.LongPromptPrefillWeight()
+				} else {
+					logger.Warn("invalid EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT; using default", "value", wv, "default", weight)
+				}
+			}
+			logger.Info("long-prompt fastest-tier routing preference ENABLED via EIGENINFERENCE_LONG_PROMPT_TOKENS",
+				"threshold_tokens", tokens, "prefill_weight", weight)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_LONG_PROMPT_TOKENS; ignoring (preference stays off)", "value", v)
+		}
+	}
+
 	// Routing: per-request sustained-decode floor (tokens/sec). The quality bar is
 	// ON BY DEFAULT (15 tok/s) so the scheduler won't pack a provider into a
 	// degraded stream; it softly prefers providers that keep a newly admitted

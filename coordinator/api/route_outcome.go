@@ -119,7 +119,7 @@ func completeRouteOutcome(pr *registry.PendingRequest, usage protocol.UsageInfo,
 	errorClass := ""
 	if consumerGone {
 		status = "partial_success"
-		errorClass = "client_gone_after_commit_provider_completed"
+		errorClass = errorClassClientGoneAfterCommitCompleted
 	}
 	out := &store.InferenceRouteOutcome{
 		FinalStatus:      status,

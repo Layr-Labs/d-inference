@@ -1634,6 +1634,22 @@ public actor BatchScheduler {
 
     // MARK: - Submit / cancel
 
+    /// The scheduler token gate (`tokenBudgetMax`) counts MLX's reclaimable pool as
+    /// used, so a request can be rejected with `token_budget_exhausted` even though
+    /// flushing that pool would admit it — and that gate runs before the per-request
+    /// KV reservation (which has its own self-heal). Flush once here when the gate is
+    /// tight (rate-limited + shortfall-gated, sharing the reservation gate's limiter)
+    /// so the gate is re-evaluated against the reclaimed headroom. Call this BEFORE
+    /// reading `activeTokenBudgetUsed`, so its only suspension is outside the atomic
+    /// activeUsed→bridge section the cumulative gate relies on.
+    private func reclaimPoolForTokenBudget(requestBudget: Int) async {
+        guard kvBytesPerToken > 0, let kvBudget else { return }
+        let need = activeTokenBudgetUsed + requestBudget
+        guard need > tokenBudgetMax else { return }
+        let shortfallBytes = UInt64(need - tokenBudgetMax) * UInt64(kvBytesPerToken)
+        _ = await kvBudget.reclaimForShortfall(shortfallBytes)
+    }
+
     /// Submit a pre-tokenized prompt. Used by `MultiModelBatchSchedulerEngine`
     /// which tokenizes the full OpenAI request (including tools, tool_call_id,
     /// reasoning_content, etc.) itself, then hands the token IDs here.
@@ -1663,18 +1679,23 @@ public actor BatchScheduler {
         let submitEpoch = generationEpoch
 
         let requestBudget = promptTokens.count + maxTokens
-        guard requestBudget <= tokenBudgetMax else {
+        // Flush the reclaimable pool before the token gate if it's tight (the gate
+        // counts the pool as used). The await is here, before the atomic
+        // activeUsed→bridge section below, so it adds no reentrancy there.
+        await reclaimPoolForTokenBudget(requestBudget: requestBudget)
+        let budgetMax = tokenBudgetMax
+        guard requestBudget <= budgetMax else {
             continuation.yield(.error(
-                "token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax) available"
+                "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"
             ))
             continuation.finish()
             return stream
         }
 
         let activeUsed = activeTokenBudgetUsed
-        if activeUsed + requestBudget > tokenBudgetMax {
+        if activeUsed + requestBudget > budgetMax {
             continuation.yield(.error(
-                "token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax - activeUsed) available"
+                "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax - activeUsed) available"
             ))
             continuation.finish()
             return stream
@@ -1829,9 +1850,14 @@ public actor BatchScheduler {
         )
 
         let requestBudget = promptTokens.count + maxTokens
-        guard requestBudget <= tokenBudgetMax else {
+        // Flush the reclaimable pool before the token gate if it's tight (the gate
+        // counts the pool as used). This await is intentionally before the atomic
+        // activeUsed→bridge section below, so it adds no reentrancy there.
+        await reclaimPoolForTokenBudget(requestBudget: requestBudget)
+        let budgetMax = tokenBudgetMax
+        guard requestBudget <= budgetMax else {
             continuation.yield(.error(
-                "token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax) available"
+                "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"
             ))
             continuation.finish()
             return stream
@@ -1849,9 +1875,9 @@ public actor BatchScheduler {
         // exit below (planner reject, KV reject) must roll back the
         // bridge via `dropBridge(...)`.
         let activeUsed = activeTokenBudgetUsed
-        if activeUsed + requestBudget > tokenBudgetMax {
+        if activeUsed + requestBudget > budgetMax {
             continuation.yield(.error(
-                "token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax - activeUsed) available"
+                "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax - activeUsed) available"
             ))
             continuation.finish()
             return stream
@@ -2046,6 +2072,14 @@ public actor BatchScheduler {
 
     private func stopCurrentEngine() async {
         generationEpoch &+= 1
+        // Detach the engine synchronously, before any suspension below. The teardown
+        // awaits (stats logging, stopAndWait) let a submit interleave on the actor;
+        // if self.engine still pointed at the stopping engine it would pass
+        // engineStillCurrent (epoch already bumped, identity still matches) and get
+        // enqueued onto an engine being torn down. Nil'ing it now makes those
+        // submits fail the guard and reject/retry against the next model instead.
+        var stoppingEngine = self.engine
+        self.engine = nil
         pendingTimeoutTask?.cancel()
         pendingTimeoutTask = nil
         // Log a final stats line before teardown, then stop the periodic logger.
@@ -2055,11 +2089,16 @@ public actor BatchScheduler {
         ttlReapTask?.cancel()
         ttlReapTask = nil
 
-        if let engine = self.engine {
+        if let engine = stoppingEngine {
             _ = engine.core.abortAllRequests()
-            await engine.stop()
+            // Stop the loop AND wait for it to fully exit: this fences any in-flight
+            // step's MLX work and releases the loop's hold on the engine.
+            await engine.core.stopAndWait()
         }
-        self.engine = nil
+        // Drop our own reference too, so the engine — and its batch KV, including
+        // rows from the requests we just aborted — is released to the reclaimable
+        // pool before the clearCache at the end of teardown.
+        stoppingEngine = nil
         modelContainer = nil
         tokenizer = nil
         // Drain the bounded capture pipeline FIRST (#374): the engine is stopped
@@ -2081,6 +2120,15 @@ public actor BatchScheduler {
         checkpointManager = nil
         checkpointBoundaries = []
         checkpointLayerSignatures = []
+
+        // Now that everything holding KV is released — the engine chain (batch KV),
+        // the capture pipeline (retained snapshots) and the RAM prefix tier — return
+        // the freed pool to the OS. Done here, after those releases, so the flush
+        // doesn't miss KV that those steps move into the pool. Fence async GPU
+        // completion first (M4 IOKit guard). Teardown runs with no engine, so this
+        // actor block can't starve request admission.
+        MLX.Stream().synchronize()
+        MLX.Memory.clearCache()
 
         // Purge the engine-tier owner's on-disk dir too (same kv/<modelKey> dir;
         // whichever tier ran first already removed it, so this no-ops then).

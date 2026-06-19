@@ -1039,6 +1039,22 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 	s.minDecodeTPS = tps
 }
 
+// SetLongPromptThreshold configures the estimated-prompt-token count at/above
+// which the scheduler applies the long-prompt fastest-tier routing preference.
+// 0 disables it (behavior-neutral). It is a package-level scheduler knob (like
+// the prefill/decode ratio), so this delegates to the registry. Call before
+// serving starts. SOFT bias only — no TTFT 429 is introduced.
+func (s *Server) SetLongPromptThreshold(tokens int) {
+	registry.SetLongPromptThreshold(tokens)
+}
+
+// SetLongPromptPrefillWeight configures the prefill-term multiplier the scheduler
+// applies to long prompts. Values < 1 clamp to 1.0 (no amplification).
+// Delegates to the registry; call before serving starts.
+func (s *Server) SetLongPromptPrefillWeight(weight float64) {
+	registry.SetLongPromptPrefillWeight(weight)
+}
+
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.
 func (s *Server) SetKnownBinaryHashes(hashes []string) {
 	normalized := normalizeKnownBinaryHashes(hashes, s.logger)

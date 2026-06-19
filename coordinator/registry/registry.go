@@ -256,6 +256,15 @@ func (pr *PendingRequest) MarkReservationFinalized() bool {
 	return ok
 }
 
+// IsReservationFinalized reports whether the reservation has already been
+// settled or refunded (so a late terminal must not re-settle or be counted
+// as a fresh client cancellation).
+func (pr *PendingRequest) IsReservationFinalized() bool {
+	pr.reservationMu.Lock()
+	defer pr.reservationMu.Unlock()
+	return pr.reservationFinalized
+}
+
 // FinalizeReservation runs settle while holding the reservation finalization
 // lock and marks the reservation finalized only if settle succeeds. It returns
 // false when another terminal path already finalized the reservation.
@@ -653,6 +662,45 @@ func (p *Provider) SetCodeAttested(v bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.CodeAttested = v
+}
+
+// CodeIdentityState is the live code-identity snapshot a reuse decision evaluates.
+// APNsDeviceToken/Version can rotate concurrently (maybeRearmCodeAttest), so the
+// decision must use these, not values captured earlier.
+type CodeIdentityState struct {
+	APNsDeviceToken        string
+	Version                string
+	SEPublicKey            string
+	AttestationValid       bool
+	RuntimeVerified        bool
+	RuntimeManifestChecked bool
+	ChallengeVerifiedSIP   bool
+}
+
+// GrantCodeAttestedIf runs `decide` against the live state and sets
+// CodeAttested=true iff it returns true — atomically under the provider lock, so a
+// concurrent token rotation can't interleave between the decision and the grant
+// (closes the rotation TOCTOU). `decide` must not take this provider's lock; it
+// may take others (e.g. the throttle) — lock order is always provider → throttle.
+func (p *Provider) GrantCodeAttestedIf(decide func(CodeIdentityState) bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	st := CodeIdentityState{
+		APNsDeviceToken:        p.APNsDeviceToken,
+		Version:                p.Version,
+		AttestationValid:       p.AttestationResult != nil && p.AttestationResult.Valid,
+		RuntimeVerified:        p.RuntimeVerified,
+		RuntimeManifestChecked: p.RuntimeManifestChecked,
+		ChallengeVerifiedSIP:   p.ChallengeVerifiedSIP,
+	}
+	if p.AttestationResult != nil {
+		st.SEPublicKey = p.AttestationResult.PublicKey
+	}
+	if !decide(st) {
+		return false
+	}
+	p.CodeAttested = true
+	return true
 }
 
 // GetCodeAttested reports whether this connection passed code-identity
@@ -1056,6 +1104,18 @@ const pendingModelLoadTTL = 2 * time.Minute
 // would strand queued requests that this provider (or its post-restart
 // re-registration) could serve.
 const pendingModelLoadDrainBackoff = 30 * time.Second
+
+// pendingModelLoadMemoryBackoff is the short cooldown used when a proactive
+// load_model fails for a NON-draining reason — dominated by transient memory
+// pressure (insufficient free memory / KV headroom) that frees within seconds
+// as in-flight requests on other slots finish. Leaving the full
+// pendingModelLoadTTL (2 min, ≈ the 120s request-queue timeout) would suppress
+// proactive re-loads to this provider long enough that a request which queues
+// right after the failure times out before the provider is reconsidered, even
+// though its memory may have freed almost immediately. Kept equal to the drain
+// backoff today but named separately so the two can diverge. The ~10s warm-pool
+// sweep reaps the re-stamped entry deterministically.
+const pendingModelLoadMemoryBackoff = 30 * time.Second
 
 // dispatchLoadCooldownTTL is how long routing skips a pair after a dispatch
 // load failure — long enough to stop the retry loop, short enough that a
@@ -3124,6 +3184,30 @@ func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Dur
 	return time.Since(started)
 }
 
+// backoffPendingModelLoad re-stamps a pending load entry's expiry to
+// now+backoff, seeding pendingModelLoadStarted when this is the first time the
+// pair is seen (the coordinator may learn of a rejection for a load_model whose
+// reservation already expired or was cleared). Shared by the drain and
+// memory/generic-failure backoff paths so a failed load is reconsidered after a
+// short cooldown instead of the full pendingModelLoadTTL. Caller must NOT hold
+// r.mu.
+func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pendingModelLoads == nil {
+		r.pendingModelLoads = make(map[string]time.Time)
+	}
+	if r.pendingModelLoadStarted == nil {
+		r.pendingModelLoadStarted = make(map[string]time.Time)
+	}
+	key := modelLoadKey(providerID, modelID)
+	now := time.Now()
+	r.pendingModelLoads[key] = now.Add(backoff)
+	if r.pendingModelLoadStarted[key].IsZero() {
+		r.pendingModelLoadStarted[key] = now
+	}
+}
+
 // BackoffPendingModelLoadForDrain re-stamps a pending load entry with the
 // short drain backoff. Called when a provider rejects load_model because it
 // is draining ahead of an auto-update restart: clearing the entry outright
@@ -3132,16 +3216,19 @@ func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Dur
 // provider long after a failed restart resumed serving. A successful restart
 // clears the entry anyway via Disconnect.
 func (r *Registry) BackoffPendingModelLoadForDrain(providerID, modelID string) {
-	r.mu.Lock()
-	key := modelLoadKey(providerID, modelID)
-	r.pendingModelLoads[key] = time.Now().Add(pendingModelLoadDrainBackoff)
-	if r.pendingModelLoadStarted == nil {
-		r.pendingModelLoadStarted = make(map[string]time.Time)
-	}
-	if r.pendingModelLoadStarted[key].IsZero() {
-		r.pendingModelLoadStarted[key] = time.Now()
-	}
-	r.mu.Unlock()
+	r.backoffPendingModelLoad(providerID, modelID, pendingModelLoadDrainBackoff)
+}
+
+// BackoffPendingModelLoadForMemory re-stamps a pending load entry with the
+// short memory backoff after a NON-draining load_model failure (see
+// pendingModelLoadMemoryBackoff). Memory-pressure load failures recover in
+// seconds, so the entry must not keep the provider unplannable for the full
+// pendingModelLoadTTL — that window (~2 min) is ≈ the 120s queue timeout, so a
+// request queued right after the failure would time out before the provider is
+// reconsidered by TriggerModelSwaps. The ~10s warm-pool sweep reaps the
+// re-stamped entry.
+func (r *Registry) BackoffPendingModelLoadForMemory(providerID, modelID string) {
+	r.backoffPendingModelLoad(providerID, modelID, pendingModelLoadMemoryBackoff)
 }
 
 // RejectUnservableQueuedRequests checks whether any eligible provider can

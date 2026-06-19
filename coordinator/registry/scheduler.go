@@ -1014,6 +1014,30 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	}
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
+	// Long-prompt fastest-tier preference: amplify the first-token-blocking time
+	// for very long prompts so the provider that reaches first token soonest is
+	// strongly preferred, reducing pre-first-token client_gone. The amplified
+	// quantity is the FULL time-to-first-token (TTFT): prefill PLUS, for a COLD
+	// provider, the model-load latency (statePenalty, ~30s). Prefill uses
+	// resolvePrefillTPS (the live, observed-preferred prefill signal) — not the
+	// static rate — so the bias follows real measured prefill and does not favor a
+	// box whose static rate looks good but whose measured prefill is degraded.
+	// Amplifying the full cold-load+prefill TTFT — not just prefill — prevents the
+	// long-prompt bias from pulling a long prompt onto a cold box whose fast
+	// prefill is dwarfed by the load and which is therefore slower end-to-end than
+	// the fastest warm provider. Folded into thisReqMs so the cost breakdown
+	// invariant (sum of terms == Total) holds. Returns 0 — and so leaves the cost
+	// byte-for-byte unchanged — for short prompts and when the knob is off.
+	prefillMs := float64(reqPrompt) / resolvePrefillTPS(snap) * 1000.0
+	ttftBlockMs := prefillMs
+	if !snap.modelLoaded {
+		// A cold provider must load before it can prefill; amplify its full
+		// first-token latency (load + prefill), not just prefill, so the long-
+		// prompt bias does not pull a long prompt onto a cold box that is slower
+		// end-to-end than the fastest warm provider.
+		ttftBlockMs += statePenalty
+	}
+	thisReqMs += longPromptPenalty(reqPrompt, ttftBlockMs)
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
 
@@ -1225,6 +1249,88 @@ func SetPrefillToDecodeRatio(ratio float64) {
 // measured prefill rate). Exposed for the routing simulation harness.
 func PrefillToDecodeRatio() float64 {
 	return prefillToDecodeRatio
+}
+
+// defaultLongPromptThresholdTokens gates the long-prompt fastest-tier routing
+// preference. 0 disables it entirely (behavior-neutral): the routing
+// cost is unchanged for every request, short or long. A positive value turns the
+// preference ON for requests whose estimated prompt is at or above the threshold.
+const defaultLongPromptThresholdTokens = 0
+
+// defaultLongPromptPrefillWeight is the multiplier applied to the prefill term of
+// the routing cost for long prompts. 1.0 is behavior-neutral; >1 amplifies the
+// prefill component so the fastest-prefill (== fastest chip tier) warm provider is
+// strongly preferred once the prompt is long enough that prefill dominates TTFT.
+const defaultLongPromptPrefillWeight = 2.0
+
+// longPromptThresholdTokens / longPromptPrefillWeight are configured once at
+// startup (via SetLongPromptThreshold / SetLongPromptPrefillWeight, e.g. from
+// EIGENINFERENCE_LONG_PROMPT_TOKENS) before serving begins, then only read on the
+// routing path. Default-off so the scheduler is byte-for-byte unchanged unless an
+// operator opts in.
+var (
+	longPromptThresholdTokens = defaultLongPromptThresholdTokens
+	longPromptPrefillWeight   = defaultLongPromptPrefillWeight
+)
+
+// SetLongPromptThreshold sets the estimated-prompt-token count at/above which the
+// long-prompt fastest-tier routing preference activates. A value <= 0 disables the
+// preference (behavior-neutral). Must be called before serving starts.
+func SetLongPromptThreshold(tokens int) {
+	if tokens < 0 {
+		tokens = 0
+	}
+	longPromptThresholdTokens = tokens
+}
+
+// LongPromptThreshold returns the current long-prompt token threshold (0 = off).
+func LongPromptThreshold() int {
+	return longPromptThresholdTokens
+}
+
+// SetLongPromptPrefillWeight overrides the prefill-term multiplier used for long
+// prompts. Non-finite values (NaN/±Inf — which slip through a naive `< 1` clamp
+// because NaN comparisons are always false, then poison every candidate cost) are
+// reset to the default. Values < 1 are clamped to 1.0 (no amplification). Must be
+// called before serving starts.
+func SetLongPromptPrefillWeight(w float64) {
+	weight := w
+	if math.IsNaN(weight) || math.IsInf(weight, 0) {
+		weight = defaultLongPromptPrefillWeight
+	}
+	if weight < 1.0 {
+		weight = 1.0
+	}
+	longPromptPrefillWeight = weight
+}
+
+// LongPromptPrefillWeight returns the current long-prompt prefill-term multiplier.
+func LongPromptPrefillWeight() float64 {
+	return longPromptPrefillWeight
+}
+
+// longPromptPenalty returns the EXTRA first-token-blocking cost (ms) added to a
+// candidate's per-request cost so very long prompts prefer the provider that
+// reaches first token soonest. It amplifies the supplied time-to-first-token
+// (ttftBlockMs) by (weight-1). The caller passes the FULL TTFT: prefill for a warm
+// provider, or model-load latency + prefill for a cold one. Amplifying the full
+// TTFT (rather than prefill alone) means a cold box's fast prefill cannot win a
+// long prompt when its ~30s load makes it slower end-to-end than the fastest warm
+// provider, while a warm provider with twice the prefill throughput still sees
+// half the penalty so the fastest chip-tier wins decisively.
+//
+// Returns 0 (fully behavior-preserving) when the preference is disabled
+// (threshold <= 0), the prompt is below the threshold (short prompts unaffected),
+// the weight is neutral (<= 1), or the blocking time is non-positive. It is a SOFT
+// ranking bias only: no candidate is dropped and no TTFT 429 is introduced.
+func longPromptPenalty(reqPromptTokens int, ttftBlockMs float64) float64 {
+	if longPromptThresholdTokens <= 0 || reqPromptTokens < longPromptThresholdTokens {
+		return 0
+	}
+	if ttftBlockMs <= 0 || longPromptPrefillWeight <= 1.0 {
+		return 0
+	}
+	return (longPromptPrefillWeight - 1.0) * ttftBlockMs
 }
 
 func resolvedPrefillTPS(p *Provider) float64 {

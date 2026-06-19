@@ -90,7 +90,7 @@ public enum BootPolicyDiagnostic {
     public static func parseSystemProfilerJSON(_ json: String) throws -> BootPolicy? {
         let data = Data(json.utf8)
         let report = try JSONDecoder().decode(SystemProfilerBridgeReport.self, from: data)
-        return report.SPiBridgeDataType.compactMap { record in
+        return report.SPiBridgeDataType.compactMap { record -> BootPolicy? in
             guard let secureBoot = nonEmpty(record.secureBoot) else {
                 return nil
             }

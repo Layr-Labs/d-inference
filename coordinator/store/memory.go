@@ -687,7 +687,12 @@ func (s *MemoryStore) UsageTimeSeries(since time.Time) []UsageBucket {
 	return out
 }
 
-// Leaderboard ranks accounts by the chosen metric across provider_earnings.
+// Leaderboard ranks accounts by the chosen metric, combining inference work
+// (provider_earnings) with non-inference reward ledger entries (referral_reward,
+// admin_reward). EarningsMicroUSD is the combined total (work + reward) and is
+// the ranking key for the earnings metric. Accounts with rewards but no work
+// still appear (work=0). A deterministic account_id tiebreaker keeps ordering
+// stable.
 func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -695,6 +700,15 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 		limit = 50
 	}
 	agg := make(map[string]*LeaderboardRow)
+	rowFor := func(accountID string) *LeaderboardRow {
+		row, ok := agg[accountID]
+		if !ok {
+			row = &LeaderboardRow{AccountID: accountID}
+			agg[accountID] = row
+		}
+		return row
+	}
+	// Inference work earnings.
 	for _, e := range s.providerEarnings {
 		if e.AccountID == "" {
 			continue
@@ -702,28 +716,42 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 		if !since.IsZero() && e.CreatedAt.Before(since) {
 			continue
 		}
-		row, ok := agg[e.AccountID]
-		if !ok {
-			row = &LeaderboardRow{AccountID: e.AccountID}
-			agg[e.AccountID] = row
-		}
-		row.EarningsMicroUSD += e.AmountMicroUSD
+		row := rowFor(e.AccountID)
+		row.WorkEarningsMicroUSD += e.AmountMicroUSD
 		row.Tokens += int64(e.PromptTokens + e.CompletionTokens)
 		row.Jobs++
 	}
+	// Non-inference reward earnings.
+	for _, e := range s.ledgerEntries {
+		if e.AccountID == "" || !IsRewardLedgerType(e.Type) {
+			continue
+		}
+		if !since.IsZero() && e.CreatedAt.Before(since) {
+			continue
+		}
+		rowFor(e.AccountID).RewardEarningsMicroUSD += e.AmountMicroUSD
+	}
 	rows := make([]LeaderboardRow, 0, len(agg))
 	for _, r := range agg {
+		r.EarningsMicroUSD = r.WorkEarningsMicroUSD + r.RewardEarningsMicroUSD
 		rows = append(rows, *r)
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		switch metric {
 		case LeaderboardTokens:
-			return rows[i].Tokens > rows[j].Tokens
+			if rows[i].Tokens != rows[j].Tokens {
+				return rows[i].Tokens > rows[j].Tokens
+			}
 		case LeaderboardJobs:
-			return rows[i].Jobs > rows[j].Jobs
+			if rows[i].Jobs != rows[j].Jobs {
+				return rows[i].Jobs > rows[j].Jobs
+			}
 		default:
-			return rows[i].EarningsMicroUSD > rows[j].EarningsMicroUSD
+			if rows[i].EarningsMicroUSD != rows[j].EarningsMicroUSD {
+				return rows[i].EarningsMicroUSD > rows[j].EarningsMicroUSD
+			}
 		}
+		return rows[i].AccountID < rows[j].AccountID
 	})
 	if len(rows) > limit {
 		rows = rows[:limit]
@@ -731,7 +759,10 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 	return rows
 }
 
-// NetworkTotals aggregates metrics across all earnings.
+// NetworkTotals aggregates metrics across all earnings, combining inference
+// work (provider_earnings) with non-inference reward ledger entries
+// (referral_reward, admin_reward). EarningsMicroUSD is the combined total and
+// ActiveAccounts counts distinct accounts across BOTH sources.
 func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -741,16 +772,27 @@ func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 		if !since.IsZero() && e.CreatedAt.Before(since) {
 			continue
 		}
-		t.EarningsMicroUSD += e.AmountMicroUSD
+		t.WorkEarningsMicroUSD += e.AmountMicroUSD
 		t.Tokens += int64(e.PromptTokens + e.CompletionTokens)
 		t.Jobs++
 		if e.AccountID != "" {
-			if _, ok := seen[e.AccountID]; !ok {
-				seen[e.AccountID] = struct{}{}
-				t.ActiveAccounts++
-			}
+			seen[e.AccountID] = struct{}{}
 		}
 	}
+	for _, e := range s.ledgerEntries {
+		if !IsRewardLedgerType(e.Type) {
+			continue
+		}
+		if !since.IsZero() && e.CreatedAt.Before(since) {
+			continue
+		}
+		t.RewardEarningsMicroUSD += e.AmountMicroUSD
+		if e.AccountID != "" {
+			seen[e.AccountID] = struct{}{}
+		}
+	}
+	t.EarningsMicroUSD = t.WorkEarningsMicroUSD + t.RewardEarningsMicroUSD
+	t.ActiveAccounts = int64(len(seen))
 	return t
 }
 

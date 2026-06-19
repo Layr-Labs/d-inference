@@ -29,11 +29,12 @@ func buildCausalAdditiveMask(L: Int, Lk: Int) -> MLXArray {
     return MLX.where(allowed, MLXArray(Float(0)), MLXArray(-Float.greatestFiniteMagnitude))
 }
 
+@discardableResult
 func runCase(
     _ name: String,
     B: Int, nQ: Int, nKV: Int, L: Int, Lk: Int, D: Int,
     bits: Int, groupSize: Int, causal: Bool
-) {
+) -> Bool {
     MLXRandom.seed(1234)
     let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
     let k = MLXRandom.normal([B, nKV, Lk, D]).asType(.float32)
@@ -67,10 +68,12 @@ func runCase(
     let kernelDiff = maxAbsDiff(candidate, dequantRef)
     let totalDiff = maxAbsDiff(candidate, fp16Ref)
     let mag = max(meanAbs(dequantRef), 1e-9)
-    let verdict = (kernelDiff / mag) < 0.02 ? "OK  " : "FAIL"
+    let ok = (kernelDiff / mag) < 0.02
+    let verdict = ok ? "OK  " : "FAIL"
     print(
         "[\(verdict)] \(name): kernel_vs_dequantRef maxAbs=\(String(format: "%.5f", kernelDiff)) rel=\(String(format: "%.4f", kernelDiff / mag)) | total_vs_fp16 maxAbs=\(String(format: "%.5f", totalDiff)) | meanAbs(ref)=\(String(format: "%.5f", mag))"
     )
+    return ok
 }
 
 // Quantize K/V with injected outlier channels (mimics real LLM activation/RoPE
@@ -104,7 +107,8 @@ func runOutlierCase(_ name: String, bits: Int, groupSize: Int, scaleOutlier: Flo
 }
 
 // Multi-step decode through the ACTUAL QuantizedKVCache (exercises step/expand/trim).
-func runMultiStepCacheTest(_ name: String, bits: Int, groupSize: Int) {
+@discardableResult
+func runMultiStepCacheTest(_ name: String, bits: Int, groupSize: Int) -> Bool {
     MLXRandom.seed(99)
     let B = 1, nQ = 8, nKV = 2, L = 300, D = 128  // >256 to cross the step boundary
     let q = MLXRandom.normal([B, nQ, L, D]).asType(.float32)
@@ -136,18 +140,24 @@ func runMultiStepCacheTest(_ name: String, bits: Int, groupSize: Int) {
     eval(cand, ref)
     let attnDiff = maxAbsDiff(cand, ref)
     let mag = max(meanAbs(ref), 1e-9)
-    let verdict = storageDiff < 1e-4 ? "OK  " : "FAIL"
+    let ok = storageDiff < 1e-4
+    let verdict = ok ? "OK  " : "FAIL"
     print("[\(verdict)] \(name): storage maxAbs=\(String(format: "%.6f", storageDiff)) | decode-attn vs fp16 maxAbs=\(String(format: "%.5f", attnDiff)) rel=\(String(format: "%.4f", attnDiff / mag))")
+    return ok
 }
+
+// Folds the early kernel-correctness + multi-step-cache probes into the overall
+// exit status (they previously printed [FAIL] but could not fail the binary).
+var selfTestOk = true
 
 print("== quantizedScaledDotProductAttention numerical self-test ==")
 for bits in [8, 4] {
     print("-- bits=\(bits), groupSize=64 --")
-    runCase("MHA  no-mask ", B: 1, nQ: 4, nKV: 4, L: 16, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: false)
-    runCase("MHA  causal  ", B: 1, nQ: 4, nKV: 4, L: 16, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: true)
-    runCase("GQA  no-mask ", B: 1, nQ: 8, nKV: 2, L: 16, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: false)
-    runCase("GQA  causal  ", B: 1, nQ: 8, nKV: 2, L: 16, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: true)
-    runCase("GQA  decode  ", B: 1, nQ: 8, nKV: 2, L: 1, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: false)
+    selfTestOk = runCase("MHA  no-mask ", B: 1, nQ: 4, nKV: 4, L: 16, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: false) && selfTestOk
+    selfTestOk = runCase("MHA  causal  ", B: 1, nQ: 4, nKV: 4, L: 16, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: true) && selfTestOk
+    selfTestOk = runCase("GQA  no-mask ", B: 1, nQ: 8, nKV: 2, L: 16, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: false) && selfTestOk
+    selfTestOk = runCase("GQA  causal  ", B: 1, nQ: 8, nKV: 2, L: 16, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: true) && selfTestOk
+    selfTestOk = runCase("GQA  decode  ", B: 1, nQ: 8, nKV: 2, L: 1, Lk: 16, D: 128, bits: bits, groupSize: 64, causal: false) && selfTestOk
 }
 
 print("== outlier quantization loss (causal, g32) ==")
@@ -159,7 +169,7 @@ for bits in [8, 4] {
 
 print("== multi-step QuantizedKVCache (decode, crosses step=256) ==")
 for bits in [8, 4] {
-    runMultiStepCacheTest("multistep bits=\(bits) g64", bits: bits, groupSize: 64)
+    selfTestOk = runMultiStepCacheTest("multistep bits=\(bits) g64", bits: bits, groupSize: 64) && selfTestOk
 }
 
 // Per-channel key quantization (KIVI-style): scale/bias per head_dim channel,
@@ -1099,6 +1109,6 @@ if dar323Ok {
 // top-level executable, falling off the end of the file always exits 0 — so CI
 // would treat a failing correctness gate as success. Combine every gate result
 // and exit nonzero if any gate failed.
-let allOK = dar314Ok && followUpOk && dar322Ok && dar323Ok
+let allOK = selfTestOk && dar314Ok && followUpOk && dar322Ok && dar323Ok
 print("== self-test summary: \(allOK ? "ALL GATES OK" : "ONE OR MORE GATES FAILED") ==")
 exit(allOK ? 0 : 1)

@@ -82,9 +82,11 @@ extension BatchScheduler {
     /// Resolve the engine-level KV-quant scheme for a loaded model.
     ///
     /// Returns `nil` when quantization is disabled or the model family is not
-    /// yet validated. For GPT-OSS we additionally guard that the configured
-    /// group size (64) divides `head_dim` and does not exceed it, so the
-    /// invalid g128 case is rejected before the cache is built.
+    /// yet validated. For both families we guard that the scheme's group size
+    /// divides the quantized layer's `head_dim` and does not exceed it, so an
+    /// invalid (group size > head_dim, or non-divisible) case is rejected here —
+    /// before the cache is built — instead of trapping the quantized cache's
+    /// `head_dim % groupSize == 0` precondition at first decode.
     static func resolveKVQuantScheme(
         modelID: String,
         architecture: ModelArchitecture,
@@ -94,6 +96,17 @@ extension BatchScheduler {
 
         switch KVQuantPolicy.classify(modelID: modelID) {
         case .gemma4:
+            // Gemma 4 quantizes the full/global attention layers at group size
+            // 128. Those layers use `global_head_dim` when the model declares one,
+            // otherwise `head_dim`. Guard the actual quantized-layer dim so a
+            // malformed/variant config disables KV quant rather than crashing.
+            let gemmaHeadDim = architecture.globalHeadDim ?? architecture.headDim
+            guard let headDim = gemmaHeadDim,
+                  headDim >= 128,
+                  headDim % 128 == 0
+            else {
+                return nil
+            }
             return .gemma4K8V8G128
         case .gptOSS:
             guard let headDim = architecture.headDim,

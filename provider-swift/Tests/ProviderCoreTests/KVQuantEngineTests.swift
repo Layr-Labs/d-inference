@@ -354,4 +354,78 @@ struct KVQuantEngineTests {
         #expect(scheme == nil,
             "GPT-OSS must not select a quant scheme when head_dim is too small for g64")
     }
+
+    @Test("Gemma 4 scheme is rejected when the quantized layer dim is not divisible by 128")
+    func gemma4SchemeRejectsIncompatibleHeadDim() {
+        // global_head_dim 100 is not a multiple of the g128 group size; enabling
+        // the kernel would trap the quantized cache precondition at decode.
+        let badArchitecture = ModelArchitecture(
+            numLayers: gemmaLike.numLayers,
+            kvHeads: gemmaLike.kvHeads,
+            headDim: gemmaLike.headDim,
+            numKvSharedLayers: gemmaLike.numKvSharedLayers,
+            globalHeadDim: 100,
+            numGlobalKvHeads: gemmaLike.numGlobalKvHeads,
+            slidingWindowPattern: gemmaLike.slidingWindowPattern,
+            layerTypes: gemmaLike.layerTypes,
+            maxContextLength: 8192
+        )
+
+        let scheme = BatchScheduler.resolveKVQuantScheme(
+            modelID: "gemma-4-26b-it",
+            architecture: badArchitecture,
+            kvQuantEnabled: true
+        )
+
+        #expect(scheme == nil,
+            "Gemma 4 must not select g128 when the quantized layer dim is not divisible by 128")
+    }
+
+    @Test("Gemma 4 scheme is rejected when architecture has no usable head_dim")
+    func gemma4SchemeRejectsMissingHeadDim() {
+        let emptyDims = ModelArchitecture(
+            numLayers: gemmaLike.numLayers,
+            kvHeads: gemmaLike.kvHeads,
+            headDim: nil,
+            numKvSharedLayers: gemmaLike.numKvSharedLayers,
+            globalHeadDim: nil,
+            numGlobalKvHeads: gemmaLike.numGlobalKvHeads,
+            slidingWindowPattern: gemmaLike.slidingWindowPattern,
+            layerTypes: gemmaLike.layerTypes,
+            maxContextLength: 8192
+        )
+
+        let scheme = BatchScheduler.resolveKVQuantScheme(
+            modelID: "gemma-4-26b-it",
+            architecture: emptyDims,
+            kvQuantEnabled: true
+        )
+
+        #expect(scheme == nil,
+            "Gemma 4 must not enable KV quant when no head_dim could be parsed")
+    }
+
+    @Test("Gemma 4 falls back to head_dim when no global dim is declared")
+    func gemma4UsesHeadDimWhenNoGlobalDim() {
+        // No global_head_dim; head_dim 256 is divisible by 128 → scheme resolves.
+        let architecture = ModelArchitecture(
+            numLayers: gemmaLike.numLayers,
+            kvHeads: gemmaLike.kvHeads,
+            headDim: 256,
+            numKvSharedLayers: gemmaLike.numKvSharedLayers,
+            globalHeadDim: nil,
+            numGlobalKvHeads: nil,
+            slidingWindowPattern: gemmaLike.slidingWindowPattern,
+            layerTypes: gemmaLike.layerTypes,
+            maxContextLength: 8192
+        )
+
+        let scheme = BatchScheduler.resolveKVQuantScheme(
+            modelID: "gemma-4-26b-it",
+            architecture: architecture,
+            kvQuantEnabled: true
+        )
+
+        #expect(scheme == .gemma4K8V8G128)
+    }
 }

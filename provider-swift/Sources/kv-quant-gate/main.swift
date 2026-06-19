@@ -91,6 +91,30 @@ struct KVQuantGate: AsyncParsableCommand {
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
         }
+
+        // Make the process exit code reflect the gate verdict so CI can enforce
+        // it without parsing JSON. A report is written above regardless.
+        //   - failed  -> always non-zero (threshold/suite failure).
+        //   - skipped -> non-zero unless --allow-missing-data (missing model or
+        //     fixtures should fail a gate run by default, but an explicit opt-in
+        //     lets exploratory/local runs tolerate skips).
+        //   - passed  -> zero.
+        switch report.passFail.status {
+        case .passed:
+            return
+        case .failed:
+            FileHandle.standardError.write(Data(
+                "kv-quant-gate: FAILED — \(report.failures.joined(separator: "; "))\n".utf8))
+            throw ExitCode.failure
+        case .skipped:
+            guard allowMissingData else {
+                FileHandle.standardError.write(Data(
+                    ("kv-quant-gate: SKIPPED (\(report.skipped.joined(separator: "; "))). "
+                        + "Pass --allow-missing-data to treat skips as success.\n").utf8))
+                throw ExitCode.failure
+            }
+            return
+        }
     }
 }
 

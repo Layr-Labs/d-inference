@@ -22,6 +22,15 @@ type warmPoolController struct {
 	queueMu  syncQueuePressure
 	tickMu   sync.Mutex
 	triggerC chan struct{}
+
+	// lastMu guards the most recent set of per-model snapshots produced by tick.
+	// They are cached read-only so observability paths (network utilization
+	// gauges, /v1/stats, /v1/admin/utilization) can read the Little's Law
+	// diagnostics the controller already computes without re-running a planning
+	// pass (which has model-load side effects).
+	lastMu      sync.RWMutex
+	lastSnaps   []WarmPoolSnapshot
+	lastSnapsAt time.Time
 }
 
 type syncQueuePressure struct {
@@ -149,6 +158,42 @@ func (r *Registry) TriggerWarmPool() []WarmPoolSnapshot {
 	return controller.tick(time.Now())
 }
 
+// LatestWarmPoolSnapshots returns a copy of the most recent per-model warm-pool
+// snapshots produced by the controller's last planning tick, along with the time
+// they were produced. It is read-only and side-effect free (unlike
+// TriggerWarmPool), so observability paths can consume the Little's Law
+// diagnostics (DemandConcurrency, QualityConcurrency, WarmProviders, ...) safely.
+// Returns nil when the controller is disabled or has not yet ticked.
+func (r *Registry) LatestWarmPoolSnapshots() ([]WarmPoolSnapshot, time.Time) {
+	r.mu.RLock()
+	controller := r.warmPool
+	r.mu.RUnlock()
+	if controller == nil {
+		return nil, time.Time{}
+	}
+	return controller.latestSnapshots()
+}
+
+func (c *warmPoolController) storeSnapshots(snaps []WarmPoolSnapshot, now time.Time) {
+	cp := make([]WarmPoolSnapshot, len(snaps))
+	copy(cp, snaps)
+	c.lastMu.Lock()
+	c.lastSnaps = cp
+	c.lastSnapsAt = now
+	c.lastMu.Unlock()
+}
+
+func (c *warmPoolController) latestSnapshots() ([]WarmPoolSnapshot, time.Time) {
+	c.lastMu.RLock()
+	defer c.lastMu.RUnlock()
+	if len(c.lastSnaps) == 0 {
+		return nil, c.lastSnapsAt
+	}
+	cp := make([]WarmPoolSnapshot, len(c.lastSnaps))
+	copy(cp, c.lastSnaps)
+	return cp, c.lastSnapsAt
+}
+
 func (c *warmPoolController) run(ctx context.Context) {
 	interval := c.config.Interval
 	if interval <= 0 {
@@ -175,6 +220,7 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 	c.tickMu.Lock()
 	defer c.tickMu.Unlock()
 	snapshots := c.plan(now)
+	c.storeSnapshots(snapshots, now)
 	for _, snap := range snapshots {
 		if c.registry.logger != nil {
 			c.registry.logger.Info("warm_pool_tick",

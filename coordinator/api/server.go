@@ -1786,6 +1786,10 @@ func (s *Server) routes() {
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
 
+	// Network utilization snapshot (admin only) — handler enforces admin auth
+	// internally via requireAdminKey.
+	s.mux.HandleFunc("GET /v1/admin/utilization", s.handleAdminUtilization)
+
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
 	// See docs/architecture/routing-telemetry-and-calibration.md §6. Handlers
@@ -1862,6 +1866,20 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			}
 			if q := s.registry.Queue(); q != nil {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+			}
+			// Network utilization — demand/capacity across the warm-serving and
+			// token-budget axes, plus a per-model breakdown.
+			util := s.registry.NetworkUtilizationSnapshot()
+			s.ddGauge("utilization.network", util.Utilization, nil)
+			s.ddGauge("utilization.warm", util.WarmUtilization, nil)
+			s.ddGauge("utilization.token_budget", util.TokenBudgetUtilization, nil)
+			s.ddGauge("utilization.bottleneck", util.BottleneckUtilization, nil)
+			s.ddGauge("capacity.tps", util.CapacityTPS, nil)
+			s.ddGauge("capacity.demand_concurrency", util.DemandConcurrency, nil)
+			s.ddGauge("capacity.serving_capacity", util.ServingCapacity, nil)
+			s.ddGauge("capacity.spill_arrival_rate", util.SpillArrivalRate, nil)
+			for _, m := range util.Models {
+				s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
 			}
 		}
 	}

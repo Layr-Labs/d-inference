@@ -117,6 +117,41 @@ import Testing
     #expect(diagnostic.message.contains("could not inspect Apple Silicon boot policy"))
 }
 
+@Test func bootPolicyDiagnosticFlagsPermissiveSecurity() {
+    let diagnostic = BootPolicyDiagnostic.diagnose(policy: .init(
+        secureBoot: "Permissive Security",
+        systemIntegrityProtection: "Disabled",
+        signedSystemVolume: "Disabled",
+        kernelCTRR: "Enabled",
+        bootArgumentsFiltering: "Disabled",
+        allowAllKernelExtensions: "No",
+        userApprovedPrivilegedMDMOperations: "No",
+        depApprovedPrivilegedMDMOperations: "No"))
+
+    #expect(diagnostic.level == .fail)
+    #expect(diagnostic.message.contains("Permissive Security"))
+}
+
+// Regression: system_profiler localizes Boot Policy display values on
+// non-English Macs (stable JSON keys, translated values), and English cannot
+// be forced. A correctly configured Full Security Mac reporting a localized
+// value must WARN, never FAIL — otherwise `darkbloom doctor` blocks a
+// healthy provider from earning.
+@Test func bootPolicyDiagnosticWarnsOnLocalizedFullSecurityValue() {
+    let diagnostic = BootPolicyDiagnostic.diagnose(policy: .init(
+        secureBoot: "Vollständige Sicherheit",  // German for "Full Security"
+        systemIntegrityProtection: "Aktiviert",
+        signedSystemVolume: "Aktiviert",
+        kernelCTRR: "Aktiviert",
+        bootArgumentsFiltering: "Aktiviert",
+        allowAllKernelExtensions: "Nein",        // German for "No"
+        userApprovedPrivilegedMDMOperations: "Nein",
+        depApprovedPrivilegedMDMOperations: "Nein"))
+
+    #expect(diagnostic.level == .warn)
+    #expect(diagnostic.message.contains("Vollständige Sicherheit"))
+}
+
 @Test func binarySHA256HasherHashesDataAndFiles() throws {
     let hasher = BinarySHA256Hasher(chunkSize: 2)
     #expect(

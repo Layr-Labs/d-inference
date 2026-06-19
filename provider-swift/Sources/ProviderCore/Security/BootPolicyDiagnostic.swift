@@ -32,10 +32,42 @@ public enum BootPolicyDiagnostic {
             self.depApprovedPrivilegedMDMOperations = depApprovedPrivilegedMDMOperations
         }
 
-        public var isFullSecurity: Bool {
-            normalized(secureBoot) == "fullsecurity"
+        /// Apple Silicon startup-security levels.
+        ///
+        /// `system_profiler` localizes these display strings on non-English
+        /// Macs — the JSON *keys* (`ibridge_secure_boot`) are stable, but the
+        /// *values* are translated by the SPiBridgeReporter XPC service (e.g.
+        /// "Full Security" -> "Vollständige Sicherheit"), and there is no
+        /// reliable way to force English output. We therefore positively
+        /// classify only the known English values and treat anything else as
+        /// `.unknown` rather than assuming a downgrade, so a correctly
+        /// configured non-English Mac is never falsely failed.
+        public enum SecureBootLevel: Sendable, Equatable {
+            case full
+            case reduced
+            case unknown
         }
 
+        public var secureBootLevel: SecureBootLevel {
+            switch normalized(secureBoot) {
+            case "fullsecurity":
+                return .full
+            // Apple Silicon: Reduced/Permissive. T2 Intel: Medium/No Security.
+            case "reducedsecurity", "permissivesecurity", "mediumsecurity", "nosecurity":
+                return .reduced
+            default:
+                return .unknown
+            }
+        }
+
+        public var isFullSecurity: Bool {
+            secureBootLevel == .full
+        }
+
+        /// True only when `system_profiler` *positively* reports that kernel
+        /// extension loading is allowed. Localized affirmative values (e.g.
+        /// "Ja", "Oui") won't match, so on a non-English Mac the `.unknown`
+        /// secure-boot level surfaces a WARN instead (see `diagnose(policy:)`).
         public var allowsKernelExtensions: Bool {
             normalized(allowAllKernelExtensions ?? "") == "yes"
         }
@@ -70,21 +102,35 @@ public enum BootPolicyDiagnostic {
                 fix: "uninstall third-party kernel extensions, reboot, then use Recovery > Startup Security Utility > Full Security.")
         }
 
-        if !policy.isFullSecurity {
+        switch policy.secureBootLevel {
+        case .full:
+            return Diagnostic(
+                section: .security,
+                name: "boot policy",
+                level: .pass,
+                message: "boot policy is Full Security.",
+                fix: nil)
+        case .reduced:
             return Diagnostic(
                 section: .security,
                 name: "boot policy",
                 level: .fail,
                 message: "boot policy is \(policy.secureBoot). Apple Silicon providers should run with Full Security.",
                 fix: "use Recovery > Startup Security Utility > Full Security.")
+        case .unknown:
+            // system_profiler localizes the Boot Policy value on non-English
+            // Macs, so an unrecognized string is most likely a correctly
+            // configured machine reporting a translated value. Warn instead of
+            // emitting a false FAIL that would block the provider from earning;
+            // the coordinator's MDM SecurityInfo cross-check still catches a
+            // genuine downgrade.
+            return Diagnostic(
+                section: .security,
+                name: "boot policy",
+                level: .warn,
+                message: "could not interpret the reported boot policy \"\(policy.secureBoot)\" (system_profiler localizes this value on non-English Macs). Confirm Startup Security is set to Full Security.",
+                fix: "open Recovery > Startup Security Utility and confirm Full Security, or run `system_profiler SPiBridgeDataType` and check Boot Policy > Secure Boot.")
         }
-
-        return Diagnostic(
-            section: .security,
-            name: "boot policy",
-            level: .pass,
-            message: "boot policy is Full Security.",
-            fix: nil)
     }
 
     public static func parseSystemProfilerJSON(_ json: String) throws -> BootPolicy? {

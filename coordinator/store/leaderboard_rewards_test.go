@@ -11,11 +11,11 @@ import (
 //
 // Resulting per-account shape (all-time):
 //
-//	alice  work=1000  tokens=150 jobs=1  reward=0     total=1000
-//	bob    work=0     tokens=0   jobs=0  reward=2000  total=2000  (reward-only)
-//	carol  work=500   tokens=15  jobs=1  reward=700   total=1200  (combined)
-//	frank  work=300   tokens=30  jobs=1  reward=0     total=300   (+admin_credit, ignored)
-//	eve    work=0     tokens=0   jobs=0  reward=0     total=0     (admin_credit only -> absent)
+//	alice  work=1000  tokens=150 jobs=1  reward=0     total=1000  (provider)
+//	bob    reward=2000 but NO work  -> NOT a provider -> absent from leaderboard
+//	carol  work=500   tokens=15  jobs=1  reward=700   total=1200  (provider, combined)
+//	frank  work=300   tokens=30  jobs=1  reward=0     total=300   (provider; +admin_credit ignored)
+//	eve    admin_credit only, no work -> absent
 func seedLeaderboardFixture(t *testing.T) *MemoryStore {
 	t.Helper()
 	s := NewMemory(Config{})
@@ -95,7 +95,7 @@ func TestLeaderboardWorkRewardDifferentiation(t *testing.T) {
 		jobs             int64
 	}{
 		{name: "work-only", accountID: "acct-alice", present: true, work: 1000, reward: 0, earnings: 1000, tokens: 150, jobs: 1},
-		{name: "reward-only", accountID: "acct-bob", present: true, work: 0, reward: 2000, earnings: 2000, tokens: 0, jobs: 0},
+		{name: "reward-only-non-provider-absent", accountID: "acct-bob", present: false},
 		{name: "combined", accountID: "acct-carol", present: true, work: 500, reward: 700, earnings: 1200, tokens: 15, jobs: 1},
 		{name: "work-plus-nonreward-credit", accountID: "acct-frank", present: true, work: 300, reward: 0, earnings: 300, tokens: 30, jobs: 1},
 		{name: "credit-only-absent", accountID: "acct-eve", present: false},
@@ -132,13 +132,13 @@ func TestLeaderboardWorkRewardDifferentiation(t *testing.T) {
 }
 
 // TestLeaderboardRankingUsesTotal verifies the earnings metric ranks by the
-// combined total: bob (reward-only) and carol (reward-boosted) outrank alice
-// even though alice has strictly more *work* earnings than either.
+// combined total: carol's reward lifts her total above alice even though alice
+// has strictly more *work* earnings. Reward-only bob is excluded (not a provider).
 func TestLeaderboardRankingUsesTotal(t *testing.T) {
 	s := seedLeaderboardFixture(t)
 	rows := s.Leaderboard(LeaderboardEarnings, time.Time{}, 50)
 
-	wantOrder := []string{"acct-bob", "acct-carol", "acct-alice", "acct-frank"}
+	wantOrder := []string{"acct-carol", "acct-alice", "acct-frank"}
 	if len(rows) != len(wantOrder) {
 		t.Fatalf("got %d rows, want %d: %+v", len(rows), len(wantOrder), rows)
 	}
@@ -165,7 +165,7 @@ func TestLeaderboardTokensAndJobsMetrics(t *testing.T) {
 	s := seedLeaderboardFixture(t)
 
 	tokens := s.Leaderboard(LeaderboardTokens, time.Time{}, 50)
-	wantTokenOrder := []string{"acct-alice", "acct-frank", "acct-carol", "acct-bob"}
+	wantTokenOrder := []string{"acct-alice", "acct-frank", "acct-carol"}
 	for i, want := range wantTokenOrder {
 		if i >= len(tokens) || tokens[i].AccountID != want {
 			t.Fatalf("tokens rank %d = %v, want %s (rows=%+v)", i+1, rowID(tokens, i), want, tokens)
@@ -173,8 +173,9 @@ func TestLeaderboardTokensAndJobsMetrics(t *testing.T) {
 	}
 
 	jobs := s.Leaderboard(LeaderboardJobs, time.Time{}, 50)
-	// alice/carol/frank all have 1 job -> tiebreak by account_id asc; bob has 0.
-	wantJobOrder := []string{"acct-alice", "acct-carol", "acct-frank", "acct-bob"}
+	// alice/carol/frank all have 1 job -> tiebreak by account_id asc; reward-only
+	// bob is not a provider and is excluded.
+	wantJobOrder := []string{"acct-alice", "acct-carol", "acct-frank"}
 	for i, want := range wantJobOrder {
 		if i >= len(jobs) || jobs[i].AccountID != want {
 			t.Fatalf("jobs rank %d = %v, want %s (rows=%+v)", i+1, rowID(jobs, i), want, jobs)
@@ -191,18 +192,18 @@ func rowID(rows []LeaderboardRow, i int) string {
 
 func TestLeaderboardLimitClamp(t *testing.T) {
 	s := seedLeaderboardFixture(t)
-	// limit<=0 and limit>200 both clamp to 50 (>= our 4 rows), so all appear.
-	if got := s.Leaderboard(LeaderboardEarnings, time.Time{}, 0); len(got) != 4 {
-		t.Errorf("limit 0 -> %d rows, want 4", len(got))
+	// limit<=0 and limit>200 both clamp to 50 (>= our 3 provider rows), so all appear.
+	if got := s.Leaderboard(LeaderboardEarnings, time.Time{}, 0); len(got) != 3 {
+		t.Errorf("limit 0 -> %d rows, want 3", len(got))
 	}
-	if got := s.Leaderboard(LeaderboardEarnings, time.Time{}, 1000); len(got) != 4 {
-		t.Errorf("limit 1000 -> %d rows, want 4", len(got))
+	if got := s.Leaderboard(LeaderboardEarnings, time.Time{}, 1000); len(got) != 3 {
+		t.Errorf("limit 1000 -> %d rows, want 3", len(got))
 	}
 	// A real positive limit truncates after sorting.
 	if got := s.Leaderboard(LeaderboardEarnings, time.Time{}, 2); len(got) != 2 {
 		t.Fatalf("limit 2 -> %d rows, want 2", len(got))
-	} else if got[0].AccountID != "acct-bob" || got[1].AccountID != "acct-carol" {
-		t.Errorf("limit 2 top rows = %s,%s want acct-bob,acct-carol", got[0].AccountID, got[1].AccountID)
+	} else if got[0].AccountID != "acct-carol" || got[1].AccountID != "acct-alice" {
+		t.Errorf("limit 2 top rows = %s,%s want acct-carol,acct-alice", got[0].AccountID, got[1].AccountID)
 	}
 }
 
@@ -212,11 +213,11 @@ func TestNetworkTotalsWorkRewardDifferentiation(t *testing.T) {
 
 	const (
 		wantWork     = int64(1800) // alice 1000 + carol 500 + frank 300
-		wantReward   = int64(2700) // bob 2000 + carol 700
+		wantReward   = int64(700)  // carol 700 only; bob's 2000 excluded (not a provider)
 		wantEarnings = wantWork + wantReward
 		wantTokens   = int64(195) // 150 + 15 + 30
 		wantJobs     = int64(3)   // alice, carol, frank
-		wantAccounts = int64(4)   // alice, bob, carol, frank (eve = admin_credit only, excluded)
+		wantAccounts = int64(3)   // alice, carol, frank (bob reward-only + eve credit-only excluded)
 	)
 
 	if totals.WorkEarningsMicroUSD != wantWork {
@@ -238,7 +239,53 @@ func TestNetworkTotalsWorkRewardDifferentiation(t *testing.T) {
 		t.Errorf("Jobs = %d, want %d", totals.Jobs, wantJobs)
 	}
 	if totals.ActiveAccounts != wantAccounts {
-		t.Errorf("ActiveAccounts = %d, want %d (must count reward-only bob, exclude credit-only eve)", totals.ActiveAccounts, wantAccounts)
+		t.Errorf("ActiveAccounts = %d, want %d (providers only: exclude reward-only bob and credit-only eve)", totals.ActiveAccounts, wantAccounts)
+	}
+}
+
+// TestLeaderboardExcludesNonProviderRewards verifies rewards are only credited
+// to providers (accounts with inference work). A non-provider that only earned
+// referral/admin rewards must NOT appear on the provider leaderboard, and its
+// rewards must be excluded from network totals — while a real provider's reward
+// is still counted.
+func TestLeaderboardExcludesNonProviderRewards(t *testing.T) {
+	s := NewMemory(Config{})
+	// A provider who also earned an admin reward.
+	if err := s.RecordProviderEarning(&ProviderEarning{AccountID: "prov", AmountMicroUSD: 100, PromptTokens: 4, CompletionTokens: 6, CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("record prov earning: %v", err)
+	}
+	if err := s.CreditWithdrawable("prov", 50, LedgerAdminReward, "r1"); err != nil {
+		t.Fatalf("credit prov reward: %v", err)
+	}
+	// A non-provider who only earned referral + admin rewards (never served).
+	if err := s.CreditWithdrawable("consumer", 900, LedgerReferralReward, "r2"); err != nil {
+		t.Fatalf("credit consumer referral: %v", err)
+	}
+	if err := s.CreditWithdrawable("consumer", 98, LedgerAdminReward, "r3"); err != nil {
+		t.Fatalf("credit consumer admin reward: %v", err)
+	}
+
+	rows := s.Leaderboard(LeaderboardEarnings, time.Time{}, 50)
+	if _, ok := findRow(rows, "consumer"); ok {
+		t.Errorf("non-provider 'consumer' must not appear on the provider leaderboard")
+	}
+	prov, ok := findRow(rows, "prov")
+	if !ok {
+		t.Fatalf("provider 'prov' missing from leaderboard: %+v", rows)
+	}
+	if prov.WorkEarningsMicroUSD != 100 || prov.RewardEarningsMicroUSD != 50 || prov.EarningsMicroUSD != 150 {
+		t.Errorf("prov = work %d reward %d total %d, want 100/50/150", prov.WorkEarningsMicroUSD, prov.RewardEarningsMicroUSD, prov.EarningsMicroUSD)
+	}
+
+	tot := s.NetworkTotals(time.Time{})
+	if tot.RewardEarningsMicroUSD != 50 {
+		t.Errorf("network reward = %d, want 50 (consumer's 998 excluded)", tot.RewardEarningsMicroUSD)
+	}
+	if tot.EarningsMicroUSD != 150 {
+		t.Errorf("network earnings = %d, want 150", tot.EarningsMicroUSD)
+	}
+	if tot.ActiveAccounts != 1 {
+		t.Errorf("active accounts = %d, want 1 (only the provider)", tot.ActiveAccounts)
 	}
 }
 

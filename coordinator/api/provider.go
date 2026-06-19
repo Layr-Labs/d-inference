@@ -424,6 +424,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			case protocol.LoadModelStatusFailed:
 				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
+				// DAR-331: quantify WHY proactive loads are rejected. The reason
+				// is derived only from the existing error string (no new wire
+				// field). The proactive path's string is often a generic
+				// Foundation bridge ("other"), but dashboards still get the
+				// draining vs descriptive classes, and the short backoff below
+				// does NOT depend on this classification.
+				s.ddIncr("routing.load_model_rejects", []string{
+					"model:" + statusMsg.ModelID,
+					"reason:" + classifyLoadFailure(statusMsg.Error),
+				})
 				if statusMsg.Error == protocol.ProviderDrainingForUpdate {
 					// Transient: the provider refused only because it is
 					// draining ahead of an auto-update restart. Shorten the
@@ -432,8 +442,23 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					// rejected — the provider is back within the queue window
 					// and other providers remain plannable.
 					s.registry.BackoffPendingModelLoadForDrain(providerID, statusMsg.ModelID)
+					s.ddIncr("routing.pending_load_backoff", []string{
+						"model:" + statusMsg.ModelID, "kind:drain",
+					})
 				} else {
-					// Keep the pending entry (TTL cooldown suppresses retry storms).
+					// DAR-331: a non-draining load failure is dominated by
+					// transient memory pressure that frees in seconds. Re-stamp
+					// the pending entry to the short memory backoff (~30s)
+					// instead of leaving the full 2-min TTL — that window ≈ the
+					// 120s queue timeout, so a request queued right after the
+					// failure would time out before this provider (whose memory
+					// may already have freed) is reconsidered by
+					// TriggerModelSwaps. The ~10s warm-pool sweep reaps the short
+					// entry deterministically.
+					s.registry.BackoffPendingModelLoadForMemory(providerID, statusMsg.ModelID)
+					s.ddIncr("routing.pending_load_backoff", []string{
+						"model:" + statusMsg.ModelID, "kind:memory",
+					})
 					// If no other provider can serve this model, reject queued
 					// requests immediately rather than making them wait 120s.
 					s.registry.RejectUnservableQueuedRequests(statusMsg.ModelID)

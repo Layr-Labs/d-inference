@@ -95,6 +95,27 @@ func (s *Server) downgradePreferToSelfRoute(policy *selfRoutePolicy, model strin
 	return true
 }
 
+// pinPreferToSelfRouteOnShed converts a PREFER request into an EXCLUSIVE
+// self-route when its model is being shed from the public fleet but the owner
+// has a structurally-eligible machine. Model-shed is a PUBLIC-fleet load lever,
+// so a prefer request must never be allowed to skip the shed and then fall back
+// to the paid public fleet (which would defeat the shed for exactly the fleet it
+// protects). Pinning it owned-only — exclusive, no fallback — keeps the shed
+// effective while never blocking an owner from their own Mac: it runs free on
+// the owner's machine (queuing there if busy) instead of touching the shed
+// public fleet. Owners with no eligible machine are left as prefer and shed
+// normally by shedIfModelRejected. Mutates policy in place.
+func (s *Server) pinPreferToSelfRouteOnShed(policy *selfRoutePolicy, model string, traits registry.RequestTraits, requiresVision bool, allowedSerials []string) {
+	if policy == nil || !policy.prefer || policy.ownerAccountID == "" {
+		return
+	}
+	if !s.registry.OwnedProviderEligible(policy.ownerAccountID, model, traits, requiresVision, allowedSerials) {
+		return
+	}
+	policy.enabled = true
+	policy.prefer = false
+}
+
 // selfRouteUnavailable reports whether a self-route request cannot proceed and,
 // when so, writes the precise terminal error. Self-route never falls back to
 // the paid fleet, so "can't serve" is an explicit failure rather than a

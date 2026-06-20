@@ -262,6 +262,44 @@ func TestOwnedProviderEligible(t *testing.T) {
 	}
 }
 
+// TestOwnedProviderEligibleHardwareFit verifies the PERMANENT hardware-fit gate:
+// a model that can never fit the owner's Mac is ineligible (so the downgrade is
+// refused rather than stranding an exclusive self-route on a 503), while a
+// fitting model — or one already resident — stays eligible.
+func TestOwnedProviderEligibleHardwareFit(t *testing.T) {
+	reg := New(testLogger())
+	model := "fit-model"
+
+	p := makeSchedulerProvider(t, reg, "mine", model, 100) // 64 GB Mac
+	setProviderAccount(p, "acct-A")
+	// Not resident, so the fit gate applies (a resident model has demonstrably fit).
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].State = "unknown"
+	p.mu.Unlock()
+
+	// Catalog says the model needs 128 GB — it can never fit the 64 GB Mac.
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 128}})
+	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("a model that can't fit the Mac must be ineligible (no downgrade)")
+	}
+
+	// A fitting requirement → eligible again.
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 32}})
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("a model that fits the Mac must be eligible")
+	}
+
+	// A RESIDENT (loaded) model has demonstrably fit, so the fit gate is skipped
+	// even if the catalog over-states its footprint.
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].State = "running"
+	p.mu.Unlock()
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 128}})
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("a resident model must stay eligible despite an over-size catalog entry")
+	}
+}
+
 func setProviderPrivateOnly(p *Provider) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

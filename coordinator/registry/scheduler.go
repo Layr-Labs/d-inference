@@ -764,6 +764,30 @@ func (r *Registry) OwnedProviderEligible(accountID, model string, traits Request
 		if eligible && requiresVision {
 			eligible = r.providerServesVisionModelLocked(p, model)
 		}
+		if eligible {
+			// Permanent hardware-fit gate (mirrors buildCandidateWithReason): a
+			// model whose footprint can never fit this Mac's total memory is a
+			// PERMANENT miss, not transient load — so, unlike slot-state/capacity,
+			// it must gate the downgrade (otherwise dispatch 503s on a machine
+			// that can never run the model). Skipped when the model is already
+			// resident, which proves it fit.
+			totalMemoryGB := float64(p.Hardware.MemoryGB)
+			resident := false
+			if p.BackendCapacity != nil {
+				if p.BackendCapacity.TotalMemoryGB > 0 {
+					totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+				}
+				for _, slot := range p.BackendCapacity.Slots {
+					if slot.Model == model {
+						resident = slotStateModelLoaded(slot.State)
+						break
+					}
+				}
+			}
+			if !resident && !modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemoryGB) {
+				eligible = false
+			}
+		}
 		p.mu.Unlock()
 		if eligible {
 			return true

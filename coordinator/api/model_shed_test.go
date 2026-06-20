@@ -29,7 +29,7 @@ func TestModelShedRejectsRequestedAlias(t *testing.T) {
 	srv.SetRejectModels(map[string]bool{"gemma-4-26b": true})
 	w := httptest.NewRecorder()
 
-	if !srv.shedIfModelRejected(w, modelShedRequest(), map[string]any{"temperature": 0.2}, selfRoutePolicy{}, "gemma-4-26b", "gemma-4-26b-qat-4bit", true, 1200, 256, false, true, nil) {
+	if !srv.shedIfModelRejected(w, modelShedRequest(), map[string]any{"temperature": 0.2}, selfRoutePolicy{}, "gemma-4-26b", "gemma-4-26b-qat-4bit", true, 1200, 256, false, true) {
 		t.Fatal("shedIfModelRejected = false, want true")
 	}
 	if w.Code != http.StatusTooManyRequests {
@@ -62,7 +62,7 @@ func TestModelShedRejectsResolvedConcreteModel(t *testing.T) {
 	srv.SetRejectModels(map[string]bool{"gemma-4-26b-qat-4bit": true})
 	w := httptest.NewRecorder()
 
-	if !srv.shedIfModelRejected(w, modelShedRequest(), nil, selfRoutePolicy{}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false, nil) {
+	if !srv.shedIfModelRejected(w, modelShedRequest(), nil, selfRoutePolicy{}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false) {
 		t.Fatal("shedIfModelRejected = false, want true")
 	}
 	if w.Code != http.StatusTooManyRequests {
@@ -75,7 +75,7 @@ func TestModelShedDoesNotRejectOtherModels(t *testing.T) {
 	srv.SetRejectModels(map[string]bool{"gemma-4-26b": true})
 	w := httptest.NewRecorder()
 
-	if srv.shedIfModelRejected(w, modelShedRequest(), nil, selfRoutePolicy{}, "gpt-oss-20b", "gpt-oss-20b", false, 100, 64, false, false, nil) {
+	if srv.shedIfModelRejected(w, modelShedRequest(), nil, selfRoutePolicy{}, "gpt-oss-20b", "gpt-oss-20b", false, 100, 64, false, false) {
 		t.Fatal("shedIfModelRejected = true for non-shed model")
 	}
 	if w.Code == http.StatusTooManyRequests {
@@ -89,10 +89,10 @@ func TestModelShedPolicySelfRouteBypassesPreferOwnerSheds(t *testing.T) {
 	self := httptest.NewRecorder()
 	prefer := httptest.NewRecorder()
 
-	if srv.shedIfModelRejected(self, modelShedRequest(), nil, selfRoutePolicy{enabled: true}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false, nil) {
+	if srv.shedIfModelRejected(self, modelShedRequest(), nil, selfRoutePolicy{enabled: true}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false) {
 		t.Fatal("exclusive self-route should bypass model shed")
 	}
-	if !srv.shedIfModelRejected(prefer, modelShedRequest(), nil, selfRoutePolicy{prefer: true}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false, nil) {
+	if !srv.shedIfModelRejected(prefer, modelShedRequest(), nil, selfRoutePolicy{prefer: true}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false) {
 		t.Fatal("prefer-owner should be model-shed because it can fall back to public fleet")
 	}
 	waitForRejectionCount(t, srv, 1)

@@ -260,17 +260,6 @@ Each reviewer should:
 
 Only proceed to the next objective after both reviewers pass. If either flags issues, fix them before moving on.
 
-## Pull Requests
-
-**Every PR description must include before/after Mermaid diagrams** that show how the change alters the relevant flow, data model, or architecture. Use GitHub-rendered ` ```mermaid ` fenced blocks.
-
-- **Before** — the current behavior/structure the PR changes. Omit only for a brand-new component with no prior state (then show just the "after").
-- **After** — the new behavior/structure once the PR lands.
-- Pick the diagram that fits the change: `flowchart` for control/data flow, `sequenceDiagram` for request/protocol exchanges, `erDiagram` for schema changes, `stateDiagram-v2` for lifecycle/state.
-- Keep them scoped to the delta, not the whole system — a reviewer should grasp what changed from the diagrams alone.
-
-This applies to all PRs (coordinator, provider, console-ui, docs). A PR without before/after diagrams is incomplete.
-
 ## Git Hooks
 
 Hooks live in `.githooks/` and are enabled via `git config core.hooksPath .githooks` (already set for this repo).

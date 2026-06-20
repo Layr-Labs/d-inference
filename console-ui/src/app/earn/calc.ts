@@ -144,7 +144,7 @@ export const FLOOR_TIERS: FloorTier[] = [
 /** Uptime fraction below which the floor is 0; it ramps linearly to full at 100%. */
 export const MIN_UPTIME_FOR_AVAIL = 0.9;
 
-/** Monthly floor (USD) for a verified memory size, before availability/taper. */
+/** Monthly floor (USD) for a verified memory size, before availability. */
 export function tierFloorUSD(memGB: number): number {
   for (const t of FLOOR_TIERS) {
     if (memGB >= t.minGB) return t.floorUSD;
@@ -163,9 +163,9 @@ export function availFromUptime(uptimeFrac: number): number {
   return v;
 }
 
-/** Per-machine monthly floor (USD): tier × availability × taper. taper=1 today. */
-export function scaledFloorUSD(memGB: number, uptimeFrac: number, taper = 1): number {
-  return tierFloorUSD(memGB) * availFromUptime(uptimeFrac) * taper;
+/** Per-machine monthly floor (USD): tier × availability. */
+export function scaledFloorUSD(memGB: number, uptimeFrac: number): number {
+  return tierFloorUSD(memGB) * availFromUptime(uptimeFrac);
 }
 
 /* ─── Live model catalog ─── */

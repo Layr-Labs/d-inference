@@ -57,29 +57,25 @@ func TestAvail(t *testing.T) {
 }
 
 func TestScaledFloor(t *testing.T) {
-	// 64GB tier ($18) at 95% uptime (avail=0.5), taper=1 → $9.
-	if got := ScaledFloor(64, 0.95, 1.0); got != 9_000_000 {
-		t.Errorf("ScaledFloor(64, 0.95, 1.0) = %d, want 9_000_000", got)
+	// 64GB tier ($18) at 95% uptime (avail=0.5) → $9.
+	if got := ScaledFloor(64, 0.95); got != 9_000_000 {
+		t.Errorf("ScaledFloor(64, 0.95) = %d, want 9_000_000", got)
 	}
-	// Full uptime, full taper → full tier floor.
-	if got := ScaledFloor(64, 1.0, 1.0); got != 18_000_000 {
-		t.Errorf("ScaledFloor(64, 1.0, 1.0) = %d, want 18_000_000", got)
+	// Full uptime → full tier floor.
+	if got := ScaledFloor(64, 1.0); got != 18_000_000 {
+		t.Errorf("ScaledFloor(64, 1.0) = %d, want 18_000_000", got)
 	}
 	// Below 90% uptime → 0 regardless of tier.
-	if got := ScaledFloor(512, 0.89, 1.0); got != 0 {
-		t.Errorf("ScaledFloor(512, 0.89, 1.0) = %d, want 0", got)
+	if got := ScaledFloor(512, 0.89); got != 0 {
+		t.Errorf("ScaledFloor(512, 0.89) = %d, want 0", got)
 	}
-	// Half taper on top of full availability.
-	if got := ScaledFloor(64, 1.0, 0.5); got != 9_000_000 {
-		t.Errorf("ScaledFloor(64, 1.0, 0.5) = %d, want 9_000_000", got)
-	}
-	// 32GB entry tier ($12) at full uptime/taper.
-	if got := ScaledFloor(32, 1.0, 1.0); got != 12_000_000 {
-		t.Errorf("ScaledFloor(32, 1.0, 1.0) = %d, want 12_000_000", got)
+	// 32GB entry tier ($12) at full uptime.
+	if got := ScaledFloor(32, 1.0); got != 12_000_000 {
+		t.Errorf("ScaledFloor(32, 1.0) = %d, want 12_000_000", got)
 	}
 	// Sub-24GB tier → 0.
-	if got := ScaledFloor(16, 1.0, 1.0); got != 0 {
-		t.Errorf("ScaledFloor(16, 1.0, 1.0) = %d, want 0", got)
+	if got := ScaledFloor(16, 1.0); got != 0 {
+		t.Errorf("ScaledFloor(16, 1.0) = %d, want 0", got)
 	}
 }
 

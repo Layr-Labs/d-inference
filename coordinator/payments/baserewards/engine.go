@@ -13,7 +13,7 @@ import (
 // engine.go is the only file in this package that touches the store or registry.
 // It builds per-machine settlement candidates from durable store state (the
 // money source of truth) plus the live registry (trust/health/hardware), runs
-// the pure floor/alloc/taper math, and settles each machine's draw via an
+// the pure floor/alloc math, and settles each machine's draw via an
 // idempotent store write (design §8).
 
 // settlementGrace is the window an open session keeps accruing uptime past its
@@ -38,31 +38,22 @@ type Config struct {
 	MinUptimeFrac     float64       // 0.90 — hard eligibility gate (design §6 gate 3)
 	GraceSeconds      int           // 90 — open-session uptime grace (design §8)
 	WorkWindow        time.Duration // rolling window for the proven-work gate (gate 5)
-
-	// Phase 2 taper knobs (taper=1 in Phase 0; LaunchDate.IsZero() ⇒ no glide).
-	LaunchDate            time.Time
-	CalendarResidual      float64 // taper residual after day 90
-	CliffMaxDropFrac      float64 // 0.30 — per-machine month-over-month drop cap
-	TargetRevenueMicroUSD int64
 }
 
 // DefaultConfig returns the recommended launch configuration: k=0 additive base
 // income (the full floor is paid on top of organic earnings), $9k pool, half
-// reserved for the workhorse tier, NO per-account cap (per-machine payout), 90%
-// uptime gate. Phase 0 leaves the taper at 1.0.
+// reserved for the workhorse tier, NO per-account cap (per-machine payout), and
+// 90% uptime gate.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:               false,
-		ReductionK:            DefaultReductionK,
-		PoolBudgetMicroUSD:    FloorPoolBudgetMicroUSD,
-		WorkhorseReserveFrac:  0.5,
-		PerAccountCapFrac:     0, // disabled — per-machine, not per-account (see Config)
-		MinUptimeFrac:         MinUptimeForAvail,
-		GraceSeconds:          defaultGraceSeconds,
-		WorkWindow:            45 * 24 * time.Hour, // rolling ~45d proven-work window
-		CalendarResidual:      0,
-		CliffMaxDropFrac:      DefaultCliffMaxDropFrac,
-		TargetRevenueMicroUSD: TargetRevenueMicroUSD,
+		Enabled:              false,
+		ReductionK:           DefaultReductionK,
+		PoolBudgetMicroUSD:   FloorPoolBudgetMicroUSD,
+		WorkhorseReserveFrac: 0.5,
+		PerAccountCapFrac:    0, // disabled — per-machine, not per-account (see Config)
+		MinUptimeFrac:        MinUptimeForAvail,
+		GraceSeconds:         defaultGraceSeconds,
+		WorkWindow:           45 * 24 * time.Hour, // rolling ~45d proven-work window
 	}
 }
 
@@ -289,8 +280,7 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 		if capGB, known := mdm.ModelMaxMemoryGB(p.HardwareModel); known && capGB > 0 && memGB > capGB {
 			memGB = capGB
 		}
-		taper := 1.0 // Phase 0: no taper
-		floor := ScaledFloor(memGB, uptimeFrac, taper)
+		floor := ScaledFloor(memGB, uptimeFrac)
 		draw := Draw(floor, earned, e.cfg.ReductionK)
 
 		out = append(out, candidate{

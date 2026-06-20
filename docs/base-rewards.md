@@ -52,9 +52,9 @@ stays affordable for three reasons:
 The trade-off is stated honestly: additive base income does **not** self-liquidate
 per machine — every eligible machine always draws its full floor, so the program
 runs near the pool cap for as long as it is on. We accept that for a simpler,
-stronger provider promise, and bound the cost with the pool and the sunset taper
-(§4b) rather than a per-machine clawback. The optional `k` knob (§2) remains if
-the economics ever demand a reduction.
+stronger provider promise, and bound cost with a fixed monthly pool and explicit
+budget decisions rather than a hidden per-machine clawback. The optional `k` knob
+(§2) remains if the economics ever demand a reduction.
 
 And it still delivers the worst-case marketing promise: the floor is what a
 machine earns when the network is silent — and anything it earns is on top.
@@ -126,9 +126,9 @@ We ship `k = 0`: the full floor is paid on top of earnings. Reasons:
 
 Cost honesty: unlike `k = 1`, additive base income does **not** shrink to $0 per
 machine as demand grows — budget it as a roughly flat, pool-sized line for the
-program's life, ended by the sunset taper (§4b), not by self-liquidation. If the
-pool ever needs to stretch, dial `k` up (0.5–1.0) — the mechanic is already in the
-code (`Draw(floor, earned, k)`), default `k=0`.
+program's life, not as a self-liquidating subsidy. If the pool ever needs to
+stretch, dial `k` up (0.5–1.0) — the mechanic is already in the code
+(`Draw(floor, earned, k)`), default `k=0`.
 
 ---
 
@@ -186,47 +186,25 @@ Notes:
 
 ---
 
-## 4. The two cost levers
+## 4. Cost controls
 
-There are two independent levers that bound program cost. The shipped model uses
-only the second; the first is an optional knob held in reserve.
+The shipped model keeps the provider promise simple (`earned + base reward`) and
+uses explicit controls to bound spend.
 
 ### 4a. Per-provider clawback (optional — OFF by default)
 
 This is the `base_draw = max(0, floor − k · earned)` mechanic of §2, with `k`. At
 the shipped default `k = 0` it is **inactive**: the full floor is paid additively
 and a provider's base never shrinks because it earned. Setting `k > 0` turns it on
-per machine, every epoch, automatically (no configuration beyond the knob) — held
-in reserve in case the pool must stretch further than the §4b taper achieves.
+per machine, every epoch, automatically. It is held in reserve in case the pool
+must stretch further.
 
-### 4b. Per-network (the program sunsets as the *platform* earns)
+### 4b. Fixed monthly pool (always ON)
 
-A global multiplier on the floor that fades the whole program as real network
-revenue grows:
-
-```
-floor_i  ← floor_i · taper
-taper    = min( calendar_glide , revenue_taper )
-revenue_taper = clamp( 1 − fleet_organic_revenue_30d / TARGET_REVENUE , 0 , 1 )
-calendar_glide: 1.0 for days 0–30, linear to a residual floor over days 30–90
-```
-
-- **`revenue_taper` keys on absolute revenue, not a utilization ratio.** A
-  utilization ratio (`active/capacity`) is a positive-feedback trap: defunding
-  supply shrinks capacity, which *raises* measured utilization, which defunds
-  further — collapsing the fleet at constant low demand. Absolute revenue is
-  monotone in real demand and immune to that loop.
-- **Off-ramp:** when `fleet_organic_revenue` exceeds `TARGET_REVENUE`
-  (≈ 3× the pool) for two consecutive months, retire the cold-start floor and run
-  on usage (plus the eventual platform fee).
-
-### Cliff guard (applies to both)
-
-No machine's **total** monthly income (earned + base) may fall more than **30%
-month-over-month** from a taper change, and any reduction to the program ships
-with **30 days' notice**. This relocates cliff-prevention from a fragile
-fleet-average assumption to a per-machine guarantee, and is the cheapest defense
-against churn and "bait-and-switch" complaints.
+`FLOOR_POOL_B` is the hard cap on all base-reward money printed in an epoch. If
+eligible floors exceed the pool, the allocator funds a deterministic subset of
+machines, protecting the 48–96GB workhorse tier first (§7). This is the primary
+cost control for the additive model.
 
 ---
 
@@ -252,8 +230,8 @@ organic_earned_i = Σ ProviderEarning.AmountMicroUSD
   its own consumer through a second account; jobs where the consumer account ==
   the provider's account never count.
 - **Probe credits excluded.** Synthetic probes (§6) may pay a tiny real amount
-  for indistinguishability; those credits are flagged and excluded from both the
-  reduction and any revenue metric.
+  for indistinguishability; those credits are flagged and excluded from the
+  optional reduction and the displayed organic-earnings breakdown.
 
 ---
 
@@ -344,13 +322,14 @@ and the workhorse tier the marketing is written for gets $0.
 
 Additive base income (`k = 0`) does **not** self-liquidate: every eligible machine
 draws its full floor every epoch regardless of earnings, so the program runs at
-roughly the pool cap for its whole life. Even under the legacy `k = 1` backstop the
-per-machine crossover (`earned ≥ floor`) sits **far** above alpha demand — a 64GB
-Max at ~40 tok/s would need ~105% single-stream (≈ 35% sustained-batched)
-utilization to gross its own $18 — so either way this is **a flat ~$8k/mo retention
-line for many months**. Plan it as real burn: affordable on a seed runway, correctly
-understood as supply-side CAC, and ended deliberately by the §4b sunset taper (and
-optionally the `k` knob), not by self-liquidation.
+roughly the pool cap while it is enabled. Even under the legacy `k = 1` backstop
+the per-machine crossover (`earned ≥ floor`) sits **far** above alpha demand — a
+64GB Max at ~40 tok/s would need ~105% single-stream (≈ 35% sustained-batched)
+utilization to gross its own $18 — so either way this is **a flat ~$8k/mo
+retention line for many months**. Plan it as real burn: affordable on a seed
+runway, correctly understood as supply-side CAC, and controlled by explicit pool
+and lifetime budget decisions (or the optional `k` knob), not by automatic
+self-liquidation.
 
 ---
 
@@ -382,11 +361,11 @@ per-token.
 | | Old | This design |
 |---|---|---|
 | Relationship to earnings | additive (`base + usage`) | **additive base income** (`earned + floor`; optional `k`-clawback, default off) |
-| Total cost | unbounded (`rate × fleet × time`) | **bounded** by `FLOOR_POOL_B` (flat while on; ended by the sunset taper) |
+| Total cost | unbounded (`rate × fleet × time`) | **bounded** by `FLOOR_POOL_B` (flat while enabled) |
 | Valuation | `memBase + bwBonus` (sum) on **self-reported** specs | memory-tier floor on **verified** memory |
 | Work proof | "warm model loaded" (idle-farmable) | probe / dispatched billed job; self-route excluded |
 | Durability | in-memory, lost every deploy | durable `provider_sessions` + idempotent settlement |
-| Demand coupling | none | fleet pool cap + sunset taper (optional per-provider `k`) |
+| Demand coupling | none | fleet pool cap (optional per-provider `k`) |
 
 **Keep:** the eligibility-gate concept, the µUSD ledger plumbing, the admin
 visibility endpoint, the rough $10–40 envelope. **Drop:** the additive rate
@@ -424,12 +403,6 @@ pre-attestation unpaid).
 **Phase 1 — verified capacity + probes (~2 wks).** serial→model memory
 verification; coordinator correctness-probes (gate 2 + probe half of gate 5).
 
-**Phase 2 — tapers + sunset.** Per-network revenue taper + calendar glide;
-per-machine 30%-drop cliff guard; published off-ramp condition.
-
-**Phase 3 — fee handoff.** When the platform fee turns on, fund any residual
-incentive from the fee pool; sunset the cold-start floor per §4b.
-
 ---
 
 ## 12. Open decisions
@@ -443,9 +416,7 @@ incentive from the fee pool; sunset the cold-start floor per §4b.
    to make it honestly Standard (+~$1–2k/mo worst case)?
 4. **Epoch length** — monthly (matches the "Netflix" framing) with a live
    dashboard estimate, or weekly settlement?
-5. **`TARGET_REVENUE` handoff threshold** — set against your demand forecast
-   (proposed ≈ 3× pool).
-6. **Entry tiers (decided)** — 24GB ($10) and 32GB ($12) now earn a floor to
+5. **Entry tiers (decided)** — 24GB ($10) and 32GB ($12) now earn a floor to
    incentivize the common mid-range Macs (they can serve the 20B baseline +
    specialist STT/embeddings work, and the fleet skews into this range). They
    earn only while serving (work gate). Open sub-question: extend a floor to

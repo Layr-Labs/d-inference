@@ -150,7 +150,7 @@ func AllocateDraws(cands []Candidate, budget, capBudget int64, workhorseReserveF
 		remaining -= want
 	}
 
-	// Phase 1: fund the workhorse tier from the reserved sub-pool.
+	// Step 1: fund the workhorse tier from the reserved sub-pool.
 	if workhorseReserveFrac > 0 {
 		reserve := int64(float64(budget) * workhorseReserveFrac)
 		for _, o := range order {
@@ -168,7 +168,7 @@ func AllocateDraws(cands []Candidate, budget, capBudget int64, workhorseReserveF
 		}
 	}
 
-	// Phase 2: water-fill the rest (and any unfunded workhorses) from whatever
+	// Step 2: water-fill the rest (and any unfunded workhorses) from whatever
 	// budget remains.
 	for _, o := range order {
 		if remaining <= 0 {

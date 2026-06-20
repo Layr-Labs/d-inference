@@ -26,8 +26,8 @@ type ServerConfig struct {
 }
 
 // BaseRewardsConfig holds the deployment knobs for the provider base-rewards
-// engine. Policy constants (the floor table, taper targets) live in
-// payments/baserewards; only operational toggles are env-driven here. The
+// engine. Policy constants (the floor table) live in payments/baserewards; only
+// operational toggles are env-driven here. The
 // feature is OFF unless Enabled is true, so the default config is a no-op.
 type BaseRewardsConfig struct {
 	Enabled        bool    // EIGENINFERENCE_BASE_REWARDS

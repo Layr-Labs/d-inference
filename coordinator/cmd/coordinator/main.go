@@ -15,7 +15,7 @@
 //
 // Graceful shutdown: The coordinator handles SIGINT/SIGTERM, enters drain mode,
 // stops the eviction loop, waits for in-flight requests to finish (up to
-// EIGENINFERENCE_DRAIN_GRACE, default 120s), then drains connections with a hard
+// EIGENINFERENCE_DRAIN_GRACE, default 10m), then drains connections with a hard
 // 15-second http.Server.Shutdown deadline as the final backstop.
 package main
 
@@ -711,7 +711,7 @@ func main() {
 	// Wait for already-admitted in-flight requests to finish before shutting the
 	// HTTP server down. Streaming responses can run well past the 15s Shutdown
 	// deadline, so we poll Inflight() until it reaches 0 or EIGENINFERENCE_DRAIN_GRACE
-	// (default 120s) elapses — whichever comes first — instead of cutting them off.
+	// (default 10m) elapses — whichever comes first — instead of cutting them off.
 	// We never block forever: the grace context bounds the wait, and the hard
 	// Shutdown deadline below is the final backstop.
 	grace := api.DrainGraceFromEnv()

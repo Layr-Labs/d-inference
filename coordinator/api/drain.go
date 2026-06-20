@@ -193,13 +193,11 @@ func (s *Server) handleAdminDrain(w http.ResponseWriter, r *http.Request) {
 // to shut down. Streaming responses can run well past the old 15s Shutdown
 // deadline, so the default is generous.
 //
-// It is set to 120s to match the two upstream budgets that bound how long a
-// single in-flight request can legitimately take: the provider-side going_away
-// drain budget and the coordinator's request-queue timeout are BOTH 120s. A
-// shorter coordinator grace (the original 60s) would cut long in-flight requests
-// here before the provider had finished draining them, defeating the point of a
-// graceful drain. Overridable via EIGENINFERENCE_DRAIN_GRACE.
-const DefaultDrainGrace = 120 * time.Second
+// It matches the coordinator's inferenceTimeout (10 minutes): streaming requests
+// reset that timeout on each chunk and non-streaming requests may validly take
+// the full budget, so a shorter default would still cut healthy generations
+// during an otherwise graceful restart. Overridable via EIGENINFERENCE_DRAIN_GRACE.
+const DefaultDrainGrace = 600 * time.Second
 
 // drainGracePollInterval is how often WaitForInflightZero re-checks the in-flight
 // count while waiting for requests to finish.

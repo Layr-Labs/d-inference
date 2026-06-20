@@ -238,6 +238,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
 	codeAttestationEnforced := s.registry.CodeAttestationEnforced()
 
+	// --- Network utilization (demand/capacity across warm-serving + token-budget axes) ---
+	util := s.registry.NetworkUtilizationSnapshot()
+
 	resp := map[string]any{
 		"total_requests":            totalRequests,
 		"total_prompt_tokens":       totalPromptTokens,
@@ -252,7 +255,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"total_cpu_cores":           totalCPUCores,
 		"total_memory_gb":           totalMemoryGB,
 		"total_bandwidth_gbs":       totalBandwidthGB,
-		"network_capacity_tps":      0, // would need benchmark data
+		"network_capacity_tps":      util.CapacityTPS,
+		"network_utilization":       util.Public(),
 		"providers":                 providers,
 		"models":                    models,
 		"time_series":               timeSeries,

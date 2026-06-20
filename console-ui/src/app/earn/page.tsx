@@ -4,11 +4,26 @@ import { useEffect, useState, useMemo } from "react";
 import { TopBar } from "@/components/TopBar";
 import { useAuth } from "@/hooks/useAuth";
 import { trackEvent } from "@/lib/google-analytics";
-import { fetchModels, fetchPricing, type Model, type PricingResponse } from "@/lib/api";
+import { fetchModels, fetchPricing, type Model } from "@/lib/api";
+import { BaseRewardsPanel } from "@/components/earn/BaseRewardsPanel";
+import {
+  MAC_CONFIGS,
+  MAC_TYPES,
+  type CatalogModel,
+  buildCatalogModels,
+  calculateModelEarnings,
+  calculatePortfolioEarnings,
+  getComparisons,
+  fmtUSD,
+  fmtUSDWhole,
+  SINGLE_STREAM_EFFICIENCY,
+  CONTINUOUS_BATCH_FACTOR,
+  ASSUMED_UTILIZATION,
+  PROMPT_TO_COMPLETION_RATIO,
+} from "./calc";
 import Link from "next/link";
 import {
   Cpu,
-  Zap,
   DollarSign,
   TrendingUp,
   Coffee,
@@ -16,299 +31,27 @@ import {
   ParkingCircle,
   Info,
   Crown,
+  Shield,
   ArrowRight,
   Mail,
   Terminal,
 } from "lucide-react";
 
-/* ─── Hardware database ─── */
-
-interface MacConfig {
-  macType: string;
-  chip: string;
-  ramOptions: number[];
-  bandwidthGBs: number;
-  idleWatts: number;   // power when model loaded, waiting for requests
-  inferWatts: number;  // power during active token generation
-}
-
-const MAC_CONFIGS: MacConfig[] = [
-  // --- MacBook Air ---
-  { macType: "MacBook Air", chip: "M1",       ramOptions: [8, 16],                    bandwidthGBs: 68,  idleWatts: 8,  inferWatts: 12 },
-  { macType: "MacBook Air", chip: "M2",       ramOptions: [8, 16, 24],               bandwidthGBs: 100, idleWatts: 8,  inferWatts: 12 },
-  { macType: "MacBook Air", chip: "M3",       ramOptions: [8, 16, 24],               bandwidthGBs: 100, idleWatts: 8,  inferWatts: 12 },
-  { macType: "MacBook Air", chip: "M4",       ramOptions: [16, 24, 32],              bandwidthGBs: 120, idleWatts: 8,  inferWatts: 12 },
-
-  // --- MacBook Pro ---
-  { macType: "MacBook Pro", chip: "M1 Pro",   ramOptions: [16, 32],                  bandwidthGBs: 200, idleWatts: 12, inferWatts: 30 },
-  { macType: "MacBook Pro", chip: "M1 Max",   ramOptions: [32, 64],                  bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
-  { macType: "MacBook Pro", chip: "M2 Pro",   ramOptions: [16, 32],                  bandwidthGBs: 200, idleWatts: 12, inferWatts: 30 },
-  { macType: "MacBook Pro", chip: "M2 Max",   ramOptions: [32, 64, 96],              bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
-  { macType: "MacBook Pro", chip: "M3",       ramOptions: [8, 16, 24],               bandwidthGBs: 100, idleWatts: 10, inferWatts: 20 },
-  { macType: "MacBook Pro", chip: "M3 Pro",   ramOptions: [18, 36],                  bandwidthGBs: 150, idleWatts: 15, inferWatts: 35 },
-  { macType: "MacBook Pro", chip: "M3 Max",   ramOptions: [36, 48, 64, 96, 128],     bandwidthGBs: 300, idleWatts: 20, inferWatts: 45 },
-  { macType: "MacBook Pro", chip: "M4",       ramOptions: [16, 24, 32],              bandwidthGBs: 120, idleWatts: 10, inferWatts: 20 },
-  { macType: "MacBook Pro", chip: "M4 Pro",   ramOptions: [24, 48],                  bandwidthGBs: 273, idleWatts: 12, inferWatts: 30 },
-  { macType: "MacBook Pro", chip: "M4 Max",   ramOptions: [36, 48, 64, 128],         bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
-  { macType: "MacBook Pro", chip: "M5",       ramOptions: [16, 24, 32],              bandwidthGBs: 153, idleWatts: 10, inferWatts: 20 },
-  { macType: "MacBook Pro", chip: "M5 Pro",   ramOptions: [24, 48],                  bandwidthGBs: 307, idleWatts: 12, inferWatts: 30 },
-  { macType: "MacBook Pro", chip: "M5 Max",   ramOptions: [36, 48, 64, 128],         bandwidthGBs: 614, idleWatts: 20, inferWatts: 50 },
-
-  // --- Mac Mini ---
-  { macType: "Mac Mini", chip: "M1",          ramOptions: [8, 16],                   bandwidthGBs: 68,  idleWatts: 5,  inferWatts: 10 },
-  { macType: "Mac Mini", chip: "M2",          ramOptions: [8, 16, 24],               bandwidthGBs: 100, idleWatts: 5,  inferWatts: 12 },
-  { macType: "Mac Mini", chip: "M2 Pro",      ramOptions: [16, 32],                  bandwidthGBs: 200, idleWatts: 8,  inferWatts: 25 },
-  { macType: "Mac Mini", chip: "M4",          ramOptions: [16, 24, 32],              bandwidthGBs: 120, idleWatts: 5,  inferWatts: 15 },
-  { macType: "Mac Mini", chip: "M4 Pro",      ramOptions: [24, 48],                  bandwidthGBs: 273, idleWatts: 8,  inferWatts: 25 },
-
-  // --- Mac Studio ---
-  { macType: "Mac Studio", chip: "M1 Max",    ramOptions: [32, 64],                  bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
-  { macType: "Mac Studio", chip: "M1 Ultra",  ramOptions: [64, 128],                 bandwidthGBs: 800, idleWatts: 30, inferWatts: 90 },
-  { macType: "Mac Studio", chip: "M2 Max",    ramOptions: [32, 64, 96],              bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
-  { macType: "Mac Studio", chip: "M2 Ultra",  ramOptions: [64, 128, 192],            bandwidthGBs: 800, idleWatts: 35, inferWatts: 100 },
-  { macType: "Mac Studio", chip: "M3 Ultra",  ramOptions: [96, 256, 512],             bandwidthGBs: 819, idleWatts: 35, inferWatts: 110 },
-  { macType: "Mac Studio", chip: "M4 Max",    ramOptions: [36, 48, 64, 128],         bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
-  { macType: "Mac Studio", chip: "M5 Max",    ramOptions: [36, 48, 64, 128],         bandwidthGBs: 614, idleWatts: 25, inferWatts: 65 },
-
-  // --- Mac Pro ---
-  { macType: "Mac Pro", chip: "M2 Ultra",     ramOptions: [64, 128, 192],            bandwidthGBs: 800, idleWatts: 40, inferWatts: 120 },
-  { macType: "Mac Pro", chip: "M3 Ultra",     ramOptions: [96, 256, 512],             bandwidthGBs: 819, idleWatts: 40, inferWatts: 120 },
-];
-
-const MAC_TYPES = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac Pro"];
-
-/* ─── Live model catalog ─── */
-
-interface CatalogModel {
-  id: string;
-  name: string;
-  minRAMGB: number;
-  demandNote: string; // demand expectation shown as infotip
-  activeParamsGB: number;
-  modelSizeGB: number;
-  outputPriceMicro: number;
-}
-
-const DEFAULT_OUTPUT_PRICE_MICRO_USD = 200_000;
-
-function buildPricingLookup(pricing: PricingResponse | null): Record<string, number> {
-  if (!pricing) return {};
-  return Object.fromEntries(pricing.prices.map((p) => [p.model, p.output_price]));
-}
-
-function modelSizeGB(model: Model): number {
-  if (model.size_gb && model.size_gb > 0) return model.size_gb;
-  if (model.size_bytes && model.size_bytes > 0) return model.size_bytes / 1e9;
-  const match = model.id.match(/(?:^|[^A-Za-z0-9])(\d{1,3})\s*[bB](?:[^A-Za-z0-9]|$)/);
-  return match ? Number(match[1]) : 27;
-}
-
-function activeParamsGB(model: Model, sizeGB: number): number {
-  // Search id, architecture, and description; accept decimal active counts
-  // ("A3.6B" or "3.6B active") before falling back to the size-based estimate.
-  const text = `${model.id} ${model.architecture ?? ""} ${model.description ?? ""}`;
-  const active = text.match(/A(\d{1,3}(?:\.\d+)?)B/i) ?? text.match(/(\d{1,3}(?:\.\d+)?)B\s+active/i);
-  if (active) return Math.max(1, Math.round(Number(active[1])));
-  if (/moe/i.test(text)) return Math.max(3, Math.round(sizeGB * 0.15));
-  return Math.max(1, Math.round(sizeGB));
-}
-
-function buildCatalogModels(models: Model[], pricing: PricingResponse | null): CatalogModel[] {
-  const outputPrices = buildPricingLookup(pricing);
-  return models
-    .map((model) => {
-      const outputPriceMicro = outputPrices[model.id] ?? DEFAULT_OUTPUT_PRICE_MICRO_USD;
-      const size = Math.max(1, Math.round(modelSizeGB(model)));
-      return {
-        id: model.id,
-        name: model.display_name || model.id.split("/").pop() || model.id,
-        minRAMGB: model.min_ram_gb || Math.ceil(size * 1.35),
-        demandNote: "Uses the live coordinator catalog and current/default per-token pricing.",
-        activeParamsGB: activeParamsGB(model, size),
-        modelSizeGB: size,
-        outputPriceMicro,
-      };
-    })
-    .filter((model): model is CatalogModel => Boolean(model));
-}
-
-/* ─── Earnings calculation ─── */
-
-interface ModelEarnings {
-  modelId: string;
-  modelName: string;
-  decodeTokPerSec: number;
-  revenuePerHour: number;
-  elecPerHour: number;
-  netPerHour: number;
-  monthlyRevenue: number;
-  monthlyElec: number;
-  monthlyNet: number;
-  annualNet: number;
-  elecPercent: number;
-  // Formula breakdown fields
-  batchSize: number;
-  batchEff: number;
-  activeParamsGB: number;
-  outputPriceMicro: number;
-  marginalWatts: number;
-  // Catalog reference for formula display
-  catalogModel: CatalogModel;
-}
-
-function calculateModelEarnings(
-  model: CatalogModel,
-  config: MacConfig,
-  ramGB: number,
-  hoursPerDay: number,
-  elecCostPerKWh: number,
-  loadedModelSizeGB = model.modelSizeGB
-): ModelEarnings {
-  const freeRAM = ramGB - loadedModelSizeGB;
-  const batchSize = Math.max(1, Math.min(16, Math.floor(freeRAM / 2)));
-  const batchEff = batchSize <= 4 ? 0.80 : batchSize <= 8 ? 0.85 : 0.90;
-  const { activeParamsGB, outputPriceMicro } = model;
-  const singleTokPerSec = (config.bandwidthGBs / activeParamsGB) * 0.60;
-  const decodeTokPerSec = singleTokPerSec * batchSize * batchEff;
-  const tokPerHour = decodeTokPerSec * 3600;
-  const revenuePerHour = (tokPerHour / 1_000_000) * (outputPriceMicro / 1_000_000);
-
-  const marginalWatts = config.inferWatts - config.idleWatts;
-  const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh;
-  const netPerHour = revenuePerHour - elecPerHour;
-
-  const hoursPerMonth = hoursPerDay * 30;
-  const monthlyRevenue = revenuePerHour * hoursPerMonth;
-  const monthlyElec = elecPerHour * hoursPerMonth;
-  const monthlyNet = netPerHour * hoursPerMonth;
-  const annualNet = monthlyNet * 12;
-  const elecPercent = monthlyRevenue > 0 ? (monthlyElec / monthlyRevenue) * 100 : 0;
-
-  return {
-    modelId: model.id,
-    modelName: model.name,
-    decodeTokPerSec,
-    revenuePerHour,
-    elecPerHour,
-    netPerHour,
-    monthlyRevenue,
-    monthlyElec,
-    monthlyNet,
-    annualNet,
-    elecPercent,
-    batchSize,
-    batchEff,
-    activeParamsGB,
-    outputPriceMicro,
-    marginalWatts,
-    catalogModel: model,
-  };
-}
-
-interface PortfolioEarnings {
-  modelName: string;
-  selectedModels: ModelEarnings[];
-  selectedModelCount: number;
-  totalModelSizeGB: number;
-  hoursPerModel: number;
-  decodeTokPerSec: number;
-  revenuePerHour: number;
-  elecPerHour: number;
-  netPerHour: number;
-  monthlyRevenue: number;
-  monthlyElec: number;
-  monthlyNet: number;
-  annualNet: number;
-  elecPercent: number;
-}
-
-function calculatePortfolioEarnings(
-  models: CatalogModel[],
-  config: MacConfig,
-  ramGB: number,
-  hoursPerDay: number,
-  elecCostPerKWh: number
-): PortfolioEarnings | null {
-  if (models.length === 0) return null;
-  const totalModelSizeGB = models.reduce((sum, model) => sum + model.modelSizeGB, 0);
-  if (totalModelSizeGB > ramGB) return null;
-
-  const hoursPerModel = hoursPerDay / models.length;
-  const selectedModels = models.map((model) =>
-    calculateModelEarnings(model, config, ramGB, hoursPerModel, elecCostPerKWh, totalModelSizeGB)
-  );
-
-  const monthlyRevenue = selectedModels.reduce((sum, model) => sum + model.monthlyRevenue, 0);
-  const monthlyElec = selectedModels.reduce((sum, model) => sum + model.monthlyElec, 0);
-  const monthlyNet = selectedModels.reduce((sum, model) => sum + model.monthlyNet, 0);
-  const activeHoursPerMonth = Math.max(1, hoursPerDay * 30);
-
-  return {
-    modelName:
-      models.length === 1
-        ? models[0].name
-        : `${models.length} models selected`,
-    selectedModels,
-    selectedModelCount: models.length,
-    totalModelSizeGB,
-    hoursPerModel,
-    decodeTokPerSec:
-      selectedModels.reduce((sum, model) => sum + model.decodeTokPerSec, 0) / selectedModels.length,
-    revenuePerHour: monthlyRevenue / activeHoursPerMonth,
-    elecPerHour: monthlyElec / activeHoursPerMonth,
-    netPerHour: monthlyNet / activeHoursPerMonth,
-    monthlyRevenue,
-    monthlyElec,
-    monthlyNet,
-    annualNet: monthlyNet * 12,
-    elecPercent: monthlyRevenue > 0 ? (monthlyElec / monthlyRevenue) * 100 : 0,
-  };
-}
-
-/* ─── Fun comparisons ─── */
-
-function getComparisons(monthlyNet: number): string[] {
-  const comparisons: string[] = [];
-  if (monthlyNet > 2)
-    comparisons.push(`${Math.floor(monthlyNet / 2)} Spotify Premium subscriptions`);
-  if (monthlyNet > 5)
-    comparisons.push(`${Math.floor(monthlyNet / 5)} lattes per month`);
-  if (monthlyNet > 15)
-    comparisons.push(`${Math.floor(monthlyNet / 15)} Netflix Standard plans`);
-  if (monthlyNet > 50)
-    comparisons.push(`a ${Math.floor(monthlyNet / 50)}-day parking meter`);
-  if (monthlyNet > 70)
-    comparisons.push(`${Math.floor(monthlyNet / 70)}x your home internet bill`);
-  if (monthlyNet > 200)
-    comparisons.push(
-      `$${(monthlyNet * 12).toLocaleString(undefined, { maximumFractionDigits: 0 })}/yr — a nice side income`
-    );
-  return comparisons;
-}
+/* ─── Fixed assumptions ─── */
+// 80% utilization + always-on, with continuous batching at a quality-preserving
+// 4×. We deliberately don't expose utilization or hours to the user — this is
+// the realistic "busy machine" figure the calculator estimates, and the
+// base-reward floor is added on top.
+const ALWAYS_ON_HOURS = 24;
 
 function comparisonIcon(text: string) {
   if (text.includes("Spotify") || text.includes("Netflix"))
     return <TrendingUp size={14} className="text-accent-green shrink-0" />;
-  if (text.includes("latte"))
-    return <Coffee size={14} className="text-accent-amber shrink-0" />;
-  if (text.includes("internet"))
-    return <Wifi size={14} className="text-accent-brand shrink-0" />;
+  if (text.includes("latte")) return <Coffee size={14} className="text-accent-amber shrink-0" />;
+  if (text.includes("internet")) return <Wifi size={14} className="text-accent-brand shrink-0" />;
   if (text.includes("parking"))
     return <ParkingCircle size={14} className="text-accent-amber shrink-0" />;
   return <DollarSign size={14} className="text-accent-green shrink-0" />;
-}
-
-/* ─── Format helpers ─── */
-
-function fmtUSD(n: number, decimals = 2): string {
-  if (n < 0) return "-$" + Math.abs(n).toFixed(decimals);
-  return "$" + n.toFixed(decimals);
-}
-
-function fmtUSDWhole(n: number): string {
-  if (n < 0)
-    return "-$" + Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
-  return "$" + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
 /* ─── Selector pill button ─── */
@@ -345,7 +88,6 @@ export default function EarnPage() {
   const [selectedMacType, setSelectedMacType] = useState("MacBook Pro");
   const [selectedChip, setSelectedChip] = useState("M4 Max");
   const [selectedRAM, setSelectedRAM] = useState(48);
-  const [inferenceHours, setInferenceHours] = useState(18);
   const [elecCost, setElecCost] = useState("0.15");
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
@@ -391,12 +133,12 @@ export default function EarnPage() {
     ? selectedRAM
     : availableRAM[availableRAM.length - 1] ?? 8;
 
-  // Calculate earnings for ALL eligible models
+  // Calculate USAGE earnings for ALL eligible models (for ranking)
   const rankedModels = useMemo(() => {
     if (!selectedConfig) return [];
     const eligible = catalogModels.filter((m) => m.minRAMGB <= effectiveRAM);
     const results = eligible.map((m) =>
-      calculateModelEarnings(m, selectedConfig, effectiveRAM, 18, elecCostNum)
+      calculateModelEarnings(m, selectedConfig, ALWAYS_ON_HOURS, elecCostNum)
     );
     results.sort((a, b) => b.monthlyNet - a.monthlyNet);
     return results;
@@ -435,10 +177,10 @@ export default function EarnPage() {
       selectedCatalogModels,
       selectedConfig,
       effectiveRAM,
-      inferenceHours,
+      ALWAYS_ON_HOURS,
       elecCostNum
     );
-  }, [selectedConfig, selectedCatalogModels, effectiveRAM, inferenceHours, elecCostNum]);
+  }, [selectedConfig, selectedCatalogModels, effectiveRAM, elecCostNum]);
 
   const comparisons = useMemo(
     () => (result ? getComparisons(result.monthlyNet) : []),
@@ -471,12 +213,7 @@ export default function EarnPage() {
       if (validCurrent.length === 0) {
         return [modelId];
       }
-      const base =
-        validCurrent.length > 0
-          ? validCurrent
-          : bestModelId && eligibleModelIds.has(bestModelId)
-            ? [bestModelId]
-            : [];
+      const base = validCurrent;
       if (base.includes(modelId)) {
         const next = base.filter((id) => id !== modelId);
         return next.length > 0 ? next : base;
@@ -497,7 +234,7 @@ export default function EarnPage() {
     modelSelectorHint = "No compatible catalog model for this memory configuration";
   } else if (selectedModelIds.length > 0) {
     modelSelectorHint =
-      "Selected models share active inference hours, so earnings are not double-counted.";
+      "Selected models share active inference hours, so usage earnings are not double-counted.";
   }
 
   return (
@@ -513,7 +250,7 @@ export default function EarnPage() {
             </h2>
             <p className="text-sm text-text-tertiary">
               Estimate how much your Apple Silicon Mac can earn serving inference
-              on the Darkbloom network.
+              on the Darkbloom network — usage earnings plus the base-reward floor.
             </p>
           </div>
 
@@ -739,16 +476,16 @@ export default function EarnPage() {
                         {m.modelName}
                       </span>
 
-                      {/* Monthly net */}
+                      {/* Monthly usage net */}
                       <span className={`text-sm font-mono tabular-nums whitespace-nowrap ${
                         m.monthlyNet >= 0 ? "text-accent-green" : "text-accent-red"
                       }`}>
-                        {fmtUSD(m.monthlyNet)}/mo solo
+                        {fmtUSD(m.monthlyNet)}/mo usage
                       </span>
 
                       {isBest && m.monthlyNet > 0 && (
                         <span className="px-2 py-0.5 rounded text-xs font-medium bg-accent-green/10 text-accent-green border border-accent-green/20 whitespace-nowrap">
-                          Best solo
+                          Best model
                         </span>
                       )}
                     </button>
@@ -757,7 +494,7 @@ export default function EarnPage() {
                       <div className="px-4 pb-3 pl-11">
                         <div className="flex items-start gap-1.5 text-xs text-text-tertiary">
                           <Info size={11} className="shrink-0 mt-0.5" />
-                          <span>{catalogEntry.demandNote}{isUnprofitable ? " This model loses money on your hardware — electricity exceeds revenue." : ""}</span>
+                          <span>{catalogEntry.demandNote}{isUnprofitable ? " This model's usage revenue is below its electricity cost on your hardware — the base reward still applies." : ""}</span>
                         </div>
                       </div>
                     )}
@@ -777,61 +514,27 @@ export default function EarnPage() {
 
           {result ? (
             <>
-              {/* Inference Hours & Electricity */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                {/* Inference hours slider */}
-                <div className="rounded-xl bg-bg-secondary p-5">
-                  <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
-                    <Zap size={12} className="inline mr-1.5 -mt-0.5" />
-                    Inference Hours
-                  </label>
-                  <div className="flex items-baseline gap-2 mb-3">
-                    <span className="text-2xl font-bold font-mono text-text-primary">
-                      {inferenceHours}
-                    </span>
-                    <span className="text-sm text-text-tertiary">
-                      hours of active inference per day
-                    </span>
-                  </div>
+              {/* Electricity cost (utilization & hours are fixed at 100% / always-on) */}
+              <div className="rounded-xl bg-bg-secondary p-5 mb-6">
+                <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
+                  <DollarSign size={12} className="inline mr-1.5 -mt-0.5" />
+                  Electricity Cost
+                </label>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-text-secondary text-sm">$</span>
                   <input
-                    type="range"
-                    min={1}
-                    max={24}
-                    value={inferenceHours}
-                    onChange={(e) => {
-                      setInferenceHours(parseInt(e.target.value));
-                    }}
-                    className="w-full accent-accent-brand"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={elecCost}
+                    onChange={(e) => setElecCost(e.target.value)}
+                    className="w-24 bg-bg-tertiary rounded-lg px-3 py-2 text-sm font-mono text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-brand/50"
                   />
-                  <div className="flex justify-between text-xs text-text-tertiary mt-1">
-                    <span>1 hr</span>
-                    <span>12 hrs</span>
-                    <span>24 hrs</span>
-                  </div>
+                  <span className="text-text-tertiary text-sm">/kWh</span>
                 </div>
-
-                {/* Electricity cost */}
-                <div className="rounded-xl bg-bg-secondary p-5">
-                  <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
-                    <DollarSign size={12} className="inline mr-1.5 -mt-0.5" />
-                    Electricity Cost
-                  </label>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-text-secondary text-sm">$</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={elecCost}
-                      onChange={(e) => setElecCost(e.target.value)}
-                      className="w-24 bg-bg-tertiary rounded-lg px-3 py-2 text-sm font-mono text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-brand/50"
-                    />
-                    <span className="text-text-tertiary text-sm">/kWh</span>
-                  </div>
-                  <p className="text-xs text-text-tertiary mt-2">
-                    US avg: $0.15 | EU avg: $0.25 | CA avg: $0.22
-                  </p>
-                </div>
+                <p className="text-xs text-text-tertiary mt-2">
+                  US avg: $0.15 | EU avg: $0.25 | CA avg: $0.22
+                </p>
               </div>
 
               {/* Results */}
@@ -849,7 +552,7 @@ export default function EarnPage() {
                       <span className="font-mono text-text-secondary">
                         {result.modelName}
                       </span>{" "}
-                      at {inferenceHours} total active hrs/day
+                      (always-on, {Math.round(ASSUMED_UTILIZATION * 100)}% utilization)
                     </p>
                     {result.selectedModelCount > 1 && (
                       <p className="text-xs text-text-tertiary mt-1">
@@ -857,6 +560,17 @@ export default function EarnPage() {
                       </p>
                     )}
                   </div>
+                </div>
+
+                {/* Utilization & batching assumption note */}
+                <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-bg-tertiary mb-5">
+                  <Info size={14} className="text-text-tertiary shrink-0 mt-0.5" />
+                  <p className="text-xs text-text-tertiary">
+                    Usage assumes <span className="text-text-secondary font-medium">{Math.round(ASSUMED_UTILIZATION * 100)}% utilization</span>{" "}
+                    with continuous batching ({CONTINUOUS_BATCH_FACTOR}× concurrent requests at full speed).
+                    Real demand varies by model and time of day — the base reward covers you while the
+                    network is quiet, and usage scales up as it fills.
+                  </p>
                 </div>
 
                 {/* Big number */}
@@ -872,19 +586,40 @@ export default function EarnPage() {
                   </p>
                 </div>
 
+                {/* Usage + floor breakdown */}
+                <div className="grid grid-cols-3 gap-3 mb-6">
+                  <div className="rounded-lg bg-bg-tertiary p-3 text-center">
+                    <p className="text-xs text-text-tertiary mb-1">Usage (inference)</p>
+                    <p className="text-lg font-mono text-text-primary">{fmtUSD(result.monthlyUsageNet)}</p>
+                    <p className="text-[10px] text-text-tertiary mt-0.5">revenue − electricity</p>
+                  </div>
+                  <div className="rounded-lg bg-accent-brand/5 border border-accent-brand/20 p-3 text-center">
+                    <p className="text-xs text-text-tertiary mb-1 flex items-center justify-center gap-1">
+                      <Shield size={11} className="text-accent-brand" /> Base reward
+                    </p>
+                    <p className="text-lg font-mono text-accent-brand">+ {fmtUSD(result.monthlyFloor)}</p>
+                    <p className="text-[10px] text-text-tertiary mt-0.5">{effectiveRAM}GB tier × uptime</p>
+                  </div>
+                  <div className="rounded-lg bg-accent-green/5 border border-accent-green/20 p-3 text-center">
+                    <p className="text-xs text-text-tertiary mb-1">Total / mo</p>
+                    <p className="text-lg font-mono text-accent-green">{fmtUSD(result.monthlyNet)}</p>
+                    <p className="text-[10px] text-text-tertiary mt-0.5">usage + base reward</p>
+                  </div>
+                </div>
+
                 {/* Detail grid */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div>
                     <p className="text-xs text-text-tertiary mb-0.5">
-                      Batched decode speed
+                      Decode speed
                     </p>
                     <p className="text-sm font-mono text-text-primary">
-                      {result.decodeTokPerSec.toFixed(1)} tok/s avg
+                      {result.decodeTokPerSec.toFixed(1)} tok/s
                     </p>
                   </div>
                   <div>
                     <p className="text-xs text-text-tertiary mb-0.5">
-                      Monthly revenue
+                      Monthly usage revenue
                     </p>
                     <p className="text-sm font-mono text-text-primary">
                       {fmtUSD(result.monthlyRevenue)}
@@ -908,7 +643,7 @@ export default function EarnPage() {
                   </div>
                   <div>
                     <p className="text-xs text-text-tertiary mb-0.5">
-                      Revenue per hour
+                      Usage revenue per hour
                     </p>
                     <p className="text-sm font-mono text-text-primary">
                       {fmtUSD(result.revenuePerHour, 4)}
@@ -924,10 +659,10 @@ export default function EarnPage() {
                   </div>
                   <div>
                     <p className="text-xs text-text-tertiary mb-0.5">
-                      Net per hour
+                      Base reward / mo
                     </p>
-                    <p className="text-sm font-mono text-accent-green">
-                      {fmtUSD(result.netPerHour, 4)}
+                    <p className="text-sm font-mono text-accent-brand">
+                      {fmtUSD(result.monthlyFloor)}
                     </p>
                   </div>
                   <div>
@@ -936,7 +671,7 @@ export default function EarnPage() {
                       <span className="relative group">
                         <Info size={12} className="text-text-tertiary cursor-help" />
                         <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 w-48 px-2 py-1 text-[10px] text-text-secondary bg-bg-tertiary border border-border-primary rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                          Payouts are currently processed manually. Automatic payouts coming soon.
+                          You keep 100% of usage revenue and the base reward. Payouts are currently processed manually.
                         </span>
                       </span>
                     </p>
@@ -945,70 +680,46 @@ export default function EarnPage() {
                 </div>
               </div>
 
+              {/* Base rewards explainer */}
+              <BaseRewardsPanel highlightGB={effectiveRAM} />
+
               {/* Calculation breakdown */}
               <div className="rounded-xl bg-bg-secondary p-6 mb-6">
                 <h3 className="text-sm font-medium text-text-primary mb-3">
                   How this is calculated
                 </h3>
                 <div className="text-xs text-text-tertiary font-mono space-y-1 bg-bg-tertiary rounded-lg p-4 overflow-x-auto">
-                  {result.selectedModelCount > 1 ? (
+                  {result.selectedModels[0] && (
                     <>
                       <p>
-                        loaded_models = {result.selectedModels.map((m) => m.modelName).join(" + ")}
+                        single_stream = ({selectedConfig.bandwidthGBs} GB/s / {result.selectedModels[0].activeParamsGB} GB) * {SINGLE_STREAM_EFFICIENCY} ={" "}
+                        {((selectedConfig.bandwidthGBs / result.selectedModels[0].activeParamsGB) * SINGLE_STREAM_EFFICIENCY).toFixed(1)} tok/s
                       </p>
                       <p>
-                        model_weights = {result.totalModelSizeGB} GB / {effectiveRAM} GB RAM
-                      </p>
-                      <p>
-                        active_hours/model = {inferenceHours} hrs/day / {result.selectedModelCount} models ={" "}
-                        {result.hoursPerModel.toFixed(1)} hrs/day
-                      </p>
-                      <p>
-                        monthly_revenue = sum(model revenue/hr * {result.hoursPerModel.toFixed(1)} hrs/day * 30) ={" "}
-                        {fmtUSD(result.monthlyRevenue)}
-                      </p>
-                      <p>
-                        monthly_electricity = shared active compute time * ${elecCostNum.toFixed(2)}/kWh ={" "}
-                        {fmtUSD(result.monthlyElec)}
-                      </p>
-                      <p>
-                        monthly_net = {fmtUSD(result.monthlyRevenue)} - {fmtUSD(result.monthlyElec)} ={" "}
-                        {fmtUSD(result.monthlyNet)}
-                      </p>
-                    </>
-                  ) : result.selectedModels[0] ? (
-                    <>
-                      <p>
-                        single_tok/s = ({selectedConfig.bandwidthGBs} GB/s / {result.selectedModels[0].activeParamsGB} GB) * 0.60 ={" "}
-                        {((selectedConfig.bandwidthGBs / result.selectedModels[0].activeParamsGB) * 0.6).toFixed(1)} tok/s
-                      </p>
-                      <p>
-                        batched_tok/s ={" "}
-                        {((selectedConfig.bandwidthGBs / result.selectedModels[0].activeParamsGB) * 0.6).toFixed(1)} * {result.selectedModels[0].batchSize} * {result.selectedModels[0].batchEff} ={" "}
+                        decode_tok/s = single_stream * {CONTINUOUS_BATCH_FACTOR}x batch * {Math.round(ASSUMED_UTILIZATION * 100)}% util ={" "}
                         {result.selectedModels[0].decodeTokPerSec.toFixed(1)} tok/s
                       </p>
                       <p>
-                        tok/hr = {result.selectedModels[0].decodeTokPerSec.toFixed(1)} * 3600 ={" "}
-                        {(result.selectedModels[0].decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        usage_rev/hr = decode_tok/hr * out_price + (decode_tok/hr * {PROMPT_TO_COMPLETION_RATIO} prompt) * in_price ={" "}
+                        {fmtUSD(result.revenuePerHour, 4)}
                       </p>
                       <p>
-                        revenue/hr = ({(result.selectedModels[0].decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} / 1M) * $
-                        {(result.selectedModels[0].outputPriceMicro / 1_000_000).toFixed(6)} = {fmtUSD(result.revenuePerHour, 4)}
+                        electricity/hr = ({result.selectedModels[0].marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh * {Math.round(ASSUMED_UTILIZATION * 100)}% ={" "}
+                        {fmtUSD(result.elecPerHour, 4)}
                       </p>
                       <p>
-                        marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.selectedModels[0].marginalWatts}W
+                        monthly_usage = ({fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)}) * 24 hrs/day * 30 ={" "}
+                        {fmtUSD(result.monthlyUsageNet)}
                       </p>
                       <p>
-                        elec/hr = ({result.selectedModels[0].marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
+                        base_reward = {effectiveRAM}GB tier * 100% uptime = {fmtUSD(result.monthlyFloor)}/mo
                       </p>
-                      <p>
-                        net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
-                      </p>
-                      <p>
-                        monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
+                      <p className="text-text-secondary">
+                        monthly_total = {fmtUSD(result.monthlyUsageNet)} usage + {fmtUSD(result.monthlyFloor)} base reward ={" "}
+                        {fmtUSD(result.monthlyNet)}
                       </p>
                     </>
-                  ) : null}
+                  )}
                 </div>
               </div>
 
@@ -1016,7 +727,7 @@ export default function EarnPage() {
               {comparisons.length > 0 && (
                 <div className="rounded-xl bg-bg-secondary p-6 mb-8">
                   <h3 className="text-sm font-medium text-text-primary mb-3">
-                    Your Mac earns more idle than...
+                    Your Mac earns more than...
                   </h3>
                   <div className="space-y-2">
                     {comparisons.map((c) => (
@@ -1043,7 +754,7 @@ export default function EarnPage() {
                     No compatible model for this hardware
                   </h3>
                   <p className="text-sm text-text-tertiary">
-                    Current catalog models need at least 36 GB unified memory. Choose a Mac with more memory to estimate provider earnings.
+                    No live catalog model fits in {effectiveRAM} GB of unified memory. Choose a Mac with more memory to estimate provider earnings.
                   </p>
                 </div>
               </div>
@@ -1053,13 +764,13 @@ export default function EarnPage() {
           {/* Disclaimer */}
           <div className="rounded-xl bg-bg-secondary p-5 mb-8">
             <p className="text-xs text-text-tertiary mb-2">
-              <span className="font-medium text-text-secondary">These are estimates only.</span> We do not guarantee any specific utilization or earnings. Actual earnings depend on network demand, model popularity, your provider reputation score, and how many other providers are serving the same model.
+              <span className="font-medium text-text-secondary">These are estimates only.</span> Usage earnings assume {Math.round(ASSUMED_UTILIZATION * 100)}% utilization with continuous batching ({CONTINUOUS_BATCH_FACTOR}× concurrent requests); actual usage depends on network demand, model popularity, your provider reputation, and how many other providers serve the same model. The live network currently runs well below this.
             </p>
             <p className="text-xs text-text-tertiary mb-2">
-              When your Mac is idle (no inference requests), it consumes minimal power — you don&apos;t lose significant money waiting for requests. The electricity costs shown only apply during active inference.
+              <span className="font-medium text-text-secondary">Base rewards</span> are paid on top of usage to attested machines that stay online ≥90% of the month, up to a fixed monthly budget — they are not a guarantee and taper off as the network grows.
             </p>
             <p className="text-xs text-text-tertiary">
-              Models with higher demand and more active users tend to produce more consistent earnings.
+              When your Mac is idle (no requests), it draws minimal power — the electricity cost shown only applies during active inference. You keep 100% of both usage revenue and base rewards.
             </p>
           </div>
         </div>

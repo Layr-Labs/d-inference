@@ -4,10 +4,26 @@ import Testing
 
 private let gib: UInt64 = 1024 * 1024 * 1024
 
-@Test func globalKVCacheBudgetReserveClearsCacheAndAdmitsOnResample() async {
-    // cap = 6 GiB (1.0 × 8 GiB, but the 2 GiB OS floor binds); mlxUsed = active 5
-    // + cache 2 = 7 GiB → 0 free. The 2 GiB pool is above the heal threshold, so
-    // clearCache drops cache → 0, leaving 1 GiB free — enough for the 1 GiB request.
+// New admission contract.
+//
+// The KV reclaimable-pool self-heal flush is a blocking GPU synchronize. It used
+// to run inside `GlobalKVCacheBudget`'s `commit` (flush-then-resample-then-admit),
+// serializing every other reservation behind a GPU sync — the fleet-wide wedge.
+//
+// Now the admission decision is made against the current snapshot and returns
+// immediately; a near-miss merely signals the off-actor `KVPoolReclaimer`, whose
+// flush runs on the reclaimer's executor, never the budget actor's. So:
+//   * a near-miss the pool could cover is now rejected (no inline flush-and-admit),
+//   * `reserve`/`reserveBytes` return promptly even while the flush is blocking,
+//   * the flush still happens — in the background, coalesced and rate-limited (its
+//     mechanics are pinned in `KVPoolReclaimerTests`).
+//
+// Invariant under test: the budget actor is never blocked on a GPU sync.
+
+@Test func admissionRejectsNearMissOnCurrentSnapshotInsteadOfFlushingInline() async {
+    // cap = 6 GiB (the 2 GiB OS floor binds: 8 − 2); mlxUsed = active 5 + cache 2
+    // = 7 GiB → 0 free. The old code flushed the 2 GiB pool inline and admitted
+    // the 1 GiB request. The new code rejects it against the current snapshot.
     let memory = MutableMemorySnapshot(cacheAfterClear: 0)
     let budget = GlobalKVCacheBudget(
         capFraction: 1.0,
@@ -15,13 +31,13 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         memorySnapshot: { memory.snapshot() },
         clearCache: { memory.clearCache() })
 
-    #expect(await budget.reserve(requestID: "fits-after-clear", kvBytesPerToken: 1, tokenCount: Int(gib)))
-    #expect(memory.clearCount == 1)
+    #expect(!(await budget.reserve(requestID: "near-miss", kvBytesPerToken: 1, tokenCount: Int(gib))))
+    // The flush is signalled to the off-actor reclaimer and runs in the
+    // background (the pool could cover the 1 GiB shortfall).
+    #expect(await eventually { memory.clearCount == 1 })
 }
 
-@Test func globalKVCacheBudgetReserveStillRejectsAfterClearWhenTooLarge() async {
-    // Same 6 GiB cap and 2 GiB pool, but the request needs 2 GiB. Even after the
-    // pool is flushed only 1 GiB is free, so it's still rejected — one heal attempt.
+@Test func reserveBytesRejectsNearMissOnCurrentSnapshot() async {
     let memory = MutableMemorySnapshot(cacheAfterClear: 0)
     let budget = GlobalKVCacheBudget(
         capFraction: 1.0,
@@ -29,76 +45,83 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         memorySnapshot: { memory.snapshot() },
         clearCache: { memory.clearCache() })
 
-    #expect(!(await budget.reserve(requestID: "too-large", kvBytesPerToken: 1, tokenCount: Int(2 * gib))))
-    #expect(memory.clearCount == 1)
+    #expect(!(await budget.reserveBytes(requestID: "near-miss-bytes", bytes: gib)))
+    #expect(await eventually { memory.clearCount == 1 })
 }
 
-@Test func globalKVCacheBudgetReserveBytesClearsCacheAndAdmitsOnResample() async {
-    // reserveBytes path: same headroom as the reserve() admit case — the 2 GiB
-    // pool is flushed to free 1 GiB, admitting the 1 GiB byte reservation.
-    let memory = MutableMemorySnapshot(cacheAfterClear: 0)
+@Test func admissionDoesNotBlockTheActorOnTheReclaimFlush() async {
+    // The core contract. The injected clearCache blocks for 0.5s (it simulates
+    // the GPU synchronize). `reserve` must return promptly — proving the
+    // admission decision did not wait on the flush — while the flush completes
+    // later, off the budget actor.
+    let spy = BlockingClearSpy(blockSeconds: 0.5)
+    let memory = MutableMemorySnapshot(cacheAfterClear: 2 * gib)  // pool never shrinks here
+    let budget = GlobalKVCacheBudget(
+        capFraction: 1.0,
+        activationReserveBytes: 0,
+        memorySnapshot: { memory.snapshot() },
+        clearCache: { spy.clear() })
+
+    let start = ContinuousClock.now
+    let admitted = await budget.reserve(requestID: "fast-return", kvBytesPerToken: 1, tokenCount: Int(gib))
+    let elapsed = ContinuousClock.now - start
+
+    #expect(!admitted)                                   // rejected on current snapshot
+    #expect(elapsed < .milliseconds(250))                // returned well before the 0.5s flush
+    #expect(spy.completedCount == 0)                     // flush not finished when reserve returned
+    #expect(await eventually(timeout: .seconds(3)) { spy.completedCount == 1 })  // it did run, off-actor
+}
+
+@Test func admissionAdmitsImmediatelyWhenItFitsWithoutAnyFlush() async {
+    // The happy path is unchanged: a request that fits the current snapshot is
+    // admitted with no reclaim signalled at all.
+    let memory = MutableMemorySnapshot(total: 8 * gib, active: 0, cache: 0, cacheAfterClear: 0)
     let budget = GlobalKVCacheBudget(
         capFraction: 1.0,
         activationReserveBytes: 0,
         memorySnapshot: { memory.snapshot() },
         clearCache: { memory.clearCache() })
 
-    #expect(await budget.reserveBytes(requestID: "bytes-fit-after-clear", bytes: gib))
-    #expect(memory.clearCount == 1)
+    #expect(await budget.reserve(requestID: "fits", kvBytesPerToken: 1, tokenCount: Int(gib)))
+    // Give any (erroneously) scheduled background flush a chance to run, then
+    // confirm none did.
+    try? await Task.sleep(for: .milliseconds(50))
+    #expect(memory.clearCount == 0)
 }
 
-@Test func globalKVCacheBudgetSkipsHealWhenPoolCannotCoverShortfall() async {
-    // Active-dominated near-cap: the reclaimable pool (100 MiB) can't cover the
-    // 1 GiB the request is short by, so flushing it wouldn't admit the request —
-    // the self-heal is skipped (no clear, no GPU sync) and the request is rejected.
-    let mib: UInt64 = 1024 * 1024
-    let memory = MutableMemorySnapshot(
-        total: 8 * gib, active: 6 * gib, cache: 100 * mib, cacheAfterClear: 0)
-    let budget = GlobalKVCacheBudget(
-        capFraction: 1.0,
-        activationReserveBytes: 0,
-        memorySnapshot: { memory.snapshot() },
-        clearCache: { memory.clearCache() })
+// MARK: - helpers
 
-    #expect(!(await budget.reserve(requestID: "tiny-pool", kvBytesPerToken: 1, tokenCount: Int(gib))))
-    #expect(memory.clearCount == 0)   // pool too small to be worth flushing
+/// Poll a condition up to `timeout`, so a background (off-actor) flush can be
+/// observed without racing a fixed sleep.
+private func eventually(
+    timeout: Duration = .seconds(2),
+    _ condition: @Sendable () -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return condition()
 }
 
-@Test func globalKVCacheBudgetRateLimitsRepeatedSelfHealFlushes() async {
-    // A large pool that the fake clear doesn't shrink (cacheAfterClear == cache,
-    // simulating immediate refill), so both near-miss admissions pass the pool-size
-    // gate. With a long interval injected, the second flush is rate-limited — the
-    // blocking GPU sync runs at most once per window, not once per admission.
-    let memory = MutableMemorySnapshot(
-        total: 8 * gib, active: 5 * gib, cache: 2 * gib, cacheAfterClear: 2 * gib)
-    let budget = GlobalKVCacheBudget(
-        capFraction: 1.0,
-        activationReserveBytes: 0,
-        memorySnapshot: { memory.snapshot() },
-        clearCache: { memory.clearCache() },
-        selfHealMinInterval: .seconds(3600))
+/// A clearCache spy whose flush blocks (like the real GPU synchronize), so a test
+/// can prove the budget actor doesn't wait on it.
+private final class BlockingClearSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private let blockSeconds: Double
+    private var _completed = 0
 
-    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: 1, tokenCount: Int(2 * gib))))
-    #expect(!(await budget.reserve(requestID: "b", kvBytesPerToken: 1, tokenCount: Int(2 * gib))))
-    #expect(memory.clearCount == 1)   // second flush rate-limited within the window
-}
+    init(blockSeconds: Double) { self.blockSeconds = blockSeconds }
 
-@Test func globalKVCacheBudgetHealsSmallShortfallFromSmallPool() async {
-    // The gate is shortfall-based, not an absolute pool floor: a small pool
-    // (200 MiB) that covers a small shortfall must still heal. cap = 6 GiB;
-    // active 6000 MiB + cache 200 MiB > cap → 0 free; the request is short by
-    // 64 MiB, which the 200 MiB pool covers, so the flush frees ~144 MiB and admits.
-    let mib: UInt64 = 1024 * 1024
-    let memory = MutableMemorySnapshot(
-        total: 8 * gib, active: 6000 * mib, cache: 200 * mib, cacheAfterClear: 0)
-    let budget = GlobalKVCacheBudget(
-        capFraction: 1.0,
-        activationReserveBytes: 0,
-        memorySnapshot: { memory.snapshot() },
-        clearCache: { memory.clearCache() })
+    func clear() {
+        Thread.sleep(forTimeInterval: blockSeconds)   // simulate the blocking GPU sync
+        lock.lock(); _completed += 1; lock.unlock()
+    }
 
-    #expect(await budget.reserveBytes(requestID: "small", bytes: 64 * mib))
-    #expect(memory.clearCount == 1)
+    var completedCount: Int {
+        lock.lock(); defer { lock.unlock() }; return _completed
+    }
 }
 
 /// Lock-guarded so @Sendable closures can mutate fake MLX cache state safely.

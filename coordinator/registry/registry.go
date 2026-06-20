@@ -256,6 +256,15 @@ func (pr *PendingRequest) MarkReservationFinalized() bool {
 	return ok
 }
 
+// IsReservationFinalized reports whether the reservation has already been
+// settled or refunded (so a late terminal must not re-settle or be counted
+// as a fresh client cancellation).
+func (pr *PendingRequest) IsReservationFinalized() bool {
+	pr.reservationMu.Lock()
+	defer pr.reservationMu.Unlock()
+	return pr.reservationFinalized
+}
+
 // FinalizeReservation runs settle while holding the reservation finalization
 // lock and marks the reservation finalized only if settle succeeds. It returns
 // false when another terminal path already finalized the reservation.
@@ -1061,6 +1070,24 @@ type Registry struct {
 	inferenceErrorStrikes   map[inferenceErrorKey][]time.Time // recent 5xx strike times per (provider, model, shape)
 	inferenceErrorCooldowns map[inferenceErrorKey]time.Time   // cool-down expiry per (provider, model, shape)
 
+	// providerOutcomes / providerBreakerOpenUntil / providerBreakerTrips
+	// implement the per-provider (node-health) circuit breaker, SEPARATE from
+	// and ADDITIONAL to the shape-keyed inference-error breaker above. It
+	// quarantines a whole provider that returns GENUINE-FAULT errors
+	// (500/502/504, or a fault-shaped 503 — internal error, crash, the opaque
+	// Foundation string) for ~all of its requests, regardless
+	// of model/shape — the case the inference-error breaker misses because it
+	// skips 503. After an exponential cooldown it re-probes and auto-re-admits
+	// on the first success. Capacity-class sheds (4xx/429 and token-budget /
+	// KV-headroom / draining 503s) never count — a healthy-but-busy provider.
+	// The breaker FAILS OPEN: when it would deroute every provider for a model,
+	// selection re-scans with it bypassed (selectBestCandidateLockedFull) so a
+	// bad fleet-wide rollout cannot zero out routing. Guarded by r.mu like the
+	// maps above; cleared on Disconnect. See provider_breaker.go.
+	providerOutcomes         map[string]*providerHealthWindow // per-provider sliding fault/success ring
+	providerBreakerOpenUntil map[string]time.Time             // breaker-open expiry per provider
+	providerBreakerTrips     map[string]int                   // trip count per provider (exponential backoff)
+
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
 	// transient coordinator stall (which ages many LastHeartbeat values at once)
@@ -1096,6 +1123,18 @@ const pendingModelLoadTTL = 2 * time.Minute
 // re-registration) could serve.
 const pendingModelLoadDrainBackoff = 30 * time.Second
 
+// pendingModelLoadMemoryBackoff is the short cooldown used when a proactive
+// load_model fails for a NON-draining reason — dominated by transient memory
+// pressure (insufficient free memory / KV headroom) that frees within seconds
+// as in-flight requests on other slots finish. Leaving the full
+// pendingModelLoadTTL (2 min, ≈ the 120s request-queue timeout) would suppress
+// proactive re-loads to this provider long enough that a request which queues
+// right after the failure times out before the provider is reconsidered, even
+// though its memory may have freed almost immediately. Kept equal to the drain
+// backoff today but named separately so the two can diverge. The ~10s warm-pool
+// sweep reaps the re-stamped entry deterministically.
+const pendingModelLoadMemoryBackoff = 30 * time.Second
+
 // dispatchLoadCooldownTTL is how long routing skips a pair after a dispatch
 // load failure — long enough to stop the retry loop, short enough that a
 // recovered provider returns on its own.
@@ -1109,20 +1148,23 @@ type modelLoadAction struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:               make(map[string]*Provider),
-		queue:                   NewRequestQueue(10, 120*time.Second),
-		MinTrustLevel:           TrustHardware,
-		tpsRegistry:             NewTPSRegistry(),
-		modelProviders:          make(map[string]*atomic.Int64),
-		pendingModelLoads:       make(map[string]time.Time),
-		pendingModelLoadStarted: make(map[string]time.Time),
-		dispatchLoadCooldowns:   make(map[string]time.Time),
-		inferenceErrorStrikes:   make(map[inferenceErrorKey][]time.Time),
-		inferenceErrorCooldowns: make(map[inferenceErrorKey]time.Time),
-		evictStrikes:            make(map[string]int),
-		cacheAffinity:           newCacheAffinityTracker(cacheAffinityTTL),
-		cacheAffinityBonusMs:    defaultCacheAffinityBonusMs,
-		logger:                  logger,
+		providers:                make(map[string]*Provider),
+		queue:                    NewRequestQueue(10, 120*time.Second),
+		MinTrustLevel:            TrustHardware,
+		tpsRegistry:              NewTPSRegistry(),
+		modelProviders:           make(map[string]*atomic.Int64),
+		pendingModelLoads:        make(map[string]time.Time),
+		pendingModelLoadStarted:  make(map[string]time.Time),
+		dispatchLoadCooldowns:    make(map[string]time.Time),
+		inferenceErrorStrikes:    make(map[inferenceErrorKey][]time.Time),
+		inferenceErrorCooldowns:  make(map[inferenceErrorKey]time.Time),
+		providerOutcomes:         make(map[string]*providerHealthWindow),
+		providerBreakerOpenUntil: make(map[string]time.Time),
+		providerBreakerTrips:     make(map[string]int),
+		evictStrikes:             make(map[string]int),
+		cacheAffinity:            newCacheAffinityTracker(cacheAffinityTTL),
+		cacheAffinityBonusMs:     defaultCacheAffinityBonusMs,
+		logger:                   logger,
 	}
 }
 
@@ -3163,6 +3205,30 @@ func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Dur
 	return time.Since(started)
 }
 
+// backoffPendingModelLoad re-stamps a pending load entry's expiry to
+// now+backoff, seeding pendingModelLoadStarted when this is the first time the
+// pair is seen (the coordinator may learn of a rejection for a load_model whose
+// reservation already expired or was cleared). Shared by the drain and
+// memory/generic-failure backoff paths so a failed load is reconsidered after a
+// short cooldown instead of the full pendingModelLoadTTL. Caller must NOT hold
+// r.mu.
+func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pendingModelLoads == nil {
+		r.pendingModelLoads = make(map[string]time.Time)
+	}
+	if r.pendingModelLoadStarted == nil {
+		r.pendingModelLoadStarted = make(map[string]time.Time)
+	}
+	key := modelLoadKey(providerID, modelID)
+	now := time.Now()
+	r.pendingModelLoads[key] = now.Add(backoff)
+	if r.pendingModelLoadStarted[key].IsZero() {
+		r.pendingModelLoadStarted[key] = now
+	}
+}
+
 // BackoffPendingModelLoadForDrain re-stamps a pending load entry with the
 // short drain backoff. Called when a provider rejects load_model because it
 // is draining ahead of an auto-update restart: clearing the entry outright
@@ -3171,16 +3237,19 @@ func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Dur
 // provider long after a failed restart resumed serving. A successful restart
 // clears the entry anyway via Disconnect.
 func (r *Registry) BackoffPendingModelLoadForDrain(providerID, modelID string) {
-	r.mu.Lock()
-	key := modelLoadKey(providerID, modelID)
-	r.pendingModelLoads[key] = time.Now().Add(pendingModelLoadDrainBackoff)
-	if r.pendingModelLoadStarted == nil {
-		r.pendingModelLoadStarted = make(map[string]time.Time)
-	}
-	if r.pendingModelLoadStarted[key].IsZero() {
-		r.pendingModelLoadStarted[key] = time.Now()
-	}
-	r.mu.Unlock()
+	r.backoffPendingModelLoad(providerID, modelID, pendingModelLoadDrainBackoff)
+}
+
+// BackoffPendingModelLoadForMemory re-stamps a pending load entry with the
+// short memory backoff after a NON-draining load_model failure (see
+// pendingModelLoadMemoryBackoff). Memory-pressure load failures recover in
+// seconds, so the entry must not keep the provider unplannable for the full
+// pendingModelLoadTTL — that window (~2 min) is ≈ the 120s queue timeout, so a
+// request queued right after the failure would time out before the provider is
+// reconsidered by TriggerModelSwaps. The ~10s warm-pool sweep reaps the
+// re-stamped entry.
+func (r *Registry) BackoffPendingModelLoadForMemory(providerID, modelID string) {
+	r.backoffPendingModelLoad(providerID, modelID, pendingModelLoadMemoryBackoff)
 }
 
 // RejectUnservableQueuedRequests checks whether any eligible provider can
@@ -3296,6 +3365,12 @@ func (r *Registry) Disconnect(id string) {
 				delete(r.pendingModelLoadStarted, key)
 			}
 		}
+		// Drop per-provider node-health breaker state. The id is a per-session
+		// UUID that will never recur, so its health ring, open expiry, and trip
+		// count must not linger after disconnect.
+		delete(r.providerOutcomes, id)
+		delete(r.providerBreakerOpenUntil, id)
+		delete(r.providerBreakerTrips, id)
 		p.mu.Lock()
 		if p.Status != StatusUntrusted {
 			r.onlineCount.Add(-1)
@@ -4446,6 +4521,33 @@ type providerCapSnap struct {
 	queuedTokenBudget     int64
 }
 
+// publiclyRoutableLocked reports whether a provider passes the public routing
+// gates (status, privacy, trust, runtime, private-text support, challenge
+// freshness). The caller must hold r.mu (read) and p.mu. It is shared by
+// ModelCapacitySnapshot and FleetCapacitySnapshot so both count the same set of
+// providers.
+func (r *Registry) publiclyRoutableLocked(p *Provider, now time.Time) bool {
+	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if p.PrivateOnly {
+		return false
+	}
+	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+		return false
+	}
+	if !p.RuntimeVerified {
+		return false
+	}
+	if !r.providerSupportsPrivateTextLocked(p) {
+		return false
+	}
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		return false
+	}
+	return true
+}
+
 // ModelCapacitySnapshot returns a capacity snapshot for every model served
 // by at least one provider. Providers must pass the same routing gates as
 // snapshotProviderLocked (status, trust, runtime, privacy, challenge
@@ -4463,27 +4565,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// Apply the same gates as snapshotProviderLocked. Private-only machines
 		// never serve the public fleet, so they do not count toward public
 		// model capacity.
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
-			p.mu.Unlock()
-			continue
-		}
-		if p.PrivateOnly {
-			p.mu.Unlock()
-			continue
-		}
-		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-			p.mu.Unlock()
-			continue
-		}
-		if !p.RuntimeVerified {
-			p.mu.Unlock()
-			continue
-		}
-		if !r.providerSupportsPrivateTextLocked(p) {
-			p.mu.Unlock()
-			continue
-		}
-		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		if !r.publiclyRoutableLocked(p, now) {
 			p.mu.Unlock()
 			continue
 		}

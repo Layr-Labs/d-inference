@@ -242,6 +242,11 @@ extension BatchScheduler {
                 ? Double(finalCompletion) / elapsedSeconds : 0
         }
 
+        // Backend-liveness watchdog: a real successful completion is proof the
+        // engine is decoding — it clears the "budget pinned with 0 successes"
+        // signal regardless of the measured TPS.
+        if success { lastSuccessAt = finishedAt }
+
         if success, tps > 0 {
             // Previously `activeBridges.count + 1` mixed in
             // queued-not-admitted bridges. Use admitted-and-running
@@ -490,5 +495,27 @@ extension BatchScheduler {
     /// be aborted rather than handed to `runBridge`.
     func _bridgeIsActiveForTest(_ id: String) -> Bool {
         activeBridges[id] != nil
+    }
+
+    /// Test seam: set the live `modelId` without a real load (production sets it
+    /// in `loadModel`). Lets a non-live unit test assert the heartbeat's
+    /// steady-state slot model. Internal + @testable-only; stripped from
+    /// production binaries.
+    func _setModelIdForTest(_ id: String) {
+        modelId = id
+    }
+
+    /// Test seam: reproduce the mid-self-restart heartbeat window WITHOUT a live
+    /// engine. Mirrors the exact transient state that `selfRestartForRecovery` +
+    /// `loadModel` → `stopCurrentEngine` produce mid-restart: the recovery flag is
+    /// set and the REAL model id is captured, while the live `modelId` has been
+    /// cleared to "" and the engine nil'd. Lets a non-live unit test assert the
+    /// heartbeat still advertises the real model id as `reloading` (never `model:""`
+    /// and never a servable state). Internal + @testable-only.
+    func _enterRecoveryReloadWindowForTest(realModelId: String) {
+        isReloadingForRecovery = true
+        recoveryReloadModelId = realModelId
+        modelId = ""
+        engine = nil
     }
 }

@@ -233,6 +233,28 @@ type Server struct {
 	// 0 (off). Set via EIGENINFERENCE_MIN_DECODE_TPS.
 	minDecodeTPS float64
 
+	// servabilityGate enables the smart early-429 admission gate: when
+	// true, a request whose (prompt + max_tokens) cannot fit the model's context
+	// window or any provider's structural token budget is rejected with an
+	// uptime-NEUTRAL 429 + Retry-After at preflight (OpenRouter fails over)
+	// instead of being admitted and failing as an uptime-DAMAGING 5xx. Default
+	// false (behavior-neutral). Set via EIGENINFERENCE_SERVABILITY_GATE=true. See
+	// registry.PredictServable + servability_gate.go. Independent of (and weaker
+	// than) the always-on dispatch-exhausted reclassification of token-budget 5xx
+	// → 429, which fixes the same failure on the actual provider-rejection path.
+	servabilityGate bool
+
+	// prefillKeepaliveInterval enables SSE keepalives during long prefill:
+	// when > 0, a STREAMING request that has been dispatched but not yet produced
+	// its first content chunk commits HTTP 200 and emits ": keepalive" SSE comments
+	// every interval until the first chunk or a terminal error, so OpenRouter's
+	// fetch timeout does not fire and fail us over mid-prefill. The zero value
+	// disables it; production sets it ON (defaultPrefillKeepaliveInterval, 10s, in
+	// cmd/coordinator). 0 keeps the deferred-commit / invisible-failover behavior.
+	// Set via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration). See
+	// prefill_keepalive.go.
+	prefillKeepaliveInterval time.Duration
+
 	// knownRuntimeManifest holds accepted runtime component hashes.
 	// When set, providers whose runtime hashes don't match are marked as
 	// unverified and excluded from routing (but not disconnected).
@@ -1039,6 +1061,38 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 	s.minDecodeTPS = tps
 }
 
+// SetServabilityGate toggles the smart early-429 admission gate. See the
+// servabilityGate field. Call before serving starts.
+func (s *Server) SetServabilityGate(enabled bool) {
+	s.servabilityGate = enabled
+}
+
+// SetPrefillKeepaliveInterval sets the prefill SSE keepalive cadence.
+// <= 0 disables it. Production enables it by default (see cmd/coordinator). See
+// the prefillKeepaliveInterval field. Call before serving starts.
+func (s *Server) SetPrefillKeepaliveInterval(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	s.prefillKeepaliveInterval = d
+}
+
+// SetLongPromptThreshold configures the estimated-prompt-token count at/above
+// which the scheduler applies the long-prompt fastest-tier routing preference.
+// 0 disables it (behavior-neutral). It is a package-level scheduler knob (like
+// the prefill/decode ratio), so this delegates to the registry. Call before
+// serving starts. SOFT bias only — no TTFT 429 is introduced.
+func (s *Server) SetLongPromptThreshold(tokens int) {
+	registry.SetLongPromptThreshold(tokens)
+}
+
+// SetLongPromptPrefillWeight configures the prefill-term multiplier the scheduler
+// applies to long prompts. Values < 1 clamp to 1.0 (no amplification).
+// Delegates to the registry; call before serving starts.
+func (s *Server) SetLongPromptPrefillWeight(weight float64) {
+	registry.SetLongPromptPrefillWeight(weight)
+}
+
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.
 func (s *Server) SetKnownBinaryHashes(hashes []string) {
 	normalized := normalizeKnownBinaryHashes(hashes, s.logger)
@@ -1786,6 +1840,10 @@ func (s *Server) routes() {
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
 
+	// Network utilization snapshot (admin only) — handler enforces admin auth
+	// internally via requireAdminKey.
+	s.mux.HandleFunc("GET /v1/admin/utilization", s.handleAdminUtilization)
+
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
 	// See docs/architecture/routing-telemetry-and-calibration.md §6. Handlers
@@ -1862,6 +1920,20 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			}
 			if q := s.registry.Queue(); q != nil {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+			}
+			// Network utilization — demand/capacity across the warm-serving and
+			// token-budget axes, plus a per-model breakdown.
+			util := s.registry.NetworkUtilizationSnapshot()
+			s.ddGauge("utilization.network", util.Utilization, nil)
+			s.ddGauge("utilization.warm", util.WarmUtilization, nil)
+			s.ddGauge("utilization.token_budget", util.TokenBudgetUtilization, nil)
+			s.ddGauge("utilization.bottleneck", util.BottleneckUtilization, nil)
+			s.ddGauge("capacity.tps", util.CapacityTPS, nil)
+			s.ddGauge("capacity.demand_concurrency", util.DemandConcurrency, nil)
+			s.ddGauge("capacity.serving_capacity", util.ServingCapacity, nil)
+			s.ddGauge("capacity.spill_arrival_rate", util.SpillArrivalRate, nil)
+			for _, m := range util.Models {
+				s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
 			}
 		}
 	}

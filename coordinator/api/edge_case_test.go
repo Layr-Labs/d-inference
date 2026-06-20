@@ -759,6 +759,18 @@ func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
 		t.Errorf("latest min_macos = %v, want 26.0", latest["min_macos"])
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/api/version?macos=26.0", nil)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get /api/version: status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var versionResp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &versionResp)
+	if versionResp["min_macos"] != "26.0" {
+		t.Errorf("/api/version min_macos = %v, want 26.0", versionResp["min_macos"])
+	}
+
 	// Verify binary hashes were synced
 	releases := st.ListReleases()
 	if len(releases) == 0 {
@@ -785,6 +797,84 @@ func TestEdge_ValidateSwiftReleaseDefaultsMinMacOS(t *testing.T) {
 	}
 	if release.MinMacOS != "26.0" {
 		t.Fatalf("MinMacOS = %q, want 26.0", release.MinMacOS)
+	}
+}
+
+func TestEdge_LatestReleaseFiltersByMacOSCompatibility(t *testing.T) {
+	srv, st := testServer(t)
+	if err := st.SetRelease(&store.Release{
+		Version:    "1.0.0",
+		Platform:   "macos-arm64",
+		BinaryHash: strings.Repeat("a", 64),
+		BundleHash: strings.Repeat("b", 64),
+		URL:        "https://example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz",
+		Active:     true,
+		CreatedAt:  time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SetRelease old: %v", err)
+	}
+	if err := st.SetRelease(&store.Release{
+		Version:    "2.0.0",
+		Platform:   "macos-arm64",
+		BinaryHash: strings.Repeat("c", 64),
+		BundleHash: strings.Repeat("d", 64),
+		MinMacOS:   "26.0",
+		URL:        "https://example.com/releases/v2.0.0/darkbloom-bundle-macos-arm64.tar.gz",
+		Active:     true,
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("SetRelease tahoe: %v", err)
+	}
+
+	cases := []struct {
+		name        string
+		path        string
+		wantStatus  int
+		wantVersion string
+	}{
+		{
+			name:        "legacy caller without macos only sees ungated release",
+			path:        "/v1/releases/latest?platform=macos-arm64",
+			wantStatus:  http.StatusOK,
+			wantVersion: "1.0.0",
+		},
+		{
+			name:        "pre Tahoe caller only sees ungated release",
+			path:        "/v1/releases/latest?platform=macos-arm64&macos=25.7",
+			wantStatus:  http.StatusOK,
+			wantVersion: "1.0.0",
+		},
+		{
+			name:        "Tahoe caller sees Tahoe release",
+			path:        "/v1/releases/latest?platform=macos-arm64&macos=26.0",
+			wantStatus:  http.StatusOK,
+			wantVersion: "2.0.0",
+		},
+		{
+			name:       "invalid macos rejected",
+			path:       "/v1/releases/latest?platform=macos-arm64&macos=Tahoe",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if tc.wantVersion == "" {
+				return
+			}
+			var latest map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &latest); err != nil {
+				t.Fatalf("decode latest: %v", err)
+			}
+			if latest["version"] != tc.wantVersion {
+				t.Fatalf("version = %v, want %s", latest["version"], tc.wantVersion)
+			}
+		})
 	}
 }
 

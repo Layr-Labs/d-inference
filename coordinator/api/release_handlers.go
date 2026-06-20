@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -136,9 +137,9 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	// Invalidate cached version/manifest/release responses so providers and
 	// install.sh see the new release on the next request instead of waiting
 	// out the TTL.
-	s.readCache.Invalidate("api_version:v1")
+	s.readCache.InvalidatePrefix("api_version:v1")
 	s.readCache.Invalidate("runtime_manifest:v1")
-	s.readCache.Invalidate("latest_release:v1")
+	s.readCache.InvalidatePrefix("latest_release:v1:")
 
 	s.logger.Info("release registered",
 		"version", release.Version,
@@ -469,16 +470,21 @@ func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 	if platform == "" {
 		platform = "macos-arm64"
 	}
+	macOS := strings.TrimSpace(r.URL.Query().Get("macos"))
+	if macOS != "" && !releaseMacOSVersionPattern.MatchString(macOS) {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "macos must be a numeric macOS version, e.g. 26.0"))
+		return
+	}
 
-	cacheKey := "latest_release:v1:" + platform
+	cacheKey := "latest_release:v1:" + platform + ":macos=" + url.QueryEscape(macOS)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
 
-	release := s.store.GetLatestRelease(platform)
+	release := latestCompatibleRelease(s.store.ListReleases(), platform, macOS)
 	if release == nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no active release for platform "+platform))
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no compatible active release for platform "+platform))
 		return
 	}
 
@@ -489,6 +495,92 @@ func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	s.readCache.Set(cacheKey, body, time.Minute)
 	writeCachedJSON(w, body)
+}
+
+func latestCompatibleRelease(releases []store.Release, platform, macOS string) *store.Release {
+	var latest *store.Release
+	for i := range releases {
+		r := releases[i]
+		if r.Platform != platform || !r.Active || !releaseCompatibleWithMacOS(r.MinMacOS, macOS) {
+			continue
+		}
+		if latest == nil ||
+			releaseVersionGreater(r.Version, latest.Version) ||
+			(r.Version == latest.Version && r.CreatedAt.After(latest.CreatedAt)) {
+			copy := r
+			latest = &copy
+		}
+	}
+	return latest
+}
+
+func releaseCompatibleWithMacOS(minMacOS, macOS string) bool {
+	minMacOS = strings.TrimSpace(minMacOS)
+	if minMacOS == "" {
+		return true
+	}
+	macOS = strings.TrimSpace(macOS)
+	if macOS == "" {
+		return false
+	}
+	cmp, ok := compareDottedVersions(macOS, minMacOS)
+	return ok && cmp >= 0
+}
+
+func releaseVersionGreater(a, b string) bool {
+	cmp, ok := compareDottedVersions(strings.TrimPrefix(a, "v"), strings.TrimPrefix(b, "v"))
+	return ok && cmp > 0
+}
+
+func compareDottedVersions(a, b string) (int, bool) {
+	aParts, ok := parseDottedVersion(a)
+	if !ok {
+		return 0, false
+	}
+	bParts, ok := parseDottedVersion(b)
+	if !ok {
+		return 0, false
+	}
+	n := max(len(aParts), len(bParts))
+	for i := 0; i < n; i++ {
+		var av, bv int
+		if i < len(aParts) {
+			av = aParts[i]
+		}
+		if i < len(bParts) {
+			bv = bParts[i]
+		}
+		if av > bv {
+			return 1, true
+		}
+		if av < bv {
+			return -1, true
+		}
+	}
+	return 0, true
+}
+
+func parseDottedVersion(v string) ([]int, bool) {
+	base := strings.TrimSpace(v)
+	if i := strings.IndexAny(base, "-+"); i >= 0 {
+		base = base[:i]
+	}
+	parts := strings.Split(base, ".")
+	if len(parts) == 0 {
+		return nil, false
+	}
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			return nil, false
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, true
 }
 
 // handleAdminListReleases handles GET /v1/admin/releases.
@@ -548,6 +640,9 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	// Re-sync known hashes after deactivation.
 	s.SyncBinaryHashes()
 	s.SyncRuntimeManifest()
+	s.readCache.InvalidatePrefix("api_version:v1")
+	s.readCache.Invalidate("runtime_manifest:v1")
+	s.readCache.InvalidatePrefix("latest_release:v1:")
 
 	s.logger.Info("admin: release deactivated", "version", req.Version, "platform", req.Platform)
 	writeJSON(w, http.StatusOK, map[string]any{

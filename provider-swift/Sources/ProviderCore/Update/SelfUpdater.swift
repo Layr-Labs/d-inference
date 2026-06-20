@@ -85,7 +85,9 @@ public struct SelfUpdater: Sendable {
     /// Check the coordinator for the latest release.
     public func checkForUpdate() async -> UpdateCheckResult {
         let currentVersion = ProviderCore.version
-        let endpoint = "\(coordinatorBaseURL)/v1/releases/latest?platform=macos-arm64"
+        let currentOS = currentOSVersion()
+        let currentOSString = Self.macOSString(currentOS)
+        let endpoint = "\(coordinatorBaseURL)/v1/releases/latest?platform=macos-arm64&macos=\(currentOSString)"
 
         guard let url = URL(string: endpoint) else {
             return .checkFailed(reason: "invalid coordinator URL: \(endpoint)")
@@ -133,7 +135,6 @@ public struct SelfUpdater: Sendable {
 
             if isNewer(latest: version, current: currentVersion) {
                 if let minMacOS = release.minMacOS, !minMacOS.isEmpty {
-                    let currentOS = currentOSVersion()
                     guard let compatible = Self.macOS(currentOS, isAtLeast: minMacOS) else {
                         return .checkFailed(reason: "invalid min_macos in release response: \(minMacOS)")
                     }
@@ -141,7 +142,7 @@ public struct SelfUpdater: Sendable {
                         return .incompatible(
                             current: currentVersion,
                             latest: release,
-                            currentMacOS: Self.macOSString(currentOS),
+                            currentMacOS: currentOSString,
                             requiredMacOS: minMacOS
                         )
                     }

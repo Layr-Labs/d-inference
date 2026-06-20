@@ -167,8 +167,13 @@ enum DoctorRunner {
             out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: latest.version))
         case .upToDate(let current):
             out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: current))
-        case .incompatible(let current, let latest, _, _):
-            out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: latest.version))
+        case .incompatible(let current, let latest, let currentMacOS, let requiredMacOS):
+            out.append(Diagnostic(
+                section: .version,
+                name: "provider update",
+                level: .warn,
+                message: "running \(current); latest is \(latest.version), but it requires macOS \(requiredMacOS)+ and this Mac is on \(currentMacOS).",
+                fix: "Upgrade macOS to \(requiredMacOS)+ before running `darkbloom update`."))
         case .checkFailed:
             break // network section already covers coordinator reachability
         }

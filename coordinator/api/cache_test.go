@@ -25,6 +25,25 @@ func TestTTLCachePurgeExpired(t *testing.T) {
 	}
 }
 
+func TestTTLCacheInvalidatePrefix(t *testing.T) {
+	c := newTTLCache()
+	c.Set("latest_release:v1:macos=26.0", []byte("a"), time.Minute)
+	c.Set("latest_release:v1:macos=15.0", []byte("b"), time.Minute)
+	c.Set("api_version:v1", []byte("c"), time.Minute)
+
+	c.InvalidatePrefix("latest_release:v1:")
+
+	if _, ok := c.Get("latest_release:v1:macos=26.0"); ok {
+		t.Fatal("expected prefixed latest-release key to be invalidated")
+	}
+	if _, ok := c.Get("latest_release:v1:macos=15.0"); ok {
+		t.Fatal("expected second prefixed latest-release key to be invalidated")
+	}
+	if _, ok := c.Get("api_version:v1"); !ok {
+		t.Fatal("non-prefixed key should survive prefix invalidation")
+	}
+}
+
 // The janitor actually reclaims expired entries (PurgeExpired was previously
 // never scheduled, so high-cardinality keys lingered forever) and stops on ctx
 // cancel.

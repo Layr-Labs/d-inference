@@ -21,7 +21,7 @@ coordinator admits can still fail to load on the provider.
 
 ## macOS requirements
 
-- macOS 15 or later is the current minimum target.
+- macOS Tahoe 26.0 or later is the current minimum target.
 - System Integrity Protection (SIP) must be enabled.
 - Secure Boot must be set to Full (for `hardware` trust).
 - A logged-in GUI Aqua session is required for APNs code-identity attestation.

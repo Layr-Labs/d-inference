@@ -24,6 +24,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -4368,7 +4369,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // If a release is registered in the store, uses that. Otherwise falls back
 // to the hardcoded LatestProviderVersion.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	const cacheKey = "api_version:v1"
+	macOS := strings.TrimSpace(r.URL.Query().Get("macos"))
+	if macOS != "" && !releaseMacOSVersionPattern.MatchString(macOS) {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "macos must be a numeric macOS version, e.g. 26.0"))
+		return
+	}
+	cacheKey := "api_version:v1:macos=" + url.QueryEscape(macOS)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
@@ -4376,7 +4382,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 	var resp types.VersionResponse
 	// Try release table first.
-	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
+	if release := latestCompatibleRelease(s.store.ListReleases(), "macos-arm64", macOS); release != nil {
 		resp = types.VersionResponse{
 			Version:      release.Version,
 			Platform:     release.Platform,
@@ -4385,6 +4391,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 			BinaryHash:   release.BinaryHash,
 			BundleHash:   release.BundleHash,
 			MetallibHash: release.MetallibHash,
+			MinMacOS:     release.MinMacOS,
 			Changelog:    release.Changelog,
 		}
 	} else {

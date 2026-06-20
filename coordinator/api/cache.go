@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -51,6 +52,17 @@ func (c *ttlCache) Set(key string, value []byte, ttl time.Duration) {
 func (c *ttlCache) Invalidate(key string) {
 	c.mu.Lock()
 	delete(c.data, key)
+	c.mu.Unlock()
+}
+
+// InvalidatePrefix removes every key with the given prefix.
+func (c *ttlCache) InvalidatePrefix(prefix string) {
+	c.mu.Lock()
+	for k := range c.data {
+		if strings.HasPrefix(k, prefix) {
+			delete(c.data, k)
+		}
+	}
 	c.mu.Unlock()
 }
 

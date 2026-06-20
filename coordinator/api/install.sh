@@ -1,6 +1,6 @@
 #!/bin/bash
 # NOTE: This file is embedded in the coordinator binary via go:embed.
-# Keep it in sync with scripts/install.sh.
+# Keep macOS preflight and release-fetch logic in sync with scripts/install.sh.
 set -euo pipefail
 
 # Darkbloom Provider Installer (Swift CLI release v0.5.0+)
@@ -79,7 +79,7 @@ echo ""
 # ─── Step 1: Fetch latest release ────────────────────────────
 echo "→ [1/5] Fetching latest release from $COORD_URL ..."
 
-RELEASE_JSON=$(curl -fsSL "$COORD_URL/v1/releases/latest" 2>/dev/null || echo "")
+RELEASE_JSON=$(curl -fsSL "$COORD_URL/v1/releases/latest?platform=macos-arm64&macos=$MACOS" 2>/dev/null || echo "")
 if [ -z "$RELEASE_JSON" ]; then
     echo "  ✗ Could not reach coordinator at $COORD_URL"
     echo "    Check your internet connection and try again."

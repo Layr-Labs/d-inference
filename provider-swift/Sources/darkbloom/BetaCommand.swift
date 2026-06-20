@@ -180,19 +180,33 @@ private func setBetaFeature(
     let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
     var config = snapshot.config
 
-    // Already in the desired state and the file exists — no-op (mirrors autoupdate).
-    if feature.isEnabled(in: config) == enabled && snapshot.configFileExists {
+    // Persist to the path the daemon will actually read. With no explicit
+    // --config, loadRuntimeSnapshot may have just migrated a legacy config to
+    // the canonical ~/.config/darkbloom/provider.toml; `darkbloom restart` and
+    // the launchd daemon resolve that canonical path first, so writing back to
+    // the (legacy) snapshot.configPath would leave the restarted daemon on the
+    // stale value. Re-resolving the default returns the post-migration canonical.
+    let savePath: URL
+    if configOptions.config != nil {
+        savePath = snapshot.configPath
+    } else {
+        savePath = try ConfigManager.defaultConfigPath()
+    }
+
+    // Already in the desired state and the target file exists — no-op.
+    if feature.isEnabled(in: config) == enabled
+        && FileManager.default.fileExists(atPath: savePath.path) {
         print("\(feature.title) (\(feature.id)) is already \(enabled ? "enabled" : "disabled").")
         return
     }
 
     feature.apply(enabled, to: &config)
-    try ConfigManager.save(config, to: snapshot.configPath)
+    try ConfigManager.save(config, to: savePath)
 
     print("\(enabled ? "Enabled" : "Disabled") beta feature: \(feature.title) (\(feature.id))")
     print("  \(feature.details)")
     if feature.requiresRestart {
         print("  Restart to apply:  darkbloom restart")
     }
-    print("  Config: \(snapshot.configPath.path)")
+    print("  Config: \(savePath.path)")
 }

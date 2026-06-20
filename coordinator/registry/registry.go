@@ -2848,7 +2848,11 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 			advertised[m.ID] = struct{}{}
 		}
 	}
-	assignedPool := r.assignProviderModelPoolLocked(p)
+	var assignedPoolKeys []string
+	if r.enforceModelPools {
+		r.assignProviderModelPoolLocked(p)
+		assignedPoolKeys = r.modelPoolKeysLocked(p.AssignedPool)
+	}
 	p.mu.Unlock()
 
 	var entries []protocol.DesiredModelEntry
@@ -2856,7 +2860,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		if t.Desired == "" {
 			continue
 		}
-		if assignedPool != "" && assignedPool != r.modelPoolKeyLocked(t.Desired) {
+		if r.enforceModelPools && len(assignedPoolKeys) > 0 && !poolKeysOverlap(assignedPoolKeys, r.modelPoolKeysLocked(t.Desired)) {
 			continue
 		}
 		_, hasDesired := advertised[t.Desired]

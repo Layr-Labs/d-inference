@@ -155,12 +155,16 @@ func (r *Registry) providerModelPoolSeedLocked(p *Provider) string {
 		}
 	}
 	var commonPools map[string]struct{}
+	candidatePools := make(map[string]struct{})
 	firstAdvertised := ""
 	for _, model := range p.Models {
 		if r.modelCanSeedPoolLocked(model.ID) && r.modelAllowedByCatalogLocked(model) {
 			keys := r.modelPoolKeysLocked(model.ID)
 			if len(keys) == 0 {
 				continue
+			}
+			for _, key := range keys {
+				candidatePools[key] = struct{}{}
 			}
 			if firstAdvertised == "" {
 				firstAdvertised = model.ID
@@ -177,9 +181,6 @@ func (r *Registry) providerModelPoolSeedLocked(p *Provider) string {
 				}
 			}
 			commonPools = next
-			if len(commonPools) == 0 {
-				return ""
-			}
 		}
 	}
 	if firstAdvertised == "" {
@@ -196,7 +197,7 @@ func (r *Registry) providerModelPoolSeedLocked(p *Provider) string {
 	if len(commonPools) > 1 {
 		return firstAdvertised
 	}
-	return ""
+	return firstSortedMapKey(candidatePools)
 }
 
 func (r *Registry) providerAssignedToModelPoolLocked(p *Provider, model string, allowPrivate bool) bool {
@@ -213,6 +214,34 @@ func (r *Registry) providerAssignedToModelPoolLocked(p *Provider, model string, 
 			if a == req {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func firstSortedMapKey(keys map[string]struct{}) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	return ordered[0]
+}
+
+func poolKeysOverlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, key := range a {
+		seen[key] = struct{}{}
+	}
+	for _, key := range b {
+		if _, ok := seen[key]; ok {
+			return true
 		}
 	}
 	return false

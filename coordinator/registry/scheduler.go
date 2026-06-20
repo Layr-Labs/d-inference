@@ -89,6 +89,9 @@ type routingSnapshot struct {
 	minRAMGb        int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
 	modelLoaded     bool    // true when the requested model is resident (running or idle)
 	availableOnDisk bool    // model is in provider's Models list but not currently loaded
+	// coldLoadBlockedByBusySlot is true when a different model slot is actively
+	// running/waiting, so the provider cannot evict it to cold-load this model.
+	coldLoadBlockedByBusySlot bool
 
 	observedDecodeTPS     float64
 	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
@@ -845,6 +848,9 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
 		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model != model && backendSlotBusy(slot) {
+				snap.coldLoadBlockedByBusySlot = true
+			}
 			if slot.Model != model {
 				continue
 			}
@@ -1004,6 +1010,9 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		return nil, rejectNone, false
 	}
 	if !snap.hasHeadroom {
+		return nil, rejectCapacity, false
+	}
+	if !snap.modelLoaded && snap.coldLoadBlockedByBusySlot {
 		return nil, rejectCapacity, false
 	}
 
@@ -1611,6 +1620,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}
 			for _, slot := range p.BackendCapacity.Slots {
+				if slot.Model != model && backendSlotBusy(slot) {
+					snap.coldLoadBlockedByBusySlot = true
+				}
 				if slot.Model != model {
 					continue
 				}
@@ -1647,6 +1659,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		if _, eligible := slotStatePenalty(snap.slotState); !eligible {
 			continue
 		}
+		if !snap.modelLoaded && snap.coldLoadBlockedByBusySlot {
+			capacityRejections++
+			continue
+		}
 
 		// Free memory / token budget admission gate.
 		if !freeMemoryAdmits(snap, dummyPR.EstimatedPromptTokens, dummyPR.RequestedMaxTokens) {
@@ -1669,6 +1685,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		return candidateCount, capacityRejections, modelTooLarge, 0, false
 	}
 	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
+}
+
+func backendSlotBusy(slot protocol.BackendSlotCapacity) bool {
+	return slot.NumRunning > 0 || slot.NumWaiting > 0 || slot.State == "running"
 }
 
 func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.Duration {

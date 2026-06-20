@@ -487,6 +487,30 @@ func TestDesiredModelsForProviderConservative(t *testing.T) {
 	}
 }
 
+func TestDesiredModelsForProviderHonorsModelPoolDisable(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
+	const (
+		poolA    = "pool-disable-a"
+		previous = "pool-disable-b-previous"
+		desired  = "pool-disable-b-desired"
+	)
+	p := registerProviderWithModel(reg, "p-pool-disable", poolA)
+	p.mu.Lock()
+	p.AssignedPool = poolA
+	p.Models = append(p.Models, protocol.ModelInfo{ID: previous, ModelType: "chat"})
+	p.mu.Unlock()
+	reg.SetModelCatalog([]CatalogEntry{{ID: poolA}, {ID: previous}, {ID: desired}})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"pool-b": {Desired: desired, Previous: previous},
+	})
+
+	entries := reg.DesiredModelsForProvider("p-pool-disable")
+	if len(entries) != 1 || entries[0].DesiredBuild != desired {
+		t.Fatalf("desired entries = %+v, want alias-b desired while pools disabled", entries)
+	}
+}
+
 // A provider that was offline through a retirement (still advertising only a
 // RETIRED member of the alias) is still recognized as part of the alias's fleet
 // at registration and told to converge — without this it would be permanently

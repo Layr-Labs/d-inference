@@ -38,6 +38,9 @@ type QueuedRequest struct {
 	EnqueuedAt time.Time
 	DoneCh     chan struct{} // closed when the waiter is no longer interested
 	doneOnce   sync.Once
+	assignMu   sync.Mutex
+	assigned   *Provider
+	canceled   bool
 
 	// Decision captures the cost breakdown of the routing decision that
 	// dispatched this queued request. Populated by drainQueuedRequestsForModels
@@ -60,6 +63,27 @@ func (r *QueuedRequest) markDone() {
 		r.init()
 		close(r.DoneCh)
 	})
+}
+
+func (r *QueuedRequest) tryAssign(p *Provider) bool {
+	r.init()
+	r.assignMu.Lock()
+	defer r.assignMu.Unlock()
+	if r.canceled {
+		return false
+	}
+	r.assigned = p
+	return true
+}
+
+func (r *QueuedRequest) cancelAssignment() *Provider {
+	r.init()
+	r.assignMu.Lock()
+	r.canceled = true
+	assigned := r.assigned
+	r.assignMu.Unlock()
+	r.markDone()
+	return assigned
 }
 
 func (r *QueuedRequest) Done() <-chan struct{} {
@@ -146,14 +170,15 @@ func (q *RequestQueue) Remove(requestID, model string) {
 }
 
 // Cancel marks a queued request as no longer interested and removes it if it is
-// still present in the queue. A concurrent drain that already popped it will see
-// DoneCh and unwind its provider reservation.
-func (q *RequestQueue) Cancel(req *QueuedRequest) {
+// still present in the queue. If a concurrent drain already assigned a provider,
+// it returns that provider so the caller can unwind its pending reservation.
+func (q *RequestQueue) Cancel(req *QueuedRequest) *Provider {
 	if req == nil {
-		return
+		return nil
 	}
-	req.markDone()
+	assigned := req.cancelAssignment()
 	q.Remove(req.RequestID, req.Model)
+	return assigned
 }
 
 // PopNextFresh removes and returns the first non-stale request for a model.

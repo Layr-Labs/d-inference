@@ -670,14 +670,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		for {
 			remaining := s.registry.Queue().MaxWait() - time.Since(queueStarted)
 			if remaining <= 0 {
-				s.registry.Queue().Cancel(queuedReq)
-				select {
-				case assigned := <-queuedReq.ResponseCh:
-					if assigned != nil {
-						assigned.RemovePending(d.requestID)
-						s.registry.SetProviderIdle(assigned.ID)
-					}
-				default:
+				if assigned := s.registry.Queue().Cancel(queuedReq); assigned != nil {
+					assigned.RemovePending(d.requestID)
+					s.registry.SetProviderIdle(assigned.ID)
 				}
 				d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
 				d.refundReservation()
@@ -709,14 +704,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					d.refundReservation()
 					return outcomeClientGone
 				}
-				s.registry.Queue().Cancel(queuedReq)
-				select {
-				case assigned := <-queuedReq.ResponseCh:
-					if assigned != nil {
-						assigned.RemovePending(d.requestID)
-						s.registry.SetProviderIdle(assigned.ID)
-					}
-				default:
+				if assigned := s.registry.Queue().Cancel(queuedReq); assigned != nil {
+					assigned.RemovePending(d.requestID)
+					s.registry.SetProviderIdle(assigned.ID)
 				}
 				d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
 				d.refundReservation()

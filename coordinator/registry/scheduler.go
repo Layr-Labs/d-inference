@@ -1844,6 +1844,11 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 				continue
 			default:
 			}
+			if !req.tryAssign(provider) {
+				provider.RemovePending(req.Pending.RequestID)
+				r.SetProviderIdle(provider.ID)
+				continue
+			}
 
 			select {
 			case req.ResponseCh <- provider:

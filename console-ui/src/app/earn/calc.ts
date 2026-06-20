@@ -210,9 +210,51 @@ export function activeParamsGB(model: Model, sizeGB: number): number {
   return Math.max(1, Math.round(sizeGB));
 }
 
+/**
+ * Strip known quantization / build-variant suffixes from a model id to get its
+ * base-model key. e.g. "gemma-4-26b-qat-4bit" / "gemma-4-26b-8bit" →
+ * "gemma-4-26b". Used to collapse catalog variants of the same model.
+ */
+export function baseModelKey(id: string): string {
+  let k = id.toLowerCase().trim();
+  const suffix = /-(qat|q4|q8|int4|int8|4bit|8bit|4-bit|8-bit|bf16|fp16|mxfp4|nf4|gguf|rollback|preview|beta|rc\d*)$/;
+  let prev = "";
+  while (k !== prev) {
+    prev = k;
+    k = k.replace(suffix, "");
+  }
+  return k;
+}
+
+/** Lower is more canonical — prefer clean names / base ids over quant/rollback builds. */
+function variantPenalty(m: Model): number {
+  const text = `${m.display_name ?? ""} ${m.id}`.toLowerCase();
+  let p = 0;
+  if (/\(|rollback|preview|\brc\b/.test(text)) p += 100; // explicit variant/rollback build
+  if (/qat|int4|int8|fp16|bf16|mxfp4|nf4|\d\s*-?bit/.test(text)) p += 10; // quantization suffix
+  p += m.id.length * 0.01; // tie-break: shorter (base) id wins
+  return p;
+}
+
+/**
+ * Collapse catalog variants (different quantizations / rollback builds of the
+ * same base model) into one entry, keeping the most canonical build. The live
+ * catalog lists e.g. gemma-4-26b, gemma-4-26b-qat-4bit and gemma-4-26b-8bit as
+ * separate rows; the earnings calculator should show a single "Gemma 4 26B".
+ */
+export function dedupeModelVariants(models: Model[]): Model[] {
+  const byBase = new Map<string, Model>();
+  for (const m of models) {
+    const key = baseModelKey(m.id);
+    const cur = byBase.get(key);
+    if (!cur || variantPenalty(m) < variantPenalty(cur)) byBase.set(key, m);
+  }
+  return [...byBase.values()];
+}
+
 export function buildCatalogModels(models: Model[], pricing: PricingResponse | null): CatalogModel[] {
   const prices = buildPricingLookup(pricing);
-  return models
+  return dedupeModelVariants(models)
     .map((model) => {
       const price = prices[model.id];
       const size = Math.max(1, Math.round(modelSizeGB(model)));

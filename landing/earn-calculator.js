@@ -113,6 +113,33 @@
     if (/moe/i.test(text)) return Math.max(3, Math.round(sizeGB * 0.15));
     return Math.max(1, Math.round(sizeGB));
   }
+  // Strip quantization / build-variant suffixes to get a base-model key, so
+  // gemma-4-26b / gemma-4-26b-qat-4bit / gemma-4-26b-8bit collapse to one entry.
+  function baseModelKey(id) {
+    let k = String(id || "").toLowerCase().trim();
+    const suffix = /-(qat|q4|q8|int4|int8|4bit|8bit|4-bit|8-bit|bf16|fp16|mxfp4|nf4|gguf|rollback|preview|beta|rc\d*)$/;
+    let prev = "";
+    while (k !== prev) { prev = k; k = k.replace(suffix, ""); }
+    return k;
+  }
+  function variantPenalty(m) {
+    const text = `${m.display_name || ""} ${m.id || ""}`.toLowerCase();
+    let p = 0;
+    if (/\(|rollback|preview|\brc\b/.test(text)) p += 100;
+    if (/qat|int4|int8|fp16|bf16|mxfp4|nf4|\d\s*-?bit/.test(text)) p += 10;
+    p += String(m.id || "").length * 0.01;
+    return p;
+  }
+  function dedupeModelVariants(models) {
+    const byBase = new Map();
+    for (const m of models) {
+      const key = baseModelKey(m.id);
+      const cur = byBase.get(key);
+      if (!cur || variantPenalty(m) < variantPenalty(cur)) byBase.set(key, m);
+    }
+    return [...byBase.values()];
+  }
+
   function buildCatalogModels(models, pricing) {
     const outputPrices = {};
     const inputPrices = {};
@@ -122,7 +149,7 @@
         inputPrices[p.model] = p.input_price;
       });
     }
-    return models.map((m) => {
+    return dedupeModelVariants(models).map((m) => {
       const size = Math.max(1, Math.round(catalogModelSizeGB(m)));
       return {
         id: m.id,

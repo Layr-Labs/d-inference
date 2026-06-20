@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dedupeModelVariants, baseModelKey, buildCatalogModels } from "@/app/earn/calc";
 
 const apiMocks = vi.hoisted(() => ({
   fetchModels: vi.fn(),
@@ -54,6 +55,32 @@ beforeEach(() => {
     prices: [
       { model: "gemma-4-26b", input_price: 65_000, output_price: 200_000, input_usd: "$0.0650", output_usd: "$0.2000" },
     ],
+  });
+});
+
+describe("model variant dedupe", () => {
+  const variants = [
+    { id: "gpt-oss-20b", object: "model", display_name: "GPT-OSS 20B", family: "gpt-oss" },
+    { id: "gemma-4-26b-qat-4bit", object: "model", display_name: "Gemma 4 26B", family: "gemma" },
+    { id: "gemma-4-26b", object: "model", display_name: "Gemma 4 26B", family: "gemma" },
+    { id: "gemma-4-26b-8bit", object: "model", display_name: "Gemma 4 26B 8-bit (rollback)", family: "gemma" },
+  ];
+
+  it("strips quant / build suffixes to a base key", () => {
+    expect(baseModelKey("gemma-4-26b-qat-4bit")).toBe("gemma-4-26b");
+    expect(baseModelKey("gemma-4-26b-8bit")).toBe("gemma-4-26b");
+    expect(baseModelKey("gemma-4-26b")).toBe("gemma-4-26b");
+    expect(baseModelKey("gpt-oss-20b")).toBe("gpt-oss-20b");
+  });
+
+  it("collapses the catalog to one canonical entry per base model", () => {
+    const out = dedupeModelVariants(variants);
+    expect(out.map((m) => m.id).sort()).toEqual(["gemma-4-26b", "gpt-oss-20b"]);
+  });
+
+  it("buildCatalogModels yields exactly two clean models", () => {
+    const built = buildCatalogModels(variants, null);
+    expect(built.map((m) => m.name).sort()).toEqual(["GPT-OSS 20B", "Gemma 4 26B"]);
   });
 });
 

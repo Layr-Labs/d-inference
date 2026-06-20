@@ -207,6 +207,31 @@ func (r *Registry) providerAssignedToModelPoolLocked(p *Provider, model string, 
 	if r.assignProviderModelPoolLocked(p) == "" || p.AssignedPool == "" {
 		return false
 	}
+	return r.providerAssignedPoolMatchesModelLocked(p, model)
+}
+
+func (r *Registry) providerAssignedOrIdleReassignableToModelPoolLocked(p *Provider, model string, allowPrivate bool) bool {
+	if !r.enforceModelPools || allowPrivate {
+		return true
+	}
+	if r.assignProviderModelPoolLocked(p) == "" || p.AssignedPool == "" {
+		if !r.providerPoolReassignableLocked(p) {
+			return false
+		}
+		p.AssignedPool = model
+		return true
+	}
+	if r.providerAssignedPoolMatchesModelLocked(p, model) {
+		return true
+	}
+	if !r.providerPoolReassignableLocked(p) {
+		return false
+	}
+	p.AssignedPool = model
+	return true
+}
+
+func (r *Registry) providerAssignedPoolMatchesModelLocked(p *Provider, model string) bool {
 	assigned := r.modelPoolKeysLocked(p.AssignedPool)
 	requested := r.modelPoolKeysLocked(model)
 	for _, a := range assigned {
@@ -217,6 +242,21 @@ func (r *Registry) providerAssignedToModelPoolLocked(p *Provider, model string, 
 		}
 	}
 	return false
+}
+
+func (r *Registry) providerPoolReassignableLocked(p *Provider) bool {
+	if p.pendingCount() != 0 {
+		return false
+	}
+	if p.BackendCapacity != nil {
+		for _, slot := range p.BackendCapacity.Slots {
+			if backendSlotBusy(slot) || slotStateModelLoaded(slot.State) {
+				return false
+			}
+		}
+		return true
+	}
+	return p.CurrentModel == "" && len(p.WarmModels) == 0
 }
 
 func firstSortedMapKey(keys map[string]struct{}) string {

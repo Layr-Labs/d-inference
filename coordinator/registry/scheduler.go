@@ -782,7 +782,7 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if !r.providerPassesRoutingGatesBeforePoolLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
 		return false
 	}
-	if !r.providerAssignedToModelPoolLocked(p, model, selfRouteOwner) {
+	if !r.providerAssignedOrIdleReassignableToModelPoolLocked(p, model, selfRouteOwner) {
 		return false
 	}
 	return true

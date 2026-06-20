@@ -204,7 +204,7 @@ func (r *Registry) HasToolCapableProviderForModel(model string, allowedSerials .
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
 			r.providerServesCatalogModelLocked(p, model) &&
-			r.providerAssignedToModelPoolLocked(p, model, false) &&
+			r.providerAssignedOrIdleReassignableToModelPoolLocked(p, model, false) &&
 			r.providerEligibleForTraitsLocked(p, model, traits)
 		p.mu.Unlock()
 		if eligible {

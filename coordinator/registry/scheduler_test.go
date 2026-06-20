@@ -1551,6 +1551,59 @@ func TestModelPoolAssignmentBlocksUnassignedPublicModel(t *testing.T) {
 	}
 }
 
+func TestIdleShutdownProviderCanReassignPoolOnDemand(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "pool-idle-shutdown-a"
+	modelB := "pool-idle-shutdown-b"
+	p := makeSchedulerProvider(t, reg, "pool-idle-shutdown-provider", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "idle_shutdown", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(modelB, &PendingRequest{
+		RequestID:          "req-reassign-idle-shutdown",
+		Model:              modelB,
+		RequestedMaxTokens: 128,
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("selected %#v for idle-shutdown reassignment, want %q; decision=%+v", selected, p.ID, decision)
+	}
+	p.mu.Lock()
+	assigned := p.AssignedPool
+	p.mu.Unlock()
+	if reg.ModelPoolKey(assigned) != modelB {
+		t.Fatalf("assigned_pool = %q (pool %q), want %q", assigned, reg.ModelPoolKey(assigned), modelB)
+	}
+}
+
+func TestResidentIdleProviderDoesNotReassignPoolOnDemand(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "pool-resident-a"
+	modelB := "pool-resident-b"
+	p := makeSchedulerProvider(t, reg, "pool-resident-provider", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "idle", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(modelB, &PendingRequest{
+		RequestID:          "req-resident-no-reassign",
+		Model:              modelB,
+		RequestedMaxTokens: 128,
+	})
+	if selected != nil {
+		t.Fatalf("selected %q, want nil while another model is resident", selected.ID)
+	}
+	if decision.CandidateCount != 0 || decision.CapacityRejections != 0 {
+		t.Fatalf("decision=%+v, want pool mismatch without capacity signal", decision)
+	}
+}
+
 func TestModelPoolAssignmentUsesFirstHeartbeatBeforeAdvertisedOrder(t *testing.T) {
 	reg := New(testLogger())
 	modelA := "pool-registration-a"

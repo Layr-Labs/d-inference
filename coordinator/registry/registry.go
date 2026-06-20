@@ -2187,7 +2187,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			r.providerAssignedToModelPoolLocked(p, model, false) &&
+			r.providerAssignedOrIdleReassignableToModelPoolLocked(p, model, false) &&
 			r.providerServesVisionModelLocked(p, model)
 		p.mu.Unlock()
 		if eligible {
@@ -2698,7 +2698,7 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 	p, ok := r.providers[providerID]
 	if ok {
 		p.mu.Lock()
-		allowed := r.providerAssignedToModelPoolLocked(p, modelID, false)
+		allowed := r.providerAssignedOrIdleReassignableToModelPoolLocked(p, modelID, false)
 		p.mu.Unlock()
 		if !allowed {
 			r.mu.RUnlock()
@@ -3078,7 +3078,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return 0, false
 	}
-	if !r.providerAssignedToModelPoolLocked(p, model, false) {
+	if !r.providerAssignedOrIdleReassignableToModelPoolLocked(p, model, false) {
 		return 0, false
 	}
 

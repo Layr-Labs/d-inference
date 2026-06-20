@@ -84,7 +84,7 @@ func TestColdSpillProvidersZeroWhenLoadPending(t *testing.T) {
 	}
 }
 
-func TestColdSpillProvidersZeroForUnassignedModelPool(t *testing.T) {
+func TestColdSpillProvidersDetectsIdleReassignableProvider(t *testing.T) {
 	reg := New(testLogger())
 	assigned := "cold-spill-assigned"
 	unassigned := "cold-spill-unassigned"
@@ -96,8 +96,23 @@ func TestColdSpillProvidersZeroForUnassignedModelPool(t *testing.T) {
 	p.CurrentModel = ""
 	p.mu.Unlock()
 
+	if n := reg.ColdSpillProviders(unassigned, RequestTraits{}, false); n != 1 {
+		t.Fatalf("ColdSpillProviders = %d, want 1 for idle reassignable provider", n)
+	}
+}
+
+func TestColdSpillProvidersZeroForResidentUnassignedModelPool(t *testing.T) {
+	reg := New(testLogger())
+	assigned := "cold-spill-resident-assigned"
+	unassigned := "cold-spill-resident-unassigned"
+	p := makeSchedulerProvider(t, reg, "cold-resident-wrong-pool", assigned, 80)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: unassigned, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: assigned, State: "idle"}}
+	p.mu.Unlock()
+
 	if n := reg.ColdSpillProviders(unassigned, RequestTraits{}, false); n != 0 {
-		t.Fatalf("ColdSpillProviders = %d, want 0 for unassigned pool", n)
+		t.Fatalf("ColdSpillProviders = %d, want 0 for resident wrong-pool provider", n)
 	}
 	if got := reg.PoolRejectedProviderCount(unassigned, RequestTraits{}, false); got != 1 {
 		t.Fatalf("PoolRejectedProviderCount = %d, want 1", got)

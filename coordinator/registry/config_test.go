@@ -55,6 +55,22 @@ func TestReadConfigWarmPoolDefaultsActive(t *testing.T) {
 	}
 }
 
+func TestReadConfigModelPoolsDefaultEnabled(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_MODEL_POOLS_ENABLED", "")
+
+	if !ReadConfig().ModelPoolsEnabled {
+		t.Fatal("model pools should default to enabled")
+	}
+}
+
+func TestReadConfigModelPoolsCanBeDisabled(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_MODEL_POOLS_ENABLED", "false")
+
+	if ReadConfig().ModelPoolsEnabled {
+		t.Fatal("model pools enabled despite explicit false")
+	}
+}
+
 func TestReadConfigWarmPoolMinWarmByModel(t *testing.T) {
 	clearWarmPoolEnv(t)
 	t.Setenv(env.EnvPrefix+"_WARM_POOL_MIN_WARM", "gpt-oss-20b=4, bad, gemma=0, other=-1, qwen=2")

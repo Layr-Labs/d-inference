@@ -4521,29 +4521,26 @@ func (r *Registry) Snapshot() FleetSnapshot {
 
 // ModelCapacity describes the live capacity for a single model.
 type ModelCapacity struct {
-	ModelID               string  `json:"id"`
-	AssignedPool          string  `json:"assigned_pool"`
-	AssignedPoolProviders int     `json:"assigned_pool_providers"`
-	Ready                 bool    `json:"ready"`                  // at least one routable provider with headroom
-	CanAccept             bool    `json:"can_accept"`             // ready AND queue not full
-	RoutableProviders     int     `json:"routable_providers"`     // passed all gates
-	WarmProviders         int     `json:"warm_providers"`         // model loaded (slot state "running" or "idle")
-	RunningProviders      int     `json:"running_providers"`      // model loaded with active requests (slot state "running")
-	ColdProviders         int     `json:"cold_providers"`         // model available but not loaded
-	ActiveRequests        int     `json:"active_requests"`        // in-flight across fleet
-	QueuedRequests        int     `json:"queued_requests"`        // waiting in coordinator queue
-	QueueLimit            int     `json:"queue_limit"`            // max queue depth per model
-	AggregateTPS          float64 `json:"aggregate_tps"`          // sum of effective decode TPS
-	EstimatedTTFTMs       int64   `json:"estimated_ttft_ms"`      // best-case TTFT from lowest-cost warm provider
-	TokenBudgetRemaining  int64   `json:"token_budget_remaining"` // aggregate free budget across providers
-	TokenBudgetTotal      int64   `json:"token_budget_total"`     // aggregate total budget
+	ModelID              string  `json:"id"`
+	Ready                bool    `json:"ready"`                  // at least one routable provider with headroom
+	CanAccept            bool    `json:"can_accept"`             // ready AND queue not full
+	RoutableProviders    int     `json:"routable_providers"`     // passed all gates
+	WarmProviders        int     `json:"warm_providers"`         // model loaded (slot state "running" or "idle")
+	RunningProviders     int     `json:"running_providers"`      // model loaded with active requests (slot state "running")
+	ColdProviders        int     `json:"cold_providers"`         // model available but not loaded
+	ActiveRequests       int     `json:"active_requests"`        // in-flight across fleet
+	QueuedRequests       int     `json:"queued_requests"`        // waiting in coordinator queue
+	QueueLimit           int     `json:"queue_limit"`            // max queue depth per model
+	AggregateTPS         float64 `json:"aggregate_tps"`          // sum of effective decode TPS
+	EstimatedTTFTMs      int64   `json:"estimated_ttft_ms"`      // best-case TTFT from lowest-cost warm provider
+	TokenBudgetRemaining int64   `json:"token_budget_remaining"` // aggregate free budget across providers
+	TokenBudgetTotal     int64   `json:"token_budget_total"`     // aggregate total budget
 }
 
 // providerCapSnap is a per-provider snapshot collected under the registry
 // lock, then aggregated into ModelCapacity outside the lock.
 type providerCapSnap struct {
 	model                 string
-	assignedPool          string
 	warm                  bool
 	running               bool
 	hasHeadroom           bool // pending < maxConcurrency
@@ -4629,7 +4626,6 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 			snap := providerCapSnap{
 				model:          m.ID,
-				assignedPool:   r.modelPoolKeyLocked(m.ID),
 				hasHeadroom:    hasHeadroom,
 				effectiveTPS:   decodeTPS,
 				prefillTPS:     prefillTPS,
@@ -4676,19 +4672,17 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 	// Phase 2: aggregate per-model outside the lock.
 	type modelAgg struct {
-		assignedPool      string
-		assignedProviders int
-		routable          int
-		warm              int
-		running           int
-		cold              int
-		activeRequests    int
-		aggregateTPS      float64
-		budgetRemaining   int64
-		budgetTotal       int64
-		bestWarmTTFTMs    int64 // -1 = not set
-		bestColdTTFTMs    int64 // -1 = not set
-		anyImmediateSlot  bool  // at least one provider with headroom
+		routable         int
+		warm             int
+		running          int
+		cold             int
+		activeRequests   int
+		aggregateTPS     float64
+		budgetRemaining  int64
+		budgetTotal      int64
+		bestWarmTTFTMs   int64 // -1 = not set
+		bestColdTTFTMs   int64 // -1 = not set
+		anyImmediateSlot bool  // at least one provider with headroom
 	}
 	agg := make(map[string]*modelAgg)
 	for _, s := range snaps {
@@ -4697,8 +4691,6 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			a = &modelAgg{bestWarmTTFTMs: -1, bestColdTTFTMs: -1}
 			agg[s.model] = a
 		}
-		a.assignedPool = s.assignedPool
-		a.assignedProviders++
 		if s.warm {
 			a.warm++
 			if s.running {
@@ -4772,22 +4764,20 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 
 		result = append(result, ModelCapacity{
-			ModelID:               model,
-			AssignedPool:          a.assignedPool,
-			AssignedPoolProviders: a.assignedProviders,
-			Ready:                 ready,
-			CanAccept:             canAccept,
-			RoutableProviders:     a.routable,
-			WarmProviders:         a.warm,
-			RunningProviders:      a.running,
-			ColdProviders:         a.cold,
-			ActiveRequests:        a.activeRequests,
-			QueuedRequests:        queued,
-			QueueLimit:            queueLimit,
-			AggregateTPS:          a.aggregateTPS,
-			EstimatedTTFTMs:       ttft,
-			TokenBudgetRemaining:  a.budgetRemaining,
-			TokenBudgetTotal:      a.budgetTotal,
+			ModelID:              model,
+			Ready:                ready,
+			CanAccept:            canAccept,
+			RoutableProviders:    a.routable,
+			WarmProviders:        a.warm,
+			RunningProviders:     a.running,
+			ColdProviders:        a.cold,
+			ActiveRequests:       a.activeRequests,
+			QueuedRequests:       queued,
+			QueueLimit:           queueLimit,
+			AggregateTPS:         a.aggregateTPS,
+			EstimatedTTFTMs:      ttft,
+			TokenBudgetRemaining: a.budgetRemaining,
+			TokenBudgetTotal:     a.budgetTotal,
 		})
 	}
 	return result

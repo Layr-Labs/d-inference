@@ -1749,8 +1749,8 @@ func TestModelCapacitySnapshotOnlyIncludesAssignedPool(t *testing.T) {
 	if !ok {
 		t.Fatalf("assigned model %q missing from capacity snapshot: %+v", modelA, snapshots)
 	}
-	if snap.AssignedPool != modelA || snap.AssignedPoolProviders != 1 {
-		t.Fatalf("assigned pool fields = %q/%d, want %q/1", snap.AssignedPool, snap.AssignedPoolProviders, modelA)
+	if !snap.Ready || snap.RoutableProviders != 1 {
+		t.Fatalf("assigned model snapshot = %+v, want ready with one routable provider", snap)
 	}
 }
 

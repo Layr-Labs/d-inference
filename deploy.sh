@@ -25,8 +25,16 @@
 #
 # ROLLBACK (valid any time AFTER the flip and BEFORE the old color is stopped):
 #   ./deploy.sh --rollback
-# flips the Caddy upstream back to the still-running previous color and reloads,
-# restoring the on-disk Caddyfile if the reload itself fails.
+# restores BOTH routing AND capacity to the previous color. A bare Caddy flip is
+# NOT sufficient once the forward deploy has signalled going-away to the old color:
+# that latches the old color to REFUSE new provider registrations (503) and pushes
+# its providers one-way onto the new color, so flipping back alone would route
+# consumers to a color with no providers (429). Rollback therefore (1) re-enables
+# the target color (undrain + clear its going-away latch so it accepts providers
+# again), (2) flips the Caddy upstream back to it and reloads (restoring the
+# on-disk Caddyfile if the reload itself fails), (3) broadcasts going-away to the
+# now-abandoned color so its providers reconnect and land back on the restored
+# color, and (4) waits for the restored color to report providers>0.
 #
 # SAFETY:
 #   * --dry-run prints the full plan (new ordering) and mutates NOTHING.
@@ -45,8 +53,11 @@
 #     coordinator secrets stay in that file and are never touched here.
 #
 # Cross-phase contracts (separate PRs; referenced, not implemented here):
-#   Phase 1 : GET /readyz  +  POST /v1/admin/drain
-#   Phase 3 : POST /v1/admin/going-away (admin-gated; returns 200 {"sent":N})
+#   Phase 1 : GET /readyz  +  POST /v1/admin/drain  (bodyless POST = start draining;
+#             POST {"draining":false} = clear the drain latch / undrain)
+#   Phase 3 : POST /v1/admin/going-away (admin-gated). Empty body = broadcast+latch,
+#             returns 200 {"sent":N}.  {"cancel":true} = clear the latch,
+#             returns 200 {"going_away":false,"cleared":true}.
 
 # NOTE: shell options are set inside main() so that sourcing this file for tests
 # does not mutate the caller's shell. The functions below are written to not
@@ -410,6 +421,32 @@ drain_color() {
   return 1
 }
 
+# undrain_color <color> <port> — POST /v1/admin/drain {"draining":false} to CLEAR a
+# color's drain latch so it re-accepts work (the inverse of drain_color's bodyless
+# POST, which STARTS draining). Used by --rollback to re-enable the rollback target,
+# which the forward deploy may have drained. Best-effort: warns and continues on any
+# failure so a not-yet-deployed endpoint degrades gracefully. DRY_RUN-aware.
+# EIGENINFERENCE_ADMIN_KEY is loaded once by the caller (load_admin_env).
+undrain_color() {
+  local color="$1" port="$2"
+  log "Undraining $color (port $port): POST $DRAIN_PATH {\"draining\":false} (re-accept work)..."
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "DRY-RUN: would POST $DRAIN_PATH {\"draining\":false} to $color:$port"
+    return 0
+  fi
+  # Phase 1 contract: the drain endpoint accepts {"draining":false} to UN-drain.
+  if ! "$CURL_BIN" -fsS -X POST \
+        -H "Authorization: Bearer ${EIGENINFERENCE_ADMIN_KEY:-}" \
+        -H "Content-Type: application/json" \
+        --max-time 10 \
+        --data '{"draining":false}' \
+        "http://${HEALTH_HOST}:${port}${DRAIN_PATH}" >/dev/null; then
+    warn "undrain request to $color returned an error (continuing; it may already accept work, or the endpoint is not deployed yet)."
+  else
+    log "$color undrained (now re-accepting work)."
+  fi
+}
+
 # signal_going_away <color> <port> — POST /v1/admin/going-away to the OLD color so
 # its providers reconnect and (Caddy already flipped) re-land on the NEW color.
 # Phase 3 (PR #396) contract: admin-gated, returns 200 {"sent":N}. Best-effort:
@@ -434,6 +471,38 @@ signal_going_away() {
     log "going-away accepted by $color (sent=$sent; those providers will reconnect to the new color)."
   else
     warn "going-away to $color did not return a parseable {\"sent\":N} (continuing; providers will still reconnect within the heartbeat timeout)."
+  fi
+}
+
+# clear_going_away <color> <port> — POST /v1/admin/going-away {"cancel":true} to
+# CLEAR a color's going-away latch (set by a prior signal_going_away). Until cleared
+# that latch makes the color REFUSE new provider registrations (503), so --rollback
+# MUST clear it on the rollback target before flipping traffic back, or the restored
+# color would route consumers to zero providers. Phase 3 (PR #396) contract:
+# admin-gated; empty body = broadcast+latch (signal_going_away), {"cancel":true} =
+# clear, returns 200 {"going_away":false,"cleared":true}. Best-effort: warns and
+# continues on failure (a not-yet-deployed endpoint degrades gracefully).
+# DRY_RUN-aware. EIGENINFERENCE_ADMIN_KEY is loaded once by the caller (load_admin_env).
+clear_going_away() {
+  local color="$1" port="$2"
+  log "Clearing going-away latch on $color (port $port): POST $GOING_AWAY_PATH {\"cancel\":true} (re-accept providers)..."
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "DRY-RUN: would POST $GOING_AWAY_PATH {\"cancel\":true} to $color:$port (admin-gated; expect 200 {\"going_away\":false,\"cleared\":true})"
+    return 0
+  fi
+  local body cleared
+  body="$("$CURL_BIN" -fsS -X POST \
+        -H "Authorization: Bearer ${EIGENINFERENCE_ADMIN_KEY:-}" \
+        -H "Content-Type: application/json" \
+        --max-time 10 \
+        --data '{"cancel":true}' \
+        "http://${HEALTH_HOST}:${port}${GOING_AWAY_PATH}" 2>/dev/null || true)"
+  # Contract response: {"going_away":false,"cleared":true}.
+  cleared="$(printf '%s' "$body" | sed -n 's/.*"cleared"[[:space:]]*:[[:space:]]*true.*/true/p' | head -n1)"
+  if [ "$cleared" = "true" ]; then
+    log "going-away latch cleared on $color (now re-accepts provider registrations)."
+  else
+    warn "clear going-away on $color did not confirm {\"cleared\":true} (continuing; endpoint may not be deployed yet — providers will still re-register once it accepts them)."
   fi
 }
 
@@ -476,10 +545,16 @@ do_rollback() {
   target_color="$(other_color "$cur_color")"
   target_port="$(port_for_color "$target_color")"
   log "ROLLBACK: Caddy currently -> $cur_color ($cur_port); reverting to $target_color ($target_port)."
-  warn "Rollback only restores routing. The $target_color container must still be RUNNING (valid only before it was stopped)."
+  log "Rollback restores routing AND capacity: re-enable $target_color (undrain + clear its going-away latch), flip Caddy back, then push providers off $cur_color back onto $target_color."
+  warn "The $target_color container must still be RUNNING (rollback is valid only before it was stopped)."
   if [ "$DRY_RUN" -eq 1 ]; then
     log "DRY-RUN: would health-check $target_color at http://${HEALTH_HOST}:${target_port}${HEALTH_PATH} before flipping."
-    log "DRY-RUN: would flip_upstream $CADDYFILE $cur_port $target_port, then reload Caddy."
+    log "DRY-RUN: would load_admin_env (parse EIGENINFERENCE_ADMIN_KEY for the admin POSTs below)."
+    log "DRY-RUN: STEP A — would re-enable $target_color: POST $DRAIN_PATH {\"draining\":false} (undrain) + POST $GOING_AWAY_PATH {\"cancel\":true} (clear going-away latch) to ${HEALTH_HOST}:${target_port}."
+    log "DRY-RUN: STEP B — would flip_upstream $CADDYFILE $cur_port $target_port, then reload Caddy (auto-revert to $cur_color if reload fails)."
+    log "DRY-RUN: STEP C — would POST $GOING_AWAY_PATH to the now-abandoned $cur_color ($cur_port) so its providers reconnect and land on $target_color."
+    log "DRY-RUN: STEP D — would poll $target_color ($target_port) /health for providers>0 (timeout ${PROVIDERS_TIMEOUT}s)."
+    log "DRY-RUN: would leave $cur_color running (idle, providers drained off) for inspection; stop it manually with '$SYSTEMCTL_BIN stop darkbloom-coordinator@${cur_color}'."
     return 0
   fi
   # Never flip onto a dead port (connection refused -> 502s): probe the target's
@@ -498,19 +573,49 @@ do_rollback() {
     err "Start it first (e.g. '$SYSTEMCTL_BIN start darkbloom-coordinator@${target_color}'), or re-run with --force to flip anyway."
     return 1
   fi
-  confirm "Flip Caddy upstream $cur_port -> $target_port and reload?" || { log "Rollback aborted."; return 1; }
+  confirm "Roll back to $target_color: re-enable it, flip Caddy $cur_port -> $target_port, and push providers back?" || { log "Rollback aborted."; return 1; }
+
+  # Parse the admin key for the authenticated undrain + going-away POSTs below. Real
+  # run only — the --dry-run path returned above, so the plan stays secret-free.
+  load_admin_env
+  if [ -z "${EIGENINFERENCE_ADMIN_KEY:-}" ]; then
+    warn "EIGENINFERENCE_ADMIN_KEY is empty ($DINF_ENV_FILE missing or unset); the undrain/going-away POSTs will be unauthenticated and likely rejected — continuing (best-effort)."
+  fi
+
+  # STEP A — re-enable the rollback target BEFORE flipping traffic onto it. The
+  # forward deploy latched it going-away (it now refuses new provider registrations,
+  # 503) and may have drained it; undo BOTH so it can re-accept providers once Caddy
+  # points back at it. Best-effort (warn + continue) so a not-yet-deployed Phase 1/3
+  # endpoint degrades gracefully.
+  undrain_color "$target_color" "$target_port"
+  clear_going_away "$target_color" "$target_port"
+
+  # STEP B — flip Caddy cur->target + reload. Mirror the cutover path: if the reload
+  # fails after flipping the on-disk Caddyfile, flip it BACK so on-disk state matches
+  # live Caddy (still -> $cur_color); otherwise a later run would read the stale
+  # on-disk port and flip/stop the wrong color.
   flip_upstream "$CADDYFILE" "$cur_port" "$target_port" || die "flip_upstream failed (rc $?)"
-  # Mirror the cutover path: if the reload fails after flipping the on-disk
-  # Caddyfile, flip it BACK so on-disk state matches live Caddy (still -> $cur_color).
-  # Otherwise a later run would read the stale on-disk port and flip/stop the
-  # wrong color.
   if ! reload_caddy; then
     err "caddy reload failed after rollback flip; restoring Caddyfile to $cur_color ($cur_port) so on-disk state matches live Caddy."
     flip_upstream "$CADDYFILE" "$target_port" "$cur_port" || err "restore flip ALSO failed — manual intervention required on $CADDYFILE"
     reload_caddy || true
     die "rollback aborted: caddy reload failed (Caddyfile restored to $cur_color)"
   fi
-  log "ROLLBACK complete: Caddy -> $target_color ($target_port)."
+  log "Caddy now -> $target_color ($target_port)."
+
+  # STEP C — push providers off the now-abandoned $cur_color back onto $target_color.
+  # Broadcast going-away to $cur_color: its providers reconnect and — Caddy already
+  # flipped — land on $target_color. (signal_going_away logs this as the "OLD" color;
+  # in a rollback that is the abandoned new color we are retiring.) Best-effort like
+  # the forward path; providers also reconnect within the heartbeat timeout.
+  log "Pushing providers off the abandoned $cur_color back onto $target_color..."
+  signal_going_away "$cur_color" "$cur_port"
+
+  # STEP D — confirm capacity actually returned to $target_color (reconnects landed).
+  wait_for_providers "$target_color" "$target_port"
+
+  log "ROLLBACK complete: Caddy -> $target_color ($target_port); providers pushed back to it."
+  log "The abandoned $cur_color ($cur_port) is left RUNNING (idle, providers drained off) for inspection; stop it manually with '$SYSTEMCTL_BIN stop darkbloom-coordinator@${cur_color}'."
 }
 
 # ===========================================================================
@@ -526,7 +631,10 @@ Caddy upstream, brings up the idle color, cuts over, drains, and stops the old.
 Options:
   --image <ref>      Pin this container image for the idle color before starting.
   --caddyfile <path> Caddyfile to read/flip (default: /etc/caddy/Caddyfile).
-  --rollback         Flip Caddy back to the other (still-running) color + reload.
+  --rollback         Roll back to the other (still-running) color: re-enable it
+                     (undrain + clear its going-away latch), flip Caddy back +
+                     reload, then push providers back onto it and wait for
+                     providers>0.
   --force            With --rollback: flip even if the target color fails its
                      health check (DANGEROUS — may route traffic to a dead port).
   --dry-run          Print the plan; change nothing.

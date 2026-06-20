@@ -148,35 +148,63 @@ stopped (the "rollback window" `deploy.sh` prints):
 sudo ./deploy.sh --rollback
 ```
 
-This flips the Caddy upstream back to the other (still-running) color and
-reloads. Before flipping, `deploy.sh` health-checks the rollback target with a
-single-shot `GET /health` liveness probe so it never cuts traffic over to a dead
-port (which would surface as 502s). If the target is **not** healthy the rollback
-is refused; start it again first (`systemctl start darkbloom-coordinator@<old>`),
-then re-run `--rollback`.
+A bare Caddy flip back is **not** enough once the forward deploy has signalled
+going-away to the old color: that **latches** the old color to refuse new provider
+registrations (503) and moves its providers one-way onto the new color, so simply
+re-pointing Caddy at the old color would route consumers to a color with **zero**
+providers (429). `--rollback` therefore restores **both routing and capacity**:
 
-To override the health gate and flip anyway (for example, you are certain the
-probe is wrong), add `--force`:
+1. **Health-check** the rollback target with a single-shot `GET /health` liveness
+   probe so it never cuts traffic over to a dead port (which would surface as
+   502s). If the target is **not** healthy the rollback is refused; start it again
+   first (`systemctl start darkbloom-coordinator@<old>`), then re-run `--rollback`.
+2. **Re-enable** the target *before* flipping: `POST /v1/admin/drain {"draining":false}`
+   (undrain) and `POST /v1/admin/going-away {"cancel":true}` (clear the going-away
+   latch) so it accepts providers again. Both are best-effort — they warn and
+   continue if the endpoint is not deployed yet.
+3. **Flip** the Caddy upstream back to the target + graceful `caddy reload` (the
+   on-disk Caddyfile is restored to the current color if the reload itself fails).
+4. **Push providers back**: `POST /v1/admin/going-away` to the now-abandoned color
+   so its providers reconnect and — Caddy already flipped — land back on the
+   restored color.
+5. **Wait for providers**: poll the restored color's `/health` until
+   `providers > 0` (warns, does not abort, on timeout).
+
+The abandoned color is left **running** (idle, providers drained off) for
+inspection; stop it manually with
+`systemctl stop darkbloom-coordinator@<abandoned>`.
+
+To override the health gate in step 1 and flip anyway (for example, you are
+certain the probe is wrong), add `--force`:
 
 ```bash
 sudo ./deploy.sh --rollback --force   # DANGEROUS: may route traffic to a dead port
 ```
 
-`deploy.sh` also auto-rolls-back the flip if `caddy reload` fails mid-cutover.
+`--dry-run` prints this whole plan and changes nothing.
 
 ## Cross-phase contracts
 
 `deploy.sh` consumes endpoints/behaviors delivered by sibling PRs:
 
 - **Phase 1** — `GET /readyz` (exposes an `inflight` counter, e.g.
-  `{"inflight":0}`) and `POST /v1/admin/drain` (admin-authenticated). Until
-  Phase 1 lands, steps 4 and 8 will not see these endpoints.
-- **Phase 3** (PR #396) — `POST /v1/admin/going-away` (admin-authenticated;
-  returns `200 {"sent":N}`) tells the old color's providers to reconnect so they
-  re-land on the already-flipped new color. (`going_away` is also broadcast on a
-  graceful coordinator stop.) Until Phase 3 lands, step 6 has no endpoint to call
-  (it warns and continues; providers still reconnect within the heartbeat
-  timeout).
+  `{"inflight":0}`) and `POST /v1/admin/drain` (admin-authenticated). A bodyless
+  `POST /v1/admin/drain` **starts** draining; `POST /v1/admin/drain {"draining":false}`
+  **clears** the drain latch (used by `--rollback` to undrain the rollback target).
+  Until Phase 1 lands, steps 4 and 8 (and the rollback undrain) will not see these
+  endpoints.
+- **Phase 3** (PR #396) — `POST /v1/admin/going-away` (admin-authenticated):
+  - **empty body** = broadcast going-away **and latch** the color to refuse new
+    provider registrations; returns `200 {"sent":N}`. Tells that color's providers
+    to reconnect so they re-land on the already-flipped color. (`going_away` is also
+    broadcast on a graceful coordinator stop.)
+  - **`{"cancel":true}`** = **clear** the latch; returns
+    `200 {"going_away":false,"cleared":true}`. Used by `--rollback` to re-enable the
+    rollback target so it accepts providers again.
+
+  Until Phase 3 lands, step 6 (and the rollback clear + push-back) have no endpoint
+  to call — they warn and continue; providers still reconnect within the heartbeat
+  timeout.
 
 ## One-time install on the box
 

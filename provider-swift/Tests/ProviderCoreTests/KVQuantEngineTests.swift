@@ -205,7 +205,7 @@ struct KVQuantEngineTests {
             "sliding-attention layer must use BatchRotatingKVCache")
     }
 
-    @Test("factory on kernel kind: full layers use QuantizedBatchKVCache, sliding stays BatchRotatingKVCache")
+    @Test("factory on kernel kind: full layers use QuantizedBatchKVCache, sliding uses QuantizedBatchRotatingKVCache")
     func factoryOnKernelKindUsesQuantizedBatchKVCache() {
         let quantConfig = KVQuantizationConfig(groupSize: 128, bits: 8, mode: .affine, cacheKind: .kernel)
         let fullName = Scheduler.cacheFactoryTypeName(
@@ -216,18 +216,26 @@ struct KVQuantEngineTests {
 
         #expect(fullName == "QuantizedBatchKVCache",
             "full-attention layer must use QuantizedBatchKVCache when quant kind is kernel")
-        #expect(slidingName == "BatchRotatingKVCache",
-            "sliding-attention layer must stay fp16 (BatchRotatingKVCache)")
+        // Sliding-window layers are quantized too (#46): the quant groups run along
+        // head-dim, so the rotating-window front-trim stays group-aligned.
+        #expect(slidingName == "QuantizedBatchRotatingKVCache",
+            "sliding-window layer must use QuantizedBatchRotatingKVCache when quant kind is kernel")
     }
 
-    @Test("factory on dequant kind: full layers use DequantBatchKVCache")
+    @Test("factory on dequant kind: full layers use DequantBatchKVCache, sliding uses DequantBatchRotatingKVCache")
     func factoryOnDequantKindUsesDequantBatchKVCache() {
         let quantConfig = KVQuantizationConfig(groupSize: 64, bits: 8, mode: .affine, cacheKind: .dequant)
         let fullName = Scheduler.cacheFactoryTypeName(
             for: KVCacheSimple(), quantConfig: quantConfig)
+        let slidingName = Scheduler.cacheFactoryTypeName(
+            for: RotatingKVCache(maxSize: 1024, keep: 0, step: 1024),
+            quantConfig: quantConfig)
 
         #expect(fullName == "DequantBatchKVCache",
             "full-attention layer must use DequantBatchKVCache when quant kind is dequant")
+        // Sliding-window layers are quantized too (#46).
+        #expect(slidingName == "DequantBatchRotatingKVCache",
+            "sliding-window layer must use DequantBatchRotatingKVCache when quant kind is dequant")
     }
 
     @Test("factory ignores quant config for arrays and mamba-style caches")

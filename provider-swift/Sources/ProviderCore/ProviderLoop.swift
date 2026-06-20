@@ -257,6 +257,13 @@ public actor ProviderLoop {
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     private var inflightTasks: [String: Task<Void, Never>] = [:]
 
+    /// Tracks the per-request DETACHED model-load tasks (see `handleInferenceRequest`)
+    /// so they can be cancelled when in-flight work is torn down. Without a retained
+    /// handle, a load that stalls past the drain timeout would leave
+    /// `handleInferenceRequest` awaiting `loadTask.value` forever, so `run()` could
+    /// never return and the CLI would escalate to SIGKILL instead of exiting cleanly.
+    private var inflightModelLoadTasks: [String: Task<Void, Error>] = [:]
+
     /// A detached task can finish before the actor stores it in `inflightTasks`.
     /// Track that edge so the post-spawn registration does not leave a stale task.
     private var completedBeforeTaskRegistration = Set<String>()
@@ -404,6 +411,9 @@ public actor ProviderLoop {
 
     private static let shutdownDrainTimeout: Duration = .seconds(600)
     private static let preloadShutdownTimeout: Duration = .seconds(10)
+    /// Max time to wait for queued outbound frames to flush to the socket during
+    /// a graceful drain before closing the transport.
+    private static let outboundFlushTimeout: Duration = .seconds(5)
     private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     // MARK: - Initialization
@@ -808,8 +818,13 @@ public actor ProviderLoop {
             // The run loop has stopped consuming coordinator events, but we keep
             // the socket open to finish in-flight responses. Tell the client to
             // reject NEW inference requests with 503 so the coordinator reroutes
-            // them immediately instead of black-holing them for the whole drain.
-            await coordinatorClient?.beginDraining()
+            // them immediately instead of black-holing them for the whole drain,
+            // and to route `cancel` frames for in-flight requests straight to
+            // `handleCancellation` so an aborted stream stops generating promptly.
+            let drainSelf = self
+            await coordinatorClient?.beginDraining(onCancel: { requestId in
+                await drainSelf.handleCancellation(requestId: requestId, receivedFromCoordinator: true)
+            })
             // Cancel background work + preloads first, but keep the coordinator
             // socket open so in-flight responses can still be delivered while we
             // drain. `sparingInflightLoads: true` lets a request that was still
@@ -824,6 +839,11 @@ public actor ProviderLoop {
                 // but never finished, so suspended load tasks unwind.
                 cancelLoadWaiters()
             }
+            // Flush queued outbound frames (the tail of a finished request — its
+            // last chunks and `inference_complete`) before tearing down the
+            // transport, so a slow socket doesn't drop responses for a request
+            // that just drained successfully.
+            await coordinatorClient?.flushOutbound(timeout: Self.outboundFlushTimeout)
         } else {
             // The event stream ended without a controlled drain (e.g. coordinator
             // disconnect): the connection is already gone, so cancel in-flight
@@ -1212,9 +1232,13 @@ public actor ProviderLoop {
         // model (`shutdownShouldAbortLoad`). Awaiting `.value` from a cancelled
         // run task does not throw — it waits for the load to finish.
         let loadSelf = self
+        let loadTask = Task.detached { try await loadSelf.ensureModelLoaded(modelId: modelId) }
+        inflightModelLoadTasks[requestId] = loadTask
         do {
-            try await Task.detached { try await loadSelf.ensureModelLoaded(modelId: modelId) }.value
+            try await loadTask.value
+            inflightModelLoadTasks[requestId] = nil
         } catch {
+            inflightModelLoadTasks[requestId] = nil
             if requestToModel.removeValue(forKey: requestId) != nil {
                 powerAssertion.release()
                 syncWarmModelState()
@@ -3268,6 +3292,12 @@ public actor ProviderLoop {
     }
 
     private func cancelAllInflight() async {
+        // Cancel detached model-load tasks first: a request still cold-loading
+        // (awaiting `loadTask.value` in `handleInferenceRequest`) only unblocks
+        // when its load task is cancelled or finishes. Without this, a stalled
+        // load would keep `run()` from returning past the drain timeout.
+        for task in inflightModelLoadTasks.values { task.cancel() }
+        inflightModelLoadTasks.removeAll()
         let requestIds = Array(inflightTasks.keys)
         for requestId in requestIds {
             await handleCancellation(requestId: requestId, receivedFromCoordinator: false)

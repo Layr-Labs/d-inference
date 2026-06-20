@@ -497,7 +497,7 @@ export default function EarningsContent() {
               <span className="font-medium text-text-primary">
                 {STRIPE_CONNECT_COUNTRIES.find(c => c.code === stripeStatus?.stripe_account_country)?.name || stripeStatus?.stripe_account_country || "your selected country"}
               </span>
-              . If you need a different country, select it below and we will create a new account.
+              . If that is not correct, select your country below and we will create a new account.
             </p>
             <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
               Country
@@ -564,16 +564,14 @@ export default function EarningsContent() {
                 </div>
               )}
             </div>
-            {!rejected && (
-              <button
-                onClick={handleStripeOnboard}
-                disabled={stripeOnboardLoading || !selectedCountry}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-              >
-                {stripeOnboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
-                {stripeOnboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
-              </button>
-            )}
+            <button
+              onClick={handleStripeOnboard}
+              disabled={stripeOnboardLoading || !selectedCountry}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              {stripeOnboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
+              {stripeOnboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
+            </button>
           </>
         )}
 

@@ -283,6 +283,33 @@ func TestStripeOnboardCreatesNewAccountWhenCountryChanges(t *testing.T) {
 	}
 }
 
+func TestStripeOnboardCreatesNewAccountWhenExistingCountryUnknown(t *testing.T) {
+	srv, st := stripePayoutsTestServer(t, true, nil)
+	user := seedUser(t, st, "acct-country-unknown-1", "carol@example.com")
+
+	// Simulates users created before stripe_account_country existed. If they
+	// explicitly select a country, don't reuse the unknown-country account.
+	_ = st.SetUserStripeAccount(user.AccountID, "acct_old_unknown", "pending", "", "", "", false)
+	user, _ = st.GetUserByAccountID(user.AccountID)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard",
+		strings.NewReader(`{"country":"GB"}`))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeOnboard(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	refreshed, _ := st.GetUserByAccountID(user.AccountID)
+	if refreshed.StripeAccountID == "acct_old_unknown" {
+		t.Fatal("expected a new Stripe account for explicit country selection")
+	}
+	if refreshed.StripeAccountCountry != "GB" {
+		t.Errorf("StripeAccountCountry = %q, want GB", refreshed.StripeAccountCountry)
+	}
+}
+
 // --- Status ---
 
 func TestStripeStatusReportsCurrentState(t *testing.T) {

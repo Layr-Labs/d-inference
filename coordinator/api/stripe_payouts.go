@@ -122,7 +122,7 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 	// changed later.
 	stripeAcctID := user.StripeAccountID
 	countryChanged := stripeAcctID != "" && requestedCountry != "" &&
-		user.StripeAccountCountry != "" && requestedCountry != user.StripeAccountCountry
+		(user.StripeAccountCountry == "" || requestedCountry != user.StripeAccountCountry)
 
 	if stripeAcctID == "" || countryChanged {
 		country := requestedCountry

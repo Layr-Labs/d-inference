@@ -682,7 +682,7 @@ function StripePayoutsCard({
             <span className="font-medium text-text-primary">
               {STRIPE_CONNECT_COUNTRIES.find((c) => c.code === status?.stripe_account_country)?.name || status?.stripe_account_country || "your selected country"}
             </span>
-            . If you need a different country, select it below and we will create a new account.
+            . If that is not correct, select your country below and we will create a new account.
           </p>
           <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
             Country

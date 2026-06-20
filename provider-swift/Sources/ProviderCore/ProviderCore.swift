@@ -59,14 +59,14 @@ public enum ProviderCore {
     // Submodule pin advanced to 5d3bb51b. Additive/omitempty wire fields — fully
     // backward-compatible with the currently-deployed coordinator.
     // 0.6.16 fixes the fleet-wide admission wedge and adds a backend-liveness
-    // watchdog. DAR-338: the KV reclaimable-pool self-heal flush (a BLOCKING GPU
+    // watchdog. The KV reclaimable-pool self-heal flush (a blocking GPU
     // synchronize) no longer runs on the GlobalKVCacheBudget actor / admission hot
-    // path — it moved to a dedicated off-actor KVPoolReclaimer (coalesced +
-    // rate-limited; on-pressure + proactive sweep), so a near-miss admission can
-    // never serialize every other reservation behind a GPU sync. DAR-337: an
-    // in-process backend-liveness watchdog detects a wedged engine (a request
+    // path — it moved to a dedicated off-actor KVPoolReclaimer (coalesced and
+    // rate-limited, with both on-pressure and proactive sweeps), so a near-miss
+    // admission can never serialize every other reservation behind a GPU sync.
+    // An in-process backend-liveness watchdog detects a wedged engine (a request
     // admitted but 0 tokens past the pending-timeout window) or a pinned/collapsed
-    // KV pool (budget at the floor with 0 successes), reports a TRUTHFUL heartbeat
+    // KV pool (budget at the floor with 0 successes), reports a truthful heartbeat
     // slot_state ("crashed"/"reloading" instead of a lying "idle"), and
     // self-restarts the engine/model slot to recover. Wire-compatible: only
     // existing slot_state string values are emitted; no protocol changes.

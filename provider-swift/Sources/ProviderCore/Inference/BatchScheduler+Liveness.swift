@@ -1,6 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Backend-liveness watchdog for `BatchScheduler` (DAR-337 / DAR-338).
+// Backend-liveness watchdog for `BatchScheduler`.
 //
 // A loaded model can stop serving while the process stays up and the engine
 // loop never crashes — a wedged engine (a request admitted but producing 0
@@ -9,10 +9,10 @@
 // and the coordinator would keep routing to it.
 //
 // This watchdog:
-//   1. periodically drives the off-actor proactive KV-pool sweep (DAR-338), then
+//   1. periodically drives the off-actor proactive KV-pool sweep, then
 //   2. assesses backend liveness via the pure `BackendLivenessPolicy`, and on a
-//      degraded verdict makes the heartbeat slot_state TRUTHFUL (see
-//      `BatchScheduler+Telemetry`) AND self-restarts the engine/model slot
+//      degraded verdict makes the heartbeat slot_state truthful (see
+//      `BatchScheduler+Telemetry`) and self-restarts the engine/model slot
 //      (reusing the normal `stopCurrentEngine` + `loadModel` path) to recover.
 //
 // The blocking work it can trigger (a model reload) happens via `loadModel`,
@@ -41,10 +41,10 @@ extension BatchScheduler {
     }
 
     /// One watchdog tick: proactively trim the reclaimable KV pool (off-actor,
-    /// non-blocking) then assess + recover backend liveness.
+    /// non-blocking) then assess and recover backend liveness.
     func tickLivenessWatchdog() async {
         // Proactive, rate-limited, threshold-gated pool sweep. Non-blocking and
-        // nonisolated — it never touches/awaits the budget actor (DAR-338).
+        // nonisolated — it never touches or awaits the budget actor.
         kvBudget?.proactiveReclaimSweep()
         await assessBackendLiveness()
     }
@@ -85,7 +85,7 @@ extension BatchScheduler {
                 livenessLogger.info("backend liveness recovered to healthy for \(model, privacy: .public)")
             }
         case .wedged, .pinned:
-            // Report the truth on the heartbeat REGARDLESS of the restart cooldown
+            // Report the truth on the heartbeat regardless of the restart cooldown
             // so the coordinator stops routing here even between restart attempts.
             livenessState = verdict
             if let last = lastSelfRestartAt, now - last < livenessRestartCooldown {
@@ -100,10 +100,10 @@ extension BatchScheduler {
         }
     }
 
-    /// Longest time (seconds) that any ADMITTED request has been producing 0
+    /// Longest time (seconds) that any admitted request has been producing 0
     /// tokens, or nil if no admitted request is currently at 0 tokens. A request
     /// is "admitted" once the engine emits its first `RequestOutput`
-    /// (`admittedAt != nil`); 0 tokens means no first token AND no completion
+    /// (`admittedAt != nil`); 0 tokens means no first token and no completion
     /// tokens observed — i.e. the engine took it but isn't decoding it.
     func longestAdmittedZeroTokenStallSeconds(now: ContinuousClock.Instant) -> Double? {
         var longest: Double?
@@ -132,7 +132,7 @@ extension BatchScheduler {
         livenessLogger.error("self-restarting model \(id, privacy: .public) to recover backend liveness")
         await loadModel(container: container, modelId: id, weightHash: hash)
         // Single owner of the flag: clear it whether the reload succeeded, was
-        // superseded, or bailed early, so a later tick can re-detect + retry.
+        // superseded, or bailed early, so a later tick can re-detect and retry.
         isReloadingForRecovery = false
         livenessLogger.info("self-restart of \(id, privacy: .public) complete (engine reloaded)")
     }
@@ -149,7 +149,7 @@ extension BatchScheduler {
         let kind = verdict == .wedged ? "WEDGED" : "PINNED"
         let stallStr = longestStall.map { String(format: "%.0f", $0) } ?? "n/a"
         // Lightweight diagnostics: enough to tell wedge from pin and to see the
-        // collapsed budget / stall without a GPU probe.
+        // collapsed budget or stall without a GPU probe.
         let model = modelId
         let active = activeBridges.count
         let pending = pendingRequestCount

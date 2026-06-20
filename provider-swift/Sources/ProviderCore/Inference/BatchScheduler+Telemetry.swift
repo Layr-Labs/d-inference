@@ -116,11 +116,11 @@ extension BatchScheduler {
 
     // MARK: - Heartbeat payload
 
-    /// Truthful slot_state for the heartbeat (DAR-337/338). A wedged or pinned
-    /// backend must NOT keep advertising "idle"/"running" (a healthy-looking slot
-    /// the coordinator routes to); it reports "crashed" so the coordinator
-    /// deroutes, and "reloading" while a recovery self-restart is in flight. Only
-    /// a genuinely healthy backend reports the normal running/idle pair.
+    /// Truthful slot_state for the heartbeat. A wedged or pinned backend must not
+    /// keep advertising "idle"/"running" (a healthy-looking slot the coordinator
+    /// routes to); it reports "crashed" so the coordinator deroutes, and
+    /// "reloading" while a recovery self-restart is in flight. Only a genuinely
+    /// healthy backend reports the normal running/idle pair.
     func heartbeatSlotState(activeRequests: Int) -> String {
         if isReloadingForRecovery { return "reloading" }
         switch livenessState {

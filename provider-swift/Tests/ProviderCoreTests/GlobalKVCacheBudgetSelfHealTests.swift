@@ -4,26 +4,26 @@ import Testing
 
 private let gib: UInt64 = 1024 * 1024 * 1024
 
-// DAR-338 NEW CONTRACT.
+// New admission contract.
 //
-// The KV reclaimable-pool self-heal flush is a BLOCKING GPU synchronize. It used
-// to run INSIDE `GlobalKVCacheBudget`'s `commit` (flush-then-resample-then-admit),
+// The KV reclaimable-pool self-heal flush is a blocking GPU synchronize. It used
+// to run inside `GlobalKVCacheBudget`'s `commit` (flush-then-resample-then-admit),
 // serializing every other reservation behind a GPU sync — the fleet-wide wedge.
 //
-// Now the admission decision is made against the CURRENT snapshot and returns
-// immediately; a near-miss merely SIGNALS the off-actor `KVPoolReclaimer`, whose
+// Now the admission decision is made against the current snapshot and returns
+// immediately; a near-miss merely signals the off-actor `KVPoolReclaimer`, whose
 // flush runs on the reclaimer's executor, never the budget actor's. So:
-//   * a near-miss the pool could cover is now REJECTED (no inline flush-and-admit),
+//   * a near-miss the pool could cover is now rejected (no inline flush-and-admit),
 //   * `reserve`/`reserveBytes` return promptly even while the flush is blocking,
-//   * the flush still happens — in the background, coalesced + rate-limited (its
+//   * the flush still happens — in the background, coalesced and rate-limited (its
 //     mechanics are pinned in `KVPoolReclaimerTests`).
 //
-// INVARIANT under test: the budget actor is never blocked on a GPU sync.
+// Invariant under test: the budget actor is never blocked on a GPU sync.
 
 @Test func admissionRejectsNearMissOnCurrentSnapshotInsteadOfFlushingInline() async {
     // cap = 6 GiB (the 2 GiB OS floor binds: 8 − 2); mlxUsed = active 5 + cache 2
-    // = 7 GiB → 0 free. The OLD code flushed the 2 GiB pool inline and ADMITTED
-    // the 1 GiB request. The NEW code rejects it against the current snapshot.
+    // = 7 GiB → 0 free. The old code flushed the 2 GiB pool inline and admitted
+    // the 1 GiB request. The new code rejects it against the current snapshot.
     let memory = MutableMemorySnapshot(cacheAfterClear: 0)
     let budget = GlobalKVCacheBudget(
         capFraction: 1.0,
@@ -33,7 +33,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 
     #expect(!(await budget.reserve(requestID: "near-miss", kvBytesPerToken: 1, tokenCount: Int(gib))))
     // The flush is signalled to the off-actor reclaimer and runs in the
-    // background (the pool COULD cover the 1 GiB shortfall).
+    // background (the pool could cover the 1 GiB shortfall).
     #expect(await eventually { memory.clearCount == 1 })
 }
 
@@ -50,9 +50,9 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 @Test func admissionDoesNotBlockTheActorOnTheReclaimFlush() async {
-    // THE core DAR-338 contract. The injected clearCache BLOCKS for 0.5s (it
-    // simulates the GPU synchronize). `reserve` must return promptly — proving the
-    // admission decision did NOT wait on the flush — while the flush completes
+    // The core contract. The injected clearCache blocks for 0.5s (it simulates
+    // the GPU synchronize). `reserve` must return promptly — proving the
+    // admission decision did not wait on the flush — while the flush completes
     // later, off the budget actor.
     let spy = BlockingClearSpy(blockSeconds: 0.5)
     let memory = MutableMemorySnapshot(cacheAfterClear: 2 * gib)  // pool never shrinks here
@@ -105,7 +105,7 @@ private func eventually(
     return condition()
 }
 
-/// A clearCache spy whose flush BLOCKS (like the real GPU synchronize), so a test
+/// A clearCache spy whose flush blocks (like the real GPU synchronize), so a test
 /// can prove the budget actor doesn't wait on it.
 private final class BlockingClearSpy: @unchecked Sendable {
     private let lock = NSLock()

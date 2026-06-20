@@ -4,8 +4,8 @@ import Testing
 
 private let gib: UInt64 = 1024 * 1024 * 1024
 
-/// The off-actor KV-pool reclaimer (DAR-338). These drive the actor methods
-/// directly (deterministic — the injected `clearCache` runs synchronously on the
+/// The off-actor KV-pool reclaimer. These drive the actor methods directly
+/// (deterministic — the injected `clearCache` runs synchronously on the
 /// reclaimer actor) to pin the shortfall gate, rate-limit, coalescing, and the
 /// proactive-sweep threshold without a GPU.
 @Suite("KV pool reclaimer")

@@ -1,25 +1,25 @@
 // Copyright © 2026 Eigen Labs.
 //
-// DAR-338: off-actor reclaimer for the MLX reclaimable KV pool.
+// Off-actor reclaimer for the MLX reclaimable KV pool.
 //
 // The reclaim flush is `MLX.Stream().synchronize()` + `MLX.Memory.clearCache()`
-// — a BLOCKING GPU synchronize that waits for in-flight inference GPU work to
-// drain. It used to run INSIDE the `GlobalKVCacheBudget` actor (the per-request
+// — a blocking GPU synchronize that waits for in-flight inference GPU work to
+// drain. It used to run inside the `GlobalKVCacheBudget` actor (the per-request
 // KV admission gate). A synchronous GPU sync on an actor blocks that actor's
-// executor for its whole duration, so EVERY other reservation serialized behind
+// executor for its whole duration, so every other reservation serialized behind
 // it: under sustained load the reclaimable pool grew, near-miss admissions
 // chained one blocking sync per second on the admission actor, slots could not
 // be granted, requests aborted on the pending timeout, and the node kept
 // advertising itself as healthy — the fleet-wide wedge.
 //
-// This actor owns the flush and runs it OFF the budget actor. Callers SIGNAL
+// This actor owns the flush and runs it off the budget actor. Callers signal
 // pressure with the non-isolated, fire-and-forget `scheduleReclaim` /
 // `scheduleSweep` (they return instantly — they only spawn a task), and the GPU
-// sync runs later on THIS actor's executor, never the budget actor's. The flush
+// sync runs later on this actor's executor, never the budget actor's. The flush
 // is rate-limited (at most one per `minInterval`) and shortfall/threshold-gated,
 // so a flood of near-misses can never chain syncs.
 //
-// INVARIANT: nothing here ever runs on, awaits on, or blocks the
+// Invariant: nothing here ever runs on, awaits, or blocks the
 // `GlobalKVCacheBudget` actor. The admission decision is made against the
 // current memory snapshot and returns immediately; this reclaimer keeps the
 // pool small over time so most admissions succeed without any inline flush.
@@ -67,20 +67,20 @@ actor KVPoolReclaimer {
 
     // MARK: - Fire-and-forget signals (called from the budget actor)
 
-    /// On-pressure signal from the admission path. NON-ISOLATED so the caller
+    /// On-pressure signal from the admission path. Non-isolated so the caller
     /// (the budget actor) returns instantly: this only spawns a task; the GPU
     /// sync happens later on this reclaimer's executor.
     nonisolated func scheduleReclaim(shortfall: UInt64) {
         Task { await self.reclaimIfNeeded(shortfall: shortfall) }
     }
 
-    /// Proactive signal from the periodic scheduler watchdog. NON-ISOLATED, same
+    /// Proactive signal from the periodic scheduler watchdog. Non-isolated, same
     /// contract as `scheduleReclaim`.
     nonisolated func scheduleSweep() {
         Task { await self.sweep() }
     }
 
-    // MARK: - Reclaim execution (runs on THIS actor, never the budget actor)
+    // MARK: - Reclaim execution (runs on this actor, never the budget actor)
 
     /// On-pressure reclaim: flush iff the reclaimable pool can actually cover the
     /// shortfall the request is short by (a flush that still leaves it rejected —

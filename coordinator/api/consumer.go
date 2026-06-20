@@ -521,6 +521,7 @@ func (s *Server) dispatchOneProvider(
 	consumerLocation *store.ProviderLocation,
 	reservedMicroUSD int64,
 	estimatedPromptTokens int,
+	billingPromptTokens int,
 	requestedMaxTokens int,
 	tokenAdmission registry.TokenAdmission,
 	requiresVision bool,
@@ -559,6 +560,7 @@ func (s *Server) dispatchOneProvider(
 		ConsumerLocation:       consumerLocation,
 		IsResponsesAPI:         isResponsesAPI,
 		EstimatedPromptTokens:  estimatedPromptTokens,
+		BillingPromptTokens:    billingPromptTokens,
 		RequiresVision:         requiresVision,
 		Traits:                 traits,
 		RequestedMaxTokens:     requestedMaxTokens,
@@ -1328,7 +1330,11 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	if s.isServiceConsumer(pr.ConsumerKey) {
 		return pr.ReservedMicroUSD, nil
 	}
-	required := s.providerReservationCost(provider, pr.Model, pr.EstimatedPromptTokens, pr.RequestedMaxTokens)
+	promptTokens := pr.BillingPromptTokens
+	if promptTokens <= 0 {
+		promptTokens = pr.EstimatedPromptTokens
+	}
+	required := s.providerReservationCost(provider, pr.Model, promptTokens, pr.RequestedMaxTokens)
 	if required <= pr.ReservedMicroUSD {
 		return pr.ReservedMicroUSD, nil
 	}
@@ -1845,12 +1851,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// per-key spend cap entirely. A zero-balance owner must never be blocked
 		// from running on their own machine, and a self_route_only key never spends.
 		if s.billing == nil || policy.enabled {
-			timing.ReservedAt = time.Now()
+			now := time.Now()
+			timing.ReservingAt = now
+			timing.ReservedAt = now
 			return true
 		}
 		// Atomically debit the worst-case cost using the byte-length upper bound
 		// for prompt tokens plus max_tokens. This now runs after pure routing
 		// preflight so rejected requests never touch the cross-cloud ledger path.
+		timing.ReservingAt = time.Now()
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
 			s.recordRejection(rejectionInfo{
@@ -2275,6 +2284,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		tokenAdmission:         tokenAdmission,
 		serviceReservation:     serviceReservation,
 		estimatedPromptTokens:  estimatedPromptTokens,
+		billingPromptTokens:    billingPromptTokens,
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
 		hasTools:               hasTools,
@@ -4684,13 +4694,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	reserveBalance := func() bool {
 		// Self-route is free: skip the reservation and per-key spend cap.
 		if s.billing == nil || policy.enabled {
-			timing.ReservedAt = time.Now()
+			now := time.Now()
+			timing.ReservingAt = now
+			timing.ReservedAt = now
 			return true
 		}
 		// Same worst-case-cost reservation as handleChatCompletions, using the
 		// byte-length upper bound for prompt tokens so the reservation always
 		// covers actual cost. It runs after routing preflight to avoid ledger
 		// churn for fast 429/503/TTFT rejections.
+		timing.ReservingAt = time.Now()
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
 			s.recordRejection(rejectionInfo{
@@ -4968,6 +4981,30 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
+	inferenceBody, _ := marshalForwardBody(parsed)
+	if len(inferenceBody) > maxInferenceBodyBytes {
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "validation",
+			reasonCode:            "payload_too_large",
+			httpStatus:            http.StatusRequestEntityTooLarge,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			requestBodyBytes:      len(inferenceBody),
+			params:                rejectionSamplingParams(parsed),
+		})
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
+			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
+		return
+	}
+
 	if !reserveBalance() {
 		return
 	}
@@ -4988,6 +5025,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		OwnerAccountID:         policy.ownerAccountID,
 		FreeSelfRoute:          policy.enabled,
 		EstimatedPromptTokens:  estimatedPromptTokens,
+		BillingPromptTokens:    billingPromptTokens,
 		RequiresVision:         requiresVision,
 		CacheAffinityKey:       cacheAffinityKey,
 		// Single-attempt path: no retry loop, so no AvoidVersion to thread.
@@ -5258,40 +5296,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			}
 			return
 		}
-	}
-
-	inferenceBody, _ := marshalForwardBody(parsed)
-
-	// Re-check the cap on the FINAL body we'll seal (the input cap bounded the
-	// read; this body was re-marshaled after mutation). A body over the cap seals
-	// into a frame the provider rejects by tearing down its session — return a
-	// clean 413 instead (see maxInferenceBodyBytes). Billing is already reserved
-	// at this point, so refund before returning.
-	if len(inferenceBody) > maxInferenceBodyBytes {
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "payload_too_large", http.StatusRequestEntityTooLarge))
-		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "validation",
-			reasonCode:            "payload_too_large",
-			httpStatus:            http.StatusRequestEntityTooLarge,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                stream,
-			estimatedPromptTokens: estimatedPromptTokens,
-			requestedMaxTokens:    requestedMaxTokens,
-			requiresVision:        requiresVision,
-			hasTools:              hasTools,
-			requestBodyBytes:      len(inferenceBody),
-			params:                rejectionSamplingParams(parsed),
-		})
-		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
-			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
-		return
 	}
 
 	if provider.PublicKey == "" {

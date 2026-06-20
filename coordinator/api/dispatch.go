@@ -95,6 +95,7 @@ type dispatchState struct {
 	reservedMicroUSD       int64
 	serviceReservation     bool
 	estimatedPromptTokens  int
+	billingPromptTokens    int
 	requestedMaxTokens     int
 	tokenAdmission         registry.TokenAdmission
 	requiresVision         bool
@@ -327,8 +328,16 @@ func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.Requ
 		return
 	}
 	out.ParseMs = timingMsBetween(t.ReceivedAt, t.ParsedAt)
-	out.ReserveMs = timingMsBetween(t.ParsedAt, t.ReservedAt)
-	out.RouteMs = timingMsBetween(t.ReservedAt, t.RoutedAt)
+	reserveStart := t.ReservingAt
+	if reserveStart.IsZero() {
+		reserveStart = t.ParsedAt
+	}
+	out.ReserveMs = timingMsBetween(reserveStart, t.ReservedAt)
+	if !t.ReservingAt.IsZero() {
+		out.RouteMs = timingMsBetween(t.ParsedAt, t.ReservingAt) + timingMsBetween(t.ReservedAt, t.RoutedAt)
+	} else {
+		out.RouteMs = timingMsBetween(t.ReservedAt, t.RoutedAt)
+	}
 	out.EncryptMs = timingMsBetween(t.RoutedAt, t.EncryptedAt)
 	out.QueueWaitMs = timingMsBetween(t.QueuedAt, t.DispatchedAt)
 	out.DispatchMs = timingMsBetween(t.DispatchedAt, firstChunk)
@@ -516,7 +525,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	routeAttempt := attempt
 	d.provider, d.pr, decision, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 		r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
+		d.estimatedPromptTokens, d.billingPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
 		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cacheAffinityKey, d.excludeProviders,
 		d.attempt,
@@ -1016,7 +1025,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 
 		backupProvider, backupPR, _, backupErr, backupErrCode = s.dispatchOneProvider(
 			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-			d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
+			d.estimatedPromptTokens, d.billingPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
 			d.allowedProviderSerials, d.isResponsesAPI, d.policy,
 			&registry.RequestTiming{ReceivedAt: d.timing.ReceivedAt},
@@ -2120,11 +2129,24 @@ func (d *dispatchState) writeCommittedResponse() {
 		if !timing.ParsedAt.IsZero() {
 			tj.ParseUs = timing.ParsedAt.Sub(timing.ReceivedAt).Microseconds()
 		}
-		if !timing.ReservedAt.IsZero() && !timing.ParsedAt.IsZero() {
-			tj.ReserveUs = timing.ReservedAt.Sub(timing.ParsedAt).Microseconds()
+		reserveStart := timing.ReservingAt
+		if reserveStart.IsZero() {
+			reserveStart = timing.ParsedAt
 		}
-		if !timing.RoutedAt.IsZero() && !timing.ReservedAt.IsZero() {
-			tj.RouteUs = timing.RoutedAt.Sub(timing.ReservedAt).Microseconds()
+		if !timing.ReservedAt.IsZero() && !reserveStart.IsZero() {
+			tj.ReserveUs = timing.ReservedAt.Sub(reserveStart).Microseconds()
+		}
+		if !timing.RoutedAt.IsZero() {
+			if !timing.ReservingAt.IsZero() {
+				if !timing.ParsedAt.IsZero() {
+					tj.RouteUs += timing.ReservingAt.Sub(timing.ParsedAt).Microseconds()
+				}
+				if !timing.ReservedAt.IsZero() {
+					tj.RouteUs += timing.RoutedAt.Sub(timing.ReservedAt).Microseconds()
+				}
+			} else if !timing.ReservedAt.IsZero() {
+				tj.RouteUs = timing.RoutedAt.Sub(timing.ReservedAt).Microseconds()
+			}
 		}
 		if !timing.QueuedAt.IsZero() && !timing.DispatchedAt.IsZero() {
 			tj.QueueUs = timing.DispatchedAt.Sub(timing.QueuedAt).Microseconds()

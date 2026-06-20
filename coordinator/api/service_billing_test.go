@@ -124,13 +124,14 @@ func TestServiceReservationNotToppedUpToProviderPrice(t *testing.T) {
 	_ = st.Credit("normie-key", 100_000_000, store.LedgerDeposit, "t")
 	pr2 := &registry.PendingRequest{
 		RequestID: "normal-reserve", Model: model, ConsumerKey: "normie-key",
-		ReservedMicroUSD: base, EstimatedPromptTokens: 1000, RequestedMaxTokens: 1000,
+		ReservedMicroUSD: base, EstimatedPromptTokens: 1000, BillingPromptTokens: 2000, RequestedMaxTokens: 1000,
 	}
 	got2, err := srv.reserveAdditionalForProvider(pr2, provider)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got2 <= base {
-		t.Errorf("non-service reservation = %d, expected top-up above base %d", got2, base)
+	want2 := payments.CalculateCostWithOverrides(model, 2000, 1000, 1_000_000, 50_000_000, true)
+	if got2 != want2 {
+		t.Errorf("non-service reservation = %d, want billing-token provider price %d", got2, want2)
 	}
 }

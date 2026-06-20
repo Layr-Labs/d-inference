@@ -129,6 +129,10 @@ type PendingRequest struct {
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int
+	// BillingPromptTokens is a conservative upper-bound token estimate used for
+	// reservations and provider-price top-ups. It must never be lower than the
+	// prompt count used for the base reservation.
+	BillingPromptTokens int
 	// RequiresVision is true when the request carries image/video input. Such a
 	// request must only be routed to a provider advertising a vision-capable
 	// (VLM) build for the resolved model; otherwise the provider would silently
@@ -303,6 +307,7 @@ func (pr *PendingRequest) MarkRouteOutcomeFinalized() bool {
 type RequestTiming struct {
 	ReceivedAt   time.Time // handler entry
 	ParsedAt     time.Time // after parse + validate
+	ReservingAt  time.Time // immediately before balance reservation
 	ReservedAt   time.Time // after balance reservation
 	RoutedAt     time.Time // after provider selection (including queue wait)
 	EncryptedAt  time.Time // after E2E encryption

@@ -31,6 +31,26 @@ func TestCommittedRouteOutcomeIsNonTerminal(t *testing.T) {
 	}
 }
 
+func TestTimingDecompositionKeepsReservationSeparateFromPreflight(t *testing.T) {
+	base := time.Unix(100, 0)
+	timing := &registry.RequestTiming{
+		ReceivedAt:  base,
+		ParsedAt:    base.Add(10 * time.Millisecond),
+		ReservingAt: base.Add(60 * time.Millisecond),
+		ReservedAt:  base.Add(65 * time.Millisecond),
+		RoutedAt:    base.Add(90 * time.Millisecond),
+	}
+	out := &store.InferenceRouteOutcome{}
+	applyTimingDecomposition(out, timing, time.Time{})
+
+	if out.ReserveMs != 5 {
+		t.Fatalf("ReserveMs = %v, want billing-only 5ms", out.ReserveMs)
+	}
+	if out.RouteMs != 75 {
+		t.Fatalf("RouteMs = %v, want preflight+route excluding reservation (50ms+25ms)", out.RouteMs)
+	}
+}
+
 func TestPostCommitProviderDisconnectOutcome(t *testing.T) {
 	pr := &registry.PendingRequest{RequestID: "req-disconnect"}
 	out := postCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{

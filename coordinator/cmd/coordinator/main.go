@@ -15,7 +15,7 @@
 //
 // Graceful shutdown: The coordinator handles SIGINT/SIGTERM, enters drain mode,
 // stops the eviction loop, waits for in-flight requests to finish (up to
-// EIGENINFERENCE_DRAIN_GRACE, default 60s), then drains connections with a hard
+// EIGENINFERENCE_DRAIN_GRACE, default 120s), then drains connections with a hard
 // 15-second http.Server.Shutdown deadline as the final backstop.
 package main
 
@@ -701,12 +701,17 @@ func main() {
 	// 429+Retry-After (DAR-327 Phase 1).
 	srv.SetDraining(true)
 
+	// DAR-327 merge note: when Phase 3 (#396) lands, srv.BroadcastGoingAway()
+	// belongs HERE — right after SetDraining(true) and BEFORE cancel() /
+	// WaitForInflightZero — so providers begin draining+reconnecting while we wait
+	// for in-flight HTTP to finish. The canonical combined shutdown order is:
+	// SetDraining → BroadcastGoingAway → cancel → WaitForInflightZero → Shutdown.
 	cancel() // Stop the eviction loop.
 
 	// Wait for already-admitted in-flight requests to finish before shutting the
 	// HTTP server down. Streaming responses can run well past the 15s Shutdown
 	// deadline, so we poll Inflight() until it reaches 0 or EIGENINFERENCE_DRAIN_GRACE
-	// (default 60s) elapses — whichever comes first — instead of cutting them off.
+	// (default 120s) elapses — whichever comes first — instead of cutting them off.
 	// We never block forever: the grace context bounds the wait, and the hard
 	// Shutdown deadline below is the final backstop.
 	grace := api.DrainGraceFromEnv()

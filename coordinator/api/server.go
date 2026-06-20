@@ -1692,6 +1692,13 @@ func (s *Server) routes() {
 	// restart/upgrade it rejects NEW inference requests with 429+Retry-After
 	// before any auth/decrypt work, and otherwise counts the request as in-flight
 	// so /readyz can report when it's safe to shut down (DAR-327 Phase 1).
+	//
+	// IMPORTANT: ANY future provider-routed inference endpoint (e.g.
+	// /v1/audio/transcriptions, /v1/images/generations, /v1/embeddings) MUST also
+	// be wrapped in s.drainGate(...). An ungated route won't 429 during drain and,
+	// because it isn't counted in httpInflight, won't be seen by WaitForInflightZero
+	// — so a graceful shutdown could cut it off mid-flight. Add new dispatch routes
+	// here, gated, alongside the four below.
 	s.mux.HandleFunc("POST /v1/chat/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))
 	s.mux.HandleFunc("POST /v1/responses", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
 	s.mux.HandleFunc("POST /v1/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))

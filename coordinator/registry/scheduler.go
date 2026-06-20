@@ -278,7 +278,15 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// fenced for every shape, the tools version floor for tool requests — and
 	// must not have entered the shape-keyed inference-error cooldown (all folded
 	// into providerCanAdmitLocked) between snapshot and reservation.
-	if !r.providerCanAdmitLocked(p, model, pr.Traits, relaxTrust) ||
+	//
+	// Fail-open: if the winner is itself node-health-breaker-open, it can only
+	// have been chosen by selectBestCandidateLockedFull's breaker-bypassed
+	// fallback pass (the normal pass excludes breaker-open providers). Carry that
+	// fail-open decision into the admit re-check so the breaker does not reject
+	// the very candidate the safety valve selected. All under r.mu (held), so the
+	// breaker state cannot change between selection and this check.
+	ignoreBreaker := r.providerBreakerOpenLocked(p.ID, time.Now())
+	if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, ignoreBreaker) ||
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model)) {
 		return nil, RoutingDecision{
 			Model:                   model,
@@ -333,7 +341,61 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // no_provider and over_capacity outcome counters.
 // Returns (winner, candidateCount, capacityRejections, modelTooLargeRejections,
 // visionRejections, ttftRejections, bestTTFTMs).
+//
+// FAIL-OPEN SAFETY VALVE: selection runs in two passes. Pass 1 honors the
+// per-provider node-health breaker. If pass 1 finds ZERO candidates AND the
+// breaker is the SOLE reason — it rejected at least one provider AND no healthy
+// provider was merely busy or too slow — pass 2 re-runs the whole scan with the
+// breaker BYPASSED (ignoreProviderBreaker=true), so a bad fleet-wide rollout
+// that fault-503s every node can never deroute the entire fleet. When healthy
+// providers are simply over capacity or above the TTFT ceiling, pass 1's signal
+// is returned instead, so the request queues / 429s and waits for a healthy node
+// rather than being routed to a known-bad provider. Pass 2's result is used only
+// when it yields a candidate, and its counters (not pass 1's) are returned so
+// metrics are never double-counted. This mirrors servability.go's fail-open
+// philosophy: when in doubt, keep serving.
 func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64) {
+	winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected :=
+		r.selectBestCandidateScanLocked(model, pr, false, excludeIDs...)
+	if !shouldBypassBreakerFailOpen(winner, breakerRejected, capacityRejections, ttftRejections) {
+		return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+	}
+	// The node-health breaker is the SOLE reason this request has no route: re-scan
+	// with the breaker bypassed. Use pass 2 only when it actually finds a candidate,
+	// so a genuinely empty fleet still reports pass 1's (accurate) counters.
+	if w2, cc2, cr2, tl2, vr2, tr2, bt2, _ := r.selectBestCandidateScanLocked(model, pr, true, excludeIDs...); w2 != nil {
+		return w2, cc2, cr2, tl2, vr2, tr2, bt2
+	}
+	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+}
+
+// shouldBypassBreakerFailOpen decides whether selection should retry with the
+// node-health breaker bypassed (the fail-open safety valve). It fails open ONLY
+// when the breaker is the SOLE reason no route was found:
+//   - pass 1 produced no winner, AND
+//   - the breaker rejected at least one provider, AND
+//   - no healthy provider was merely busy (capacityRejections) or too slow
+//     (ttftRejections).
+//
+// If a healthy provider was just over capacity or above the TTFT ceiling, we
+// surface that signal (so the request queues / 429s and waits for a healthy
+// node) rather than routing to a known-bad, breaker-open provider. Model-too-
+// large and vision-unsupported rejections are deliberately NOT counted: those
+// providers cannot serve this request at all, so they are not a healthy
+// alternative to a fail-open probe.
+func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capacityRejections, ttftRejections int) bool {
+	return winner == nil && breakerRejected > 0 && capacityRejections == 0 && ttftRejections == 0
+}
+
+// selectBestCandidateScanLocked is one pass of candidate selection. When
+// ignoreProviderBreaker is true the node-health breaker gate is skipped
+// (every other structural/privacy/capacity/trait gate still applies). It
+// additionally returns breakerRejected: how many providers were dropped while
+// their node-health breaker was OPEN on this pass — the signal
+// selectBestCandidateLockedFull uses to decide whether a breaker-bypassed
+// fail-open re-scan could help. breakerRejected is always 0 when
+// ignoreProviderBreaker is true (the breaker is not consulted).
+func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64, int) {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -356,11 +418,13 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	visionRejections := 0
 	ttftRejections := 0
 	bestTTFTMs := 0.0
+	breakerRejected := 0
+	now := time.Now()
 	enforceTTFT := pr.MaxTTFTMs > 0
 	affinityProviderID := ""
 	affinityLookup := pr.CacheAffinityKey != "" && pr.ConsumerKey != ""
 	if affinityLookup && r.cacheAffinityBonusMs > 0 {
-		affinityProviderID = r.cacheAffinity.lookup(pr.ConsumerKey, model, pr.CacheAffinityKey, time.Now())
+		affinityProviderID = r.cacheAffinity.lookup(pr.ConsumerKey, model, pr.CacheAffinityKey, now)
 	}
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
@@ -386,8 +450,14 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		// inference-error cooldown and the trait gates (render-broken fences all
 		// shapes; the tools version floor fences tool requests). A failing
 		// provider is simply dropped here.
-		snap, ok := r.snapshotProviderLocked(p, model, pr.Traits, relaxTrust)
+		snap, ok := r.snapshotProviderLockedEx(p, model, pr.Traits, relaxTrust, ignoreProviderBreaker)
 		if !ok {
+			// Count providers the node-health breaker is actively derouting so
+			// selectBestCandidateLockedFull can decide whether a breaker-bypassed
+			// fail-open re-scan would help. Only meaningful on the normal pass.
+			if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
+				breakerRejected++
+			}
 			continue
 		}
 		// Vision gate: a media request must only go to a provider advertising a
@@ -451,7 +521,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	}
 
 	if len(candidates) == 0 {
-		return nil, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+		return nil, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected
 	}
 
 	// Prefer-with-fallback: if the caller asked to prefer their own machine and
@@ -556,7 +626,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		}
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -694,6 +764,18 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 // caller's own (possibly un-enrolled) machine; every privacy-critical gate
 // still applies. Caller holds r.mu and p.mu.
 func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time) bool {
+	return r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, false)
+}
+
+// providerPassesRoutingGatesLockedEx is providerPassesRoutingGatesLocked with an
+// explicit ignoreProviderBreaker switch. When ignoreProviderBreaker is true it
+// skips ONLY the per-provider node-health breaker; every other gate
+// still applies. It exists solely for the selectBestCandidateLockedFull
+// fail-open fallback pass, so a fleet-wide fault rollout that trips the breaker
+// on every provider can never deroute the entire fleet. Every other caller goes
+// through the default wrapper above (breaker always honored). Caller holds r.mu
+// and p.mu.
+func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker bool) bool {
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return false
 	}
@@ -710,6 +792,17 @@ func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, t
 	// tool failure does not deroute clean text traffic. Cleared by
 	// RecordInferenceSuccess (same shape) or by TTL expiry.
 	if r.inferenceErrorCooldownActiveLocked(p.ID, model, traits.CooldownShape(), now) {
+		return false
+	}
+	// Skip a provider quarantined by the per-provider node-health breaker: a
+	// node returning GENUINE-FAULT errors (500/502/504 or a
+	// fault-shaped 503) for ~all of its requests is sick regardless of model or
+	// shape, so it is derouted fleet-wide. This catches the node that fault-503s
+	// every request — invisible to the shape-keyed inference-error breaker above
+	// (which skips 503 as a capacity signal). Honored on the normal routing
+	// path; the selectBestCandidateLockedFull fail-open pass sets
+	// ignoreProviderBreaker so a bad fleet-wide rollout can't deroute everyone.
+	if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
 		return false
 	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
@@ -757,12 +850,21 @@ func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, t
 // carry the request shape into the shape-keyed inference-error cooldown and the
 // render-broken / version-floor eligibility gates.
 func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool) (routingSnapshot, bool) {
+	return r.snapshotProviderLockedEx(p, model, traits, selfRouteOwner, false)
+}
+
+// snapshotProviderLockedEx is snapshotProviderLocked with an explicit
+// ignoreProviderBreaker switch threaded into the routing gate. Only the
+// selectBestCandidateLockedFull fail-open fallback pass sets it true (to bypass
+// the node-health breaker); every other caller uses the default
+// (breaker-honored) wrapper above.
+func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool) (routingSnapshot, bool) {
 	now := time.Now()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !r.providerPassesRoutingGatesLocked(p, model, traits, selfRouteOwner, now) {
+	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
 		return routingSnapshot{}, false
 	}
 
@@ -1401,8 +1503,20 @@ func providerModelIDs(p *Provider) []string {
 // provider's state changed between snapshot and reservation. Caller holds r.mu
 // and p.mu.
 func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool) bool {
+	return r.providerCanAdmitLockedEx(p, model, traits, selfRouteOwner, false)
+}
+
+// providerCanAdmitLockedEx is providerCanAdmitLocked with an explicit
+// ignoreProviderBreaker switch. ReserveProviderEx sets it true ONLY when the
+// selected winner is itself node-health-breaker-open — which can happen only
+// because the selectBestCandidateLockedFull fail-open fallback pass chose it.
+// Without this, the admit re-check would re-apply the breaker and reject the
+// very candidate the fail-open valve just selected, derouting the fleet anyway.
+// The default wrapper (breaker honored) is unchanged for every other caller.
+// Caller holds r.mu and p.mu.
+func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool) bool {
 	now := time.Now()
-	if !r.providerPassesRoutingGatesLocked(p, model, traits, selfRouteOwner, now) {
+	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
 		return false
 	}
 	if !p.hasConcurrencyHeadroomForModelLocked(model) {
@@ -1504,7 +1618,17 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// and the admit re-check). This pre-flight only runs for public
 		// (non-self-route) requests, so selfRouteOwner is false — private-only
 		// machines are excluded unconditionally.
-		if !r.providerPassesRoutingGatesLocked(p, model, traits, false, now) {
+		//
+		// ignoreProviderBreaker=true: the per-provider node-health
+		// breaker is a SELECTION-time gate that fails open in the dispatch path
+		// (selectBestCandidateScanLocked / ReserveProviderEx). The preflight must
+		// fail open on it too — otherwise an all-breaker-open fleet reports 0
+		// candidates AND 0 capacity-rejections here, and the consumer hard-503s
+		// "no_provider" BEFORE dispatch's fail-open valve can serve a probe,
+		// re-introducing the very model-wide outage the valve exists to prevent.
+		// Every other gate (incl. the shape-keyed inference-error cooldown) is
+		// still honored; the breaker still steers SELECTION away from bad nodes.
+		if !r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true) {
 			p.mu.Unlock()
 			continue
 		}

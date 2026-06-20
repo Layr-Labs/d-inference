@@ -1070,6 +1070,24 @@ type Registry struct {
 	inferenceErrorStrikes   map[inferenceErrorKey][]time.Time // recent 5xx strike times per (provider, model, shape)
 	inferenceErrorCooldowns map[inferenceErrorKey]time.Time   // cool-down expiry per (provider, model, shape)
 
+	// providerOutcomes / providerBreakerOpenUntil / providerBreakerTrips
+	// implement the per-provider (node-health) circuit breaker, SEPARATE from
+	// and ADDITIONAL to the shape-keyed inference-error breaker above. It
+	// quarantines a whole provider that returns GENUINE-FAULT errors
+	// (500/502/504, or a fault-shaped 503 — internal error, crash, the opaque
+	// Foundation string) for ~all of its requests, regardless
+	// of model/shape — the case the inference-error breaker misses because it
+	// skips 503. After an exponential cooldown it re-probes and auto-re-admits
+	// on the first success. Capacity-class sheds (4xx/429 and token-budget /
+	// KV-headroom / draining 503s) never count — a healthy-but-busy provider.
+	// The breaker FAILS OPEN: when it would deroute every provider for a model,
+	// selection re-scans with it bypassed (selectBestCandidateLockedFull) so a
+	// bad fleet-wide rollout cannot zero out routing. Guarded by r.mu like the
+	// maps above; cleared on Disconnect. See provider_breaker.go.
+	providerOutcomes         map[string]*providerHealthWindow // per-provider sliding fault/success ring
+	providerBreakerOpenUntil map[string]time.Time             // breaker-open expiry per provider
+	providerBreakerTrips     map[string]int                   // trip count per provider (exponential backoff)
+
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
 	// transient coordinator stall (which ages many LastHeartbeat values at once)
@@ -1130,20 +1148,23 @@ type modelLoadAction struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:               make(map[string]*Provider),
-		queue:                   NewRequestQueue(10, 120*time.Second),
-		MinTrustLevel:           TrustHardware,
-		tpsRegistry:             NewTPSRegistry(),
-		modelProviders:          make(map[string]*atomic.Int64),
-		pendingModelLoads:       make(map[string]time.Time),
-		pendingModelLoadStarted: make(map[string]time.Time),
-		dispatchLoadCooldowns:   make(map[string]time.Time),
-		inferenceErrorStrikes:   make(map[inferenceErrorKey][]time.Time),
-		inferenceErrorCooldowns: make(map[inferenceErrorKey]time.Time),
-		evictStrikes:            make(map[string]int),
-		cacheAffinity:           newCacheAffinityTracker(cacheAffinityTTL),
-		cacheAffinityBonusMs:    defaultCacheAffinityBonusMs,
-		logger:                  logger,
+		providers:                make(map[string]*Provider),
+		queue:                    NewRequestQueue(10, 120*time.Second),
+		MinTrustLevel:            TrustHardware,
+		tpsRegistry:              NewTPSRegistry(),
+		modelProviders:           make(map[string]*atomic.Int64),
+		pendingModelLoads:        make(map[string]time.Time),
+		pendingModelLoadStarted:  make(map[string]time.Time),
+		dispatchLoadCooldowns:    make(map[string]time.Time),
+		inferenceErrorStrikes:    make(map[inferenceErrorKey][]time.Time),
+		inferenceErrorCooldowns:  make(map[inferenceErrorKey]time.Time),
+		providerOutcomes:         make(map[string]*providerHealthWindow),
+		providerBreakerOpenUntil: make(map[string]time.Time),
+		providerBreakerTrips:     make(map[string]int),
+		evictStrikes:             make(map[string]int),
+		cacheAffinity:            newCacheAffinityTracker(cacheAffinityTTL),
+		cacheAffinityBonusMs:     defaultCacheAffinityBonusMs,
+		logger:                   logger,
 	}
 }
 
@@ -3344,6 +3365,12 @@ func (r *Registry) Disconnect(id string) {
 				delete(r.pendingModelLoadStarted, key)
 			}
 		}
+		// Drop per-provider node-health breaker state. The id is a per-session
+		// UUID that will never recur, so its health ring, open expiry, and trip
+		// count must not linger after disconnect.
+		delete(r.providerOutcomes, id)
+		delete(r.providerBreakerOpenUntil, id)
+		delete(r.providerBreakerTrips, id)
 		p.mu.Lock()
 		if p.Status != StatusUntrusted {
 			r.onlineCount.Add(-1)

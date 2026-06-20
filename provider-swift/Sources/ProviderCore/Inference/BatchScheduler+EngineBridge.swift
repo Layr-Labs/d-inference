@@ -242,6 +242,11 @@ extension BatchScheduler {
                 ? Double(finalCompletion) / elapsedSeconds : 0
         }
 
+        // Backend-liveness watchdog (DAR-337): a real successful completion is
+        // proof the engine is decoding — it clears the "budget pinned with 0
+        // successes" signal regardless of the measured TPS.
+        if success { lastSuccessAt = finishedAt }
+
         if success, tps > 0 {
             // Previously `activeBridges.count + 1` mixed in
             // queued-not-admitted bridges. Use admitted-and-running

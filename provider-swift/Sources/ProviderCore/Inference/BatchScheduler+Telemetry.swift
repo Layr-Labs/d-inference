@@ -116,6 +116,19 @@ extension BatchScheduler {
 
     // MARK: - Heartbeat payload
 
+    /// Truthful slot_state for the heartbeat (DAR-337/338). A wedged or pinned
+    /// backend must NOT keep advertising "idle"/"running" (a healthy-looking slot
+    /// the coordinator routes to); it reports "crashed" so the coordinator
+    /// deroutes, and "reloading" while a recovery self-restart is in flight. Only
+    /// a genuinely healthy backend reports the normal running/idle pair.
+    func heartbeatSlotState(activeRequests: Int) -> String {
+        if isReloadingForRecovery { return "reloading" }
+        switch livenessState {
+        case .wedged, .pinned: return "crashed"
+        case .healthy: return activeRequests > 0 ? "running" : "idle"
+        }
+    }
+
     /// Public surface called from `ProviderLoop` on every heartbeat tick.
     /// Implementation lives in the telemetry extension because most of
     /// the fields are EWMA / queued-budget state owned here.
@@ -135,7 +148,7 @@ extension BatchScheduler {
 
         let slot = BackendSlotCapacity(
             model: cap.model,
-            state: cap.activeRequests > 0 ? "running" : "idle",
+            state: heartbeatSlotState(activeRequests: cap.activeRequests),
             numRunning: UInt32(cap.activeRequests),
             numWaiting: UInt32(cap.pendingRequests),
             activeTokens: activeTokens,

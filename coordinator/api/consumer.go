@@ -5188,11 +5188,19 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
+				if provider != nil {
+					provider.RemovePending(requestID)
+					s.registry.SetProviderIdle(provider.ID)
+				}
 				s.recordWarmPoolQueueState(model)
 				s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
 				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 				refundReservation()
 				return
+			}
+			if provider != nil {
+				provider.RemovePending(requestID)
+				s.registry.SetProviderIdle(provider.ID)
 			}
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "queue_timeout", http.StatusTooManyRequests))
 			retryAfter := s.estimateRetryAfter(model)

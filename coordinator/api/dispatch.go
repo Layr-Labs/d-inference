@@ -698,11 +698,19 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			cancelWait()
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
+					if d.provider != nil {
+						d.provider.RemovePending(d.requestID)
+						s.registry.SetProviderIdle(d.provider.ID)
+					}
 					s.recordWarmPoolQueueState(d.model)
 					d.emitClientGone(phaseBeforeFirstToken)
 					d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
 					d.refundReservation()
 					return outcomeClientGone
+				}
+				if d.provider != nil {
+					d.provider.RemovePending(d.requestID)
+					s.registry.SetProviderIdle(d.provider.ID)
 				}
 				if assigned := s.registry.Queue().Cancel(queuedReq); assigned != nil {
 					assigned.RemovePending(d.requestID)

@@ -144,14 +144,9 @@ func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRe
 		}
 		return p, nil
 	case <-timer.C:
-		// Remove the request from the queue
-		req.markDone()
-		q.Remove(req.RequestID, req.Model)
-		return nil, ErrQueueTimeout
+		return q.Cancel(req), ErrQueueTimeout
 	case <-ctx.Done():
-		req.markDone()
-		q.Remove(req.RequestID, req.Model)
-		return nil, ctx.Err()
+		return q.Cancel(req), ctx.Err()
 	}
 }
 

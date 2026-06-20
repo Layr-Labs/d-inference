@@ -47,33 +47,38 @@ func (r *Registry) ModelPoolKey(model string) string {
 }
 
 func (r *Registry) modelPoolKeyLocked(model string) string {
-	if model == "" {
+	keys := r.modelPoolKeysLocked(model)
+	if len(keys) == 0 {
 		return ""
 	}
-	if _, ok := r.modelAliases[model]; ok {
-		return model
+	return keys[0]
+}
+
+func (r *Registry) modelPoolKeysLocked(model string) []string {
+	if model == "" {
+		return nil
 	}
-	best := ""
+	if _, ok := r.modelAliases[model]; ok {
+		return []string{model}
+	}
+	var keys []string
 	for alias, target := range r.modelAliases {
 		if target.Desired == model || target.Previous == model {
-			if best == "" || alias < best {
-				best = alias
-			}
+			keys = append(keys, alias)
 			continue
 		}
 		for _, retired := range target.Retired {
 			if retired == model {
-				if best == "" || alias < best {
-					best = alias
-				}
+				keys = append(keys, alias)
 				break
 			}
 		}
 	}
-	if best != "" {
-		return best
+	if len(keys) > 0 {
+		sort.Strings(keys)
+		return keys
 	}
-	return model
+	return []string{model}
 }
 
 func (r *Registry) modelCanSeedPoolLocked(model string) bool {
@@ -149,27 +154,68 @@ func (r *Registry) providerModelPoolSeedLocked(p *Provider) string {
 			return model
 		}
 	}
-	singleAdvertised := ""
+	var commonPools map[string]struct{}
+	firstAdvertised := ""
 	for _, model := range p.Models {
 		if r.modelCanSeedPoolLocked(model.ID) && r.modelAllowedByCatalogLocked(model) {
-			if singleAdvertised != "" {
+			keys := r.modelPoolKeysLocked(model.ID)
+			if len(keys) == 0 {
+				continue
+			}
+			if firstAdvertised == "" {
+				firstAdvertised = model.ID
+				commonPools = make(map[string]struct{}, len(keys))
+				for _, key := range keys {
+					commonPools[key] = struct{}{}
+				}
+				continue
+			}
+			next := make(map[string]struct{})
+			for _, key := range keys {
+				if _, ok := commonPools[key]; ok {
+					next[key] = struct{}{}
+				}
+			}
+			commonPools = next
+			if len(commonPools) == 0 {
 				return ""
 			}
-			singleAdvertised = model.ID
 		}
 	}
-	return singleAdvertised
+	if firstAdvertised == "" {
+		return ""
+	}
+	if len(commonPools) == 1 {
+		for key := range commonPools {
+			if key == firstAdvertised {
+				return firstAdvertised
+			}
+			return key
+		}
+	}
+	if len(commonPools) > 1 {
+		return firstAdvertised
+	}
+	return ""
 }
 
 func (r *Registry) providerAssignedToModelPoolLocked(p *Provider, model string, allowPrivate bool) bool {
 	if !r.enforceModelPools || allowPrivate {
 		return true
 	}
-	assigned := r.assignProviderModelPoolLocked(p)
-	if assigned == "" {
+	if r.assignProviderModelPoolLocked(p) == "" || p.AssignedPool == "" {
 		return false
 	}
-	return assigned == r.modelPoolKeyLocked(model)
+	assigned := r.modelPoolKeysLocked(p.AssignedPool)
+	requested := r.modelPoolKeysLocked(model)
+	for _, a := range assigned {
+		for _, req := range requested {
+			if a == req {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *Registry) providerPassesRoutingGatesBeforePoolLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker bool) bool {

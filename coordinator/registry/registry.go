@@ -1808,9 +1808,6 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	if !r.providerServesCatalogModelLocked(p, buildID) {
 		return false
 	}
-	if !r.providerAssignedToModelPoolLocked(p, buildID, allowPrivate) {
-		return false
-	}
 	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
 		return false
 	}
@@ -2190,6 +2187,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			r.providerAssignedToModelPoolLocked(p, model, false) &&
 			r.providerServesVisionModelLocked(p, model)
 		p.mu.Unlock()
 		if eligible {

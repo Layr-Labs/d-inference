@@ -573,6 +573,9 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return warmPoolCandidate{}, false
 	}
+	if !r.providerAssignedToModelPoolLocked(p, model, false) {
+		return warmPoolCandidate{}, false
+	}
 	totalMemoryGB := float64(p.Hardware.MemoryGB)
 	gpuActiveGB := 0.0
 	if p.BackendCapacity != nil {

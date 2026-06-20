@@ -1596,6 +1596,89 @@ func TestModelPoolAssignmentUsesFirstHeartbeatBeforeAdvertisedOrder(t *testing.T
 	}
 }
 
+func TestModelPoolAssignmentAllowsAdvertisedAliasBuildsInSamePool(t *testing.T) {
+	reg := New(testLogger())
+	previous := "pool-alias-previous"
+	desired := "pool-alias-desired"
+	reg.SetModelCatalog([]CatalogEntry{{ID: previous}, {ID: desired}})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"pool-alias": {Desired: desired, Previous: previous},
+	})
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{
+		{ID: previous, ModelType: "chat", Quantization: "4bit"},
+		{ID: desired, ModelType: "chat", Quantization: "4bit"},
+	}
+	p := reg.Register("pool-alias-provider", nil, msg)
+	p.mu.Lock()
+	p.TrustLevel = TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.SystemMetrics = protocol.SystemMetrics{ThermalState: "nominal"}
+	p.mu.Unlock()
+
+	selected, _ := reg.ReserveProviderEx(desired, &PendingRequest{
+		RequestID:          "req-alias-pool-desired",
+		Model:              desired,
+		RequestedMaxTokens: 128,
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("selected %#v for alias desired build, want %q", selected, p.ID)
+	}
+}
+
+func TestModelPoolAssignmentAllowsSharedBuildInOwningAliasPool(t *testing.T) {
+	reg := New(testLogger())
+	shared := "pool-shared-build"
+	other := "pool-alias-b-build"
+	reg.SetModelCatalog([]CatalogEntry{{ID: shared}, {ID: other}})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"alias-a": {Desired: shared},
+		"alias-b": {Desired: other, Previous: shared},
+	})
+	p := makeSchedulerProvider(t, reg, "shared-pool-provider", other, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: shared, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: other, State: "idle", MaxConcurrency: 2},
+		{Model: shared, State: "idle", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	selected, _ := reg.ReserveProviderEx(shared, &PendingRequest{
+		RequestID:          "req-shared-pool-build",
+		Model:              shared,
+		RequestedMaxTokens: 128,
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("selected %#v for shared build in owning alias pool, want %q", selected, p.ID)
+	}
+}
+
+func TestResolveModelConstrainedIgnoresPoolMismatchForPreflightClassification(t *testing.T) {
+	reg := New(testLogger())
+	assigned := "pinned-assigned-pool"
+	desired := "pinned-wrong-pool-build"
+	reg.SetModelCatalog([]CatalogEntry{{ID: assigned}, {ID: desired}})
+	reg.SetModelAliases(map[string]AliasTarget{"pinned-alias": {Desired: desired}})
+	p := makeSchedulerProvider(t, reg, "pinned-provider", assigned, 100)
+	setSchedulerProviderSerial(p, "PINNED-SERIAL")
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: desired, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: assigned, State: "idle", MaxConcurrency: 2}}
+	p.mu.Unlock()
+
+	resolved, isAlias, ok := reg.ResolveModelConstrained("pinned-alias", []string{"PINNED-SERIAL"}, "", false, false)
+	if !ok || !isAlias || resolved != desired {
+		t.Fatalf("ResolveModelConstrained = %q alias=%v ok=%v, want %q/true/true", resolved, isAlias, ok, desired)
+	}
+	if got := reg.PoolRejectedProviderCount(desired, RequestTraits{}, false, "PINNED-SERIAL"); got != 1 {
+		t.Fatalf("PoolRejectedProviderCount = %d, want 1", got)
+	}
+}
+
 func TestModelPoolAssignmentBypassesOwnedSelfRoute(t *testing.T) {
 	reg := New(testLogger())
 	modelA := "self-pool-a"
@@ -1619,6 +1702,25 @@ func TestModelPoolAssignmentBypassesOwnedSelfRoute(t *testing.T) {
 	})
 	if selected == nil || selected.ID != p.ID {
 		t.Fatalf("owned self-route selected %#v, want %q", selected, p.ID)
+	}
+}
+
+func TestCapabilityChecksIgnoreOffPoolProviders(t *testing.T) {
+	reg := New(testLogger())
+	assigned := "capability-assigned-pool"
+	target := "capability-off-pool-model"
+	p := makeSchedulerProvider(t, reg, "capability-off-pool", assigned, 100)
+	setProviderVersion(p, "0.6.5")
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: target, ModelType: "chat", Quantization: "4bit", IsVision: true})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: assigned, State: "idle", MaxConcurrency: 2}}
+	p.mu.Unlock()
+
+	if reg.HasToolCapableProviderForModel(target) {
+		t.Fatal("off-pool tool-capable provider must not satisfy tools capability check")
+	}
+	if reg.HasVisionProviderForModel(target) {
+		t.Fatal("off-pool vision-capable provider must not satisfy vision capability check")
 	}
 }
 

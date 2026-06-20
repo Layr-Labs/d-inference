@@ -21,21 +21,21 @@ func TestMemoryProviderSessionLifecycle(t *testing.T) {
 		t.Fatalf("after open: %+v", st.providerSessions)
 	}
 
-	// Touch backfills the empty serial/account and advances last_seen.
+	// Touch backfills the empty serial/account/provider_key and advances last_seen.
 	ts := time.Now().Add(time.Minute).Truncate(time.Millisecond)
-	if err := st.TouchProviderSession(ctx, "sess-1", "SERIAL1", "ACCT1", ts); err != nil {
+	if err := st.TouchProviderSession(ctx, "sess-1", "SERIAL1", "ACCT1", "PK1", ts); err != nil {
 		t.Fatalf("touch: %v", err)
 	}
-	if s := st.providerSessions[0]; s.SerialNumber != "SERIAL1" || s.AccountID != "ACCT1" || !s.LastSeen.Equal(ts) {
+	if s := st.providerSessions[0]; s.SerialNumber != "SERIAL1" || s.AccountID != "ACCT1" || s.ProviderKey != "PK1" || !s.LastSeen.Equal(ts) {
 		t.Fatalf("after touch backfill: %+v", s)
 	}
 
-	// A later touch must NOT overwrite an already-known serial/account.
-	if err := st.TouchProviderSession(ctx, "sess-1", "SERIAL2", "ACCT2", ts.Add(time.Minute)); err != nil {
+	// A later touch must NOT overwrite an already-known serial/account/provider_key.
+	if err := st.TouchProviderSession(ctx, "sess-1", "SERIAL2", "ACCT2", "PK2", ts.Add(time.Minute)); err != nil {
 		t.Fatalf("touch2: %v", err)
 	}
-	if s := st.providerSessions[0]; s.SerialNumber != "SERIAL1" || s.AccountID != "ACCT1" {
-		t.Fatalf("touch overwrote serial/account: %+v", s)
+	if s := st.providerSessions[0]; s.SerialNumber != "SERIAL1" || s.AccountID != "ACCT1" || s.ProviderKey != "PK1" {
+		t.Fatalf("touch overwrote serial/account/provider_key: %+v", s)
 	}
 
 	// Close sets disconnected_at + reason.
@@ -49,7 +49,7 @@ func TestMemoryProviderSessionLifecycle(t *testing.T) {
 	}
 
 	// Touch on a closed session is a no-op.
-	if err := st.TouchProviderSession(ctx, "sess-1", "X", "Y", closeAt.Add(time.Hour)); err != nil {
+	if err := st.TouchProviderSession(ctx, "sess-1", "X", "Y", "Z", closeAt.Add(time.Hour)); err != nil {
 		t.Fatalf("touch-closed: %v", err)
 	}
 	if !st.providerSessions[0].LastSeen.Equal(closed.LastSeen) {
@@ -124,14 +124,14 @@ func TestMemoryProviderSessionReconcileFencesFreshSessions(t *testing.T) {
 	if err := st.OpenProviderSession(ctx, "fresh", "S1", "A1"); err != nil {
 		t.Fatalf("open fresh: %v", err)
 	}
-	if err := st.TouchProviderSession(ctx, "fresh", "S1", "A1", now.Add(-10*time.Second)); err != nil {
+	if err := st.TouchProviderSession(ctx, "fresh", "S1", "A1", "PK1", now.Add(-10*time.Second)); err != nil {
 		t.Fatalf("touch fresh: %v", err)
 	}
 	// A genuinely-orphaned session: opened, last heartbeat 10 min ago.
 	if err := st.OpenProviderSession(ctx, "stale", "S2", "A2"); err != nil {
 		t.Fatalf("open stale: %v", err)
 	}
-	if err := st.TouchProviderSession(ctx, "stale", "S2", "A2", now.Add(-10*time.Minute)); err != nil {
+	if err := st.TouchProviderSession(ctx, "stale", "S2", "A2", "PK2", now.Add(-10*time.Minute)); err != nil {
 		t.Fatalf("touch stale: %v", err)
 	}
 
@@ -200,19 +200,19 @@ func TestPostgresProviderSessionLifecycle(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	ts := time.Now().Add(time.Minute)
-	if err := st.TouchProviderSession(ctx, sid, "SER1", "ACC1", ts); err != nil {
+	if err := st.TouchProviderSession(ctx, sid, "SER1", "ACC1", "PK1", ts); err != nil {
 		t.Fatalf("touch: %v", err)
 	}
 
-	var serial, account string
+	var serial, account, providerKey string
 	var disc *time.Time
 	if err := st.pool.QueryRow(ctx,
-		`SELECT serial_number, account_id, disconnected_at FROM provider_sessions WHERE session_id=$1`, sid,
-	).Scan(&serial, &account, &disc); err != nil {
+		`SELECT serial_number, account_id, provider_key, disconnected_at FROM provider_sessions WHERE session_id=$1`, sid,
+	).Scan(&serial, &account, &providerKey, &disc); err != nil {
 		t.Fatalf("query after touch: %v", err)
 	}
-	if serial != "SER1" || account != "ACC1" || disc != nil {
-		t.Fatalf("after touch: serial=%q account=%q disc=%v", serial, account, disc)
+	if serial != "SER1" || account != "ACC1" || providerKey != "PK1" || disc != nil {
+		t.Fatalf("after touch: serial=%q account=%q provider_key=%q disc=%v", serial, account, providerKey, disc)
 	}
 
 	if err := st.CloseProviderSession(ctx, sid, "disconnect", time.Now()); err != nil {

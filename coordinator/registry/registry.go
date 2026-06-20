@@ -1460,6 +1460,7 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			seKey = p.AttestationResult.PublicKey
 			serial = p.AttestationResult.SerialNumber
 		}
+		providerKey := p.PublicKey // X25519 key — earnings/session identity (base rewards)
 		var mdaCertJSON json.RawMessage
 		if len(p.MDACertChain) > 0 {
 			mdaCertJSON, _ = json.Marshal(p.MDACertChain)
@@ -1515,9 +1516,9 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
 		}
 
-		// Keep this connection's session row fresh and backfill serial/account
-		// once attestation/linking has populated them.
-		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, rec.LastSeen); err != nil {
+		// Keep this connection's session row fresh and backfill
+		// serial/account/provider_key once attestation/linking has populated them.
+		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, providerKey, rec.LastSeen); err != nil {
 			r.logger.Warn("failed to touch provider session", "provider_id", rec.ID, "error", err)
 		}
 	})

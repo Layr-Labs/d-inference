@@ -139,6 +139,15 @@ type MemoryStore struct {
 
 	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
 	inferenceRejections []RejectionRecord
+
+	// Base rewards — per-epoch floor draws (idempotent on provider_key|epoch_id).
+	providerFloorDraws []ProviderFloorDraw
+	floorDrawSeq       int64
+	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
+
+	// Base rewards Phase 1 — coordinator correctness-probe outcomes.
+	probeResults   []ProbeResult
+	probeResultSeq int64
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -191,6 +200,9 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
 		inferenceRejections:           make([]RejectionRecord, 0),
+		providerFloorDraws:            make([]ProviderFloorDraw, 0),
+		floorDrawKeys:                 make(map[string]struct{}),
+		probeResults:                  make([]ProbeResult, 0),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{
@@ -245,6 +257,15 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	}
 	if n := len(s.logReports); n > maxEntries {
 		s.logReports = append([]LogReport(nil), s.logReports[n-maxEntries:]...)
+	}
+	// Floor-draw audit rows are bounded, but the floorDrawKeys idempotency map is
+	// intentionally NOT pruned — it is the authoritative dedupe guard and dropping
+	// it could let a re-settle double-credit.
+	if n := len(s.providerFloorDraws); n > maxEntries {
+		s.providerFloorDraws = append([]ProviderFloorDraw(nil), s.providerFloorDraws[n-maxEntries:]...)
+	}
+	if n := len(s.probeResults); n > maxEntries {
+		s.probeResults = append([]ProbeResult(nil), s.probeResults[n-maxEntries:]...)
 	}
 
 	// Expired device codes can be dropped outright.
@@ -2411,6 +2432,16 @@ func (s *MemoryStore) RecordProviderEarning(earning *ProviderEarning) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
+	// a retried settlement with the same non-empty job_id is a no-op.
+	if earning.JobID != "" {
+		for i := range s.providerEarnings {
+			if s.providerEarnings[i].JobID == earning.JobID {
+				return nil
+			}
+		}
+	}
+
 	s.providerEarningsSeq++
 	cp := *earning
 	cp.ID = s.providerEarningsSeq
@@ -2559,6 +2590,17 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
+	// a retried settlement with the same non-empty job_id must not double-credit
+	// the balance, the withdrawable subset, the ledger, or the earnings summary.
+	if earning.JobID != "" {
+		for i := range s.providerEarnings {
+			if s.providerEarnings[i].JobID == earning.JobID {
+				return nil
+			}
+		}
+	}
 
 	cp := *earning
 	if cp.CreatedAt.IsZero() {
@@ -3051,8 +3093,8 @@ func (s *MemoryStore) OpenProviderSession(_ context.Context, sessionID, serial, 
 }
 
 // TouchProviderSession updates the open session's last_seen and backfills
-// serial/account if they were unknown at open time.
-func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial, accountID string, lastSeen time.Time) error {
+// serial/account/provider_key if they were unknown at open time.
+func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.providerSessions {
@@ -3064,6 +3106,9 @@ func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial,
 			}
 			if ps.AccountID == "" {
 				ps.AccountID = accountID
+			}
+			if ps.ProviderKey == "" {
+				ps.ProviderKey = providerKey
 			}
 			// At most one open row per sessionID (OpenProviderSession
 			// guarantees it), so stop scanning once matched.

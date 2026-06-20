@@ -237,3 +237,14 @@ git config core.hooksPath .githooks
 | Go (`coordinator/`) | `gofmt -l` | `gofmt -w <file>` |
 | Swift (`provider-swift/`) | no enforced formatter | `cd provider-swift && swift test` |
 | TypeScript (`console-ui/`) | `npx eslint src/` | `cd console-ui && npx eslint src/ --fix` |
+
+## Pull Requests
+
+**Every PR description must include before/after Mermaid diagrams** that show how the change alters the relevant flow, data model, or architecture. Use GitHub-rendered ` ```mermaid ` fenced blocks.
+
+- **Before** — the current behavior/structure the PR changes. Omit only for a brand-new component with no prior state (then show just the "after").
+- **After** — the new behavior/structure once the PR lands.
+- Pick the diagram that fits the change: `flowchart` for control/data flow, `sequenceDiagram` for request/protocol exchanges, `erDiagram` for schema changes, `stateDiagram-v2` for lifecycle/state.
+- Keep them scoped to the delta, not the whole system — a reviewer should grasp what changed from the diagrams alone.
+
+This applies to all PRs (coordinator, provider, console-ui, docs). A PR without before/after diagrams is incomplete.

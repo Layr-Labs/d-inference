@@ -333,10 +333,14 @@ func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.Requ
 		reserveStart = t.ParsedAt
 	}
 	out.ReserveMs = timingMsBetween(reserveStart, t.ReservedAt)
+	routeEnd := t.RoutedAt
+	if !t.QueuedAt.IsZero() {
+		routeEnd = t.QueuedAt
+	}
 	if !t.ReservingAt.IsZero() {
-		out.RouteMs = timingMsBetween(t.ParsedAt, t.ReservingAt) + timingMsBetween(t.ReservedAt, t.RoutedAt)
+		out.RouteMs = timingMsBetween(t.ParsedAt, t.ReservingAt) + timingMsBetween(t.ReservedAt, routeEnd)
 	} else {
-		out.RouteMs = timingMsBetween(t.ReservedAt, t.RoutedAt)
+		out.RouteMs = timingMsBetween(t.ReservedAt, routeEnd)
 	}
 	out.EncryptMs = timingMsBetween(t.RoutedAt, t.EncryptedAt)
 	out.QueueWaitMs = timingMsBetween(t.QueuedAt, t.DispatchedAt)
@@ -604,6 +608,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			ConsumerLocation:       d.consumerLocation,
 			IsResponsesAPI:         d.isResponsesAPI,
 			EstimatedPromptTokens:  d.estimatedPromptTokens,
+			BillingPromptTokens:    d.billingPromptTokens,
 			RequiresVision:         d.requiresVision,
 			Traits:                 d.traits(),
 			RequestedMaxTokens:     d.requestedMaxTokens,
@@ -2136,16 +2141,20 @@ func (d *dispatchState) writeCommittedResponse() {
 		if !timing.ReservedAt.IsZero() && !reserveStart.IsZero() {
 			tj.ReserveUs = timing.ReservedAt.Sub(reserveStart).Microseconds()
 		}
-		if !timing.RoutedAt.IsZero() {
+		routeEnd := timing.RoutedAt
+		if !timing.QueuedAt.IsZero() {
+			routeEnd = timing.QueuedAt
+		}
+		if !routeEnd.IsZero() {
 			if !timing.ReservingAt.IsZero() {
 				if !timing.ParsedAt.IsZero() {
 					tj.RouteUs += timing.ReservingAt.Sub(timing.ParsedAt).Microseconds()
 				}
 				if !timing.ReservedAt.IsZero() {
-					tj.RouteUs += timing.RoutedAt.Sub(timing.ReservedAt).Microseconds()
+					tj.RouteUs += routeEnd.Sub(timing.ReservedAt).Microseconds()
 				}
 			} else if !timing.ReservedAt.IsZero() {
-				tj.RouteUs = timing.RoutedAt.Sub(timing.ReservedAt).Microseconds()
+				tj.RouteUs = routeEnd.Sub(timing.ReservedAt).Microseconds()
 			}
 		}
 		if !timing.QueuedAt.IsZero() && !timing.DispatchedAt.IsZero() {

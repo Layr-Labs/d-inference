@@ -33,21 +33,53 @@ func TestCommittedRouteOutcomeIsNonTerminal(t *testing.T) {
 
 func TestTimingDecompositionKeepsReservationSeparateFromPreflight(t *testing.T) {
 	base := time.Unix(100, 0)
-	timing := &registry.RequestTiming{
-		ReceivedAt:  base,
-		ParsedAt:    base.Add(10 * time.Millisecond),
-		ReservingAt: base.Add(60 * time.Millisecond),
-		ReservedAt:  base.Add(65 * time.Millisecond),
-		RoutedAt:    base.Add(90 * time.Millisecond),
+	tests := []struct {
+		name      string
+		timing    *registry.RequestTiming
+		wantRoute float64
+		wantQueue float64
+	}{
+		{
+			name: "direct",
+			timing: &registry.RequestTiming{
+				ReceivedAt:  base,
+				ParsedAt:    base.Add(10 * time.Millisecond),
+				ReservingAt: base.Add(60 * time.Millisecond),
+				ReservedAt:  base.Add(65 * time.Millisecond),
+				RoutedAt:    base.Add(90 * time.Millisecond),
+			},
+			wantRoute: 75,
+		},
+		{
+			name: "queued",
+			timing: &registry.RequestTiming{
+				ReceivedAt:   base,
+				ParsedAt:     base.Add(10 * time.Millisecond),
+				ReservingAt:  base.Add(60 * time.Millisecond),
+				ReservedAt:   base.Add(65 * time.Millisecond),
+				QueuedAt:     base.Add(70 * time.Millisecond),
+				RoutedAt:     base.Add(120 * time.Millisecond),
+				DispatchedAt: base.Add(140 * time.Millisecond),
+			},
+			wantRoute: 55,
+			wantQueue: 70,
+		},
 	}
-	out := &store.InferenceRouteOutcome{}
-	applyTimingDecomposition(out, timing, time.Time{})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := &store.InferenceRouteOutcome{}
+			applyTimingDecomposition(out, tt.timing, time.Time{})
 
-	if out.ReserveMs != 5 {
-		t.Fatalf("ReserveMs = %v, want billing-only 5ms", out.ReserveMs)
-	}
-	if out.RouteMs != 75 {
-		t.Fatalf("RouteMs = %v, want preflight+route excluding reservation (50ms+25ms)", out.RouteMs)
+			if out.ReserveMs != 5 {
+				t.Fatalf("ReserveMs = %v, want billing-only 5ms", out.ReserveMs)
+			}
+			if out.RouteMs != tt.wantRoute {
+				t.Fatalf("RouteMs = %v, want %v", out.RouteMs, tt.wantRoute)
+			}
+			if out.QueueWaitMs != tt.wantQueue {
+				t.Fatalf("QueueWaitMs = %v, want %v", out.QueueWaitMs, tt.wantQueue)
+			}
+		})
 	}
 }
 

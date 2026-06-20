@@ -1,22 +1,22 @@
 // Copyright © 2026 Eigen Labs.
 //
-// DAR-337 / DAR-338 in-process backend-liveness decision.
+// In-process backend-liveness decision.
 //
 // A loaded model can stop serving while the process stays up and the engine
 // loop never crashes, so the node keeps advertising slot_state=idle/healthy and
 // the coordinator keeps routing to it — a silent wedge. Two failure modes:
 //
-//   * WEDGE (DAR-338 safety net): a request was admitted (the engine picked it
-//     up) but produced 0 tokens for far longer than any real prefill — the GPU
-//     step loop has stalled behind a blocked reservation / GPU sync.
-//   * PINNED (DAR-337): the global KV budget collapsed to its ~1024-token floor
-//     and stays there with 0 successful serves — every request 503s on
-//     "insufficient global KV cache headroom" until a process/model reload.
+//   * Wedged: a request was admitted (the engine picked it up) but produced 0
+//     tokens for far longer than any real prefill — the GPU step loop has
+//     stalled behind a blocked reservation or GPU sync.
+//   * Pinned: the global KV budget collapsed to its ~1024-token floor and stays
+//     there with 0 successful serves — every request 503s on "insufficient
+//     global KV cache headroom" until a process/model reload.
 //
-// This policy is PURE (no GPU, no clocks, no I/O — all timing is passed in as
+// This policy is pure (no GPU, no clocks, no I/O — all timing is passed in as
 // seconds) so every branch is unit-testable. The scheduler owns the live state
 // (active bridges, token budget, last-success time) and feeds it here; the
-// returned diagnosis drives both a TRUTHFUL heartbeat slot_state and a model
+// returned diagnosis drives both a truthful heartbeat slot_state and a model
 // self-restart.
 
 import Foundation

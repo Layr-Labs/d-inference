@@ -1,8 +1,8 @@
 import Testing
 @testable import ProviderCore
 
-/// The pure backend-liveness decision (DAR-337/338). Every branch of wedge vs
-/// pinned vs healthy is pinned here, GPU-free.
+/// The pure backend-liveness decision. Every branch of wedge vs pinned vs
+/// healthy is pinned here, GPU-free.
 @Suite("Backend liveness policy")
 struct BackendLivenessPolicyTests {
     // Small, explicit thresholds so the arithmetic is obvious.

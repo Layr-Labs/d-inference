@@ -27,10 +27,11 @@ public actor GlobalKVCacheBudget {
     private let memorySnapshot: @Sendable () -> MemorySnapshot
     private var reservations: [String: UInt64] = [:]
 
-    /// DAR-338: the reclaimable-pool flush runs HERE, off this actor. The
-    /// admission paths only ever SIGNAL it (non-blocking); the blocking GPU sync
-    /// happens on the reclaimer's executor. This actor is therefore NEVER blocked
-    /// on a GPU synchronize — the invariant the whole change exists to guarantee.
+    /// The reclaimable-pool flush runs in this reclaimer, off the budget actor.
+    /// The admission paths only ever signal it (non-blocking); the blocking GPU
+    /// sync happens on the reclaimer's executor, so the budget actor is never
+    /// blocked on a GPU synchronize — the invariant this design exists to
+    /// guarantee.
     private let reclaimer: KVPoolReclaimer
     static let defaultSelfHealMinInterval: Duration = KVPoolReclaimer.defaultMinInterval
 
@@ -158,14 +159,14 @@ public actor GlobalKVCacheBudget {
         }
     }
 
-    /// Reserve `bytes` against the CURRENT live headroom. The headroom math counts
-    /// the reclaimable MLX pool as used; on a near-miss we SIGNAL the off-actor
-    /// reclaimer to shrink that pool for FUTURE admissions and reject this request
-    /// against the current snapshot. We do NOT flush-and-resample inline: that
+    /// Reserve `bytes` against the current live headroom. The headroom math counts
+    /// the reclaimable MLX pool as used; on a near-miss we signal the off-actor
+    /// reclaimer to shrink that pool for future admissions and reject this request
+    /// against the current snapshot. We do not flush-and-resample inline: that
     /// would run a blocking GPU sync on this actor and serialize every other
-    /// reservation behind it (DAR-338). Rejecting a near-miss is acceptable — the
-    /// coordinator + per-provider breaker reroute, and the background reclaim keeps
-    /// the pool small so most admissions succeed without ever near-missing.
+    /// reservation behind it. Rejecting a near-miss is acceptable — the
+    /// coordinator and per-provider breaker reroute, and the background reclaim
+    /// keeps the pool small so most admissions succeed without ever near-missing.
     /// Caller has validated `bytes > 0` and no existing reservation.
     private func commit(requestID: String, bytes: UInt64) -> Bool {
         let available = availableReservationBytes()
@@ -178,12 +179,13 @@ public actor GlobalKVCacheBudget {
     }
 
     /// Signal the off-actor reclaimer to flush the reclaimable MLX pool for a
-    /// shortfall observed by the scheduler's token-budget gate. NON-BLOCKING and
+    /// shortfall observed by the scheduler's token-budget gate. Non-blocking and
     /// `nonisolated` (it touches no actor state — only the immutable reclaimer),
     /// so the caller doesn't even hop this actor: the GPU sync runs on the
-    /// reclaimer, never here (it used to run inline as a blocking synchronize —
-    /// the DAR-338 wedge). The reclaimer gates on whether the pool can cover the
-    /// shortfall and rate-limits, so this is an unconditional fire-and-forget.
+    /// reclaimer, never here (it used to run inline as a blocking synchronize,
+    /// which wedged the admission actor). The reclaimer gates on whether the pool
+    /// can cover the shortfall and rate-limits, so this is an unconditional
+    /// fire-and-forget.
     public nonisolated func reclaimForShortfall(_ shortfall: UInt64) {
         guard shortfall > 0 else { return }
         reclaimer.scheduleReclaim(shortfall: shortfall)
@@ -191,7 +193,7 @@ public actor GlobalKVCacheBudget {
 
     /// Trigger a proactive, rate-limited, threshold-gated background sweep of the
     /// reclaimable MLX pool so admission headroom stays healthy under sustained
-    /// load WITHOUT any inline flush. NON-BLOCKING + `nonisolated`. Called
+    /// load without any inline flush. Non-blocking and `nonisolated`. Called
     /// periodically by the scheduler watchdog while a model is loaded.
     public nonisolated func proactiveReclaimSweep() {
         reclaimer.scheduleSweep()

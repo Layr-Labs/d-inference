@@ -26,7 +26,7 @@ import (
 // auto-re-admitted on the first success.
 //
 // FAIL OPEN. Capacity-class sheds NEVER count (4xx/429 and a healthy-but-busy
-// 503 — token budget, KV headroom, draining, queue full, …), so load alone can
+// 5xx — token budget, KV headroom, draining, queue full, …), so load alone can
 // never trip it. And when the breaker would deroute EVERY provider for a model
 // (e.g. a bad fleet-wide rollout that fault-503s everywhere), selection re-scans
 // with the breaker bypassed (see selectBestCandidateLockedFull) so routing can
@@ -121,8 +121,8 @@ func (w *providerHealthWindow) windowStats(now time.Time, window time.Duration) 
 // Classification (errStr matched case-insensitively, substring-based — provider
 // strings are human-readable and drift across versions):
 //   - Healthy shed (IGNORED — not recorded, consecFail/ring untouched):
-//     ok==false with a client-shape code (429 or any 4xx) or a CAPACITY-class
-//     503 (token budget / KV headroom / memory / OOM / context / draining /
+//     ok==false with a client-shape code (429 or any 4xx) or a capacity-class
+//     5xx (token budget / KV headroom / memory / OOM / context / draining /
 //     busy slot / queue full / …). Load alone must never trip the breaker.
 //   - Fault (COUNTED): 500/502/504 always; a 503 whose message indicates a real
 //     fault, and — by default — any 503 not recognized as a capacity shed.
@@ -256,37 +256,44 @@ func (r *Registry) ProviderBreakerOpen(providerID string) bool {
 //
 // Healthy sheds (returns false — never counted):
 //   - client-shape failures: 429 and any 4xx (400-499, incl. 499 cancel)
-//   - capacity-class 503: a healthy-but-busy provider (see isCapacityShed503)
+//   - a capacity-class 5xx: a healthy-but-busy provider (see isCapacityShedError)
 //
 // Genuine faults (returns true — counted toward the breaker):
-//   - 500/502/504 always (provider-sickness shapes, same as the inference-error
-//     breaker)
-//   - a 503 whose message indicates a real fault (internal error, model load
-//     failed, crash/panic, the opaque Foundation string) and, by default, ANY
-//     503 not recognized as a capacity shed
+//   - a 5xx (500/502/503/504) whose message is NOT a capacity shed: a real
+//     crash, internal error, model-load fault, disconnect-flush, or silent
+//     timeout, and by default any such 5xx not recognized as a capacity shed
 //
-// Any other code (e.g. an unattributed 0/501/505) is NOT counted — conservative,
-// matching the inference-error breaker ignoring unattributed 5xx.
+// Capacity-shaped 5xx are ignored regardless of the exact code: capacity rejects
+// usually arrive as 503, but some/older paths surface them as 500/502/504 and
+// the dispatch reclassifier turns those into uptime-neutral 429s, so counting
+// them here would deroute a healthy busy node. Any other code (e.g. an
+// unattributed 0/501/505) is NOT counted — conservative.
 func providerOutcomeIsFault(statusCode int, errStr string) bool {
 	if statusCode == 429 || (statusCode >= 400 && statusCode <= 499) {
 		return false
 	}
 	switch statusCode {
-	case 500, 502, 504:
-		return true
-	case 503:
-		return !isCapacityShed503(errStr)
+	case 500, 502, 503, 504:
+		// A 5xx whose MESSAGE names a capacity/backpressure condition is a
+		// healthy-but-busy shed, not a node fault — ignore it regardless of the
+		// exact status code. Capacity rejects normally arrive as 503, but some
+		// (and older) provider paths surface token-budget / KV / context capacity
+		// as 500/502/504, and the dispatch reclassifier already turns those into
+		// uptime-neutral 429s; counting them as faults here would deroute a
+		// healthy busy node. A 5xx with no capacity marker (a real crash, a
+		// disconnect-flush, or a silent timeout) is a genuine fault.
+		return !isCapacityShedError(errStr)
 	default:
 		return false
 	}
 }
 
-// capacityShed503Markers are lowercased substrings that mark a 503 as a
+// capacityShedMarkers are lowercased substrings that mark a 5xx as a
 // healthy-but-busy CAPACITY shed rather than a fault. A provider returning any
 // of these is healthy and must never be derouted by the node-health breaker —
 // quarantining it would shed load exactly when the fleet is busy. Kept in sync
-// in spirit with the provider's capacity/lifecycle 503 vocabulary.
-var capacityShed503Markers = []string{
+// in spirit with the provider's capacity/lifecycle reject vocabulary.
+var capacityShedMarkers = []string{
 	"token_budget",
 	"kv headroom",
 	"kv cache headroom",
@@ -307,13 +314,14 @@ var capacityShed503Markers = []string{
 	"service temporarily unavailable",
 }
 
-// isCapacityShed503 reports whether a 503's message describes a healthy-but-busy
-// capacity/lifecycle shed (which must NOT count toward the breaker). Matching is
-// case-insensitive and substring-based, except "oom" (whole word, so "room" /
-// "bloom" do not match) and the ("slot" AND "active") pair (a busy-slot shed).
-func isCapacityShed503(errStr string) bool {
+// isCapacityShedError reports whether a failed 5xx terminal's message describes a
+// healthy-but-busy capacity/lifecycle shed (which must NOT count toward the
+// breaker). Matching is case-insensitive and substring-based, except "oom"
+// (whole word, so "room" / "bloom" do not match) and the ("slot" AND "active")
+// pair (a busy-slot shed).
+func isCapacityShedError(errStr string) bool {
 	s := strings.ToLower(errStr)
-	for _, m := range capacityShed503Markers {
+	for _, m := range capacityShedMarkers {
 		if strings.Contains(s, m) {
 			return true
 		}

@@ -46,10 +46,13 @@ func isCapacityClassProviderError(errStr string) bool {
 	// written with a plain ASCII apostrophe — matches the real wire string.
 	s = strings.ReplaceAll(s, "\u2019", "'")
 
-	// BUCKET B (genuine fault) is checked FIRST so a fault signal always wins:
-	// e.g. "model load failed: …" stays a fault even if its suffix happens to
-	// mention memory. Markers here are specific enough never to appear in a pure
-	// capacity string.
+	// Unambiguous HARD faults (crash / panic / internal / opaque) are checked
+	// FIRST so they always win — never a capacity shed even if the message
+	// mentions memory. NOTE: "model load failed" is deliberately NOT in this set;
+	// it is checked LATER (after the capacity markers) so a cold-load CAPACITY
+	// failure the provider wraps as "model load failed: insufficient memory"
+	// reclassifies to a 429, while a bad-weights load failure still falls through
+	// to a 5xx fault.
 	for _, m := range faultClassMarkers {
 		if strings.Contains(s, m) {
 			return false
@@ -75,6 +78,16 @@ func isCapacityClassProviderError(errStr string) bool {
 		(strings.Contains(s, "active") || strings.Contains(s, "cap")):
 		// "All N model slot(s) are active; cannot load '…'" — slot-cap rejection.
 		return true
+	}
+
+	// "model load failed: …" is checked AFTER the capacity markers above, so a
+	// transient cold-load CAPACITY failure the provider wraps as "model load
+	// failed: insufficient memory / insufficient KV / all N slot(s) active"
+	// already reclassified to 429 above. Reaching here means a "model load
+	// failed" with NO capacity reason — a genuine load fault (bad weights /
+	// metallib / corrupt model) — so it stays a 5xx.
+	if strings.Contains(s, "model load failed") {
+		return false
 	}
 
 	// DEFAULT: unknown/ambiguous ⇒ genuine fault (keep 5xx, stays visible).
@@ -130,10 +143,11 @@ var faultClassMarkers = []string{
 	"backend crash",  // telemetry .backendCrash — engine/backend died
 	"backend_crash",  // …and its wire-tag spelling
 	"internal error", // generic server fault
-	// Bad weights / metallib: a real load fault, NOT a capacity miss. MUST stay
-	// here (see the "not loaded" caveat in capacityClassMarkers above).
-	"model load failed",
 	// Opaque Foundation-bridged InferenceError (no LocalizedError conformance):
 	// "The operation couldn't be completed. (ProviderCore.InferenceError error N.)".
 	"the operation couldn't be completed",
+	// NOTE: "model load failed" is intentionally NOT here — it is checked in
+	// isCapacityClassProviderError AFTER the capacity markers, so a cold-load
+	// capacity failure ("model load failed: insufficient memory") reclassifies to
+	// 429 while a bad-weights load failure falls through to the default fault.
 }

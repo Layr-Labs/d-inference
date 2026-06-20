@@ -64,10 +64,17 @@ func TestProviderOutcomeIsFault(t *testing.T) {
 		{422, "unprocessable", false},
 		{499, "client closed request", false},
 		{418, "teapot", false},
-		// Provider-sickness status codes always count.
+		// Provider-sickness status codes count when the message is not capacity.
 		{500, "internal server error", true},
 		{502, "bad gateway", true},
 		{504, "", true},
+		// ...but a capacity/backpressure message makes a 500/502/504 a healthy
+		// shed too: some (and older) provider paths surface capacity rejects as a
+		// non-503 5xx, and the dispatch reclassifier turns those into uptime-
+		// neutral 429s, so the node breaker must not count them as faults.
+		{500, "token_budget_exhausted: request requires 9000 tokens", false},
+		{502, "insufficient global KV cache headroom", false},
+		{504, "request timed out waiting for capacity", false},
 		// Unattributed non-2xx codes are NOT counted (conservative).
 		{501, "not implemented", false},
 		{505, "", false},
@@ -331,6 +338,10 @@ func TestProviderBreakerIgnoresHealthySheds(t *testing.T) {
 		{400, "bad request"},
 		{404, "not found"},
 		{499, "client closed request"},
+		// Capacity-shaped non-503 5xx (older/provider paths) — still healthy sheds.
+		{500, "token_budget_exhausted"},
+		{502, "insufficient KV headroom"},
+		{504, "request timed out waiting for capacity"},
 		{503, "token_budget exhausted"},
 		{503, "insufficient KV headroom"},
 		{503, "insufficient memory to load model"},

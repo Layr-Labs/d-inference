@@ -39,6 +39,11 @@ func TestIsCapacityClassProviderError(t *testing.T) {
 		{"server busy backpressure", "server busy", true},
 		{"queue full backpressure", "token_budget_exhausted: request queue full", true},
 		{"cold model not loaded", "Model 'X' is not loaded on this provider", true},
+		// "model load failed: <capacity reason>" — a transient cold-load capacity
+		// failure must reclassify to 429 (capacity wins over the load-fail wrapper).
+		{"load failed insufficient memory", "model load failed: insufficient memory to load model 'X'", true},
+		{"load failed insufficient kv", "model load failed: insufficient KV headroom for 'X'", true},
+		{"load failed slot cap", "model load failed: all 3 model slot(s) are active", true},
 
 		// --- BUCKET B: genuine faults / unrelated strings → false. ---
 		// Existing cases (no-regression).

@@ -109,6 +109,33 @@ struct AutoUpdateControllerTests {
         #expect(recorder.events == ["claim", "check", "resume"])
     }
 
+    @Test("incompatible release: resumes serving, never stages or drains")
+    func incompatibleReleaseResumesServing() async {
+        let recorder = Recorder()
+        let controller = makeController(
+            Fakes(checkResult: .incompatible(
+                current: "1.0.0",
+                latest: Self.release,
+                currentMacOS: "15.7.0",
+                requiredMacOS: "26.0"
+            )),
+            recorder: recorder
+        )
+
+        let outcome = await controller.run()
+
+        guard case .incompatible(let reason) = outcome else {
+            Issue.record("expected incompatible, got \(outcome)")
+            return
+        }
+        #expect(reason.contains("requires macOS 26.0+"))
+        #expect(recorder.events == ["claim", "check", "resume"])
+        #expect(!recorder.events.contains("stage"))
+        #expect(!recorder.events.contains("beginDraining"))
+        #expect(!recorder.events.contains("commit"))
+        #expect(!recorder.events.contains("restart"))
+    }
+
     // MARK: - The critical invariant: a failed download/stage never drains
 
     @Test("download/stage failure: stays serving, NEVER drains, commits, or restarts")

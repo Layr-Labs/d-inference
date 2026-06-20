@@ -611,6 +611,7 @@ jobs:
               "binary_hash":     os.environ["BINARY_HASH"],
               "bundle_hash":     os.environ["BUNDLE_HASH"],
               "metallib_hash":   os.environ["METALLIB_HASH"],
+              "min_macos":       os.environ["MIN_MACOS"],
               "template_hashes": os.environ.get("TEMPLATE_HASHES", ""),
               "url":             "${BUNDLE_URL}",
               "changelog":       """${TAG_MSG}""".strip(),

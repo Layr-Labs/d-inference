@@ -698,6 +698,7 @@ func TestEdge_ReleaseRegisterMissingFields(t *testing.T) {
 		{"missing_hash", `{"version":"1.0.0","platform":"macos-arm64","url":"http://example.com/b.tar.gz"}`},
 		{"missing_url", fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q}`, strings.Repeat("a", 64), strings.Repeat("b", 64))},
 		{"invalid_hash", `{"version":"1.0.0","platform":"macos-arm64","binary_hash":"abc","bundle_hash":"def","url":"http://example.com/b.tar.gz"}`},
+		{"invalid_min_macos", fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"min_macos":"Tahoe","url":"http://example.com/b.tar.gz"}`, strings.Repeat("a", 64), strings.Repeat("b", 64))},
 		{"missing_swift_metallib", fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","backend":"mlx-swift","binary_hash":%q,"bundle_hash":%q,"url":"http://example.com/b.tar.gz"}`, strings.Repeat("a", 64), strings.Repeat("b", 64))},
 	}
 
@@ -730,7 +731,7 @@ func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
 	defer cdn.Close()
 	srv.SetR2CDNURL(cdn.URL + "/")
 
-	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","backend":"mlx-swift","binary_hash":%q,"bundle_hash":%q,"metallib_hash":%q,"url":%q,"changelog":"First release"}`, binaryHash, bundleHash, strings.Repeat("c", 64), cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","backend":"mlx-swift","binary_hash":%q,"bundle_hash":%q,"metallib_hash":%q,"min_macos":"26.0","url":%q,"changelog":"First release"}`, binaryHash, bundleHash, strings.Repeat("c", 64), cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
 	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer release-key")
 	w := httptest.NewRecorder()
@@ -754,11 +755,36 @@ func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
 	if latest["version"] != "1.0.0" {
 		t.Errorf("latest version = %v, want 1.0.0", latest["version"])
 	}
+	if latest["min_macos"] != "26.0" {
+		t.Errorf("latest min_macos = %v, want 26.0", latest["min_macos"])
+	}
 
 	// Verify binary hashes were synced
 	releases := st.ListReleases()
 	if len(releases) == 0 {
 		t.Error("expected at least one release in store")
+	} else if releases[0].MinMacOS != "26.0" {
+		t.Errorf("stored min_macos = %q, want 26.0", releases[0].MinMacOS)
+	}
+}
+
+func TestEdge_ValidateSwiftReleaseDefaultsMinMacOS(t *testing.T) {
+	srv, _ := testServer(t)
+	release := &store.Release{
+		Version:      "1.0.0",
+		Platform:     "macos-arm64",
+		Backend:      "mlx-swift",
+		BinaryHash:   strings.Repeat("a", 64),
+		BundleHash:   strings.Repeat("b", 64),
+		MetallibHash: strings.Repeat("c", 64),
+		URL:          "https://example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz",
+	}
+
+	if err := srv.validateReleaseMetadata(release); err != nil {
+		t.Fatalf("validateReleaseMetadata: %v", err)
+	}
+	if release.MinMacOS != "26.0" {
+		t.Fatalf("MinMacOS = %q, want 26.0", release.MinMacOS)
 	}
 }
 

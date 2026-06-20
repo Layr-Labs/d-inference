@@ -364,6 +364,8 @@ struct Start: AsyncParsableCommand {
         case .updated(let from, let to):
             print("Updated provider: v\(from) -> v\(to). Restarting into new binary...")
             try ProcessLifecycle.execCurrentProcess()
+        case .incompatible(let version, let currentMacOS, let requiredMacOS):
+            printError("auto-update skipped: v\(version) requires macOS \(requiredMacOS)+ (current macOS \(currentMacOS))")
         case .downloadFailed(let reason):
             printError("auto-update skipped: \(reason)")
         case .hashMismatch(let expected, let got):

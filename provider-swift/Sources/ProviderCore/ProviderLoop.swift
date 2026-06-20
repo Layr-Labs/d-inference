@@ -2436,6 +2436,8 @@ public actor ProviderLoop {
             logger.info("Auto-update: cycle already in progress; skipping this tick")
         case .upToDate:
             logger.info("Auto-update: already running latest version")
+        case .incompatible(let reason):
+            logger.warning("Auto-update: incompatible release skipped: \(reason)")
         case .checkFailed(let reason):
             logger.warning("Auto-update: check failed: \(reason)")
         case .stageFailed(let reason):

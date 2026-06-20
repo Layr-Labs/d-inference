@@ -9,6 +9,7 @@ public struct ReleaseInfo: Sendable {
     public let bundleHash: String
     public let binaryHash: String?
     public let metallibHash: String?
+    public let minMacOS: String?
 
     public init(
         version: String,
@@ -16,7 +17,8 @@ public struct ReleaseInfo: Sendable {
         url: String,
         bundleHash: String,
         binaryHash: String? = nil,
-        metallibHash: String? = nil
+        metallibHash: String? = nil,
+        minMacOS: String? = nil
     ) {
         self.version = version
         self.platform = platform
@@ -24,6 +26,7 @@ public struct ReleaseInfo: Sendable {
         self.bundleHash = bundleHash
         self.binaryHash = binaryHash
         self.metallibHash = metallibHash
+        self.minMacOS = minMacOS
     }
 
     public var sha256: String {
@@ -35,6 +38,7 @@ public struct ReleaseInfo: Sendable {
 public enum UpdateCheckResult: Sendable {
     case upToDate(currentVersion: String)
     case updateAvailable(current: String, latest: ReleaseInfo)
+    case incompatible(current: String, latest: ReleaseInfo, currentMacOS: String, requiredMacOS: String)
     case checkFailed(reason: String)
 }
 
@@ -42,6 +46,7 @@ public enum UpdateCheckResult: Sendable {
 public enum UpdateResult: Sendable {
     case updated(from: String, to: String)
     case alreadyUpToDate(version: String)
+    case incompatible(version: String, currentMacOS: String, requiredMacOS: String)
     case downloadFailed(reason: String)
     case hashMismatch(expected: String, got: String)
     case replaceFailed(reason: String)
@@ -51,8 +56,14 @@ public enum UpdateResult: Sendable {
 public struct SelfUpdater: Sendable {
 
     private let coordinatorBaseURL: String
+    private let currentOSVersion: @Sendable () -> OperatingSystemVersion
 
-    public init(coordinatorBaseURL: String) {
+    public init(
+        coordinatorBaseURL: String,
+        currentOSVersion: @escaping @Sendable () -> OperatingSystemVersion = {
+            ProcessInfo.processInfo.operatingSystemVersion
+        }
+    ) {
         // Convert WebSocket URL to HTTP if needed
         var base = coordinatorBaseURL
         if base.hasPrefix("ws://") {
@@ -66,6 +77,7 @@ public struct SelfUpdater: Sendable {
             base = "\(scheme)://\(host)\(port)"
         }
         self.coordinatorBaseURL = base
+        self.currentOSVersion = currentOSVersion
     }
 
     // MARK: - Version Check
@@ -115,10 +127,25 @@ public struct SelfUpdater: Sendable {
                 url: downloadURL,
                 bundleHash: bundleHash,
                 binaryHash: json["binary_hash"] as? String,
-                metallibHash: json["metallib_hash"] as? String
+                metallibHash: json["metallib_hash"] as? String,
+                minMacOS: json["min_macos"] as? String
             )
 
             if isNewer(latest: version, current: currentVersion) {
+                if let minMacOS = release.minMacOS, !minMacOS.isEmpty {
+                    let currentOS = currentOSVersion()
+                    guard let compatible = Self.macOS(currentOS, isAtLeast: minMacOS) else {
+                        return .checkFailed(reason: "invalid min_macos in release response: \(minMacOS)")
+                    }
+                    if !compatible {
+                        return .incompatible(
+                            current: currentVersion,
+                            latest: release,
+                            currentMacOS: Self.macOSString(currentOS),
+                            requiredMacOS: minMacOS
+                        )
+                    }
+                }
                 return .updateAvailable(current: currentVersion, latest: release)
             } else {
                 return .upToDate(currentVersion: currentVersion)
@@ -572,6 +599,9 @@ public struct SelfUpdater: Sendable {
         case .checkFailed(let reason):
             return .downloadFailed(reason: "update check failed: \(reason)")
 
+        case .incompatible(_, let release, let currentMacOS, let requiredMacOS):
+            return .incompatible(version: release.version, currentMacOS: currentMacOS, requiredMacOS: requiredMacOS)
+
         case .updateAvailable(let current, let release):
             let downloadResult = await downloadAndVerify(release: release)
 
@@ -634,6 +664,41 @@ public struct SelfUpdater: Sendable {
 
     private func isNewer(latest: String, current: String) -> Bool {
         Self.isNewer(latest: latest, current: current)
+    }
+
+    internal static func macOS(_ current: OperatingSystemVersion, isAtLeast minimum: String) -> Bool? {
+        guard let minimumParts = parseDottedVersion(minimum) else {
+            return nil
+        }
+        let currentParts = [
+            current.majorVersion,
+            current.minorVersion,
+            current.patchVersion,
+        ]
+        for i in 0..<max(currentParts.count, minimumParts.count) {
+            let currentPart = i < currentParts.count ? currentParts[i] : 0
+            let minimumPart = i < minimumParts.count ? minimumParts[i] : 0
+            if currentPart > minimumPart { return true }
+            if currentPart < minimumPart { return false }
+        }
+        return true
+    }
+
+    internal static func macOSString(_ version: OperatingSystemVersion) -> String {
+        "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+    }
+
+    private static func parseDottedVersion(_ version: String) -> [Int]? {
+        let parts = version.split(separator: ".", omittingEmptySubsequences: false)
+        guard !parts.isEmpty else { return nil }
+        var numbers: [Int] = []
+        for part in parts {
+            guard !part.isEmpty, let number = Int(part), number >= 0 else {
+                return nil
+            }
+            numbers.append(number)
+        }
+        return numbers
     }
 
     private func requiredBundleFile(names: [String], root: URL) throws -> URL {

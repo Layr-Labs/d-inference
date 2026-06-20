@@ -42,6 +42,7 @@ import Testing
         platform: "macos-arm64",
         binaryHash: String(repeating: "a", count: 64),
         bundleHash: String(repeating: "b", count: 64),
+        minMacOS: "26.0",
         templateHashes: "qwen3.5=templatehash",
         url: "https://pub.example/releases/v0.4.0-swift/darkbloom-bundle-macos-arm64.tar.gz",
         changelog: "Swift provider cutover test payload"
@@ -56,6 +57,7 @@ import Testing
     #expect(object["platform"] as? String == "macos-arm64")
     #expect(object["binary_hash"] as? String == String(repeating: "a", count: 64))
     #expect(object["bundle_hash"] as? String == String(repeating: "b", count: 64))
+    #expect(object["min_macos"] as? String == "26.0")
     #expect(object["python_hash"] == nil)
     #expect(object["runtime_hash"] == nil)
 }
@@ -65,6 +67,7 @@ private struct SwiftReleaseRegistrationPayload: Encodable {
     var platform: String
     var binaryHash: String
     var bundleHash: String
+    var minMacOS: String
     var templateHashes: String
     var url: String
     var changelog: String
@@ -74,6 +77,7 @@ private struct SwiftReleaseRegistrationPayload: Encodable {
         case platform
         case binaryHash = "binary_hash"
         case bundleHash = "bundle_hash"
+        case minMacOS = "min_macos"
         case templateHashes = "template_hashes"
         case url
         case changelog

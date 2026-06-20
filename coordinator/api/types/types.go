@@ -280,6 +280,7 @@ type VersionResponse struct {
 	BinaryHash   string `json:"binary_hash,omitempty"`
 	BundleHash   string `json:"bundle_hash,omitempty"`
 	MetallibHash string `json:"metallib_hash,omitempty"`
+	MinMacOS     string `json:"min_macos,omitempty"`
 	Changelog    string `json:"changelog,omitempty"`
 }
 

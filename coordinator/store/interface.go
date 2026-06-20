@@ -1243,6 +1243,7 @@ type Release struct {
 	BinaryHash     string    `json:"binary_hash"`               // SHA-256 of darkbloom binary (attestation verification)
 	BundleHash     string    `json:"bundle_hash"`               // SHA-256 of the bundle tarball (install.sh download verification)
 	MetallibHash   string    `json:"metallib_hash,omitempty"`   // SHA-256 of mlx.metallib (Swift backend GPU kernel set)
+	MinMacOS       string    `json:"min_macos,omitempty"`       // minimum macOS version required by this release, e.g. "26.0"
 	PythonHash     string    `json:"python_hash,omitempty"`     // legacy: SHA-256 of bundled Python binary (vllm-mlx backend only)
 	RuntimeHash    string    `json:"runtime_hash,omitempty"`    // legacy: SHA-256 of vllm-mlx package (vllm-mlx backend only)
 	TemplateHashes string    `json:"template_hashes,omitempty"` // comma-separated name=hash pairs

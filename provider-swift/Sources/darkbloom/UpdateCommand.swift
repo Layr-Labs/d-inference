@@ -47,8 +47,15 @@ struct Update: AsyncParsableCommand {
                 if let metallibHash = latest.metallibHash {
                     print("mlx.metallib SHA-256: \(metallibHash)")
                 }
+                if let minMacOS = latest.minMacOS, !minMacOS.isEmpty {
+                    print("Requires macOS \(minMacOS)+")
+                }
                 print("")
                 print("Run 'darkbloom update' to install.")
+
+            case .incompatible(_, let latest, let currentMacOS, let requiredMacOS):
+                printError("update unavailable: v\(latest.version) requires macOS \(requiredMacOS)+ (current macOS \(currentMacOS))")
+                throw ExitCode.failure
 
             case .checkFailed(let reason):
                 printError("update check failed: \(reason)")
@@ -72,6 +79,10 @@ struct Update: AsyncParsableCommand {
             } else {
                 print("Restart the provider for the new version to take effect.")
             }
+
+        case .incompatible(let version, let currentMacOS, let requiredMacOS):
+            printError("update unavailable: v\(version) requires macOS \(requiredMacOS)+ (current macOS \(currentMacOS))")
+            throw ExitCode.failure
 
         case .downloadFailed(let reason):
             printError("download failed: \(reason)")

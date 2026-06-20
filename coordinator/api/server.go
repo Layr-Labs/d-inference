@@ -1605,7 +1605,7 @@ func (s *Server) mdmWebhookTokenValid(r *http.Request) bool {
 var installScript []byte
 
 // installScriptPlaceholder is substituted with the coordinator's public URL at
-// serve time. Keep in sync with coordinator/internal/api/install.sh.
+// serve time. Keep coordinator/api/install.sh and scripts/install.sh in sync.
 //
 // The legacy install.sh also substituted __DARKBLOOM_R2_CDN_URL__ and
 // __DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__ for the Python runtime download.
@@ -1632,8 +1632,8 @@ func (s *Server) resolveBaseURL(r *http.Request) string {
 
 // routes mounts all HTTP and WebSocket handlers.
 func (s *Server) routes() {
-	// Install script — served from embedded binary with coordinator URL +
-	// R2 CDN URLs substituted per environment.
+	// Install script — served from embedded binary with coordinator URL
+	// substituted per environment.
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
 		rendered := strings.ReplaceAll(string(installScript), installScriptPlaceholder, s.resolveBaseURL(r))
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

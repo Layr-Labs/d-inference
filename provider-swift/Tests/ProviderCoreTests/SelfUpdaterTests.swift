@@ -11,7 +11,8 @@ struct SelfUpdaterTests {
             version: "99.0.0",
             bundleHash: String(repeating: "a", count: 64),
             binaryHash: String(repeating: "b", count: 64),
-            metallibHash: String(repeating: "c", count: 64)
+            metallibHash: String(repeating: "c", count: 64),
+            minMacOS: "26.0"
         ))
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
@@ -26,6 +27,51 @@ struct SelfUpdaterTests {
         #expect(latest.bundleHash == String(repeating: "a", count: 64))
         #expect(latest.binaryHash == String(repeating: "b", count: 64))
         #expect(latest.metallibHash == String(repeating: "c", count: 64))
+        #expect(latest.minMacOS == "26.0")
+    }
+
+    @Test("checkForUpdate skips release above current macOS floor")
+    func checkForUpdateSkipsIncompatibleMacOS() async throws {
+        let mock = MockCoordinator(release: MockReleaseFixture(
+            version: "99.0.0",
+            minMacOS: "26.0"
+        ))
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let updater = SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString,
+            currentOSVersion: { OperatingSystemVersion(majorVersion: 15, minorVersion: 7, patchVersion: 0) }
+        )
+        let result = await updater.checkForUpdate()
+
+        guard case .incompatible(_, let latest, let currentMacOS, let requiredMacOS) = result else {
+            Issue.record("expected incompatible, got \(result)")
+            return
+        }
+        #expect(latest.version == "99.0.0")
+        #expect(currentMacOS == "15.7.0")
+        #expect(requiredMacOS == "26.0")
+    }
+
+    @Test("macOS floor comparison accepts Tahoe patch and newer major")
+    func macOSFloorComparison() {
+        #expect(SelfUpdater.macOS(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 1),
+            isAtLeast: "26.0"
+        ) == true)
+        #expect(SelfUpdater.macOS(
+            OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0),
+            isAtLeast: "26.0"
+        ) == true)
+        #expect(SelfUpdater.macOS(
+            OperatingSystemVersion(majorVersion: 25, minorVersion: 7, patchVersion: 0),
+            isAtLeast: "26.0"
+        ) == false)
+        #expect(SelfUpdater.macOS(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0),
+            isAtLeast: "Tahoe"
+        ) == nil)
     }
 
     @Test("ReleaseInfo sha256 compatibility returns bundle hash")

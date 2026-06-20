@@ -167,6 +167,8 @@ enum DoctorRunner {
             out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: latest.version))
         case .upToDate(let current):
             out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: current))
+        case .incompatible(let current, let latest, _, _):
+            out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: latest.version))
         case .checkFailed:
             break // network section already covers coordinator reachability
         }

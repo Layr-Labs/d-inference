@@ -100,6 +100,7 @@ public struct MockReleaseFixture: Sendable {
     public var bundleHash: String
     public var binaryHash: String?
     public var metallibHash: String?
+    public var minMacOS: String?
 
     public init(
         version: String = "0.99.0",
@@ -107,7 +108,8 @@ public struct MockReleaseFixture: Sendable {
         url: String = "https://example.test/darkbloom-bundle-macos-arm64.tar.gz",
         bundleHash: String = String(repeating: "a", count: 64),
         binaryHash: String? = nil,
-        metallibHash: String? = nil
+        metallibHash: String? = nil,
+        minMacOS: String? = nil
     ) {
         self.version = version
         self.platform = platform
@@ -115,6 +117,7 @@ public struct MockReleaseFixture: Sendable {
         self.bundleHash = bundleHash
         self.binaryHash = binaryHash
         self.metallibHash = metallibHash
+        self.minMacOS = minMacOS
     }
 }
 
@@ -449,7 +452,8 @@ public final class MockCoordinator: @unchecked Sendable {
                 url: self.release.url,
                 bundle_hash: self.release.bundleHash,
                 binary_hash: self.release.binaryHash,
-                metallib_hash: self.release.metallibHash
+                metallib_hash: self.release.metallibHash,
+                min_macos: self.release.minMacOS
             )
             return MockCoordinator.makeJSONResponse(body: body)
         }
@@ -660,6 +664,7 @@ private struct ReleaseLatestPayload: Encodable {
     let bundle_hash: String
     let binary_hash: String?
     let metallib_hash: String?
+    let min_macos: String?
 }
 
 private struct APIVersionPayload: Encodable {

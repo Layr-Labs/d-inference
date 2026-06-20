@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -131,6 +134,45 @@ func TestInstallScriptTemplating(t *testing.T) {
 	})
 }
 
+func TestInstallScriptsEnforceTahoePreflight(t *testing.T) {
+	scripts := []string{
+		"install.sh",
+		filepath.Join("..", "..", "scripts", "install.sh"),
+	}
+	rejectVersions := []string{"25.7", "15.7.1", "", "Tahoe"}
+	acceptVersions := []string{"26", "26.0", "26.0.1", "27.0"}
+
+	for _, script := range scripts {
+		t.Run(script, func(t *testing.T) {
+			for _, version := range rejectVersions {
+				t.Run("reject_"+safeTestName(version), func(t *testing.T) {
+					output, err := runInstallScriptPreflight(t, script, version)
+					if err == nil {
+						t.Fatalf("expected %q to fail preflight; output:\n%s", version, output)
+					}
+					if !strings.Contains(output, "requires macOS Tahoe 26.0 or newer") {
+						t.Fatalf("expected Tahoe rejection for %q; output:\n%s", version, output)
+					}
+				})
+			}
+			for _, version := range acceptVersions {
+				t.Run("accept_"+safeTestName(version), func(t *testing.T) {
+					output, err := runInstallScriptPreflight(t, script, version)
+					if err == nil {
+						t.Fatalf("expected fake coordinator failure after preflight; output:\n%s", output)
+					}
+					if strings.Contains(output, "requires macOS Tahoe 26.0 or newer") {
+						t.Fatalf("version %q should pass Tahoe preflight; output:\n%s", version, output)
+					}
+					if !strings.Contains(output, "Could not reach coordinator") {
+						t.Fatalf("version %q did not reach post-preflight coordinator fetch; output:\n%s", version, output)
+					}
+				})
+			}
+		})
+	}
+}
+
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
@@ -158,6 +200,42 @@ func fetchInstallScript(t *testing.T, base string) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(body)
+}
+
+func runInstallScriptPreflight(t *testing.T, script, macOSVersion string) (string, error) {
+	t.Helper()
+	fakeBin := t.TempDir()
+	home := t.TempDir()
+	writeFakeCommand(t, fakeBin, "uname", `if [ "$1" = "-m" ]; then echo arm64; else echo Darwin; fi`)
+	writeFakeCommand(t, fakeBin, "sw_vers", `if [ "$1" = "-productVersion" ]; then echo "$FAKE_MACOS_VERSION"; else exit 1; fi`)
+	writeFakeCommand(t, fakeBin, "sysctl", `if [ "$2" = "hw.memsize" ]; then echo 17179869184; else echo "Apple M1"; fi`)
+	writeFakeCommand(t, fakeBin, "ioreg", `exit 0`)
+	writeFakeCommand(t, fakeBin, "curl", `exit 1`)
+
+	cmd := exec.Command("bash", script)
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HOME="+home,
+		"FAKE_MACOS_VERSION="+macOSVersion,
+		"COORD_URL=https://example.invalid",
+	)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func writeFakeCommand(t *testing.T, dir, name, body string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", name, err)
+	}
+}
+
+func safeTestName(s string) string {
+	if s == "" {
+		return "empty"
+	}
+	return strings.ReplaceAll(s, ".", "_")
 }
 
 func headOf(s string, n int) string {

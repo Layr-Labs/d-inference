@@ -33,6 +33,7 @@ const (
 var (
 	releaseVersionPattern      = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
 	releasePlatformPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	releaseMacOSVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){0,2}$`)
 	releaseTemplateNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
@@ -43,6 +44,7 @@ type registerReleaseRequest struct {
 	BinaryHash     string `json:"binary_hash"`
 	BundleHash     string `json:"bundle_hash"`
 	MetallibHash   string `json:"metallib_hash,omitempty"`
+	MinMacOS       string `json:"min_macos,omitempty"`
 	PythonHash     string `json:"python_hash,omitempty"`
 	RuntimeHash    string `json:"runtime_hash,omitempty"`
 	TemplateHashes string `json:"template_hashes,omitempty"`
@@ -58,6 +60,7 @@ func (req registerReleaseRequest) toRelease() store.Release {
 		BinaryHash:     req.BinaryHash,
 		BundleHash:     req.BundleHash,
 		MetallibHash:   req.MetallibHash,
+		MinMacOS:       req.MinMacOS,
 		PythonHash:     req.PythonHash,
 		RuntimeHash:    req.RuntimeHash,
 		TemplateHashes: req.TemplateHashes,
@@ -163,6 +166,7 @@ func (s *Server) validateReleaseMetadata(release *store.Release) error {
 	release.BinaryHash = strings.TrimSpace(release.BinaryHash)
 	release.BundleHash = strings.TrimSpace(release.BundleHash)
 	release.MetallibHash = strings.TrimSpace(release.MetallibHash)
+	release.MinMacOS = strings.TrimSpace(release.MinMacOS)
 	release.PythonHash = strings.TrimSpace(release.PythonHash)
 	release.RuntimeHash = strings.TrimSpace(release.RuntimeHash)
 	release.TemplateHashes = strings.TrimSpace(release.TemplateHashes)
@@ -195,6 +199,12 @@ func (s *Server) validateReleaseMetadata(release *store.Release) error {
 	}
 	if release.Backend == "mlx-swift" && release.MetallibHash == "" {
 		return fmt.Errorf("metallib_hash is required for mlx-swift releases")
+	}
+	if release.Backend == "mlx-swift" && release.MinMacOS == "" {
+		release.MinMacOS = "26.0"
+	}
+	if release.MinMacOS != "" && !releaseMacOSVersionPattern.MatchString(release.MinMacOS) {
+		return fmt.Errorf("min_macos must be a numeric macOS version, e.g. 26.0")
 	}
 	if release.PythonHash != "" {
 		if release.PythonHash, err = normalizeSHA256Hex(release.PythonHash, "python_hash"); err != nil {

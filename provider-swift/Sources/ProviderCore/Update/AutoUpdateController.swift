@@ -103,6 +103,8 @@ public struct AutoUpdateController: Sendable {
         case alreadyRunning
         /// Already on the latest version.
         case upToDate
+        /// A newer release exists but this macOS version cannot run it.
+        case incompatible(String)
         /// The version check failed.
         case checkFailed(String)
         /// Download/verify/stage failed; the provider kept serving the old
@@ -145,6 +147,12 @@ public struct AutoUpdateController: Sendable {
             deps.log("auto-update: check failed: \(reason)")
             await deps.resumeServing()
             return .checkFailed(reason)
+
+        case .incompatible(let current, let release, let currentMacOS, let requiredMacOS):
+            let reason = "v\(release.version) requires macOS \(requiredMacOS)+; current macOS is \(currentMacOS)"
+            deps.log("auto-update: \(reason); staying on v\(current)")
+            await deps.resumeServing()
+            return .incompatible(reason)
 
         case .updateAvailable(let current, let release):
             deps.log("auto-update: v\(current) -> v\(release.version) available; staging download while serving")

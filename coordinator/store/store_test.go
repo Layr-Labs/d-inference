@@ -657,6 +657,7 @@ func TestReleases(t *testing.T) {
 		BinaryHash:   "ccc333",
 		BundleHash:   "ddd444",
 		MetallibHash: "eee555",
+		MinMacOS:     "26.0",
 		URL:          "https://r2.example.com/releases/v0.2.1/bundle.tar.gz",
 	}
 	if err := s.SetRelease(r1); err != nil {
@@ -689,6 +690,9 @@ func TestReleases(t *testing.T) {
 	}
 	if latest.MetallibHash != "eee555" {
 		t.Errorf("expected metallib_hash eee555, got %s", latest.MetallibHash)
+	}
+	if latest.MinMacOS != "26.0" {
+		t.Errorf("expected min_macos 26.0, got %s", latest.MinMacOS)
 	}
 
 	// Unknown platform returns nil.

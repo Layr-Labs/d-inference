@@ -42,14 +42,14 @@ Restart=always
 RestartSec=5
 # Stop-timeout hierarchy must EXCEED the coordinator's drain budget so systemd never
 # SIGKILLs mid-drain: the coordinator drains up to EIGENINFERENCE_DRAIN_GRACE (Phase 1
-# default 120s) + a 15s hard http.Server.Shutdown backstop = ~135s. TimeoutStopSec=180
-# (> docker's `-t 150` below) lets the whole ExecStop run; the docker `-t 150` is the
-# in-container SIGTERM->SIGKILL ceiling (150 > 120s drain grace + 15s hard shutdown).
+# default 10m) + a 15s hard http.Server.Shutdown backstop = ~615s. TimeoutStopSec=660
+# (> docker's `-t 630` below) lets the whole ExecStop run; the docker `-t 630` is the
+# in-container SIGTERM->SIGKILL ceiling (630 > 10m drain grace + 15s hard shutdown).
 # The deploy.sh happy path drains each color to inflight==0 BEFORE `systemctl stop`, so
 # a pre-drained color still exits in well under a second (WaitForInflightZero returns
 # immediately at 0); the long ceiling is only a backstop for a color stopped with
 # genuinely stuck in-flight work.
-TimeoutStopSec=180
+TimeoutStopSec=660
 # Optional non-secret per-color deploy config (e.g. DINF_IMAGE pin written by
 # deploy.sh). The leading '-' makes it optional: the unit starts even if the file
 # is absent. Keep the platform unit on /etc/d-inference/deploy.env; these pins are
@@ -58,7 +58,7 @@ EnvironmentFile=-/etc/d-inference/deploy-%i.env
 ExecStartPre=-/usr/bin/docker stop darkbloom-coordinator-%i
 ExecStartPre=-/usr/bin/docker rm darkbloom-coordinator-%i
 ExecStart=/usr/local/bin/darkbloom-run.sh coordinator %i
-ExecStop=/usr/bin/docker stop -t 150 darkbloom-coordinator-%i
+ExecStop=/usr/bin/docker stop -t 630 darkbloom-coordinator-%i
 
 [Install]
 WantedBy=multi-user.target

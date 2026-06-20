@@ -423,9 +423,11 @@ type Server struct {
 	// registrations with 503 so a provider reconnecting after going_away can't
 	// stick to this dying instance (it would miss the broadcast and later fall
 	// back to backoff); it instead retries and lands on the freshly-deployed
-	// coordinator via the load balancer. One-way (never cleared): a coordinator
-	// that has announced going_away is on its way out. Named distinctly from any
-	// request-draining flag to avoid colliding with Phase 1.
+	// coordinator via the load balancer. Normally one-way (a coordinator that has
+	// announced going_away is on its way out), but ClearGoingAway can un-latch it
+	// for the blue-green ROLLBACK path — when a cutover is reverted, the
+	// rolled-back-to color must stop refusing providers and re-accept them. Named
+	// distinctly from any request-draining flag to avoid colliding with Phase 1.
 	goingAway atomic.Bool
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -58,6 +59,41 @@ func TestHandleGoingAway_AdminKeyReturnsSentCount(t *testing.T) {
 	// The endpoint must latch the flag so subsequent registrations are refused.
 	if !srv.goingAway.Load() {
 		t.Error("goingAway flag must be set after the broadcast")
+	}
+}
+
+// TestHandleGoingAway_CancelClearsLatch verifies the blue-green ROLLBACK path
+// (DAR-327 Phase 3 / cross-phase contract with the Phase 2 deploy.sh rollback):
+// a POST with body {"cancel":true} un-latches the going-away flag so this
+// coordinator re-accepts provider registrations (handleProviderWS), returning
+// 200 with {"going_away":false,"cleared":true}.
+func TestHandleGoingAway_CancelClearsLatch(t *testing.T) {
+	srv, _ := newGoingAwayServer(t)
+
+	// Simulate a coordinator that has already announced going_away.
+	srv.goingAway.Store(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/going-away",
+		strings.NewReader(`{"cancel":true}`))
+	req.Header.Set("Authorization", "Bearer "+goingAwayAdminKey)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// The latch must be cleared so handleProviderWS accepts registrations again.
+	if srv.goingAway.Load() {
+		t.Error("goingAway flag must be cleared after a cancel request")
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cleared, _ := body["cleared"].(bool); !cleared {
+		t.Errorf("response cleared = %v, want true (body: %s)", body["cleared"], w.Body.String())
 	}
 }
 

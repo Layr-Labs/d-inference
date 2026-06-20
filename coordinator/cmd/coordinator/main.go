@@ -702,6 +702,12 @@ func main() {
 	// re-trusts it sub-second. Version-gated to providers that understand the
 	// message. Broadcast FIRST so providers skip backoff instead of discovering
 	// the drop only once the socket is already torn down.
+	//
+	// CANONICAL MERGE ORDER (DAR-327): srv.SetDraining(true) [Phase 1] →
+	// srv.BroadcastGoingAway() [this call] → cancel() → srv.WaitForInflightZero()
+	// [Phase 1] → httpServer.Shutdown(). When merged with Phase 1, this broadcast
+	// goes right AFTER SetDraining(true) and BEFORE cancel()/WaitForInflightZero
+	// so providers drain+reconnect while in-flight HTTP finishes.
 	sentGoingAway := srv.BroadcastGoingAway()
 	logger.Info("broadcast going_away to providers", "count", sentGoingAway)
 

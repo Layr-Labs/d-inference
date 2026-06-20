@@ -678,21 +678,30 @@ public actor CoordinatorClient {
         plannedRestart = true
     }
 
-    /// Tear down the current coordinator connection and reconnect IMMEDIATELY
-    /// with the backoff RESET (no sleep). Used when the coordinator announces a
-    /// planned restart (`going_away`, DAR-327 Phase 3): after the provider drains
-    /// its in-flight work it closes the socket here and lands on the
-    /// freshly-deployed coordinator near-instantly. Unlike `shutdown()` this does
-    /// NOT set `shutdownRequested`, so the connection loop keeps running; unlike a
-    /// plain connection error it skips the reconnect backoff sleep. No-op once a
-    /// real shutdown is already in progress. Cancelling the socket surfaces as a
-    /// connection error so `runLoop` re-runs `sendRegistration` on the new
-    /// coordinator (the 1001 close code literally means "going away"). The
-    /// `plannedRestart` flag is set here too (idempotent with `markPlannedRestart`)
-    /// so this remains correct when called on its own.
+    /// Force the planned-restart close that makes `runLoop` reconnect IMMEDIATELY
+    /// with the backoff RESET (no exponential sleep, only a small jitter). Used
+    /// when the coordinator announces a planned restart (`going_away`, DAR-327
+    /// Phase 3): after the provider drains its in-flight work it closes the socket
+    /// here and lands on the freshly-deployed coordinator near-instantly. Unlike
+    /// `shutdown()` this does NOT set `shutdownRequested`, so the connection loop
+    /// keeps running; unlike a plain connection error it skips the reconnect
+    /// backoff sleep (the 1001 close code literally means "going away").
+    ///
+    /// MUST be preceded by `markPlannedRestart()` — which the `.goingAway` arm in
+    /// ProviderLoop always calls on receipt, before the drain — as that is what
+    /// arms `plannedRestart`. This method does NOT arm it. If an earlier
+    /// UNEXPECTED close already consumed `plannedRestart` and drove the no-backoff
+    /// reconnect, we are now on a FRESH, healthy connection, so this SELF-CANCELS
+    /// into a no-op rather than cancelling that healthy socket and flapping it.
+    /// No-op once a real shutdown is already in progress.
     public func requestPlannedRestart() {
         guard !shutdownRequested else { return }
-        plannedRestart = true
+        // If an earlier (unexpected) close already drove the no-backoff reconnect
+        // path, `plannedRestart` was consumed and we are now on a FRESH connection —
+        // do not cancel it (that would flap a healthy socket). Only the still-armed
+        // case (normal drain-then-close) should close here. `markPlannedRestart()`
+        // (always called on going_away receipt, before the drain) is what arms it.
+        guard plannedRestart else { return }
         webSocketTask?.cancel(with: .goingAway, reason: nil)
     }
 

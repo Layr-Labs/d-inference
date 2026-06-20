@@ -61,6 +61,10 @@ public actor BatchScheduler {
 
     var modelContainer: ModelContainer?
     var modelId: String = ""
+    /// Weight hash of the currently-loaded model, captured at load. Retained so a
+    /// liveness-watchdog self-restart (DAR-337/338) can reload the SAME bytes via
+    /// the normal `loadModel` path without re-deriving it. Cleared on teardown.
+    var currentWeightHash: String?
     var modelWeightBytes: Int = 0
     var kvBytesPerToken: Int = 400_000
     var dynamicTokenBudgetMax: Int = 0
@@ -128,6 +132,38 @@ public actor BatchScheduler {
 
     /// Watchdog for planner-pending requests that exceed `pendingTimeout`.
     var pendingTimeoutTask: Task<Void, Never>?
+
+    // MARK: - Backend-liveness watchdog state (DAR-337 / DAR-338)
+    //
+    // A loaded model can stop serving while the process stays up and the engine
+    // loop never crashes. These fields let the in-process watchdog detect that,
+    // report a TRUTHFUL heartbeat slot_state (so the coordinator stops routing
+    // here), and self-restart the engine to clear the condition. The decision
+    // itself is pure (`BackendLivenessPolicy`); these track its live inputs.
+
+    /// Periodic backend-liveness watchdog (assess + proactive KV-pool sweep).
+    /// Started in `loadModel`, cancelled in `stopCurrentEngine`.
+    var livenessWatchdogTask: Task<Void, Never>?
+    /// Pure liveness decision. `wedgeStallSeconds` is pinned to `pendingTimeout`
+    /// in `init` so the wedge threshold tracks the queue-timeout window.
+    let livenessPolicy: BackendLivenessPolicy
+    /// Last diagnosis from the watchdog; drives the heartbeat slot_state.
+    var livenessState: BackendLiveness = .healthy
+    /// True while a recovery self-restart is in flight; drives a "reloading"
+    /// slot_state and prevents the watchdog from launching a second restart.
+    var isReloadingForRecovery = false
+    /// When the token budget first went CONTINUOUSLY collapsed (at/below
+    /// `livenessPolicy.collapsedBudgetTokens`); nil when not collapsed.
+    var budgetCollapsedSince: ContinuousClock.Instant?
+    /// When the last request completed successfully (since the current load).
+    var lastSuccessAt: ContinuousClock.Instant?
+    /// When the watchdog last triggered a recovery restart (cooldown anchor).
+    var lastSelfRestartAt: ContinuousClock.Instant?
+    /// Minimum gap between recovery restarts, so a still-degraded backend can't
+    /// thrash reloads.
+    let livenessRestartCooldown: Duration = .seconds(120)
+    /// How often the liveness watchdog ticks (assess + proactive sweep).
+    let livenessWatchdogInterval: Duration = .seconds(2)
 
     /// Periodic prefix-cache hit/miss stats logger. Started in `loadModel`
     /// when a checkpoint-tier manager is installed, cancelled in
@@ -221,6 +257,12 @@ public actor BatchScheduler {
         self.kvBudget = kvBudget
         self.diskAccountant = diskAccountant
         self.dynamicMaxConcurrentRequests = min(4, max(1, maxConcurrentRequests))
+        // Wedge threshold tracks the pending-timeout window: a request admitted
+        // but emitting 0 tokens for that long means the engine loop has stalled.
+        let pendingSecs = Double(pendingTimeout.components.seconds)
+            + Double(pendingTimeout.components.attoseconds) / 1e18
+        self.livenessPolicy = BackendLivenessPolicy(
+            wedgeStallSeconds: pendingSecs > 0 ? pendingSecs : BackendLivenessPolicy.defaultWedgeStallSeconds)
     }
 
     // MARK: - Model lifecycle
@@ -259,6 +301,7 @@ public actor BatchScheduler {
 
         self.modelContainer = container
         self.modelId = modelId
+        self.currentWeightHash = weightHash
         self.modelWeightBytes = snapshot.bytes
         self.tokenizer = snapshot.tokenizer
 
@@ -396,6 +439,10 @@ public actor BatchScheduler {
         self.planner = makePlanner(activeTokenBudget: tokenBudgetMax)
         // Engine has no pending-queue TTL; we enforce `pendingTimeout`.
         startPendingTimeoutWatchdog()
+        // Backend-liveness watchdog (DAR-337/338): detect a wedged/pinned engine,
+        // report it truthfully on the heartbeat, and self-restart to recover.
+        // Also drives the proactive off-actor KV-pool sweep.
+        startLivenessWatchdog()
         // Periodic checkpoint-tier hit/miss logger (no-op if disabled or
         // engine-tier model). Cancelled in stopCurrentEngine.
         startPrefixCacheStatsLogger()
@@ -1647,7 +1694,12 @@ public actor BatchScheduler {
         let need = activeTokenBudgetUsed + requestBudget
         guard need > tokenBudgetMax else { return }
         let shortfallBytes = UInt64(need - tokenBudgetMax) * UInt64(kvBytesPerToken)
-        _ = await kvBudget.reclaimForShortfall(shortfallBytes)
+        // DAR-338: fire-and-forget signal (nonisolated — no actor hop, no GPU
+        // wait). The flush runs off the budget actor; `tokenBudgetMax` is re-read
+        // below against the current snapshot (a near-miss may reject — acceptable;
+        // the background reclaim + proactive sweep keep the pool small so most
+        // admits succeed without ever near-missing).
+        kvBudget.reclaimForShortfall(shortfallBytes)
     }
 
     /// Submit a pre-tokenized prompt. Used by `MultiModelBatchSchedulerEngine`
@@ -2082,6 +2134,12 @@ public actor BatchScheduler {
         self.engine = nil
         pendingTimeoutTask?.cancel()
         pendingTimeoutTask = nil
+        // Stop the backend-liveness watchdog; a recovery restart re-arms it via
+        // loadModel. (Note: when THIS teardown is part of a recovery restart, the
+        // watchdog task currently awaiting `assessBackendLiveness` is the caller —
+        // cancelling it here is the clean handoff; loadModel starts a fresh one.)
+        livenessWatchdogTask?.cancel()
+        livenessWatchdogTask = nil
         // Log a final stats line before teardown, then stop the periodic logger.
         await logPrefixCacheStats()
         prefixCacheStatsTask?.cancel()
@@ -2154,6 +2212,7 @@ public actor BatchScheduler {
 
         modelWeightBytes = 0
         modelId = ""
+        currentWeightHash = nil
         kvBytesPerToken = 400_000
         dynamicTokenBudgetMax = 0
         maxContextLength = 0
@@ -2166,6 +2225,14 @@ public actor BatchScheduler {
         lastModelLoadMs = 0
         performanceByBatchSize.removeAll()
         dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
+        // Reset backend-liveness DIAGNOSIS tracking for the next load (fresh
+        // engine = healthy until proven otherwise). `isReloadingForRecovery` is
+        // intentionally NOT reset here: it is owned by `selfRestartForRecovery`
+        // so the heartbeat keeps reporting "reloading" across this teardown until
+        // the replacement engine is up.
+        livenessState = .healthy
+        budgetCollapsedSince = nil
+        lastSuccessAt = nil
     }
 
     /// Cumulative active-bridge gate, called from tests.

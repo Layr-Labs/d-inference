@@ -714,16 +714,25 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 }
 
 // OwnedProviderEligible reports whether the account owns at least one online
-// machine that can serve `model` for THIS request's shape. Unlike
-// OwnedProviderSummary (which only answers "serves the model at all", for error
-// messaging), it applies the exact gates the dispatcher uses for an owner
-// self-route: the serial allowlist, the per-provider routing/trait gates via
-// snapshotProviderLockedEx with the hardware-trust floor relaxed only for the
-// owner's own machine, and the vision gate. The prefer→self-route downgrade
-// uses it so a zero-balance owner is pinned to their own machine only when that
-// machine can actually satisfy the request (model + serials + vision + tools) —
-// never when the downgrade would strand the request on an ineligible owned
-// provider with no candidate and no paid fallback.
+// machine that is STRUCTURALLY CAPABLE of serving `model` for THIS request's
+// shape: it serves the catalog model, matches the serial allowlist, advertises a
+// vision build when the request carries media, and meets the tool-trait gates
+// (render-ok + version floor). The hardware-trust floor is relaxed for the
+// owner's own (possibly un-enrolled) machine, exactly as self-route dispatch
+// does, while every privacy-critical gate (runtime-verified, private-text,
+// challenge freshness) still applies.
+//
+// It deliberately tests CAPABILITY, not TRANSIENT load/health: the node-health
+// breaker, the slot state (crashed/reloading), free-memory/concurrency capacity,
+// and thermal pressure are NOT consulted. Those are the dimensions on which an
+// exclusive self-route QUEUES on the owner's machine (or fails open, as dispatch
+// does on the breaker) rather than hard-failing, so they must not gate the
+// prefer→self-route downgrade — gating on them would block an owner from their
+// own Mac in exactly the cases where an explicit `X-Darkbloom-Route: self`
+// request would still be served (or queued). The downgrade's job is only to
+// refuse the conversion when the machine can NEVER serve the request shape
+// (wrong model / serial / vision / tools), which would otherwise strand an
+// exclusive self-route with no candidate and no paid fallback.
 func (r *Registry) OwnedProviderEligible(accountID, model string, traits RequestTraits, requiresVision bool, allowedSerials []string) bool {
 	if accountID == "" {
 		return false
@@ -732,6 +741,7 @@ func (r *Registry) OwnedProviderEligible(accountID, model string, traits Request
 	for _, s := range allowedSerials {
 		allowedSet[s] = struct{}{}
 	}
+	now := time.Now()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
@@ -743,21 +753,21 @@ func (r *Registry) OwnedProviderEligible(accountID, model string, traits Request
 		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
 			continue
 		}
-		// relaxTrust=true: the owner's own (possibly un-enrolled) machine. The
-		// snapshot applies every privacy/runtime/challenge/trait gate, so a
-		// render-broken or below-floor (tools) build is excluded here.
-		if _, ok := r.snapshotProviderLockedEx(p, model, traits, true, false); !ok {
-			continue
+		p.mu.Lock()
+		// relaxTrust=true: the owner's own machine. ignoreProviderBreaker=true:
+		// the transient node-health breaker is not a capability gate — self-route
+		// fails open on it just like dispatch, so it must not block the
+		// downgrade. This applies serves-model, privacy/runtime/challenge, and
+		// the trait gates (render-broken fences all shapes; the tools version
+		// floor fences tool requests) but no slot-state/capacity gate.
+		eligible := r.providerPassesRoutingGatesLockedEx(p, model, traits, true, now, true)
+		if eligible && requiresVision {
+			eligible = r.providerServesVisionModelLocked(p, model)
 		}
-		if requiresVision {
-			p.mu.Lock()
-			servesVision := r.providerServesVisionModelLocked(p, model)
-			p.mu.Unlock()
-			if !servesVision {
-				continue
-			}
+		p.mu.Unlock()
+		if eligible {
+			return true
 		}
-		return true
 	}
 	return false
 }

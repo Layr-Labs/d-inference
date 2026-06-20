@@ -114,8 +114,20 @@ func ttftDeadline(estimatedPromptTokens int) time.Duration {
 // rate-limit, reservation, or routing work, so aggregators see rate limiting
 // rather than dropped/cancelled streams. Exclusive self-route bypasses the shed
 // because it never falls back to the public fleet.
-func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, parsed map[string]any, policy selfRoutePolicy, publicModel, model string, stream bool, estimatedPromptTokens, requestedMaxTokens int, requiresVision, hasTools bool) bool {
+func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, parsed map[string]any, policy selfRoutePolicy, publicModel, model string, stream bool, estimatedPromptTokens, requestedMaxTokens int, requiresVision, hasTools bool, allowedProviderSerials []string) bool {
 	if policy.enabled || !s.modelShed(model, publicModel) {
+		return false
+	}
+	// Model-shed is a public-fleet load lever, so it must not block a request
+	// that can run on the caller's OWN machine. Exclusive self-route already
+	// bypasses it above (policy.enabled); a prefer request whose owner has a
+	// structurally-eligible machine gets the same exemption — it would route
+	// owned-first (free) anyway, and on a zero-balance/capped owner it is the
+	// path the reservation downgrade later pins to. Without this it would 429
+	// here before that downgrade can run. The eligibility check uses the same
+	// shape (traits + vision + serial allowlist) as the downgrade.
+	if policy.prefer && s.registry.OwnedProviderEligible(policy.ownerAccountID, model,
+		registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
 		return false
 	}
 	retryAfter := s.estimateRetryAfter(model)
@@ -1792,7 +1804,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
-	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
+	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials) {
 		return
 	}
 
@@ -4675,7 +4687,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	genericDeadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
-	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
+	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials) {
 		return
 	}
 

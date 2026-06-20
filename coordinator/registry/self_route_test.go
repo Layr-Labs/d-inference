@@ -2,6 +2,7 @@ package registry
 
 import (
 	"testing"
+	"time"
 )
 
 func setProviderAccount(p *Provider, accountID string) {
@@ -232,6 +233,32 @@ func TestOwnedProviderEligible(t *testing.T) {
 	// ineligible (a downgrade here would strand the request).
 	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, true, nil) {
 		t.Fatal("text-only machine must be ineligible for a vision request")
+	}
+
+	// TRANSIENT state must NOT gate eligibility — the downgrade tests capability,
+	// not current load/health, because self-route queues / fails open on these
+	// just like dispatch.
+
+	// A crashed slot (transient) must still be eligible: an exclusive self-route
+	// queues on it, so the downgrade must not refuse it and force a 402.
+	mine.mu.Lock()
+	mine.BackendCapacity.Slots[0].State = "crashed"
+	mine.mu.Unlock()
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("crashed slot is transient and must not gate the downgrade")
+	}
+	mine.mu.Lock()
+	mine.BackendCapacity.Slots[0].State = "running"
+	mine.mu.Unlock()
+
+	// An OPEN node-health breaker (transient) must still be eligible: dispatch
+	// fails open on the breaker, so the preflight must too — otherwise an owner
+	// whose only Mac has a tripped breaker is wrongly forced to a 402.
+	reg.mu.Lock()
+	reg.providerBreakerOpenUntil[mine.ID] = time.Now().Add(time.Minute)
+	reg.mu.Unlock()
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("open node-health breaker is transient and must not gate the downgrade (fail open)")
 	}
 }
 

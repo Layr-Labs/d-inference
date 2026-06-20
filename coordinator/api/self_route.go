@@ -64,6 +64,30 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 	return selfRoutePolicy{enabled: exclusive, prefer: prefer, ownerAccountID: owner}
 }
 
+// downgradePreferToSelfRoute converts a PREFER request into an EXCLUSIVE
+// self-route when the owner can't afford the paid fallback but their own
+// machine can serve the model right now. This is what lets a zero-balance
+// provider-owner keep using their own Mac for free: instead of a 402, the
+// request is pinned to the owner's online machine (free, no paid fallback).
+//
+// It mutates policy in place and reports whether the downgrade happened. The
+// downgrade only fires for PREFER requests (never a normal paid request), and
+// only when an owned machine currently serves the model — so billing integrity
+// holds: the request can no longer settle on the paid fleet, and if the machine
+// drops between here and dispatch, the exclusive self-route pre-flight returns a
+// precise 503 rather than handing out free public inference.
+func (s *Server) downgradePreferToSelfRoute(policy *selfRoutePolicy, model string) bool {
+	if policy == nil || !policy.prefer || policy.ownerAccountID == "" {
+		return false
+	}
+	if _, servesModel := s.registry.OwnedProviderSummary(policy.ownerAccountID, model); servesModel == 0 {
+		return false
+	}
+	policy.enabled = true
+	policy.prefer = false
+	return true
+}
+
 // selfRouteUnavailable reports whether a self-route request cannot proceed and,
 // when so, writes the precise terminal error. Self-route never falls back to
 // the paid fleet, so "can't serve" is an explicit failure rather than a

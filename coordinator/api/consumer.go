@@ -1870,29 +1870,39 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
 		if err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+				// Zero/low-balance owner whose own machine can serve this model
+				// right now: downgrade prefer → exclusive self-route (free,
+				// owned-only) instead of rejecting, so an owner is never blocked
+				// from using their own Mac just because they have no credits.
+				if s.downgradePreferToSelfRoute(&policy, model) {
+					reservedMicroUSD = 0
+					serviceReservation = false
+				} else {
+					s.recordRejection(rejectionInfo{
+						r:                     r,
+						stage:                 "balance",
+						reasonCode:            "insufficient_funds",
+						httpStatus:            http.StatusPaymentRequired,
+						keyID:                 keyIDFromContext(r.Context()),
+						consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+						requestedModel:        publicModel,
+						resolvedModel:         model,
+						stream:                stream,
+						estimatedPromptTokens: estimatedPromptTokens,
+						requestedMaxTokens:    requestedMaxTokens,
+						requiresVision:        requiresVision,
+						hasTools:              hasTools,
+						params:                rejectionSamplingParams(parsed),
+					})
+					writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+						"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+					return
+				}
 			} else {
 				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
 				s.writeServiceUnavailable(w, model)
+				return
 			}
-			return
 		}
 	}
 	timing.ReservedAt = time.Now()
@@ -4707,29 +4717,39 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
 		if err != nil {
 			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+				// Zero/low-balance owner whose own machine can serve this model
+				// right now: downgrade prefer → exclusive self-route (free,
+				// owned-only) instead of rejecting, so an owner is never blocked
+				// from using their own Mac just because they have no credits.
+				if s.downgradePreferToSelfRoute(&policy, model) {
+					reservedMicroUSD = 0
+					serviceReservation = false
+				} else {
+					s.recordRejection(rejectionInfo{
+						r:                     r,
+						stage:                 "balance",
+						reasonCode:            "insufficient_funds",
+						httpStatus:            http.StatusPaymentRequired,
+						keyID:                 keyIDFromContext(r.Context()),
+						consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+						requestedModel:        publicModel,
+						resolvedModel:         model,
+						stream:                stream,
+						estimatedPromptTokens: estimatedPromptTokens,
+						requestedMaxTokens:    requestedMaxTokens,
+						requiresVision:        requiresVision,
+						hasTools:              hasTools,
+						params:                rejectionSamplingParams(parsed),
+					})
+					writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+						"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+					return
+				}
 			} else {
 				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
 				s.writeServiceUnavailable(w, model)
+				return
 			}
-			return
 		}
 	}
 	refundReservation := func() {

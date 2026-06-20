@@ -326,6 +326,80 @@ func TestSelfRoute_PreferFreeOnOwnedMachine(t *testing.T) {
 	}
 }
 
+// TestSelfRoute_PreferZeroBalanceOwnerServedFree is the regression for "if you
+// don't have credits you can't use your machine": a zero-balance owner sending
+// prefer (what the console "Use my machine" toggle sends) whose own machine can
+// serve the model must be served for free instead of getting a 402. The upfront
+// balance reservation fails, but because an owned machine serves the model the
+// request is downgraded to exclusive self-route (free, owned-only).
+func TestSelfRoute_PreferZeroBalanceOwnerServedFree(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "broke-owner"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	// No Credit() call: the owner has zero balance.
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Fatalf("precondition: balance = %d, want 0", bal)
+	}
+
+	model := "broke-owner-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("prefer status = %d, want 200 (zero-balance owner must run free on own machine)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Errorf("owner balance = %d, want 0 (own machine must be net free)", bal)
+	}
+	earnings, _ := st.GetAccountEarnings(owner, 100)
+	if len(earnings) != 0 {
+		t.Errorf("provider earnings = %d, want 0 when own machine served a free request", len(earnings))
+	}
+}
+
+// TestSelfRoute_PreferZeroBalanceNoOwnedMachineStill402: a zero-balance caller
+// sending prefer who has NO owned machine that can serve the model must still be
+// rejected with 402 — the downgrade only rescues owners whose own machine can
+// serve, never grants free paid-fleet inference.
+func TestSelfRoute_PreferZeroBalanceNoOwnedMachineStill402(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const caller = "broke-owns-nothing"
+	raw, _, err := st.CreateAPIKey(caller, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	if bal := ledger.Balance(caller); bal != 0 {
+		t.Fatalf("precondition: balance = %d, want 0", bal)
+	}
+
+	model := "broke-fallback-model"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, "someone-else") // caller owns nothing
+
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusPaymentRequired {
+		t.Fatalf("prefer status = %d, want 402 (no owned machine + no balance must not get free paid inference)", status)
+	}
+}
+
 // TestSelfRoute_PreferFallsBackToPaid: with prefer and an owner who owns NO
 // machine, the request falls back to the paid public fleet and is charged —
 // unlike exclusive self-route, which would 409. "Never a dead end."

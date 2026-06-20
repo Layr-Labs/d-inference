@@ -4,7 +4,7 @@ import MLX
 import MLXLMCommon
 import ProviderCore
 
-/// DAR-318 capacity demo + DAR-323 long-context scaling microbenchmark.
+/// KV-cache capacity demo + long-context scaling microbenchmark.
 /// Loads a model into the real continuous-batching engine (fp16 baseline +
 /// quantized) and reports capacity, quality, and perf. With `--prompt-tokens`
 /// it additionally runs a synthetic long-context decode scaling sweep and a
@@ -13,7 +13,7 @@ import ProviderCore
 struct KVEngineDemo: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "kv-engine-demo",
-        abstract: "Compare fp16 and quantized BatchedEngine capacity/quality/perf, plus DAR-323 long-context scaling."
+        abstract: "Compare fp16 and quantized BatchedEngine capacity/quality/perf, plus long-context scaling."
     )
 
     @Option(help: "Model ID to load.")
@@ -709,7 +709,7 @@ struct KVEngineDemo: AsyncParsableCommand {
     // MARK: - Reporting
 
     private func printHeader(modelDir: URL) {
-        print("Darkbloom KV Engine Demo — DAR-318 / DAR-323")
+        print("Darkbloom KV Engine Demo")
         print("Model:      \(modelID)")
         print("Model dir:  \(modelDir.path)")
         print("Max tokens: \(maxTokens)")

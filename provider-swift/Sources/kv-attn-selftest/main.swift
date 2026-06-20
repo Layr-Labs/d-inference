@@ -238,7 +238,7 @@ for s: Float in [1, 20, 100] {
     runKScheme("K4 per-channel   ", kScheme: { perChannelDequant($0, bits: 4) }, scaleOutlier: s)
 }
 
-// MARK: - DAR-314: QuantizedBatchKVCache kernel + storage gate
+// MARK: - QuantizedBatchKVCache kernel + storage gate
 
 func dequantTuple(_ q: (MLXArray, MLXArray, MLXArray?), groupSize: Int, bits: Int) -> MLXArray {
     dequantized(q.0, scales: q.1, biases: q.2, groupSize: groupSize, bits: bits)
@@ -460,7 +460,7 @@ func runKernelFullyMaskedNoSinkCase(_ name: String, bits: Int, groupSize: Int) -
     return ok
 }
 
-print("== QuantizedBatchKVCache kernel correctness (DAR-314) ==")
+print("== QuantizedBatchKVCache kernel correctness ==")
 var dar314Ok = true
 for bits in [8, 4] {
     dar314Ok = runQuantizedBatchKernelCase(
@@ -493,14 +493,14 @@ dar314Ok = runKernelAdditiveArrayMaskCase(
 dar314Ok = runKernelFullyMaskedNoSinkCase(
     "live Gemma k8v8:g128 fully-masked no-sink", bits: 8, groupSize: 128) && dar314Ok
 
-print("== QuantizedBatchKVCache storage round-trip (DAR-314) ==")
+print("== QuantizedBatchKVCache storage round-trip ==")
 for bits in [8, 4] {
     dar314Ok = runQuantizedBatchStorageCheck(bits: bits, groupSize: 64) && dar314Ok
 }
 
 // Live Gemma cache mutation parameters (K8V8 g128). These exercise the same
 // continuously-batched quantized cache family the engine selects for Gemma.
-// They fold into the DAR-314 gate below (not the later g64 follow-up, whose
+// They fold into the kernel+storage gate below (not the later g64 follow-up, whose
 // `followUpOk` is declared further down and would otherwise discard these).
 dar314Ok = runFinalizeBatchedCase(
     "finalize ragged live g128", bits: 8, groupSize: 128) && dar314Ok
@@ -510,12 +510,12 @@ dar314Ok = runFilterBatchedCase(
     "filter drop-row live g128", bits: 8, groupSize: 128) && dar314Ok
 
 if dar314Ok {
-    print("DAR-314 gate: ALL OK")
+    print("kernel+storage gate: ALL OK")
 } else {
-    print("DAR-314 gate: FAILED")
+    print("kernel+storage gate: FAILED")
 }
 
-// MARK: - DAR-314 follow-up: batched cache paths not covered by the kernel gate
+// MARK: - batched-cache follow-up: batched cache paths not covered by the kernel gate
 
 func maskAndAdditiveMask(for cache: QuantizedBatchKVCache, n: Int)
     -> (MLXFast.ScaledDotProductAttentionMaskMode, MLXArray)
@@ -718,7 +718,7 @@ func runFilterBatchedCase(_ name: String, bits: Int, groupSize: Int) -> Bool {
     return ok
 }
 
-print("== QuantizedBatchKVCache finalize/extend/filter (DAR-314 follow-up) ==")
+print("== QuantizedBatchKVCache finalize/extend/filter ==")
 var followUpOk = true
 for bits in [8, 4] {
     followUpOk = runFinalizeBatchedCase(
@@ -729,12 +729,12 @@ for bits in [8, 4] {
         "filter drop-row bits=\(bits)", bits: bits, groupSize: 64) && followUpOk
 }
 if followUpOk {
-    print("DAR-314 follow-up: ALL OK")
+    print("batched-cache follow-up: ALL OK")
 } else {
-    print("DAR-314 follow-up: FAILED")
+    print("batched-cache follow-up: FAILED")
 }
 
-// MARK: - DAR-322: DequantBatchKVCache regular-attention path
+// MARK: - DequantBatchKVCache regular-attention path
 
 func runDequantBatchCacheCase(
     _ name: String,
@@ -821,7 +821,7 @@ func runLiveGPTOSSDequantCase() -> Bool {
     return ok
 }
 
-print("== DequantBatchKVCache regular-attention path (DAR-322) ==")
+print("== DequantBatchKVCache regular-attention path ==")
 var dar322Ok = true
 dar322Ok = runDequantBatchCacheCase(
     "dequant g64 D=64", B: 1, nQ: 8, nKV: 2, L: 16, D: 64) && dar322Ok
@@ -842,12 +842,12 @@ print(
 dar322Ok = (dequantAsProtocol == nil) && (kernelAsProtocol != nil) && dar322Ok
 
 if dar322Ok {
-    print("DAR-322 gate: ALL OK")
+    print("dequant-attention gate: ALL OK")
 } else {
-    print("DAR-322 gate: FAILED")
+    print("dequant-attention gate: FAILED")
 }
 
-// MARK: - DAR-323: sink-aware quantized attention (GPT-OSS kernel path)
+// MARK: - sink-aware quantized attention (GPT-OSS kernel path)
 //
 // First-principles isolation for attention sinks. An attention sink is a learned
 // per-(query)head logit that joins the softmax denominator as a valueless virtual
@@ -1077,7 +1077,7 @@ func runSinkFullyMaskedRowCase(bits: Int, groupSize: Int) -> Bool {
     return ok
 }
 
-print("== sink-aware quantized attention (DAR-323) ==")
+print("== sink-aware quantized attention ==")
 var dar323Ok = true
 for bits in [8, 4] {
     dar323Ok = runSinkCase(
@@ -1098,9 +1098,9 @@ for bits in [8, 4] {
     dar323Ok = runSinkSemanticsCase(bits: bits, groupSize: 64) && dar323Ok
 }
 if dar323Ok {
-    print("DAR-323 gate: ALL OK")
+    print("sink-attention gate: ALL OK")
 } else {
-    print("DAR-323 gate: FAILED")
+    print("sink-attention gate: FAILED")
 }
 
 // MARK: - Overall exit status

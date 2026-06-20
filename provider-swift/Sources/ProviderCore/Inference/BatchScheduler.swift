@@ -1091,7 +1091,7 @@ public actor BatchScheduler {
         // (Gemma-4, GPT-OSS) use the whole-cache exact-checkpoint
         // PrefixCacheManager. Recurrent (.none) models get neither.
         //
-        // DAR-319 v2: KV-quant + prefix cache are now COMPOSABLE for the
+        // KV-quant + prefix cache are now composable for the
         // dequant scheme (GPT-OSS). The engine's checkpoint restore rebuilds a
         // QUANTIZED batched cache (re-quantizing the restored fp16 prefix via
         // the cold cache factory) so a restored row stays concrete-class-
@@ -1268,7 +1268,7 @@ public actor BatchScheduler {
                         schedulerConfig: scheduler.config,
                         stepInterval: 0.001,
                         prefixCacheConfig: nil,
-                        // DAR-319 v1: MTP/drafter capture requires non-quantized KV;
+                        // MTP/drafter capture requires non-quantized KV;
                         // keep disabled when KV-quant is on (and off by default).
                         mtpEnabled: false
                     ),

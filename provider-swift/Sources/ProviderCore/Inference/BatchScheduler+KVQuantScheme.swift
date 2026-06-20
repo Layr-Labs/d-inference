@@ -65,7 +65,7 @@ public struct KVQuantEngineScheme: Sendable, Equatable {
 
     /// v1 GPT-OSS scheme: K8V8 affine, group size 64, dequant path.
     ///
-    /// Measured decision (DAR-323 concurrency sweep, decode-window metric): under
+    /// Measured decision (concurrency sweep, decode-window metric): under
     /// concurrency the dequant path decodes at near-parity with fp16
     /// (~0.93–1.00x) because it keeps MLX's fused flash attention and the per-step
     /// dequant is well overlapped. The native quantized kernel (`.k8v8g64`, which
@@ -115,7 +115,7 @@ extension BatchScheduler {
             else {
                 return nil
             }
-            // Experiment hook (DAR-323): force the native quantized kernel path
+            // Experiment hook: force the native quantized kernel path
             // for A/B perf comparison. Default is dequant, which decodes at
             // near-parity with fp16 under concurrency (the kernel path is slower
             // because MLX lacks a fused quantized attention kernel).

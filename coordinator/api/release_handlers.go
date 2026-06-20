@@ -482,7 +482,12 @@ func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	release := latestCompatibleRelease(s.store.ListReleases(), platform, macOS)
+	releases := s.store.ListReleases()
+	if releases == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("temporarily_unavailable", "release metadata is temporarily unavailable"))
+		return
+	}
+	release := latestCompatibleRelease(releases, platform, macOS)
 	if release == nil {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no compatible active release for platform "+platform))
 		return

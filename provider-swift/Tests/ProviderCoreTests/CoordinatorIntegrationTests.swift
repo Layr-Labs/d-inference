@@ -538,6 +538,28 @@ struct CoordinatorIntegrationTests {
         #expect(captured.contains("99.0.0"))
         #expect(captured.contains("darkbloom update"))
     }
+
+    @Test("UpdateBanner stays silent when newer release requires newer macOS")
+    func updateBannerSilentWhenReleaseRequiresNewerMacOS() async throws {
+        let mock = MockCoordinator(
+            version: MockVersionFixture(version: "99.0.0", changelog: "Tahoe-only", minMacOS: "26.0")
+        )
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let captured = await captureStderr {
+            await UpdateBanner.run(
+                coordinatorURL: baseURL.absoluteString,
+                currentVersion: "0.5.0",
+                timeout: 2.0,
+                currentOSVersion: {
+                    OperatingSystemVersion(majorVersion: 15, minorVersion: 7, patchVersion: 0)
+                }
+            )
+        }
+
+        #expect(captured.isEmpty, "expected no incompatible update banner; got: \(captured)")
+    }
 }
 
 // MARK: - Helpers

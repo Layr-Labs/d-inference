@@ -125,10 +125,12 @@ public struct MockReleaseFixture: Sendable {
 public struct MockVersionFixture: Sendable {
     public var version: String
     public var changelog: String?
+    public var minMacOS: String?
 
-    public init(version: String, changelog: String? = nil) {
+    public init(version: String, changelog: String? = nil, minMacOS: String? = nil) {
         self.version = version
         self.changelog = changelog
+        self.minMacOS = minMacOS
     }
 }
 
@@ -467,7 +469,8 @@ public final class MockCoordinator: @unchecked Sendable {
             }
             let body = APIVersionPayload(
                 version: self.version.version,
-                changelog: self.version.changelog
+                changelog: self.version.changelog,
+                min_macos: self.version.minMacOS
             )
             return MockCoordinator.makeJSONResponse(body: body)
         }
@@ -670,6 +673,7 @@ private struct ReleaseLatestPayload: Encodable {
 private struct APIVersionPayload: Encodable {
     let version: String
     let changelog: String?
+    let min_macos: String?
 }
 
 private struct DeviceCodePayload: Encodable {

@@ -513,6 +513,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ALTER TABLE releases ADD COLUMN IF NOT EXISTS min_macos TEXT NOT NULL DEFAULT '';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
+		`UPDATE releases SET min_macos = '26.0'
+		 WHERE backend = 'mlx-swift' AND COALESCE(min_macos, '') = ''`,
 		`DO $$ BEGIN
 			ALTER TABLE releases ADD COLUMN IF NOT EXISTS changelog TEXT NOT NULL DEFAULT '';
 		EXCEPTION WHEN others THEN NULL;

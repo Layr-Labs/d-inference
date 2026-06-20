@@ -127,7 +127,7 @@ const FAQ = [
   },
   {
     question: "How does the idle timeout work?",
-    answer: "The vllm-mlx backend process is automatically stopped after 1 hour of no inference requests to free GPU memory. When a new request arrives, the model is lazy-reloaded (10-30 second cold start). This is configurable via the provider config.",
+    answer: "The provider releases idle in-process MLX model state after 1 hour of no inference requests to free GPU memory. When a new request arrives, the model is lazy-reloaded (10-30 second cold start). This is configurable via the provider config.",
   },
 ];
 

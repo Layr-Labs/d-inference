@@ -770,6 +770,12 @@ func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
 	if versionResp["min_macos"] != "26.0" {
 		t.Errorf("/api/version min_macos = %v, want 26.0", versionResp["min_macos"])
 	}
+	req = httptest.NewRequest(http.MethodGet, "/api/version?macos=25.7", nil)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("incompatible /api/version status = %d, want 404; body = %s", w.Code, w.Body.String())
+	}
 
 	// Verify binary hashes were synced
 	releases := st.ListReleases()

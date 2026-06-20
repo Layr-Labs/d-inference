@@ -4382,7 +4382,12 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 	var resp types.VersionResponse
 	// Try release table first.
-	if release := latestCompatibleRelease(s.store.ListReleases(), "macos-arm64", macOS); release != nil {
+	releases := s.store.ListReleases()
+	if releases == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("temporarily_unavailable", "release metadata is temporarily unavailable"))
+		return
+	}
+	if release := latestCompatibleRelease(releases, "macos-arm64", macOS); release != nil {
 		resp = types.VersionResponse{
 			Version:      release.Version,
 			Platform:     release.Platform,
@@ -4394,6 +4399,9 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 			MinMacOS:     release.MinMacOS,
 			Changelog:    release.Changelog,
 		}
+	} else if len(releases) > 0 {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no compatible active release for platform macos-arm64"))
+		return
 	} else {
 		// Fallback to hardcoded version + coordinator download.
 		scheme := "https"

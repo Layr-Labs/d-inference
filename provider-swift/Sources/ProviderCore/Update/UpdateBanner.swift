@@ -14,10 +14,15 @@ public enum UpdateBanner: Sendable {
     public static func run(
         coordinatorURL: String,
         currentVersion: String = ProviderCore.version,
-        timeout: TimeInterval = 2.0
+        timeout: TimeInterval = 2.0,
+        currentOSVersion: @escaping @Sendable () -> OperatingSystemVersion = {
+            ProcessInfo.processInfo.operatingSystemVersion
+        }
     ) async {
         let baseURL = coordinatorHTTPBase(coordinatorURL)
-        guard let url = URL(string: "\(baseURL)/api/version") else { return }
+        let currentOS = currentOSVersion()
+        let currentOSString = SelfUpdater.macOSString(currentOS)
+        guard let url = URL(string: "\(baseURL)/api/version?macos=\(currentOSString)") else { return }
 
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
@@ -34,6 +39,11 @@ public enum UpdateBanner: Sendable {
             return
         }
 
+        if let minMacOS = payload.minMacOS, !minMacOS.isEmpty,
+           SelfUpdater.macOS(currentOS, isAtLeast: minMacOS) != true {
+            return
+        }
+
         guard let latest = payload.version,
               !latest.isEmpty,
               latest != currentVersion,
@@ -47,7 +57,14 @@ public enum UpdateBanner: Sendable {
 
     struct VersionPayload: Decodable {
         let version: String?
+        let minMacOS: String?
         let changelog: String?
+
+        enum CodingKeys: String, CodingKey {
+            case version
+            case minMacOS = "min_macos"
+            case changelog
+        }
     }
 
     /// Return true if `lhs` is strictly newer than `rhs` under the rules:

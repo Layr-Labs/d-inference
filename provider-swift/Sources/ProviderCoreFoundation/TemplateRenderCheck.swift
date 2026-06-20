@@ -195,10 +195,18 @@ public enum TemplateRenderCheck {
         specialTokens: [String: Value]
     ) throws -> [String: Value] {
         var context: [String: Value] = specialTokens
-        context["messages"] = .array(try fixture.messages.map { try Value(any: $0) })
+        // Strip JSON `null` / `Optional` leaves exactly as the
+        // runtime tokenize chokepoints now do (`sanitizeJinjaMessages` /
+        // `sanitizeJinjaTools`) before `Value(any:)`. Without this the
+        // null-bearing fixtures below would throw here at render time and
+        // false-flag every healthy template; with it the self-check stays
+        // faithful to "renders here == renders at request time".
+        context["messages"] = .array(
+            try fixture.messages.map { try Value(any: sanitizeForJinja($0)) })
         context["add_generation_prompt"] = .boolean(true)
         if let tools = fixture.tools {
-            context["tools"] = .array(try tools.map { try Value(any: $0) })
+            context["tools"] = .array(
+                try tools.map { try Value(any: sanitizeForJinja($0)) })
         }
         return context
     }
@@ -226,6 +234,7 @@ public enum TemplateRenderCheck {
         var fixtures: [Fixture] = [
             plainChatFixture,
             toolFlowFixture,
+            toolFlowWithNullsFixture,
             emptyAssistantTailFixture,
         ]
         if includeMultimodal {
@@ -322,6 +331,48 @@ public enum TemplateRenderCheck {
         )
     }
 
+    /// (c′) A tool flow carrying literal JSON `null` leaves — the
+    /// shapes that crashed `Jinja.Value(any:)` at request time before the
+    /// sanitizer landed. The assistant tool call's decoded `arguments`
+    /// carries a `null` value (`unit`); the tool's `parameters` schema
+    /// carries a `null` enum element and a `"default": null`. `NSNull()` is
+    /// the literal JSON-null sentinel `JSONSerialization` yields, matching
+    /// what `decodeToolCallArguments` hands the runtime. After
+    /// sanitization these null leaves are dropped, so this fixture renders
+    /// on every healthy template (`renderOK == true`) instead of throwing.
+    static var toolFlowWithNullsFixture: Fixture {
+        Fixture(
+            name: "tool_flow_with_nulls",
+            messages: [
+                ["role": "user", "content": "What's the weather in SF?"],
+                [
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        [
+                            "id": "call_0002",
+                            "type": "function",
+                            "function": [
+                                "name": "get_weather",
+                                "arguments": [
+                                    "city": "SF",
+                                    "unit": NSNull(),
+                                ] as [String: Any],
+                            ] as [String: Any],
+                        ] as [String: Any]
+                    ] as [[String: Any]],
+                ],
+                [
+                    "role": "tool",
+                    "content": "{\"temperature\": 19, \"condition\": \"foggy\"}",
+                    "tool_call_id": "call_0002",
+                    "name": "get_weather",
+                ],
+            ],
+            tools: [Self.canonicalToolWithNulls]
+        )
+    }
+
     /// (d) `add_generation_prompt` with an empty assistant tail — exercises
     /// last-message indexing and empty-content trims.
     static var emptyAssistantTailFixture: Fixture {
@@ -380,6 +431,44 @@ public enum TemplateRenderCheck {
                         ] as [String: Any],
                     ] as [String: Any],
                     "required": ["location", "unit"],
+                ] as [String: Any],
+            ] as [String: Any],
+        ]
+    }
+
+    /// Variant of `canonicalTool` carrying literal JSON `null`
+    /// leaves inside the `function.parameters` schema: a `"default": null`
+    /// on a property and a `null` element inside an `enum`. `NSNull()` is
+    /// the literal JSON-null sentinel. Every node still carries a string
+    /// `type` (the post-normalization invariant). After sanitization the
+    /// null leaves are dropped, leaving a schema every healthy template
+    /// renders — the schema-side half of the bug class the self-check must
+    /// now exercise.
+    static var canonicalToolWithNulls: [String: Any] {
+        [
+            "type": "function",
+            "function": [
+                "name": "get_weather",
+                "description": "Get the current weather for a location.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "city": [
+                            "type": "string",
+                            "description": "City name",
+                            // Literal JSON `null` default — dropped by the
+                            // sanitizer; crashes `Value(any:)` unsanitized.
+                            "default": NSNull(),
+                        ] as [String: Any],
+                        "unit": [
+                            "type": "string",
+                            // Literal `null` enum element — dropped by the
+                            // sanitizer, leaving the two real options.
+                            "enum": ["celsius", "fahrenheit", NSNull()] as [Any],
+                            "description": "Temperature unit",
+                        ] as [String: Any],
+                    ] as [String: Any],
+                    "required": ["city"],
                 ] as [String: Any],
             ] as [String: Any],
         ]

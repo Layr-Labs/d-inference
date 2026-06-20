@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-**Status:** Plan
+**Status:** Plan (Phase 4 partially implemented — see "Implemented (DAR-332)")
 **Scope:** Coordinator inference request outcomes for `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, and `/v1/messages`.
 **Related:** [routing-telemetry-and-calibration.md](routing-telemetry-and-calibration.md), [operations/telemetry.md](operations/telemetry.md), [operations/billing.md](operations/billing.md).
 
@@ -95,7 +95,7 @@ This is metadata-only observability.
 | 1. Expose and correct route outcomes | Add final outcome fields to `InferenceRouteRecord`, memory/Postgres readers, admin JSON, CSV/NDJSON exports, and route filters. Correct `final_status` derivation so post-commit failures no longer remain `success`. | Keep writes best-effort through `submitTelemetry`. Add filters for `final_status`, `error_class`, `client_outcome`, `provider_outcome`, and `billing_outcome`. |
 | 2. Post-commit and settlement updates | Update route outcomes from relay, provider terminal, disconnect, and settlement-grace paths. | `handleComplete`, `handleInferenceError`, relay timeout/error arms, `holdForSettlement` expiry, and post-terminal sweep need explicit outcome updates. Billing settlement should set `billing_outcome` even when the client is gone. |
 | 3. Generic endpoint route rows | Add route rows and outcome updates to `/v1/completions` and `/v1/messages`. | Extract a small route-recorder helper from `dispatchState` or build a shared function that records direct single-attempt dispatch decisions without requiring the full chat retry orchestrator. |
-| 4. Provider aggregate counters | Add provider counters for completed, provider_error, timeout, disconnect, client_cancel_pre_commit, client_cancel_after_commit, no_terminal_after_cancel, and dropped_unknown_terminal. | Do not fold client cancellations into provider failure reputation. Export counters through admin/provider stats and Datadog tags for fleet health dashboards. |
+| 4. Provider aggregate counters | Add provider counters for completed, provider_error, timeout, disconnect, client_cancel_pre_commit, client_cancel_after_commit, no_terminal_after_cancel, and dropped_unknown_terminal. | Do not fold client cancellations into provider failure reputation. Export counters through admin/provider stats and Datadog tags for fleet health dashboards. **Partially implemented (DAR-332):** the completed-after-disconnect split (`inference.partial_success`, `inference.no_terminal_after_cancel`) is emitted, and client cancellations are counted by lifecycle phase on `routing.client_gone{phase}` — see "Implemented (DAR-332)" below. |
 | 5. Broader rejection ledger and dashboards | Cover auth, RPM/token rate limits, sealed transport, generic dispatch fail-fast exits, and queue exits with `RecordRejection`. Add dashboards for final status, error class, false rejections, and settlement outcomes. | `request_rejections` should remain a rejection ledger, not a replacement for route outcome rows. A rejected request that never dispatches has no provider outcome. |
 | 6. Optional request event table | Add an append-only `request_events` table if point-in-time reconstruction is needed after the summary model is stable. | Events would include `http_received`, `route_selected`, `provider_dispatched`, `response_committed`, `client_gone`, `provider_complete`, `provider_error`, `provider_disconnect`, `billing_settled`, and `billing_refunded`. This is optional and should not block the summary columns. |
 
@@ -164,6 +164,82 @@ Required counters:
 | `dropped_unknown_terminal` | Ambiguous | Provider sent a terminal for an unknown request or after the holder expired. |
 
 Reputation should continue to penalize provider-at-fault classes only. Aggregate counters should still expose non-fault cancellations and drops so operator dashboards can distinguish client churn, provider instability, and coordinator cleanup behavior.
+
+#### Implemented (DAR-332): completed-after-disconnect metric split
+
+The first slice of this phase is built. A request that the provider COMPLETES after
+the consumer disconnected post-commit is billed and credited identically to a clean
+success (provider paid, consumer charged, **not** a provider failure), so it was
+previously indistinguishable on dashboards — both emitted only
+`d_inference.inference.completions{model}`. The following DogStatsD counters now
+make the class observable. All go through the existing `ddIncr` wrapper (no-op when
+Datadog is unconfigured) and are emitted in addition to — never instead of — the
+unchanged `inference.completions` counter, so existing dashboards keep working.
+
+| Metric | Tags | Emitted from | Meaning |
+|---|---|---|---|
+| `d_inference.inference.partial_success` | `model`, `error_class` | `api/provider.go` `handleComplete` (when `consumerGone`) | Provider completed and billing settled, but the consumer had already disconnected after commit. `error_class` = `client_gone_after_commit_provider_completed`. Subset of `inference.completions`. |
+| `d_inference.routing.client_gone` | `model`, `prompt_bucket`, `chip_family`, `phase` | `phase=before_first_token`: pre-commit client-gone arms in `api/dispatch.go` / `api/consumer.go`; `phase=after_commit`: `api/provider.go` `handleComplete` and `handleInferenceError`, plus the `api/settlement.go` grace-expiry callback | The single client-gone counter. Counts every client disconnect split by lifecycle phase (before vs after the first content token), prompt-size bucket, and provider chip family. Each request emits at most one (exactly one terminal). |
+| `d_inference.inference.no_terminal_after_cancel` | `model` | `api/settlement.go` `holdForSettlement` grace-expiry callback | Payout-gap edge: a post-commit disconnect whose settlement grace expired with no provider terminal. The reservation is refunded and the provider is never paid. |
+
+The composed money/reputation/outcome invariant is pinned by regression tests in
+`api/settlement_clientgone_test.go` (provider payout credited, consumer charged
+exactly the actual cost, `RecordJobSuccess` with `FailedJobs == 0`, and route
+`final_status = partial_success` / `error_class = client_gone_after_commit_provider_completed`),
+plus the exactly-once boundary (a late terminal after grace-expiry refund is a no-op).
+The `before_first_token` client-cancellation emit and the per-provider aggregate
+counters in the table above remain unbuilt.
+
+#### Implemented (DAR-333): OpenRouter-formula uptime + smart admission
+
+This slice adds a single per-request outcome counter that reproduces OpenRouter's
+public provider-uptime definition, plus a smart-admission backstop that keeps
+provider-capacity 5xx out of the uptime denominator. As with the DAR-332 counters,
+everything goes through the existing `ddIncr` wrapper (no-op when Datadog is
+unconfigured) and is emitted in addition to — never instead of — the unchanged
+`inference.completions` and `routing.decisions` counters, so existing dashboards
+keep working.
+
+| Metric | Tags | Emitted from | Meaning |
+|---|---|---|---|
+| `d_inference.inference.request_outcome` | `model`, `class` | `api/dispatch.go` `run()` tail (committed → `success`, exhausted → failure-by-status) and `recordRejection` for pre-dispatch stages | Exactly one emit per client request. `class` ∈ {`success`, `provider_5xx`, `mid_stream`, `timeout`, `rate_limited`, `client_error`}. Drives the live OpenRouter-formula uptime panel. |
+| `d_inference.routing.unservable_reclassified` | `model` | `api/dispatch.go` dispatch-exhausted backstop | A provider token-budget / KV / context 5xx that the dispatch path reclassified into an uptime-neutral 429. Always on (not gated). |
+
+The OpenRouter-formula uptime is `success / (success + provider_5xx + mid_stream + timeout)`.
+`rate_limited` and `client_error` are tracked on the same counter but **excluded**
+from that formula, mirroring OpenRouter excluding 429s and 4xx client errors from
+its provider uptime number. Client cancellations (before first token) are not
+emitted on this counter — they are tracked on `routing.client_gone`.
+
+The emit is taken at the `run()` tail, so it is a commit-time approximation: a stream
+that fails *after* the response was already committed is counted as `success`. For the
+exact post-commit breakdown (committed-then-failed streams classified as
+`partial_success`), query the persisted route-outcome rows via `GET /v1/admin/routes`
+(filter `final_status`) and the rejection ledger via `GET /v1/admin/rejections`.
+
+Smart admission also adds reason codes to the rejection ledger (surfaced via
+`routing.decisions{outcome:...}` and `/v1/admin/rejections`):
+
+| `reason_code` | Stage / gate | Meaning |
+|---|---|---|
+| `context_exceeded` | preflight servability gate (`EIGENINFERENCE_SERVABILITY_GATE`) | Request context length exceeds what any candidate provider can serve; rejected with a 429 before dispatch. |
+| `prompt_too_long` | preflight servability gate (`EIGENINFERENCE_SERVABILITY_GATE`) | Prompt alone exceeds the servable token budget; rejected with a 429 before dispatch. |
+| `unservable_token_budget` | dispatch backstop (always on) | Dispatch reclassified a provider token-budget/KV/context 5xx into a 429; pairs with `routing.unservable_reclassified`. |
+
+These preflight/backstop 429s also introduce the `routing.decisions` outcome tag
+value `unservable_429`.
+
+Two env flags tune the behavior:
+
+| Env flag | Type | Default | Effect |
+|---|---|---|---|
+| `EIGENINFERENCE_SERVABILITY_GATE` | bool | off | Enables the proactive preflight servability 429 gate (`context_exceeded` / `prompt_too_long`). When off, nothing is preflight-rejected; the always-on dispatch backstop still reclassifies unservable 5xx. |
+| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | `10s` (on) | SSE prefill keepalives during long prefill. ON by default; the first keepalive fires one interval in, so only long prefills commit HTTP 200 early. Set `0` to disable; tune below OpenRouter's fetch timeout. |
+
+Both new counters keep the metadata-only, low-cardinality invariant: `request_outcome`
+carries only `model` + `class`, and `unservable_reclassified` only `model`. No
+per-request identifiers, prompt/response content, client IDs, or provider IDs are
+attached to these metrics.
 
 ### 5. Rejection Ledger and Dashboards
 

@@ -25,14 +25,15 @@ public actor GlobalKVCacheBudget {
     /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
     private let configReserveBytes: UInt64
     private let memorySnapshot: @Sendable () -> MemorySnapshot
-    private let clearCache: @Sendable () -> Void
     private var reservations: [String: UInt64] = [:]
-    /// Rate-limit the self-heal flush to at most once per this interval. The flush
-    /// blocks on a GPU sync, so this bounds how often a flood of near-miss
-    /// admissions can chain GPU syncs on the actor and stall other reservations.
-    private var lastSelfHealAt: ContinuousClock.Instant?
-    private let selfHealMinInterval: Duration
-    private static let defaultSelfHealMinInterval: Duration = .seconds(1)
+
+    /// The reclaimable-pool flush runs in this reclaimer, off the budget actor.
+    /// The admission paths only ever signal it (non-blocking); the blocking GPU
+    /// sync happens on the reclaimer's executor, so the budget actor is never
+    /// blocked on a GPU synchronize — the invariant this design exists to
+    /// guarantee.
+    private let reclaimer: KVPoolReclaimer
+    static let defaultSelfHealMinInterval: Duration = KVPoolReclaimer.defaultMinInterval
 
     public init(
         capFraction: Double? = nil,
@@ -42,14 +43,13 @@ public actor GlobalKVCacheBudget {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
-        self.selfHealMinInterval = Self.defaultSelfHealMinInterval
         // Fence async GPU completion before freeing buffers, matching the engine's
         // own reclaim paths (avoids the IOKit completeMemory race seen on M4).
-        self.clearCache = {
+        let clearCache: @Sendable () -> Void = {
             MLX.Stream().synchronize()
             MLX.Memory.clearCache()
         }
-        self.memorySnapshot = {
+        let snapshot: @Sendable () -> MemorySnapshot = {
             MemorySnapshot(
                 total: ProcessInfo.processInfo.physicalMemory,
                 active: UInt64(Memory.activeMemory),
@@ -57,6 +57,10 @@ public actor GlobalKVCacheBudget {
                 // Real OS-free RAM; `.max` falls back to the MLX-only view.
                 systemAvailable: SystemMemory.availableBytes() ?? .max)
         }
+        self.memorySnapshot = snapshot
+        self.reclaimer = KVPoolReclaimer(
+            clearCache: clearCache,
+            reclaimableBytes: { snapshot().cache })
     }
 
     init(
@@ -65,14 +69,20 @@ public actor GlobalKVCacheBudget {
         configReserveBytes: UInt64 = 0,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot,
         clearCache: @escaping @Sendable () -> Void = {},
-        selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval
+        selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval,
+        reclaimer: KVPoolReclaimer? = nil
     ) {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
-        self.selfHealMinInterval = selfHealMinInterval
         self.memorySnapshot = memorySnapshot
-        self.clearCache = clearCache
+        self.reclaimer = reclaimer ?? KVPoolReclaimer(
+            clearCache: clearCache,
+            reclaimableBytes: { memorySnapshot().cache },
+            minInterval: selfHealMinInterval,
+            // Tests that don't pin a threshold should never trip the proactive
+            // sweep on their tiny synthetic pools — keep the production default.
+            proactiveThresholdBytes: KVPoolReclaimer.defaultProactiveThresholdBytes)
     }
 
     public func reserve(requestID: String, kvBytesPerToken: Int, tokenCount: Int) -> Bool {
@@ -149,35 +159,44 @@ public actor GlobalKVCacheBudget {
         }
     }
 
-    /// Reserve `bytes` against current live headroom. The headroom math counts the
-    /// reclaimable MLX pool as used, so on a near-miss we flush that pool and
-    /// resample once before denying — otherwise we'd reject a request the box can
-    /// actually serve. Caller has validated `bytes > 0` and no existing reservation.
+    /// Reserve `bytes` against the current live headroom. The headroom math counts
+    /// the reclaimable MLX pool as used; on a near-miss we signal the off-actor
+    /// reclaimer to shrink that pool for future admissions and reject this request
+    /// against the current snapshot. We do not flush-and-resample inline: that
+    /// would run a blocking GPU sync on this actor and serialize every other
+    /// reservation behind it. Rejecting a near-miss is acceptable — the
+    /// coordinator and per-provider breaker reroute, and the background reclaim
+    /// keeps the pool small so most admissions succeed without ever near-missing.
+    /// Caller has validated `bytes > 0` and no existing reservation.
     private func commit(requestID: String, bytes: UInt64) -> Bool {
-        var available = availableReservationBytes()
-        if bytes > available {
-            if reclaimForShortfall(bytes - available) { available = availableReservationBytes() }
-            if bytes > available { return false }
+        let available = availableReservationBytes()
+        guard bytes <= available else {
+            reclaimer.scheduleReclaim(shortfall: bytes - available)   // non-blocking; flush runs off-actor
+            return false
         }
         reservations[requestID] = bytes
         return true
     }
 
-    /// Rate-limited pool reclaim for the admission self-heal, shared by the live KV
-    /// reservation gate (`commit`) and the scheduler's token-budget gate. Returns
-    /// true if it actually flushed the pool (so the caller should resample). Two
-    /// guards: skip when the reclaimable pool can't cover `shortfall` (the bytes the
-    /// request is short by — a flush would still leave it rejected, e.g. when active
-    /// memory rather than the pool is what's full); and skip when a flush ran within
-    /// `selfHealMinInterval` (the flush blocks on a GPU sync, so this bounds how
-    /// often a flood of near-miss admissions can chain syncs and stall the actor).
-    public func reclaimForShortfall(_ shortfall: UInt64) -> Bool {
-        guard shortfall > 0, memorySnapshot().cache >= shortfall else { return false }
-        let now = ContinuousClock.now
-        if let last = lastSelfHealAt, now - last < selfHealMinInterval { return false }
-        lastSelfHealAt = now
-        clearCache()
-        return true
+    /// Signal the off-actor reclaimer to flush the reclaimable MLX pool for a
+    /// shortfall observed by the scheduler's token-budget gate. Non-blocking and
+    /// `nonisolated` (it touches no actor state — only the immutable reclaimer),
+    /// so the caller doesn't even hop this actor: the GPU sync runs on the
+    /// reclaimer, never here (it used to run inline as a blocking synchronize,
+    /// which wedged the admission actor). The reclaimer gates on whether the pool
+    /// can cover the shortfall and rate-limits, so this is an unconditional
+    /// fire-and-forget.
+    public nonisolated func reclaimForShortfall(_ shortfall: UInt64) {
+        guard shortfall > 0 else { return }
+        reclaimer.scheduleReclaim(shortfall: shortfall)
+    }
+
+    /// Trigger a proactive, rate-limited, threshold-gated background sweep of the
+    /// reclaimable MLX pool so admission headroom stays healthy under sustained
+    /// load without any inline flush. Non-blocking and `nonisolated`. Called
+    /// periodically by the scheduler watchdog while a model is loaded.
+    public nonisolated func proactiveReclaimSweep() {
+        reclaimer.scheduleSweep()
     }
 
     private func availableReservationBytes() -> UInt64 {
@@ -214,4 +233,10 @@ public actor GlobalKVCacheBudget {
         return total
     }
 
+    // MARK: - Test support
+
+    /// The off-actor reclaimer, so tests can drive `reclaimIfNeeded`/`sweep`
+    /// deterministically (they run the injected `clearCache` synchronously on the
+    /// reclaimer actor) instead of racing the fire-and-forget signal tasks.
+    var reclaimerForTesting: KVPoolReclaimer { reclaimer }
 }

@@ -1,5 +1,13 @@
 /**
- * Provider earnings calculator — keep in sync with console-ui/src/app/earn/page.tsx
+ * Provider earnings calculator — keep in sync with console-ui/src/app/earn/calc.ts
+ *
+ * Earnings model: total = usage + floor − electricity
+ *   • usage — realistic throughput at 80% utilization, crediting continuous
+ *     batching at a quality-preserving 4× (not the old 16× ceiling, which
+ *     overstated earnings).
+ *   • floor — provider base reward (PR #282) by verified-memory tier, ramped by
+ *     uptime, added ON TOP of usage (additive, not max).
+ *   • elec — marginal inference watts over idle, scaled by utilization.
  */
 (function () {
   const MAC_TYPES = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac Pro"];
@@ -15,39 +23,80 @@
     { macType: "MacBook Pro", chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
     { macType: "MacBook Pro", chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 10, inferWatts: 20 },
     { macType: "MacBook Pro", chip: "M3 Pro", ramOptions: [18, 36], bandwidthGBs: 150, idleWatts: 15, inferWatts: 35 },
-    { macType: "MacBook Pro", chip: "M3 Max", ramOptions: [36, 48, 64, 96, 128], bandwidthGBs: 300, idleWatts: 20, inferWatts: 45 },
+    { macType: "MacBook Pro", chip: "M3 Max", ramOptions: [36, 48, 64, 96, 128], bandwidthGBs: 400, idleWatts: 20, inferWatts: 45 },
     { macType: "MacBook Pro", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 10, inferWatts: 20 },
     { macType: "MacBook Pro", chip: "M4 Pro", ramOptions: [24, 48], bandwidthGBs: 273, idleWatts: 12, inferWatts: 30 },
     { macType: "MacBook Pro", chip: "M4 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
     { macType: "MacBook Pro", chip: "M5", ramOptions: [16, 24, 32], bandwidthGBs: 153, idleWatts: 10, inferWatts: 20 },
-    { macType: "MacBook Pro", chip: "M5 Pro", ramOptions: [24, 48], bandwidthGBs: 307, idleWatts: 12, inferWatts: 30 },
-    { macType: "MacBook Pro", chip: "M5 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 614, idleWatts: 20, inferWatts: 50 },
+    { macType: "MacBook Pro", chip: "M5 Pro", ramOptions: [24, 48], bandwidthGBs: 300, idleWatts: 12, inferWatts: 30 },
+    { macType: "MacBook Pro", chip: "M5 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 600, idleWatts: 20, inferWatts: 50 },
     { macType: "Mac Mini", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 5, inferWatts: 10 },
     { macType: "Mac Mini", chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 5, inferWatts: 12 },
     { macType: "Mac Mini", chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 8, inferWatts: 25 },
     { macType: "Mac Mini", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 5, inferWatts: 15 },
-    { macType: "Mac Mini", chip: "M4 Pro", ramOptions: [24, 48], bandwidthGBs: 273, idleWatts: 8, inferWatts: 25 },
+    { macType: "Mac Mini", chip: "M4 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 273, idleWatts: 8, inferWatts: 25 },
     { macType: "Mac Studio", chip: "M1 Max", ramOptions: [32, 64], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
     { macType: "Mac Studio", chip: "M1 Ultra", ramOptions: [64, 128], bandwidthGBs: 800, idleWatts: 30, inferWatts: 90 },
     { macType: "Mac Studio", chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
     { macType: "Mac Studio", chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 35, inferWatts: 100 },
     { macType: "Mac Studio", chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 35, inferWatts: 110 },
     { macType: "Mac Studio", chip: "M4 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
-    { macType: "Mac Studio", chip: "M5 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 614, idleWatts: 25, inferWatts: 65 },
+    { macType: "Mac Studio", chip: "M5 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 600, idleWatts: 25, inferWatts: 65 },
     { macType: "Mac Pro", chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 40, inferWatts: 120 },
     { macType: "Mac Pro", chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 40, inferWatts: 120 },
   ];
 
   const API_BASE = "https://api.darkbloom.dev";
   const DEFAULT_OUTPUT_PRICE_MICRO = 200_000;
+  const DEFAULT_INPUT_PRICE_MICRO = 50_000;
+  // Sustained fraction of peak memory bandwidth for a single decode stream.
+  const SINGLE_STREAM_EFFICIENCY = 0.6;
+  // Continuous-batching gain over single-stream at quality-preserving
+  // concurrency (capped at 4×, not the theoretical 16× ceiling).
+  const CONTINUOUS_BATCH_FACTOR = 4;
+  // Assumed network utilization (fraction of online time actively serving).
+  const ASSUMED_UTILIZATION = 0.8;
+  // Network-observed prompt:completion token ratio (≈3.5:1 from /v1/stats).
+  const PROMPT_TO_COMPLETION_RATIO = 3.5;
+
+  // Provider base-reward floor by verified unified-memory tier (USD/mo).
+  // Mirrors coordinator/payments/baserewards/floor.go.
+  const FLOOR_TIERS = [
+    { minGB: 512, label: "512GB", floorUSD: 40 },
+    { minGB: 192, label: "192GB", floorUSD: 30 },
+    { minGB: 128, label: "128GB", floorUSD: 26 },
+    { minGB: 96, label: "96GB", floorUSD: 22 },
+    { minGB: 64, label: "64GB", floorUSD: 18 },
+    { minGB: 48, label: "48GB", floorUSD: 16 },
+    { minGB: 32, label: "32GB", floorUSD: 12 },
+    { minGB: 24, label: "24GB", floorUSD: 10 },
+    { minGB: 0, label: "Under 24GB", floorUSD: 0 },
+  ];
+  const MIN_UPTIME_FOR_AVAIL = 0.9;
+
+  function tierFloorUSD(memGB) {
+    for (const t of FLOOR_TIERS) {
+      if (memGB >= t.minGB) return t.floorUSD;
+    }
+    return 0;
+  }
+  function availFromUptime(uptimeFrac) {
+    const v = (uptimeFrac - MIN_UPTIME_FOR_AVAIL) / (1 - MIN_UPTIME_FOR_AVAIL);
+    if (v < 0) return 0;
+    if (v > 1) return 1;
+    return v;
+  }
+  function scaledFloorUSD(memGB, uptimeFrac, taper = 1) {
+    return tierFloorUSD(memGB) * availFromUptime(uptimeFrac) * taper;
+  }
 
   // CATALOG_MODELS is refreshed from the live coordinator catalog on load (see
   // DOMContentLoaded below). These static entries are a fallback for when the
   // API is unreachable; keep them to the currently-served lineup. Mirrors
-  // console-ui/src/app/earn/page.tsx (buildCatalogModels).
+  // console-ui/src/app/earn/calc.ts (buildCatalogModels).
   let CATALOG_MODELS = [
-    { id: "gpt-oss-20b", name: "GPT-OSS 20B", minRAMGB: 24, activeParamsGB: 4, modelSizeGB: 12, outputPriceMicro: 70_000, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
-    { id: "gemma-4-26b", name: "Gemma 4 26B", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 165_000, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
+    { id: "gpt-oss-20b", name: "GPT-OSS 20B", minRAMGB: 24, activeParamsGB: 4, modelSizeGB: 12, outputPriceMicro: 70_000, inputPriceMicro: 14_500, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
+    { id: "gemma-4-26b", name: "Gemma 4 26B", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 165_000, inputPriceMicro: 30_000, demandNote: "Uses the live coordinator catalog and current/default per-token pricing." },
   ];
 
   // --- Live catalog → calculator model mapping (ported from console-ui) ---
@@ -58,8 +107,6 @@
     return match ? Number(match[1]) : 27;
   }
   function catalogActiveParamsGB(m, sizeGB) {
-    // Search id, architecture, and description; accept decimal active counts
-    // ("A3.6B" or "3.6B active") before falling back to the size-based estimate.
     const text = `${m.id || ""} ${m.architecture || ""} ${m.description || ""}`;
     const active = text.match(/A(\d{1,3}(?:\.\d+)?)B/i) || text.match(/(\d{1,3}(?:\.\d+)?)B\s+active/i);
     if (active) return Math.max(1, Math.round(Number(active[1])));
@@ -68,8 +115,12 @@
   }
   function buildCatalogModels(models, pricing) {
     const outputPrices = {};
+    const inputPrices = {};
     if (pricing && Array.isArray(pricing.prices)) {
-      pricing.prices.forEach((p) => { outputPrices[p.model] = p.output_price; });
+      pricing.prices.forEach((p) => {
+        outputPrices[p.model] = p.output_price;
+        inputPrices[p.model] = p.input_price;
+      });
     }
     return models.map((m) => {
       const size = Math.max(1, Math.round(catalogModelSizeGB(m)));
@@ -81,6 +132,7 @@
         activeParamsGB: catalogActiveParamsGB(m, size),
         modelSizeGB: size,
         outputPriceMicro: outputPrices[m.id] != null ? outputPrices[m.id] : DEFAULT_OUTPUT_PRICE_MICRO,
+        inputPriceMicro: inputPrices[m.id] != null ? inputPrices[m.id] : DEFAULT_INPUT_PRICE_MICRO,
       };
     });
   }
@@ -98,22 +150,24 @@
     return 0.15;
   }
 
-  function calculateModelEarnings(model, config, ramGB, hoursPerDay, elecCostPerKWh, loadedModelSizeGB = model.modelSizeGB) {
-    const freeRAM = ramGB - loadedModelSizeGB;
-    const batchSize = Math.max(1, Math.min(16, Math.floor(freeRAM / 2)));
-    const batchEff = batchSize <= 4 ? 0.8 : batchSize <= 8 ? 0.85 : 0.9;
-    const singleTokPerSec = (config.bandwidthGBs / model.activeParamsGB) * 0.6;
-    const decodeTokPerSec = singleTokPerSec * batchSize * batchEff;
-    const tokPerHour = decodeTokPerSec * 3600;
-    const revenuePerHour = (tokPerHour / 1_000_000) * (model.outputPriceMicro / 1_000_000);
+  // Per-model USAGE earnings at 100% utilization for hoursOnlinePerDay hours/day.
+  // Single-stream throughput (no batch multiplier); floor is added separately.
+  function calculateModelEarnings(model, config, hoursOnlinePerDay, elecCostPerKWh) {
+    // Effective decode = single-stream × continuous batch (4×) × utilization (80%).
+    const singleTokPerSec = (config.bandwidthGBs / model.activeParamsGB) * SINGLE_STREAM_EFFICIENCY;
+    const decodeTokPerSec = singleTokPerSec * CONTINUOUS_BATCH_FACTOR * ASSUMED_UTILIZATION;
+    const completionTokPerHour = decodeTokPerSec * 3600;
+    const promptTokPerHour = completionTokPerHour * PROMPT_TO_COMPLETION_RATIO;
+    const revenuePerHour =
+      (completionTokPerHour / 1_000_000) * (model.outputPriceMicro / 1_000_000) +
+      (promptTokPerHour / 1_000_000) * (model.inputPriceMicro / 1_000_000);
     const marginalWatts = config.inferWatts - config.idleWatts;
-    const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh;
+    const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh * ASSUMED_UTILIZATION;
     const netPerHour = revenuePerHour - elecPerHour;
-    const hoursPerMonth = hoursPerDay * 30;
+    const hoursPerMonth = hoursOnlinePerDay * 30;
     const monthlyRevenue = revenuePerHour * hoursPerMonth;
     const monthlyElec = elecPerHour * hoursPerMonth;
     const monthlyNet = netPerHour * hoursPerMonth;
-    const annualNet = monthlyNet * 12;
     const elecPercent = monthlyRevenue > 0 ? (monthlyElec / monthlyRevenue) * 100 : 0;
     return {
       modelId: model.id,
@@ -125,23 +179,27 @@
       monthlyRevenue,
       monthlyElec,
       monthlyNet,
-      annualNet,
       elecPercent,
     };
   }
 
-  function calculatePortfolioEarnings(models, config, ramGB, hoursPerDay, elecCostPerKWh) {
+  // Portfolio earnings = Σ per-model usage (models share active hours) PLUS the
+  // per-machine base-reward floor, minus electricity. total = usage + floor − elec.
+  function calculatePortfolioEarnings(models, config, ramGB, hoursOnlinePerDay, elecCostPerKWh) {
     if (!models.length) return null;
     const totalModelSizeGB = models.reduce((sum, model) => sum + model.modelSizeGB, 0);
     if (totalModelSizeGB > ramGB) return null;
-    const hoursPerModel = hoursPerDay / models.length;
+    const hoursPerModel = hoursOnlinePerDay / models.length;
     const selectedModels = models.map((model) =>
-      calculateModelEarnings(model, config, ramGB, hoursPerModel, elecCostPerKWh, totalModelSizeGB)
+      calculateModelEarnings(model, config, hoursPerModel, elecCostPerKWh)
     );
     const monthlyRevenue = selectedModels.reduce((sum, model) => sum + model.monthlyRevenue, 0);
     const monthlyElec = selectedModels.reduce((sum, model) => sum + model.monthlyElec, 0);
-    const monthlyNet = selectedModels.reduce((sum, model) => sum + model.monthlyNet, 0);
-    const activeHoursPerMonth = Math.max(1, hoursPerDay * 30);
+    const monthlyUsageNet = monthlyRevenue - monthlyElec;
+    const uptimeFrac = Math.min(1, hoursOnlinePerDay / 24);
+    const monthlyFloor = scaledFloorUSD(ramGB, uptimeFrac);
+    const monthlyNet = monthlyUsageNet + monthlyFloor;
+    const activeHoursPerMonth = Math.max(1, hoursOnlinePerDay * 30);
     return {
       modelName: models.length === 1 ? models[0].name : `${models.length} models selected`,
       selectedModels,
@@ -149,14 +207,18 @@
       totalModelSizeGB,
       hoursPerModel,
       decodeTokPerSec: selectedModels.reduce((sum, model) => sum + model.decodeTokPerSec, 0) / selectedModels.length,
-      revenuePerHour: monthlyRevenue / activeHoursPerMonth,
-      elecPerHour: monthlyElec / activeHoursPerMonth,
-      netPerHour: monthlyNet / activeHoursPerMonth,
       monthlyRevenue,
       monthlyElec,
+      monthlyUsageNet,
+      revenuePerHour: monthlyRevenue / activeHoursPerMonth,
+      elecPerHour: monthlyElec / activeHoursPerMonth,
+      netPerHour: monthlyUsageNet / activeHoursPerMonth,
+      elecPercent: monthlyRevenue > 0 ? (monthlyElec / monthlyRevenue) * 100 : 0,
+      memoryGB: ramGB,
+      uptimeFrac,
+      monthlyFloor,
       monthlyNet,
       annualNet: monthlyNet * 12,
-      elecPercent: monthlyRevenue > 0 ? (monthlyElec / monthlyRevenue) * 100 : 0,
     };
   }
 
@@ -176,7 +238,7 @@
     macType: "MacBook Pro",
     chip: "M4 Max",
     ram: 48,
-    hours: 18,
+    hours: 24,
     elecCost: detectRegionElec(),
     selectedModelIds: [],
   };
@@ -224,7 +286,7 @@
 
   function rankedModels(config, ramGB, elecCost) {
     const eligible = CATALOG_MODELS.filter((m) => m.minRAMGB <= ramGB);
-    const results = eligible.map((m) => calculateModelEarnings(m, config, ramGB, 18, elecCost));
+    const results = eligible.map((m) => calculateModelEarnings(m, config, 24, elecCost));
     results.sort((a, b) => b.monthlyNet - a.monthlyNet);
     return results;
   }
@@ -326,12 +388,12 @@
         '<span class="calc-model-net"></span>';
       row.querySelector(".calc-model-name").textContent = m.modelName;
       const netEl = row.querySelector(".calc-model-net");
-      netEl.textContent = fmtUSD(m.monthlyNet) + "/mo solo";
+      netEl.textContent = fmtUSD(m.monthlyNet) + "/mo usage";
       netEl.className = "calc-model-net " + (m.monthlyNet >= 0 ? "pos" : "neg");
       if (isBest && m.monthlyNet > 0) {
         const badge = document.createElement("span");
         badge.className = "calc-model-badge";
-        badge.textContent = "Best solo";
+        badge.textContent = "Best model";
         row.appendChild(badge);
       }
       row.onclick = () => {
@@ -358,7 +420,7 @@
         note.textContent =
           catalog.demandNote +
           (m.monthlyNet < 0
-            ? " This model loses money on your hardware — electricity exceeds revenue."
+            ? " Usage revenue is below electricity on your hardware — the base reward still applies."
             : "");
         modelList.appendChild(note);
       }
@@ -376,17 +438,31 @@
     emptyEl.style.display = "none";
     resultsEl.style.display = "block";
 
-    document.getElementById("res-model-name").textContent = result.modelName;
-    document.getElementById("res-hours").textContent = String(state.hours);
-    document.getElementById("res-monthly-net").textContent = fmtUSDWhole(result.monthlyNet);
-    document.getElementById("res-annual-net").textContent = fmtUSDWhole(result.annualNet) + " / year";
-    document.getElementById("res-decode").textContent = result.decodeTokPerSec.toFixed(1) + " tok/s avg";
-    document.getElementById("res-revenue").textContent = fmtUSD(result.monthlyRevenue);
-    document.getElementById("res-elec").textContent = "-" + fmtUSD(result.monthlyElec);
-    document.getElementById("res-elec-pct").textContent = result.elecPercent.toFixed(1) + "%";
-    document.getElementById("res-rev-hr").textContent = fmtUSD(result.revenuePerHour, 4);
-    document.getElementById("res-elec-hr").textContent = fmtUSD(result.elecPerHour, 4);
-    document.getElementById("res-net-hr").textContent = fmtUSD(result.netPerHour, 4);
+    const uptimePct = 100; // fixed: always-on, 100% utilization assumed
+    const setText = (id, text) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    };
+
+    setText("res-model-name", result.modelName);
+    setText("res-monthly-net", fmtUSDWhole(result.monthlyNet));
+    setText("res-annual-net", fmtUSDWhole(result.annualNet) + " / year");
+    setText("res-usage", fmtUSD(result.monthlyUsageNet));
+    setText("res-floor", "+ " + fmtUSD(result.monthlyFloor));
+    setText("res-total", fmtUSD(result.monthlyNet));
+    setText("res-decode", result.decodeTokPerSec.toFixed(1) + " tok/s");
+    setText("res-revenue", fmtUSD(result.monthlyRevenue));
+    setText("res-elec", "-" + fmtUSD(result.monthlyElec));
+    setText("res-elec-pct", result.elecPercent.toFixed(1) + "%");
+    setText("res-rev-hr", fmtUSD(result.revenuePerHour, 4));
+    setText("res-elec-hr", fmtUSD(result.elecPerHour, 4));
+    setText("res-net-hr", fmtUSD(result.netPerHour, 4));
+
+    const floorNote = document.getElementById("res-floor-note");
+    if (floorNote) {
+      floorNote.textContent =
+        "Includes the " + effectiveRAM + "GB base reward at " + uptimePct + "% uptime.";
+    }
   }
 
   function initPricingTableCurrency() {
@@ -398,8 +474,6 @@
         minimumFractionDigits: min ?? 2,
         maximumFractionDigits: max ?? min ?? 2,
       }).format(n);
-    // Model prices can be sub-cent (e.g. $0.015, $0.165), so allow up to 4
-    // fraction digits here instead of rounding to 2.
     document.querySelectorAll(".op,.cp").forEach((el) => {
       const m = el.textContent.trim().match(/^\$?([\d.]+)$/);
       if (m) el.textContent = fc(+m[1], 2, 4);
@@ -422,14 +496,7 @@
       elecInput.value = String(state.elecCost);
       elecInput.addEventListener("input", render);
     }
-    const hrsSlider = document.getElementById("hrs-slider");
-    if (hrsSlider) {
-      hrsSlider.addEventListener("input", (e) => {
-        state.hours = +e.target.value;
-        document.getElementById("hrs-val").textContent = String(state.hours);
-        render();
-      });
-    }
+    // Utilization & hours are fixed at 100% / always-on — no slider.
     initPricingTableCurrency();
     render();
 

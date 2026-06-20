@@ -63,11 +63,18 @@ const (
 	// when the consumer reads slowly.
 	chunkBufferSize = 256
 
-	// maxDispatchAttempts is the maximum number of provider dispatch attempts
-	// before returning an error to the consumer. The coordinator retries on
-	// the same or a different provider when the first attempt fails (e.g.
-	// backend crashed, model not loaded after idle shutdown).
-	maxDispatchAttempts = 3
+	// maxDispatchAttempts is a SAFETY CEILING on per-request provider failover,
+	// not the normal stopping point. A request keeps failing over to fresh
+	// healthy providers until one succeeds, OR candidates are exhausted (every
+	// failed provider is excluded from re-selection, so dispatchPrimary returns
+	// outcomeFailFast on the next attempt once no eligible provider remains), OR
+	// the request's deadline/context fires (run() checks r.Context() each
+	// attempt). This ceiling only guards against a pathological retry path that
+	// fails to exclude a provider (an unbounded hot loop); it is set well above
+	// any realistic per-request fault count. Retries never re-queue — only the
+	// first attempt may wait for capacity — so failover stays fast, walking the
+	// immediately-available healthy providers rather than waiting on busy ones.
+	maxDispatchAttempts = 64
 
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
 	// the coordinator launches a speculative backup dispatch. The primary
@@ -211,16 +218,30 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
-// noteInferenceError feeds the per-provider-model inference-error breaker for a
-// provider-side error received on a pending request's ErrorCh (any phase, pre-
-// or post-commit; the breaker itself only counts sickness-shaped 500/502/504)
-// and emits the cool-down metric on the transition into quarantine.
-func (s *Server) noteInferenceError(providerID string, pr *registry.PendingRequest, statusCode int) {
+// noteInferenceError feeds BOTH circuit breakers for a provider-side error
+// received on a pending request's ErrorCh (any phase, pre- or post-commit):
+//   - the shape-keyed inference-error breaker (counts only sickness-shaped
+//     500/502/504 for the (provider, model, shape) triple), and
+//   - the per-provider node-health breaker, which also counts fault-shaped
+//     503s (errStr classifies capacity-503 vs fault-503).
+//
+// It emits the cool-down metric on the inference-error transition and the
+// provider_breaker_open metric on the node-health transition into quarantine.
+// errStr is the provider's error message ("" for synthetic timeouts).
+func (s *Server) noteInferenceError(providerID string, pr *registry.PendingRequest, statusCode int, errStr string) {
 	if providerID == "" || pr == nil {
 		return
 	}
 	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode, pr.Traits.CooldownShape()) {
 		s.ddIncr("routing.cooldown_entered", []string{"model:" + pr.Model})
+	}
+	// Feed EVERY provider terminal into the per-provider node-health breaker (not
+	// just the shape-keyed 5xx the inference-error breaker counts) so a node
+	// fault-503ing ~all of its requests gets quarantined fleet-wide. errStr lets
+	// the breaker tell a capacity-503 (ignored) from a fault-503 (counted). Both
+	// breakers coexist.
+	if opened, _ := s.registry.RecordProviderOutcome(providerID, false, statusCode, errStr); opened {
+		s.ddIncr("routing.provider_breaker_open", []string{"model:" + pr.Model})
 	}
 }
 
@@ -232,6 +253,11 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 		return
 	}
 	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model, pr.Traits.CooldownShape())
+	// A clean completion proves the node is healthy — close its node-health
+	// breaker (and reset the exponential backoff) if it had tripped.
+	if _, closed := s.registry.RecordProviderOutcome(pr.ProviderID, true, 200, ""); closed {
+		s.ddIncr("routing.provider_breaker_closed", []string{"model:" + pr.Model})
+	}
 }
 
 // noteDispatchProviderError records a provider error received while the
@@ -252,9 +278,9 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 // so arms where cancelDispatch did refund are safe, and a failed pre-commit
 // attempt never reaches settlement (its channels are closed and it is neither
 // pending nor parked), so this can never double-credit against a settle.
-func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, held *[]string) (discardedHeld bool) {
+func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr string, held *[]string) (discardedHeld bool) {
 	if provider != nil {
-		s.noteInferenceError(provider.ID, pr, statusCode)
+		s.noteInferenceError(provider.ID, pr, statusCode, errStr)
 	}
 	s.refundProviderExtra(pr)
 	if held == nil || len(*held) == 0 {
@@ -1728,6 +1754,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Inject model-specific defaults from the registry: reasoning_parser
 	// and max_tokens bound. Single DB lookup (cached for platform prices).
 	maxOutputBound := defaultMaxOutputTokens
+	// modelMaxContext is the model's max context window (0 = unknown), used by the
+	// servability gate. Lifted out of the record block so it is in scope at the
+	// preflight below.
+	modelMaxContext := 0
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		// Reasoning parser from runtime_parameters.
 		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
@@ -1743,6 +1773,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if rec.MaxOutputLength > 0 {
 			maxOutputBound = rec.MaxOutputLength
 		}
+		modelMaxContext = rec.MaxContextLength
 	}
 
 	// Bound the generation so the pre-flight reservation covers it. If the
@@ -1953,6 +1984,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					rawBody, _ = marshalForwardBody(parsed)
 				}
 			}
+		}
+		// Smart early-429 for structurally-unservable long prompts
+		// (prompt+max_tokens beyond the model context window or any provider's
+		// token budget). Gated (default off) and fail-open. Runs AFTER the alias
+		// capacity fallback so an alias whose Previous build still has capacity
+		// fails over first; an unservable request is then rejected with an
+		// uptime-neutral 429 (OpenRouter fails over) instead of admit→5xx.
+		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
+			return
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			// Providers serve this model but none can ever fit it — non-retryable.
@@ -2257,9 +2297,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // Any firstChunks (held preamble + first content chunk) are written in order
 // before reading further chunks from the channel. This allows the dispatch
 // loop to "peek" at chunks for retry decisions without losing them.
-func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
+func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string, headerWritten bool) {
 	if pr.IsResponsesAPI {
-		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
+		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunks, headerWritten)
 		return
 	}
 
@@ -2269,16 +2309,12 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	// X-Request-ID is set by the logging middleware to the trace ID. The
-	// internal pr.RequestID is the per-attempt provider job UUID and may
-	// change across retries — exposing it as X-Request-ID would diverge
-	// from the access log. Surface the provider job UUID under its own
-	// header for callers who need to correlate to provider-side logs.
-	w.Header().Set("X-Inference-Job-ID", pr.RequestID)
-	w.WriteHeader(http.StatusOK)
+	// When a prefill keepalive already committed the SSE 200 header, skip the
+	// header write (a second WriteHeader would be superfluous) and stream straight
+	// into the held first chunks; otherwise write it now.
+	if !headerWritten {
+		writeSSEResponseHeader(w, pr.RequestID)
+	}
 	flusher.Flush()
 
 	// Detect Responses API format to skip appending chat-completions-style
@@ -2339,7 +2375,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error)
 						s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 						s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 						errData, _ := json.Marshal(map[string]any{
@@ -2483,7 +2519,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 			errData, _ := json.Marshal(map[string]any{
@@ -2510,18 +2546,17 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	}
 }
 
-func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
+func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string, headerWritten bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Inference-Job-ID", pr.RequestID)
-	w.WriteHeader(http.StatusOK)
+	// Skip the header write when a prefill keepalive already committed the SSE 200.
+	if !headerWritten {
+		writeSSEResponseHeader(w, pr.RequestID)
+	}
 
 	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
 	createdAt := time.Now().Unix()
@@ -2575,7 +2610,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 			emitter.emitError("provider_error", errMsg.Error)
@@ -2617,7 +2652,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error)
 						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
 						statusCode := errMsg.StatusCode
 						if statusCode == 0 {
@@ -2747,7 +2782,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error)
 			s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
 			statusCode := errMsg.StatusCode
 			if statusCode == 0 {
@@ -4609,8 +4644,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// max_output_tokens, which is Responses API only). Inject a default if
 	// unset so the pre-flight reservation bounds the generation.
 	genericMaxOutput := defaultMaxOutputTokens
-	if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec.MaxOutputLength > 0 {
-		genericMaxOutput = rec.MaxOutputLength
+	modelMaxContext := 0
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		if rec.MaxOutputLength > 0 {
+			genericMaxOutput = rec.MaxOutputLength
+		}
+		modelMaxContext = rec.MaxContextLength
 	}
 	ensureMaxTokensBound(parsed, false, genericMaxOutput)
 
@@ -4749,6 +4788,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
 			}
+		}
+		// Smart early-429 for structurally-unservable long prompts (mirrors
+		// handleChatCompletions): runs AFTER the alias capacity fallback. Gated
+		// (default off), fail-open.
+		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
+			return
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			refundReservation()
@@ -5097,6 +5142,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				s.recordWarmPoolQueueState(model)
+				s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
 				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 				refundReservation()
 				return
@@ -5340,7 +5386,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				s.sendProviderCancel(provider, requestID)
 				refundExtra()
 				refundReservation()
-				s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
+				s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error)
 				s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 				statusCode := errMsg.StatusCode
 				if statusCode == 0 {
@@ -5359,7 +5405,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
 		refundReservation()
-		s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
+		s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error)
 		s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 		statusCode := errMsg.StatusCode
 		if statusCode == 0 {
@@ -5384,6 +5430,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
 		refundReservation()
+		s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
 		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 		return
 	}
@@ -5406,7 +5453,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					s.sendProviderCancel(provider, requestID)
 					refundExtra()
 					refundReservation()
-					s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
+					s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error)
 					s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 					statusCode := errMsg.StatusCode
 					if statusCode == 0 {
@@ -5425,7 +5472,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
-			s.noteInferenceError(provider.ID, pr, errMsg.StatusCode)
+			s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error)
 			s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 			statusCode := errMsg.StatusCode
 			if statusCode == 0 {
@@ -5441,8 +5488,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundReservation()
 			// Accepted-then-silent is a provider-at-fault 504 — feed the
 			// breaker (single-attempt path: no retry here, but repeated
-			// stalls must still accumulate into the routing cooldown).
-			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout)
+			// stalls must still accumulate into the routing cooldown). No
+			// provider message on this synthetic timeout, so errStr is "".
+			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "")
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "accepted_timeout", http.StatusGatewayTimeout))
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))
@@ -5454,6 +5502,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
+			s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 			return
 		}
@@ -5493,7 +5542,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		firstChunks = []string{firstChunk}
 	}
 	if stream {
-		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
+		// The generic (/v1/completions, /v1/messages) path does not run prefill
+		// keepalives, so the SSE header has not been written yet.
+		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks, false)
 	} else {
 		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 	}

@@ -214,10 +214,14 @@ func TestProviderInferenceError(t *testing.T) {
 				conn.Write(ctx, websocket.MessageText, respData)
 			case protocol.TypeInferenceRequest:
 				reqID, _ := raw["request_id"].(string)
+				// Assert a GENUINE provider fault (5xx) propagates to the consumer
+				// unchanged. "model not loaded" is now a capacity-class cold miss
+				// that reclassifies to 429, so use an unambiguous fault string to
+				// exercise the fault-passthrough path.
 				errMsg := protocol.InferenceErrorMessage{
 					Type:       protocol.TypeInferenceError,
 					RequestID:  reqID,
-					Error:      "model not loaded",
+					Error:      "internal error",
 					StatusCode: 500,
 				}
 				errData, _ := json.Marshal(errMsg)

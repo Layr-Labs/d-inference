@@ -146,6 +146,17 @@ interface TimeSeriesBucket {
   active_providers: number;
 }
 
+interface NetworkUtilization {
+  utilization: number;
+  warm_utilization?: number;
+  token_budget_utilization?: number;
+  bottleneck_utilization?: number;
+  bottleneck_model?: string;
+  capacity_tps?: number;
+  active_requests?: number;
+  queued_requests?: number;
+}
+
 interface PlatformStats {
   total_requests: number;
   total_prompt_tokens: number;
@@ -159,6 +170,7 @@ interface PlatformStats {
   total_bandwidth_gbs: number;
   network_capacity_tps: number;
   active_power_watts?: number;
+  network_utilization?: NetworkUtilization;
   providers: ProviderStats[];
   models: ModelStats[];
   provider_locations?: ProviderLocationBucket[];
@@ -256,6 +268,13 @@ function formatNumber(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
   return n.toLocaleString();
+}
+
+function formatPercent(ratio: number): string {
+  if (!Number.isFinite(ratio) || ratio < 0) return "—";
+  const pct = ratio * 100;
+  if (pct > 0 && pct < 1) return "<1%";
+  return `${Math.round(pct)}%`;
 }
 
 function formatUSDFromMicro(value: number): string {
@@ -3063,6 +3082,11 @@ export default function StatsPage() {
   const hardwareAttested = stats.providers.filter((p) => p.trust_level === "hardware").length;
   const visibleModelCount = buildModelInventory(stats, catalogData?.aliases ?? []).length;
   const networkPowerWatts = activeNetworkPowerWatts(stats);
+  const nu = stats.network_utilization;
+  const utilizationSub =
+    nu && nu.bottleneck_model && (nu.bottleneck_utilization ?? 0) > (nu.utilization ?? 0)
+      ? `peak ${formatPercent(nu.bottleneck_utilization ?? 0)} · ${nu.bottleneck_model}`
+      : "in use";
   const tabs: Array<{ value: StatsTab; label: string }> = [
     { value: "overview", label: "Overview" },
     { value: "leaderboard", label: "Leaderboard" },
@@ -3149,6 +3173,13 @@ export default function StatsPage() {
               label="Network Power"
               value={formatPower(networkPowerWatts)}
               sub="under load"
+            />
+          )}
+          {typeof stats.network_utilization?.utilization === "number" && (
+            <MiniStat
+              label="Network Utilization"
+              value={formatPercent(stats.network_utilization.utilization)}
+              sub={utilizationSub}
             />
           )}
           <MiniStat label="GPU Cores" value={stats.total_gpu_cores.toString()} sub="Apple Silicon" />

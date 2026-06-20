@@ -890,6 +890,18 @@
     .calc-detail-grid .lbl { font-family: var(--font-mono); font-size: 10px; color: var(--grey-02); letter-spacing: 0.02em; }
     .calc-detail-grid .val { font-family: var(--font-mono); font-size: 13px; font-weight: 500; margin-top: 4px; }
     .calc-detail-grid .val.neg { color: #b91c1c; }
+    .calc-breakdown { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+    .calc-breakdown > div { text-align: center; padding: 12px; border-radius: var(--radius-sm); background: var(--off-white); border: 1px solid var(--grey-01); }
+    .calc-breakdown .lbl { font-family: var(--font-mono); font-size: 10px; color: var(--grey-03); letter-spacing: 0.02em; }
+    .calc-breakdown .val { font-family: var(--font-mono); font-size: 18px; font-weight: 600; margin-top: 4px; }
+    .calc-breakdown .sub { font-family: var(--font-mono); font-size: 9px; color: var(--grey-02); margin-top: 2px; }
+    .calc-breakdown .bd-floor .val { color: var(--eigen-blue); }
+    .calc-floor-note { font-family: var(--font-mono); font-size: 10px; color: var(--grey-03); margin-top: 12px; text-align: center; line-height: 1.5; }
+    .calc-util-note { font-family: var(--font-mono); font-size: 11px; color: var(--grey-03); line-height: 1.5; margin: 0 0 20px; padding: 10px 12px; background: var(--off-white); border-radius: var(--radius-sm); border: 1px solid var(--grey-01); }
+    .calc-floor-tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(74px, 1fr)); gap: 8px; margin-top: 12px; }
+    .calc-floor-tiers .ft { text-align: center; padding: 8px 4px; border-radius: var(--radius-sm); background: var(--off-white); border: 1px solid var(--grey-01); }
+    .calc-floor-tiers .ft .g { font-family: var(--font-mono); font-size: 10px; color: var(--grey-03); }
+    .calc-floor-tiers .ft .d { font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--black); margin-top: 2px; }
     .calc-empty {
       margin-top: 24px; padding: 24px; text-align: center; color: var(--grey-03); font-size: 14px;
       border: 1px solid var(--grey-01); border-radius: var(--radius-sm); line-height: 1.5;
@@ -1425,7 +1437,7 @@ response = client.chat.completions.create(
       <!-- Earnings Calculator (logic synced with console-ui/src/app/earn/page.tsx) -->
       <div class="calc-box rv">
         <h3>Earnings estimate</h3>
-        <p class="calc-desc">Select your hardware, model, active hours, and electricity cost to estimate provider earnings.</p>
+        <p class="calc-desc">Usage earnings (at full utilization) plus the base-reward floor your machine earns for staying online. Select your hardware, model, online hours, and electricity cost.</p>
         <div class="csec"><label class="clabel">1. Mac type</label><div class="pills" id="mac-sel"></div></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
           <div class="csec"><label class="clabel">2. Chip</label><div class="pills" id="chip-sel"></div></div>
@@ -1436,41 +1448,55 @@ response = client.chat.completions.create(
           <p class="calc-hint" id="model-hint">Auto-selected: most profitable for your hardware</p>
           <div class="calc-model-list" id="model-list"></div>
         </div>
-        <div class="calc-sliders csec">
-          <div>
-            <label class="clabel">Inference hours per day: <span id="hrs-val" style="color:var(--eigen-blue);">18</span></label>
-            <input type="range" id="hrs-slider" min="1" max="24" value="18">
+        <div class="csec" style="margin-top:8px;">
+          <label class="clabel">Electricity cost</label>
+          <div class="calc-elec-wrap">
+            <span style="font-size:14px;color:var(--grey-03);">$</span>
+            <input type="number" id="elec-cost" step="0.01" min="0" value="0.15">
+            <span style="font-size:14px;color:var(--grey-03);">/kWh</span>
           </div>
-          <div>
-            <label class="clabel">Electricity cost</label>
-            <div class="calc-elec-wrap">
-              <span style="font-size:14px;color:var(--grey-03);">$</span>
-              <input type="number" id="elec-cost" step="0.01" min="0" value="0.15">
-              <span style="font-size:14px;color:var(--grey-03);">/kWh</span>
-            </div>
-            <p class="calc-elec-hint">US avg: $0.15 · EU avg: $0.25 · CA avg: $0.22</p>
-          </div>
+          <p class="calc-elec-hint">US avg: $0.15 · EU avg: $0.25 · CA avg: $0.22 · usage assumes 80% utilization, always-on</p>
         </div>
-        <div id="calc-empty" class="calc-empty" style="display:none;">No models fit in this memory configuration. Catalog models need at least 36 GB unified memory.</div>
+        <div id="calc-empty" class="calc-empty" style="display:none;">No live catalog model fits in this memory configuration. Choose a Mac with more memory.</div>
         <div id="calc-results" class="calc-results" style="display:none;">
-          <p class="calc-serving">Serving <strong id="res-model-name">—</strong> at <span id="res-hours">18</span> hrs/day</p>
+          <p class="calc-serving">Serving <strong id="res-model-name">—</strong> (always-on, 80% utilization)</p>
           <div class="calc-results-hero">
             <p class="calc-net-label">Monthly net earnings</p>
             <p class="calc-net-big" id="res-monthly-net">$0</p>
             <p class="calc-net-annual" id="res-annual-net">$0 / year</p>
           </div>
+          <p class="calc-util-note">Usage assumes 80% utilization with continuous batching (4× concurrent requests at full speed). Real demand varies by model and time of day; the base reward covers you while the network is quiet, and usage scales up as it fills.</p>
+          <div class="calc-breakdown">
+            <div class="bd-usage"><div class="lbl">Usage (inference)</div><div class="val" id="res-usage">—</div><div class="sub">revenue − electricity</div></div>
+            <div class="bd-floor"><div class="lbl">+ Base reward</div><div class="val" id="res-floor">—</div><div class="sub">memory tier × uptime</div></div>
+            <div class="bd-total"><div class="lbl">= Total / mo</div><div class="val" id="res-total">—</div><div class="sub">usage + base reward</div></div>
+          </div>
           <div class="calc-detail-grid">
-            <div><div class="lbl">Batched decode speed</div><div class="val" id="res-decode">—</div></div>
-            <div><div class="lbl">Monthly revenue</div><div class="val" id="res-revenue">—</div></div>
+            <div><div class="lbl">Decode speed</div><div class="val" id="res-decode">—</div></div>
+            <div><div class="lbl">Monthly usage revenue</div><div class="val" id="res-revenue">—</div></div>
             <div><div class="lbl">Monthly electricity</div><div class="val neg" id="res-elec">—</div></div>
             <div><div class="lbl">Electricity % of revenue</div><div class="val" id="res-elec-pct">—</div></div>
-            <div><div class="lbl">Revenue per hour</div><div class="val" id="res-rev-hr">—</div></div>
+            <div><div class="lbl">Usage revenue per hour</div><div class="val" id="res-rev-hr">—</div></div>
             <div><div class="lbl">Electricity per hour</div><div class="val" id="res-elec-hr">—</div></div>
-            <div><div class="lbl">Net per hour</div><div class="val" id="res-net-hr">—</div></div>
+            <div><div class="lbl">Usage net per hour</div><div class="val" id="res-net-hr">—</div></div>
             <div><div class="lbl">Provider share</div><div class="val">100%</div></div>
           </div>
+          <p class="calc-floor-note" id="res-floor-note">—</p>
         </div>
-        <p id="calc-disc" style="font-family:var(--font-mono);font-size:10px;color:var(--grey-02);margin-top:16px;text-align:center;line-height:1.5;letter-spacing:0.01em;">Estimates only. Actual earnings depend on demand, model popularity, provider reputation, uptime, and local electricity cost.</p>
+        <div class="csec" style="margin-top:8px;">
+          <label class="clabel">Base reward by memory tier (paid on top of usage)</label>
+          <div class="calc-floor-tiers">
+            <div class="ft"><div class="g">24GB</div><div class="d">$10</div></div>
+            <div class="ft"><div class="g">32GB</div><div class="d">$12</div></div>
+            <div class="ft"><div class="g">48GB</div><div class="d">$16</div></div>
+            <div class="ft"><div class="g">64GB</div><div class="d">$18</div></div>
+            <div class="ft"><div class="g">96GB</div><div class="d">$22</div></div>
+            <div class="ft"><div class="g">128GB</div><div class="d">$26</div></div>
+            <div class="ft"><div class="g">192GB</div><div class="d">$30</div></div>
+            <div class="ft"><div class="g">512GB</div><div class="d">$40</div></div>
+          </div>
+        </div>
+        <p id="calc-disc" style="font-family:var(--font-mono);font-size:10px;color:var(--grey-02);margin-top:16px;text-align:center;line-height:1.5;letter-spacing:0.01em;">Estimates only. Usage assumes 80% utilization with continuous batching (4×); the live network runs lower today. Base rewards go to attested machines online ≥90% of the month, up to a fixed monthly budget — not a guarantee, and they taper as the network grows. Actual earnings depend on demand, model popularity, reputation, uptime, and local electricity cost.</p>
       </div>
 
       <!-- Paper CTA -->

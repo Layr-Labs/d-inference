@@ -53,6 +53,12 @@ import (
 	ddtracer "gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
+// defaultPrefillKeepaliveInterval is the on-by-default cadence for SSE prefill
+// keepalives. Chosen to sit below typical fetch timeouts while keeping the
+// early-commit blast radius to genuinely long prefills; tune via
+// EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (0 disables).
+const defaultPrefillKeepaliveInterval = 10 * time.Second
+
 func main() {
 	// Structured JSON logging. When Datadog is active, we wrap the handler
 	// with trace context injection so logs correlate with APM traces.
@@ -332,6 +338,38 @@ func main() {
 		}
 	}
 
+	// Routing: long-prompt fastest-tier preference. Very long prompts
+	// have a long prefill window that drives pre-first-token client cancellations
+	// (client_gone). When EIGENINFERENCE_LONG_PROMPT_TOKENS is set, the scheduler
+	// biases requests whose estimated prompt is at/above that count toward the
+	// fastest-prefill (== fastest chip tier) warm provider. Unset/<=0 keeps the
+	// routing cost behavior-neutral. SOFT ranking bias only — it never adds a hard
+	// TTFT 429. The optional EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT (default
+	// 2.0; >1 amplifies, <1 clamps to neutral) tunes how strong the bias is.
+	if v := os.Getenv("EIGENINFERENCE_LONG_PROMPT_TOKENS"); v != "" {
+		if tokens, err := strconv.Atoi(v); err == nil && tokens > 0 {
+			srv.SetLongPromptThreshold(tokens)
+			weight := registry.LongPromptPrefillWeight() // sensible default unless overridden
+			if wv := os.Getenv("EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT"); wv != "" {
+				if w, werr := strconv.ParseFloat(wv, 64); werr == nil {
+					// Pass any parsed float to the setter, which clamps values
+					// below 1.0 to the neutral 1.0 — so an operator can set 0 or
+					// 0.5 to disable the bias (as the comment above documents)
+					// instead of having it silently fall back to the strong
+					// default. Read the effective (clamped) value back for the log.
+					srv.SetLongPromptPrefillWeight(w)
+					weight = registry.LongPromptPrefillWeight()
+				} else {
+					logger.Warn("invalid EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT; using default", "value", wv, "default", weight)
+				}
+			}
+			logger.Info("long-prompt fastest-tier routing preference ENABLED via EIGENINFERENCE_LONG_PROMPT_TOKENS",
+				"threshold_tokens", tokens, "prefill_weight", weight)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_LONG_PROMPT_TOKENS; ignoring (preference stays off)", "value", v)
+		}
+	}
+
 	// Routing: per-request sustained-decode floor (tokens/sec). The quality bar is
 	// ON BY DEFAULT (15 tok/s) so the scheduler won't pack a provider into a
 	// degraded stream; it softly prefers providers that keep a newly admitted
@@ -347,6 +385,44 @@ func main() {
 	}
 	srv.SetMinDecodeTPS(minDecodeTPS)
 	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
+
+	// Smart early-429 admission gate. OFF by default (behavior-neutral).
+	// When enabled, a request whose (prompt+max_tokens) cannot fit the model
+	// context window or any provider's structural token budget is rejected with an
+	// uptime-neutral 429 at preflight instead of being admitted and 5xx'ing on the
+	// provider. The always-on dispatch-exhausted reclassification of a provider
+	// token-budget 5xx → 429 is independent of this flag.
+	if v := os.Getenv("EIGENINFERENCE_SERVABILITY_GATE"); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil && on {
+			srv.SetServabilityGate(true)
+			logger.Info("smart servability gate ENABLED via EIGENINFERENCE_SERVABILITY_GATE (unservable long prompts → early 429)")
+		} else if err != nil {
+			logger.Warn("invalid EIGENINFERENCE_SERVABILITY_GATE; gate stays off", "value", v)
+		}
+	}
+
+	// SSE keepalives during long prefill. ON by default at a 10s cadence so a long
+	// prefill never leaves the consumer connection idle long enough for OpenRouter's
+	// fetch timeout to fire and fail us over mid-prefill. The first keepalive fires
+	// one interval in, so a STREAMING request that produces its first token quickly
+	// keeps clean deferred-commit / invisible-failover — only genuinely long
+	// prefills commit HTTP 200 early and emit ": keepalive" comments. Override the
+	// cadence (or set 0 to disable) via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a
+	// Go duration); tune it below OpenRouter's fetch timeout.
+	prefillKeepalive := defaultPrefillKeepaliveInterval
+	if v := os.Getenv("EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			prefillKeepalive = d
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL; using default (want a Go duration like 5s, or 0 to disable)", "value", v, "default", defaultPrefillKeepaliveInterval.String())
+		}
+	}
+	srv.SetPrefillKeepaliveInterval(prefillKeepalive)
+	if prefillKeepalive > 0 {
+		logger.Info("prefill SSE keepalives enabled", "interval", prefillKeepalive.String())
+	} else {
+		logger.Info("prefill SSE keepalives disabled")
+	}
 
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from

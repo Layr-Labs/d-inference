@@ -805,6 +805,11 @@ public actor ProviderLoop {
         isShuttingDown = true
         if drainInflight {
             logger.info("Graceful shutdown requested; draining active inference before closing coordinator connection")
+            // The run loop has stopped consuming coordinator events, but we keep
+            // the socket open to finish in-flight responses. Tell the client to
+            // reject NEW inference requests with 503 so the coordinator reroutes
+            // them immediately instead of black-holing them for the whole drain.
+            await coordinatorClient?.beginDraining()
             // Cancel background work + preloads first, but keep the coordinator
             // socket open so in-flight responses can still be delivered while we
             // drain. `sparingInflightLoads: true` lets a request that was still

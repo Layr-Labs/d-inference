@@ -553,6 +553,13 @@ public actor CoordinatorClient {
 
     private var shutdownRequested = false
 
+    /// Set when a graceful shutdown drain has begun. The socket stays open so
+    /// in-flight responses can finish, but the `ProviderLoop` event stream is no
+    /// longer being consumed — so the receive loop rejects NEW inference requests
+    /// here with 503 (instead of yielding them into an unconsumed stream) so the
+    /// coordinator reroutes them immediately. See `beginDraining()`.
+    private var draining = false
+
     /// Mutable advertised-model list. Seeded from `config.models`; background
     /// prefetch (Layer 3) appends newly-verified builds so re-registration and
     /// reconnects pick them up without dropping the currently-served model.
@@ -639,6 +646,14 @@ public actor CoordinatorClient {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         eventContinuation?.finish()
         outboundRouter.finish()
+    }
+
+    /// Enter draining mode: keep the connection open (so in-flight responses can
+    /// still be delivered) but reject NEW inference requests with 503 from the
+    /// receive loop. Used during a graceful stop/restart, when the `ProviderLoop`
+    /// event stream is no longer consuming events but the drain has not finished.
+    public func beginDraining() {
+        draining = true
     }
 
     /// Re-register over a fresh connection carrying a device token that arrived
@@ -859,6 +874,23 @@ public actor CoordinatorClient {
         case .inferenceRequest(let request):
             let requestId = request.requestId
             logger.info("Received inference request: \(requestId)")
+
+            // Graceful drain in progress: the provider event loop has stopped
+            // consuming events, but this socket is intentionally kept open so
+            // in-flight responses can finish. Reject NEW requests with 503 right
+            // here so the coordinator reroutes them immediately instead of
+            // waiting for an inference timeout on a request that will never be
+            // processed.
+            if draining {
+                logger.info("Rejecting inference request during drain: \(requestId)")
+                let errorResponse = encodeInferenceError(
+                    requestId: requestId,
+                    error: "provider is shutting down",
+                    statusCode: 503
+                )
+                try? await ws.send(.string(errorResponse))
+                return
+            }
 
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")

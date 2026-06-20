@@ -836,7 +836,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				WHERE t.oid = 'inference_routes'::regclass
 				  AND i.indisunique
 				  AND ARRAY(
-					SELECT a.attname
+					SELECT a.attname::text
 					FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
 					JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
 					ORDER BY k.ord

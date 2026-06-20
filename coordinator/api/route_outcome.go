@@ -38,10 +38,6 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonUnknown:            {},
 }
 
-func (s *Server) updateInferenceRouteOutcome(requestID string, attempt int, outcome *store.InferenceRouteOutcome) {
-	s.updateInferenceRouteOutcomeWithModel(requestID, attempt, "", outcome)
-}
-
 func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt int, model string, outcome *store.InferenceRouteOutcome) {
 	if s == nil || s.store == nil || requestID == "" || outcome == nil {
 		return

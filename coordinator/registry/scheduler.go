@@ -1494,18 +1494,6 @@ func providerModelIDs(p *Provider) []string {
 	return ids
 }
 
-// providerCanAdmitLocked is the under-the-provider-lock admit re-check run in
-// ReserveProviderEx after a winner is selected: it re-applies every routing
-// gate (via the shared providerPassesRoutingGatesLocked — same catalog, trust,
-// privacy, challenge, shape-keyed inference-error cooldown, and trait gates as
-// selection) plus the admit-specific capacity gates (concurrency headroom and
-// non-crashed/non-reloading slot state). This guards the race where the
-// provider's state changed between snapshot and reservation. Caller holds r.mu
-// and p.mu.
-func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool) bool {
-	return r.providerCanAdmitLockedEx(p, model, traits, selfRouteOwner, false)
-}
-
 // providerCanAdmitLockedEx is providerCanAdmitLocked with an explicit
 // ignoreProviderBreaker switch. ReserveProviderEx sets it true ONLY when the
 // selected winner is itself node-health-breaker-open — which can happen only

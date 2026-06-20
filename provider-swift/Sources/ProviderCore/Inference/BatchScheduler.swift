@@ -204,6 +204,14 @@ public actor BatchScheduler {
     var performanceByBatchSize: [Int: AdaptiveBatchPerformanceBucket] = [:]
     var lastBatchSampleAt: ContinuousClock.Instant = .now
     var dynamicMaxConcurrentRequests: Int
+    /// Last concurrency cap pushed to the engine via `setMaxNumSeqs`. `-1` means
+    /// "nothing pushed yet", so the first `syncEngineConcurrency()` after a
+    /// (re)load always pushes. Reset to `-1` in `stopCurrentEngine` because a
+    /// freshly-built engine starts at its own default (`config.maxNumSeqs`), so
+    /// the cap must be re-sent even when it numerically matches the prior model.
+    /// Tracking the last-pushed value makes `syncEngineConcurrency()` a no-op
+    /// unless the effective cap actually changed (no redundant engine calls).
+    var lastPushedMaxNumSeqs: Int = -1
     var pendingSummaryCache: PendingSummary = .empty
 
     /// Memory-kind selector for `gpuMemory(_:)` in the telemetry extension.
@@ -234,7 +242,19 @@ public actor BatchScheduler {
         self.kvBudget = kvBudget
         self.diskAccountant = diskAccountant
         self.kvQuantEnabled = kvQuantEnabled
-        self.dynamicMaxConcurrentRequests = min(4, max(1, maxConcurrentRequests))
+        // Cold-start concurrency seed. Start at the configured ceiling rather
+        // than the old hard pin to 4: a startup burst of N concurrent requests
+        // has no per-batch TPS samples yet, so the adaptive ramp hasn't engaged
+        // — pinning to 4 forced e.g. 8-way load to run as two serialized waves
+        // of 4 (≈halving aggregate throughput at concurrency). The value the
+        // engine is actually told is always re-clamped to
+        // `memoryBoundMaxConcurrentRequests` (OOM gate) and `maxConcurrentRequests`
+        // inside `effectiveMaxConcurrentRequests` / `syncEngineConcurrency()`, so
+        // seeding optimistically here can never over-admit. At construction time
+        // no model is loaded (and `memoryBoundMaxConcurrentRequests` — file-private
+        // to the telemetry extension — collapses to `maxConcurrentRequests`
+        // anyway), so the ceiling IS the memory-bound value here.
+        self.dynamicMaxConcurrentRequests = max(1, maxConcurrentRequests)
     }
 
     // MARK: - Model lifecycle
@@ -404,10 +424,15 @@ public actor BatchScheduler {
         }
 
         applyPostLoadBudgets(snapshot: snapshot)
-        // Apply the conservative startup cap before admitting any request,
-        // otherwise the first few submits could run at the hard cap until
-        // the adaptive policy kicks in.
-        engine.setMaxNumSeqs(dynamicMaxConcurrentRequests)
+        // Push the effective concurrency cap to the freshly-built engine before
+        // admitting any request. `syncEngineConcurrency()` sends
+        // min(maxConcurrentRequests, dynamicMaxConcurrentRequests,
+        // memoryBoundMaxConcurrentRequests) — the SAME effective cap the
+        // heartbeat reports — and records it so later adaptive-ramp / memory
+        // updates only re-push when it actually changes. Previously the engine
+        // was told the cold-start `dynamicMaxConcurrentRequests` here ONCE and
+        // never heard the adaptive ramp, so it stayed pinned at the seed value.
+        syncEngineConcurrency()
         self.planner = makePlanner(activeTokenBudget: tokenBudgetMax)
         // Engine has no pending-queue TTL; we enforce `pendingTimeout`.
         startPendingTimeoutWatchdog()
@@ -1616,7 +1641,17 @@ public actor BatchScheduler {
             self.defaultMaxTokens = min(maxContextLength, 8192)
         }
 
-        self.dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
+        // Cold-start concurrency seed for the just-loaded model. Start at the
+        // configured ceiling, not the old hard pin to 4. The memory clamp is
+        // applied authoritatively in `effectiveMaxConcurrentRequests` /
+        // `syncEngineConcurrency()` (which `loadModel` calls immediately after
+        // this), so the engine is never told more than
+        // `memoryBoundMaxConcurrentRequests`. Seeding at the ceiling (rather than
+        // min(ceiling, memoryBound)) also lets the effective cap track a RISING
+        // memory bound instantly instead of waiting for the slow adaptive ramp to
+        // re-raise it. (`memoryBoundMaxConcurrentRequests` is file-private to the
+        // telemetry extension and not referenceable here.)
+        self.dynamicMaxConcurrentRequests = max(1, maxConcurrentRequests)
         self.performanceByBatchSize.removeAll()
         self.lastBatchSampleAt = .now
     }
@@ -2226,7 +2261,15 @@ public actor BatchScheduler {
         prefillEwmaInitialized = false
         lastModelLoadMs = 0
         performanceByBatchSize.removeAll()
-        dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
+        // Reset the cold-start seed to the configured ceiling (same rationale as
+        // the init / applyPostLoadBudgets seeds). With no model loaded the memory
+        // clamp collapses to `maxConcurrentRequests` anyway; the next load
+        // re-seeds and `syncEngineConcurrency()` re-clamps against real memory.
+        dynamicMaxConcurrentRequests = max(1, maxConcurrentRequests)
+        // Force the next load's `syncEngineConcurrency()` to push: the new engine
+        // is built fresh and starts at its own default (`config.maxNumSeqs`), so
+        // the cap must be re-sent even if it equals what the prior engine held.
+        lastPushedMaxNumSeqs = -1
     }
 
     /// Cumulative active-bridge gate, called from tests.

@@ -258,7 +258,7 @@ struct KVEngineDemo: AsyncParsableCommand {
         print("Context per stream: \(concurrencyContext) tok | decode per stream: \(maxTokens) tok")
         print("Levels: \(concurrencyLevels)\n")
 
-        func measure(kvQuantEnabled: Bool, label: String) async -> [Int: Double] {
+        func measure(kvQuantEnabled: Bool, label: String) async -> [Int: ConcurrencyThroughput] {
             print("--- \(label) ---")
             let scheduler = BatchScheduler(
                 maxConcurrentRequests: maxN,
@@ -275,7 +275,7 @@ struct KVEngineDemo: AsyncParsableCommand {
                 scheduler: scheduler, promptTokens: promptTokens,
                 concurrency: max(concurrencyLevels.max() ?? 1, 2), decodeTokens: 8)
             await cleanup()
-            var out: [Int: Double] = [:]
+            var out: [Int: ConcurrencyThroughput] = [:]
             for n in concurrencyLevels {
                 let agg = await runConcurrentBatch(
                     scheduler: scheduler,
@@ -284,8 +284,16 @@ struct KVEngineDemo: AsyncParsableCommand {
                     decodeTokens: maxTokens
                 )
                 out[n] = agg
-                print(String(format: "  N=%3d  aggregate decode tok/s = %8.2f  (per-stream %6.2f)",
-                             n, agg, agg / Double(n)))
+                // Headline is the steady-state decode rate (sum of per-stream
+                // rates); wall-clock completed-tokens/total-wall is shown for
+                // contrast — it is lower when N exceeds the engine's effective
+                // concurrency cap (later waves' queue-wait inflates the window).
+                print(String(format:
+                    "  N=%3d  steady-state decode tok/s = %8.2f (per-stream %6.2f) | wall-clock tok/s = %8.2f",
+                    n,
+                    agg.steadyStateDecodeTps,
+                    agg.steadyStateDecodeTps / Double(n),
+                    agg.wallClockDecodeTps))
                 await cleanup()
             }
             await scheduler.unloadModel()
@@ -297,11 +305,12 @@ struct KVEngineDemo: AsyncParsableCommand {
         let fp16 = await measure(kvQuantEnabled: false, label: "fp16")
         let quant = await measure(kvQuantEnabled: true, label: gptOSSAwareQuantLabel)
 
-        print("=== Aggregate decode throughput: fp16 vs \(gptOSSAwareQuantLabel) ===")
+        // Compare on the steady-state decode rate — the capacity-relevant metric.
+        print("=== Aggregate steady-state decode throughput: fp16 vs \(gptOSSAwareQuantLabel) ===")
         print("   N | fp16 tok/s | quant tok/s | ratio quant/fp16 |")
         for n in concurrencyLevels {
-            let f = fp16[n] ?? 0
-            let q = quant[n] ?? 0
+            let f = fp16[n]?.steadyStateDecodeTps ?? 0
+            let q = quant[n]?.steadyStateDecodeTps ?? 0
             let r = f > 0 ? q / f : 0
             print(String(format: "%4d | %10.2f | %11.2f | %16.3f |", n, f, q, r))
         }
@@ -314,16 +323,41 @@ struct KVEngineDemo: AsyncParsableCommand {
         let last: ContinuousClock.Instant?
     }
 
-    /// Fire `concurrency` identical streams at once; return aggregate *decode*
-    /// tok/s measured over the decode window only (first chunk to last chunk),
-    /// so prefill/queue time is excluded. This isolates steady-state decode
-    /// throughput, which is the capacity-relevant quantity.
+    /// Two distinct concurrency throughput numbers (see `runConcurrentBatch`).
+    private struct ConcurrencyThroughput {
+        /// Aggregate STEADY-STATE decode throughput: Σ over streams of
+        /// (decodeTokens / that stream's OWN first→last chunk window). Because
+        /// each stream's window starts at its own first decoded token, a stream
+        /// that had to wait for an earlier wave to finish (queue-wait + prefill)
+        /// does NOT have that idle time counted — so this isolates true
+        /// steady-state decode rate even when N exceeds the engine's concurrency
+        /// cap and streams run in serialized waves. This is the capacity-relevant
+        /// headline.
+        let steadyStateDecodeTps: Double
+        /// Wall-clock completed-tokens throughput: total decode tokens / the
+        /// GLOBAL window (earliest first chunk → latest last chunk across all
+        /// streams). This window includes later waves' queue-wait/prefill, so it
+        /// UNDER-reports steady-state decode; it reflects end-to-end wall-clock
+        /// completion throughput instead. Reported alongside for contrast.
+        let wallClockDecodeTps: Double
+    }
+
+    /// Fire `concurrency` identical streams at once and report two throughput
+    /// numbers (see `ConcurrencyThroughput`):
+    ///   (a) `steadyStateDecodeTps` — sum of per-stream decode rates, each over
+    ///       that stream's own decode window, so per-stream queue-wait/prefill is
+    ///       excluded (correct even when streams run in serialized waves).
+    ///   (b) `wallClockDecodeTps` — total decode tokens / global wall window,
+    ///       which includes later waves' queue-wait/prefill.
+    /// Pre-fix this returned only (b) as the "aggregate decode tok/s" headline,
+    /// which under-reported steady-state decode whenever concurrency exceeded the
+    /// engine's effective cap (the second wave's queue-wait inflated the window).
     private func runConcurrentBatch(
         scheduler: BatchScheduler,
         promptTokens: [Int],
         concurrency: Int,
         decodeTokens: Int
-    ) async -> Double {
+    ) async -> ConcurrencyThroughput {
         // Capture the deadline as a local so the worker tasks below don't capture
         // `self`; mirrors how `consumeStream` snapshots `generationTimeout`.
         let timeoutSeconds = generationTimeout
@@ -388,17 +422,41 @@ struct KVEngineDemo: AsyncParsableCommand {
             return out
         }
 
-        let intervalTokens = timings.reduce(0) { $0 + max($1.tokens - 1, 0) }
-        guard let firstStart = timings.compactMap({ $0.first }).min(),
-            let lastEnd = timings.compactMap({ $0.last }).max(),
-            firstStart < lastEnd
-        else {
-            return 0
+        // Convert a Duration to fractional seconds (matches the inline pattern
+        // used elsewhere in this file).
+        func secondsOf(_ duration: Duration) -> Double {
+            Double(duration.components.seconds)
+                + Double(duration.components.attoseconds) * 1e-18
         }
-        let elapsed = firstStart.duration(to: lastEnd)
-        let seconds = Double(elapsed.components.seconds)
-            + Double(elapsed.components.attoseconds) * 1e-18
-        return seconds > 0 ? Double(intervalTokens) / seconds : 0
+
+        // (a) Steady-state decode: sum each stream's own decode rate. A stream
+        // with k completed tokens spans (k - 1) inter-token intervals between its
+        // first and last chunk, so (k - 1) / window is its steady-state rate. The
+        // window starts at that stream's FIRST decoded token, so any time it spent
+        // queued/prefilling behind an earlier wave is excluded. Summing across
+        // streams gives the aggregate steady-state decode throughput.
+        let steadyStateDecodeTps = timings.reduce(0.0) { acc, t in
+            guard t.tokens >= 2, let first = t.first, let last = t.last, first < last
+            else { return acc }
+            let secs = secondsOf(first.duration(to: last))
+            return secs > 0 ? acc + Double(t.tokens - 1) / secs : acc
+        }
+
+        // (b) Wall-clock: total decode tokens / global window (earliest first
+        // chunk → latest last chunk). Includes later waves' queue-wait/prefill.
+        let intervalTokens = timings.reduce(0) { $0 + max($1.tokens - 1, 0) }
+        var wallClockDecodeTps = 0.0
+        if let firstStart = timings.compactMap({ $0.first }).min(),
+            let lastEnd = timings.compactMap({ $0.last }).max(),
+            firstStart < lastEnd {
+            let secs = secondsOf(firstStart.duration(to: lastEnd))
+            wallClockDecodeTps = secs > 0 ? Double(intervalTokens) / secs : 0
+        }
+
+        return ConcurrencyThroughput(
+            steadyStateDecodeTps: steadyStateDecodeTps,
+            wallClockDecodeTps: wallClockDecodeTps
+        )
     }
 
     // MARK: - Generation

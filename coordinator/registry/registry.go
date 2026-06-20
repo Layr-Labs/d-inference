@@ -1071,9 +1071,9 @@ type Registry struct {
 	inferenceErrorCooldowns map[inferenceErrorKey]time.Time   // cool-down expiry per (provider, model, shape)
 
 	// providerOutcomes / providerBreakerOpenUntil / providerBreakerTrips
-	// implement the per-provider (node-health) circuit breaker (DAR-335),
-	// SEPARATE from and ADDITIONAL to the shape-keyed inference-error breaker
-	// above. It quarantines a whole provider that returns GENUINE-FAULT errors
+	// implement the per-provider (node-health) circuit breaker, SEPARATE from
+	// and ADDITIONAL to the shape-keyed inference-error breaker above. It
+	// quarantines a whole provider that returns GENUINE-FAULT errors
 	// (500/502/504, or a fault-shaped 503 — "request rejected", internal error,
 	// crash, the opaque Foundation string) for ~all of its requests, regardless
 	// of model/shape — the case the inference-error breaker misses because it
@@ -3365,9 +3365,9 @@ func (r *Registry) Disconnect(id string) {
 				delete(r.pendingModelLoadStarted, key)
 			}
 		}
-		// Drop per-provider node-health breaker state (DAR-335). The id is a
-		// per-session UUID that will never recur, so its health ring, open
-		// expiry, and trip count must not linger after disconnect.
+		// Drop per-provider node-health breaker state. The id is a per-session
+		// UUID that will never recur, so its health ring, open expiry, and trip
+		// count must not linger after disconnect.
 		delete(r.providerOutcomes, id)
 		delete(r.providerBreakerOpenUntil, id)
 		delete(r.providerBreakerTrips, id)

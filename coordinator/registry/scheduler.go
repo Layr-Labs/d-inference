@@ -279,8 +279,8 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// must not have entered the shape-keyed inference-error cooldown (all folded
 	// into providerCanAdmitLocked) between snapshot and reservation.
 	//
-	// DAR-335 fail-open: if the winner is itself node-health-breaker-open, it can
-	// only have been chosen by selectBestCandidateLockedFull's breaker-bypassed
+	// Fail-open: if the winner is itself node-health-breaker-open, it can only
+	// have been chosen by selectBestCandidateLockedFull's breaker-bypassed
 	// fallback pass (the normal pass excludes breaker-open providers). Carry that
 	// fail-open decision into the admit re-check so the breaker does not reject
 	// the very candidate the safety valve selected. All under r.mu (held), so the
@@ -342,8 +342,8 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // Returns (winner, candidateCount, capacityRejections, modelTooLargeRejections,
 // visionRejections, ttftRejections, bestTTFTMs).
 //
-// FAIL-OPEN SAFETY VALVE (DAR-335): selection runs in two passes. Pass 1 honors
-// the per-provider node-health breaker. If pass 1 finds ZERO candidates AND the
+// FAIL-OPEN SAFETY VALVE: selection runs in two passes. Pass 1 honors the
+// per-provider node-health breaker. If pass 1 finds ZERO candidates AND the
 // breaker rejected at least one provider for this model, pass 2 re-runs the
 // whole scan with the breaker BYPASSED (ignoreProviderBreaker=true) — so a bad
 // fleet-wide rollout that fault-503s every node can never deroute the entire
@@ -368,7 +368,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 }
 
 // selectBestCandidateScanLocked is one pass of candidate selection. When
-// ignoreProviderBreaker is true the DAR-335 node-health breaker gate is skipped
+// ignoreProviderBreaker is true the node-health breaker gate is skipped
 // (every other structural/privacy/capacity/trait gate still applies). It
 // additionally returns breakerRejected: how many providers were dropped while
 // their node-health breaker was OPEN on this pass — the signal
@@ -749,7 +749,7 @@ func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, t
 
 // providerPassesRoutingGatesLockedEx is providerPassesRoutingGatesLocked with an
 // explicit ignoreProviderBreaker switch. When ignoreProviderBreaker is true it
-// skips ONLY the DAR-335 per-provider node-health breaker; every other gate
+// skips ONLY the per-provider node-health breaker; every other gate
 // still applies. It exists solely for the selectBestCandidateLockedFull
 // fail-open fallback pass, so a fleet-wide fault rollout that trips the breaker
 // on every provider can never deroute the entire fleet. Every other caller goes
@@ -774,8 +774,8 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if r.inferenceErrorCooldownActiveLocked(p.ID, model, traits.CooldownShape(), now) {
 		return false
 	}
-	// Skip a provider quarantined by the per-provider node-health breaker
-	// (DAR-335): a node returning GENUINE-FAULT errors (500/502/504 or a
+	// Skip a provider quarantined by the per-provider node-health breaker: a
+	// node returning GENUINE-FAULT errors (500/502/504 or a
 	// fault-shaped 503) for ~all of its requests is sick regardless of model or
 	// shape, so it is derouted fleet-wide. This catches the node that fault-503s
 	// every request — invisible to the shape-keyed inference-error breaker above
@@ -836,7 +836,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits Requ
 // snapshotProviderLockedEx is snapshotProviderLocked with an explicit
 // ignoreProviderBreaker switch threaded into the routing gate. Only the
 // selectBestCandidateLockedFull fail-open fallback pass sets it true (to bypass
-// the DAR-335 node-health breaker); every other caller uses the default
+// the node-health breaker); every other caller uses the default
 // (breaker-honored) wrapper above.
 func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool) (routingSnapshot, bool) {
 	now := time.Now()
@@ -1599,7 +1599,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// (non-self-route) requests, so selfRouteOwner is false — private-only
 		// machines are excluded unconditionally.
 		//
-		// ignoreProviderBreaker=true (DAR-335): the per-provider node-health
+		// ignoreProviderBreaker=true: the per-provider node-health
 		// breaker is a SELECTION-time gate that fails open in the dispatch path
 		// (selectBestCandidateScanLocked / ReserveProviderEx). The preflight must
 		// fail open on it too — otherwise an all-breaker-open fleet reports 0

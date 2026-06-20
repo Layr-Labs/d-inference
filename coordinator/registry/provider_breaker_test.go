@@ -106,8 +106,8 @@ func TestProviderOutcomeIsFault(t *testing.T) {
 
 // --- breaker behavior ---
 
-// Regression for DAR-335: a node returning genuine faults for ~all of its
-// requests must be quarantined. Five consecutive faults open the breaker.
+// A node returning genuine faults for ~all of its requests must be quarantined.
+// Five consecutive faults open the breaker.
 func TestProviderBreakerConsecutiveTrip(t *testing.T) {
 	r := New(testLogger())
 	const id = "p1"

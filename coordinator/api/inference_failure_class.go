@@ -9,8 +9,8 @@ import "strings"
 // KV-cache / context overflow, OOM, a slot cap, an update drain, queue/overload
 // backpressure, or a cold "model not loaded" miss.
 //
-// Split intent (DAR-336): provider 5xx are NOT blanket-reclassified. A crash is
-// OUR failure and must stay 5xx; only capacity-class conditions become a 429.
+// Split intent: provider 5xx are NOT blanket-reclassified. A crash is OUR
+// failure and must stay 5xx; only capacity-class conditions become a 429.
 //
 //   - BUCKET A — capacity/lifecycle ⇒ return TRUE. When the dispatch path
 //     exhausts all attempts with such an error, the coordinator reclassifies the

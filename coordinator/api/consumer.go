@@ -215,8 +215,8 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 // received on a pending request's ErrorCh (any phase, pre- or post-commit):
 //   - the shape-keyed inference-error breaker (counts only sickness-shaped
 //     500/502/504 for the (provider, model, shape) triple), and
-//   - the per-provider node-health breaker (DAR-335), which also counts
-//     fault-shaped 503s (errStr classifies capacity-503 vs fault-503).
+//   - the per-provider node-health breaker, which also counts fault-shaped
+//     503s (errStr classifies capacity-503 vs fault-503).
 //
 // It emits the cool-down metric on the inference-error transition and the
 // provider_breaker_open metric on the node-health transition into quarantine.
@@ -228,8 +228,8 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode, pr.Traits.CooldownShape()) {
 		s.ddIncr("routing.cooldown_entered", []string{"model:" + pr.Model})
 	}
-	// DAR-335 per-provider node-health breaker: feed EVERY provider terminal
-	// (not just the shape-keyed 5xx the inference-error breaker counts) so a node
+	// Feed EVERY provider terminal into the per-provider node-health breaker (not
+	// just the shape-keyed 5xx the inference-error breaker counts) so a node
 	// fault-503ing ~all of its requests gets quarantined fleet-wide. errStr lets
 	// the breaker tell a capacity-503 (ignored) from a fault-503 (counted). Both
 	// breakers coexist.
@@ -246,8 +246,8 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 		return
 	}
 	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model, pr.Traits.CooldownShape())
-	// DAR-335: a clean completion proves the node is healthy — close its
-	// node-health breaker (and reset the exponential backoff) if it had tripped.
+	// A clean completion proves the node is healthy — close its node-health
+	// breaker (and reset the exponential backoff) if it had tripped.
 	if _, closed := s.registry.RecordProviderOutcome(pr.ProviderID, true, 200, ""); closed {
 		s.ddIncr("routing.provider_breaker_closed", []string{"model:" + pr.Model})
 	}

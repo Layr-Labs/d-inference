@@ -2,7 +2,7 @@ package api
 
 import "testing"
 
-// TestIsCapacityClassProviderError pins the capacity-vs-fault split (DAR-336).
+// TestIsCapacityClassProviderError pins the capacity-vs-fault split.
 //
 // BUCKET A (capacity/lifecycle) → true: the provider admitted/attempted the
 // request then rejected it for a capacity reason (token budget / KV-cache /

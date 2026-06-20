@@ -10,7 +10,7 @@ import Testing
     port = 8100
     """)
 
-    #expect(config.backend.maxModelSlots == 3)
+    #expect(config.backend.maxModelSlots == 1)
 }
 
 @Test func configParsingUsesCustomMaxModelSlots() throws {

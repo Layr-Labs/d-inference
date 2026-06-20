@@ -3,6 +3,8 @@ package registry
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // An idle provider that has the model on disk (serving a DIFFERENT model) is a
@@ -79,5 +81,25 @@ func TestColdSpillProvidersZeroWhenLoadPending(t *testing.T) {
 
 	if n := reg.ColdSpillProviders(model, RequestTraits{}, false); n != 0 {
 		t.Fatalf("ColdSpillProviders = %d, want 0 (load already pending)", n)
+	}
+}
+
+func TestColdSpillProvidersZeroForUnassignedModelPool(t *testing.T) {
+	reg := New(testLogger())
+	assigned := "cold-spill-assigned"
+	unassigned := "cold-spill-unassigned"
+	p := makeSchedulerProvider(t, reg, "cold-wrong-pool", assigned, 80)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: unassigned, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity = nil
+	p.WarmModels = nil
+	p.CurrentModel = ""
+	p.mu.Unlock()
+
+	if n := reg.ColdSpillProviders(unassigned, RequestTraits{}, false); n != 0 {
+		t.Fatalf("ColdSpillProviders = %d, want 0 for unassigned pool", n)
+	}
+	if got := reg.PoolRejectedProviderCount(unassigned, RequestTraits{}, false); got != 1 {
+		t.Fatalf("PoolRejectedProviderCount = %d, want 1", got)
 	}
 }

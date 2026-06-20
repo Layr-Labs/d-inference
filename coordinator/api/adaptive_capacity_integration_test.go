@@ -104,6 +104,7 @@ func adaptiveChatRequest(ctx context.Context, baseURL, model string, maxTokens i
 func TestAdaptiveCapacityIntegrationHeartbeatMaxConcurrencyDrivesMultiModelRouting(t *testing.T) {
 	ts, reg := setupAdaptiveCapacityIntegration(t)
 	defer ts.Close()
+	reg.SetModelPoolEnforcement(false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -151,6 +152,7 @@ func TestAdaptiveCapacityIntegrationHeartbeatMaxConcurrencyDrivesMultiModelRouti
 func TestAdaptiveCapacityIntegrationQueueDrainUsesHeartbeatSlotCaps(t *testing.T) {
 	ts, reg := setupAdaptiveCapacityIntegration(t)
 	defer ts.Close()
+	reg.SetModelPoolEnforcement(false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -79,6 +79,8 @@ type NetworkUtilization struct {
 	QueuedRequests    int     `json:"queued_requests"`
 
 	Models          []ModelUtilization `json:"models"`
+	ModelPools      []ModelPoolMetrics `json:"model_pools"`
+	ModelPoolAudit  ModelPoolAudit     `json:"model_pool_audit"`
 	GeneratedAt     time.Time          `json:"generated_at"`
 	WarmDataAgeSecs float64            `json:"warm_data_age_seconds"` // staleness of warm-pool snapshot (0 = none)
 	HasWarmPoolData bool               `json:"has_warm_pool_data"`
@@ -215,7 +217,9 @@ func (r *Registry) NetworkUtilizationSnapshot() NetworkUtilization {
 	caps := r.ModelCapacitySnapshot()
 	snaps, snapAt := r.LatestWarmPoolSnapshots()
 	fleet := r.FleetCapacitySnapshot()
-	return computeNetworkUtilization(caps, snaps, fleet, snapAt, time.Now())
+	util := computeNetworkUtilization(caps, snaps, fleet, snapAt, time.Now())
+	util.ModelPools, util.ModelPoolAudit = r.ModelPoolMetricsSnapshot()
+	return util
 }
 
 // computeNetworkUtilization is the pure core, split out for unit testing without

@@ -202,7 +202,7 @@ Provider state lives in several fields that are read by different code paths wit
 - `CurrentModel` is set from heartbeat `active_model`. A nil/omitted `active_model` means no model is loaded. Stale `CurrentModel` can cause attestation hash mismatches.
 - `pendingModelLoads` is only checked by `TriggerModelSwaps` planning. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `freeMemoryAdmits`. Do not assume pending-load state affects routing decisions.
 - Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
-- Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
+- Providers default to one model slot for public serving. Operators can opt into more with `backend.maxModelSlots`; do not assume a model swap evicts all other models when multi-slot is explicitly enabled.
 - The provider's `ensureModelLoaded` requires `estimatedMemoryGb * 3.0` headroom. The coordinator's `freeMemoryAdmits` uses a different (less conservative) check. A model the coordinator admits can still fail on the provider side.
 
 ### Coordinator Mutation Checklist

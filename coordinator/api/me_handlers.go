@@ -94,6 +94,9 @@ type myProvider struct {
 	BackendCapacity *protocol.BackendCapacity `json:"backend_capacity,omitempty"`
 	WarmModels      []string                  `json:"warm_models,omitempty"`
 	CurrentModel    string                    `json:"current_model,omitempty"`
+	AssignedPool    string                    `json:"assigned_pool,omitempty"`
+	ActivePools     []string                  `json:"active_pools,omitempty"`
+	ResidentSlots   int                       `json:"resident_slots,omitempty"`
 	PendingRequests int                       `json:"pending_requests"`
 	MaxConcurrency  int                       `json:"max_concurrency"`
 	PrefillTPS      float64                   `json:"prefill_tps,omitempty"`
@@ -302,7 +305,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if live == nil {
 			live = liveByIdentity[recordIdentity(&deduped[i])]
 		}
-		mp := buildMyProvider(&deduped[i], live)
+		mp := s.buildMyProvider(&deduped[i], live)
 		out = append(out, mp)
 		seenIDs[deduped[i].ID] = true
 		if live != nil {
@@ -316,7 +319,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if liveMatchesEmittedIdentity(p, out) {
 			continue
 		}
-		out = append(out, buildMyProvider(nil, p))
+		out = append(out, s.buildMyProvider(nil, p))
 	}
 	return out, nil
 }
@@ -455,7 +458,7 @@ func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {
 // buildMyProvider merges a persisted record with the live registry snapshot.
 // Either may be nil (a never-connected stored record OR a fresh registration
 // that hasn't been persisted yet), but at least one must be non-nil.
-func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvider {
+func (s *Server) buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvider {
 	mp := myProvider{Status: "never_seen"}
 
 	// 1. Start from the persisted record (covers offline machines).
@@ -528,6 +531,8 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 
 	// 2. Overlay the live snapshot if present.
 	if live != nil {
+		var assignedPoolSeed string
+		var activePoolSeeds []string
 		live.Mu().Lock()
 		mp.ID = live.ID
 		if live.AccountID != "" {
@@ -604,6 +609,8 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		}
 		mp.WarmModels = append([]string{}, live.WarmModels...)
 		mp.CurrentModel = live.CurrentModel
+		assignedPoolSeed = live.AssignedPool
+		activePoolSeeds = activePoolSeedsFromLive(live.BackendCapacity, live.WarmModels, live.CurrentModel)
 		// Reputation snapshot.
 		mp.Reputation = myReputation{
 			Score:              live.Reputation.Score(),
@@ -619,9 +626,57 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// Concurrency limit lookup acquires its own lock.
 		mp.PendingRequests = live.PendingCount()
 		mp.MaxConcurrency = live.MaxConcurrency()
+		mp.AssignedPool = s.registry.ModelPoolKey(assignedPoolSeed)
+		mp.ActivePools = modelPoolKeys(s.registry, activePoolSeeds)
+		mp.ResidentSlots = len(activePoolSeeds)
 	}
 
 	return mp
+}
+
+func activePoolSeedsFromLive(capacity *protocol.BackendCapacity, warmModels []string, currentModel string) []string {
+	seen := make(map[string]struct{})
+	var seeds []string
+	add := func(model string) {
+		if model == "" {
+			return
+		}
+		if _, ok := seen[model]; ok {
+			return
+		}
+		seen[model] = struct{}{}
+		seeds = append(seeds, model)
+	}
+	if capacity != nil {
+		for _, slot := range capacity.Slots {
+			if slot.State == "running" || slot.State == "idle" {
+				add(slot.Model)
+			}
+		}
+		return seeds
+	}
+	for _, model := range warmModels {
+		add(model)
+	}
+	add(currentModel)
+	return seeds
+}
+
+func modelPoolKeys(reg *registry.Registry, models []string) []string {
+	seen := make(map[string]struct{})
+	var pools []string
+	for _, model := range models {
+		pool := reg.ModelPoolKey(model)
+		if pool == "" {
+			continue
+		}
+		if _, ok := seen[pool]; ok {
+			continue
+		}
+		seen[pool] = struct{}{}
+		pools = append(pools, pool)
+	}
+	return pools
 }
 
 // handleDeleteMyProvider handles DELETE /v1/me/providers/{serial}.

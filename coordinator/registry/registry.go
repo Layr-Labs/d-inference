@@ -369,6 +369,10 @@ type Provider struct {
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
 	CurrentModel string   // model currently being served
+	// AssignedPool is the coordinator-managed public model pool seed for this
+	// connection. The rendered pool is modelPoolKeyLocked(AssignedPool), so an
+	// alias desired/previous build stays in the same pool across version rollout.
+	AssignedPool string
 
 	// Live system metrics from heartbeats
 	SystemMetrics protocol.SystemMetrics
@@ -1097,6 +1101,7 @@ type Registry struct {
 
 	cacheAffinity        *cacheAffinityTracker
 	cacheAffinityBonusMs float64
+	enforceModelPools    bool
 	warmPool             *warmPoolController
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
@@ -1164,6 +1169,7 @@ func New(logger *slog.Logger) *Registry {
 		evictStrikes:             make(map[string]int),
 		cacheAffinity:            newCacheAffinityTracker(cacheAffinityTTL),
 		cacheAffinityBonusMs:     defaultCacheAffinityBonusMs,
+		enforceModelPools:        true,
 		logger:                   logger,
 	}
 }
@@ -1800,6 +1806,9 @@ func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSeri
 // slot required — they load on first demand). Caller holds r.mu (RLock) and p.mu.
 func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
 	if !r.providerServesCatalogModelLocked(p, buildID) {
+		return false
+	}
+	if !r.providerAssignedToModelPoolLocked(p, buildID, allowPrivate) {
 		return false
 	}
 	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
@@ -2664,6 +2673,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		}
 	}
 	p.mu.Unlock()
+	r.assignProviderModelPool(id)
 
 	r.PersistProviderThrottled(p)
 	// Persist accumulated uptime (throttled) so it survives restarts/reconnects;
@@ -2686,19 +2696,27 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 // does not block waiting for the load to complete. The provider replies
 // asynchronously with a load_model_status message.
 func (r *Registry) SendLoadModel(providerID, modelID string) error {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	if ok {
+		p.mu.Lock()
+		allowed := r.providerAssignedToModelPoolLocked(p, modelID, false)
+		p.mu.Unlock()
+		if !allowed {
+			r.mu.RUnlock()
+			return fmt.Errorf("provider %q is not assigned to model pool for %q", providerID, modelID)
+		}
+	}
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerID)
+	}
 	if r.loadModelSender != nil {
 		if err := r.loadModelSender(providerID, modelID); err != nil {
 			return err
 		}
 		r.logger.Info("sent load_model to provider", "provider_id", providerID, "model_id", modelID)
 		return nil
-	}
-
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("provider %q not found", providerID)
 	}
 
 	msg := protocol.LoadModelMessage{
@@ -2832,11 +2850,15 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 			advertised[m.ID] = struct{}{}
 		}
 	}
+	assignedPool := r.assignProviderModelPoolLocked(p)
 	p.mu.Unlock()
 
 	var entries []protocol.DesiredModelEntry
 	for alias, t := range r.modelAliases {
 		if t.Desired == "" {
+			continue
+		}
+		if assignedPool != "" && assignedPool != r.modelPoolKeyLocked(t.Desired) {
 			continue
 		}
 		_, hasDesired := advertised[t.Desired]
@@ -2971,6 +2993,9 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return false
 	}
+	if !r.providerAssignedToModelPoolLocked(p, model, false) {
+		return false
+	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == model {
@@ -3049,6 +3074,9 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {
+		return 0, false
+	}
+	if !r.providerAssignedToModelPoolLocked(p, model, false) {
 		return 0, false
 	}
 
@@ -3137,12 +3165,18 @@ func (r *Registry) providerHasPendingLoad(providerID string) bool {
 func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
 	if !ok {
+		r.mu.RUnlock()
 		return
 	}
 
 	p.mu.Lock()
+	if !r.providerAssignedToModelPoolLocked(p, modelID, false) {
+		p.mu.Unlock()
+		r.mu.RUnlock()
+		return
+	}
+	r.mu.RUnlock()
 	defer p.mu.Unlock()
 	for _, wm := range p.WarmModels {
 		if wm == modelID {
@@ -3160,7 +3194,7 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	//
 	// We only add/update the new model's slot and leave existing slots
 	// untouched — the provider may have multiple model slots loaded
-	// simultaneously (maxModelSlots defaults to 3). The next heartbeat
+	// simultaneously when explicitly configured. The next heartbeat
 	// will provide the authoritative slot list.
 	if p.BackendCapacity != nil {
 		found := false
@@ -4489,26 +4523,29 @@ func (r *Registry) Snapshot() FleetSnapshot {
 
 // ModelCapacity describes the live capacity for a single model.
 type ModelCapacity struct {
-	ModelID              string  `json:"id"`
-	Ready                bool    `json:"ready"`                  // at least one routable provider with headroom
-	CanAccept            bool    `json:"can_accept"`             // ready AND queue not full
-	RoutableProviders    int     `json:"routable_providers"`     // passed all gates
-	WarmProviders        int     `json:"warm_providers"`         // model loaded (slot state "running" or "idle")
-	RunningProviders     int     `json:"running_providers"`      // model loaded with active requests (slot state "running")
-	ColdProviders        int     `json:"cold_providers"`         // model available but not loaded
-	ActiveRequests       int     `json:"active_requests"`        // in-flight across fleet
-	QueuedRequests       int     `json:"queued_requests"`        // waiting in coordinator queue
-	QueueLimit           int     `json:"queue_limit"`            // max queue depth per model
-	AggregateTPS         float64 `json:"aggregate_tps"`          // sum of effective decode TPS
-	EstimatedTTFTMs      int64   `json:"estimated_ttft_ms"`      // best-case TTFT from lowest-cost warm provider
-	TokenBudgetRemaining int64   `json:"token_budget_remaining"` // aggregate free budget across providers
-	TokenBudgetTotal     int64   `json:"token_budget_total"`     // aggregate total budget
+	ModelID               string  `json:"id"`
+	AssignedPool          string  `json:"assigned_pool"`
+	AssignedPoolProviders int     `json:"assigned_pool_providers"`
+	Ready                 bool    `json:"ready"`                  // at least one routable provider with headroom
+	CanAccept             bool    `json:"can_accept"`             // ready AND queue not full
+	RoutableProviders     int     `json:"routable_providers"`     // passed all gates
+	WarmProviders         int     `json:"warm_providers"`         // model loaded (slot state "running" or "idle")
+	RunningProviders      int     `json:"running_providers"`      // model loaded with active requests (slot state "running")
+	ColdProviders         int     `json:"cold_providers"`         // model available but not loaded
+	ActiveRequests        int     `json:"active_requests"`        // in-flight across fleet
+	QueuedRequests        int     `json:"queued_requests"`        // waiting in coordinator queue
+	QueueLimit            int     `json:"queue_limit"`            // max queue depth per model
+	AggregateTPS          float64 `json:"aggregate_tps"`          // sum of effective decode TPS
+	EstimatedTTFTMs       int64   `json:"estimated_ttft_ms"`      // best-case TTFT from lowest-cost warm provider
+	TokenBudgetRemaining  int64   `json:"token_budget_remaining"` // aggregate free budget across providers
+	TokenBudgetTotal      int64   `json:"token_budget_total"`     // aggregate total budget
 }
 
 // providerCapSnap is a per-provider snapshot collected under the registry
 // lock, then aggregated into ModelCapacity outside the lock.
 type providerCapSnap struct {
 	model                 string
+	assignedPool          string
 	warm                  bool
 	running               bool
 	hasHeadroom           bool // pending < maxConcurrency
@@ -4578,6 +4615,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			if !r.modelAllowedByCatalogLocked(m) {
 				continue
 			}
+			if !r.providerAssignedToModelPoolLocked(p, m.ID, false) {
+				continue
+			}
 			hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(m.ID)
 			// Count only pending requests for this specific model, not the
 			// total across all models. Using the total inflates
@@ -4591,6 +4631,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 			snap := providerCapSnap{
 				model:          m.ID,
+				assignedPool:   r.modelPoolKeyLocked(m.ID),
 				hasHeadroom:    hasHeadroom,
 				effectiveTPS:   decodeTPS,
 				prefillTPS:     prefillTPS,
@@ -4637,17 +4678,19 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 	// Phase 2: aggregate per-model outside the lock.
 	type modelAgg struct {
-		routable         int
-		warm             int
-		running          int
-		cold             int
-		activeRequests   int
-		aggregateTPS     float64
-		budgetRemaining  int64
-		budgetTotal      int64
-		bestWarmTTFTMs   int64 // -1 = not set
-		bestColdTTFTMs   int64 // -1 = not set
-		anyImmediateSlot bool  // at least one provider with headroom
+		assignedPool      string
+		assignedProviders int
+		routable          int
+		warm              int
+		running           int
+		cold              int
+		activeRequests    int
+		aggregateTPS      float64
+		budgetRemaining   int64
+		budgetTotal       int64
+		bestWarmTTFTMs    int64 // -1 = not set
+		bestColdTTFTMs    int64 // -1 = not set
+		anyImmediateSlot  bool  // at least one provider with headroom
 	}
 	agg := make(map[string]*modelAgg)
 	for _, s := range snaps {
@@ -4656,6 +4699,8 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			a = &modelAgg{bestWarmTTFTMs: -1, bestColdTTFTMs: -1}
 			agg[s.model] = a
 		}
+		a.assignedPool = s.assignedPool
+		a.assignedProviders++
 		if s.warm {
 			a.warm++
 			if s.running {
@@ -4729,20 +4774,22 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 
 		result = append(result, ModelCapacity{
-			ModelID:              model,
-			Ready:                ready,
-			CanAccept:            canAccept,
-			RoutableProviders:    a.routable,
-			WarmProviders:        a.warm,
-			RunningProviders:     a.running,
-			ColdProviders:        a.cold,
-			ActiveRequests:       a.activeRequests,
-			QueuedRequests:       queued,
-			QueueLimit:           queueLimit,
-			AggregateTPS:         a.aggregateTPS,
-			EstimatedTTFTMs:      ttft,
-			TokenBudgetRemaining: a.budgetRemaining,
-			TokenBudgetTotal:     a.budgetTotal,
+			ModelID:               model,
+			AssignedPool:          a.assignedPool,
+			AssignedPoolProviders: a.assignedProviders,
+			Ready:                 ready,
+			CanAccept:             canAccept,
+			RoutableProviders:     a.routable,
+			WarmProviders:         a.warm,
+			RunningProviders:      a.running,
+			ColdProviders:         a.cold,
+			ActiveRequests:        a.activeRequests,
+			QueuedRequests:        queued,
+			QueueLimit:            queueLimit,
+			AggregateTPS:          a.aggregateTPS,
+			EstimatedTTFTMs:       ttft,
+			TokenBudgetRemaining:  a.budgetRemaining,
+			TokenBudgetTotal:      a.budgetTotal,
 		})
 	}
 	return result

@@ -248,6 +248,7 @@ func TestPublicNameForBuild(t *testing.T) {
 
 func TestMergeProviderModelsMakesProviderServeBuild(t *testing.T) {
 	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
 	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8)) // serves only fp8
 
 	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
@@ -417,6 +418,7 @@ func TestMergeProviderModelsRejectsMissingHashAndKeepsPrevious(t *testing.T) {
 
 func TestMergeProviderModelsDoesNotDropSiblingForUnrelatedSharedAlias(t *testing.T) {
 	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
 	const (
 		oldA   = "alias-a-old"
 		shared = "shared-build"

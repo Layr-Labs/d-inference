@@ -713,6 +713,55 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 	return online, servesModel
 }
 
+// OwnedProviderEligible reports whether the account owns at least one online
+// machine that can serve `model` for THIS request's shape. Unlike
+// OwnedProviderSummary (which only answers "serves the model at all", for error
+// messaging), it applies the exact gates the dispatcher uses for an owner
+// self-route: the serial allowlist, the per-provider routing/trait gates via
+// snapshotProviderLockedEx with the hardware-trust floor relaxed only for the
+// owner's own machine, and the vision gate. The prefer→self-route downgrade
+// uses it so a zero-balance owner is pinned to their own machine only when that
+// machine can actually satisfy the request (model + serials + vision + tools) —
+// never when the downgrade would strand the request on an ineligible owned
+// provider with no candidate and no paid fallback.
+func (r *Registry) OwnedProviderEligible(accountID, model string, traits RequestTraits, requiresVision bool, allowedSerials []string) bool {
+	if accountID == "" {
+		return false
+	}
+	allowedSet := make(map[string]struct{}, len(allowedSerials))
+	for _, s := range allowedSerials {
+		allowedSet[s] = struct{}{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		// Ownership + allowlist first (both take p.mu internally), mirroring the
+		// candidate filter in selectBestCandidateScanLocked.
+		if !providerOwnedBy(p, accountID) {
+			continue
+		}
+		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
+			continue
+		}
+		// relaxTrust=true: the owner's own (possibly un-enrolled) machine. The
+		// snapshot applies every privacy/runtime/challenge/trait gate, so a
+		// render-broken or below-floor (tools) build is excluded here.
+		if _, ok := r.snapshotProviderLockedEx(p, model, traits, true, false); !ok {
+			continue
+		}
+		if requiresVision {
+			p.mu.Lock()
+			servesVision := r.providerServesVisionModelLocked(p, model)
+			p.mu.Unlock()
+			if !servesVision {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // logRoutingDecision emits a structured debug-level record of the
 // winning candidate and its cost breakdown. Cheap when the level is
 // disabled, since slog short-circuits before formatting.

@@ -400,6 +400,46 @@ func TestSelfRoute_PreferZeroBalanceNoOwnedMachineStill402(t *testing.T) {
 	}
 }
 
+// TestSelfRoute_PreferSpendCappedOwnerServedFree is the regression for the
+// Codex review finding: a spend-capped key must not pre-empt the owned-machine
+// downgrade. An owner whose key has an exhausted spend cap (and who would
+// otherwise get insufficient_quota before the balance check) sending prefer,
+// with an owned machine that serves the model, must be served for free.
+func TestSelfRoute_PreferSpendCappedOwnerServedFree(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "capped-owner"
+	zeroCap := int64(0) // any spend exceeds a $0 cap
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "capped", LimitMicroUSD: &zeroCap})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	// Even with a healthy balance, the $0 spend cap would reject a paid request.
+	_ = st.Credit(owner, 100_000_000, store.LedgerDeposit, "test-setup")
+	initial := ledger.Balance(owner)
+
+	model := "capped-owner-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("prefer status = %d, want 200 (spend cap must not block the owned-machine downgrade)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	// Free self-route spends nothing, so the cap is never touched.
+	if bal := ledger.Balance(owner); bal != initial {
+		t.Errorf("owner balance = %d, want %d (own machine must be net free)", bal, initial)
+	}
+}
+
 // TestSelfRoute_PreferFallsBackToPaid: with prefer and an owner who owns NO
 // machine, the request falls back to the paid public fleet and is charged —
 // unlike exclusive self-route, which would 409. "Never a dead end."

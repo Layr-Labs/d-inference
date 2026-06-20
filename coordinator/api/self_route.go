@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // This file holds the consumer-side "use my own machine, for free" (self-route)
@@ -66,21 +68,26 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 
 // downgradePreferToSelfRoute converts a PREFER request into an EXCLUSIVE
 // self-route when the owner can't afford the paid fallback but their own
-// machine can serve the model right now. This is what lets a zero-balance
+// machine can serve THIS request right now. This is what lets a zero-balance
 // provider-owner keep using their own Mac for free: instead of a 402, the
 // request is pinned to the owner's online machine (free, no paid fallback).
 //
+// Eligibility is the full request shape (model + serial allowlist + vision +
+// tools), not just "owns a provider for the model": if the owned machine can't
+// actually satisfy the request, we must NOT downgrade — doing so would strand an
+// exclusive self-route with no candidate (and no paid fallback) instead of
+// preserving the precise 402/error.
+//
 // It mutates policy in place and reports whether the downgrade happened. The
-// downgrade only fires for PREFER requests (never a normal paid request), and
-// only when an owned machine currently serves the model — so billing integrity
-// holds: the request can no longer settle on the paid fleet, and if the machine
-// drops between here and dispatch, the exclusive self-route pre-flight returns a
-// precise 503 rather than handing out free public inference.
-func (s *Server) downgradePreferToSelfRoute(policy *selfRoutePolicy, model string) bool {
+// downgrade only fires for PREFER requests (never a normal paid request) — so
+// billing integrity holds: the request can no longer settle on the paid fleet,
+// and if the machine drops between here and dispatch, the exclusive self-route
+// pre-flight returns a precise 503 rather than handing out free public inference.
+func (s *Server) downgradePreferToSelfRoute(policy *selfRoutePolicy, model string, traits registry.RequestTraits, requiresVision bool, allowedSerials []string) bool {
 	if policy == nil || !policy.prefer || policy.ownerAccountID == "" {
 		return false
 	}
-	if _, servesModel := s.registry.OwnedProviderSummary(policy.ownerAccountID, model); servesModel == 0 {
+	if !s.registry.OwnedProviderEligible(policy.ownerAccountID, model, traits, requiresVision, allowedSerials) {
 		return false
 	}
 	policy.enabled = true

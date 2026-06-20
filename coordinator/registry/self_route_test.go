@@ -179,6 +179,62 @@ func TestOwnedProviderSummary(t *testing.T) {
 	}
 }
 
+// TestOwnedProviderEligible verifies the trait/vision/serial-aware owner
+// eligibility gate used by the prefer→self-route downgrade. Unlike
+// OwnedProviderSummary it must reject an owned machine that serves the model but
+// can't satisfy the actual request shape.
+func TestOwnedProviderEligible(t *testing.T) {
+	reg := New(testLogger())
+	model := "eligible-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	setProviderAccount(mine, "acct-A")
+	setSchedulerProviderSerial(mine, "SERIAL-A")
+
+	// Plain request: owned + serving → eligible.
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("plain request: owned serving machine should be eligible")
+	}
+	// Different account / empty account never matches.
+	if reg.OwnedProviderEligible("acct-B", model, RequestTraits{}, false, nil) {
+		t.Fatal("acct-B must not match acct-A's machine")
+	}
+	if reg.OwnedProviderEligible("", model, RequestTraits{}, false, nil) {
+		t.Fatal("empty account must never match")
+	}
+	// Unknown model → not eligible.
+	if reg.OwnedProviderEligible("acct-A", "other-model", RequestTraits{}, false, nil) {
+		t.Fatal("machine that doesn't serve the model must not be eligible")
+	}
+
+	// Serial allowlist: a non-matching serial excludes the machine; a matching
+	// one admits it.
+	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, []string{"SERIAL-OTHER"}) {
+		t.Fatal("serial allowlist miss must exclude the owned machine")
+	}
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, []string{"SERIAL-A"}) {
+		t.Fatal("serial allowlist hit must admit the owned machine")
+	}
+
+	// Tools trait: a below-floor binary (empty version) is gated for a
+	// tool-bearing request, even though it serves the model for plain text.
+	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{HasTools: true}, false, nil) {
+		t.Fatal("below-floor binary must be ineligible for a tools request")
+	}
+	mine.mu.Lock()
+	mine.Version = "0.6.3" // first version meeting the tools floor
+	mine.mu.Unlock()
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{HasTools: true}, false, nil) {
+		t.Fatal("at-floor binary must be eligible for a tools request")
+	}
+
+	// Vision: this machine advertises only a text build, so a vision request is
+	// ineligible (a downgrade here would strand the request).
+	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, true, nil) {
+		t.Fatal("text-only machine must be ineligible for a vision request")
+	}
+}
+
 func setProviderPrivateOnly(p *Provider) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

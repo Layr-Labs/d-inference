@@ -157,6 +157,13 @@ public actor BatchScheduler {
     var budgetCollapsedSince: ContinuousClock.Instant?
     /// When the last request completed successfully (since the current load).
     var lastSuccessAt: ContinuousClock.Instant?
+    /// When a request was last rejected at admission BEFORE any `activeBridges`
+    /// entry existed — the early token-budget guards and the per-request KV
+    /// reservation failure. A pinned KV pool rejects real traffic at exactly
+    /// those sites, so it has no active/queued bridge to prove demand; the
+    /// liveness watchdog reads a recent value here as DEMAND so the pin is
+    /// detectable. Reset on each load (it is per-load demand state).
+    var lastAdmissionRejectAt: ContinuousClock.Instant?
     /// When the watchdog last triggered a recovery restart (cooldown anchor).
     var lastSelfRestartAt: ContinuousClock.Instant?
     /// Minimum gap between recovery restarts, so a still-degraded backend can't
@@ -1737,6 +1744,9 @@ public actor BatchScheduler {
         await reclaimPoolForTokenBudget(requestBudget: requestBudget)
         let budgetMax = tokenBudgetMax
         guard requestBudget <= budgetMax else {
+            // Rejected before any bridge exists — record demand for the liveness
+            // watchdog (a pinned pool is detectable only via this signal).
+            noteAdmissionReject()
             continuation.yield(.error(
                 "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"
             ))
@@ -1746,6 +1756,7 @@ public actor BatchScheduler {
 
         let activeUsed = activeTokenBudgetUsed
         if activeUsed + requestBudget > budgetMax {
+            noteAdmissionReject()
             continuation.yield(.error(
                 "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax - activeUsed) available"
             ))
@@ -1805,6 +1816,10 @@ public actor BatchScheduler {
         )
         guard kvOutcome != .failed else {
             await dropBridge(requestId: id)
+            // The per-request KV reservation failed (collapsed headroom): the
+            // bridge is dropped, so this too returns with no active entry. Record
+            // demand for the liveness watchdog.
+            noteAdmissionReject()
             continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
             continuation.finish()
             return stream
@@ -1908,6 +1923,9 @@ public actor BatchScheduler {
         await reclaimPoolForTokenBudget(requestBudget: requestBudget)
         let budgetMax = tokenBudgetMax
         guard requestBudget <= budgetMax else {
+            // Rejected before any bridge exists — record demand for the liveness
+            // watchdog (a pinned pool is detectable only via this signal).
+            noteAdmissionReject()
             continuation.yield(.error(
                 "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"
             ))
@@ -1928,6 +1946,7 @@ public actor BatchScheduler {
         // bridge via `dropBridge(...)`.
         let activeUsed = activeTokenBudgetUsed
         if activeUsed + requestBudget > budgetMax {
+            noteAdmissionReject()
             continuation.yield(.error(
                 "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax - activeUsed) available"
             ))
@@ -1990,6 +2009,10 @@ public actor BatchScheduler {
         )
         guard kvOutcome != .failed else {
             await dropBridge(requestId: id)
+            // The per-request KV reservation failed (collapsed headroom): the
+            // bridge is dropped, so this too returns with no active entry. Record
+            // demand for the liveness watchdog.
+            noteAdmissionReject()
             continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
             continuation.finish()
             return stream
@@ -2233,6 +2256,7 @@ public actor BatchScheduler {
         livenessState = .healthy
         budgetCollapsedSince = nil
         lastSuccessAt = nil
+        lastAdmissionRejectAt = nil
     }
 
     /// Cumulative active-bridge gate, called from tests.

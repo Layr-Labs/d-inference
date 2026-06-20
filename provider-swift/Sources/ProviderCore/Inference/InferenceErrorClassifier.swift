@@ -36,6 +36,11 @@ func classifyInferenceErrorReason(_ error: Error) -> String? {
     let described = String(describing: error)
     let localized = error.localizedDescription
     let typeName = String(reflecting: type(of: error))
+    // PRIVACY: `haystack` (and `described`) may embed prompt-derived text — a
+    // Jinja `TemplateException`'s `String(describing:)` can include the offending
+    // rendered template fragment. It is used ONLY to derive the normalized label
+    // returned below; it is never returned, logged, or transmitted. NEVER log
+    // `haystack` / `described` directly — emit the classified `reason` instead.
     let haystack = described + "\n" + localized + "\n" + typeName
 
     // DAR-341 — Harmony assistant message carried raw <|channel|> tags. MUST be
@@ -71,16 +76,22 @@ func classifyInferenceErrorReason(_ error: Error) -> String? {
 /// "reasoning_content": ...]`) — the same representation handed to
 /// `applyChatTemplate`. Scans the `content`, `thinking`, and `reasoning_content`
 /// string fields, mirroring the fields the Harmony template rejects.
+///
+/// Scope is restricted to `assistant` messages so the diagnostic matches both
+/// the Harmony guard (which only `raise_exception`s on assistant turns) and the
+/// sanitizer scope (`stripHarmonyFramingFromMessage`, also assistant-only). A
+/// `<|channel|>` token in a user/system/tool message neither trips the guard nor
+/// is stripped, so reporting it would be a misleading diagnostic.
 func offendingHarmonyMessageLocation(
     in messages: [[String: any Sendable]]
 ) -> (index: Int, role: String)? {
     let marker = "<|channel|>"
     let textKeys = ["content", "thinking", "reasoning_content"]
     for (index, message) in messages.enumerated() {
+        guard (message["role"] as? String) == "assistant" else { continue }
         for key in textKeys {
             if let text = message[key] as? String, text.contains(marker) {
-                let role = (message["role"] as? String) ?? "unknown"
-                return (index: index, role: role)
+                return (index: index, role: "assistant")
             }
         }
     }

@@ -109,14 +109,29 @@ private struct DescribedError: Error, CustomStringConvertible {
     #expect(location?.role == "assistant")
 }
 
-@Test func offendingLocationReturnsFirstMatch() {
+@Test func offendingLocationReturnsFirstAssistantMatch() {
+    // A <|channel|> tag in a USER message neither trips the Harmony guard nor is
+    // sanitized (the strip is assistant-only), so the diagnostic skips it and
+    // reports the first ASSISTANT message carrying raw framing — keeping the
+    // scan scope aligned with the strip scope.
     let messages: [[String: any Sendable]] = [
         ["role": "user", "content": "earliest <|channel|> here"],
         ["role": "assistant", "content": "later <|channel|> too"],
     ]
     let location = offendingHarmonyMessageLocation(in: messages)
-    #expect(location?.index == 0)
-    #expect(location?.role == "user")
+    #expect(location?.index == 1)
+    #expect(location?.role == "assistant")
+}
+
+@Test func offendingLocationIgnoresNonAssistantRoles() {
+    // <|channel|> tags in non-assistant roles are not guard-relevant and not
+    // stripped, so they must not be flagged as the offending message.
+    let messages: [[String: any Sendable]] = [
+        ["role": "system", "content": "raw <|channel|> in system"],
+        ["role": "user", "content": "raw <|channel|> in user"],
+        ["role": "tool", "content": "raw <|channel|> in tool"],
+    ]
+    #expect(offendingHarmonyMessageLocation(in: messages) == nil)
 }
 
 @Test func offendingLocationReturnsNilWhenNoChannelTags() {

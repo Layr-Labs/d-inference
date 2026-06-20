@@ -2,12 +2,12 @@
  * Provider earnings calculator — keep in sync with console-ui/src/app/earn/calc.ts
  *
  * Earnings model: total = usage + floor − electricity
- *   • usage — realistic SINGLE-STREAM decode at 100% utilization (no batch
- *     multiplier: at the utilization the network actually sees a machine serves
- *     ~one request at a time, so the old 16×-batch ceiling overstated earnings).
+ *   • usage — realistic throughput at 80% utilization, crediting continuous
+ *     batching at a quality-preserving 4× (not the old 16× ceiling, which
+ *     overstated earnings).
  *   • floor — provider base reward (PR #282) by verified-memory tier, ramped by
  *     uptime, added ON TOP of usage (additive, not max).
- *   • elec — marginal inference watts over idle while online.
+ *   • elec — marginal inference watts over idle, scaled by utilization.
  */
 (function () {
   const MAC_TYPES = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac Pro"];
@@ -51,6 +51,11 @@
   const DEFAULT_INPUT_PRICE_MICRO = 50_000;
   // Sustained fraction of peak memory bandwidth for a single decode stream.
   const SINGLE_STREAM_EFFICIENCY = 0.6;
+  // Continuous-batching gain over single-stream at quality-preserving
+  // concurrency (capped at 4×, not the theoretical 16× ceiling).
+  const CONTINUOUS_BATCH_FACTOR = 4;
+  // Assumed network utilization (fraction of online time actively serving).
+  const ASSUMED_UTILIZATION = 0.8;
   // Network-observed prompt:completion token ratio (≈3.5:1 from /v1/stats).
   const PROMPT_TO_COMPLETION_RATIO = 3.5;
 
@@ -148,14 +153,16 @@
   // Per-model USAGE earnings at 100% utilization for hoursOnlinePerDay hours/day.
   // Single-stream throughput (no batch multiplier); floor is added separately.
   function calculateModelEarnings(model, config, hoursOnlinePerDay, elecCostPerKWh) {
-    const decodeTokPerSec = (config.bandwidthGBs / model.activeParamsGB) * SINGLE_STREAM_EFFICIENCY;
+    // Effective decode = single-stream × continuous batch (4×) × utilization (80%).
+    const singleTokPerSec = (config.bandwidthGBs / model.activeParamsGB) * SINGLE_STREAM_EFFICIENCY;
+    const decodeTokPerSec = singleTokPerSec * CONTINUOUS_BATCH_FACTOR * ASSUMED_UTILIZATION;
     const completionTokPerHour = decodeTokPerSec * 3600;
     const promptTokPerHour = completionTokPerHour * PROMPT_TO_COMPLETION_RATIO;
     const revenuePerHour =
       (completionTokPerHour / 1_000_000) * (model.outputPriceMicro / 1_000_000) +
       (promptTokPerHour / 1_000_000) * (model.inputPriceMicro / 1_000_000);
     const marginalWatts = config.inferWatts - config.idleWatts;
-    const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh;
+    const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh * ASSUMED_UTILIZATION;
     const netPerHour = revenuePerHour - elecPerHour;
     const hoursPerMonth = hoursOnlinePerDay * 30;
     const monthlyRevenue = revenuePerHour * hoursPerMonth;

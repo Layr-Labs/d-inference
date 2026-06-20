@@ -8,13 +8,11 @@
  *
  *   total = usage + floor − electricity
  *
- *   • usage    — realistic SINGLE-STREAM decode throughput, assuming 100%
- *                utilization (the machine is busy serving the whole time it is
- *                online). We deliberately do NOT multiply by a batch factor: at
- *                the utilization the network actually sees, a machine serves
- *                ~one request at a time (quality-first scheduling), so the
- *                16×-batch "ceiling" the old calculator used was unreachable in
- *                practice and overstated earnings by ~10–20×.
+ *   • usage    — realistic THROUGHPUT at a fixed 80% utilization, where the
+ *                throughput credits continuous batching at a quality-preserving
+ *                4× (NOT the 16× ceiling the old calculator used — that
+ *                overstated earnings by ~10–20×). Utilization and hours are
+ *                fixed by product direction and not exposed to the user.
  *   • floor    — the provider base-reward earnings floor (PR #282), set by
  *                verified-memory tier, ramped by uptime. Added ON TOP of usage
  *                (additive), not max(usage, floor).
@@ -93,11 +91,28 @@ export const DEFAULT_INPUT_PRICE_MICRO_USD = 50_000; // $0.05 / 1M input tokens
 export const SINGLE_STREAM_EFFICIENCY = 0.6;
 
 /**
+ * Continuous-batching gain over single-stream at quality-preserving
+ * concurrency (provider-swift BatchScheduler sustains multiple requests in a
+ * single fused decode step without dropping per-user latency). Capped at 4× —
+ * NOT the theoretical 16× ceiling — to stay within the concurrency the engine
+ * holds while keeping decode latency acceptable.
+ */
+export const CONTINUOUS_BATCH_FACTOR = 4;
+
+/**
+ * Assumed network utilization (fraction of time the machine is actively
+ * serving a request while online). 100% would mean a request every second;
+ * 80% leaves realistic idle gaps between requests at the demand level the
+ * calculator targets. Fixed by product direction — not exposed to the user.
+ */
+export const ASSUMED_UTILIZATION = 0.8;
+
+/**
  * Network-observed prompt:completion token ratio (≈3.5:1 from /v1/stats:
  * total_prompt_tokens / total_completion_tokens). Decode throughput limits
- * completion tokens; the matching prompt tokens are prefilled "for free" (prefill
- * is far faster than decode) and are also billed, so we credit input revenue at
- * this ratio.
+ * completion tokens; the matching prompt tokens are prefilled "for free"
+ * (prefill is far faster than decode) and are also billed, so we credit input
+ * revenue at this ratio.
  */
 export const PROMPT_TO_COMPLETION_RATIO = 3.5;
 
@@ -248,17 +263,23 @@ export function calculateModelEarnings(
 ): ModelEarnings {
   const { activeParamsGB, outputPriceMicro, inputPriceMicro } = model;
 
-  // Single-stream decode: bandwidth-bound, one request at a time. NO batch
-  // multiplier — see file header.
-  const decodeTokPerSec = (config.bandwidthGBs / activeParamsGB) * SINGLE_STREAM_EFFICIENCY;
+  // Effective decode throughput = single-stream × continuous batch × assumed
+  // utilization. The batch factor (4×) credits the engine's continuous batching
+  // at quality-preserving concurrency; the utilization (80%) leaves realistic
+  // idle gaps. See file header.
+  const singleTokPerSec = (config.bandwidthGBs / activeParamsGB) * SINGLE_STREAM_EFFICIENCY;
+  const decodeTokPerSec =
+    singleTokPerSec * CONTINUOUS_BATCH_FACTOR * ASSUMED_UTILIZATION;
   const completionTokPerHour = decodeTokPerSec * 3600;
   const promptTokPerHour = completionTokPerHour * PROMPT_TO_COMPLETION_RATIO;
   const revenuePerHour =
     (completionTokPerHour / 1_000_000) * (outputPriceMicro / 1_000_000) +
     (promptTokPerHour / 1_000_000) * (inputPriceMicro / 1_000_000);
 
+  // Marginal electricity: the machine is actually inferring at `utilization`
+  // of online time; the rest it sits at idle (no marginal draw).
   const marginalWatts = config.inferWatts - config.idleWatts;
-  const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh;
+  const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh * ASSUMED_UTILIZATION;
   const netPerHour = revenuePerHour - elecPerHour;
 
   const hoursPerMonth = hoursOnlinePerDay * 30;

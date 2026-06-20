@@ -17,6 +17,8 @@ import {
   fmtUSD,
   fmtUSDWhole,
   SINGLE_STREAM_EFFICIENCY,
+  CONTINUOUS_BATCH_FACTOR,
+  ASSUMED_UTILIZATION,
   PROMPT_TO_COMPLETION_RATIO,
 } from "./calc";
 import Link from "next/link";
@@ -36,10 +38,10 @@ import {
 } from "lucide-react";
 
 /* ─── Fixed assumptions ─── */
-// 100% utilization + always-on: the machine serves a request every second it
-// is online, 24/7. We deliberately don't expose utilization or hours to the
-// user — this is the optimistic ceiling the calculator estimates, and the
-// base-reward floor covers the gap to realistic (lower) demand.
+// 80% utilization + always-on, with continuous batching at a quality-preserving
+// 4×. We deliberately don't expose utilization or hours to the user — this is
+// the realistic "busy machine" figure the calculator estimates, and the
+// base-reward floor is added on top.
 const ALWAYS_ON_HOURS = 24;
 
 function comparisonIcon(text: string) {
@@ -550,7 +552,7 @@ export default function EarnPage() {
                       <span className="font-mono text-text-secondary">
                         {result.modelName}
                       </span>{" "}
-                      (always-on, 100% utilization)
+                      (always-on, {Math.round(ASSUMED_UTILIZATION * 100)}% utilization)
                     </p>
                     {result.selectedModelCount > 1 && (
                       <p className="text-xs text-text-tertiary mt-1">
@@ -560,14 +562,14 @@ export default function EarnPage() {
                   </div>
                 </div>
 
-                {/* 100% utilization assumption note */}
+                {/* Utilization & batching assumption note */}
                 <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-bg-tertiary mb-5">
                   <Info size={14} className="text-text-tertiary shrink-0 mt-0.5" />
                   <p className="text-xs text-text-tertiary">
-                    Usage assumes <span className="text-text-secondary font-medium">100% utilization</span>{" "}
-                    — your Mac serving a request every second it&apos;s online. The live network runs
-                    well below that today, which is exactly what the base reward is for: it covers you
-                    while demand ramps, and usage takes over as the network fills up.
+                    Usage assumes <span className="text-text-secondary font-medium">{Math.round(ASSUMED_UTILIZATION * 100)}% utilization</span>{" "}
+                    with continuous batching ({CONTINUOUS_BATCH_FACTOR}× concurrent requests at full speed).
+                    Real demand varies by model and time of day — the base reward covers you while the
+                    network is quiet, and usage scales up as it fills.
                   </p>
                 </div>
 
@@ -690,15 +692,19 @@ export default function EarnPage() {
                   {result.selectedModels[0] && (
                     <>
                       <p>
-                        decode_tok/s = ({selectedConfig.bandwidthGBs} GB/s / {result.selectedModels[0].activeParamsGB} GB) * {SINGLE_STREAM_EFFICIENCY} ={" "}
-                        {result.selectedModels[0].decodeTokPerSec.toFixed(1)} tok/s (single stream)
+                        single_stream = ({selectedConfig.bandwidthGBs} GB/s / {result.selectedModels[0].activeParamsGB} GB) * {SINGLE_STREAM_EFFICIENCY} ={" "}
+                        {((selectedConfig.bandwidthGBs / result.selectedModels[0].activeParamsGB) * SINGLE_STREAM_EFFICIENCY).toFixed(1)} tok/s
+                      </p>
+                      <p>
+                        decode_tok/s = single_stream * {CONTINUOUS_BATCH_FACTOR}x batch * {Math.round(ASSUMED_UTILIZATION * 100)}% util ={" "}
+                        {result.selectedModels[0].decodeTokPerSec.toFixed(1)} tok/s
                       </p>
                       <p>
                         usage_rev/hr = decode_tok/hr * out_price + (decode_tok/hr * {PROMPT_TO_COMPLETION_RATIO} prompt) * in_price ={" "}
                         {fmtUSD(result.revenuePerHour, 4)}
                       </p>
                       <p>
-                        electricity/hr = ({result.selectedModels[0].marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh ={" "}
+                        electricity/hr = ({result.selectedModels[0].marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh * {Math.round(ASSUMED_UTILIZATION * 100)}% ={" "}
                         {fmtUSD(result.elecPerHour, 4)}
                       </p>
                       <p>
@@ -758,7 +764,7 @@ export default function EarnPage() {
           {/* Disclaimer */}
           <div className="rounded-xl bg-bg-secondary p-5 mb-8">
             <p className="text-xs text-text-tertiary mb-2">
-              <span className="font-medium text-text-secondary">These are estimates only.</span> Usage earnings assume 100% utilization (your Mac fully busy while online); actual usage depends on network demand, model popularity, your provider reputation, and how many other providers serve the same model. The live network currently runs well below full utilization.
+              <span className="font-medium text-text-secondary">These are estimates only.</span> Usage earnings assume {Math.round(ASSUMED_UTILIZATION * 100)}% utilization with continuous batching ({CONTINUOUS_BATCH_FACTOR}× concurrent requests); actual usage depends on network demand, model popularity, your provider reputation, and how many other providers serve the same model. The live network currently runs well below this.
             </p>
             <p className="text-xs text-text-tertiary mb-2">
               <span className="font-medium text-text-secondary">Base rewards</span> are paid on top of usage to attested machines that stay online ≥90% of the month, up to a fixed monthly budget — they are not a guarantee and taper off as the network grows.

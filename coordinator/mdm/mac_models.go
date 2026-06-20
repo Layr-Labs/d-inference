@@ -21,6 +21,7 @@ package mdm
 //	M3   24GB / Pro 36 / Max 128
 //	M4   32GB / Pro 64 / Max 128 / (Mac Studio M4 Max 128, M3 Ultra 512)
 //	M5   32GB / Pro 64 / Max 128
+//	A18  8GB (MacBook Neo; earns $0 under the floor table)
 //
 // Sources cross-checked: Apple Tech Specs, EveryMac model-identifier pages,
 // AppleDB device selection. When in doubt we pick the LARGEST configuration ever
@@ -84,13 +85,8 @@ var modelMaxMemoryGB = map[string]int{
 	"Mac16,13": 32,  // MacBook Air 15" (M4, 2025)
 
 	// --- Mac Studio (2025): M4 Max + M3 Ultra ---
-	// Mac16,9 is AMBIGUOUS: it covers both the M4 Max Mac Studio (max 128GB) and
-	// the M3 Ultra Mac Studio (max 512GB). Since memory is only clamped DOWN and
-	// we do not verify exact installed memory yet, capping at 512 would let a
-	// 128GB M4 Max self-report 512GB and bank the top $40 floor. We cap
-	// conservatively at 128 until we have a stronger memory proof for genuine
-	// ≥512GB machines (a rare honest M3 Ultra is under-tiered until then).
-	"Mac16,9": 128,
+	"Mac16,9":  128, // Mac Studio (M4 Max, 2025)
+	"Mac15,14": 512, // Mac Studio (M3 Ultra, 2025) — originally configurable to 512GB
 
 	// --- M5 family (Mac17,x) ---
 	// Sources: Apple Support "Identify your MacBook Pro/Air model" + 2025/2026
@@ -102,6 +98,9 @@ var modelMaxMemoryGB = map[string]int{
 	"Mac17,8": 64,  // MacBook Pro 16" (M5 Pro, 2026)
 	"Mac17,7": 128, // MacBook Pro 14" (M5 Max, 2026)
 	"Mac17,6": 128, // MacBook Pro 16" (M5 Max, 2026)
+
+	// --- A-series Mac family ---
+	"Mac17,5": 8, // MacBook Neo (A18 Pro, 2026) — below the 24GB floor threshold
 }
 
 // ModelMaxMemoryGB returns the maximum unified memory (GB) ever shipped in the

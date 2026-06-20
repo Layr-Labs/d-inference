@@ -289,11 +289,12 @@ struct KVEngineDemo: AsyncParsableCommand {
                 // contrast — it is lower when N exceeds the engine's effective
                 // concurrency cap (later waves' queue-wait inflates the window).
                 print(String(format:
-                    "  N=%3d  steady-state decode tok/s = %8.2f (per-stream %6.2f) | wall-clock tok/s = %8.2f",
+                    "  N=%3d  decode tok/s = %8.2f | wall-clock = %8.2f | TTFT(min) = %8.1f ms | prefill tok/s = %8.1f",
                     n,
                     agg.steadyStateDecodeTps,
-                    agg.steadyStateDecodeTps / Double(n),
-                    agg.wallClockDecodeTps))
+                    agg.wallClockDecodeTps,
+                    agg.minTtftMs,
+                    agg.prefillTps))
                 await cleanup()
             }
             await scheduler.unloadModel()
@@ -319,6 +320,7 @@ struct KVEngineDemo: AsyncParsableCommand {
 
     private struct StreamTiming {
         let tokens: Int
+        let submit: ContinuousClock.Instant?
         let first: ContinuousClock.Instant?
         let last: ContinuousClock.Instant?
     }
@@ -340,6 +342,14 @@ struct KVEngineDemo: AsyncParsableCommand {
         /// UNDER-reports steady-state decode; it reflects end-to-end wall-clock
         /// completion throughput instead. Reported alongside for contrast.
         let wallClockDecodeTps: Double
+        /// Min time-to-first-token (submit → first chunk) across streams, in ms.
+        /// At N=1 this is the pure prefill + first-decode latency; the min picks
+        /// the wave-1 stream (least queue wait) as the cleanest prefill proxy.
+        let minTtftMs: Double
+        /// Prefill throughput proxy: promptTokenCount / minTTFT. TTFT includes one
+        /// decode step + scheduling, so this slightly under-reports pure prefill;
+        /// the bias shrinks as prompt length grows.
+        let prefillTps: Double
     }
 
     /// Fire `concurrency` identical streams at once and report two throughput
@@ -365,6 +375,7 @@ struct KVEngineDemo: AsyncParsableCommand {
             group in
             for i in 0..<concurrency {
                 group.addTask {
+                    let submit = ContinuousClock.now
                     let stream = await scheduler.submitTokenized(
                         promptTokens: promptTokens,
                         maxTokens: decodeTokens,
@@ -395,7 +406,7 @@ struct KVEngineDemo: AsyncParsableCommand {
                                         break
                                     }
                                 }
-                                return StreamTiming(tokens: toks, first: first, last: last)
+                                return StreamTiming(tokens: toks, submit: submit, first: first, last: last)
                             }
                             inner.addTask {
                                 try await Task.sleep(for: .seconds(timeoutSeconds))
@@ -403,7 +414,7 @@ struct KVEngineDemo: AsyncParsableCommand {
                             }
                             do {
                                 guard let result = try await inner.next() else {
-                                    return StreamTiming(tokens: 0, first: nil, last: nil)
+                                    return StreamTiming(tokens: 0, submit: submit, first: nil, last: nil)
                                 }
                                 inner.cancelAll()
                                 return result
@@ -413,7 +424,7 @@ struct KVEngineDemo: AsyncParsableCommand {
                             }
                         }
                     } catch {
-                        return StreamTiming(tokens: 0, first: nil, last: nil)
+                        return StreamTiming(tokens: 0, submit: submit, first: nil, last: nil)
                     }
                 }
             }
@@ -453,9 +464,20 @@ struct KVEngineDemo: AsyncParsableCommand {
             wallClockDecodeTps = secs > 0 ? Double(intervalTokens) / secs : 0
         }
 
+        // (c) TTFT / prefill: submit → first chunk. Min across streams (the
+        // wave-1 stream with the least queue wait) isolates prefill cost best.
+        let ttftsSec: [Double] = timings.compactMap { t in
+            guard let s = t.submit, let f = t.first, s < f else { return nil }
+            return secondsOf(s.duration(to: f))
+        }
+        let minTtftSec = ttftsSec.min() ?? 0
+        let prefillTps = minTtftSec > 0 ? Double(promptTokens.count) / minTtftSec : 0
+
         return ConcurrencyThroughput(
             steadyStateDecodeTps: steadyStateDecodeTps,
-            wallClockDecodeTps: wallClockDecodeTps
+            wallClockDecodeTps: wallClockDecodeTps,
+            minTtftMs: minTtftSec * 1000.0,
+            prefillTps: prefillTps
         )
     }
 

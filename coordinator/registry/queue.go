@@ -145,6 +145,17 @@ func (q *RequestQueue) Remove(requestID, model string) {
 	}
 }
 
+// Cancel marks a queued request as no longer interested and removes it if it is
+// still present in the queue. A concurrent drain that already popped it will see
+// DoneCh and unwind its provider reservation.
+func (q *RequestQueue) Cancel(req *QueuedRequest) {
+	if req == nil {
+		return
+	}
+	req.markDone()
+	q.Remove(req.RequestID, req.Model)
+}
+
 // PopNextFresh removes and returns the first non-stale request for a model.
 func (q *RequestQueue) PopNextFresh(model string) *QueuedRequest {
 	q.mu.Lock()

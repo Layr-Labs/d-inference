@@ -1465,7 +1465,7 @@ response = client.chat.completions.create(
             <p class="calc-net-big" id="res-monthly-net">$0</p>
             <p class="calc-net-annual" id="res-annual-net">$0 / year</p>
           </div>
-          <p class="calc-util-note">Usage assumes 80% utilization with continuous batching (4× concurrent requests at full speed). Real demand varies by model and time of day; the base reward covers you while the network is quiet, and usage scales up as it fills.</p>
+          <p class="calc-util-note">Usage assumes 80% utilization with continuous batching (2× concurrent requests at full speed). Real demand varies by model and time of day; the base reward covers you while the network is quiet, and usage scales up as it fills.</p>
           <div class="calc-breakdown">
             <div class="bd-usage"><div class="lbl">Usage (inference)</div><div class="val" id="res-usage">—</div><div class="sub">revenue − electricity</div></div>
             <div class="bd-floor"><div class="lbl">+ Base reward</div><div class="val" id="res-floor">—</div><div class="sub">memory tier × uptime</div></div>
@@ -1496,7 +1496,7 @@ response = client.chat.completions.create(
             <div class="ft"><div class="g">512GB</div><div class="d">$40</div></div>
           </div>
         </div>
-        <p id="calc-disc" style="font-family:var(--font-mono);font-size:10px;color:var(--grey-02);margin-top:16px;text-align:center;line-height:1.5;letter-spacing:0.01em;">Estimates only. Usage assumes 80% utilization with continuous batching (4×); the live network runs lower today. Base rewards go to attested machines online ≥90% of the month, up to a fixed monthly budget — not a guarantee, and they taper as the network grows. Actual earnings depend on demand, model popularity, reputation, uptime, and local electricity cost.</p>
+        <p id="calc-disc" style="font-family:var(--font-mono);font-size:10px;color:var(--grey-02);margin-top:16px;text-align:center;line-height:1.5;letter-spacing:0.01em;">Estimates only. Usage assumes 80% utilization with continuous batching (2×); the live network runs lower today. Base rewards go to attested machines online ≥90% of the month, up to a fixed monthly budget — not a guarantee, and they taper as the network grows. Actual earnings depend on demand, model popularity, reputation, uptime, and local electricity cost.</p>
       </div>
 
       <!-- Paper CTA -->

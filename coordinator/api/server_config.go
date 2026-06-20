@@ -31,7 +31,7 @@ type ServerConfig struct {
 // feature is OFF unless Enabled is true, so the default config is a no-op.
 type BaseRewardsConfig struct {
 	Enabled        bool    // EIGENINFERENCE_BASE_REWARDS
-	ReductionK     float64 // EIGENINFERENCE_BASE_REWARDS_K (1.0 = pure floor)
+	ReductionK     float64 // EIGENINFERENCE_BASE_REWARDS_K (0 = additive base income, default; 1 = legacy max backstop)
 	FloorPoolB     int64   // EIGENINFERENCE_BASE_REWARDS_POOL_MICRO (µUSD/mo cap)
 	MinUptimeFrac  float64 // EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME
 	AccountCapFrac float64 // EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP (0 = per-machine, no cap)
@@ -53,7 +53,7 @@ func ReadServerConfig() ServerConfig {
 		ServiceReservations:  env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
-			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 1.0),
+			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)
 			FloorPoolB:     int64(env.EnvInt(env.EnvPrefix+"_BASE_REWARDS_POOL_MICRO", 9_000_000_000)),
 			MinUptimeFrac:  env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_MIN_UPTIME", 0.90),
 			AccountCapFrac: env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_ACCOUNT_CAP", 0), // 0 = per-machine (no per-account cap)

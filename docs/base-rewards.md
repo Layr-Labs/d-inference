@@ -1,4 +1,4 @@
-# Base Rewards — an earnings floor that shrinks as you earn
+# Base Rewards — additive base income on top of what you earn
 
 **Status:** Design proposal · **Date:** 2026-06-06 · **Owner:** Coordinator / Payments
 
@@ -6,39 +6,58 @@
 > at least a Netflix subscription — best case, more."**
 
 This document specifies a supply-side base reward for providers during the
-cold-start period, designed around one core idea: **the base reward is reduced,
-dollar-for-dollar, by what the provider already earns from real inference.** A
-provider making money on the platform draws little or no subsidy; an idle
-provider is topped up to a floor. The subsidy therefore targets exactly the
-machines that need it and **self-liquidates** as demand grows.
+cold-start period, designed around one core idea: **the base reward is paid
+additively, on top of what the provider earns from real inference — base income,
+not a backstop.** Every eligible machine keeps 100% of its organic earnings *and*
+its full memory-tier floor; real usage is pure upside on top of a stable base.
+Cost is bounded not by clawing the base back against earnings, but by a **fixed
+monthly pool** (`FLOOR_POOL_B`, §7) and a strict **eligibility gate** (attested,
+online, actually serving — §6).
+
+An optional reduction knob `k` (default **0**) can claw the base back against
+earnings if the program ever needs to economize — `k=1` reproduces a pure
+`max(earned, floor)` backstop — but the shipped model is additive (`k=0`).
 
 It replaces the earlier `streaming.go` design (a flat `memoryBase + bandwidthBonus`
-rate paid *on top of* per-token earnings), which was unbounded, double-paid, and
-idle-farmable. See [§9 Delta](#9-delta-vs-the-previous-streaming-design).
+rate paid on top of per-token earnings), which was unbounded, double-paid, and
+idle-farmable. This design is also additive, but unlike streaming.go it is
+**pool-bounded, verified-memory-tiered, work-gated, and durably settled.**
+See [§9 Delta](#9-delta-vs-the-previous-streaming-design).
 
 ---
 
 ## 1. The question this answers
 
-> *"If you're making money through the platform, we reduce the number — does that
-> make sense?"*
+> *"If a machine is attested, online, and actually serving, should it earn a
+> stable base — even before the network is busy — and still keep everything it
+> makes from real work?"*
 
-Yes. It is the single most important property for making the subsidy affordable.
-Three reasons:
+Yes. The base reward is **additive base income**: `payout = earned + floor`. A
+provider always keeps 100% of organic earnings and receives its full tier floor
+on top. This is the strongest, simplest retention promise for cold-start, and it
+stays affordable for three reasons:
 
-1. **It means-tests the subsidy.** A fixed subsidy budget goes furthest when it
-   is spent only on providers below the floor. Paying base reward to a provider
-   already grossing more than the floor is pure waste.
-2. **It is self-liquidating.** Total subsidy = Σ of the gaps between each
-   machine's floor and its earnings. As real demand grows and earnings rise, the
-   gap — and therefore the cost — drifts to **zero on its own**, with no clawback
-   and no announcement.
-3. **It never double-pays.** The old design paid `base + usage`. This pays the
-   *greater* (or a tapered blend), so a busy machine is never handed a full base
-   on top of a full paycheck.
+1. **A hard pool cap, not a per-machine clawback.** Total spend is bounded by a
+   fixed monthly pool (`FLOOR_POOL_B`, §7), water-filled across eligible machines.
+   We bound cost at the *fleet* level instead of means-testing each machine, so
+   the promise to any one provider stays clean: your base is never cut because you
+   earned.
+2. **A real eligibility gate.** The floor goes only to attested, online machines
+   that actually serve (a passed probe or a dispatched billed job; self-route
+   excluded — §6). Idlers and self-dealers earn nothing, so additive payment is
+   not idle-farmable.
+3. **Verified, bounded valuation.** The floor is set by *verified* memory tier
+   (§3); no self-reported number can raise a payout (§3b).
+
+The trade-off is stated honestly: additive base income does **not** self-liquidate
+per machine — every eligible machine always draws its full floor, so the program
+runs near the pool cap for as long as it is on. We accept that for a simpler,
+stronger provider promise, and bound the cost with the pool and the sunset taper
+(§4b) rather than a per-machine clawback. The optional `k` knob (§2) remains if
+the economics ever demand a reduction.
 
 And it still delivers the worst-case marketing promise: the floor is what a
-machine earns when the network is silent.
+machine earns when the network is silent — and anything it earns is on top.
 
 ---
 
@@ -60,13 +79,26 @@ earns on the platform, the base is reduced by $k.*
 
 | k | Behavior | Cost | When to use |
 |---|---|---|---|
-| **1.0** | `payout = max(earned, floor)` — base is a pure backstop; it vanishes exactly when `earned = floor`. | **Cheapest.** Total draw = `Σ max(0, floor − earned)`. | **Recommended for launch.** |
-| 0.5–0.8 | Base reduces *slower* than earnings rise, so total take-home always increases with effort; base phases out at `earned = floor / k`. | Higher (you pay base + part of earnings in the ramp). | If you want to preserve marginal incentive to chase demand in the sub-floor zone. |
-| 0 | Flat `earned + floor` (the old additive model). | Unbounded. | **Never.** |
+| **0** | Flat `earned + floor` — additive base income; the full floor is paid on top of earnings. | Bounded by the pool: `Σ floor` water-filled to `≤ FLOOR_POOL_B`; does **not** self-liquidate. | **Shipped default.** |
+| 0.5–0.8 | Base reduces *slower* than earnings rise; base phases out at `earned = floor / k`. | Lower than additive, higher than `k=1`. | If you want to economize while still rewarding the sub-floor ramp. |
+| 1.0 | `payout = max(earned, floor)` — base is a pure backstop; it vanishes when `earned = floor`. | **Cheapest;** self-liquidates as demand grows. | Legacy backstop if the pool must stretch much further. |
 
 **Worked example — 64GB M4 Max, floor = $18:**
 
-*k = 1 (pure floor, recommended):*
+*k = 0 (additive base income, shipped):*
+
+| Earned / mo | Base draw | **Total payout** | Network cost |
+|---|---|---|---|
+| $0  | $18 | **$18** | $18 |
+| $9  | $18 | **$27** | $18 |
+| $18 | $18 | **$36** | $18 |
+| $30 | $18 | **$48** | $18 |
+
+The provider keeps 100% of earnings and the full $18 floor on top. Network cost
+holds at the floor (bounded by the pool); real usage is pure upside. **This is the
+"base income + keep everything you earn" mechanic.**
+
+*k = 1 (legacy max backstop):*
 
 | Earned / mo | Base draw | **Total payout** | Network cost |
 |---|---|---|---|
@@ -75,38 +107,28 @@ earns on the platform, the base is reduced by $k.*
 | $18 | $0  | **$18** | $0  |
 | $30 | $0  | **$30** | $0  |
 
-As the provider earns more, the base reduces dollar-for-dollar; total stays at
-the Netflix floor until they out-earn it, then they keep 100%. Network cost falls
-to zero. **This is the "reduce the number as you make money" mechanic.**
+Here the base reduces dollar-for-dollar and self-liquidates as the provider
+out-earns the floor — cheapest, but a weaker provider promise (a "dead zone"
+where extra usage below the floor doesn't raise take-home).
 
-*k = 0.5 (shared ramp):*
+### Recommendation: ship `k = 0` (additive base income)
 
-| Earned / mo | Base draw | **Total payout** | Network cost |
-|---|---|---|---|
-| $0  | $18.00 | **$18.00** | $18.00 |
-| $9  | $13.50 | **$22.50** | $13.50 |
-| $18 | $9.00  | **$27.00** | $9.00  |
-| $36 | $0.00  | **$36.00** | $0.00  |
+We ship `k = 0`: the full floor is paid on top of earnings. Reasons:
 
-Here total take-home always rises with earnings (no dead zone), the base phases
-out at 2× the floor, and it costs more.
+- **Strongest retention promise.** "Keep everything you earn, plus a base for
+  staying online" beats "we top you up to a floor" — there is no dead zone where
+  extra usage fails to increase take-home.
+- **The pool already bounds cost.** Spend is capped at `FLOOR_POOL_B` regardless
+  of `k`; additive just means the program runs near that cap while it is on, which
+  we accept for cold-start.
+- **The gate already prevents farming.** A machine cannot collect the floor by
+  refusing work (§6), so additivity creates no idle-income loophole.
 
-### Recommendation: ship `k = 1`
-
-The only downside of `k = 1` is the "dead zone": between $0 and the floor,
-earning an extra dollar of usage doesn't increase take-home. In a normal sales
-draw this weakens the incentive to work. **Here it doesn't matter**, because:
-
-- At alpha demand almost every machine earns ≈ $0 organically, so it sits at the
-  full floor regardless — the dead zone is empty.
-- The **eligibility gate (§6) already forces real serving** — a machine cannot
-  collect the floor by refusing work; it must pass coordinator probes / serve
-  real dispatched jobs. The incentive to serve lives in the gate, not the payout
-  curve.
-
-So `k = 1` (`payout = max(earned, floor)`) is the cheapest, cleanest, and easiest
-to explain: *"we top you up to your floor; out-earn it and you keep everything."*
-`k` can be dialed down later if you decide to reward the ramp.
+Cost honesty: unlike `k = 1`, additive base income does **not** shrink to $0 per
+machine as demand grows — budget it as a roughly flat, pool-sized line for the
+program's life, ended by the sunset taper (§4b), not by self-liquidation. If the
+pool ever needs to stretch, dial `k` up (0.5–1.0) — the mechanic is already in the
+code (`Draw(floor, earned, k)`), default `k=0`.
 
 ---
 
@@ -164,15 +186,18 @@ Notes:
 
 ---
 
-## 4. The two reductions
+## 4. The two cost levers
 
-There are two independent "reduce the number as money is made" levers. Both
-point the same direction; ship the first now, the second when revenue appears.
+There are two independent levers that bound program cost. The shipped model uses
+only the second; the first is an optional knob held in reserve.
 
-### 4a. Per-provider (the centerpiece — *your* base shrinks as *you* earn)
+### 4a. Per-provider clawback (optional — OFF by default)
 
-This is the `base_draw = max(0, floor − k · earned)` mechanic of §2. It operates
-per machine, every epoch, automatically. No configuration, no announcements.
+This is the `base_draw = max(0, floor − k · earned)` mechanic of §2, with `k`. At
+the shipped default `k = 0` it is **inactive**: the full floor is paid additively
+and a provider's base never shrinks because it earned. Setting `k > 0` turns it on
+per machine, every epoch, automatically (no configuration beyond the knob) — held
+in reserve in case the pool must stretch further than the §4b taper achieves.
 
 ### 4b. Per-network (the program sunsets as the *platform* earns)
 
@@ -207,10 +232,12 @@ against churn and "bait-and-switch" complaints.
 
 ## 5. What counts as "earned" (organic earnings)
 
-The reduction must key on **real** money, or providers will manufacture fake
-earnings to... no — the incentive runs the other way: fake earnings would
-*reduce* their base. The real risk is the inverse: fake "served work" to clear
-the **eligibility gate** (§6). Regardless, "earned" is defined tightly:
+"Earned" must be defined on **real** money — it feeds the eligibility gate (§6),
+the admin/dashboard `earned + base` breakdown, the optional `k`-clawback (§2), and
+the scarcity ranking when the pool is over-subscribed (§7). The real risk is fake
+"served work" to clear the **eligibility gate** (§6); under additive payment there
+is no incentive to fake *earnings* (they wouldn't raise the base). "Earned" is
+defined tightly:
 
 ```
 organic_earned_i = Σ ProviderEarning.AmountMicroUSD
@@ -291,11 +318,12 @@ concentration problem appears; the default is per-machine.
 
 ## 7. Budget — name one number
 
-The per-provider reduction (§2) already bounds spend in expectation, but a hard
-pool cap makes the worst case a number you can pre-commit:
+Under additive base income the pool cap is the *primary* cost control (there is no
+per-machine clawback by default), so the worst case is also the expected case — a
+number you can pre-commit:
 
 ```
-network_draw = Σ base_draw_i  ≤  FLOOR_POOL_B
+network_draw = Σ base_draw_i  ≤  FLOOR_POOL_B      // base_draw_i = floor_i at k=0
 ```
 
 | Line | Worst case |
@@ -312,14 +340,17 @@ network_draw = Σ base_draw_i  ≤  FLOOR_POOL_B
 **not** biggest-machine-first — otherwise idle 512GB boxes consume the whole pool
 and the workhorse tier the marketing is written for gets $0.
 
-### Honest note on "self-liquidating"
+### Honest note on cost (no self-liquidation)
 
-The per-machine draw extinguishes when `earned ≥ floor`, but that crossover is
-**far** above alpha demand. A 64GB Max at ~40 tok/s would need ~105% single-stream
-(≈ 35% sustained-batched) utilization to gross its own $18. So **plan this as a
-flat ~$8k/mo retention line for many months**, not a fast taper. It is real burn
-— affordable on a seed runway, correctly understood as supply-side CAC. The
-reduction guarantees it *ends* eventually; it does not make it cheap *now*.
+Additive base income (`k = 0`) does **not** self-liquidate: every eligible machine
+draws its full floor every epoch regardless of earnings, so the program runs at
+roughly the pool cap for its whole life. Even under the legacy `k = 1` backstop the
+per-machine crossover (`earned ≥ floor`) sits **far** above alpha demand — a 64GB
+Max at ~40 tok/s would need ~105% single-stream (≈ 35% sustained-batched)
+utilization to gross its own $18 — so either way this is **a flat ~$8k/mo retention
+line for many months**. Plan it as real burn: affordable on a seed runway, correctly
+understood as supply-side CAC, and ended deliberately by the §4b sunset taper (and
+optionally the `k` knob), not by self-liquidation.
 
 ---
 
@@ -329,7 +360,7 @@ reduction guarantees it *ends* eventually; it does not make it cheap *now*.
 - **The base draw** settles once at epoch close: one **idempotent** ledger entry
   per machine, entry type `provider_floor_draw`, unique key
   `(provider_key, epoch_id)`, `ON CONFLICT DO NOTHING`. The provider sees a
-  combined "earned + floor top-up" number.
+  combined "earned + base reward" number.
 - **Uptime / `avail`** computed from durable `provider_sessions` intervals
   (union overlapping rows per machine — blue-green deploys leave two open rows);
   an open session accrues only to `min(epoch_end, last_seen + 90s grace)`.
@@ -350,12 +381,12 @@ per-token.
 
 | | Old | This design |
 |---|---|---|
-| Relationship to earnings | additive (`base + usage`) | **reduced by earnings** (`max(earned, floor)`, or `k`-tapered) |
-| Total cost | unbounded (`rate × fleet × time`) | **bounded** by `FLOOR_POOL_B`; self-liquidating |
+| Relationship to earnings | additive (`base + usage`) | **additive base income** (`earned + floor`; optional `k`-clawback, default off) |
+| Total cost | unbounded (`rate × fleet × time`) | **bounded** by `FLOOR_POOL_B` (flat while on; ended by the sunset taper) |
 | Valuation | `memBase + bwBonus` (sum) on **self-reported** specs | memory-tier floor on **verified** memory |
 | Work proof | "warm model loaded" (idle-farmable) | probe / dispatched billed job; self-route excluded |
 | Durability | in-memory, lost every deploy | durable `provider_sessions` + idempotent settlement |
-| Demand coupling | none | per-provider reduction + fleet sunset taper |
+| Demand coupling | none | fleet pool cap + sunset taper (optional per-provider `k`) |
 
 **Keep:** the eligibility-gate concept, the µUSD ledger plumbing, the admin
 visibility endpoint, the rough $10–40 envelope. **Drop:** the additive rate
@@ -375,14 +406,14 @@ table, the in-memory tracker as source-of-truth, the bandwidth-bonus term.
   a deceptive-practices claim. Use "earnings floor" / "baseline while eligible."
 - **Don't call 64GB "typical."** It's the workhorse tier, not the median Mac.
 - **Make it verifiable.** Show each provider their tier, floor, uptime%, slot
-  rank, and the `earned + top-up` breakdown in the dashboard.
+  rank, and the `earned + base` breakdown in the dashboard.
 
 ---
 
 ## 11. Phased rollout
 
 **Phase 0 — bounded floor, honest gate, restart-safe (~3 wks).** Floor table +
-`k=1` reduction; eligibility gates 1, 3, 4, and the *billed-job* half of gate 5
+additive `k=0` base income (full floor on top of earnings); eligibility gates 1, 3, 4, and the *billed-job* half of gate 5
 (cheap — no new schema); `UNIQUE(job_id)` + idempotent `provider_floor_draw`
 settlement from `provider_sessions`; slot allocation protecting the workhorse
 tier; per-machine payout (per-account cap off by default). Idlers and self-dealers earn nothing
@@ -403,8 +434,9 @@ incentive from the fee pool; sunset the cold-start floor per §4b.
 
 ## 12. Open decisions
 
-1. **`k`** — ship `k = 1` (pure floor, cheapest) or `k ≈ 0.5–0.8` (preserve ramp
-   incentive, costs more)? Recommendation: **`k = 1`**.
+1. **`k` (decided)** — ship `k = 0` (additive base income: keep everything you
+   earn, plus the full floor). The `k` knob stays in the code (default 0) and can
+   be dialed up to 0.5–1.0 later to economize if pool pressure demands.
 2. **`FLOOR_POOL_B` = $9,000/mo and all-in `Z` ≈ $10,500/mo** — approve as the
    pre-committed ceiling? And a `~$40k` lifetime cap?
 3. **48GB tier** — keep at $16 marketed as "Netflix with ads," or raise to ≥$18

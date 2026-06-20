@@ -977,7 +977,7 @@ const (
 	LedgerAdminCredit    LedgerEntryType = "admin_credit"        // admin-granted non-withdrawable credit
 	LedgerAdminReward    LedgerEntryType = "admin_reward"        // admin-granted withdrawable reward
 	LedgerMigration      LedgerEntryType = "migration"           // balance moved between account identities (e.g. legacy key re-keying)
-	LedgerFloorDraw      LedgerEntryType = "provider_floor_draw" // base-rewards epoch floor top-up
+	LedgerFloorDraw      LedgerEntryType = "provider_floor_draw" // base-rewards epoch base income (additive)
 )
 
 // LedgerEntry is a single balance-changing event.

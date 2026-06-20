@@ -259,7 +259,7 @@ func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
 	setSerial(p, "S1", "Mac15,8")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
-	// $5 organic → 64GB floor $18, draw = 18-5 = $13.
+	// $5 organic + 64GB floor $18, additive (k=0) → full $18 base reward on top.
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 5_000_000, start.Add(time.Hour))}
 
 	e := newTestEngine(st, reg, clock)
@@ -267,11 +267,11 @@ func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Settled != 1 || res.TotalDrawMicroUSD != 13_000_000 {
-		t.Fatalf("happy path: got %+v, want 1 settled / 13_000_000 draw", res)
+	if res.Settled != 1 || res.TotalDrawMicroUSD != 18_000_000 {
+		t.Fatalf("happy path: got %+v, want 1 settled / 18_000_000 draw (additive full floor)", res)
 	}
-	if bal, wd := st.balance("acc1"); bal != 13_000_000 || wd != 13_000_000 {
-		t.Fatalf("credit: balance=%d withdrawable=%d, want 13_000_000 each", bal, wd)
+	if bal, wd := st.balance("acc1"); bal != 18_000_000 || wd != 18_000_000 {
+		t.Fatalf("credit: balance=%d withdrawable=%d, want 18_000_000 each", bal, wd)
 	}
 
 	// Re-run (same store) → idempotent, no double credit.
@@ -282,7 +282,7 @@ func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 	if res2.Settled != 0 || res2.AlreadySettled != 1 {
 		t.Fatalf("idempotent re-run: got %+v, want 0 settled / 1 already", res2)
 	}
-	if bal, _ := st.balance("acc1"); bal != 13_000_000 {
+	if bal, _ := st.balance("acc1"); bal != 18_000_000 {
 		t.Fatalf("re-run double-credited: balance=%d", bal)
 	}
 }

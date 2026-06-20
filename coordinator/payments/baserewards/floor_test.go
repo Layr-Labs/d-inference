@@ -83,6 +83,20 @@ func TestScaledFloor(t *testing.T) {
 	}
 }
 
+func TestDraw_K0_AdditiveDefault(t *testing.T) {
+	// k=0 (the default) is additive base income: the full floor is paid on top
+	// of earnings regardless of how much the machine earned organically.
+	if DefaultReductionK != 0.0 {
+		t.Fatalf("DefaultReductionK = %v, want 0.0 (additive base income)", DefaultReductionK)
+	}
+	const floor = 18_000_000
+	for _, earned := range []int64{0, 9_000_000, 18_000_000, 30_000_000} {
+		if got := Draw(floor, earned, DefaultReductionK); got != floor {
+			t.Errorf("Draw(%d, %d, 0) = %d, want %d (full floor, additive)", floor, earned, got, floor)
+		}
+	}
+}
+
 func TestDraw_K1(t *testing.T) {
 	// k=1, floor=$18: the base shrinks dollar-for-dollar with earnings.
 	const floor = 18_000_000

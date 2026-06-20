@@ -24,7 +24,7 @@ const defaultGraceSeconds = 90
 // deployment overrides are applied by the caller (server_config → main).
 type Config struct {
 	Enabled              bool
-	ReductionK           float64 // default 1.0 (pure floor)
+	ReductionK           float64 // default 0 (additive base income); k=1 = legacy max(earned,floor) backstop
 	PoolBudgetMicroUSD   int64   // default FloorPoolBudgetMicroUSD ($9k/mo)
 	WorkhorseReserveFrac float64 // default 0.5 — sub-pool reserved for 48–96GB
 	// PerAccountCapFrac caps any single payout account's share of the pool.
@@ -46,9 +46,10 @@ type Config struct {
 	TargetRevenueMicroUSD int64
 }
 
-// DefaultConfig returns the recommended launch configuration: k=1 pure floor,
-// $9k pool, half reserved for the workhorse tier, NO per-account cap (per-machine
-// payout), 90% uptime gate. Phase 0 leaves the taper at 1.0.
+// DefaultConfig returns the recommended launch configuration: k=0 additive base
+// income (the full floor is paid on top of organic earnings), $9k pool, half
+// reserved for the workhorse tier, NO per-account cap (per-machine payout), 90%
+// uptime gate. Phase 0 leaves the taper at 1.0.
 func DefaultConfig() Config {
 	return Config{
 		Enabled:               false,

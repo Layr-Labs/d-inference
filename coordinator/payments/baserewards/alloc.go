@@ -28,7 +28,7 @@ type Candidate struct {
 	MemGB       int
 	Earned      int64
 	Floor       int64 // scaled floor
-	Draw        int64 // desired = max(0, Floor - k*Earned)
+	Draw        int64 // desired base reward = max(0, Floor - k*Earned); default k=0 ⇒ full Floor
 }
 
 // Allocation is the granted draw for one machine, never exceeding its desired
@@ -44,10 +44,13 @@ func isWorkhorse(c Candidate) bool {
 	return c.MemGB >= workhorseMinGB && c.MemGB <= workhorseMaxGB
 }
 
-// valuePerFloorDollar ranks candidates: higher is funded first. Lower
-// earned-vs-floor coverage ranks higher (the machines that most need topping
-// up), and workhorse-class machines are boosted above the rest so biggest idle
-// machines wait behind them. Returns a score in roughly [0, 2].
+// valuePerFloorDollar ranks candidates when the pool can't fund every base
+// reward: higher is funded first. Under additive base income the full floor is
+// always desired, so this only rations a constrained pool — lower earned-vs-floor
+// coverage ranks higher (direct the scarce subsidy to machines not yet earning
+// much, the supply the base reward is meant to retain), and workhorse-class
+// machines are boosted above the rest so biggest idle machines wait behind them.
+// Returns a score in roughly [0, 2].
 func valuePerFloorDollar(c Candidate) float64 {
 	if c.Floor <= 0 {
 		return 0

@@ -1,9 +1,15 @@
-// Package baserewards implements the provider earnings-floor subsidy
-// (design: docs/base-rewards.md). The floor is a per-machine, per-epoch base
-// reward that is reduced dollar-for-dollar by what the provider already earns
-// from real inference:
+// Package baserewards implements the provider base-reward (base income) subsidy
+// (design: docs/base-rewards.md). The base reward is a per-machine, per-epoch
+// payment ADDED ON TOP of what the provider earns from real inference — base
+// income, not a backstop:
 //
-//	payout_i = earned_i + max(0, floor_i - k*earned_i)   // k=1 => max(earned, floor)
+//	payout_i = earned_i + max(0, floor_i - k*earned_i)   // k=0 (default) => earned_i + floor_i
+//
+// With the default reduction rate k=0 the base reward is purely additive: a
+// machine keeps 100% of its organic inference earnings AND its full floor, so
+// real usage is upside on top of a stable base. The k knob is retained as an
+// optional clawback (k=1 reproduces the legacy max(earned, floor) backstop) but
+// defaults to 0 — pure base income.
 //
 // floor_i is set by verified memory tier (µUSD/mo), scaled by availability and a
 // taper, capped by a fleet-wide pool, and settled once per monthly epoch via an
@@ -15,10 +21,11 @@ package baserewards
 
 import "math"
 
-// DefaultReductionK is the recommended launch reduction rate (k=1): the base is
-// a pure backstop that vanishes exactly when earned == floor
-// (payout = max(earned, floor)). See design §2.
-const DefaultReductionK float64 = 1.0
+// DefaultReductionK is the launch reduction rate (k=0): the base reward is pure
+// additive base income — paid in full on top of organic earnings
+// (payout = earned + floor). Set k>0 to claw the base back against earnings;
+// k=1 reproduces the legacy max(earned, floor) backstop. See design §2.
+const DefaultReductionK float64 = 0.0
 
 // MinUptimeForAvail is the uptime fraction below which availability is 0, and
 // FullUptimeForAvail is where it reaches 1.0. avail ramps linearly between them.
@@ -87,9 +94,10 @@ func ScaledFloor(memGB int, uptimeFrac, taper float64) int64 {
 }
 
 // Draw returns the new money to print for one machine this epoch:
-// max(0, floor - int64(k*earned)). With k=1 this is max(0, floor-earned) — the
-// base shrinks dollar-for-dollar with organic earnings and never goes negative
-// (design §2).
+// max(0, floor - int64(k*earned)). With the default k=0 this is simply floor —
+// the full base reward, paid additively on top of organic earnings. With k=1 it
+// is max(0, floor-earned), the legacy backstop that shrinks dollar-for-dollar
+// with earnings. Never negative (design §2).
 func Draw(floor, earned int64, k float64) int64 {
 	reduced := floor - int64(k*float64(earned))
 	if reduced < 0 {

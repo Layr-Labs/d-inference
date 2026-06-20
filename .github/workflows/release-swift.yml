@@ -241,11 +241,15 @@ jobs:
       - name: Inject release version into ProviderCore
         run: |
           set -euo pipefail
-          CURRENT=$(grep -o '"[^"]*"' provider-swift/Sources/ProviderCore/ProviderCore.swift | tr -d '"')
-          echo "Replacing ProviderCore.version: $CURRENT → $VERSION"
-          sed -i '' "s|public static let version = \"$CURRENT\"|public static let version = \"$VERSION\"|" \
-            provider-swift/Sources/ProviderCore/ProviderCore.swift
-          grep 'public static let version' provider-swift/Sources/ProviderCore/ProviderCore.swift
+          FILE=provider-swift/Sources/ProviderCore/ProviderCore.swift
+          echo "Setting ProviderCore.version → $VERSION"
+          # Target ONLY the version line. Do not grep every string literal: nearby
+          # comments contain quoted words ("crashed"/"reloading"/"idle") which made
+          # the old `grep -o '"..."'` capture multiple lines and break sed.
+          sed -i '' -E "s|(public static let version = )\"[^\"]*\"|\1\"${VERSION}\"|" "$FILE"
+          grep -n 'public static let version' "$FILE"
+          grep -q "public static let version = \"${VERSION}\"" "$FILE" \
+            || { echo "::error::version injection failed for $VERSION"; exit 1; }
 
       - name: Build provider-swift (release)
         working-directory: provider-swift

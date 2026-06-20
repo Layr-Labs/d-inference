@@ -1886,7 +1886,7 @@ exhausted:
 			} else {
 				statusCode = http.StatusServiceUnavailable
 			}
-		} else if statusCode >= 500 && isUnservableProviderError(d.lastErr) {
+		} else if statusCode >= 500 && isCapacityClassProviderError(d.lastErr) {
 			// Backstop (always on): the provider admitted the request then
 			// rejected it because (prompt+max_tokens) overflowed its token budget /
 			// KV / context — a capacity condition, not a server fault. Return an

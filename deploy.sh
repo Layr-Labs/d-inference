@@ -14,7 +14,7 @@
 #   5. flip the Caddy upstream old->new + graceful `caddy reload`  (cutover)
 #   6. POST /v1/admin/going-away to the OLD color (DAR-327 Phase 3, PR #396) so its
 #      providers reconnect and — Caddy already flipped — land on the NEW color
-#   7. wait until the NEW color reports providers>0 (the reconnects landed)
+#   7. wait until the NEW color reports routable capacity>0 (providers landed + trusted)
 #   8. drain the OLD color            (POST /v1/admin/drain, Phase 1) until inflight==0
 #   9. stop the OLD color             (systemctl stop darkbloom-coordinator@<old>)
 #
@@ -34,7 +34,7 @@
 # again), (2) flips the Caddy upstream back to it and reloads (restoring the
 # on-disk Caddyfile if the reload itself fails), (3) broadcasts going-away to the
 # now-abandoned color so its providers reconnect and land back on the restored
-# color, and (4) waits for the restored color to report providers>0.
+# color, and (4) waits for the restored color to report routable capacity>0.
 #
 # SAFETY:
 #   * --dry-run prints the full plan (new ordering) and mutates NOTHING.
@@ -74,12 +74,13 @@ HEALTH_HOST="${HEALTH_HOST:-127.0.0.1}"
 HEALTH_PATH="${HEALTH_PATH:-/health}"
 READYZ_PATH="${READYZ_PATH:-/readyz}"
 DRAIN_PATH="${DRAIN_PATH:-/v1/admin/drain}"
+CAPACITY_PATH="${CAPACITY_PATH:-/v1/models/capacity}"
 # Phase 3 (PR #396) endpoint: tells the OLD color's providers to reconnect so
 # they re-land on the already-flipped NEW color. Admin-gated; returns {"sent":N}.
 GOING_AWAY_PATH="${GOING_AWAY_PATH:-/v1/admin/going-away}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
 DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-120}"
-# How long to wait for the NEW color to report providers>0 after going-away.
+# How long to wait for the NEW color to report routable capacity>0 after going-away.
 PROVIDERS_TIMEOUT="${PROVIDERS_TIMEOUT:-60}"
 CADDY_BIN="${CADDY_BIN:-caddy}"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
@@ -562,32 +563,44 @@ clear_going_away() {
   fi
 }
 
+# capacity_model_count reads GET /v1/models/capacity JSON from stdin and prints the
+# number of routable capacity entries. Empty/malformed bodies produce 0. Uses
+# python3 instead of jq because the GCE deploy box already relies on python3 in
+# darkbloom-run.sh for registry auth, while jq may not be installed.
+capacity_model_count() {
+  python3 -c 'import json,sys
+try:
+    body=json.load(sys.stdin)
+    print(len(body.get("models") or []))
+except Exception:
+    print(0)'
+}
+
 # wait_for_providers <color> <port> — after going-away, poll the NEW color's
-# /health until its provider count is > 0 (reconnects have landed). /health shape
-# (coordinator api/types HealthResponse): {"status":"ok","providers":N,...}.
-# Returns nonzero on timeout; the forward deploy treats that as fatal unless
-# --force, while rollback only warns because routing is already restored.
+# routable capacity feed until at least one model has capacity. Raw /health
+# providers only proves a WebSocket registered; /v1/models/capacity proves the
+# provider is trusted/routable enough for consumers. Returns nonzero on timeout.
 wait_for_providers() {
   local color="$1" port="$2"
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "DRY-RUN: would poll http://${HEALTH_HOST}:${port}${HEALTH_PATH} for providers>0 (timeout ${PROVIDERS_TIMEOUT}s)"
+    log "DRY-RUN: would poll http://${HEALTH_HOST}:${port}${CAPACITY_PATH} for routable capacity>0 (timeout ${PROVIDERS_TIMEOUT}s)"
     return 0
   fi
-  log "Waiting for NEW color $color (port $port) to report providers>0 (timeout ${PROVIDERS_TIMEOUT}s)..."
+  log "Waiting for $color (port $port) to report routable capacity>0 via $CAPACITY_PATH (timeout ${PROVIDERS_TIMEOUT}s)..."
   local now deadline body count
   now="$(date +%s)"
   deadline=$(( now + PROVIDERS_TIMEOUT ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    body="$("$CURL_BIN" -fsS --max-time 5 "http://${HEALTH_HOST}:${port}${HEALTH_PATH}" 2>/dev/null || true)"
-    count="$(printf '%s' "$body" | sed -n 's/.*"providers"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+    body="$($CURL_BIN -fsS --max-time 5 "http://${HEALTH_HOST}:${port}${CAPACITY_PATH}" 2>/dev/null || true)"
+    count="$(printf '%s' "$body" | capacity_model_count)"
     if [ -n "$count" ] && [ "$count" -gt 0 ]; then
-      log "$color now has $count provider(s) attached."
+      log "$color now has $count routable capacity entr(ies)."
       return 0
     fi
-    log "  $color providers=${count:-unknown}; waiting for reconnects..."
+    log "  $color routable_capacity=${count:-0}; waiting for trusted/routable providers..."
     sleep 2
   done
-  warn "$color did not report providers>0 within ${PROVIDERS_TIMEOUT}s; providers may still be reconnecting (heartbeat timeout)."
+  warn "$color did not report routable capacity>0 within ${PROVIDERS_TIMEOUT}s; providers may still be reconnecting/attesting."
   return 1
 }
 
@@ -609,7 +622,7 @@ do_rollback() {
     log "DRY-RUN: STEP A — would re-enable $target_color: POST $DRAIN_PATH {\"draining\":false} (undrain) + POST $GOING_AWAY_PATH {\"cancel\":true} (clear going-away latch) to ${HEALTH_HOST}:${target_port}."
     log "DRY-RUN: STEP B — would flip_upstream $CADDYFILE $cur_port $target_port, then reload Caddy (auto-revert to $cur_color if reload fails)."
     log "DRY-RUN: STEP C — would POST $GOING_AWAY_PATH to the now-abandoned $cur_color ($cur_port) so its providers reconnect and land on $target_color."
-    log "DRY-RUN: STEP D — would poll $target_color ($target_port) /health for providers>0 (timeout ${PROVIDERS_TIMEOUT}s)."
+    log "DRY-RUN: STEP D — would poll $target_color ($target_port) $CAPACITY_PATH for routable capacity>0 (timeout ${PROVIDERS_TIMEOUT}s)."
     log "DRY-RUN: would leave $cur_color running (idle, providers drained off) for inspection; stop it manually with '$SYSTEMCTL_BIN stop darkbloom-coordinator@${cur_color}'."
     return 0
   fi
@@ -667,11 +680,20 @@ do_rollback() {
   log "Pushing providers off the abandoned $cur_color back onto $target_color..."
   signal_going_away "$cur_color" "$cur_port"
 
-  # STEP D — confirm capacity actually returned to $target_color (reconnects landed).
-  # Rollback has already restored routing; a provider wait timeout must not undo
-  # that recovery path, so tolerate it with a warning.
+  # STEP D — confirm routable capacity actually returned to $target_color. If it
+  # does not, restore routing to the previously-live $cur_color rather than
+  # declaring rollback success on a provider-empty target.
   if ! wait_for_providers "$target_color" "$target_port"; then
-    warn "Rollback routing is already restored to $target_color; continuing despite provider wait timeout. Monitor capacity and provider reconnects."
+    warn "Rollback target $target_color did not regain routable capacity; restoring Caddy back to $cur_color."
+    undrain_color "$cur_color" "$cur_port"
+    clear_going_away "$cur_color" "$cur_port"
+    flip_upstream "$CADDYFILE" "$target_port" "$cur_port" || die "rollback recovery failed: could not flip Caddy back to $cur_color ($cur_port); manual intervention required"
+    if ! reload_caddy; then
+      die "rollback recovery failed: Caddy reload back to $cur_color ($cur_port) failed; manual intervention required"
+    fi
+    signal_going_away "$target_color" "$target_port"
+    wait_for_providers "$cur_color" "$cur_port" || warn "Previously-live $cur_color did not confirm routable capacity after rollback recovery; monitor capacity immediately."
+    die "rollback aborted: providers did not return to $target_color; Caddy restored to $cur_color"
   fi
 
   log "ROLLBACK complete: Caddy -> $target_color ($target_port); providers pushed back to it."
@@ -694,7 +716,7 @@ Options:
   --rollback         Roll back to the other (still-running) color: re-enable it
                      (undrain + clear its going-away latch), flip Caddy back +
                      reload, then push providers back onto it and wait for
-                     providers>0.
+                     routable capacity>0.
   --force            Forward: continue drain/stop even if providers do not land or
                      drain times out. Rollback: flip even if target health fails
                      (DANGEROUS — may route traffic to a dead port).
@@ -703,9 +725,9 @@ Options:
   -h, --help         Show this help.
 
 Environment overrides: CADDYFILE, BLUE_PORT(8080), GREEN_PORT(8081), HEALTH_HOST,
-HEALTH_TIMEOUT, DRAIN_TIMEOUT, PROVIDERS_TIMEOUT(60), GOING_AWAY_PATH, CADDY_BIN,
-SYSTEMCTL_BIN, CURL_BIN, DINF_DEPLOY_ENV_TMPL(/etc/d-inference/deploy-%s.env),
-DINF_ENV_FILE(/etc/d-inference/env).
+HEALTH_TIMEOUT, DRAIN_TIMEOUT, PROVIDERS_TIMEOUT(60), GOING_AWAY_PATH,
+CAPACITY_PATH(/v1/models/capacity), CADDY_BIN, SYSTEMCTL_BIN, CURL_BIN,
+DINF_DEPLOY_ENV_TMPL(/etc/d-inference/deploy-%s.env), DINF_ENV_FILE(/etc/d-inference/env).
 USAGE
 }
 
@@ -828,17 +850,25 @@ main() {
   #    consumers with zero providers during the drain window (429s).
   signal_going_away "$active_color" "$active_port"
 
-  # 6. Wait until the NEW color actually has providers attached (reconnects landed).
-  #    If this times out, do NOT drain/stop the old color unless --force is set:
-  #    old providers have not proven they landed on the new color yet.
+  # 6. Wait until the NEW color actually has routable capacity (reconnects landed
+  #    and providers are trusted/routable). If this times out, do NOT drain/stop
+  #    the old color unless --force is set: old providers have not proven they
+  #    landed on the new color yet.
   if ! wait_for_providers "$idle_color" "$idle_port"; then
     if [ "$FORCE" -eq 1 ]; then
-      warn "Providers did not land on $idle_color within ${PROVIDERS_TIMEOUT}s, but --force was given; proceeding to drain/stop $active_color despite capacity risk."
+      warn "Routable capacity did not land on $idle_color within ${PROVIDERS_TIMEOUT}s, but --force was given; proceeding to drain/stop $active_color despite capacity risk."
     else
-      err "NOT draining or stopping $active_color: $idle_color did not report providers>0 within ${PROVIDERS_TIMEOUT}s."
-      err "Caddy is already -> $idle_color; the old color stays RUNNING so providers/in-flight work are not disrupted."
-      err "Investigate provider reconnects, run '$0 --rollback' before stopping $active_color if needed, or re-run with --force to continue despite capacity risk."
-      die "deploy aborted: providers did not land on new color (cutover done, $active_color left running)"
+      err "NOT draining or stopping $active_color: $idle_color did not report routable capacity>0 within ${PROVIDERS_TIMEOUT}s."
+      err "Restoring Caddy back to $active_color so production traffic returns to the known-capacity color."
+      undrain_color "$active_color" "$active_port"
+      clear_going_away "$active_color" "$active_port"
+      flip_upstream "$CADDYFILE" "$idle_port" "$active_port" || die "provider handoff failed and Caddy restore flip back to $active_color failed; manual intervention required"
+      if ! reload_caddy; then
+        die "provider handoff failed and Caddy reload back to $active_color failed; manual intervention required"
+      fi
+      signal_going_away "$idle_color" "$idle_port"
+      wait_for_providers "$active_color" "$active_port" || warn "$active_color did not confirm routable capacity after restore; monitor capacity immediately."
+      die "deploy aborted: providers did not land on new color; Caddy restored to $active_color and $active_color left running"
     fi
   fi
 

@@ -29,12 +29,15 @@
 [Unit]
 Description=Darkbloom coordinator (%i color, blue-green)
 After=docker.service network-online.target darkbloom-platform.service cloud-sql-proxy.service
-# Hard deps: without Docker or the Cloud SQL proxy the coordinator cannot run.
+# Hard deps: without Docker, the platform services (step-ca/MicroMDM), or the
+# Cloud SQL proxy the coordinator cannot run safely.
 # When EIGENINFERENCE_DATABASE_URL is set (prod), the DB is reached via the proxy
 # on 127.0.0.1:5432, so requiring cloud-sql-proxy.service avoids a crash-loop on a
 # cold/failed proxy (mirrors deploy/gcp/vm-startup.sh's d-inference-coordinator).
-Requires=docker.service cloud-sql-proxy.service
-Wants=network-online.target darkbloom-platform.service
+# Requiring darkbloom-platform.service prevents cutting over to a color while the
+# trust/enrollment plane behind /acme, /scep, and /mdm is down.
+Requires=docker.service darkbloom-platform.service cloud-sql-proxy.service
+Wants=network-online.target
 
 [Service]
 Type=simple

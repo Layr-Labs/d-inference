@@ -112,9 +112,11 @@ providers (which would 429):
 6. **Going-away**: `POST /v1/admin/going-away` to the **old** color
    (**DAR-327 Phase 3**, PR #396; admin-gated, returns `{"sent":N}`) so its
    providers reconnect and — Caddy already flipped — land on the **new** color.
-7. **Wait for providers**: poll the new color's `/health` until its `providers`
-   count is `> 0` (the reconnects landed). If this times out, the deploy exits
-   nonzero unless `--force` is set and does **not** drain or stop the old color.
+7. **Wait for routable capacity**: poll the new color's `/v1/models/capacity`
+   until it reports at least one model capacity entry. This proves providers have
+   landed and passed routing/trust gates, not merely opened a WebSocket. If this
+   times out, the deploy restores Caddy to the old color, exits nonzero unless
+   `--force` is set, and does **not** drain or stop the old color.
 8. **Drain** the old color: `POST /v1/admin/drain` (Phase 1), then poll its
    `/readyz` until `inflight == 0`. If it does **not** drain in time the old
    color is **not** stopped (that would cut in-flight requests) — `deploy.sh`
@@ -168,9 +170,10 @@ providers (429). `--rollback` therefore restores **both routing and capacity**:
 4. **Push providers back**: `POST /v1/admin/going-away` to the now-abandoned color
    so its providers reconnect and — Caddy already flipped — land back on the
    restored color.
-5. **Wait for providers**: poll the restored color's `/health` until
-   `providers > 0` (warns and continues on timeout because routing is already
-   flipped back to the restored color).
+5. **Wait for routable capacity**: poll the restored color's `/v1/models/capacity`
+   until at least one model capacity entry is present. If capacity does not return,
+   rollback restores Caddy to the previously-live color and exits nonzero instead
+   of declaring success on a provider-empty target.
 
 The abandoned color is left **running** (idle, providers drained off) for
 inspection; stop it manually with

@@ -372,3 +372,51 @@ func TestDeferredCommit_PreContentFailover(t *testing.T) {
 		t.Errorf("role preamble count = %d, want exactly 1 (failed attempt's preamble discarded); body:\n%s", got, body)
 	}
 }
+
+// TestDispatch_FailoverContinuesPastLegacyCap proves deadline-bounded failover:
+// the dispatch loop keeps trying fresh healthy providers well past the old
+// 3-attempt cap, stopping only at candidate exhaustion (or the deadline). Six
+// providers advertise higher TPS and crash pre-content (so routing prefers them
+// first and fails over off each); one healthy provider advertises the lowest TPS
+// and is therefore selected LAST. The request must still land on it. Under the
+// legacy maxDispatchAttempts=3 the loop gave up after the first few failing
+// providers and never reached the healthy one — even allowing for speculative
+// double-dispatch, six bad providers ahead of it exceeds that budget.
+func TestDispatch_FailoverContinuesPastLegacyCap(t *testing.T) {
+	ts, reg, _ := setupLoadTestServer(t)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	model := "failover-past-cap-model"
+
+	// Six failing providers, descending high TPS so routing prefers them first
+	// and fails over off each in turn.
+	for _, tps := range []float64{600, 500, 400, 300, 200, 100} {
+		pk := testPublicKeyB64()
+		conn := connectAndPrepareProvider(t, ctx, ts.URL, reg, model, pk, tps)
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		go runDeferredCommitProvider(ctx, t, conn, pk, true, "")
+	}
+	// One healthy provider with the lowest TPS — reachable only after the six
+	// failing providers have each been tried and excluded.
+	healthyPK := testPublicKeyB64()
+	healthyConn := connectAndPrepareProvider(t, ctx, ts.URL, reg, model, healthyPK, 10.0)
+	defer healthyConn.Close(websocket.StatusNormalClosure, "")
+	go runDeferredCommitProvider(ctx, t, healthyConn, healthyPK, false, "from-healthy")
+
+	code, body, err := sendRequest(ctx, ts.URL, "test-key", model)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after failing over past six bad providers; body = %s", code, body)
+	}
+	if !strings.Contains(body, "from-healthy") {
+		t.Errorf("failover must reach the healthy provider behind six failing ones; body:\n%s", body)
+	}
+	if strings.Contains(body, "provider crashed after preamble") {
+		t.Errorf("a failing provider's error leaked to the consumer; body:\n%s", body)
+	}
+}

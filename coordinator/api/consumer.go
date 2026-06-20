@@ -63,11 +63,18 @@ const (
 	// when the consumer reads slowly.
 	chunkBufferSize = 256
 
-	// maxDispatchAttempts is the maximum number of provider dispatch attempts
-	// before returning an error to the consumer. The coordinator retries on
-	// the same or a different provider when the first attempt fails (e.g.
-	// backend crashed, model not loaded after idle shutdown).
-	maxDispatchAttempts = 3
+	// maxDispatchAttempts is a SAFETY CEILING on per-request provider failover,
+	// not the normal stopping point. A request keeps failing over to fresh
+	// healthy providers until one succeeds, OR candidates are exhausted (every
+	// failed provider is excluded from re-selection, so dispatchPrimary returns
+	// outcomeFailFast on the next attempt once no eligible provider remains), OR
+	// the request's deadline/context fires (run() checks r.Context() each
+	// attempt). This ceiling only guards against a pathological retry path that
+	// fails to exclude a provider (an unbounded hot loop); it is set well above
+	// any realistic per-request fault count. Retries never re-queue — only the
+	// first attempt may wait for capacity — so failover stays fast, walking the
+	// immediately-available healthy providers rather than waiting on busy ones.
+	maxDispatchAttempts = 64
 
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
 	// the coordinator launches a speculative backup dispatch. The primary

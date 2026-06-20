@@ -1800,6 +1800,16 @@ func (d *dispatchState) run() {
 
 	for attempt := range maxDispatchAttempts {
 		d.attempt = attempt
+		// Deadline-bounded failover: after the first attempt, stop failing over
+		// once the request's deadline/context has fired (client gone or a request
+		// timeout). We keep trying fresh healthy providers only while there is
+		// time budget left. Candidate exhaustion is handled inside dispatchPrimary
+		// (it returns outcomeFailFast as soon as no eligible provider remains), so
+		// in practice the loop ends at exhaustion or success; maxDispatchAttempts
+		// is only a hot-loop ceiling and this is the wall-clock bound.
+		if attempt > 0 && r.Context().Err() != nil {
+			goto exhausted
+		}
 		// Each attempt holds preamble chunks from its own provider only.
 		d.heldChunks = nil
 
@@ -1898,10 +1908,10 @@ exhausted:
 			s.ddIncr("routing.unservable_reclassified", []string{"model:" + d.model})
 		}
 		s.emitRequest(r.Context(), protocol.SeverityError, d.requestID,
-			fmt.Sprintf("inference failed after %d attempt(s)", maxDispatchAttempts),
+			fmt.Sprintf("inference failed after %d attempt(s)", d.attempt+1),
 			map[string]any{
 				"reason":      "dispatch_exhausted",
-				"attempt":     maxDispatchAttempts,
+				"attempt":     d.attempt + 1,
 				"status_code": statusCode,
 				"last_error":  d.lastErr,
 			})
@@ -1929,8 +1939,8 @@ exhausted:
 			// frozen, so surface the terminal failure in-band. Responses streams use
 			// a different error shape (event: error, no [DONE]) than chat completions.
 			rateLimited := statusCode == http.StatusTooManyRequests
-			capMsg := fmt.Sprintf("all providers at capacity after %d attempt(s): %s", maxDispatchAttempts, d.lastErr)
-			errMsg := fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, d.lastErr)
+			capMsg := fmt.Sprintf("all providers at capacity after %d attempt(s): %s", d.attempt+1, d.lastErr)
+			errMsg := fmt.Sprintf("inference failed after %d attempt(s): %s", d.attempt+1, d.lastErr)
 			if d.isResponsesAPI {
 				if rateLimited {
 					writeResponsesSSEErrorEvent(w, "rate_limit_exceeded", capMsg)
@@ -1946,11 +1956,11 @@ exhausted:
 		}
 		if statusCode == http.StatusTooManyRequests {
 			writeJSON(w, statusCode, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers at capacity after %d attempt(s): %s", maxDispatchAttempts, d.lastErr),
+				fmt.Sprintf("all providers at capacity after %d attempt(s): %s", d.attempt+1, d.lastErr),
 				withCode("rate_limit_exceeded")))
 		} else {
 			writeJSON(w, statusCode, errorResponse("provider_error",
-				fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, d.lastErr)))
+				fmt.Sprintf("inference failed after %d attempt(s): %s", d.attempt+1, d.lastErr)))
 		}
 		return
 	}

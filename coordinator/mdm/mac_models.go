@@ -9,9 +9,9 @@ package mdm
 //
 // We therefore use the model identifier ONLY as a downward cap: a machine whose
 // self-reported MemoryGB exceeds the maximum its model ever shipped with is
-// clamped down to that maximum. We NEVER raise a floor from this table — an
-// unknown model returns (0, false) and the caller treats it as "no cap" (it
-// trusts the tier-sized correctness probe to be the real verifier instead).
+// clamped down to that maximum. We NEVER raise a floor from this table. Unknown
+// models return (0, false); base rewards treat that as ineligible until the model
+// is explicitly catalogued.
 //
 // Maxima are keyed on the chip variant baked into each model identifier, since
 // the absolute memory ceiling is a property of the SoC (M_/Pro/Max/Ultra):
@@ -20,6 +20,7 @@ package mdm
 //	M2   24GB / Pro 32 / Max 96 / Ultra 192
 //	M3   24GB / Pro 36 / Max 128
 //	M4   32GB / Pro 64 / Max 128 / (Mac Studio M4 Max 128, M3 Ultra 512)
+//	M5   32GB / Pro 64 / Max 128
 //
 // Sources cross-checked: Apple Tech Specs, EveryMac model-identifier pages,
 // AppleDB device selection. When in doubt we pick the LARGEST configuration ever
@@ -52,7 +53,7 @@ var modelMaxMemoryGB = map[string]int{
 	"Mac14,10": 96,  // MacBook Pro 16" (M2 Pro/Max, 2023) — Max → 96
 	"Mac14,3":  24,  // Mac mini (M2, 2023)
 	"Mac14,12": 32,  // Mac mini (M2 Pro, 2023)
-	"Mac14,13": 192, // Mac Studio (M2 Max/Ultra, 2023) — Ultra → 192
+	"Mac14,13": 96,  // Mac Studio (M2 Max, 2023)
 	"Mac14,14": 192, // Mac Studio (M2 Ultra, 2023)
 	"Mac14,8":  192, // Mac Pro (M2 Ultra, 2023)
 
@@ -90,6 +91,17 @@ var modelMaxMemoryGB = map[string]int{
 	// conservatively at 128 until the tier-sized correctness probe can confirm a
 	// genuine ≥512GB machine (a rare honest M3 Ultra is under-tiered until then).
 	"Mac16,9": 128,
+
+	// --- M5 family (Mac17,x) ---
+	// Sources: Apple Support "Identify your MacBook Pro/Air model" + 2025/2026
+	// Apple tech specs. M5 tops at 32GB, M5 Pro at 64GB, M5 Max at 128GB.
+	"Mac17,2": 32,  // MacBook Pro 14" (M5, 2025)
+	"Mac17,3": 32,  // MacBook Air 13" (M5, 2026)
+	"Mac17,4": 32,  // MacBook Air 15" (M5, 2026)
+	"Mac17,9": 64,  // MacBook Pro 14" (M5 Pro, 2026)
+	"Mac17,8": 64,  // MacBook Pro 16" (M5 Pro, 2026)
+	"Mac17,7": 128, // MacBook Pro 14" (M5 Max, 2026)
+	"Mac17,6": 128, // MacBook Pro 16" (M5 Max, 2026)
 }
 
 // ModelMaxMemoryGB returns the maximum unified memory (GB) ever shipped in the
@@ -99,9 +111,8 @@ var modelMaxMemoryGB = map[string]int{
 // a self-reported MemoryGB above this value is clamped to it; an equal-or-below
 // value is accepted as that machine's tier ceiling. It NEVER raises a floor.
 //
-// Unknown models return (0, false); the caller MUST treat that as "no cap"
-// (trust the tier-sized correctness probe) rather than as a zero ceiling — a
-// model we have not catalogued must not be silently denied its earned tier.
+// Unknown models return (0, false); base rewards treat that as ineligible until
+// the model is explicitly catalogued.
 func ModelMaxMemoryGB(hardwareModel string) (gb int, known bool) {
 	gb, known = modelMaxMemoryGB[hardwareModel]
 	return gb, known

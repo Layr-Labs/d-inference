@@ -469,17 +469,19 @@ type Store interface {
 	// ListFloorDrawsForEpoch returns all draw rows for an epoch (admin status).
 	ListFloorDrawsForEpoch(ctx context.Context, epochID string) ([]ProviderFloorDraw, error)
 
-	// ListProviderSessionsOverlapping returns sessions whose
-	// [connected_at, COALESCE(disconnected_at, last_seen)] interval overlaps
-	// [start, end). The caller unions per machine and clamps open sessions to
-	// min(end, last_seen + grace). Ordered by serial_number, connected_at.
-	ListProviderSessionsOverlapping(ctx context.Context, start, end time.Time) ([]ProviderSession, error)
+	// ListProviderSessionsOverlapping returns sessions whose lifetime interval
+	// overlaps [start, end). Closed sessions end at disconnected_at; open sessions
+	// may overlap via last_seen + openSessionGrace. The caller unions per machine
+	// and clamps open sessions to min(end, last_seen + grace). Ordered by
+	// serial_number, connected_at.
+	ListProviderSessionsOverlapping(ctx context.Context, start, end time.Time, openSessionGrace time.Duration) ([]ProviderSession, error)
 
 	// RecordProbeResult stores one coordinator correctness-probe outcome (Phase 1).
 	RecordProbeResult(result *ProbeResult) error
 
-	// HasProbeSuccessSince reports whether a provider passed ≥1 probe since
-	// `since` (work-gate, design §6 gate 5, probe half).
+	// HasProbeSuccessSince reports whether the latest probe since `since` was a
+	// success (work-gate, design §6 gate 5, probe half). A later failure expires an
+	// older success.
 	HasProbeSuccessSince(providerKey string, since time.Time) (bool, error)
 
 	// WithEpochSettlementLock runs fn while holding a cross-instance lock keyed

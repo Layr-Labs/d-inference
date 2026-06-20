@@ -382,7 +382,7 @@ func TestListProviderSessionsOverlapping_BlueGreenDoubleOpen(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			sessions, err := s.ListProviderSessionsOverlapping(ctx, start, end)
+			sessions, err := s.ListProviderSessionsOverlapping(ctx, start, end, 90*time.Second)
 			if err != nil {
 				t.Fatalf("list overlapping: %v", err)
 			}
@@ -417,7 +417,7 @@ func TestListProviderSessionsOverlapping_Empty(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			start := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 			end := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-			out, err := s.ListProviderSessionsOverlapping(ctx, start, end)
+			out, err := s.ListProviderSessionsOverlapping(ctx, start, end, 90*time.Second)
 			if err != nil {
 				t.Fatalf("list overlapping: %v", err)
 			}
@@ -426,6 +426,46 @@ func TestListProviderSessionsOverlapping_Empty(t *testing.T) {
 			}
 			if len(out) != 0 {
 				t.Fatalf("empty fleet returned %d sessions, want 0", len(out))
+			}
+		})
+	}
+}
+
+// TestListProviderSessionsOverlapping_OpenSessionGraceIncludesOverlap covers the
+// 5-minute settlement edge case where an open session's last_seen is just before
+// the period but last_seen+grace overlaps it.
+func TestListProviderSessionsOverlapping_OpenSessionGraceIncludesOverlap(t *testing.T) {
+	ctx := context.Background()
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			serial := uniqueID("SER")
+			sessionID := uniqueID("s")
+			now := time.Now().UTC()
+			start := now.Add(time.Minute)
+			end := start.Add(5 * time.Minute)
+			lastSeen := start.Add(-30 * time.Second)
+
+			if err := s.OpenProviderSession(ctx, sessionID, serial, "acct"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.TouchProviderSession(ctx, sessionID, serial, "acct", "PK", lastSeen); err != nil {
+				t.Fatal(err)
+			}
+
+			withoutGrace, err := s.ListProviderSessionsOverlapping(ctx, start, end, 10*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if countSessions(withoutGrace, serial) != 0 {
+				t.Fatalf("session should not overlap with 10s grace")
+			}
+
+			withGrace, err := s.ListProviderSessionsOverlapping(ctx, start, end, 90*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if countSessions(withGrace, serial) != 1 {
+				t.Fatalf("session should overlap via 90s grace, got %d", countSessions(withGrace, serial))
 			}
 		})
 	}
@@ -472,6 +512,34 @@ func TestRecordProbeResult_HasProbeSuccessSince(t *testing.T) {
 			}
 			if !ok {
 				t.Fatalf("HasProbeSuccessSince with a successful probe = false, want true")
+			}
+
+			// A later failed probe expires the earlier success.
+			if err := s.RecordProbeResult(&ProbeResult{
+				ProviderKey: pk, Model: "qwen", Success: false, CreatedAt: since.Add(3 * time.Hour),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ok, err = s.HasProbeSuccessSince(pk, since)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok {
+				t.Fatalf("HasProbeSuccessSince with later failed probe = true, want false")
+			}
+
+			// A still-later success qualifies again.
+			if err := s.RecordProbeResult(&ProbeResult{
+				ProviderKey: pk, Model: "qwen", Success: true, CreatedAt: since.Add(4 * time.Hour),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ok, err = s.HasProbeSuccessSince(pk, since)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok {
+				t.Fatalf("HasProbeSuccessSince with latest successful probe = false, want true")
 			}
 
 			// A success before the window does not count.
@@ -617,4 +685,14 @@ func unionCoveredSeconds(sessions []ProviderSession, serial string, start, end t
 		total += curE.Sub(curS).Seconds()
 	}
 	return total
+}
+
+func countSessions(sessions []ProviderSession, serial string) int {
+	n := 0
+	for _, ps := range sessions {
+		if ps.SerialNumber == serial {
+			n++
+		}
+	}
+	return n
 }

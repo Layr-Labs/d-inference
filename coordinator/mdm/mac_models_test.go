@@ -11,9 +11,17 @@ func TestModelMaxMemoryGB(t *testing.T) {
 		{"MacBookAir10,1", 16, true}, // M1 Air
 		{"Mac15,8", 128, true},       // M3 Max 14"
 		{"Mac16,9", 128, true},       // Mac Studio (ambiguous M4 Max/M3 Ultra) — conservative cap
+		{"Mac17,2", 32, true},        // 14" M5 MacBook Pro
+		{"Mac17,3", 32, true},        // 13" M5 MacBook Air
+		{"Mac17,4", 32, true},        // 15" M5 MacBook Air
+		{"Mac17,9", 64, true},        // 14" M5 Pro MacBook Pro
+		{"Mac17,8", 64, true},        // 16" M5 Pro MacBook Pro
+		{"Mac17,7", 128, true},       // 14" M5 Max MacBook Pro
+		{"Mac17,6", 128, true},       // 16" M5 Max MacBook Pro
 		{"Mac13,2", 128, true},       // M1 Ultra Studio
-		{"Mac14,13", 192, true},      // M2 Ultra Studio
-		{"NotAModel99,9", 0, false},  // unknown → no cap
+		{"Mac14,13", 96, true},       // M2 Max Studio
+		{"Mac14,14", 192, true},      // M2 Ultra Studio
+		{"NotAModel99,9", 0, false},  // unknown → ineligible for base rewards
 		{"", 0, false},               // empty → no cap
 	}
 	for _, c := range cases {

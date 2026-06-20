@@ -28,6 +28,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/json"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
@@ -48,8 +49,11 @@ const (
 	// probeMaxTokens keeps probe cost negligible.
 	probeMaxTokens = 8
 	// probePerProviderChance is the per-tick probability each eligible provider
-	// is probed, so probes land at random times within an epoch.
+	// is probed, so probes land at random times over time.
 	probePerProviderChance = 0.25
+	// probeMaxConcurrent bounds slow/degraded probes so one tick can still cover a
+	// useful slice of the fleet without unbounded goroutines.
+	probeMaxConcurrent = 8
 	// probePrompt is a tiny deterministic prompt (temperature 0).
 	probePrompt = "Reply with the single word: ok"
 )
@@ -83,6 +87,10 @@ func (p *Prober) Run(ctx context.Context) {
 
 // tick probes a random subset of eligible providers.
 func (p *Prober) tick(ctx context.Context) {
+	sem := make(chan struct{}, probeMaxConcurrent)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
 	for _, snap := range p.srv.registry.ListProviders() {
 		if !snap.Attested || !snap.Online || snap.CurrentModel == "" || snap.SerialNumber == "" {
 			continue
@@ -90,7 +98,17 @@ func (p *Prober) tick(ctx context.Context) {
 		if p.rng() > probePerProviderChance {
 			continue
 		}
-		p.probeProvider(ctx, snap)
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(snap registry.ProviderSnapshot) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			p.probeProvider(ctx, snap)
+		}(snap)
 	}
 }
 
@@ -140,6 +158,13 @@ func (p *Prober) probeProvider(ctx context.Context, snap registry.ProviderSnapsh
 	}
 
 	provider, _ := s.registry.ReserveProviderEx(model, pr)
+	if provider != nil {
+		// The serial allowlist may match a different live connection for the same
+		// machine during reconnect/blue-green overlap. Attribute the probe to the
+		// connection we actually reserved.
+		result.ProviderID = provider.ID
+		result.ProviderKey = provider.PublicKey
+	}
 	if provider == nil || provider.PublicKey == "" || provider.Conn == nil {
 		if provider != nil {
 			provider.RemovePending(requestID)
@@ -223,8 +248,9 @@ func proberJitter() float64 {
 	const scale = 1_000_000
 	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(scale))
 	if err != nil {
-		// Extremely unlikely; preserve liveness if system entropy is unavailable.
-		return float64(time.Now().UnixNano()%scale) / float64(scale)
+		// Extremely unlikely; fail closed for this selection rather than making probe
+		// timing predictable.
+		return 1.0
 	}
 	return float64(n.Int64()) / float64(scale)
 }

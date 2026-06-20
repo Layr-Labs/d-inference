@@ -219,7 +219,8 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 // (gate 3), and proven work — a billed other-account job in the rolling window
 // (gate 5, billed-job half). Memory tier is the self-reported bucket in Phase 0.
 func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]candidate, error) {
-	sessions, err := e.store.ListProviderSessionsOverlapping(ctx, start, end)
+	grace := time.Duration(e.cfg.GraceSeconds) * time.Second
+	sessions, err := e.store.ListProviderSessionsOverlapping(ctx, start, end, grace)
 	if err != nil {
 		return nil, err
 	}
@@ -279,8 +280,15 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 		// only lower the floor, never raise it). Full verification (probe on a
 		// tier-sized model) is Phase 1.
 		memGB := p.MemoryGB
-		if capGB, known := mdm.ModelMaxMemoryGB(p.HardwareModel); known && capGB > 0 && memGB > capGB {
-			memGB = capGB
+		if capGB, known := mdm.ModelMaxMemoryGB(p.HardwareModel); known {
+			if capGB > 0 && memGB > capGB {
+				memGB = capGB
+			}
+		} else {
+			// Until a model is catalogued, don't trust self-reported memory for base
+			// rewards. This prevents future/unknown identifiers (e.g. M5) from claiming
+			// top-tier floors before we add an explicit cap.
+			memGB = 0
 		}
 		floor := PeriodFloor(memGB, uptimeFrac, start, end)
 		draw := Draw(floor, earned, e.cfg.ReductionK)

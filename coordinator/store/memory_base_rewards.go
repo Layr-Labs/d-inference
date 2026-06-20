@@ -147,8 +147,9 @@ func (s *MemoryStore) ListFloorDrawsForEpoch(_ context.Context, epochID string) 
 }
 
 // ListProviderSessionsOverlapping returns sessions whose lifetime interval
-// [connected_at, COALESCE(disconnected_at, last_seen)] overlaps [start, end).
-func (s *MemoryStore) ListProviderSessionsOverlapping(_ context.Context, start, end time.Time) ([]ProviderSession, error) {
+// overlaps [start, end). Closed sessions end at disconnected_at; open sessions
+// may overlap via last_seen + openSessionGrace.
+func (s *MemoryStore) ListProviderSessionsOverlapping(_ context.Context, start, end time.Time, openSessionGrace time.Duration) ([]ProviderSession, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -158,6 +159,8 @@ func (s *MemoryStore) ListProviderSessionsOverlapping(_ context.Context, start, 
 		sessEnd := ps.LastSeen
 		if ps.DisconnectedAt != nil {
 			sessEnd = *ps.DisconnectedAt
+		} else {
+			sessEnd = ps.LastSeen.Add(openSessionGrace)
 		}
 		// Overlap: connected_at < end AND sessEnd >= start.
 		if ps.ConnectedAt.Before(end) && !sessEnd.Before(start) {
@@ -195,18 +198,22 @@ func (s *MemoryStore) RecordProbeResult(result *ProbeResult) error {
 	return nil
 }
 
-// HasProbeSuccessSince reports whether a provider passed ≥1 probe since `since`.
+// HasProbeSuccessSince reports whether the latest probe since `since` succeeded.
 func (s *MemoryStore) HasProbeSuccessSince(providerKey string, since time.Time) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	var latest *ProbeResult
 	for i := range s.probeResults {
 		p := &s.probeResults[i]
-		if p.ProviderKey == providerKey && p.Success && !p.CreatedAt.Before(since) {
-			return true, nil
+		if p.ProviderKey != providerKey || p.CreatedAt.Before(since) {
+			continue
+		}
+		if latest == nil || p.CreatedAt.After(latest.CreatedAt) || (p.CreatedAt.Equal(latest.CreatedAt) && p.ID > latest.ID) {
+			latest = p
 		}
 	}
-	return false, nil
+	return latest != nil && latest.Success, nil
 }
 
 // WithEpochSettlementLock runs fn directly: the memory store is single-process,

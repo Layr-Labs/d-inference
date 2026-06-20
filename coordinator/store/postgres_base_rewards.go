@@ -176,16 +176,21 @@ func (s *PostgresStore) ListFloorDrawsForEpoch(ctx context.Context, epochID stri
 }
 
 // ListProviderSessionsOverlapping returns sessions whose lifetime interval
-// overlaps [start, end). The interval end is COALESCE(disconnected_at, last_seen).
-func (s *PostgresStore) ListProviderSessionsOverlapping(ctx context.Context, start, end time.Time) ([]ProviderSession, error) {
+// overlaps [start, end). Closed sessions end at disconnected_at; open sessions
+// may overlap via last_seen + openSessionGrace.
+func (s *PostgresStore) ListProviderSessionsOverlapping(ctx context.Context, start, end time.Time, openSessionGrace time.Duration) ([]ProviderSession, error) {
+	openGraceStart := start.Add(-openSessionGrace)
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, session_id, provider_key, serial_number, account_id,
 		        connected_at, last_seen, disconnected_at, disconnect_reason
 		   FROM provider_sessions
 		  WHERE connected_at < $2
-		    AND COALESCE(disconnected_at, last_seen) >= $1
+		    AND (
+		      (disconnected_at IS NOT NULL AND disconnected_at >= $1)
+		      OR (disconnected_at IS NULL AND last_seen >= $3)
+		    )
 		  ORDER BY serial_number, connected_at`,
-		start, end,
+		start, end, openGraceStart,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list provider sessions overlapping: %w", err)
@@ -226,16 +231,18 @@ func (s *PostgresStore) RecordProbeResult(result *ProbeResult) error {
 	return nil
 }
 
-// HasProbeSuccessSince reports whether a provider passed ≥1 probe since `since`.
+// HasProbeSuccessSince reports whether the latest probe since `since` succeeded.
 func (s *PostgresStore) HasProbeSuccessSince(providerKey string, since time.Time) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var exists bool
 	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS(
-			SELECT 1 FROM provider_probe_results
-			 WHERE provider_key = $1 AND success AND created_at >= $2)`,
+		`SELECT COALESCE((
+			SELECT success FROM provider_probe_results
+			 WHERE provider_key = $1 AND created_at >= $2
+			 ORDER BY created_at DESC, id DESC
+			 LIMIT 1), false)`,
 		providerKey, since,
 	).Scan(&exists)
 	if err != nil {

@@ -36,12 +36,14 @@ func newEngineStore() *engineStore {
 	return &engineStore{inner: store.NewMemory(store.Config{}), probed: map[string]bool{}}
 }
 
-func (s *engineStore) ListProviderSessionsOverlapping(_ context.Context, start, end time.Time) ([]store.ProviderSession, error) {
+func (s *engineStore) ListProviderSessionsOverlapping(_ context.Context, start, end time.Time, openSessionGrace time.Duration) ([]store.ProviderSession, error) {
 	out := []store.ProviderSession{}
 	for _, ps := range s.sessions {
 		sessEnd := ps.LastSeen
 		if ps.DisconnectedAt != nil {
 			sessEnd = *ps.DisconnectedAt
+		} else {
+			sessEnd = ps.LastSeen.Add(openSessionGrace)
 		}
 		if ps.ConnectedAt.Before(end) && !sessEnd.Before(start) {
 			out = append(out, ps)
@@ -250,6 +252,28 @@ func TestSettleEpoch_MemoryCapPreventsOverclaim(t *testing.T) {
 	}
 	if bal, _ := st.balance("accAir"); bal != 0 {
 		t.Fatalf("overclaimed Air credited %d, want 0 (cap rejects the 512GB claim)", bal)
+	}
+}
+
+func TestSettleEpoch_UnknownHardwareModelUnpaid(t *testing.T) {
+	epochID, start, end, clock := closedEpoch()
+	st := newEngineStore()
+	reg := registry.New(testLogger())
+	p := addProvider(reg, "unknown", "PKunknown", "Sunknown", "Mac99,1", 512)
+	setSerial(p, "Sunknown", "Mac99,1")
+	st.sessions = []store.ProviderSession{fullUptimeSession("unknown", "PKunknown", "Sunknown", "accUnknown", start, end)}
+	st.earnings = []store.ProviderEarning{organicEarning("PKunknown", "consumer", "j1", 1_000_000, start.Add(time.Minute))}
+
+	e := newTestEngine(st, reg, clock)
+	res, err := e.SettleEpoch(context.Background(), epochID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TotalDrawMicroUSD != 0 {
+		t.Fatalf("unknown hardware model should draw 0, got %d", res.TotalDrawMicroUSD)
+	}
+	if bal, _ := st.balance("accUnknown"); bal != 0 {
+		t.Fatalf("unknown hardware model credited %d, want 0", bal)
 	}
 }
 

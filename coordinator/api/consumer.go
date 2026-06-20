@@ -1830,22 +1830,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pre-flight balance reservation — atomically debit the worst-case cost
-	// using the byte-length upper bound for prompt tokens (guaranteed >=
-	// actual tokens for any BPE tokenizer) plus max_tokens we just bounded
-	// the generation to. The post-inference charge refunds any unused
-	// portion. The routing estimate (estimatedPromptTokens, len/4) is kept
-	// separate so scheduler capacity checks aren't over-inflated.
+	consumerKey := consumerKeyFromContext(r.Context())
+	consumerLocation := s.requestLocation(r)
 	var reservedMicroUSD int64
 	serviceReservation := false
-	// Self-route is free: skip the pre-flight balance reservation and the
-	// per-key spend cap entirely. A zero-balance owner must never be blocked
-	// from running on their own machine, and a self_route_only key never spends.
-	if s.billing != nil && !policy.enabled {
-		consumerKey := consumerKeyFromContext(r.Context())
+	// Refund reservation on early errors (before inference starts).
+	refundReservation := func() {
+		if reservedMicroUSD > 0 {
+			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
+		}
+	}
+	reserveBalance := func() bool {
+		// Self-route is free: skip the pre-flight balance reservation and the
+		// per-key spend cap entirely. A zero-balance owner must never be blocked
+		// from running on their own machine, and a self_route_only key never spends.
+		if s.billing == nil || policy.enabled {
+			timing.ReservedAt = time.Now()
+			return true
+		}
+		// Atomically debit the worst-case cost using the byte-length upper bound
+		// for prompt tokens plus max_tokens. This now runs after pure routing
+		// preflight so rejected requests never touch the cross-cloud ledger path.
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
-		// Per-key spend cap (phase 1) — checked before the reservation so a
-		// capped key never debits the account ledger.
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
 			s.recordRejection(rejectionInfo{
 				r:                     r,
@@ -1864,7 +1870,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				params:                rejectionSamplingParams(parsed),
 			})
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-			return
+			return false
 		}
 		var err error
 		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
@@ -1892,16 +1898,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
 				s.writeServiceUnavailable(w, model)
 			}
-			return
+			return false
 		}
-	}
-	timing.ReservedAt = time.Now()
-
-	// Refund reservation on early errors (before inference starts).
-	refundReservation := func() {
-		if reservedMicroUSD > 0 {
-			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, serviceReservation)
-		}
+		timing.ReservedAt = time.Now()
+		return true
 	}
 
 	// Reject requests for models not in the catalog.
@@ -2034,8 +2034,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// request fall through to the normal dispatch+queue path so a slot
 			// freeing — or a cold load completing — within the queue window serves
 			// it. The dispatch/queue path still returns a 429 when the queue is
-			// full or the wait times out (true saturation). The reservation is
-			// kept for dispatch.
+			// full or the wait times out (true saturation). Billing is reserved
+			// after preflight, immediately before dispatch.
 			if s.queueBeforeShedEnabled() {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
@@ -2095,7 +2095,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			s.triggerWarmPool()
 			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
-				// Fall through to dispatch+queue; reservation kept.
+				// Fall through to dispatch+queue; billing is reserved below.
 			} else {
 				// None of these clear by a slot freeing up, so queueing for up to
 				// 120s only adds misleading latency before the same error. Fail
@@ -2224,8 +2224,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// picks a provider (or queues), runs the speculative TTFT-aware first-chunk
 	// wait with an invisible backup race + failover up to maxDispatchAttempts,
 	// commits exactly once, then writes attestation/timing headers and streams.
-	consumerKey := consumerKeyFromContext(r.Context())
-	consumerLocation := s.requestLocation(r)
 	// Final cap on the body we'll seal. The read cap (parseInferencePrelude)
 	// bounded the request as received, but rawBody has since been re-marshaled at
 	// several points — alias resolution, allowlist/routing-field stripping,
@@ -2236,10 +2234,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// request (see maxInferenceBodyBytes / CoordinatorClient.maxInboundMessageBytes).
 	// This is the single point where rawBody is frozen into dispatchState, so the
 	// check here covers every upstream mutation; an oversized request gets a clean
-	// 413 instead of disconnecting a provider mid-flight. The reservation is held
-	// at this point, so refund before returning.
+	// 413 instead of disconnecting a provider mid-flight.
 	if len(rawBody) > maxInferenceBodyBytes {
-		refundReservation()
 		s.recordRejection(rejectionInfo{
 			r:                     r,
 			stage:                 "validation",
@@ -2259,6 +2255,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
 			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
+		return
+	}
+
+	if !reserveBalance() {
 		return
 	}
 
@@ -4672,17 +4672,26 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// Pre-flight balance reservation — same worst-case-cost reservation as
-	// handleChatCompletions, using the byte-length upper bound for prompt
-	// tokens so the reservation always covers actual cost.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
 	var reservedMicroUSD int64
 	serviceReservation := false
-	// Self-route is free: skip the reservation and per-key spend cap.
-	if s.billing != nil && !policy.enabled {
+	refundReservation := func() {
+		if reservedMicroUSD > 0 {
+			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
+		}
+	}
+	reserveBalance := func() bool {
+		// Self-route is free: skip the reservation and per-key spend cap.
+		if s.billing == nil || policy.enabled {
+			timing.ReservedAt = time.Now()
+			return true
+		}
+		// Same worst-case-cost reservation as handleChatCompletions, using the
+		// byte-length upper bound for prompt tokens so the reservation always
+		// covers actual cost. It runs after routing preflight to avoid ledger
+		// churn for fast 429/503/TTFT rejections.
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
-		// Per-key spend cap (phase 1) — checked before the reservation.
 		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
 			s.recordRejection(rejectionInfo{
 				r:                     r,
@@ -4701,7 +4710,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				params:                rejectionSamplingParams(parsed),
 			})
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-			return
+			return false
 		}
 		var err error
 		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
@@ -4729,15 +4738,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
 				s.writeServiceUnavailable(w, model)
 			}
-			return
+			return false
 		}
+		timing.ReservedAt = time.Now()
+		return true
 	}
-	refundReservation := func() {
-		if reservedMicroUSD > 0 {
-			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
-		}
-	}
-	timing.ReservedAt = time.Now()
 	rejectionForGeneric := func(stage, reason string, status, retryAfterMs int) rejectionInfo {
 		return rejectionInfo{
 			r:                     r,
@@ -4961,6 +4966,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				return
 			}
 		}
+	}
+
+	if !reserveBalance() {
+		return
 	}
 
 	requestID := uuid.New().String()

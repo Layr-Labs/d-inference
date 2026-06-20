@@ -83,10 +83,12 @@ func TestProviderWriteTextCanceledContextDoesNotCloseSocket(t *testing.T) {
 
 func TestProviderWriterQueueFullReturnsImmediately(t *testing.T) {
 	w := &providerWriter{
-		queue: make(chan *providerWriteRequest, 1),
-		done:  make(chan struct{}),
+		controlQueue: make(chan *providerWriteRequest, 1),
+		queue:        make(chan *providerWriteRequest, 1),
+		done:         make(chan struct{}),
 	}
 	w.queue <- &providerWriteRequest{done: make(chan error, 1)}
+	w.controlQueue <- &providerWriteRequest{done: make(chan error, 1)}
 
 	if err := w.write(context.Background(), []byte(`{"type":"overflow"}`)); err != errProviderWriterQueueFull {
 		t.Fatalf("write on full queue = %v, want errProviderWriterQueueFull", err)
@@ -98,8 +100,9 @@ func TestProviderWriterQueueFullReturnsImmediately(t *testing.T) {
 
 func TestProviderWriteTextCancellationBeforeStartSkipsFrame(t *testing.T) {
 	w := &providerWriter{
-		queue: make(chan *providerWriteRequest, 1),
-		done:  make(chan struct{}),
+		controlQueue: make(chan *providerWriteRequest, 1),
+		queue:        make(chan *providerWriteRequest, 1),
+		done:         make(chan struct{}),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -127,11 +130,81 @@ func TestProviderWriteTextCancellationBeforeStartSkipsFrame(t *testing.T) {
 	}
 }
 
+func TestProviderWriterPrioritizesControlFrames(t *testing.T) {
+	w := &providerWriter{
+		controlQueue: make(chan *providerWriteRequest, 1),
+		queue:        make(chan *providerWriteRequest, 1),
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
+	}
+	normal := &providerWriteRequest{data: []byte(`{"type":"inference"}`)}
+	control := &providerWriteRequest{data: []byte(`{"type":"cancel"}`)}
+	w.queue <- normal
+	w.controlQueue <- control
+
+	got, ok := w.next()
+	if !ok {
+		t.Fatal("next stopped unexpectedly")
+	}
+	if got != control {
+		t.Fatalf("first frame = %s, want control frame", got.data)
+	}
+	got, ok = w.next()
+	if !ok {
+		t.Fatal("next stopped unexpectedly after control frame")
+	}
+	if got != normal {
+		t.Fatalf("second frame = %s, want normal frame", got.data)
+	}
+}
+
+func TestProviderControlEnqueueBypassesFullDataQueue(t *testing.T) {
+	w := &providerWriter{
+		controlQueue: make(chan *providerWriteRequest, 1),
+		queue:        make(chan *providerWriteRequest, 1),
+		done:         make(chan struct{}),
+	}
+	w.queue <- &providerWriteRequest{done: make(chan error, 1)}
+
+	if err := w.write(context.Background(), []byte(`{"type":"inference"}`)); err != errProviderWriterQueueFull {
+		t.Fatalf("write on full data queue = %v, want errProviderWriterQueueFull", err)
+	}
+	if err := w.enqueue(context.Background(), []byte(`{"type":"cancel"}`)); err != nil {
+		t.Fatalf("control enqueue with full data queue = %v, want nil", err)
+	}
+}
+
 func TestSendModelLoadActionsClearsPendingWhenWriterQueueFull(t *testing.T) {
 	r := New(testLogger())
 	p := &Provider{
 		ID:          "queue-full-provider",
-		writer:      &providerWriter{queue: make(chan *providerWriteRequest, 1), done: make(chan struct{})},
+		writer:      &providerWriter{controlQueue: make(chan *providerWriteRequest, 1), queue: make(chan *providerWriteRequest, 1), done: make(chan struct{})},
+		pendingReqs: make(map[string]*PendingRequest),
+	}
+	p.writer.controlQueue <- &providerWriteRequest{done: make(chan error, 1)}
+	r.mu.Lock()
+	r.providers[p.ID] = p
+	r.mu.Unlock()
+
+	actions := r.reservePendingModelLoads([]modelLoadAction{{providerID: p.ID, modelID: "m"}}, time.Now())
+	if len(actions) != 1 {
+		t.Fatalf("reserved actions = %d, want 1", len(actions))
+	}
+	r.sendModelLoadActions(actions)
+
+	r.mu.Lock()
+	hasPending := r.providerHasPendingLoad(p.ID)
+	r.mu.Unlock()
+	if hasPending {
+		t.Fatal("pending model load was not cleared after writer queue rejected load_model")
+	}
+}
+
+func TestSendModelLoadActionsUsesControlQueueWhenDataQueueFull(t *testing.T) {
+	r := New(testLogger())
+	p := &Provider{
+		ID:          "data-full-provider",
+		writer:      &providerWriter{controlQueue: make(chan *providerWriteRequest, 1), queue: make(chan *providerWriteRequest, 1), done: make(chan struct{})},
 		pendingReqs: make(map[string]*PendingRequest),
 	}
 	p.writer.queue <- &providerWriteRequest{done: make(chan error, 1)}
@@ -148,7 +221,15 @@ func TestSendModelLoadActionsClearsPendingWhenWriterQueueFull(t *testing.T) {
 	r.mu.Lock()
 	hasPending := r.providerHasPendingLoad(p.ID)
 	r.mu.Unlock()
-	if hasPending {
-		t.Fatal("pending model load was not cleared after writer queue rejected load_model")
+	if !hasPending {
+		t.Fatal("pending model load was cleared even though control queue accepted load_model")
+	}
+	select {
+	case req := <-p.writer.controlQueue:
+		if !strings.Contains(string(req.data), `"load_model"`) {
+			t.Fatalf("queued control frame = %s, want load_model", req.data)
+		}
+	default:
+		t.Fatal("load_model was not queued on the control queue")
 	}
 }

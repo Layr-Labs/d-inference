@@ -1226,7 +1226,7 @@ func (s *Server) sendChallenge(ctx context.Context, providerID string, provider 
 
 	writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer writeCancel()
-	if err := provider.WriteText(writeCtx, data); err != nil {
+	if err := provider.WriteControlText(writeCtx, data); err != nil {
 		s.logger.Error("failed to send challenge", "provider_id", providerID, "error", err)
 		tracker.remove(nonce)
 		return

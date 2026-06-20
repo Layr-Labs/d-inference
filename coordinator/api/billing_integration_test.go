@@ -301,7 +301,7 @@ func TestIntegration_ConsumerBillingCharge(t *testing.T) {
 }
 
 // TestIntegration_ConsumerInsufficientBalance verifies that consumers with zero
-// balance are rejected with 402 before routing to a provider.
+// balance are rejected with 402 once the request is otherwise routable.
 func TestIntegration_ConsumerInsufficientBalance(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	// Use a separate API key ("broke-key") with zero balance.
@@ -324,8 +324,11 @@ func TestIntegration_ConsumerInsufficientBalance(t *testing.T) {
 		t.Fatalf("initial balance = %d, want 0", got)
 	}
 
-	// Send a consumer inference request — should be rejected with 402.
 	model := "insufficient-balance-model"
+	providerConn, _, _ := setupProviderForBilling(t, ctx, ts, reg, model)
+	defer providerConn.Close(websocket.StatusNormalClosure, "test done")
+
+	// Send a routable consumer inference request — should be rejected with 402.
 	status := sendInferenceRequest(t, ctx, ts.URL, model, "broke-key")
 	if status != http.StatusPaymentRequired {
 		t.Fatalf("inference status = %d, want 402 (insufficient funds)", status)
@@ -339,6 +342,36 @@ func TestIntegration_ConsumerInsufficientBalance(t *testing.T) {
 	// No usage should be recorded (request was rejected before routing).
 	if len(ledger.Usage(consumerID)) != 0 {
 		t.Errorf("no usage should be recorded for rejected request")
+	}
+}
+
+func TestIntegration_RoutingRejectsBeforeBalanceReservation(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "offline-key"})
+	reg := registry.New(logger)
+	model := "offline-but-catalogued-model"
+	reg.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	ledger := srv.ledger
+	billingSvc := billing.NewService(st, ledger, logger, billing.Config{MockMode: true})
+	srv.SetBilling(billingSvc)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, "offline-key")
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("inference status = %d, want 503 (no routable provider before billing)", status)
+	}
+	if got := ledger.Balance("offline-key"); got != 0 {
+		t.Fatalf("balance = %d, want 0", got)
+	}
+	if usage := ledger.Usage("offline-key"); len(usage) != 0 {
+		t.Fatalf("usage entries = %d, want 0", len(usage))
 	}
 }
 

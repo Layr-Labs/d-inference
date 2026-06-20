@@ -12,6 +12,7 @@ import (
 
 const (
 	providerWriteQueueSize        = 128
+	providerControlQueueSize      = 64
 	providerWriteMinTimeout       = 5 * time.Second
 	providerWriteMaxTimeout       = 30 * time.Second
 	providerWriteBytesPerSecond   = 2 << 20 // 2 MiB/s (~16 Mbps) floor.
@@ -30,12 +31,13 @@ type providerWriteRequest struct {
 }
 
 type providerWriter struct {
-	conn     *websocket.Conn
-	queue    chan *providerWriteRequest
-	stop     chan struct{}
-	done     chan struct{}
-	acceptMu sync.Mutex
-	dead     atomic.Bool
+	conn         *websocket.Conn
+	controlQueue chan *providerWriteRequest
+	queue        chan *providerWriteRequest
+	stop         chan struct{}
+	done         chan struct{}
+	acceptMu     sync.Mutex
+	dead         atomic.Bool
 }
 
 func newProviderWriter(conn *websocket.Conn) *providerWriter {
@@ -43,16 +45,25 @@ func newProviderWriter(conn *websocket.Conn) *providerWriter {
 		return nil
 	}
 	w := &providerWriter{
-		conn:  conn,
-		queue: make(chan *providerWriteRequest, providerWriteQueueSize),
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
+		conn:         conn,
+		controlQueue: make(chan *providerWriteRequest, providerControlQueueSize),
+		queue:        make(chan *providerWriteRequest, providerWriteQueueSize),
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 	go w.run()
 	return w
 }
 
 func (w *providerWriter) write(ctx context.Context, data []byte) error {
+	return w.writeWithPriority(ctx, data, false)
+}
+
+func (w *providerWriter) writeControl(ctx context.Context, data []byte) error {
+	return w.writeWithPriority(ctx, data, true)
+}
+
+func (w *providerWriter) writeWithPriority(ctx context.Context, data []byte, control bool) error {
 	if w == nil {
 		return errProviderWriterStopped
 	}
@@ -70,20 +81,8 @@ func (w *providerWriter) write(ctx context.Context, data []byte) error {
 		data: append([]byte(nil), data...),
 		done: make(chan error, 1),
 	}
-	w.acceptMu.Lock()
-	if w.dead.Load() {
-		w.acceptMu.Unlock()
-		return errProviderWriterStopped
-	}
-	select {
-	case w.queue <- req:
-		w.acceptMu.Unlock()
-	case <-w.done:
-		w.acceptMu.Unlock()
-		return errProviderWriterStopped
-	default:
-		w.acceptMu.Unlock()
-		return errProviderWriterQueueFull
+	if err := w.accept(req, control); err != nil {
+		return err
 	}
 	select {
 	case err := <-req.done:
@@ -104,6 +103,10 @@ func (w *providerWriter) write(ctx context.Context, data []byte) error {
 }
 
 func (w *providerWriter) enqueue(ctx context.Context, data []byte) error {
+	return w.enqueueWithPriority(ctx, data, true)
+}
+
+func (w *providerWriter) enqueueWithPriority(ctx context.Context, data []byte, control bool) error {
 	if w == nil {
 		return errProviderWriterStopped
 	}
@@ -120,13 +123,21 @@ func (w *providerWriter) enqueue(ctx context.Context, data []byte) error {
 		ctx:  context.Background(),
 		data: append([]byte(nil), data...),
 	}
+	return w.accept(req, control)
+}
+
+func (w *providerWriter) accept(req *providerWriteRequest, control bool) error {
 	w.acceptMu.Lock()
 	if w.dead.Load() {
 		w.acceptMu.Unlock()
 		return errProviderWriterStopped
 	}
+	queue := w.queue
+	if control {
+		queue = w.controlQueue
+	}
 	select {
-	case w.queue <- req:
+	case queue <- req:
 		w.acceptMu.Unlock()
 		return nil
 	case <-w.done:
@@ -158,39 +169,63 @@ func (w *providerWriter) run() {
 	defer w.dead.Store(true)
 	defer close(w.done)
 	for {
-		select {
-		case <-w.stop:
+		req, ok := w.next()
+		if !ok {
 			w.drain(errProviderWriterStopped)
 			return
-		case req := <-w.queue:
-			if (req.ctx != nil && req.ctx.Err() != nil) || !req.state.CompareAndSwap(0, 2) {
-				if req.done != nil {
-					if req.ctx != nil && req.ctx.Err() != nil {
-						req.done <- req.ctx.Err()
-					} else {
-						req.done <- context.Canceled
-					}
-				}
-				continue
-			}
-			if err := w.writeFrame(req.data); err != nil {
-				if req.done != nil {
-					req.done <- err
-				}
-				w.closeNow()
-				w.drain(err)
-				return
-			}
-			if req.done != nil {
-				req.done <- nil
-			}
 		}
+		if (req.ctx != nil && req.ctx.Err() != nil) || !req.state.CompareAndSwap(0, 2) {
+			if req.done != nil {
+				if req.ctx != nil && req.ctx.Err() != nil {
+					req.done <- req.ctx.Err()
+				} else {
+					req.done <- context.Canceled
+				}
+			}
+			continue
+		}
+		if err := w.writeFrame(req.data); err != nil {
+			if req.done != nil {
+				req.done <- err
+			}
+			w.closeNow()
+			w.drain(err)
+			return
+		}
+		if req.done != nil {
+			req.done <- nil
+		}
+	}
+}
+
+func (w *providerWriter) next() (*providerWriteRequest, bool) {
+	select {
+	case <-w.stop:
+		return nil, false
+	default:
+	}
+	select {
+	case req := <-w.controlQueue:
+		return req, true
+	default:
+	}
+	select {
+	case <-w.stop:
+		return nil, false
+	case req := <-w.controlQueue:
+		return req, true
+	case req := <-w.queue:
+		return req, true
 	}
 }
 
 func (w *providerWriter) drain(err error) {
 	for {
 		select {
+		case req := <-w.controlQueue:
+			if req.done != nil {
+				req.done <- err
+			}
 		case req := <-w.queue:
 			if req.done != nil {
 				req.done <- err
@@ -256,6 +291,21 @@ func (p *Provider) WriteText(ctx context.Context, data []byte) error {
 		return errProviderWriterStopped
 	}
 	return w.write(ctx, data)
+}
+
+// WriteControlText serializes a high-priority text WebSocket frame. Control
+// frames bypass queued inference frames but do not preempt an active write.
+func (p *Provider) WriteControlText(ctx context.Context, data []byte) error {
+	if p == nil {
+		return errors.New("provider is nil")
+	}
+	p.mu.Lock()
+	w := p.writer
+	p.mu.Unlock()
+	if w == nil {
+		return errProviderWriterStopped
+	}
+	return w.writeControl(ctx, data)
 }
 
 // EnqueueText queues a text WebSocket frame without waiting for write

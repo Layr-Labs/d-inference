@@ -2712,11 +2712,11 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
-		return fmt.Errorf("failed to send load_model to provider %q: %w", providerID, err)
+	if err := p.EnqueueText(ctx, data); err != nil {
+		return fmt.Errorf("failed to queue load_model for provider %q: %w", providerID, err)
 	}
 
-	r.logger.Info("sent load_model to provider",
+	r.logger.Info("queued load_model for provider",
 		"provider_id", providerID,
 		"model_id", modelID,
 	)
@@ -2751,11 +2751,11 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
-		return fmt.Errorf("failed to send prefetch_model to provider %q: %w", providerID, err)
+	if err := p.EnqueueText(ctx, data); err != nil {
+		return fmt.Errorf("failed to queue prefetch_model for provider %q: %w", providerID, err)
 	}
 
-	r.logger.Info("sent prefetch_model to provider",
+	r.logger.Info("queued prefetch_model for provider",
 		"provider_id", providerID,
 		"model_id", modelID,
 		"priority", priority,
@@ -2800,11 +2800,11 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
-		return fmt.Errorf("failed to send desired_models to provider %q: %w", providerID, err)
+	if err := p.EnqueueText(ctx, data); err != nil {
+		return fmt.Errorf("failed to queue desired_models for provider %q: %w", providerID, err)
 	}
 
-	r.logger.Info("sent desired_models to provider",
+	r.logger.Info("queued desired_models for provider",
 		"provider_id", providerID,
 		"entries", len(entries),
 	)

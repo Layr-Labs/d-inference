@@ -19,7 +19,7 @@ function Vital({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5 min-w-0">
       <div className="flex items-center justify-between gap-2 min-w-0">
         <span className="text-[10px] uppercase tracking-wider text-text-tertiary truncate">{label}</span>
         <span className="text-xs font-mono font-semibold text-text-primary capitalize tabular-nums shrink-0">{value}</span>

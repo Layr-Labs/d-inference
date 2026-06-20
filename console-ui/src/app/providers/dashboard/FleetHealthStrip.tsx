@@ -53,9 +53,11 @@ export function FleetHealthStrip({
   return (
     <div className={`@container rounded-xl bg-bg-secondary shadow-sm border border-border-dim border-l-[3px] ${meta.rail} p-5`}>
       {/* Side-by-side verdict + KPIs only once the strip is genuinely wide
-          enough (container-, not viewport-keyed). Below that it stacks, so a
-          narrow strip never crams the verdict on top of the numbers. */}
-      <div className="grid gap-5 @3xl:grid-cols-[36%_1fr] @3xl:items-center">
+          enough — @5xl (64rem) mirrors the original lg viewport threshold but
+          keys off the strip's real width, not the viewport. Below that it
+          stacks, so a narrow strip never crams the verdict on top of the
+          numbers, and the split only fires where the 5-column KPI row fits. */}
+      <div className="grid gap-5 @5xl:grid-cols-[36%_1fr] @5xl:items-center">
         {/* Left: the plain-language fleet verdict (worst state wins) */}
         <div className="flex items-center gap-3">
           <div className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 ${meta.tint}`}>

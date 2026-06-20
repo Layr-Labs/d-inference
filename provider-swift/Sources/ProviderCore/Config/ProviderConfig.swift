@@ -64,8 +64,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// coordinator-driven preloads so advertised model count cannot become a
     /// memory-unbounded slot cap.
     public var maxModelSlots: UInt64
-    /// When true, enable KV-cache quantization for validated model families
-    /// (Gemma 4 only in v1). Default false keeps the legacy fp16 path.
+    /// Opt-in KV-cache quantization for the validated model families
+    /// (GPT-OSS and Gemma 4). Default false serves fp16. When true, those
+    /// families store K/V quantized for ~1.9x more admitted tokens; any other
+    /// model is unaffected and keeps fp16. Enable per provider by setting
+    /// `kv_quant = true` under `[backend]` in provider.toml.
     public var kvQuant: Bool
 
     public init(

@@ -36,6 +36,7 @@ import os
 // `internal` (not `private`) so the BatchScheduler extension files
 // (e.g. +EngineBridge) can log under the same category.
 let prefixCacheLogger = Logger(subsystem: "dev.darkbloom.provider", category: "prefix-cache-wiring")
+let kvQuantLogger = Logger(subsystem: "dev.darkbloom.provider", category: "kv-quant")
 
 /// Continuous-batching scheduler. Wraps a single `MLXLMCommon.BatchedEngine`
 /// per loaded model. The engine owns the GPU step loop; this actor owns
@@ -1120,6 +1121,17 @@ public actor BatchScheduler {
             weightBytes: weightBytes,
             quantScheme: kvQuantScheme
         )
+        // Make the switch observable: a beta provider can confirm via
+        // `darkbloom logs` whether kv_quant actually engaged for this model.
+        if let scheme = kvQuantScheme {
+            let kind = scheme.candidateMode.cacheKind == .dequant ? "dequant" : "kernel"
+            let pc = kvQuantBlocksPrefixCache ? "off (kernel scheme)" : "on"
+            kvQuantLogger.notice(
+                "KV-quant ENABLED for \(modelId, privacy: .public): \(kind, privacy: .public) scheme, \(kvBytesPerToken) KV bytes/token, prefix cache \(pc, privacy: .public)")
+        } else if kvQuantEnabled {
+            kvQuantLogger.notice(
+                "KV-quant requested (kv_quant=true) but \(modelId, privacy: .public) is not a supported family — serving fp16")
+        }
         let maxBlocks = prefixCacheMaxBlocks(
             kvBytesPerToken: kvBytesPerToken,
             budgetBytes: prefixCacheBudgetBytes(),

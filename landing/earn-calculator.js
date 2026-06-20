@@ -3,7 +3,7 @@
  *
  * Earnings model: total = usage + floor − electricity
  *   • usage — realistic throughput at 80% utilization, crediting continuous
- *     batching at a quality-preserving 2× (not the old 16× ceiling, which
+ *     batching at a quality-preserving 4× (not the old 16× ceiling, which
  *     overstated earnings).
  *   • floor — provider base reward (PR #282) by verified-memory tier, ramped by
  *     uptime, added ON TOP of usage (additive, not max).
@@ -52,8 +52,8 @@
   // Sustained fraction of peak memory bandwidth for a single decode stream.
   const SINGLE_STREAM_EFFICIENCY = 0.6;
   // Continuous-batching gain over single-stream at quality-preserving
-  // concurrency (capped at 2×, not the theoretical 16× ceiling).
-  const CONTINUOUS_BATCH_FACTOR = 2;
+  // concurrency (capped at 4×, not the theoretical 16× ceiling).
+  const CONTINUOUS_BATCH_FACTOR = 4;
   // Assumed network utilization (fraction of online time actively serving).
   const ASSUMED_UTILIZATION = 0.8;
   // Network-observed prompt:completion token ratio (≈3.5:1 from /v1/stats).
@@ -153,7 +153,7 @@
   // Per-model USAGE earnings at 100% utilization for hoursOnlinePerDay hours/day.
   // Single-stream throughput (no batch multiplier); floor is added separately.
   function calculateModelEarnings(model, config, hoursOnlinePerDay, elecCostPerKWh) {
-    // Effective decode = single-stream × continuous batch (2×) × utilization (80%).
+    // Effective decode = single-stream × continuous batch (4×) × utilization (80%).
     const singleTokPerSec = (config.bandwidthGBs / model.activeParamsGB) * SINGLE_STREAM_EFFICIENCY;
     const decodeTokPerSec = singleTokPerSec * CONTINUOUS_BATCH_FACTOR * ASSUMED_UTILIZATION;
     const completionTokPerHour = decodeTokPerSec * 3600;

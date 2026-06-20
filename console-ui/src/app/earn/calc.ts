@@ -10,7 +10,7 @@
  *
  *   • usage    — realistic THROUGHPUT at a fixed 80% utilization, where the
  *                throughput credits continuous batching at a quality-preserving
- *                2× (NOT the 16× ceiling the old calculator used — that
+ *                4× (NOT the 16× ceiling the old calculator used — that
  *                overstated earnings by ~10–20×). Utilization and hours are
  *                fixed by product direction and not exposed to the user.
  *   • floor    — the provider base-reward earnings floor (PR #282), set by
@@ -93,11 +93,11 @@ export const SINGLE_STREAM_EFFICIENCY = 0.6;
 /**
  * Continuous-batching gain over single-stream at quality-preserving
  * concurrency (provider-swift BatchScheduler sustains multiple requests in a
- * single fused decode step without dropping per-user latency). Capped at 2× —
+ * single fused decode step without dropping per-user latency). Capped at 4× —
  * NOT the theoretical 16× ceiling — to stay within the concurrency the engine
  * holds while keeping decode latency acceptable.
  */
-export const CONTINUOUS_BATCH_FACTOR = 2;
+export const CONTINUOUS_BATCH_FACTOR = 4;
 
 /**
  * Assumed network utilization (fraction of time the machine is actively
@@ -264,7 +264,7 @@ export function calculateModelEarnings(
   const { activeParamsGB, outputPriceMicro, inputPriceMicro } = model;
 
   // Effective decode throughput = single-stream × continuous batch × assumed
-  // utilization. The batch factor (2×) credits the engine's continuous batching
+  // utilization. The batch factor (4×) credits the engine's continuous batching
   // at quality-preserving concurrency; the utilization (80%) leaves realistic
   // idle gaps. See file header.
   const singleTokPerSec = (config.bandwidthGBs / activeParamsGB) * SINGLE_STREAM_EFFICIENCY;

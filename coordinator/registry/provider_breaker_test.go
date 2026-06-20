@@ -87,10 +87,12 @@ func TestProviderOutcomeIsFault(t *testing.T) {
 		{503, "server busy", false},
 		{503, "service temporarily unavailable", false},
 		{503, "All 3 model slot(s) are active; cannot load 'x'", false},
+		// Overload/backpressure shed — healthy-but-busy, consistent with the api
+		// reclassifier and the inference-error breaker (NOT a node fault).
+		{503, "request rejected", false},
 		// "room" must NOT match the whole word "oom".
 		{503, "no room left for this request", true},
 		// Fault-shaped 503s: genuine node faults, counted.
-		{503, "request rejected", true},
 		{503, "internal error", true},
 		{503, "model load failed", true},
 		{503, "The operation couldn't be completed. (error 1.)", true},
@@ -157,6 +159,40 @@ func TestProviderPassesRoutingGatesBreakerBypass(t *testing.T) {
 	}
 }
 
+// The fail-open valve must trigger ONLY when the node-health breaker is the SOLE
+// reason a request has no route. If a healthy provider was merely busy
+// (capacityRejections) or too slow (ttftRejections), selection must surface that
+// signal (queue / 429) instead of failing open to a known-bad, breaker-open node.
+func TestShouldBypassBreakerFailOpen(t *testing.T) {
+	cases := []struct {
+		name            string
+		winner          bool
+		breakerRejected int
+		capacity        int
+		ttft            int
+		want            bool
+	}{
+		{"winner found — no fail-open needed", true, 1, 0, 0, false},
+		{"breaker played no part", false, 0, 0, 0, false},
+		{"breaker is the sole reason", false, 1, 0, 0, true},
+		{"healthy provider merely busy", false, 1, 1, 0, false},
+		{"healthy provider too slow", false, 1, 0, 1, false},
+		{"mixed fleet: busy + slow + breaker", false, 2, 3, 1, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var w *routingCandidate
+			if c.winner {
+				w = &routingCandidate{}
+			}
+			if got := shouldBypassBreakerFailOpen(w, c.breakerRejected, c.capacity, c.ttft); got != c.want {
+				t.Fatalf("shouldBypassBreakerFailOpen(winner=%v, breaker=%d, cap=%d, ttft=%d)=%v, want %v",
+					c.winner, c.breakerRejected, c.capacity, c.ttft, got, c.want)
+			}
+		})
+	}
+}
+
 // The sustained fail-RATE path (>=20 outcomes, >80% faults) trips even when the
 // consecutive-fault counter is low; exactly 80% stays closed.
 func TestProviderBreakerRateTrip(t *testing.T) {
@@ -174,7 +210,7 @@ func TestProviderBreakerRateTrip(t *testing.T) {
 			pattern = append(pattern, true)
 		}
 		seedProviderHealthWindow(r, id, pattern, now)
-		opened, _ := r.RecordProviderOutcome(id, false, 503, "request rejected")
+		opened, _ := r.RecordProviderOutcome(id, false, 503, "internal error")
 		if !opened {
 			t.Fatal("a sustained >80% fault rate over a full window must open the breaker")
 		}
@@ -193,7 +229,7 @@ func TestProviderBreakerRateTrip(t *testing.T) {
 			pattern = append(pattern, true)
 		}
 		seedProviderHealthWindow(r, id, pattern, now)
-		opened, _ := r.RecordProviderOutcome(id, false, 503, "request rejected")
+		opened, _ := r.RecordProviderOutcome(id, false, 503, "internal error")
 		if opened {
 			t.Fatal("exactly 80% fault rate must NOT open the breaker (threshold is strictly greater)")
 		}
@@ -307,6 +343,7 @@ func TestProviderBreakerIgnoresHealthySheds(t *testing.T) {
 		{503, "queue full"},
 		{503, "server busy"},
 		{503, "service temporarily unavailable"},
+		{503, "request rejected"},
 		{503, "All 3 model slot(s) are active; cannot load 'x'"},
 	}
 	for i := 0; i < 100; i++ {
@@ -335,7 +372,6 @@ func TestProviderBreakerFaultFlavorsTrip(t *testing.T) {
 		code int
 		err  string
 	}{
-		{"request rejected 503", 503, "request rejected"},
 		{"internal error 503", 503, "internal error"},
 		{"model load failed 503", 503, "model load failed"},
 		{"opaque Foundation 503", 503, "The operation couldn't be completed. (error 1.)"},
@@ -379,7 +415,7 @@ func TestReserveProviderExNodeHealthBreakerFailsOpen(t *testing.T) {
 	// Trip ONLY the (faster) bad provider with fault-503s. Selection must fall to
 	// the healthy provider despite the bad one's higher TPS.
 	for i := 0; i < providerBreakerConsecTrip; i++ {
-		reg.RecordProviderOutcome(bad.ID, false, 503, "request rejected")
+		reg.RecordProviderOutcome(bad.ID, false, 503, "internal error")
 	}
 	if !reg.ProviderBreakerOpen(bad.ID) {
 		t.Fatal("bad provider's breaker must be open")
@@ -441,7 +477,7 @@ func TestQuickCapacityCheckFailsOpenOnProviderBreaker(t *testing.T) {
 
 	// Trip the only provider's breaker — the entire fleet is now breaker-open.
 	for i := 0; i < providerBreakerConsecTrip; i++ {
-		reg.RecordProviderOutcome(p.ID, false, 503, "request rejected")
+		reg.RecordProviderOutcome(p.ID, false, 503, "internal error")
 	}
 	if !reg.ProviderBreakerOpen(p.ID) {
 		t.Fatal("provider breaker must be open")

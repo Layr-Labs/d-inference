@@ -105,10 +105,14 @@ var capacityClassMarkers = []string{
 	// (protocol.ProviderDrainingForUpdate = "provider draining for update").
 	"draining",
 	// Overload / backpressure: the request was not run, so failover is safe.
+	// NB: "service temporarily unavailable" is intentionally NOT a marker — the
+	// coordinator itself emits "service temporarily unavailable — please retry"
+	// on its OWN store/DB errors (e.g. a failed reservation top-up in the
+	// dispatch path), which is a genuine coordinator fault that must stay a 5xx,
+	// not be hidden as an uptime-neutral 429.
 	"request rejected",
 	"queue full",
 	"server busy",
-	"service temporarily unavailable",
 	"request timed out waiting for capacity",
 	// Cold miss: model not resident yet. NOT "model load failed" (a fault) —
 	// these markers match "model not loaded" / "is not loaded on this provider".

@@ -45,6 +45,11 @@ func TestIsCapacityClassProviderError(t *testing.T) {
 		{"empty", "", false},
 		{"internal error", "internal error", false},
 		{"provider disconnected", "provider disconnected", false},
+		// Coordinator-generated 503 (e.g. a failed reservation top-up in the
+		// dispatch path emits "service temporarily unavailable — please retry")
+		// must stay a fault — NOT be hidden as an uptime-neutral 429 — because it
+		// is the coordinator's own failure, not provider capacity backpressure.
+		{"coordinator service unavailable stays fault", "service temporarily unavailable — please retry", false},
 		{"boom is not oom", "boom", false},
 		{"room is not oom", "no room left on device", false},
 		// New fault cases.

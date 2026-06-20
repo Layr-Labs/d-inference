@@ -12,9 +12,9 @@ import (
 // counts sickness-shaped 500/502/504 — it deliberately ignores 503 (the
 // provider's capacity/lifecycle signal) and resets per shape on success. The
 // hole it leaves: a NODE that has gone bad at the box level and returns a
-// GENUINE-FAULT 503 ("request rejected", internal error, a crashed/panicked
-// backend, or the opaque Foundation "the operation couldn't be completed"
-// string) for ~100% of its requests stays fully routable. Reputation skips 503,
+// GENUINE-FAULT 503 (an internal error, a crashed/panicked backend, or the
+// opaque Foundation "the operation couldn't be completed" string) for ~100% of
+// its requests stays fully routable. Reputation skips 503,
 // the dispatch-load cooldown only fires on model-load failures, and within-
 // request retry is per-request. Worse, the bad node keeps reporting slot_state
 // = idle + a warm model, so the scheduler treats it as an ideal instant-TTFT
@@ -261,9 +261,9 @@ func (r *Registry) ProviderBreakerOpen(providerID string) bool {
 // Genuine faults (returns true — counted toward the breaker):
 //   - 500/502/504 always (provider-sickness shapes, same as the inference-error
 //     breaker)
-//   - a 503 whose message indicates a real fault ("request rejected", internal
-//     error, model load failed, crash/panic, the opaque Foundation string) and,
-//     by default, ANY 503 not recognized as a capacity shed
+//   - a 503 whose message indicates a real fault (internal error, model load
+//     failed, crash/panic, the opaque Foundation string) and, by default, ANY
+//     503 not recognized as a capacity shed
 //
 // Any other code (e.g. an unattributed 0/501/505) is NOT counted — conservative,
 // matching the inference-error breaker ignoring unattributed 5xx.
@@ -296,6 +296,11 @@ var capacityShed503Markers = []string{
 	"context length",
 	"context window",
 	"draining",
+	// Overload / backpressure sheds: the request was never run, so the node is
+	// healthy-but-busy. Classified as capacity here for consistency with the api
+	// reclassifier and the inference-error breaker, which also treat these as
+	// capacity/lifecycle rather than node faults.
+	"request rejected",
 	"request timed out waiting for capacity",
 	"queue full",
 	"server busy",

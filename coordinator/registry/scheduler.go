@@ -344,27 +344,47 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 //
 // FAIL-OPEN SAFETY VALVE: selection runs in two passes. Pass 1 honors the
 // per-provider node-health breaker. If pass 1 finds ZERO candidates AND the
-// breaker rejected at least one provider for this model, pass 2 re-runs the
-// whole scan with the breaker BYPASSED (ignoreProviderBreaker=true) — so a bad
-// fleet-wide rollout that fault-503s every node can never deroute the entire
-// fleet. Pass 2's result is used only when it yields a candidate, and its
-// counters (not pass 1's) are returned so metrics are never double-counted. This
-// mirrors servability.go's fail-open philosophy: when in doubt, keep serving.
+// breaker is the SOLE reason — it rejected at least one provider AND no healthy
+// provider was merely busy or too slow — pass 2 re-runs the whole scan with the
+// breaker BYPASSED (ignoreProviderBreaker=true), so a bad fleet-wide rollout
+// that fault-503s every node can never deroute the entire fleet. When healthy
+// providers are simply over capacity or above the TTFT ceiling, pass 1's signal
+// is returned instead, so the request queues / 429s and waits for a healthy node
+// rather than being routed to a known-bad provider. Pass 2's result is used only
+// when it yields a candidate, and its counters (not pass 1's) are returned so
+// metrics are never double-counted. This mirrors servability.go's fail-open
+// philosophy: when in doubt, keep serving.
 func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64) {
 	winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected :=
 		r.selectBestCandidateScanLocked(model, pr, false, excludeIDs...)
-	// Pass 1 succeeded, or the node-health breaker played no part in the empty
-	// result — return pass 1 as-is (no redundant second scan).
-	if winner != nil || breakerRejected == 0 {
+	if !shouldBypassBreakerFailOpen(winner, breakerRejected, capacityRejections, ttftRejections) {
 		return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
 	}
-	// Pass 1 found nothing and the breaker rejected >0 providers: re-scan with
-	// the breaker bypassed. Use pass 2 only when it actually finds a candidate,
+	// The node-health breaker is the SOLE reason this request has no route: re-scan
+	// with the breaker bypassed. Use pass 2 only when it actually finds a candidate,
 	// so a genuinely empty fleet still reports pass 1's (accurate) counters.
 	if w2, cc2, cr2, tl2, vr2, tr2, bt2, _ := r.selectBestCandidateScanLocked(model, pr, true, excludeIDs...); w2 != nil {
 		return w2, cc2, cr2, tl2, vr2, tr2, bt2
 	}
 	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+}
+
+// shouldBypassBreakerFailOpen decides whether selection should retry with the
+// node-health breaker bypassed (the fail-open safety valve). It fails open ONLY
+// when the breaker is the SOLE reason no route was found:
+//   - pass 1 produced no winner, AND
+//   - the breaker rejected at least one provider, AND
+//   - no healthy provider was merely busy (capacityRejections) or too slow
+//     (ttftRejections).
+//
+// If a healthy provider was just over capacity or above the TTFT ceiling, we
+// surface that signal (so the request queues / 429s and waits for a healthy
+// node) rather than routing to a known-bad, breaker-open provider. Model-too-
+// large and vision-unsupported rejections are deliberately NOT counted: those
+// providers cannot serve this request at all, so they are not a healthy
+// alternative to a fail-open probe.
+func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capacityRejections, ttftRejections int) bool {
+	return winner == nil && breakerRejected > 0 && capacityRejections == 0 && ttftRejections == 0
 }
 
 // selectBestCandidateScanLocked is one pass of candidate selection. When

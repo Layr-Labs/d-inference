@@ -1074,8 +1074,8 @@ type Registry struct {
 	// implement the per-provider (node-health) circuit breaker, SEPARATE from
 	// and ADDITIONAL to the shape-keyed inference-error breaker above. It
 	// quarantines a whole provider that returns GENUINE-FAULT errors
-	// (500/502/504, or a fault-shaped 503 — "request rejected", internal error,
-	// crash, the opaque Foundation string) for ~all of its requests, regardless
+	// (500/502/504, or a fault-shaped 503 — internal error, crash, the opaque
+	// Foundation string) for ~all of its requests, regardless
 	// of model/shape — the case the inference-error breaker misses because it
 	// skips 503. After an exponential cooldown it re-probes and auto-re-admits
 	// on the first success. Capacity-class sheds (4xx/429 and token-budget /

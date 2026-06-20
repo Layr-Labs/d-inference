@@ -64,6 +64,15 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 	return s
 }
 
+func TestPostgresInferenceRouteErrorReasonUpsertQualifiesTargetColumn(t *testing.T) {
+	if !strings.Contains(inferenceRouteErrorReasonUpsertAssignment, "inference_routes.error_reason") {
+		t.Fatalf("error_reason upsert fallback must qualify target table: %s", inferenceRouteErrorReasonUpsertAssignment)
+	}
+	if strings.Contains(inferenceRouteErrorReasonUpsertAssignment, "), error_reason)") {
+		t.Fatalf("error_reason upsert fallback is ambiguous in ON CONFLICT: %s", inferenceRouteErrorReasonUpsertAssignment)
+	}
+}
+
 func TestPostgresCreateKey(t *testing.T) {
 	s := testPostgresStore(t)
 

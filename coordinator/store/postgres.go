@@ -827,6 +827,24 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_inference_routes_provider ON inference_routes(provider_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inference_routes_model ON inference_routes(model, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inference_routes_request ON inference_routes(request_id)`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1
+				FROM pg_index i
+				JOIN pg_class t ON t.oid = i.indrelid
+				WHERE t.oid = 'inference_routes'::regclass
+				  AND i.indisunique
+				  AND ARRAY(
+					SELECT a.attname
+					FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+					JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+					ORDER BY k.ord
+				  ) = ARRAY['request_id', 'attempt']
+			) THEN
+				CREATE UNIQUE INDEX idx_inference_routes_request_attempt_unique ON inference_routes(request_id, attempt);
+			END IF;
+		END $$`,
 		// Phase 1 additions to inference_routes: coarse geo, coordinator-side
 		// latency decomposition, measured decode TPS, and admission/backup-race
 		// outcome flags. Added idempotently so a dev DB that already created the
@@ -1478,8 +1496,31 @@ func (s *PostgresStore) RecordUsageFullWithPublicModel(providerID, consumerKey, 
 	)
 }
 
+const inferenceRouteErrorReasonUpsertAssignment = "error_reason = COALESCE(NULLIF(EXCLUDED.error_reason, ''), inference_routes.error_reason)"
+
+const inferenceRouteSelectColumns = `
+			id,
+			request_id, attempt, provider_id, model, public_model, consumer_key_hash, key_id, outcome,
+			cost_ms, state_ms, queue_ms, pending_ms, backlog_ms, this_req_ms, health_ms, ttft_ms, best_ttft_ms,
+			effective_queue, candidate_count, capacity_rejections, model_too_large_rejections, vision_rejections, ttft_rejections,
+			effective_tps, static_tps, provider_status, provider_trust_level, provider_version,
+			hardware_chip, hardware_chip_family, hardware_tier, memory_gb, gpu_cores, cpu_cores,
+			system_memory_pressure, system_cpu_usage, system_thermal_state,
+			gpu_memory_active_gb, gpu_memory_peak_gb, gpu_memory_cache_gb,
+			slot_state, backend_running, backend_waiting,
+			active_token_budget_used, active_token_budget_max, queued_token_budget,
+			estimated_prompt_tokens, requested_max_tokens,
+			requires_vision, has_tools, self_route_only, prefer_owner, cache_affinity_key,
+			final_status, error_code, error_class, prompt_tokens, completion_tokens, reasoning_tokens, cost_micro_usd,
+			actual_ttft_ms, dispatch_to_first_chunk_ms, total_duration_ms,
+			created_at, updated_at,
+			provider_region, consumer_region,
+			parse_ms, reserve_ms, route_ms, encrypt_ms, queue_wait_ms, dispatch_ms, actual_decode_tps,
+			admitted_but_failed, used_backup, backup_won, error_reason`
+
 // RecordInferenceRoute writes the routing decision snapshot for a request
-// attempt. Best-effort; failures are discarded and never block inference.
+// attempt. Callers keep this best-effort by logging returned errors off the
+// request path rather than blocking inference.
 func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
 	if record == nil {
 		return nil
@@ -1498,7 +1539,7 @@ func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error
 		updatedAt = now
 	}
 
-	_, _ = s.pool.Exec(ctx,
+	_, err := s.pool.Exec(ctx,
 		`INSERT INTO inference_routes (
 			request_id, attempt, provider_id, model, public_model, consumer_key_hash, key_id, outcome,
 			cost_ms, state_ms, queue_ms, pending_ms, backlog_ms, this_req_ms, health_ms, ttft_ms, best_ttft_ms,
@@ -1581,7 +1622,7 @@ func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error
 			cache_affinity_key = EXCLUDED.cache_affinity_key,
 			provider_region = EXCLUDED.provider_region,
 			consumer_region = EXCLUDED.consumer_region,
-			error_reason = COALESCE(NULLIF(EXCLUDED.error_reason, ''), error_reason),
+			`+inferenceRouteErrorReasonUpsertAssignment+`,
 			updated_at = EXCLUDED.updated_at`,
 		record.RequestID, record.Attempt, record.ProviderID, record.Model, record.PublicModel, record.ConsumerKeyHash, record.KeyID, record.Outcome,
 		record.CostMs, record.StateMs, record.QueueMs, record.PendingMs, record.BacklogMs, record.ThisReqMs, record.HealthMs, record.TTFTMs, record.BestTTFTMs,
@@ -1597,11 +1638,15 @@ func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error
 		createdAt, updatedAt,
 		record.ProviderRegion, record.ConsumerRegion, record.ErrorReason,
 	)
+	if err != nil {
+		return fmt.Errorf("store: record inference route: %w", err)
+	}
 	return nil
 }
 
 // UpdateInferenceRouteOutcome updates the attempt with final outcome data
-// (tokens, timing, error). Best-effort; failures are discarded.
+// (tokens, timing, error). Callers keep this best-effort by logging returned
+// errors off the request path rather than blocking inference.
 func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error {
 	if outcome == nil {
 		return nil
@@ -1610,7 +1655,7 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, _ = s.pool.Exec(ctx,
+	_, err := s.pool.Exec(ctx,
 		`UPDATE inference_routes SET
 			final_status = COALESCE(NULLIF($3, ''), final_status),
 			error_code = CASE WHEN $4 <> 0 THEN $4 ELSE error_code END,
@@ -1641,6 +1686,9 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 		outcome.ParseMs, outcome.ReserveMs, outcome.RouteMs, outcome.EncryptMs, outcome.QueueWaitMs, outcome.DispatchMs, outcome.ActualDecodeTPS,
 		outcome.AdmittedButFailed, outcome.UsedBackup, outcome.BackupWon,
 	)
+	if err != nil {
+		return fmt.Errorf("store: update inference route outcome: %w", err)
+	}
 	return nil
 }
 
@@ -1651,7 +1699,7 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT * FROM inference_routes WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2`,
+		`SELECT `+inferenceRouteSelectColumns+` FROM inference_routes WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2`,
 		since, maxTelemetryReadRows)
 	if err != nil {
 		return nil

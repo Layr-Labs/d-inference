@@ -288,7 +288,15 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 	}
 
 	s.submitTelemetry("recordInferenceRoute", func() {
-		_ = s.store.RecordInferenceRoute(record)
+		if err := s.store.RecordInferenceRoute(record); err != nil && s.logger != nil {
+			s.logger.Error("inference_routes record write failed",
+				"request_id", record.RequestID,
+				"attempt", record.Attempt,
+				"provider_id", record.ProviderID,
+				"model", record.Model,
+				"error", err,
+			)
+		}
 	})
 }
 

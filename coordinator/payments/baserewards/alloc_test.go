@@ -86,12 +86,12 @@ func TestAllocateDraws_PerAccountCap(t *testing.T) {
 }
 
 // TestAllocateDraws_PerAccountCapAcrossRuns is the regression for the cap leak
-// across re-settlement runs: an account that already drew this epoch must have
+// across re-settlement runs: an account that already drew this period must have
 // that prior amount counted against its 5% cap, so a newly-eligible machine on
 // the same account can only draw the remaining headroom.
 func TestAllocateDraws_PerAccountCapAcrossRuns(t *testing.T) {
 	const pool = int64(100_000_000) // 5% cap = 5_000_000
-	// "whale" already settled 4M in an earlier run of this epoch.
+	// "whale" already settled 4M in an earlier run of this period.
 	prior := map[string]int64{"whale": 4_000_000}
 	cands := []Candidate{
 		{ProviderKey: "a2", AccountID: "whale", MemGB: 64, Floor: 18_000_000, Draw: 18_000_000},

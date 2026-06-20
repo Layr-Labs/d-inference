@@ -138,13 +138,14 @@ func setSerial(p *registry.Provider, serial, hardwareModel string) {
 	}
 }
 
-// epoch helpers: pick a fully-closed past epoch and a clock just after it.
+// epoch helpers: pick a fully-closed past settlement period and a clock just
+// after it.
 func closedEpoch() (epochID string, start, end, clock time.Time) {
-	// Use a fixed month well in the past so it is always closed.
+	// Use a fixed 5-minute period well in the past so it is always closed.
 	start = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	end = start.AddDate(0, 1, 0)
-	clock = end.Add(48 * time.Hour) // safely after epoch close
-	return "2025-01", start, end, clock
+	end = start.Add(SettlementPeriod)
+	clock = end.Add(10 * time.Minute) // safely after period close
+	return start.Format(periodIDLayout), start, end, clock
 }
 
 // fullUptimeSession returns a closed session covering the entire epoch.
@@ -215,8 +216,8 @@ func TestSettleEpoch_EpochNotClosed(t *testing.T) {
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
-	// Clock is mid-epoch → not closed.
-	e := newTestEngine(st, reg, start.Add(10*24*time.Hour))
+	// Clock is mid-period → not closed.
+	e := newTestEngine(st, reg, start.Add(time.Minute))
 	res, err := e.SettleEpoch(context.Background(), epochID)
 	if err != nil {
 		t.Fatal(err)
@@ -259,19 +260,21 @@ func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
 	setSerial(p, "S1", "Mac15,8")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
-	// $5 organic + 64GB floor $18, additive (k=0) → full $18 base reward on top.
-	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 5_000_000, start.Add(time.Hour))}
+	// $5 organic + 64GB floor $18/mo, additive (k=0) → full prorated 5-minute
+	// base reward on top.
+	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 5_000_000, start.Add(time.Minute))}
 
 	e := newTestEngine(st, reg, clock)
 	res, err := e.SettleEpoch(context.Background(), epochID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Settled != 1 || res.TotalDrawMicroUSD != 18_000_000 {
-		t.Fatalf("happy path: got %+v, want 1 settled / 18_000_000 draw (additive full floor)", res)
+	want := PeriodFloor(64, 1.0, start, end)
+	if res.Settled != 1 || res.TotalDrawMicroUSD != want {
+		t.Fatalf("happy path: got %+v, want 1 settled / %d draw (additive prorated floor)", res, want)
 	}
-	if bal, wd := st.balance("acc1"); bal != 18_000_000 || wd != 18_000_000 {
-		t.Fatalf("credit: balance=%d withdrawable=%d, want 18_000_000 each", bal, wd)
+	if bal, wd := st.balance("acc1"); bal != want || wd != want {
+		t.Fatalf("credit: balance=%d withdrawable=%d, want %d each", bal, wd, want)
 	}
 
 	// Re-run (same store) → idempotent, no double credit.
@@ -282,7 +285,7 @@ func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 	if res2.Settled != 0 || res2.AlreadySettled != 1 {
 		t.Fatalf("idempotent re-run: got %+v, want 0 settled / 1 already", res2)
 	}
-	if bal, _ := st.balance("acc1"); bal != 18_000_000 {
+	if bal, _ := st.balance("acc1"); bal != want {
 		t.Fatalf("re-run double-credited: balance=%d", bal)
 	}
 }
@@ -295,8 +298,8 @@ func TestSettleEpoch_RestartSafe(t *testing.T) {
 	setSerial(p, "S1", "Mac15,8")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	// A billed job served just BEFORE the epoch (within the 45d work window)
-	// satisfies the proven-work gate but contributes $0 to this epoch's earned →
-	// the machine draws its full $18 floor.
+	// satisfies the proven-work gate but contributes $0 to this period's earned →
+	// the machine draws its prorated floor.
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 2_000_000, start.Add(-24*time.Hour))}
 
 	e1 := newTestEngine(st, reg, clock)
@@ -313,8 +316,9 @@ func TestSettleEpoch_RestartSafe(t *testing.T) {
 	if res.Settled != 0 || res.AlreadySettled != 1 {
 		t.Fatalf("restart: got %+v, want 0 settled / 1 already", res)
 	}
-	if bal, _ := st.balance("acc1"); bal != 18_000_000 {
-		t.Fatalf("restart double-credited: balance=%d, want 18_000_000", bal)
+	want := PeriodFloor(64, 1.0, start, end)
+	if bal, _ := st.balance("acc1"); bal != want {
+		t.Fatalf("restart double-credited: balance=%d, want %d", bal, want)
 	}
 }
 
@@ -368,7 +372,7 @@ func TestSettleEpoch_PartialSettlement_SumEqualsPool(t *testing.T) {
 	// Many idle workhorses, each wanting the full $18 floor, over-subscribing a
 	// tiny pool. Σ granted must equal the pool exactly.
 	const n = 10
-	budget := int64(50_000_000) // far below n*18M demand
+	budget := int64(50_000_000) // monthly pool; prorated period budget is below demand
 	for i := 0; i < n; i++ {
 		pk := "PK" + string(rune('A'+i))
 		acc := "acc" + string(rune('A'+i))
@@ -387,12 +391,13 @@ func TestSettleEpoch_PartialSettlement_SumEqualsPool(t *testing.T) {
 	if res.Eligible != n {
 		t.Fatalf("eligible=%d, want %d", res.Eligible, n)
 	}
-	if res.TotalDrawMicroUSD != budget {
-		t.Fatalf("over-subscribed Σ granted = %d, want exactly pool %d", res.TotalDrawMicroUSD, budget)
+	wantBudget := PeriodBudget(budget, start, end)
+	if res.TotalDrawMicroUSD != wantBudget {
+		t.Fatalf("over-subscribed Σ granted = %d, want exactly period pool %d", res.TotalDrawMicroUSD, wantBudget)
 	}
 	used, _ := st.SumFloorDrawsForEpoch(context.Background(), epochID)
-	if used != budget {
-		t.Fatalf("settled pool used = %d, want %d", used, budget)
+	if used != wantBudget {
+		t.Fatalf("settled pool used = %d, want %d", used, wantBudget)
 	}
 }
 
@@ -420,14 +425,14 @@ func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
 	setSerial(p, "S1", "Mac15,8")
 
 	// Two sessions, each covering most of the epoch, heavily overlapping. Closed
-	// at end so they fully cover the month.
+	// at end so they fully cover the period.
 	half := start.Add(end.Sub(start) / 2)
 	disc := end
 	s1 := store.ProviderSession{SessionID: "s1", SerialNumber: "S1", AccountID: "acc1", ProviderKey: "PK1", ConnectedAt: start, LastSeen: end, DisconnectedAt: &disc}
 	s2 := store.ProviderSession{SessionID: "s2", SerialNumber: "S1", AccountID: "acc1", ProviderKey: "PK1", ConnectedAt: half, LastSeen: end, DisconnectedAt: &disc}
 	st.sessions = []store.ProviderSession{s1, s2}
-	// Billed job before the epoch satisfies the work gate; $0 earned this epoch →
-	// full floor, so the test isolates the uptime-cap behavior.
+	// Billed job before the period satisfies the work gate; $0 earned this period →
+	// prorated floor, so the test isolates the uptime-cap behavior.
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 2_000_000, start.Add(-24*time.Hour))}
 
 	e := newTestEngine(st, reg, clock)
@@ -438,9 +443,10 @@ func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
 	if res.Settled != 1 {
 		t.Fatalf("expected one settlement, got %+v", res)
 	}
-	// Full coverage (not 150%) → exactly the $18 floor for the 64GB tier.
-	if res.TotalDrawMicroUSD != 18_000_000 {
-		t.Fatalf("double-open over-paid: draw=%d, want 18_000_000 (uptime capped at 1.0)", res.TotalDrawMicroUSD)
+	// Full coverage (not 150%) → exactly the prorated 64GB floor.
+	want := PeriodFloor(64, 1.0, start, end)
+	if res.TotalDrawMicroUSD != want {
+		t.Fatalf("double-open over-paid: draw=%d, want %d (uptime capped at 1.0)", res.TotalDrawMicroUSD, want)
 	}
 }
 
@@ -476,9 +482,9 @@ func TestUptimeByProviderKey_OpenSessionGrace(t *testing.T) {
 	cfg.GraceSeconds = 90
 	e := &Engine{cfg: cfg, now: func() time.Time { return end.Add(time.Hour) }}
 
-	// Open session (no DisconnectedAt), last_seen 1h before epoch end. It should
-	// accrue only to last_seen + 90s, NOT to epoch end.
-	lastSeen := end.Add(-time.Hour)
+	// Open session (no DisconnectedAt), last_seen before period end. It should
+	// accrue only to last_seen + 90s, NOT to period end.
+	lastSeen := start.Add(2 * time.Minute)
 	sessions := []store.ProviderSession{{
 		SessionID: "s1", ProviderKey: "PK1", ConnectedAt: start, LastSeen: lastSeen,
 	}}

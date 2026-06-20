@@ -26,7 +26,7 @@ const defaultGraceSeconds = 90
 type Config struct {
 	Enabled              bool
 	ReductionK           float64 // default 0 (additive base income); k=1 = legacy max(earned,floor) backstop
-	PoolBudgetMicroUSD   int64   // default FloorPoolBudgetMicroUSD ($9k/mo)
+	PoolBudgetMicroUSD   int64   // default FloorPoolBudgetMicroUSD ($9k/mo), prorated per settlement period
 	WorkhorseReserveFrac float64 // default 0.5 — sub-pool reserved for 48–96GB
 	// PerAccountCapFrac caps any single payout account's share of the pool.
 	// DEFAULT 0 (DISABLED): base rewards are per-MACHINE, not per-account — an
@@ -42,7 +42,7 @@ type Config struct {
 }
 
 // DefaultConfig returns the recommended launch configuration: k=0 additive base
-// income (the full floor is paid on top of organic earnings), $9k pool, half
+// income (the full prorated floor is paid on top of organic earnings), $9k pool, half
 // reserved for the workhorse tier, NO per-account cap (per-machine payout), and
 // 90% uptime gate.
 func DefaultConfig() Config {
@@ -58,7 +58,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// Engine settles the base-reward floor for closed monthly epochs.
+// Engine settles prorated base rewards for closed settlement periods.
 type Engine struct {
 	store  store.Store
 	reg    *registry.Registry
@@ -104,8 +104,8 @@ type candidate struct {
 	uptimeFrac float64
 }
 
-// SettleEpoch settles the base-reward floor for one closed epoch. It is a no-op
-// when the flag is off (design §6) or the epoch is not yet closed, and is
+// SettleEpoch settles the prorated base reward for one closed period. It is a
+// no-op when the flag is off (design §6) or the period is not yet closed, and is
 // idempotent — re-running over the same store credits nothing twice (design §8).
 func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult, error) {
 	res := SettleResult{EpochID: epochID}
@@ -117,7 +117,7 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 	if err != nil {
 		return res, err
 	}
-	// Settlement is end-of-epoch only: never settle a month still in progress.
+	// Settlement is period-close only: never settle a window still in progress.
 	if e.now().Before(end) {
 		return res, nil
 	}
@@ -131,16 +131,16 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 		return res, nil
 	}
 
-	// Serialize settlement of this epoch across coordinator instances: two
+	// Serialize settlement of this period across coordinator instances: two
 	// settlers must not each allocate the full pool and overshoot FLOOR_POOL_B.
 	// The memory store runs fn directly; postgres holds an advisory lock.
 	lockErr := e.store.WithEpochSettlementLock(ctx, epochID, func() error {
-		// Respect the hard pool cap across re-runs of the same closed epoch. A
+		// Respect the hard pool cap across re-runs of the same closed period. A
 		// machine settled on an earlier run keeps its frozen row; we subtract
 		// those draws from the budget and drop those keys from this run's
 		// candidates. Without this, a fleet that changed between two runs of one
-		// epoch could settle a second cohort against the full budget and breach
-		// FLOOR_POOL_B.
+		// period could settle a second cohort against the full period budget and
+		// breach FLOOR_POOL_B.
 		settled, err := e.store.ListFloorDrawsForEpoch(ctx, epochID)
 		if err != nil {
 			return err
@@ -157,7 +157,7 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 		pureCands := make([]Candidate, 0, len(cands))
 		for i := range cands {
 			if settledKeys[cands[i].c.ProviderKey] {
-				res.AlreadySettled++ // frozen row from a prior run this epoch
+				res.AlreadySettled++ // frozen row from a prior run this period
 				continue
 			}
 			pureCands = append(pureCands, cands[i].c)
@@ -166,11 +166,12 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 			return nil
 		}
 
-		remainingBudget := e.cfg.PoolBudgetMicroUSD - settledSum
+		periodBudget := PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end)
+		remainingBudget := periodBudget - settledSum
 		if remainingBudget < 0 {
 			remainingBudget = 0
 		}
-		allocs := AllocateDraws(pureCands, remainingBudget, e.cfg.PoolBudgetMicroUSD, e.cfg.WorkhorseReserveFrac, e.cfg.PerAccountCapFrac, priorByAccount)
+		allocs := AllocateDraws(pureCands, remainingBudget, periodBudget, e.cfg.WorkhorseReserveFrac, e.cfg.PerAccountCapFrac, priorByAccount)
 
 		// Index audit context by provider key so we can carry
 		// floor/earned/uptime/mem into the settlement row.
@@ -281,7 +282,7 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 		if capGB, known := mdm.ModelMaxMemoryGB(p.HardwareModel); known && capGB > 0 && memGB > capGB {
 			memGB = capGB
 		}
-		floor := ScaledFloor(memGB, uptimeFrac)
+		floor := PeriodFloor(memGB, uptimeFrac, start, end)
 		draw := Draw(floor, earned, e.cfg.ReductionK)
 
 		out = append(out, candidate{
@@ -315,7 +316,7 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 }
 
 // uptimeByProviderKey unions overlapping session intervals per machine and
-// returns the covered fraction of the epoch, capped at 1.0. Open sessions accrue
+// returns the covered fraction of the period, capped at 1.0. Open sessions accrue
 // only to min(end, last_seen + grace); blue-green deploys leave two open rows
 // that union without double-counting (design §8). Sessions with no provider key
 // (pre-backfill) are ignored — they cannot be credited.
@@ -404,7 +405,7 @@ func latestAccountByProviderKey(sessions []store.ProviderSession) map[string]str
 	return out
 }
 
-// Run drives hourly settlement of the previous (closed) epoch. Idempotency
+// Run drives settlement of the previous (closed) 5-minute period. Idempotency
 // absorbs duplicate ticks, restarts, and blue-green double-runs. It returns when
 // ctx is cancelled; launch it via saferun.Go so a panic never crashes the
 // process.
@@ -412,9 +413,10 @@ func (e *Engine) Run(ctx context.Context) {
 	if !e.cfg.Enabled {
 		return
 	}
-	// Settle once at startup (covers a restart that missed the tick), then hourly.
+	// Settle once at startup (covers a restart that missed the tick), then every
+	// settlement period.
 	e.settleOnce(ctx)
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(SettlementPeriod)
 	defer ticker.Stop()
 	for {
 		select {
@@ -444,13 +446,17 @@ func (e *Engine) settleOnce(ctx context.Context) {
 	}
 }
 
-// Status returns a read-only admin projection of the current settlement state
-// for the previous (most recently closed) epoch.
+// Status returns a read-only admin projection of the current settlement state for
+// the previous (most recently closed) period.
 func (e *Engine) Status(ctx context.Context) (map[string]any, error) {
 	if !e.cfg.Enabled {
 		return map[string]any{"enabled": false}, nil
 	}
 	epochID := previousEpochID(e.now())
+	start, end, err := epochBounds(epochID)
+	if err != nil {
+		return nil, err
+	}
 	used, err := e.store.SumFloorDrawsForEpoch(ctx, epochID)
 	if err != nil {
 		return nil, err
@@ -460,12 +466,14 @@ func (e *Engine) Status(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	return map[string]any{
-		"enabled":     true,
-		"epoch_id":    epochID,
-		"pool_budget": e.cfg.PoolBudgetMicroUSD,
-		"pool_used":   used,
-		"reduction_k": e.cfg.ReductionK,
-		"draw_count":  len(draws),
-		"draws":       draws,
+		"enabled":             true,
+		"epoch_id":            epochID,
+		"period_seconds":      int64(end.Sub(start).Seconds()),
+		"monthly_pool_budget": e.cfg.PoolBudgetMicroUSD,
+		"pool_budget":         PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end),
+		"pool_used":           used,
+		"reduction_k":         e.cfg.ReductionK,
+		"draw_count":          len(draws),
+		"draws":               draws,
 	}, nil
 }

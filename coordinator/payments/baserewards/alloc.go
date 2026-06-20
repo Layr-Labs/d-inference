@@ -9,8 +9,8 @@ import "sort"
 // marketing is written for. A per-account concentration cap (bound to the
 // Stripe payout identity — design §6) limits any single account's share.
 
-// FloorPoolBudgetMicroUSD is the default monthly hard cap on Σ base_draw — the
-// pre-committed board number (design §7).
+// FloorPoolBudgetMicroUSD is the default monthly hard cap on Σ base_draw. Each
+// 5-minute settlement period receives a prorated share of this pool.
 const FloorPoolBudgetMicroUSD int64 = 9_000_000_000 // $9,000/mo
 
 // Workhorse tier bounds (inclusive) — the 48–96GB class protected by the
@@ -45,7 +45,7 @@ func isWorkhorse(c Candidate) bool {
 }
 
 // valuePerFloorDollar ranks candidates when the pool can't fund every base
-// reward: higher is funded first. Under additive base income the full floor is
+// reward: higher is funded first. Under additive base income the full prorated floor is
 // always desired, so this only rations a constrained pool — lower earned-vs-floor
 // coverage ranks higher (direct the scarce subsidy to machines not yet earning
 // much, the supply the base reward is meant to retain), and workhorse-class
@@ -75,13 +75,13 @@ func valuePerFloorDollar(c Candidate) float64 {
 //  3. An optional per-account cap (perAccountCapFrac of capBudget; 0 disables)
 //     bounds each AccountID's total grant. The cap is keyed on the FULL pool
 //     (capBudget), and priorByAccount seeds each account's already-settled total
-//     for this epoch, so the cap holds ACROSS idempotent re-settlement runs (a
+//     for this period, so the cap holds ACROSS idempotent re-settlement runs (a
 //     new machine from an account near its cap cannot win a fresh full cap).
 //
-// `budget` is what may be granted this run (the pool minus amounts already
-// settled this epoch); `capBudget` is the full monthly pool used only as the
-// per-account cap basis. Pass capBudget == budget and priorByAccount == nil for
-// a single-shot allocation.
+// `budget` is what may be granted this run (the period pool minus amounts
+// already settled for this epoch_id); `capBudget` is the full period pool used
+// only as the per-account cap basis. Pass capBudget == budget and priorByAccount
+// == nil for a single-shot allocation.
 //
 // Deterministic for any input: candidates are stable-sorted with ProviderKey as
 // the final tiebreaker, so map iteration order in the caller never changes the

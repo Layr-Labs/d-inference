@@ -15,6 +15,7 @@ describe("BaseRewardsPanel", () => {
     // Additive base income: usage earnings + base reward, keep 100% of both.
     expect(container.textContent).toMatch(/on top of the base reward/i);
     expect(container.textContent).toMatch(/keep 100% of both/i);
+    expect(container.textContent).toMatch(/settle every 5 minutes/i);
   });
 
   it("anchors the Netflix claim to 64GB+ and marks sub-24GB as usage only", () => {

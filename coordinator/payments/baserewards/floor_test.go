@@ -3,6 +3,7 @@ package baserewards
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func TestTierFloor(t *testing.T) {
@@ -56,26 +57,28 @@ func TestAvail(t *testing.T) {
 	}
 }
 
-func TestScaledFloor(t *testing.T) {
-	// 64GB tier ($18) at 95% uptime (avail=0.5) → $9.
-	if got := ScaledFloor(64, 0.95); got != 9_000_000 {
-		t.Errorf("ScaledFloor(64, 0.95) = %d, want 9_000_000", got)
+func TestPeriodFloor(t *testing.T) {
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(SettlementPeriod)
+	// 64GB tier ($18/mo) at 95% uptime (avail=0.5), prorated for 5 minutes in Jan.
+	if got := PeriodFloor(64, 0.95, start, end); got != 1_008 {
+		t.Errorf("PeriodFloor(64, 0.95) = %d, want 1_008", got)
 	}
-	// Full uptime → full tier floor.
-	if got := ScaledFloor(64, 1.0); got != 18_000_000 {
-		t.Errorf("ScaledFloor(64, 1.0) = %d, want 18_000_000", got)
+	// Full uptime → 5-minute share of the monthly tier floor.
+	if got := PeriodFloor(64, 1.0, start, end); got != 2_016 {
+		t.Errorf("PeriodFloor(64, 1.0) = %d, want 2_016", got)
 	}
 	// Below 90% uptime → 0 regardless of tier.
-	if got := ScaledFloor(512, 0.89); got != 0 {
-		t.Errorf("ScaledFloor(512, 0.89) = %d, want 0", got)
+	if got := PeriodFloor(512, 0.89, start, end); got != 0 {
+		t.Errorf("PeriodFloor(512, 0.89) = %d, want 0", got)
 	}
 	// 32GB entry tier ($12) at full uptime.
-	if got := ScaledFloor(32, 1.0); got != 12_000_000 {
-		t.Errorf("ScaledFloor(32, 1.0) = %d, want 12_000_000", got)
+	if got := PeriodFloor(32, 1.0, start, end); got != 1_344 {
+		t.Errorf("PeriodFloor(32, 1.0) = %d, want 1_344", got)
 	}
 	// Sub-24GB tier → 0.
-	if got := ScaledFloor(16, 1.0); got != 0 {
-		t.Errorf("ScaledFloor(16, 1.0) = %d, want 0", got)
+	if got := PeriodFloor(16, 1.0, start, end); got != 0 {
+		t.Errorf("PeriodFloor(16, 1.0) = %d, want 0", got)
 	}
 }
 

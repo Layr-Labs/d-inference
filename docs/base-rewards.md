@@ -11,8 +11,9 @@ additively, on top of what the provider earns from real inference — base incom
 not a backstop.** Every eligible machine keeps 100% of its organic earnings *and*
 its full memory-tier floor; real usage is pure upside on top of a stable base.
 Cost is bounded not by clawing the base back against earnings, but by a **fixed
-monthly pool** (`FLOOR_POOL_B`, §7) and a strict **eligibility gate** (attested,
-online, actually serving — §6).
+monthly pool** (`FLOOR_POOL_B`, §7) that is prorated into 5-minute settlement
+periods, plus a strict **eligibility gate** (attested, online, actually serving —
+§6).
 
 An optional reduction knob `k` (default **0**) can claw the base back against
 earnings if the program ever needs to economize — `k=1` reproduces a pure
@@ -38,10 +39,10 @@ on top. This is the strongest, simplest retention promise for cold-start, and it
 stays affordable for three reasons:
 
 1. **A hard pool cap, not a per-machine clawback.** Total spend is bounded by a
-   fixed monthly pool (`FLOOR_POOL_B`, §7), water-filled across eligible machines.
-   We bound cost at the *fleet* level instead of means-testing each machine, so
-   the promise to any one provider stays clean: your base is never cut because you
-   earned.
+   fixed monthly pool (`FLOOR_POOL_B`, §7), prorated into 5-minute settlement
+   periods and water-filled across eligible machines. We bound cost at the
+   *fleet* level instead of means-testing each machine, so the promise to any one
+   provider stays clean: your base is never cut because you earned.
 2. **A real eligibility gate.** The floor goes only to attested, online machines
    that actually serve (a passed probe or a dispatched billed job; self-route
    excluded — §6). Idlers and self-dealers earn nothing, so additive payment is
@@ -50,11 +51,12 @@ stays affordable for three reasons:
    (§3); no self-reported number can raise a payout (§3b).
 
 The trade-off is stated honestly: additive base income does **not** self-liquidate
-per machine — every eligible machine always draws its full floor, so the program
+per machine — every eligible machine always draws its prorated floor, so the program
 runs near the pool cap for as long as it is on. We accept that for a simpler,
 stronger provider promise, and bound cost with a fixed monthly pool and explicit
-budget decisions rather than a hidden per-machine clawback. The optional `k` knob
-(§2) remains if the economics ever demand a reduction.
+budget decisions rather than a hidden per-machine clawback. Providers see the
+balance move quickly because the monthly floor accrues every 5 minutes. The
+optional `k` knob (§2) remains if the economics ever demand a reduction.
 
 And it still delivers the worst-case marketing promise: the floor is what a
 machine earns when the network is silent — and anything it earns is on top.
@@ -63,11 +65,11 @@ machine earns when the network is silent — and anything it earns is on top.
 
 ## 2. The model
 
-For each eligible machine *i*, over a monthly epoch *e*:
+For each eligible machine *i*, over a closed 5-minute settlement period *p*:
 
 ```
-earned_i    = organic per-token earnings this epoch          (see §5 for "organic")
-floor_i     = memory-tier floor × availability × slot        (see §3)
+earned_i    = organic per-token earnings in this period      (see §5 for "organic")
+floor_i     = monthly memory-tier floor × period/month × availability × slot
 base_draw_i = max(0, floor_i − k · earned_i)                 // the ONLY new money printed
 payout_i    = earned_i + base_draw_i
 ```
@@ -79,7 +81,7 @@ earns on the platform, the base is reduced by $k.*
 
 | k | Behavior | Cost | When to use |
 |---|---|---|---|
-| **0** | Flat `earned + floor` — additive base income; the full floor is paid on top of earnings. | Bounded by the pool: `Σ floor` water-filled to `≤ FLOOR_POOL_B`; does **not** self-liquidate. | **Shipped default.** |
+| **0** | Flat `earned + floor` — additive base income; each 5-minute prorated floor is paid on top of earnings. | Bounded by the prorated pool: `Σ floor` water-filled to `≤ FLOOR_POOL_B × period/month`; does **not** self-liquidate. | **Shipped default.** |
 | 0.5–0.8 | Base reduces *slower* than earnings rise; base phases out at `earned = floor / k`. | Lower than additive, higher than `k=1`. | If you want to economize while still rewarding the sub-floor ramp. |
 | 1.0 | `payout = max(earned, floor)` — base is a pure backstop; it vanishes when `earned = floor`. | **Cheapest;** self-liquidates as demand grows. | Legacy backstop if the pool must stretch much further. |
 
@@ -94,9 +96,10 @@ earns on the platform, the base is reduced by $k.*
 | $18 | $18 | **$36** | $18 |
 | $30 | $18 | **$48** | $18 |
 
-The provider keeps 100% of earnings and the full $18 floor on top. Network cost
-holds at the floor (bounded by the pool); real usage is pure upside. **This is the
-"base income + keep everything you earn" mechanic.**
+The provider keeps 100% of earnings and the full $18/month floor on top, paid in
+5-minute increments. Network cost holds at the prorated floor (bounded by the
+prorated pool); real usage is pure upside. **This is the "base income + keep
+everything you earn" mechanic.**
 
 *k = 1 (legacy max backstop):*
 
@@ -113,7 +116,7 @@ where extra usage below the floor doesn't raise take-home).
 
 ### Recommendation: ship `k = 0` (additive base income)
 
-We ship `k = 0`: the full floor is paid on top of earnings. Reasons:
+We ship `k = 0`: each prorated floor is paid on top of earnings. Reasons:
 
 - **Strongest retention promise.** "Keep everything you earn, plus a base for
   staying online" beats "we top you up to a floor" — there is no dead zone where
@@ -135,13 +138,13 @@ stretch, dial `k` up (0.5–1.0) — the mechanic is already in the code
 ## 3. Per-machine valuation: the floor table
 
 The floor is set by **memory tier** — what models the machine can actually hold,
-which is the option value the network is paying to keep warm — then scaled by
-availability and (if the budget binds) a slot factor.
+which is the option value the network is paying to keep warm — then prorated to a
+5-minute period, scaled by availability and (if the budget binds) a slot factor.
 
 ```
-floor_i = floor_tier(verified_memory_i) · avail_i · slot_i
+floor_i = floor_tier(verified_memory_i) · period_seconds / seconds_in_month · avail_i · slot_i
 
-avail_i = clamp( (uptime_fraction_i − 0.90) / 0.10 , 0 , 1 )   // 0 below 90% uptime, full at 100%
+avail_i = clamp( (period_uptime_fraction_i − 0.90) / 0.10 , 0 , 1 )   // 0 below 90% uptime, full at 100%
 ```
 
 | Machine class | Floor / mo (worst case, full eligibility) | "Pay for your Netflix"? |
@@ -157,10 +160,9 @@ avail_i = clamp( (uptime_fraction_i − 0.90) / 0.10 , 0 , 1 )   // 0 below 90% 
 | 512GB | $40 | Yes |
 
 Notes:
-- **`avail` is the "stay online" incentive.** Below 90% monthly uptime the floor
-  ramps toward $0; this replaces the old per-minute accrual. Uptime is computed
-  from the durable `provider_sessions` table (restart-safe), **not** in-memory
-  ticks.
+- **`avail` is the "stay online" incentive.** Below 90% uptime within a 5-minute
+  settlement period the prorated floor ramps toward $0. Uptime is computed from
+  the durable `provider_sessions` table (restart-safe), **not** in-memory ticks.
 - **Floor tier is capped at *verified* memory** (§6) — a self-reported spec can
   only cap a machine *downward*, never raise its floor.
 - **24GB and 32GB are incentivized entry tiers.** They can serve the gpt-oss-20B
@@ -194,17 +196,18 @@ uses explicit controls to bound spend.
 ### 4a. Per-provider clawback (optional — OFF by default)
 
 This is the `base_draw = max(0, floor − k · earned)` mechanic of §2, with `k`. At
-the shipped default `k = 0` it is **inactive**: the full floor is paid additively
-and a provider's base never shrinks because it earned. Setting `k > 0` turns it on
-per machine, every epoch, automatically. It is held in reserve in case the pool
-must stretch further.
+the shipped default `k = 0` it is **inactive**: the full prorated floor is paid
+additively and a provider's base never shrinks because it earned. Setting `k > 0`
+turns it on per machine, every settlement period, automatically. It is held in
+reserve in case the pool must stretch further.
 
 ### 4b. Fixed monthly pool (always ON)
 
-`FLOOR_POOL_B` is the hard cap on all base-reward money printed in an epoch. If
-eligible floors exceed the pool, the allocator funds a deterministic subset of
-machines, protecting the 48–96GB workhorse tier first (§7). This is the primary
-cost control for the additive model.
+`FLOOR_POOL_B` is the hard monthly cap on base-reward money. Each 5-minute
+settlement gets a prorated share of that pool. If eligible floors exceed that
+period pool, the allocator funds a deterministic subset of machines, protecting
+the 48–96GB workhorse tier first (§7). This is the primary cost control for the
+additive model.
 
 ---
 
@@ -223,7 +226,7 @@ organic_earned_i = Σ ProviderEarning.AmountMicroUSD
                      AND AmountMicroUSD > 0
                      AND consumer_account ≠ provider_account   // excludes self-route
                      AND not a synthetic-probe credit
-                   over the epoch
+                   over the settlement period
 ```
 
 - **Self-route excluded.** Self-route settles at $0 today, but a provider can be
@@ -237,14 +240,14 @@ organic_earned_i = Σ ProviderEarning.AmountMicroUSD
 
 ## 6. Eligibility gate (anti-gaming)
 
-A machine accrues a floor for the epoch **only while all of these hold**. Floor
-without these is $0 — unproven capacity earns nothing (it must not dilute honest
-providers).
+A machine accrues its prorated floor for a 5-minute settlement period **only
+while all of these hold**. Floor without these is $0 — unproven capacity earns
+nothing (it must not dilute honest providers).
 
 1. **Attested** — trust ∈ {`hardware`, `self_signed`} ≥ `MIN_TRUST`.
 2. **Memory verified** — serial→model lookup **and** a tier-sized correctness
    probe confirm the machine can hold the tier it's being paid for.
-3. **Online ≥ 90%** of the epoch (else `avail` ramps the floor down).
+3. **Online ≥ 90%** of the settlement period (else `avail` ramps the floor down).
 4. **Healthy** — memory pressure < 0.8, thermal ≠ critical, and the advertised
    model is actually loaded for routing.
 5. **Proven work** — in a rolling window, **either** passed ≥1 coordinator
@@ -265,7 +268,7 @@ each is fixed:
   X25519 key like a real consumer, temp=0 on a pinned model + weight-hash, check
   the SE-signed `ResponseHash` against the precomputed expected hash. Make probes
   indistinguishable (occasionally pay them; rotate consumer keys; fire at random
-  times within the epoch).
+  times within the month).
 - **Self-route settles at $0 and credits success unconditionally**
   (`coordinator/api/consumer.go`, `coordinator/api/provider.go`). **Fix: count
   only coordinator-dispatched, other-account, billed jobs toward the work gate.**
@@ -301,7 +304,7 @@ per-machine clawback by default), so the worst case is also the expected case �
 number you can pre-commit:
 
 ```
-network_draw = Σ base_draw_i  ≤  FLOOR_POOL_B      // base_draw_i = floor_i at k=0
+period_draw = Σ base_draw_i  ≤  FLOOR_POOL_B × period_seconds / seconds_in_month
 ```
 
 | Line | Worst case |
@@ -321,8 +324,8 @@ and the workhorse tier the marketing is written for gets $0.
 ### Honest note on cost (no self-liquidation)
 
 Additive base income (`k = 0`) does **not** self-liquidate: every eligible machine
-draws its full floor every epoch regardless of earnings, so the program runs at
-roughly the pool cap while it is enabled. Even under the legacy `k = 1` backstop
+draws its prorated floor every settlement period regardless of earnings, so the
+program runs at roughly the pool cap while it is enabled. Even under the legacy `k = 1` backstop
 the per-machine crossover (`earned ≥ floor`) sits **far** above alpha demand — a
 64GB Max at ~40 tok/s would need ~105% single-stream (≈ 35% sustained-batched)
 utilization to gross its own $18 — so either way this is **a flat ~$8k/mo
@@ -336,13 +339,13 @@ self-liquidation.
 ## 8. Settlement & restart-safety
 
 - **Per-token earnings** settle live per-job, as today (`CreditProviderAccount`).
-- **The base draw** settles once at epoch close: one **idempotent** ledger entry
-  per machine, entry type `provider_floor_draw`, unique key
-  `(provider_key, epoch_id)`, `ON CONFLICT DO NOTHING`. The provider sees a
-  combined "earned + base reward" number.
+- **The base draw** settles every 5 minutes after the period closes: one
+  **idempotent** ledger entry per machine, entry type `provider_floor_draw`,
+  unique key `(provider_key, epoch_id)`, `ON CONFLICT DO NOTHING`. The provider
+  sees a combined "earned + base reward" number and the balance moves quickly.
 - **Uptime / `avail`** computed from durable `provider_sessions` intervals
   (union overlapping rows per machine — blue-green deploys leave two open rows);
-  an open session accrues only to `min(epoch_end, last_seen + 90s grace)`.
+  an open session accrues only to `min(period_end, last_seen + 90s grace)`.
 - **Required fixes:** add `UNIQUE(job_id)` to `provider_earnings` (no uniqueness
   today → a retried settlement double-credits real money); unify the identity
   (`provider_sessions` keys on serial+account, earnings on `provider_key` — add
@@ -392,7 +395,7 @@ table, the in-memory tracker as source-of-truth, the bandwidth-bonus term.
 ## 11. Phased rollout
 
 **Phase 0 — bounded floor, honest gate, restart-safe (~3 wks).** Floor table +
-additive `k=0` base income (full floor on top of earnings); eligibility gates 1, 3, 4, and the *billed-job* half of gate 5
+additive `k=0` base income (prorated floor on top of earnings); eligibility gates 1, 3, 4, and the *billed-job* half of gate 5
 (cheap — no new schema); `UNIQUE(job_id)` + idempotent `provider_floor_draw`
 settlement from `provider_sessions`; slot allocation protecting the workhorse
 tier; per-machine payout (per-account cap off by default). Idlers and self-dealers earn nothing
@@ -408,14 +411,15 @@ verification; coordinator correctness-probes (gate 2 + probe half of gate 5).
 ## 12. Open decisions
 
 1. **`k` (decided)** — ship `k = 0` (additive base income: keep everything you
-   earn, plus the full floor). The `k` knob stays in the code (default 0) and can
+   earn, plus the prorated floor). The `k` knob stays in the code (default 0) and can
    be dialed up to 0.5–1.0 later to economize if pool pressure demands.
 2. **`FLOOR_POOL_B` = $9,000/mo and all-in `Z` ≈ $10,500/mo** — approve as the
    pre-committed ceiling? And a `~$40k` lifetime cap?
 3. **48GB tier** — keep at $16 marketed as "Netflix with ads," or raise to ≥$18
    to make it honestly Standard (+~$1–2k/mo worst case)?
-4. **Epoch length** — monthly (matches the "Netflix" framing) with a live
-   dashboard estimate, or weekly settlement?
+4. **Settlement cadence (decided)** — 5-minute settlement periods, prorated from
+   the monthly floor/pool, so providers see balances move shortly after they stay
+   online.
 5. **Entry tiers (decided)** — 24GB ($10) and 32GB ($12) now earn a floor to
    incentivize the common mid-range Macs (they can serve the 20B baseline +
    specialist STT/embeddings work, and the fleet skews into this range). They

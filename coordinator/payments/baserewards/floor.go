@@ -6,20 +6,23 @@
 //	payout_i = earned_i + max(0, floor_i - k*earned_i)   // k=0 (default) => earned_i + floor_i
 //
 // With the default reduction rate k=0 the base reward is purely additive: a
-// machine keeps 100% of its organic inference earnings AND its full floor, so
+// machine keeps 100% of its organic inference earnings AND its full prorated floor, so
 // real usage is upside on top of a stable base. The k knob is retained as an
 // optional clawback (k=1 reproduces the legacy max(earned, floor) backstop) but
 // defaults to 0 — pure base income.
 //
-// floor_i is set by verified memory tier (µUSD/mo), scaled by availability,
-// capped by a fleet-wide pool, and settled once per monthly epoch via an
+// floor_i is set by verified memory tier (µUSD/mo), prorated to a 5-minute
+// period, scaled by availability, capped by a fleet-wide pool, and settled via an
 // idempotent row per (provider_key, epoch_id).
 //
 // This file holds the pure floor math (tier table, availability ramp, scaled
 // floor, draw). No I/O — see engine.go for the only store/registry touch.
 package baserewards
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 // DefaultReductionK is the launch reduction rate (k=0): the base reward is pure
 // additive base income — paid in full on top of organic earnings
@@ -69,7 +72,7 @@ func TierFloor(memGB int) int64 {
 	return 0
 }
 
-// Avail returns the availability multiplier for a monthly uptime fraction:
+// Avail returns the availability multiplier for a settlement-period uptime fraction:
 // clamp((uptimeFrac-0.90)/0.10, 0, 1). It is 0 at or below 90% uptime and 1.0
 // at 100%, ramping linearly in between. This is the "stay online" incentive
 // (design §3).
@@ -84,15 +87,15 @@ func Avail(uptimeFrac float64) float64 {
 	return v
 }
 
-// ScaledFloor returns the per-machine floor in µUSD after applying availability:
-// TierFloor(memGB) * Avail(uptimeFrac), rounded to the nearest µUSD. Rounding
-// (not truncation) avoids a systematic 1µUSD underpay from float64
-// representation error when availability is exactly 1.
-func ScaledFloor(memGB int, uptimeFrac float64) int64 {
-	return int64(math.Round(float64(TierFloor(memGB)) * Avail(uptimeFrac)))
+// PeriodFloor returns the prorated per-machine floor in µUSD for [start, end):
+// monthly tier floor × period/month fraction × availability. Rounding (not
+// truncation) avoids a systematic 1µUSD underpay from float64 representation
+// error when availability is exactly 1.
+func PeriodFloor(memGB int, uptimeFrac float64, start, end time.Time) int64 {
+	return int64(math.Round(float64(TierFloor(memGB)) * periodMonthFraction(start, end) * Avail(uptimeFrac)))
 }
 
-// Draw returns the new money to print for one machine this epoch:
+// Draw returns the new money to print for one machine this settlement period:
 // max(0, floor - int64(k*earned)). With the default k=0 this is simply floor —
 // the full base reward, paid additively on top of organic earnings. With k=1 it
 // is max(0, floor-earned), the legacy backstop that shrinks dollar-for-dollar

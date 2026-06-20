@@ -392,7 +392,7 @@ public enum OutboundMessage: Sendable {
     case inferenceAccepted(requestId: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
     case inferenceComplete(requestId: String, usage: UsageInfo, seSignature: String?, responseHash: String?)
-    case inferenceError(requestId: String, error: String, statusCode: UInt16)
+    case inferenceError(requestId: String, error: String, statusCode: UInt16, errorReason: String?)
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
@@ -1036,11 +1036,12 @@ public actor CoordinatorClient {
         (try? CoordinatorClientCodec.encodeOutboundMessageString(msg)) ?? "{}"
     }
 
-    private func encodeInferenceError(requestId: String, error: String, statusCode: UInt16) -> String {
+    private func encodeInferenceError(requestId: String, error: String, statusCode: UInt16, errorReason: String? = nil) -> String {
         let message = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
             requestId: requestId,
             error: error,
-            statusCode: statusCode
+            statusCode: statusCode,
+            errorReason: errorReason
         ))
         guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),
               let json = String(data: data, encoding: .utf8) else {

@@ -185,7 +185,8 @@ struct CoordinatorIntegrationTests {
                     send.send(.inferenceError(
                         requestId: rid,
                         error: "request cancelled",
-                        statusCode: 499
+                        statusCode: 499,
+                        errorReason: nil
                     ))
                     return
 

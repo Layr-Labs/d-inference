@@ -154,11 +154,18 @@ public enum ProviderMessage: Sendable, Equatable {
         public var requestId: String
         public var error: String
         public var statusCode: UInt16
+        /// Normalized, privacy-safe failure reason (DAR-341). One of the shared
+        /// `error_reason` vocabulary values — "jinja_channel_tags",
+        /// "jinja_null_bridge", "jinja_template", "model_load" — or nil when the
+        /// provider cannot confidently classify the failure (the coordinator then
+        /// derives a reason from status/class). Omitted on the wire when nil.
+        public var errorReason: String?
 
-        public init(requestId: String, error: String, statusCode: UInt16) {
+        public init(requestId: String, error: String, statusCode: UInt16, errorReason: String? = nil) {
             self.requestId = requestId
             self.error = error
             self.statusCode = statusCode
+            self.errorReason = errorReason
         }
     }
 
@@ -353,6 +360,7 @@ extension ProviderMessage: Codable {
         // InferenceError
         case error
         case statusCode = "status_code"
+        case errorReason = "error_reason"
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
@@ -439,6 +447,7 @@ extension ProviderMessage: Codable {
             try container.encode(e.requestId, forKey: .requestId)
             try container.encode(e.error, forKey: .error)
             try container.encode(e.statusCode, forKey: .statusCode)
+            try container.encodeIfPresent(e.errorReason, forKey: .errorReason)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -555,7 +564,8 @@ extension ProviderMessage: Codable {
             self = .inferenceError(InferenceError(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 error: try container.decode(String.self, forKey: .error),
-                statusCode: try container.decode(UInt16.self, forKey: .statusCode)
+                statusCode: try container.decode(UInt16.self, forKey: .statusCode),
+                errorReason: try container.decodeIfPresent(String.self, forKey: .errorReason)
             ))
 
         case .attestationResponse:

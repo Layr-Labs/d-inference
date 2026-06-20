@@ -224,6 +224,41 @@ import Testing
     }
 }
 
+@Test func inferenceErrorEncodesErrorReasonOnlyWhenPresent() throws {
+    // DAR-341: the normalized `error_reason` rides the inference-error message.
+    // Present → snake_case key on the wire + round-trips back to the value.
+    let withReason = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-error",
+        error: "(Jinja.TemplateException error 1.)",
+        statusCode: 500,
+        errorReason: "jinja_channel_tags"
+    ))
+    let withData = try ProviderProtocolCodec.encodeProviderMessage(withReason)
+    let withObject = try jsonObject(withData)
+    #expect(withObject["error_reason"] as? String == "jinja_channel_tags")
+
+    let decodedWith = try ProviderProtocolCodec.decodeProviderMessage(from: withData)
+    #expect(decodedWith == withReason)
+    guard case .inferenceError(let e) = decodedWith else { throw TestFailure.unexpectedMessage }
+    #expect(e.errorReason == "jinja_channel_tags")
+
+    // Absent (nil) → the key is OMITTED on the wire (mirrors Go `omitempty`) and
+    // round-trips back to nil.
+    let withoutReason = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-error",
+        error: "model not loaded",
+        statusCode: 503
+    ))
+    let withoutData = try ProviderProtocolCodec.encodeProviderMessage(withoutReason)
+    let withoutObject = try jsonObject(withoutData)
+    #expect(withoutObject["error_reason"] == nil)
+
+    let decodedWithout = try ProviderProtocolCodec.decodeProviderMessage(from: withoutData)
+    #expect(decodedWithout == withoutReason)
+    guard case .inferenceError(let e2) = decodedWithout else { throw TestFailure.unexpectedMessage }
+    #expect(e2.errorReason == nil)
+}
+
 @Test func loadModelMessagesRoundTripWithCoordinator() throws {
     // Coordinator → provider preload request
     let goLoadRequest = #"{"type":"load_model","model_id":"mlx-community/Qwen3-0.6B-8bit"}"#

@@ -31,6 +31,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import ProviderCoreFoundation
 import os
 
 // `internal` (not `private`) so the BatchScheduler extension files
@@ -2026,7 +2027,12 @@ public actor BatchScheduler {
         // Pre-tokenize so chat-template errors surface as `.error` events;
         // engine's internal `buildPrompt` silently falls back to role:content.
         let messages: [[String: any Sendable]] = request.messages.map { msg in
-            ["role": msg.role, "content": msg.content]
+            [
+                "role": msg.role,
+                "content": msg.role == "assistant"
+                    ? stripHarmonyChannelFraming(fromAssistantContent: msg.content)
+                    : msg.content,
+            ]
         }
         let promptTokens: [Int]
         do {

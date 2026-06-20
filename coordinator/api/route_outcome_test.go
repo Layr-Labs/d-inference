@@ -1,11 +1,15 @@
 package api
 
 import (
+	"log/slog"
+	"net/http"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func TestCommittedRouteOutcomeIsNonTerminal(t *testing.T) {
@@ -55,6 +59,82 @@ func TestPreCommitProviderDisconnectOutcome(t *testing.T) {
 	}
 	if out.ErrorClass != "provider_disconnect_pre_commit" {
 		t.Fatalf("ErrorClass = %q, want provider_disconnect_pre_commit", out.ErrorClass)
+	}
+}
+
+func TestInferenceErrorReasonPrecedenceAndDerivation(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "req-reason"}
+
+	providerReason := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:       "token_budget_exhausted: request queue full",
+		StatusCode:  http.StatusInternalServerError,
+		ErrorReason: "jinja_channel_tags",
+	})
+	if providerReason.ErrorReason != "jinja_channel_tags" {
+		t.Fatalf("provider-supplied reason should win, got %+v", providerReason)
+	}
+
+	derivedTokenBudget := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:      "token_budget_exhausted: request queue full",
+		StatusCode: http.StatusInternalServerError,
+	})
+	if derivedTokenBudget.ErrorReason != "token_budget_exhausted" {
+		t.Fatalf("token-budget reason = %q, want token_budget_exhausted", derivedTokenBudget.ErrorReason)
+	}
+
+	queueTimeout := pendingRouteOutcome(pr, "timeout", "queue_timeout", http.StatusTooManyRequests)
+	if queueTimeout.ErrorReason != "capacity_timeout" {
+		t.Fatalf("queue timeout reason = %q, want capacity_timeout", queueTimeout.ErrorReason)
+	}
+
+	clientGone := pendingRouteOutcome(pr, "cancelled", "client_gone", 0)
+	if clientGone.ErrorReason != "cancelled" {
+		t.Fatalf("client gone reason = %q, want cancelled", clientGone.ErrorReason)
+	}
+
+	unknown := routeOutcome("error", "unclassified", http.StatusTeapot)
+	if unknown.ErrorReason != "unknown" {
+		t.Fatalf("unknown fallback reason = %q, want unknown", unknown.ErrorReason)
+	}
+
+	invalidProviderReason := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:       "raw provider stack trace should not persist",
+		StatusCode:  http.StatusInternalServerError,
+		ErrorReason: "raw provider stack trace should not persist",
+	})
+	if invalidProviderReason.ErrorReason != "unknown" {
+		t.Fatalf("invalid provider reason = %q, want unknown", invalidProviderReason.ErrorReason)
+	}
+}
+
+func TestInferenceErrorMetricEmitsReasonAndModel(t *testing.T) {
+	collector := newUDPCollector(t)
+	defer collector.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
+
+	srv.updateInferenceRouteOutcomeWithModel("req-metric", 1, "gpt-oss-20b", &store.InferenceRouteOutcome{
+		FinalStatus: "error",
+		ErrorClass:  "provider_error",
+		ErrorCode:   http.StatusInternalServerError,
+		ErrorReason: "jinja_null_bridge",
+	})
+
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	metrics := findMetrics(packets, metricInferenceError)
+	if len(metrics) == 0 {
+		t.Fatalf("missing %s metric; packets=%v", metricInferenceError, packets)
+	}
+	if !hasMetric(metrics, "reason:jinja_null_bridge") {
+		t.Fatalf("missing reason tag; packets=%v", metrics)
+	}
+	if !hasMetric(metrics, "model:gpt-oss-20b") {
+		t.Fatalf("missing model tag; packets=%v", metrics)
 	}
 }
 

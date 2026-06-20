@@ -70,5 +70,10 @@ public enum ProviderCore {
     // slot_state ("crashed"/"reloading" instead of a lying "idle"), and
     // self-restarts the engine/model slot to recover. Wire-compatible: only
     // existing slot_state string values are emitted; no protocol changes.
-    public static let version = "0.6.16"
+    // 0.6.17 adds the DAR-341 Harmony channel-tag inbound sanitizer + normalized
+    // inference `error_reason` classification (jinja_channel_tags /
+    // jinja_null_bridge / jinja_template / model_load), so durable telemetry can
+    // tell the two indistinguishable gpt-oss 500 modes apart. Wire-compatible:
+    // `error_reason` is an optional inference-error field, omitted when nil.
+    public static let version = "0.6.17"
 }

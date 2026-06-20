@@ -705,10 +705,11 @@ func TestInferenceCompleteMarshal(t *testing.T) {
 
 func TestInferenceErrorMarshal(t *testing.T) {
 	msg := InferenceErrorMessage{
-		Type:       TypeInferenceError,
-		RequestID:  "req-789",
-		Error:      "model not loaded",
-		StatusCode: 500,
+		Type:        TypeInferenceError,
+		RequestID:   "req-789",
+		Error:       "model not loaded",
+		StatusCode:  500,
+		ErrorReason: "model_load",
 	}
 
 	data, err := json.Marshal(msg)
@@ -726,6 +727,18 @@ func TestInferenceErrorMarshal(t *testing.T) {
 	}
 	if decoded.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status_code = %d, want 500", decoded.StatusCode)
+	}
+	if decoded.ErrorReason != "model_load" {
+		t.Errorf("error_reason = %q, want model_load", decoded.ErrorReason)
+	}
+
+	msg.ErrorReason = ""
+	data, err = json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal without reason: %v", err)
+	}
+	if bytes.Contains(data, []byte("error_reason")) {
+		t.Fatalf("error_reason should be omitted when empty, got %s", data)
 	}
 }
 
@@ -863,7 +876,7 @@ func TestProviderMessageUnmarshalComplete(t *testing.T) {
 }
 
 func TestProviderMessageUnmarshalError(t *testing.T) {
-	raw := `{"type":"inference_error","request_id":"err-1","error":"model not loaded","status_code":500}`
+	raw := `{"type":"inference_error","request_id":"err-1","error":"model not loaded","status_code":500,"error_reason":"model_load"}`
 
 	var pm ProviderMessage
 	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
@@ -876,6 +889,9 @@ func TestProviderMessageUnmarshalError(t *testing.T) {
 	}
 	if errMsg.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status_code = %d", errMsg.StatusCode)
+	}
+	if errMsg.ErrorReason != "model_load" {
+		t.Errorf("error_reason = %q, want model_load", errMsg.ErrorReason)
 	}
 }
 

@@ -2288,48 +2288,46 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// when the consumer already disconnected this is a partial success because
 		// the provider completed and billing settled, but the client did not receive
 		// the full response.
-		s.submitTelemetry("updateInferenceRoute", func() {
-			outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
-			if pr.Timing != nil {
-				t := pr.Timing
-				// This runs on the provider read-loop goroutine, not the request
-				// owner. FirstChunkAt is the one Timing field the dispatch goroutine
-				// writes after dispatch (while streaming), so read it via the
-				// mutex-guarded accessor to avoid a data race. The remaining fields
-				// (DispatchedAt, ReceivedAt, and those used by applyTimingDecomposition)
-				// are all stamped before dispatch and are safe to read here via the
-				// provider-registration happens-before edge.
-				firstChunk := pr.FirstChunkAtSafe()
-				if !firstChunk.IsZero() && !t.DispatchedAt.IsZero() {
-					ms := float64(firstChunk.Sub(t.DispatchedAt).Milliseconds())
-					outcome.ActualTTFTMs = ms
-					outcome.DispatchToFirstChunkMs = ms
-				}
-				if !t.ReceivedAt.IsZero() {
-					outcome.TotalDurationMs = float64(time.Since(t.ReceivedAt).Milliseconds())
-				}
-				// Coordinator-side latency decomposition (ParseMs..DispatchMs).
-				applyTimingDecomposition(outcome, t, firstChunk)
-				// Measured decode throughput: completion tokens over the decode
-				// window (first chunk -> completion). Guard zero/negative
-				// durations and zero tokens so unmeasurable requests record 0.
-				// CompletionTokens is provider-supplied and untrusted, so clamp the
-				// derived TPS to a sanity ceiling: a dishonest/buggy provider must
-				// not be able to write an absurd value that would skew routing
-				// calibration (threat-model T-007/T-027). Throughput is advisory,
-				// never a security gate.
-				if msg.Usage.CompletionTokens > 0 && !firstChunk.IsZero() {
-					if decodeSecs := time.Since(firstChunk).Seconds(); decodeSecs > 0 {
-						tps := float64(msg.Usage.CompletionTokens) / decodeSecs
-						if tps > maxPlausibleDecodeTPS {
-							tps = maxPlausibleDecodeTPS
-						}
-						outcome.ActualDecodeTPS = tps
+		outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
+		if pr.Timing != nil {
+			t := pr.Timing
+			// This runs on the provider read-loop goroutine, not the request
+			// owner. FirstChunkAt is the one Timing field the dispatch goroutine
+			// writes after dispatch (while streaming), so read it via the
+			// mutex-guarded accessor to avoid a data race. The remaining fields
+			// (DispatchedAt, ReceivedAt, and those used by applyTimingDecomposition)
+			// are all stamped before dispatch and are safe to read here via the
+			// provider-registration happens-before edge.
+			firstChunk := pr.FirstChunkAtSafe()
+			if !firstChunk.IsZero() && !t.DispatchedAt.IsZero() {
+				ms := float64(firstChunk.Sub(t.DispatchedAt).Milliseconds())
+				outcome.ActualTTFTMs = ms
+				outcome.DispatchToFirstChunkMs = ms
+			}
+			if !t.ReceivedAt.IsZero() {
+				outcome.TotalDurationMs = float64(time.Since(t.ReceivedAt).Milliseconds())
+			}
+			// Coordinator-side latency decomposition (ParseMs..DispatchMs).
+			applyTimingDecomposition(outcome, t, firstChunk)
+			// Measured decode throughput: completion tokens over the decode
+			// window (first chunk -> completion). Guard zero/negative durations
+			// and zero tokens so unmeasurable requests record 0.
+			// CompletionTokens is provider-supplied and untrusted, so clamp the
+			// derived TPS to a sanity ceiling: a dishonest/buggy provider must
+			// not be able to write an absurd value that would skew routing
+			// calibration (threat-model T-007/T-027). Throughput is advisory,
+			// never a security gate.
+			if msg.Usage.CompletionTokens > 0 && !firstChunk.IsZero() {
+				if decodeSecs := time.Since(firstChunk).Seconds(); decodeSecs > 0 {
+					tps := float64(msg.Usage.CompletionTokens) / decodeSecs
+					if tps > maxPlausibleDecodeTPS {
+						tps = maxPlausibleDecodeTPS
 					}
+					outcome.ActualDecodeTPS = tps
 				}
 			}
-			_ = s.store.UpdateInferenceRouteOutcome(msg.RequestID, pr.Attempt, outcome)
-		})
+		}
+		s.updateInferenceRouteOutcomeWithModel(msg.RequestID, pr.Attempt, pr.Model, outcome)
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		// Split the partial case out of the (intentionally unchanged) completions
@@ -2524,7 +2522,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		// disconnects, not just provider-completed ones (handleComplete). A
 		// no-terminal disconnect is counted by the settlement grace path.
 		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
-		outcome := pendingRouteOutcome(pr, status, errorClass, msg.StatusCode)
+		outcome := pendingRouteOutcomeWithReason(pr, status, errorClass, msg.StatusCode, msg.ErrorReason, msg.Error)
 		if !cancelTerminal {
 			outcome.AdmittedButFailed = true
 		}

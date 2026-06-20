@@ -867,6 +867,7 @@ func testInferenceRouteStore(t *testing.T, s Store) {
 		FinalStatus:            "success",
 		ErrorCode:              0,
 		ErrorClass:             "",
+		ErrorReason:            "",
 		PromptTokens:           50,
 		CompletionTokens:       100,
 		ReasoningTokens:        10,
@@ -915,13 +916,21 @@ func testInferenceRouteStore(t *testing.T, s Store) {
 		t.Errorf("decode/backup flags not exposed on route record: %+v", all[0])
 	}
 
+	if err := s.UpdateInferenceRouteOutcome("req-1", 1, &InferenceRouteOutcome{FinalStatus: "error", ErrorClass: "provider_error", ErrorCode: 500, ErrorReason: "jinja_template"}); err != nil {
+		t.Fatalf("UpdateInferenceRouteOutcome error reason: %v", err)
+	}
+	all = s.InferenceRouteRecordsSince(time.Time{})
+	if all[0].ErrorReason != "jinja_template" {
+		t.Errorf("error_reason not exposed on route record: %+v", all[0])
+	}
+
 	// A later latency-only committed update must not erase the terminal status or
 	// token/cost fields.
 	if err := s.UpdateInferenceRouteOutcome("req-1", 1, &InferenceRouteOutcome{ActualTTFTMs: 175}); err != nil {
 		t.Fatalf("UpdateInferenceRouteOutcome latency-only: %v", err)
 	}
 	all = s.InferenceRouteRecordsSince(time.Time{})
-	if all[0].FinalStatus != "success" || all[0].PromptTokens != 50 || all[0].CostMicroUSD != 2500 || all[0].ActualTTFTMs != 175 {
+	if all[0].FinalStatus != "error" || all[0].PromptTokens != 50 || all[0].CostMicroUSD != 2500 || all[0].ActualTTFTMs != 175 || all[0].ErrorReason != "jinja_template" {
 		t.Errorf("latency-only outcome update should merge, got %+v", all[0])
 	}
 

@@ -306,10 +306,11 @@ type InferenceCompleteMessage struct {
 
 // InferenceErrorMessage signals an error during inference.
 type InferenceErrorMessage struct {
-	Type       string `json:"type"`
-	RequestID  string `json:"request_id"`
-	Error      string `json:"error"`
-	StatusCode int    `json:"status_code"`
+	Type        string `json:"type"`
+	RequestID   string `json:"request_id"`
+	Error       string `json:"error"`
+	StatusCode  int    `json:"status_code"`
+	ErrorReason string `json:"error_reason,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

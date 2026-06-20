@@ -932,7 +932,8 @@ public actor ProviderLoop {
         send.send(.inferenceError(
             requestId: requestId,
             error: providerDrainingForUpdateReason,
-            statusCode: 503
+            statusCode: 503,
+            errorReason: nil
         ))
         return true
     }
@@ -990,7 +991,8 @@ public actor ProviderLoop {
             send.send(.inferenceError(
                 requestId: requestId,
                 error: "provider is shutting down",
-                statusCode: 503
+                statusCode: 503,
+                errorReason: nil
             ))
             return
         }
@@ -1007,7 +1009,8 @@ public actor ProviderLoop {
             send.send(.inferenceError(
                 requestId: requestId,
                 error: "missing or malformed ephemeral_public_key",
-                statusCode: 400
+                statusCode: 400,
+                errorReason: nil
             ))
             return
         }
@@ -1023,7 +1026,8 @@ public actor ProviderLoop {
             send.send(.inferenceError(
                 requestId: requestId,
                 error: "decryption failed",
-                statusCode: 400
+                statusCode: 400,
+                errorReason: nil
             ))
             return
         }
@@ -1048,7 +1052,7 @@ public actor ProviderLoop {
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
             logger.error("[\(requestId)] Failed to parse chat request (\(type(of: error)))")
-            send.send(.inferenceError(requestId: requestId, error: "invalid request body", statusCode: 400))
+            send.send(.inferenceError(requestId: requestId, error: "invalid request body", statusCode: 400, errorReason: nil))
             return
         }
 
@@ -1078,7 +1082,8 @@ public actor ProviderLoop {
             send.send(.inferenceError(
                 requestId: requestId,
                 error: "insufficient memory to load model '\(modelId)'",
-                statusCode: 503
+                statusCode: 503,
+                errorReason: nil
             ))
             return
         }
@@ -1118,7 +1123,7 @@ public actor ProviderLoop {
             await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
             let statusCode = Self.loadErrorStatusCode(for: error)
-            send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: statusCode))
+            send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: statusCode, errorReason: "model_load"))
             return
         }
 
@@ -1136,7 +1141,7 @@ public actor ProviderLoop {
             }
             await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] Model '\(modelId)' disappeared after load")
-            send.send(.inferenceError(requestId: requestId, error: "model unavailable", statusCode: 500))
+            send.send(.inferenceError(requestId: requestId, error: "model unavailable", statusCode: 500, errorReason: nil))
             return
         }
 
@@ -1196,7 +1201,8 @@ public actor ProviderLoop {
                     send.send(.inferenceError(
                         requestId: requestId,
                         error: "response encryption failed",
-                        statusCode: 500
+                        statusCode: 500,
+                        errorReason: nil
                     ))
                     return false
                 }
@@ -1265,10 +1271,39 @@ public actor ProviderLoop {
             } catch {
                 log.error("[\(requestId)] Failed to start stream: \(error)")
                 let statusCode = Self.mapInferenceErrorToStatus(error)
+                // Classify HERE, where the real `Error` (and its rich
+                // `String(describing:)` text) is in scope. For a Harmony
+                // TemplateException `error.localizedDescription` collapses to the
+                // lossy "(Jinja.TemplateException error 1.)", so the only place we
+                // can tell channel-tags from null-bridge from a generic template
+                // failure is at this catch (DAR-341). We send ONLY the normalized
+                // reason on the wire — never the rich text, which can carry prompt
+                // content (E2E privacy).
+                let reason = classifyInferenceErrorReason(error)
+                if let reason, reason == "jinja_channel_tags" || reason == "jinja_null_bridge" {
+                    // Privacy-safe diagnostic: log the OFFENDING message's index +
+                    // role only — never its content. `templateMessageDict()` yields
+                    // the same dict shape handed to the chat template.
+                    if let location = offendingHarmonyMessageLocation(
+                        in: streamingRequest.messages.map { $0.templateMessageDict() }
+                    ) {
+                        log.error(
+                            "[\(requestId)] Harmony template render failed reason=\(reason); "
+                            + "offending message index=\(location.index) role=\(location.role) "
+                            + "(content omitted for privacy)"
+                        )
+                    } else {
+                        log.error(
+                            "[\(requestId)] Harmony template render failed reason=\(reason); "
+                            + "offending message not located (content omitted for privacy)"
+                        )
+                    }
+                }
                 send.send(.inferenceError(
                     requestId: requestId,
                     error: error.localizedDescription,
-                    statusCode: statusCode
+                    statusCode: statusCode,
+                    errorReason: reason
                 ))
                 return
             }
@@ -1398,10 +1433,14 @@ public actor ProviderLoop {
                         providerStats.incrementStreamClosedWithoutTerminal()
                     }
                     let statusCode = Self.mapInferenceErrorToStatus(error)
+                    // Mid-stream generation error. Left unclassified (nil): the
+                    // Harmony channel-tags / null-bridge template failures surface
+                    // at stream START (see the catch below), not here.
                     send.send(.inferenceError(
                         requestId: requestId,
                         error: error.localizedDescription,
-                        statusCode: statusCode
+                        statusCode: statusCode,
+                        errorReason: nil
                     ))
                     return
                 }
@@ -1414,7 +1453,8 @@ public actor ProviderLoop {
                 send.send(.inferenceError(
                     requestId: requestId,
                     error: "request cancelled",
-                    statusCode: 499
+                    statusCode: 499,
+                    errorReason: nil
                 ))
                 return
             }

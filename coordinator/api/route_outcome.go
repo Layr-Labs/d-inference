@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"strings"
 	"time"
 
@@ -9,13 +10,57 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+const metricInferenceError = "inference.error"
+
+const (
+	errorReasonJinjaChannelTags   = "jinja_channel_tags"
+	errorReasonJinjaNullBridge    = "jinja_null_bridge"
+	errorReasonJinjaTemplate      = "jinja_template"
+	errorReasonModelLoad          = "model_load"
+	errorReasonCapacityTimeout    = "capacity_timeout"
+	errorReasonQueueFull          = "queue_full"
+	errorReasonTokenBudgetExhaust = "token_budget_exhausted"
+	errorReasonCancelled          = "cancelled"
+	errorReasonProviderError      = "provider_error"
+	errorReasonUnknown            = "unknown"
+)
+
+var validInferenceErrorReasons = map[string]struct{}{
+	errorReasonJinjaChannelTags:   {},
+	errorReasonJinjaNullBridge:    {},
+	errorReasonJinjaTemplate:      {},
+	errorReasonModelLoad:          {},
+	errorReasonCapacityTimeout:    {},
+	errorReasonQueueFull:          {},
+	errorReasonTokenBudgetExhaust: {},
+	errorReasonCancelled:          {},
+	errorReasonProviderError:      {},
+	errorReasonUnknown:            {},
+}
+
 func (s *Server) updateInferenceRouteOutcome(requestID string, attempt int, outcome *store.InferenceRouteOutcome) {
+	s.updateInferenceRouteOutcomeWithModel(requestID, attempt, "", outcome)
+}
+
+func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt int, model string, outcome *store.InferenceRouteOutcome) {
 	if s == nil || s.store == nil || requestID == "" || outcome == nil {
 		return
 	}
+	s.emitInferenceErrorMetric(model, outcome)
 	s.submitTelemetry("updateInferenceRoute", func() {
 		_ = s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome)
 	})
+}
+
+func (s *Server) emitInferenceErrorMetric(model string, outcome *store.InferenceRouteOutcome) {
+	if s == nil || outcome == nil || outcome.ErrorReason == "" || outcome.FinalStatus == "" || outcome.FinalStatus == "success" {
+		return
+	}
+	tags := []string{"reason:" + outcome.ErrorReason}
+	if model != "" {
+		tags = append(tags, "model:"+model)
+	}
+	s.ddIncr(metricInferenceError, tags)
 }
 
 func (s *Server) updateInferenceRouteOutcomeForPending(pr *registry.PendingRequest, outcome *store.InferenceRouteOutcome) {
@@ -25,14 +70,19 @@ func (s *Server) updateInferenceRouteOutcomeForPending(pr *registry.PendingReque
 	if outcome != nil && outcome.FinalStatus != "" && !pr.MarkRouteOutcomeFinalized() {
 		return
 	}
-	s.updateInferenceRouteOutcome(pr.RequestID, pr.Attempt, outcome)
+	s.updateInferenceRouteOutcomeWithModel(pr.RequestID, pr.Attempt, pr.Model, outcome)
 }
 
 func routeOutcome(status, class string, code int) *store.InferenceRouteOutcome {
+	return routeOutcomeWithReason(status, class, code, "", "")
+}
+
+func routeOutcomeWithReason(status, class string, code int, providerReason, errorText string) *store.InferenceRouteOutcome {
 	return &store.InferenceRouteOutcome{
 		FinalStatus: status,
 		ErrorCode:   code,
 		ErrorClass:  class,
+		ErrorReason: inferenceErrorReason(providerReason, status, class, code, errorText),
 	}
 }
 
@@ -43,13 +93,23 @@ func committedRouteOutcome(pr *registry.PendingRequest) *store.InferenceRouteOut
 }
 
 func pendingRouteOutcome(pr *registry.PendingRequest, status, class string, code int) *store.InferenceRouteOutcome {
-	out := routeOutcome(status, class, code)
+	out := pendingRouteOutcomeWithReason(pr, status, class, code, "", "")
+	return out
+}
+
+func pendingRouteOutcomeWithReason(pr *registry.PendingRequest, status, class string, code int, providerReason, errorText string) *store.InferenceRouteOutcome {
+	out := routeOutcomeWithReason(status, class, code, providerReason, errorText)
 	applyPendingRouteTelemetry(out, pr)
 	return out
 }
 
 func providerFailedPendingRouteOutcome(pr *registry.PendingRequest, status, class string, code int) *store.InferenceRouteOutcome {
-	out := pendingRouteOutcome(pr, status, class, code)
+	out := providerFailedPendingRouteOutcomeWithReason(pr, status, class, code, "", "")
+	return out
+}
+
+func providerFailedPendingRouteOutcomeWithReason(pr *registry.PendingRequest, status, class string, code int, providerReason, errorText string) *store.InferenceRouteOutcome {
+	out := pendingRouteOutcomeWithReason(pr, status, class, code, providerReason, errorText)
 	out.AdmittedButFailed = true
 	return out
 }
@@ -67,7 +127,7 @@ func postCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.In
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_after_commit"
 	}
-	return providerFailedPendingRouteOutcome(pr, "partial_success", class, msg.StatusCode)
+	return providerFailedPendingRouteOutcomeWithReason(pr, "partial_success", class, msg.StatusCode, msg.ErrorReason, msg.Error)
 }
 
 func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
@@ -75,7 +135,7 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_before_response"
 	}
-	return providerFailedPendingRouteOutcome(pr, "error", class, msg.StatusCode)
+	return providerFailedPendingRouteOutcomeWithReason(pr, "error", class, msg.StatusCode, msg.ErrorReason, msg.Error)
 }
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
@@ -83,7 +143,7 @@ func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.Inf
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_pre_commit"
 	}
-	return providerFailedPendingRouteOutcome(pr, "error", class, msg.StatusCode)
+	return providerFailedPendingRouteOutcomeWithReason(pr, "error", class, msg.StatusCode, msg.ErrorReason, msg.Error)
 }
 
 func postCommitProviderIncompleteOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
@@ -129,8 +189,58 @@ func completeRouteOutcome(pr *registry.PendingRequest, usage protocol.UsageInfo,
 		ReasoningTokens:  usage.ReasoningTokens,
 		CostMicroUSD:     costMicroUSD,
 	}
+	if errorClass != "" {
+		out.ErrorReason = inferenceErrorReason("", status, errorClass, 0, "")
+	}
 	applyPendingRouteTelemetry(out, pr)
 	return out
+}
+
+// inferenceErrorReason returns the durable, normalized enum persisted on
+// inference_routes and used as the Datadog reason tag. Provider-supplied reasons
+// take precedence, but are still whitelisted so raw provider text cannot leak
+// into telemetry storage.
+func inferenceErrorReason(providerReason, status, class string, code int, message string) string {
+	if reason := normalizeInferenceErrorReason(providerReason); reason != "" {
+		return reason
+	}
+	if status == "" && class == "" && code == 0 && message == "" {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(status), "success") {
+		return ""
+	}
+
+	lowerStatus := strings.ToLower(strings.TrimSpace(status))
+	lowerClass := strings.ToLower(strings.TrimSpace(class))
+	lowerMessage := strings.ToLower(strings.TrimSpace(message))
+
+	switch {
+	case strings.Contains(lowerMessage, errorReasonTokenBudgetExhaust) || strings.Contains(lowerClass, errorReasonTokenBudgetExhaust):
+		return errorReasonTokenBudgetExhaust
+	case lowerClass == errorReasonQueueFull || strings.Contains(lowerMessage, "queue full"):
+		return errorReasonQueueFull
+	case lowerClass == "queue_timeout" || lowerClass == errorReasonCapacityTimeout || strings.Contains(lowerMessage, "queue timeout") || strings.Contains(lowerMessage, "timed out waiting for a free slot"):
+		return errorReasonCapacityTimeout
+	case lowerStatus == errorReasonCancelled || code == 499 || strings.Contains(lowerClass, "client_gone") || strings.Contains(lowerClass, "cancel") || strings.Contains(lowerMessage, "request cancelled"):
+		return errorReasonCancelled
+	case lowerClass == errorReasonProviderError || strings.HasPrefix(lowerClass, "provider_error") || strings.HasPrefix(lowerClass, "provider_disconnect") || strings.Contains(lowerClass, "provider_incomplete") || strings.Contains(lowerClass, "stream_timeout") || strings.Contains(lowerClass, "first_chunk_timeout") || strings.Contains(lowerClass, "accepted_timeout") || strings.Contains(lowerClass, "preamble_liveness_timeout") || strings.Contains(lowerMessage, "provider disconnected") || code >= http.StatusInternalServerError:
+		return errorReasonProviderError
+	default:
+		return errorReasonUnknown
+	}
+}
+
+func normalizeInferenceErrorReason(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	reason = strings.ReplaceAll(reason, "-", "_")
+	if reason == "" {
+		return ""
+	}
+	if _, ok := validInferenceErrorReasons[reason]; ok {
+		return reason
+	}
+	return errorReasonUnknown
 }
 
 func applyPendingRouteTelemetry(out *store.InferenceRouteOutcome, pr *registry.PendingRequest) {

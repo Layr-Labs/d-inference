@@ -17,6 +17,9 @@ func mergeInferenceRouteOutcome(dst *InferenceRouteOutcome, src *InferenceRouteO
 	if src.ErrorClass != "" {
 		dst.ErrorClass = src.ErrorClass
 	}
+	if src.ErrorReason != "" {
+		dst.ErrorReason = src.ErrorReason
+	}
 	if src.PromptTokens != 0 {
 		dst.PromptTokens = src.PromptTokens
 	}
@@ -77,6 +80,7 @@ func applyInferenceRouteOutcomeToRecord(rec *InferenceRouteRecord, outcome Infer
 	rec.FinalStatus = outcome.FinalStatus
 	rec.ErrorCode = outcome.ErrorCode
 	rec.ErrorClass = outcome.ErrorClass
+	rec.ErrorReason = outcome.ErrorReason
 	rec.PromptTokens = outcome.PromptTokens
 	rec.CompletionTokens = outcome.CompletionTokens
 	rec.ReasoningTokens = outcome.ReasoningTokens

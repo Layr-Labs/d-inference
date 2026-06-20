@@ -195,20 +195,38 @@ public enum TemplateRenderCheck {
         specialTokens: [String: Value]
     ) throws -> [String: Value] {
         var context: [String: Value] = specialTokens
-        // Strip JSON `null` / `Optional` leaves exactly as the
+        // Strip Harmony assistant replay tags, then JSON `null` / `Optional`
+        // leaves, exactly as the
         // runtime tokenize chokepoints now do (`sanitizeJinjaMessages` /
         // `sanitizeJinjaTools`) before `Value(any:)`. Without this the
-        // null-bearing fixtures below would throw here at render time and
+        // channel-tagged and null-bearing fixtures below would throw here and
         // false-flag every healthy template; with it the self-check stays
         // faithful to "renders here == renders at request time".
         context["messages"] = .array(
-            try fixture.messages.map { try Value(any: sanitizeForJinja($0)) })
+            try fixture.messages.map { message in
+                try Value(any: sanitizeForJinja(stripHarmonyFraming(message)))
+            })
         context["add_generation_prompt"] = .boolean(true)
         if let tools = fixture.tools {
             context["tools"] = .array(
                 try tools.map { try Value(any: sanitizeForJinja($0)) })
         }
         return context
+    }
+
+    /// Apply Harmony replay normalization in the self-check's `[String: Any]`
+    /// fixture domain. The shared string sanitizer remains the source of truth;
+    /// this wrapper only handles role/key selection for message dictionaries.
+    private static func stripHarmonyFraming(_ message: [String: Any]) -> [String: Any] {
+        guard (message["role"] as? String) == "assistant" else { return message }
+
+        var output = message
+        for key in ["content", "thinking", "reasoning_content"] {
+            if let text = output[key] as? String {
+                output[key] = stripHarmonyChannelFraming(fromAssistantContent: text)
+            }
+        }
+        return output
     }
 
     // MARK: - Canonical fixtures
@@ -233,6 +251,7 @@ public enum TemplateRenderCheck {
     static func canonicalFixtures(includeMultimodal: Bool) -> [Fixture] {
         var fixtures: [Fixture] = [
             plainChatFixture,
+            assistantChannelTagsFixture,
             toolFlowFixture,
             toolFlowWithNullsFixture,
             emptyAssistantTailFixture,
@@ -251,6 +270,23 @@ public enum TemplateRenderCheck {
             messages: [
                 ["role": "system", "content": "You are a helpful assistant."],
                 ["role": "user", "content": "Write one sentence about the sea."],
+            ]
+        )
+    }
+
+    /// (a′) Prior assistant turn replayed with raw Harmony channel framing.
+    /// Harmony drops prior-turn analysis at inference and replays only the
+    /// final answer, so the self-check must normalize this shape before render.
+    static var assistantChannelTagsFixture: Fixture {
+        Fixture(
+            name: "assistant_channel_tags",
+            messages: [
+                ["role": "user", "content": "What's the weather?"],
+                [
+                    "role": "assistant",
+                    "content": "<|channel|>analysis<|message|>The user wants the weather.<|end|><|channel|>final<|message|>It is sunny.",
+                ],
+                ["role": "user", "content": "What should I wear?"],
             ]
         )
     }

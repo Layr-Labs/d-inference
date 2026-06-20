@@ -119,11 +119,12 @@ public enum CoordinatorClientCodec {
                 responseHash: responseHash
             ))
 
-        case .inferenceError(let requestId, let error, let statusCode):
+        case .inferenceError(let requestId, let error, let statusCode, let errorReason):
             return .inferenceError(ProviderMessage.InferenceError(
                 requestId: requestId,
                 error: error,
-                statusCode: statusCode
+                statusCode: statusCode,
+                errorReason: errorReason
             ))
 
         case .attestationResponse(let payload):

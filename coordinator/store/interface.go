@@ -707,6 +707,7 @@ type InferenceRouteRecord struct {
 	FinalStatus            string  `json:"final_status"`
 	ErrorCode              int     `json:"error_code"`
 	ErrorClass             string  `json:"error_class"`
+	ErrorReason            string  `json:"error_reason,omitempty"`
 	PromptTokens           int     `json:"prompt_tokens"`
 	CompletionTokens       int     `json:"completion_tokens"`
 	ReasoningTokens        int     `json:"reasoning_tokens"`
@@ -734,6 +735,7 @@ type InferenceRouteOutcome struct {
 	FinalStatus            string  `json:"final_status"`
 	ErrorCode              int     `json:"error_code"`
 	ErrorClass             string  `json:"error_class"`
+	ErrorReason            string  `json:"error_reason,omitempty"`
 	PromptTokens           int     `json:"prompt_tokens"`
 	CompletionTokens       int     `json:"completion_tokens"`
 	ReasoningTokens        int     `json:"reasoning_tokens"`

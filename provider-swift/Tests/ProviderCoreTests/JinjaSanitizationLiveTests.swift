@@ -1,4 +1,4 @@
-// Live end-to-end coverage for the Jinja null/Optional sanitizer, exercised
+// Live end-to-end coverage for the Jinja / Harmony sanitizers, exercised
 // against a REAL gpt-oss model through the same serving path ProviderLoop uses
 // (MLXOpenAIService over MultiModelBatchSchedulerEngine, where the sanitizer is
 // applied before applyChatTemplate).
@@ -6,9 +6,10 @@
 // gpt-oss / Harmony is the model the fix targets: its template routinely renders
 // tools + tool-call history, which is where un-normalized JSON null leaves used
 // to throw "Cannot convert value of type … to Jinja Value" (a hard 500). This
-// proves (a) a normal request still infers and (b) a request carrying null leaves
-// in both a tool schema and an assistant tool-call's arguments now renders,
-// generates, and completes instead of crashing.
+// proves (a) a normal request still infers, (b) a request carrying null leaves
+// in both a tool schema and an assistant tool-call's arguments now renders, and
+// (c) raw Harmony channel tags in replayed assistant content are stripped before
+// applyChatTemplate.
 //
 // Gated by DARKBLOOM_LIVE_MLX_TESTS=1 and requires
 // `mlx-community/gpt-oss-20b-MXFP4-Q8` in the local HuggingFace cache. Skips
@@ -24,10 +25,10 @@ import MLXLMServer
 
 private let gptOssModelID = "mlx-community/gpt-oss-20b-MXFP4-Q8"
 
-@Suite("Jinja null sanitizer (live gpt-oss)", .serialized)
+@Suite("Jinja / Harmony sanitizers (live gpt-oss)", .serialized)
 struct JinjaSanitizationLiveTests {
 
-    /// Drain a stream into (content, reasoning, completionTokens, errorFrame).
+    /// Drain a stream into (content, completionTokens).
     private func drain(
         _ stream: AsyncThrowingStream<String, Error>
     ) async throws -> (content: String, completionTokens: Int) {
@@ -43,7 +44,7 @@ struct JinjaSanitizationLiveTests {
     }
 
     @Test(
-        "normal + null-bearing tool requests both infer end-to-end",
+        "normal + null/tool + Harmony replay requests infer end-to-end",
         .enabled(if: LiveInferenceFixtures.liveTestsEnabled)
     )
     func nullBearingToolRequestInfers() async throws {
@@ -145,5 +146,32 @@ struct JinjaSanitizationLiveTests {
         let toolResult = try await drain(try await service.streamChatCompletionFrames(request: toolReq))
         #expect(toolResult.completionTokens > 0)
         print("[live] null-tool: completion_tokens=\(toolResult.completionTokens) content=\(toolResult.content.prefix(80))")
+
+        // (c) Upstream replay sometimes leaves raw Harmony channel tags in a
+        // prior assistant turn. The runtime strips those to the final answer
+        // before applyChatTemplate, so this renders + generates instead of
+        // tripping Harmony's raw-tag guard. The `thinking` /
+        // `reasoning_content` key path is covered by foundation unit tests;
+        // OpenAIChatMessage does not expose those fields directly.
+        let harmonyReplayMessages: [OpenAIChatMessage] = [
+            .init(role: .user, content: .text("What's the weather?")),
+            .init(
+                role: .assistant,
+                content: .text("<|channel|>analysis<|message|>The user wants the weather.<|end|><|channel|>final<|message|>It is sunny.")),
+            .init(role: .user, content: .text("Use the prior answer in one short sentence.")),
+        ]
+        let harmonyReplayReq = OpenAIChatCompletionRequest(
+            model: gptOssModelID,
+            messages: harmonyReplayMessages,
+            reasoningParser: .harmony,
+            stream: true,
+            temperature: 0.0,
+            maxTokens: 128,
+            streamOptions: .init(includeUsage: true, continuousUsageStats: nil)
+        )
+        let harmonyReplayResult = try await drain(
+            try await service.streamChatCompletionFrames(request: harmonyReplayReq))
+        #expect(harmonyReplayResult.completionTokens > 0)
+        print("[live] harmony-replay: completion_tokens=\(harmonyReplayResult.completionTokens) content=\(harmonyReplayResult.content.prefix(80))")
     }
 }

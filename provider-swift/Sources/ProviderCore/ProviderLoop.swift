@@ -789,7 +789,8 @@ public actor ProviderLoop {
                             await self.drainThenPlannedRestart(coordinator: coordinator)
                         }
                     } else {
-                        logger.info("going_away received during an in-progress update; deferring to that update's restart")
+                        await coordinator.markPlannedRestart()
+                        logger.info("going_away received during an in-progress update; planned restart armed, deferring actual restart to that update")
                     }
                 }
             }
@@ -2552,6 +2553,9 @@ public actor ProviderLoop {
     /// admission afterward via `resumeServingAfterUpdate`.
     private func drainThenPlannedRestart(coordinator: CoordinatorClient) async {
         let drained = await waitForInflightDrain(timeout: Self.goingAwayDrainTimeout)
+        if Task.isCancelled {
+            return
+        }
         if !drained {
             logger.warning("going_away: in-flight drain timed out; cancelling remaining requests")
             await cancelAllInflight()

@@ -557,11 +557,11 @@ public actor CoordinatorClient {
 
     private var shutdownRequested = false
 
-    /// Set by `requestPlannedRestart()` when the coordinator announces it is
+    /// Set by `markPlannedRestart()` when the coordinator announces it is
     /// going away (DAR-327 Phase 3). Unlike `shutdownRequested` this does NOT
     /// exit the connection loop — it makes the next reconnect skip the backoff
     /// sleep so the provider lands on the freshly-deployed coordinator
-    /// near-instantly. Cleared by `runLoop` once the immediate reconnect is taken.
+    /// near-instantly. Cleared only after a new registration succeeds.
     private var plannedRestart = false
 
     /// Mutable advertised-model list. Seeded from `config.models`; background
@@ -670,9 +670,11 @@ public actor CoordinatorClient {
     /// mid-drain (an early/unexpected close, not our explicit post-drain
     /// `requestPlannedRestart`), `runLoop` still observes `plannedRestart` and
     /// takes the no-backoff reconnect path instead of treating it as an ordinary
-    /// disconnect and backing off. The socket is left ALIVE here so in-flight
-    /// work can finish draining first (drain-before-close). Idempotent; no-op once
-    /// a real shutdown is already in progress.
+    /// disconnect and backing off. The flag stays armed across failed reconnect
+    /// attempts and is cleared once a new registration succeeds. The socket is
+    /// left ALIVE here so in-flight work can finish draining first
+    /// (drain-before-close). Idempotent; no-op once a real shutdown is already
+    /// in progress.
     public func markPlannedRestart() {
         guard !shutdownRequested else { return }
         plannedRestart = true
@@ -690,17 +692,16 @@ public actor CoordinatorClient {
     /// MUST be preceded by `markPlannedRestart()` — which the `.goingAway` arm in
     /// ProviderLoop always calls on receipt, before the drain — as that is what
     /// arms `plannedRestart`. This method does NOT arm it. If an earlier
-    /// UNEXPECTED close already consumed `plannedRestart` and drove the no-backoff
-    /// reconnect, we are now on a FRESH, healthy connection, so this SELF-CANCELS
-    /// into a no-op rather than cancelling that healthy socket and flapping it.
-    /// No-op once a real shutdown is already in progress.
+    /// UNEXPECTED close already drove the fast reconnect and a fresh registration
+    /// succeeded, `connectAndRun` cleared `plannedRestart`, so a delayed drain
+    /// self-cancels into a no-op rather than cancelling that healthy socket and
+    /// flapping it. No-op once a real shutdown is already in progress.
     public func requestPlannedRestart() {
         guard !shutdownRequested else { return }
-        // If an earlier (unexpected) close already drove the no-backoff reconnect
-        // path, `plannedRestart` was consumed and we are now on a FRESH connection —
-        // do not cancel it (that would flap a healthy socket). Only the still-armed
-        // case (normal drain-then-close) should close here. `markPlannedRestart()`
-        // (always called on going_away receipt, before the drain) is what arms it.
+        // If an earlier (unexpected) close already drove the fast reconnect and a
+        // fresh registration succeeded, `plannedRestart` has been cleared; do not
+        // cancel that healthy socket. Only the still-armed case (normal
+        // drain-then-close or repeated failed reconnects) should close here.
         guard plannedRestart else { return }
         webSocketTask?.cancel(with: .goingAway, reason: nil)
     }
@@ -728,11 +729,10 @@ public actor CoordinatorClient {
                 // A planned restart (going_away) that closed the socket cleanly:
                 // reconnect with the backoff reset, but apply a small RANDOM
                 // jitter first so the synchronized fleet-wide going_away doesn't
-                // stampede the freshly-deployed coordinator. A plain clean close
-                // still reconnects immediately. Consume the flag exactly once so
-                // a later real error uses normal backoff.
+                // stampede the freshly-deployed coordinator. Keep the flag armed
+                // until a new registration succeeds, so repeated old-node closes
+                // stay on the fast reconnect path instead of exponential backoff.
                 if plannedRestart {
-                    plannedRestart = false
                     await sleepPlannedRestartJitter()
                 }
                 continue
@@ -745,10 +745,10 @@ public actor CoordinatorClient {
                 // going_away is fleet-wide and synchronized, so a zero-delay
                 // reconnect would send every idle provider onto the just-deployed
                 // (most fragile) coordinator in lockstep — the exact herd
-                // ExponentialBackoff's jitter exists to break. Consume the flag
-                // exactly once. Mirrors the clean-close path above.
+                // ExponentialBackoff's jitter exists to break. Keep the flag armed
+                // across failed reconnect attempts (for example old-node 503s)
+                // until `connectAndRun` successfully registers on a new socket.
                 if plannedRestart {
-                    plannedRestart = false
                     backoff.reset()
                     await sleepPlannedRestartJitter()
                     continue
@@ -811,6 +811,9 @@ public actor CoordinatorClient {
 
         try await sendRegistration(ws: ws)
         logger.info("Sent registration to coordinator")
+        // Successful registration means this planned restart landed; end the
+        // fast-reconnect window so delayed drains won't flap the fresh socket.
+        plannedRestart = false
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is

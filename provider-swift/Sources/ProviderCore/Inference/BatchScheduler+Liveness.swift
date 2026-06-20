@@ -143,12 +143,20 @@ extension BatchScheduler {
         guard let container = modelContainer else { return }
         let id = modelId
         let hash = currentWeightHash
+        // Capture the REAL model id NOW, before `loadModel` → `stopCurrentEngine`
+        // transiently clears the live `modelId` to "". The heartbeat reports this
+        // captured id (with a not-servable `reloading` state) for the whole reload
+        // window, so the coordinator deroutes the real model instead of seeing a
+        // phantom `model:""` slot and treating the model as cold/unknown here.
+        recoveryReloadModelId = id
         isReloadingForRecovery = true
         livenessLogger.error("self-restarting model \(id, privacy: .public) to recover backend liveness")
         await loadModel(container: container, modelId: id, weightHash: hash)
-        // Single owner of the flag: clear it whether the reload succeeded, was
-        // superseded, or bailed early, so a later tick can re-detect and retry.
+        // Single owner of the flag + captured id: clear them whether the reload
+        // succeeded, was superseded, or bailed early, so a later tick can
+        // re-detect and retry. (loadModel has by now re-set the live `modelId`.)
         isReloadingForRecovery = false
+        recoveryReloadModelId = nil
         livenessLogger.info("self-restart of \(id, privacy: .public) complete (engine reloaded)")
     }
 

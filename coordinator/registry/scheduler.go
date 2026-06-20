@@ -400,6 +400,9 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
 	}
+	for _, id := range pr.ExcludedProviderIDs {
+		excludeSet[id] = struct{}{}
+	}
 	allowedSerials := make(map[string]struct{}, len(pr.AllowedProviderSerials))
 	for _, serial := range pr.AllowedProviderSerials {
 		allowedSerials[serial] = struct{}{}

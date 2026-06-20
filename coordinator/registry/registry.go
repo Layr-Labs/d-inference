@@ -101,6 +101,11 @@ type PendingRequest struct {
 	// one of these attested hardware serials. Empty means the request may
 	// route to any eligible provider.
 	AllowedProviderSerials []string
+	// ExcludedProviderIDs are providers this request already rejected after a
+	// queue assignment, for example because their custom price exceeded the
+	// caller's remaining balance. Queue drains honor this to keep waiting for a
+	// different provider instead of repeatedly assigning the same one.
+	ExcludedProviderIDs []string
 	// SelfRouteOnly restricts routing to providers owned by OwnerAccountID
 	// (the "use my own machine" path). When set, the scheduler skips every
 	// provider whose AccountID != OwnerAccountID and never falls back to the

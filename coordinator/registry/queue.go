@@ -190,6 +190,11 @@ func (q *RequestQueue) MaxSize() int {
 	return q.maxSize
 }
 
+// MaxWait returns the maximum amount of time a request may remain queued.
+func (q *RequestQueue) MaxWait() time.Duration {
+	return q.maxWait
+}
+
 // QueueSize returns the number of queued requests for a model.
 func (q *RequestQueue) QueueSize(model string) int {
 	q.mu.Lock()

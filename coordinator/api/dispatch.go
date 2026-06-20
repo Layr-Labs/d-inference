@@ -666,80 +666,121 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			"attempt", attempt+1,
 		)
 
-		var err error
-		d.provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				s.recordWarmPoolQueueState(d.model)
-				d.emitClientGone(phaseBeforeFirstToken)
-				d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+		queueStarted := queuedReq.EnqueuedAt
+		for {
+			remaining := s.registry.Queue().MaxWait() - time.Since(queueStarted)
+			if remaining <= 0 {
+				d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
 				d.refundReservation()
-				return outcomeClientGone
-			}
-			d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
-			d.refundReservation()
-			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
-			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
-			retryAfter := s.estimateRetryAfter(d.model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision))
-			if d.policy.enabled {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
-					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
-			} else {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", d.publicModel),
-					withCode("rate_limit_exceeded")))
-			}
-			return outcomeResponseWritten
-		}
-		s.recordWarmPoolQueueState(d.model)
-		// Queue assigned a provider; still need to dispatch.
-		// Use the queue PR's channels.
-		d.pr = queuePR
-		d.requestID = d.pr.RequestID
-		d.timing.RoutedAt = time.Now()
-		d.recordRoutingDecisionFor(d.provider, d.pr, d.requestID, d.pr.Attempt, queuedReq.Decision, "", "selected")
-
-		// Log missing payout destination but don't skip — earnings
-		// are credited to the provider's internal ledger and can be
-		// withdrawn once they complete Stripe Connect onboarding.
-		// A queued request settles FREE when its drained provider is the
-		// caller's own machine: exclusive self-route always, OR a prefer
-		// request whose selected provider is owned (settlement refunds to
-		// zero). Skip the payout warning and the custom-price top-up then
-		// (the top-up could otherwise 429 the free owned route).
-		queuedSettlesFree := d.policy.enabled
-		if !queuedSettlesFree && d.policy.prefer {
-			d.provider.Mu().Lock()
-			queuedSettlesFree = d.policy.ownerAccountID != "" && d.provider.AccountID == d.policy.ownerAccountID
-			d.provider.Mu().Unlock()
-		}
-
-		if s.billing != nil && !queuedSettlesFree && !providerHasPayoutDestination(d.provider) {
-			s.logger.Warn("queued provider missing payout destination, crediting to internal ledger",
-				"request_id", d.requestID,
-				"provider_id", d.provider.ID,
-			)
-		}
-
-		// Custom pricing check — provider may charge more than the
-		// platform rate. Reserve the additional amount now. Skipped for
-		// free self-route, which settles at zero cost.
-		if s.billing != nil && !queuedSettlesFree {
-			if _, err := s.reserveAdditionalForProvider(d.pr, d.provider); err != nil {
-				d.provider.RemovePending(d.requestID)
-				s.registry.SetProviderIdle(d.provider.ID)
-				d.excludeProviders[d.provider.ID] = struct{}{}
-				if errors.Is(err, store.ErrInsufficientBalance) {
-					s.logger.Warn("queued provider pricing exceeds balance, skipping",
-						"request_id", d.requestID,
-						"provider_id", d.provider.ID,
-						"error", err,
-					)
-					d.setLastError("insufficient funds for provider price", http.StatusPaymentRequired)
-					d.updateRoutingOutcome(d.errorRoutingOutcome("error", "insufficient_funds", d.lastErrCode))
+				s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
+				s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queueStarted))
+				retryAfter := s.estimateRetryAfter(d.model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision))
+				if d.policy.enabled {
+					writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
+						"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
 				} else {
+					writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+						fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", d.publicModel),
+						withCode("rate_limit_exceeded")))
+				}
+				return outcomeResponseWritten
+			}
+
+			waitCtx, cancelWait := context.WithTimeout(r.Context(), remaining)
+			var err error
+			d.provider, err = s.registry.Queue().WaitForProviderContext(waitCtx, queuedReq)
+			cancelWait()
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					s.recordWarmPoolQueueState(d.model)
+					d.emitClientGone(phaseBeforeFirstToken)
+					d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+					d.refundReservation()
+					return outcomeClientGone
+				}
+				d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
+				d.refundReservation()
+				s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
+				s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queueStarted))
+				retryAfter := s.estimateRetryAfter(d.model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision))
+				if d.policy.enabled {
+					writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
+						"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
+				} else {
+					writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+						fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", d.publicModel),
+						withCode("rate_limit_exceeded")))
+				}
+				return outcomeResponseWritten
+			}
+			s.recordWarmPoolQueueState(d.model)
+			// Queue assigned a provider; still need to dispatch.
+			// Use the queue PR's channels.
+			d.pr = queuePR
+			d.requestID = d.pr.RequestID
+			d.timing.RoutedAt = time.Now()
+			d.recordRoutingDecisionFor(d.provider, d.pr, d.requestID, d.pr.Attempt, queuedReq.Decision, "", "selected")
+
+			// Log missing payout destination but don't skip — earnings
+			// are credited to the provider's internal ledger and can be
+			// withdrawn once they complete Stripe Connect onboarding.
+			// A queued request settles FREE when its drained provider is the
+			// caller's own machine: exclusive self-route always, OR a prefer
+			// request whose selected provider is owned (settlement refunds to
+			// zero). Skip the payout warning and the custom-price top-up then
+			// (the top-up could otherwise 429 the free owned route).
+			queuedSettlesFree := d.policy.enabled
+			if !queuedSettlesFree && d.policy.prefer {
+				d.provider.Mu().Lock()
+				queuedSettlesFree = d.policy.ownerAccountID != "" && d.provider.AccountID == d.policy.ownerAccountID
+				d.provider.Mu().Unlock()
+			}
+
+			if s.billing != nil && !queuedSettlesFree && !providerHasPayoutDestination(d.provider) {
+				s.logger.Warn("queued provider missing payout destination, crediting to internal ledger",
+					"request_id", d.requestID,
+					"provider_id", d.provider.ID,
+				)
+			}
+
+			// Custom pricing check — provider may charge more than the
+			// platform rate. Reserve the additional amount now. Skipped for
+			// free self-route, which settles at zero cost.
+			if s.billing != nil && !queuedSettlesFree {
+				if _, err := s.reserveAdditionalForProvider(d.pr, d.provider); err != nil {
+					d.provider.RemovePending(d.requestID)
+					d.excludeProviders[d.provider.ID] = struct{}{}
+					if errors.Is(err, store.ErrInsufficientBalance) {
+						d.pr.ExcludedProviderIDs = append(d.pr.ExcludedProviderIDs, d.provider.ID)
+						s.logger.Warn("queued provider pricing exceeds balance, waiting for another provider",
+							"request_id", d.requestID,
+							"provider_id", d.provider.ID,
+							"error", err,
+						)
+						queuedReq = &registry.QueuedRequest{
+							RequestID:  d.requestID,
+							Model:      d.model,
+							Pending:    d.pr,
+							ResponseCh: make(chan *registry.Provider, 1),
+						}
+						if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+							d.refundReservation()
+							retryAfter := s.estimateRetryAfter(d.model)
+							w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+							s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision))
+							writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+								fmt.Sprintf("all providers for model %q are at capacity and queue is full", d.publicModel),
+								withCode("rate_limit_exceeded")))
+							return outcomeResponseWritten
+						}
+						s.registry.SetProviderIdle(d.provider.ID)
+						continue
+					}
+					s.registry.SetProviderIdle(d.provider.ID)
 					s.logger.Error("queued provider reservation failed (DB error)",
 						"request_id", d.requestID,
 						"provider_id", d.provider.ID,
@@ -747,9 +788,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					)
 					d.setLastError("service temporarily unavailable — please retry", http.StatusServiceUnavailable)
 					d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", d.lastErrCode))
+					return outcomeRetry
 				}
-				return outcomeRetry
 			}
+			break
 		}
 		// Perform E2E encryption and send the request.
 		if d.provider.PublicKey == "" {

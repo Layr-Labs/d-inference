@@ -170,13 +170,6 @@ func buildDoctorChecks(snapshot: RuntimeSnapshot) -> [DoctorCheck] {
         detail: rdmaDisabled ? "disabled" : "enabled; allowed for RDMA-aware runtimes"
     ))
 
-    let secureBoot = checkSecureBootEnabled()
-    checks.append(.init(
-        name: "secure boot",
-        status: secureBoot ? .pass : .warn,
-        detail: secureBoot ? "enabled" : "not confirmed"
-    ))
-
     let authenticatedRoot = checkAuthenticatedRootEnabled()
     checks.append(.init(
         name: "authenticated root",

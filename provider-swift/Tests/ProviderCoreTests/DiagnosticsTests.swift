@@ -37,6 +37,19 @@ import Testing
     #expect(b.fix != nil)
 }
 
+@Test func trustReasonCatalogUsesFullSecurityGuideForSecureBootFailures() {
+    let expectedFix = "Follow this guide and change Security Policy to \"Full Security\": https://support.apple.com/guide/mac-help/change-security-settings-startup-disk-a-mac-mchl768f7291/mac"
+
+    let challenge = TrustReasonCatalog.advice(level: "hardware", status: "untrusted",
+                                              reason: "Secure Boot disabled")
+    #expect(challenge.fix == expectedFix)
+
+    let mdm = TrustReasonCatalog.advice(level: "hardware", status: "untrusted",
+                                        reason: "MDM reports Secure Boot not full (level=\"medium\")")
+    #expect(mdm.fix == expectedFix)
+    #expect(mdm.message.contains("Full Security"))
+}
+
 @Test func trustReasonCatalogEchoesUnknownReasonVerbatim() {
     let novel = "some-brand-new-coordinator-reason-v9"
     let advice = TrustReasonCatalog.advice(level: "self_signed", status: "online", reason: novel)

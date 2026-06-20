@@ -10,7 +10,7 @@
 ///   - Core dump disabling: RLIMIT_CORE set to 0
 ///   - Environment scrubbing: removes dangerous env vars (DYLD_*, etc.)
 ///   - Anti-debug detection: P_TRACED flag, sysctl kern.proc
-///   - Secure Boot check: Apple Silicon full security mode
+///   - Secure Boot self-report for coordinator MDM cross-check
 ///   - Hardened Runtime check: codesign entitlement verification
 ///   - Bundle signature verification: validates .app code signature
 ///   - MDM enrollment detection: MicroMDM profile checks
@@ -141,20 +141,22 @@ public func checkRDMADisabled() -> Bool {
 
 // MARK: - Secure Boot Check
 
-/// Check if Secure Boot is enabled.
+/// Provider self-report for Secure Boot posture.
 ///
-/// On Apple Silicon, Secure Boot is always enabled in Full Security mode.
-/// Reduced Security or Permissive Security are set via Recovery OS.
+/// This is intentionally not an authoritative local boot-policy detector:
+/// macOS does not expose a stable unprivileged public API for the local boot
+/// policy, and localized command output is not suitable for a trust verdict.
+/// The coordinator's Apple MDM SecurityInfo response is the authoritative typed
+/// source for SecureBootLevel.
+/// Apple docs:
+/// https://developer.apple.com/documentation/devicemanagement/securityinforesponse/securityinfo-data.dictionary/secureboot-data.dictionary
 ///
-/// Returns true if running in Full Security mode.
+/// Returns true when the local authenticated-root proxy is intact. The
+/// coordinator must still verify the machine with MDM SecurityInfo.
 public func checkSecureBootEnabled() -> Bool {
-    // On Apple Silicon, the default (and only safe) configuration is
-    // Full Security. Checking bputil would require root. The coordinator
-    // independently verifies via MDM SecurityInfo, so returning true here
-    // is safe -- a downgraded device will fail the MDM cross-check.
-    //
-    // For software-level detection without root, we check the Authenticated
-    // Root Volume which is only sealed under Full Security.
+    // MDM SecurityInfo is the source of truth. Keep this as a provider
+    // self-report so the coordinator can detect mismatches against the MDM
+    // response, but do not surface it locally as a doctor Secure Boot verdict.
     return checkAuthenticatedRootEnabled()
 }
 

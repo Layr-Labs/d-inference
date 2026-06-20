@@ -130,14 +130,10 @@ func (f *fakeMDMServer) pushCount() int {
 
 // securityInfoWebhook builds a MicroMDM acknowledge webhook body carrying a
 // SecurityInfo plist with the given CommandUUID and SIP/SecureBoot posture.
-func securityInfoWebhook(udid, commandUUID string, sipEnabled bool, secureBootFull bool) []byte {
+func securityInfoWebhook(udid, commandUUID string, sipEnabled bool, secureBootLevel string) []byte {
 	sip := "<false/>"
 	if sipEnabled {
 		sip = "<true/>"
-	}
-	sb := "reduced"
-	if secureBootFull {
-		sb = "full"
 	}
 	plist := fmt.Sprintf(`<?xml version="1.0"?><plist version="1.0"><dict>`+
 		`<key>CommandUUID</key><string>%s</string>`+
@@ -145,7 +141,7 @@ func securityInfoWebhook(udid, commandUUID string, sipEnabled bool, secureBootFu
 		`<key>SecurityInfo</key><dict>`+
 		`<key>SystemIntegrityProtectionEnabled</key>%s`+
 		`<key>SecureBootLevel</key><string>%s</string>`+
-		`</dict></dict></plist>`, commandUUID, sip, sb)
+		`</dict></dict></plist>`, commandUUID, sip, secureBootLevel)
 	body, _ := json.Marshal(map[string]any{
 		"topic": "mdm.Acknowledge",
 		"acknowledge_event": map[string]string{
@@ -202,7 +198,7 @@ func attestResultOf(p *registry.Provider) attestation.VerificationResult {
 // deliverWebhookWhenPushed waits until the fake server records a push (proving
 // SendSecurityInfoCommand ran and the command UUID is tracked + a waiter is
 // registered), then delivers the SecurityInfo webhook. Runs in a goroutine.
-func deliverWebhookWhenPushed(srv *Server, fake *fakeMDMServer, udid, commandUUID string, sip, secureBoot bool) {
+func deliverWebhookWhenPushed(srv *Server, fake *fakeMDMServer, udid, commandUUID string, sip bool, secureBootLevel string) {
 	go func() {
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
@@ -212,7 +208,7 @@ func deliverWebhookWhenPushed(srv *Server, fake *fakeMDMServer, udid, commandUUI
 			time.Sleep(5 * time.Millisecond)
 		}
 		time.Sleep(20 * time.Millisecond)
-		srv.mdmClient.HandleWebhook(securityInfoWebhook(udid, commandUUID, sip, secureBoot))
+		srv.mdmClient.HandleWebhook(securityInfoWebhook(udid, commandUUID, sip, secureBootLevel))
 	}()
 }
 
@@ -228,7 +224,7 @@ func TestVerifyProviderViaMDM_PostureMismatchTerminal(t *testing.T) {
 	srv, p := mdmReliabilityServer(t, fake)
 
 	// MDM says SIP=false (mismatch vs attestation SIP=true) → posture mismatch.
-	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-mismatch", false /*sip*/, true)
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-mismatch", false /*sip*/, mdm.SecureBootLevelFull)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
@@ -240,6 +236,37 @@ func TestVerifyProviderViaMDM_PostureMismatchTerminal(t *testing.T) {
 	}
 	if status := srv.registry.GetProvider("prov-mdm").GetStatus(); status != registry.StatusUntrusted {
 		t.Errorf("status = %q, want %q (posture mismatch must mark untrusted)", status, registry.StatusUntrusted)
+	}
+}
+
+func TestVerifyProviderViaMDM_NonFullSecureBootLevelsTerminal(t *testing.T) {
+	for idx, level := range []string{
+		mdm.SecureBootLevelMedium,
+		mdm.SecureBootLevelOff,
+		mdm.SecureBootLevelNotSupported,
+	} {
+		t.Run(level, func(t *testing.T) {
+			commandUUID := fmt.Sprintf("cmd-nonfull-%d", idx)
+			fake := &fakeMDMServer{
+				device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+				commandUUID: commandUUID,
+			}
+			srv, p := mdmReliabilityServer(t, fake)
+
+			deliverWebhookWhenPushed(srv, fake, "UDID-1", commandUUID, true /*sip*/, level)
+
+			outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
+
+			if outcome != mdmVerifyTerminal {
+				t.Errorf("outcome = %v, want mdmVerifyTerminal for SecureBootLevel=%q", outcome, level)
+			}
+			if got := p.GetMDMFailureReason(); got != "posture-mismatch" {
+				t.Errorf("MDMFailureReason = %q, want %q", got, "posture-mismatch")
+			}
+			if status := srv.registry.GetProvider("prov-mdm").GetStatus(); status != registry.StatusUntrusted {
+				t.Errorf("status = %q, want %q for SecureBootLevel=%q", status, registry.StatusUntrusted, level)
+			}
+		})
 	}
 }
 
@@ -321,7 +348,7 @@ func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 	// Seed a stale failure reason to prove success clears it.
 	p.SetMDMFailureReason("securityinfo-timeout")
 
-	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true /*sip*/, true /*secureboot*/)
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true /*sip*/, mdm.SecureBootLevelFull)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
@@ -536,7 +563,7 @@ func TestVerifyProviderViaMDM_InvalidAttestationNotPromoted(t *testing.T) {
 	p.AttestationResult.Valid = false
 	p.Mu().Unlock()
 	// Even if SecurityInfo would pass, the invalid attestation must block promotion.
-	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true, true)
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true, mdm.SecureBootLevelFull)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
@@ -580,7 +607,7 @@ func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
 
 	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
 		SystemIntegrityProtectionEnabled: true,
-		SecureBootLevel:                  "full",
+		SecureBootLevel:                  mdm.SecureBootLevelFull,
 	})
 
 	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
@@ -588,6 +615,35 @@ func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
 	}
 	if got := p.GetMDMFailureReason(); got != "" {
 		t.Errorf("MDMFailureReason = %q, want cleared", got)
+	}
+}
+
+func TestApplyLateSecurityInfo_NonFullSecureBootDoesNotUpgrade(t *testing.T) {
+	for _, level := range []string{
+		mdm.SecureBootLevelMedium,
+		mdm.SecureBootLevelOff,
+		mdm.SecureBootLevelNotSupported,
+	} {
+		t.Run(level, func(t *testing.T) {
+			fake := &fakeMDMServer{
+				device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+				commandUUID: "unused",
+			}
+			srv, p := mdmReliabilityServer(t, fake)
+			p.SetMDMFailureReason("securityinfo-timeout")
+
+			srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
+				SystemIntegrityProtectionEnabled: true,
+				SecureBootLevel:                  level,
+			})
+
+			if lvl := p.GetTrustLevel(); lvl == registry.TrustHardware {
+				t.Errorf("trust = %q, must not upgrade for SecureBootLevel=%q", lvl, level)
+			}
+			if got := p.GetMDMFailureReason(); got != "securityinfo-timeout" {
+				t.Errorf("MDMFailureReason = %q, want original timeout reason retained", got)
+			}
+		})
 	}
 }
 
@@ -604,7 +660,7 @@ func TestApplyLateSecurityInfo_SkipsUntrusted(t *testing.T) {
 
 	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
 		SystemIntegrityProtectionEnabled: true,
-		SecureBootLevel:                  "full",
+		SecureBootLevel:                  mdm.SecureBootLevelFull,
 	})
 
 	if lvl := p.GetTrustLevel(); lvl == registry.TrustHardware {
@@ -624,7 +680,7 @@ func TestVerifyProviderViaMDM_DefersGrantWhenUntrusted(t *testing.T) {
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.registry.MarkUntrusted("prov-mdm") // deroute lands while MDM verify is in flight
-	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true, true)
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true, mdm.SecureBootLevelFull)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 

@@ -102,6 +102,10 @@ func NewStripeConnect(secretKey, connectWebhookSecret, platformCountry string, m
 // MockMode reports whether the client is short-circuiting Stripe API calls.
 func (c *StripeConnect) MockMode() bool { return c.mockMode }
 
+// PlatformCountry returns the ISO 3166-1 alpha-2 platform default country
+// used when the user doesn't provide one.
+func (c *StripeConnect) PlatformCountry() string { return c.platformCountry }
+
 // stripeAPIBase is overridden by tests to point at httptest.NewServer().
 var stripeAPIBase = "https://api.stripe.com"
 

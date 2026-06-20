@@ -637,6 +637,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Stripe Connect — bank/card payouts
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_status TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_country TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_type TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_last4 TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_instant_eligible BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
@@ -3006,16 +3007,16 @@ func (s *PostgresStore) CreateUser(user *User) error {
 }
 
 const userSelectColumns = `account_id, privy_user_id, email, role, platform_fee_percent,
-	stripe_account_id, stripe_account_status, stripe_destination_type,
-	stripe_destination_last4, stripe_instant_eligible, created_at`
+	stripe_account_id, stripe_account_status, stripe_account_country,
+	stripe_destination_type, stripe_destination_last4, stripe_instant_eligible, created_at`
 
 func scanUser(row interface {
 	Scan(...any) error
 }) (*User, error) {
 	var u User
 	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.Role, &u.PlatformFeePercent,
-		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeDestinationType,
-		&u.StripeDestinationLast4, &u.StripeInstantEligible, &u.CreatedAt); err != nil {
+		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeAccountCountry,
+		&u.StripeDestinationType, &u.StripeDestinationLast4, &u.StripeInstantEligible, &u.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &u, nil
@@ -3052,19 +3053,28 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 }
 
 // SetUserStripeAccount upserts the Stripe Connect fields on a user record.
-func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error {
+// stripeAccountCountry is the ISO country the Express account is locked to.
+// Pass an empty string to leave the existing country value unchanged.
+func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	countryClause := ""
+	args := []any{accountID, stripeAccountID, status, destinationType, destinationLast4, instantEligible}
+	if stripeAccountCountry != "" {
+		countryClause = ", stripe_account_country = $7"
+		args = append(args, stripeAccountCountry)
+	}
+
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE users SET
+		fmt.Sprintf(`UPDATE users SET
 			stripe_account_id = $2,
 			stripe_account_status = $3,
 			stripe_destination_type = $4,
 			stripe_destination_last4 = $5,
-			stripe_instant_eligible = $6
-		 WHERE account_id = $1`,
-		accountID, stripeAccountID, status, destinationType, destinationLast4, instantEligible,
+			stripe_instant_eligible = $6%s
+		 WHERE account_id = $1`, countryClause),
+		args...,
 	)
 	if err != nil {
 		return fmt.Errorf("store: set stripe account: %w", err)

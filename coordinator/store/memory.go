@@ -1987,7 +1987,9 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 }
 
 // SetUserStripeAccount upserts the Stripe Connect fields on a user record.
-func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error {
+// stripeAccountCountry is the ISO country the Express account is locked to.
+// Pass an empty string to leave the existing country value unchanged.
+func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -2004,6 +2006,9 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, d
 
 	u.StripeAccountID = stripeAccountID
 	u.StripeAccountStatus = status
+	if stripeAccountCountry != "" {
+		u.StripeAccountCountry = stripeAccountCountry
+	}
 	u.StripeDestinationType = destinationType
 	u.StripeDestinationLast4 = destinationLast4
 	u.StripeInstantEligible = instantEligible

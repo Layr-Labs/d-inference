@@ -822,9 +822,17 @@ public actor ProviderLoop {
             // and to route `cancel` frames for in-flight requests straight to
             // `handleCancellation` so an aborted stream stops generating promptly.
             let drainSelf = self
-            await coordinatorClient?.beginDraining(onCancel: { requestId in
-                await drainSelf.handleCancellation(requestId: requestId, receivedFromCoordinator: true)
-            })
+            await coordinatorClient?.beginDraining(
+                onCancel: { requestId in
+                    await drainSelf.handleCancellation(requestId: requestId, receivedFromCoordinator: true)
+                },
+                onDisconnect: {
+                    // The socket dropped mid-drain: the coordinator has failed our
+                    // in-flight requests, so cancel them instead of generating
+                    // frames that can no longer reach the consumer.
+                    await drainSelf.cancelAllInflight()
+                }
+            )
             // Cancel background work + preloads first, but keep the coordinator
             // socket open so in-flight responses can still be delivered while we
             // drain. `sparingInflightLoads: true` lets a request that was still
@@ -893,16 +901,27 @@ public actor ProviderLoop {
         if let prefetchCoordinator {
             await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
         }
-        let preloads = Array(preloadTasks.values)
-        for task in preloads { task.cancel() }
+        // During a graceful drain, a preload may be the actual loader for a model
+        // that an already-accepted request is waiting on (the request sits in
+        // `loadingWaiters` while the preload owns `ensureModelLoaded`). Cancelling
+        // that preload would fail the accepted request instead of letting it
+        // drain, so spare preloads whose model still backs an in-flight request
+        // and only cancel/await the background-only ones. Spared preloads finish
+        // the load (waiters resume) and clean themselves up via `removePreloadTask`.
+        let inflightModels = sparingInflightLoads ? Set(requestToModel.values) : Set<String>()
+        let preloadsToCancel = preloadTasks.filter { !inflightModels.contains($0.key) }
+        for (_, task) in preloadsToCancel { task.cancel() }
         cancelLoadWaiters(sparingInflightRequests: sparingInflightLoads)
-        let preloadsFinished = await waitForPreloads(preloads, timeout: Self.preloadShutdownTimeout)
+        let cancelledPreloads = Array(preloadsToCancel.values)
+        let preloadsFinished = await waitForPreloads(cancelledPreloads, timeout: Self.preloadShutdownTimeout)
         if !preloadsFinished {
             logger.warning("Timed out waiting for coordinator-driven preloads to cancel during shutdown")
         }
-        preloadTasks.removeAll()
-        preloadTaskIds.removeAll()
-        preloadStatusSubscribers.removeAll()
+        for key in preloadsToCancel.keys {
+            preloadTasks.removeValue(forKey: key)
+            preloadTaskIds.removeValue(forKey: key)
+            preloadStatusSubscribers.removeValue(forKey: key)
+        }
     }
 
     // MARK: - Security Hardening
@@ -1245,6 +1264,20 @@ public actor ProviderLoop {
                 await updateAggregateCapacity()
             }
             await cancellationRegistry.finish(requestId: requestId)
+            // A cancelled load (client/coordinator cancel, or a shutdown drain
+            // cancelling the detached load task) is NOT a model fault. Reporting
+            // "model load failed" with a 5xx would make the coordinator cooldown
+            // / deroute a healthy provider+model. Map it to a clean shutdown 503
+            // (reroute) when draining, and stay silent for a plain cancel — the
+            // coordinator already aborted the request that triggered it.
+            if error is CancellationError {
+                if isShuttingDown {
+                    send.send(.inferenceError(requestId: requestId, error: "provider is shutting down", statusCode: 503))
+                } else {
+                    logger.info("[\(requestId)] Model load cancelled before completion")
+                }
+                return
+            }
             logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
             let statusCode = Self.loadErrorStatusCode(for: error)
             send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: statusCode))

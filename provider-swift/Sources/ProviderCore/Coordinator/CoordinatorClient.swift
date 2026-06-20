@@ -587,6 +587,12 @@ public actor CoordinatorClient {
     /// generating instead of running until the drain timeout.
     private var drainCancelHandler: (@Sendable (String) async -> Void)?
 
+    /// Disconnect handler installed by `beginDraining`. If the socket drops while
+    /// draining (event stream no longer consumed), the coordinator fails our
+    /// in-flight requests, so this lets the provider cancel them rather than keep
+    /// generating frames that can never reach the consumer.
+    private var drainDisconnectHandler: (@Sendable () async -> Void)?
+
     /// Mutable advertised-model list. Seeded from `config.models`; background
     /// prefetch (Layer 3) appends newly-verified builds so re-registration and
     /// reconnects pick them up without dropping the currently-served model.
@@ -680,12 +686,20 @@ public actor CoordinatorClient {
     /// receive loop. Used during a graceful stop/restart, when the `ProviderLoop`
     /// event stream is no longer consuming events but the drain has not finished.
     ///
-    /// - Parameter onCancel: invoked for coordinator `cancel` frames received
-    ///   while draining, so an aborted in-flight request stops generating
-    ///   promptly instead of running until the drain timeout.
-    public func beginDraining(onCancel: (@Sendable (String) async -> Void)? = nil) {
+    /// - Parameters:
+    ///   - onCancel: invoked for coordinator `cancel` frames received while
+    ///     draining, so an aborted in-flight request stops generating promptly
+    ///     instead of running until the drain timeout.
+    ///   - onDisconnect: invoked if the socket drops while draining, so the
+    ///     provider can cancel in-flight work the coordinator has already failed
+    ///     instead of generating frames that can no longer be delivered.
+    public func beginDraining(
+        onCancel: (@Sendable (String) async -> Void)? = nil,
+        onDisconnect: (@Sendable () async -> Void)? = nil
+    ) {
         draining = true
         drainCancelHandler = onCancel
+        drainDisconnectHandler = onDisconnect
     }
 
     /// Wait until queued outbound messages have been written to the socket, or
@@ -722,6 +736,14 @@ public actor CoordinatorClient {
         modelWeightHashOverrides = hashes
     }
 
+    /// Handle a socket drop that happens while draining: the coordinator fails
+    /// our in-flight requests on disconnect, so cancel them (don't keep
+    /// generating undeliverable frames) and stop reconnecting.
+    private func handleDrainDisconnect() async {
+        logger.info("Coordinator socket closed during drain; cancelling in-flight work and stopping reconnects")
+        if let handler = drainDisconnectHandler { await handler() }
+    }
+
     // MARK: - Connection Loop
 
     private func runLoop() async {
@@ -734,10 +756,12 @@ public actor CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info("Coordinator connection closed, reconnecting...")
+                if draining { await handleDrainDisconnect(); break }
                 backoff.reset()
                 continue
             } catch {
                 if shutdownRequested { break }
+                if draining { await handleDrainDisconnect(); break }
 
                 eventContinuation?.yield(.disconnected)
                 let delay = backoff.nextDelay()

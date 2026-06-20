@@ -27,17 +27,18 @@ PERSIST="${USER_PERSISTENT_DATA_PATH:-/mnt/disks/userdata}"
 ln -sfn "$PERSIST" /data
 
 # Bounded wait for platform first-boot init so a cold box (coordinator started
-# before the platform finished initializing the CA) doesn't crash-loop.
+# before the platform finished initializing the CA) retries under the supervisor
+# instead of starting in a degraded ACME-off state.
 CA_ROOT="${EIGENINFERENCE_STEP_CA_ROOT:-/data/step-ca/certs/root_ca.crt}"
-WAIT_SECS="${COORDINATOR_PLATFORM_WAIT_SECS:-60}"
+WAIT_SECS="${COORDINATOR_PLATFORM_WAIT_SECS:-120}"
 i=0
 while [ ! -f "$CA_ROOT" ]; do
     if [ "$i" -eq 0 ]; then
         echo "start-coordinator: waiting (up to ${WAIT_SECS}s) for platform step-ca root cert at $CA_ROOT ..."
     fi
     if [ "$i" -ge "$WAIT_SECS" ]; then
-        echo "start-coordinator: WARNING: $CA_ROOT still absent after ${WAIT_SECS}s; starting anyway." >&2
-        break
+        echo "start-coordinator: ERROR: $CA_ROOT still absent after ${WAIT_SECS}s; refusing to start coordinator. Supervisor will retry." >&2
+        exit 1
     fi
     i=$((i + 1))
     sleep 1

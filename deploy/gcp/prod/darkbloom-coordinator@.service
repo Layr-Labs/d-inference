@@ -50,9 +50,11 @@ RestartSec=5
 # immediately at 0); the long ceiling is only a backstop for a color stopped with
 # genuinely stuck in-flight work.
 TimeoutStopSec=180
-# Optional non-secret deploy config (e.g. DINF_IMAGE pin written by deploy.sh).
-# The leading '-' makes it optional: the unit starts even if the file is absent.
-EnvironmentFile=-/etc/d-inference/deploy.env
+# Optional non-secret per-color deploy config (e.g. DINF_IMAGE pin written by
+# deploy.sh). The leading '-' makes it optional: the unit starts even if the file
+# is absent. Keep the platform unit on /etc/d-inference/deploy.env; these pins are
+# only for swappable coordinator colors.
+EnvironmentFile=-/etc/d-inference/deploy-%i.env
 ExecStartPre=-/usr/bin/docker stop darkbloom-coordinator-%i
 ExecStartPre=-/usr/bin/docker rm darkbloom-coordinator-%i
 ExecStart=/usr/local/bin/darkbloom-run.sh coordinator %i

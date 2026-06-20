@@ -11,8 +11,9 @@
 # Also covers two security/safety-critical helpers added in the Phase 2 review:
 #   - load_admin_env: PARSES (never sources) the EIGENINFERENCE_ADMIN_KEY line,
 #     incl. a regression canary proving env-file values are NOT executed.
-#   - pin_image / restore_image_pin / accept_image_pin: the image-pin rollback so
-#     an aborted deploy never leaves the shared pin file on an unaccepted image.
+#   - pin_image / restore_image_pin / accept_image_pin: the per-color image-pin
+#     rollback so an aborted deploy never leaves the idle color on an unaccepted
+#     image.
 #
 # Run:  ./deploy/gcp/prod/deploy_test.sh        (or: bash deploy/gcp/prod/deploy_test.sh)
 # Exit: 0 if all assertions pass, 1 otherwise.
@@ -57,9 +58,9 @@ ORIG="$WORK/Caddyfile.orig"
 CF="$WORK/Caddyfile"
 
 # Sample mirrors deploy/gcp/prod/Caddyfile: the snippet contains the step-ca
-# (:9000) and MicroMDM (:9002) https upstreams, the /dl/* static handler, and the
-# single coordinator upstream (:8080), imported by two public sites and the
-# internal :8090 listener.
+# (:9000) and MicroMDM (:9002) https upstreams, the /dl/* and
+# /enroll.mobileconfig static handlers, and the single coordinator upstream
+# (:8080), imported by two public sites and the internal :8090 listener.
 cat > "$ORIG" <<'CADDY'
 (coordinator_routes) {
 	handle /acme/* {
@@ -78,6 +79,10 @@ cat > "$ORIG" <<'CADDY'
 		}
 	}
 	handle /dl/* {
+		root * /var/www/html
+		file_server
+	}
+	handle /enroll.mobileconfig {
 		root * /var/www/html
 		file_server
 	}
@@ -128,6 +133,7 @@ assert_eq "exactly one line added by flip" "1" "$added"
 assert_contains "step-ca upstream :9000 untouched" "$CF" "reverse_proxy https://127.0.0.1:9000"
 assert_contains "MicroMDM upstream :9002 untouched" "$CF" "reverse_proxy https://127.0.0.1:9002"
 assert_contains "/dl/* static handler untouched by flip" "$CF" "handle /dl/* {"
+assert_contains "/enroll.mobileconfig static handler untouched by flip" "$CF" "handle /enroll.mobileconfig {"
 assert_contains "internal webhook listener :8090 untouched" "$CF" "http://127.0.0.1:8090 {"
 
 # ---- reversible: flip back restores the file byte-for-byte ----
@@ -217,40 +223,78 @@ EIGENINFERENCE_ADMIN_KEY=""; load_admin_env
 assert_eq "load_admin_env yields empty key when absent" "" "${EIGENINFERENCE_ADMIN_KEY:-}"
 
 echo
-echo "# deploy_test: image-pin rollback (pin_image / restore_image_pin / accept_image_pin)"
+echo "# deploy_test: provider wait timeout"
+
+# wait_for_providers must return nonzero on timeout so forward deploy can abort
+# before draining/stopping the old color. Use a zero-second timeout so no network
+# or curl mock is required.
+# shellcheck disable=SC2034  # read by wait_for_providers in sourced deploy.sh
+PROVIDERS_TIMEOUT=0
+wait_for_providers blue 8080 >/dev/null 2>&1; rc=$?
+assert_rc "wait_for_providers returns nonzero on timeout" 1 "$rc"
+# shellcheck disable=SC2034  # read by wait_for_providers in sourced deploy.sh
+DRY_RUN=1
+wait_for_providers blue 8080 >/dev/null 2>&1; rc=$?
+assert_rc "wait_for_providers dry-run returns 0" 0 "$rc"
+
+echo
+echo "# deploy_test: per-color image-pin rollback (pin_image / restore_image_pin / accept_image_pin)"
 
 # shellcheck disable=SC2034  # DRY_RUN read by the dry-run guards in sourced deploy.sh
 DRY_RUN=0
-PINENV="$WORK/deploy.env"
-# shellcheck disable=SC2034  # read by pin_image/restore_image_pin in sourced deploy.sh
-DINF_DEPLOY_ENV="$PINENV"
-# DINF_DEPLOY_ENV_BAK / DINF_DEPLOY_ENV_EXISTED are set by pin_image itself, so the
-# tests below intentionally do NOT pre-seed them.
+PIN_TMPL="$WORK/deploy-%s.env"
+PINBLUE="$WORK/deploy-blue.env"
+PINGREEN="$WORK/deploy-green.env"
+# shellcheck disable=SC2034  # read by deploy_env_for_color/pin_image in sourced deploy.sh
+DINF_DEPLOY_ENV_TMPL="$PIN_TMPL"
+# DINF_DEPLOY_ENV_BAK / DINF_DEPLOY_ENV_EXISTED / DINF_DEPLOY_ENV_PINNED are set by
+# pin_image itself, so the tests below intentionally do NOT pre-seed them.
 
-# (a) pin when the file did NOT exist -> restore removes it entirely.
-rm -f "$PINENV"
-pin_image "repo/coord:abc" >/dev/null 2>&1
-assert_contains "pin_image writes DINF_IMAGE" "$PINENV" "DINF_IMAGE=repo/coord:abc"
+assert_eq "deploy_env_for_color blue" "$PINBLUE" "$(deploy_env_for_color blue)"
+assert_eq "deploy_env_for_color green" "$PINGREEN" "$(deploy_env_for_color green)"
+deploy_env_for_color red >/dev/null 2>&1; rc=$?
+assert_rc "deploy_env_for_color rejects unknown colors" 2 "$rc"
+
+# (a) pin when the color file did NOT exist -> restore removes only that file.
+rm -f "$PINBLUE" "$PINGREEN"
+pin_image blue "repo/coord:abc" >/dev/null 2>&1; rc=$?
+assert_rc "pin_image blue returns 0" 0 "$rc"
+assert_contains "pin_image writes DINF_IMAGE to blue" "$PINBLUE" "DINF_IMAGE=repo/coord:abc"
+if [ ! -f "$PINGREEN" ]; then pass "pin_image blue does not create green pin file"; else fail "pin_image blue should not create green pin file"; fi
 restore_image_pin >/dev/null 2>&1
-if [ ! -f "$PINENV" ]; then pass "restore_image_pin removes a pin file created this run"; else fail "restore_image_pin should remove a newly-created pin file"; fi
+if [ ! -f "$PINBLUE" ]; then pass "restore_image_pin removes a blue pin file created this run"; else fail "restore_image_pin should remove a newly-created blue pin file"; fi
 
 # (b) pin OVER an existing file -> accept keeps it (restore becomes a no-op).
-printf 'OTHER=1\n' > "$PINENV"
-pin_image "repo/coord:def" >/dev/null 2>&1
-assert_contains "pin_image preserves other keys" "$PINENV" "OTHER=1"
-assert_contains "pin_image sets the new image" "$PINENV" "DINF_IMAGE=repo/coord:def"
+printf 'OTHER=1\n' > "$PINGREEN"
+pin_image green "repo/coord:def" >/dev/null 2>&1; rc=$?
+assert_rc "pin_image green returns 0" 0 "$rc"
+assert_contains "pin_image preserves other keys in green" "$PINGREEN" "OTHER=1"
+assert_contains "pin_image sets the new image in green" "$PINGREEN" "DINF_IMAGE=repo/coord:def"
 accept_image_pin
 restore_image_pin >/dev/null 2>&1
-assert_contains "accept_image_pin keeps the pin (restore is a no-op)" "$PINENV" "DINF_IMAGE=repo/coord:def"
+assert_contains "accept_image_pin keeps the green pin (restore is a no-op)" "$PINGREEN" "DINF_IMAGE=repo/coord:def"
 
-# (c) pin OVER an existing pinned file -> restore brings back the original image.
-printf 'DINF_IMAGE=old/img:1\nOTHER=2\n' > "$PINENV"
-pin_image "new/img:2" >/dev/null 2>&1
-assert_contains "pin_image replaces the old image line" "$PINENV" "DINF_IMAGE=new/img:2"
-assert_absent  "pin_image drops the prior image line" "$PINENV" "DINF_IMAGE=old/img:1"
+# (c) pin OVER an existing pinned file -> restore brings back the original image
+# in the exact file pin_image touched, even if the template changes before restore.
+printf 'DINF_IMAGE=old/img:1\nOTHER=2\n' > "$PINBLUE"
+pin_image blue "new/img:2" >/dev/null 2>&1; rc=$?
+assert_rc "pin_image blue over existing pin returns 0" 0 "$rc"
+assert_contains "pin_image replaces the old blue image line" "$PINBLUE" "DINF_IMAGE=new/img:2"
+assert_absent  "pin_image drops the prior blue image line" "$PINBLUE" "DINF_IMAGE=old/img:1"
+# shellcheck disable=SC2034  # restore_image_pin must use DINF_DEPLOY_ENV_PINNED, not this new template
+DINF_DEPLOY_ENV_TMPL="$WORK/other-%s.env"
 restore_image_pin >/dev/null 2>&1
-assert_contains "restore_image_pin restores the prior image pin" "$PINENV" "DINF_IMAGE=old/img:1"
-assert_absent  "restore_image_pin drops the unaccepted image pin" "$PINENV" "DINF_IMAGE=new/img:2"
+assert_contains "restore_image_pin restores the prior blue image pin" "$PINBLUE" "DINF_IMAGE=old/img:1"
+assert_absent  "restore_image_pin drops the unaccepted blue image pin" "$PINBLUE" "DINF_IMAGE=new/img:2"
+if [ ! -e "$WORK/other-blue.env" ]; then pass "restore_image_pin uses the pinned file, not the current template"; else fail "restore_image_pin wrote to the current template instead of pinned file"; fi
+
+# (d) pin_image fails before restart if the per-color env path cannot be written.
+BAD_PARENT="$WORK/not-a-dir"
+printf 'x\n' > "$BAD_PARENT"
+# shellcheck disable=SC2034  # read by deploy_env_for_color/pin_image in sourced deploy.sh
+DINF_DEPLOY_ENV_TMPL="$BAD_PARENT/deploy-%s.env"
+pin_image blue "bad/img:1" >/dev/null 2>&1; rc=$?
+assert_rc "pin_image fails when deploy env directory cannot be created" 1 "$rc"
 
 echo
 echo "# deploy_test: ${PASS} passed, ${FAIL} failed"

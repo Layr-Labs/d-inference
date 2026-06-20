@@ -99,10 +99,10 @@ providers (which would 429):
 
 1. **Detect** the active color from the Caddyfile upstream port.
 2. **Pin** the new image for the idle color (`--image`, optional → `DINF_IMAGE`
-   in `/etc/d-inference/deploy.env`, read by `darkbloom-run.sh`). The pin is
-   snapshotted and rolled back if the deploy aborts before cutover; it is kept
-   once the cutover is accepted (so an aborted deploy never leaves the shared pin
-   file pointing at an unaccepted image).
+   in `/etc/d-inference/deploy-<color>.env`, read by `darkbloom-run.sh` via the
+   coordinator unit's per-color `EnvironmentFile`). The pin is snapshotted and
+   rolled back if the deploy aborts before cutover; it is kept once the cutover
+   is accepted, so the active color never reads the idle color's unaccepted pin.
 3. **Restart** the idle color: `systemctl restart darkbloom-coordinator@<idle>`
    (**restart, not start** — a stale already-running idle container must re-exec
    `darkbloom-run.sh` to pick up the newly pinned `DINF_IMAGE`).
@@ -113,7 +113,8 @@ providers (which would 429):
    (**DAR-327 Phase 3**, PR #396; admin-gated, returns `{"sent":N}`) so its
    providers reconnect and — Caddy already flipped — land on the **new** color.
 7. **Wait for providers**: poll the new color's `/health` until its `providers`
-   count is `> 0` (the reconnects landed). Warns (does not abort) on timeout.
+   count is `> 0` (the reconnects landed). If this times out, the deploy exits
+   nonzero unless `--force` is set and does **not** drain or stop the old color.
 8. **Drain** the old color: `POST /v1/admin/drain` (Phase 1), then poll its
    `/readyz` until `inflight == 0`. If it does **not** drain in time the old
    color is **not** stopped (that would cut in-flight requests) — `deploy.sh`
@@ -168,7 +169,8 @@ providers (429). `--rollback` therefore restores **both routing and capacity**:
    so its providers reconnect and — Caddy already flipped — land back on the
    restored color.
 5. **Wait for providers**: poll the restored color's `/health` until
-   `providers > 0` (warns, does not abort, on timeout).
+   `providers > 0` (warns and continues on timeout because routing is already
+   flipped back to the restored color).
 
 The abandoned color is left **running** (idle, providers drained off) for
 inspection; stop it manually with
@@ -230,11 +232,12 @@ sudo ./deploy.sh --rollback --force   # DANGEROUS: may route traffic to a dead p
 >   and `CORS_ORIGIN` in `/etc/d-inference/env` to the prod hostnames (e.g.
 >   `api.darkbloom.dev`).
 >
-> The `/dl/*` route added to `deploy/gcp/prod/Caddyfile` serves static bundles
-> from `/var/www/html` (same as the combined `coordinator/Caddyfile`); ensure
-> that directory exists on the box and holds the published provider bundle, or the
-> release fallback URL `/dl/eigeninference-bundle-macos-arm64.tar.gz` 404s and
-> `scripts/install.sh` breaks.
+> The `/dl/*` and `/enroll.mobileconfig` routes in `deploy/gcp/prod/Caddyfile`
+> serve static files from `/var/www/html` (same as the combined
+> `coordinator/Caddyfile`); ensure that directory exists on the box and holds the
+> published provider bundle plus enrollment profile, or the release fallback URL
+> `/dl/eigeninference-bundle-macos-arm64.tar.gz` 404s and `scripts/install.sh`
+> breaks, and ACME enrollment profile downloads fail.
 
 ```bash
 # Wrapper + units (committed, secret-free):
@@ -262,7 +265,9 @@ Secrets are unchanged: GCP Secret Manager → tmpfs `/etc/d-inference/env`
 (written by `deploy/gcp/refresh-env.sh`) → `--env-file` inside
 `darkbloom-run.sh`. Nothing secret is committed; registry auth uses the VM
 service-account token from the metadata server. `/etc/d-inference/deploy.env`
-holds only the non-secret `DINF_IMAGE` pin.
+remains the platform unit's optional non-secret deploy config, while each
+coordinator color reads its own non-secret image pin from
+`/etc/d-inference/deploy-blue.env` or `/etc/d-inference/deploy-green.env`.
 
 `deploy.sh` **parses** `EIGENINFERENCE_ADMIN_KEY` from `/etc/d-inference/env`
 (path overridable via `DINF_ENV_FILE`) **only at cutover time**, to authenticate

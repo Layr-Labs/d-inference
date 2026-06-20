@@ -6,8 +6,8 @@
 # color never serves consumers with zero providers (which would 429):
 #
 #   1. detect the active color from the on-box Caddyfile upstream port
-#   2. (optional) pin the new image for the idle color (rolled back if the deploy
-#      is aborted before cutover; kept once the cutover is accepted)
+#   2. (optional) pin the new image in the idle color's per-color env file
+#      (rolled back if the deploy is aborted before cutover; kept once accepted)
 #   3. restart the IDLE color         (systemctl restart darkbloom-coordinator@<idle>)
 #      — restart, NOT start, so a stale idle container re-execs with the new image
 #   4. wait for idle /health AND /readyz  (DAR-327 Phase 1 endpoints)
@@ -20,8 +20,8 @@
 #
 # Steps 6-7 explicitly hand providers to the new color via the Phase 3
 # going-away endpoint; the drain (8) and stop (9) then retire the old color with
-# no capacity gap. If the drain does not complete the old color is NOT stopped
-# (it would cut in-flight requests) unless --force is given.
+# no capacity gap. If providers do not land on the new color, or if the drain
+# does not complete, the old color is NOT drained/stopped unless --force is given.
 #
 # ROLLBACK (valid any time AFTER the flip and BEFORE the old color is stopped):
 #   ./deploy.sh --rollback
@@ -84,11 +84,11 @@ PROVIDERS_TIMEOUT="${PROVIDERS_TIMEOUT:-60}"
 CADDY_BIN="${CADDY_BIN:-caddy}"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
 CURL_BIN="${CURL_BIN:-curl}"
-DINF_DEPLOY_ENV="${DINF_DEPLOY_ENV:-/etc/d-inference/deploy.env}"
+DINF_DEPLOY_ENV_TMPL="${DINF_DEPLOY_ENV_TMPL:-/etc/d-inference/deploy-%s.env}"
 # Secrets env file (Secret Manager -> tmpfs). Holds EIGENINFERENCE_ADMIN_KEY,
 # whose single line is PARSED (never sourced; see load_admin_env) at cutover time
 # to authenticate the admin going-away/drain POSTs. Distinct from the non-secret
-# DINF_DEPLOY_ENV image-pin file above. Overridable for tests.
+# per-color DINF_DEPLOY_ENV_TMPL image-pin files above. Overridable for tests.
 DINF_ENV_FILE="${DINF_ENV_FILE:-/etc/d-inference/env}"
 
 # Runtime flags (main overrides from CLI args).
@@ -98,12 +98,12 @@ ASSUME_YES=0
 FORCE=0
 IMAGE_REF=""
 
-# Image-pin rollback state (set by pin_image, consumed by restore/accept). The
-# pin in DINF_DEPLOY_ENV is shared by BOTH colors, so an aborted deploy must
-# restore it or the still-live OLD color would pull the unaccepted image on its
-# next restart. DINF_DEPLOY_ENV_BAK="" means "no pin to roll back".
+# Image-pin rollback state (set by pin_image, consumed by restore/accept).
+# DINF_DEPLOY_ENV_BAK="" means "no pin to roll back"; DINF_DEPLOY_ENV_PINNED
+# keeps restore/accept pointed at the exact per-color file pin_image touched.
 DINF_DEPLOY_ENV_BAK=""
 DINF_DEPLOY_ENV_EXISTED=0
+DINF_DEPLOY_ENV_PINNED=""
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -223,6 +223,22 @@ other_color() {
   esac
 }
 
+deploy_env_for_color() {
+  if [ "$#" -ne 1 ]; then
+    echo "deploy_env_for_color: usage: deploy_env_for_color <blue|green>" >&2
+    return 2
+  fi
+  local color="$1"
+  case "$color" in
+    blue|green) ;;
+    *) echo "deploy_env_for_color: unknown color: $color" >&2; return 2 ;;
+  esac
+  case "$DINF_DEPLOY_ENV_TMPL" in
+    *%s*) printf '%s\n' "${DINF_DEPLOY_ENV_TMPL/\%s/$color}" ;;
+    *) echo "deploy_env_for_color: DINF_DEPLOY_ENV_TMPL must contain %s: $DINF_DEPLOY_ENV_TMPL" >&2; return 2 ;;
+  esac
+}
+
 # ===========================================================================
 # Effectful helpers (dry-run aware).
 # ===========================================================================
@@ -272,39 +288,70 @@ reload_caddy() {
   "$CADDY_BIN" reload --config "$CADDYFILE" --adapter caddyfile
 }
 
-# pin_image <ref> — write DINF_IMAGE=<ref> to the (shared) DINF_DEPLOY_ENV pin
-# file so the idle color re-execs with the new image. The previous pin state is
-# snapshotted first so restore_image_pin can undo it if the deploy is aborted
-# BEFORE the cutover is accepted (the OLD color shares this file and would
-# otherwise pull the unaccepted image on its next systemd restart). The pin is
-# made permanent by accept_image_pin once the cutover succeeds.
+# pin_image <color> <ref> — write DINF_IMAGE=<ref> to the idle color's per-color
+# deploy env file so only that color re-execs with the new image. The previous
+# pin state is snapshotted first so restore_image_pin can undo it if the deploy
+# is aborted BEFORE the cutover is accepted. The pin is made permanent by
+# accept_image_pin once the cutover succeeds.
 pin_image() {
-  local ref="$1"
-  log "Pinning idle-color image: DINF_IMAGE=$ref -> $DINF_DEPLOY_ENV"
+  if [ "$#" -ne 2 ]; then
+    echo "pin_image: usage: pin_image <blue|green> <image-ref>" >&2
+    return 2
+  fi
+  local color="$1" ref="$2" pin_file
+  pin_file="$(deploy_env_for_color "$color")" || return $?
+  log "Pinning $color image: DINF_IMAGE=$ref -> $pin_file"
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "DRY-RUN: would snapshot $DINF_DEPLOY_ENV, then write DINF_IMAGE=$ref (read by darkbloom-run.sh via EnvironmentFile); the pin is rolled back if the deploy aborts before cutover, kept once cutover is accepted"
+    log "DRY-RUN: would snapshot $pin_file, then write DINF_IMAGE=$ref (read by darkbloom-run.sh via EnvironmentFile); the pin is rolled back if the deploy aborts before cutover, kept once cutover is accepted"
     return 0
   fi
-  local dir tmp
-  dir="$(dirname "$DINF_DEPLOY_ENV")"
-  mkdir -p "$dir"
+  local dir bak tmp rc
+  dir="$(dirname "$pin_file")"
+  if ! mkdir -p "$dir"; then
+    err "failed to create deploy env directory $dir"
+    return 1
+  fi
   # Snapshot the current pin so an aborted/declined/unhealthy deploy can restore
   # it. An empty backup with DINF_DEPLOY_ENV_EXISTED=0 marks "file did not exist".
-  DINF_DEPLOY_ENV_BAK="$(mktemp)" || die "mktemp failed"
-  if [ -f "$DINF_DEPLOY_ENV" ]; then
+  bak="$(mktemp)" || { err "mktemp failed"; return 1; }
+  if [ -f "$pin_file" ]; then
+    if ! cat "$pin_file" > "$bak"; then
+      rm -f "$bak"
+      err "failed to snapshot existing image pin $pin_file"
+      return 1
+    fi
     DINF_DEPLOY_ENV_EXISTED=1
-    cat "$DINF_DEPLOY_ENV" > "$DINF_DEPLOY_ENV_BAK"
   else
     DINF_DEPLOY_ENV_EXISTED=0
   fi
-  tmp="$(mktemp)" || die "mktemp failed"
-  if [ -f "$DINF_DEPLOY_ENV" ]; then
-    grep -v '^DINF_IMAGE=' "$DINF_DEPLOY_ENV" > "$tmp" || true
+  DINF_DEPLOY_ENV_BAK="$bak"
+  DINF_DEPLOY_ENV_PINNED="$pin_file"
+
+  tmp="$(mktemp)" || { err "mktemp failed"; return 1; }
+  if [ -f "$pin_file" ]; then
+    grep -v '^DINF_IMAGE=' "$pin_file" > "$tmp"
+    rc=$?
+    if [ "$rc" -gt 1 ]; then
+      rm -f "$tmp"
+      err "failed to read existing image pin $pin_file"
+      return 1
+    fi
   fi
-  printf 'DINF_IMAGE=%s\n' "$ref" >> "$tmp"
-  cat "$tmp" > "$DINF_DEPLOY_ENV"
+  if ! printf 'DINF_IMAGE=%s\n' "$ref" >> "$tmp"; then
+    rm -f "$tmp"
+    err "failed to write temporary image pin for $pin_file"
+    return 1
+  fi
+  if ! cat "$tmp" > "$pin_file"; then
+    rm -f "$tmp"
+    err "failed to write image pin $pin_file"
+    return 1
+  fi
   rm -f "$tmp"
-  chmod 644 "$DINF_DEPLOY_ENV"
+  if ! chmod 644 "$pin_file"; then
+    err "failed to chmod image pin $pin_file"
+    return 1
+  fi
 }
 
 # restore_image_pin — undo a pin_image() write. Called on any exit BEFORE the
@@ -313,16 +360,24 @@ pin_image() {
 restore_image_pin() {
   [ -n "${DINF_DEPLOY_ENV_BAK:-}" ] || return 0
   [ "$DRY_RUN" -eq 1 ] && return 0
+  local pin_file="${DINF_DEPLOY_ENV_PINNED:-}"
+  if [ -z "$pin_file" ]; then
+    warn "Deploy aborted before cutover, but no pinned deploy env path was recorded; cannot restore image pin."
+    rm -f "$DINF_DEPLOY_ENV_BAK"
+    DINF_DEPLOY_ENV_BAK=""
+    return 0
+  fi
   if [ "${DINF_DEPLOY_ENV_EXISTED:-0}" -eq 1 ]; then
-    warn "Deploy aborted before cutover: restoring previous image pin in $DINF_DEPLOY_ENV."
-    cat "$DINF_DEPLOY_ENV_BAK" > "$DINF_DEPLOY_ENV" 2>/dev/null || warn "failed to restore $DINF_DEPLOY_ENV"
-    chmod 644 "$DINF_DEPLOY_ENV" 2>/dev/null || true
+    warn "Deploy aborted before cutover: restoring previous image pin in $pin_file."
+    cat "$DINF_DEPLOY_ENV_BAK" > "$pin_file" 2>/dev/null || warn "failed to restore $pin_file"
+    chmod 644 "$pin_file" 2>/dev/null || true
   else
-    warn "Deploy aborted before cutover: removing image pin $DINF_DEPLOY_ENV (created this run)."
-    rm -f "$DINF_DEPLOY_ENV" 2>/dev/null || warn "failed to remove $DINF_DEPLOY_ENV"
+    warn "Deploy aborted before cutover: removing image pin $pin_file (created this run)."
+    rm -f "$pin_file" 2>/dev/null || warn "failed to remove $pin_file"
   fi
   rm -f "$DINF_DEPLOY_ENV_BAK"
   DINF_DEPLOY_ENV_BAK=""
+  DINF_DEPLOY_ENV_PINNED=""
 }
 
 # accept_image_pin — keep the pin permanently (cutover succeeded) and disarm the
@@ -331,6 +386,7 @@ accept_image_pin() {
   [ -n "${DINF_DEPLOY_ENV_BAK:-}" ] || return 0
   rm -f "$DINF_DEPLOY_ENV_BAK"
   DINF_DEPLOY_ENV_BAK=""
+  DINF_DEPLOY_ENV_PINNED=""
 }
 
 # wait_healthy <color> <port> — poll /health AND /readyz until both 200 or timeout.
@@ -509,8 +565,8 @@ clear_going_away() {
 # wait_for_providers <color> <port> — after going-away, poll the NEW color's
 # /health until its provider count is > 0 (reconnects have landed). /health shape
 # (coordinator api/types HealthResponse): {"status":"ok","providers":N,...}.
-# WARNS on timeout (does NOT abort): Caddy is already flipped and the old color is
-# still up, so a human can investigate without a hard failure.
+# Returns nonzero on timeout; the forward deploy treats that as fatal unless
+# --force, while rollback only warns because routing is already restored.
 wait_for_providers() {
   local color="$1" port="$2"
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -531,8 +587,8 @@ wait_for_providers() {
     log "  $color providers=${count:-unknown}; waiting for reconnects..."
     sleep 2
   done
-  warn "$color did not report providers>0 within ${PROVIDERS_TIMEOUT}s; providers may still be reconnecting (heartbeat timeout). Proceeding to drain the old color — monitor capacity."
-  return 0
+  warn "$color did not report providers>0 within ${PROVIDERS_TIMEOUT}s; providers may still be reconnecting (heartbeat timeout)."
+  return 1
 }
 
 # ===========================================================================
@@ -612,7 +668,11 @@ do_rollback() {
   signal_going_away "$cur_color" "$cur_port"
 
   # STEP D — confirm capacity actually returned to $target_color (reconnects landed).
-  wait_for_providers "$target_color" "$target_port"
+  # Rollback has already restored routing; a provider wait timeout must not undo
+  # that recovery path, so tolerate it with a warning.
+  if ! wait_for_providers "$target_color" "$target_port"; then
+    warn "Rollback routing is already restored to $target_color; continuing despite provider wait timeout. Monitor capacity and provider reconnects."
+  fi
 
   log "ROLLBACK complete: Caddy -> $target_color ($target_port); providers pushed back to it."
   log "The abandoned $cur_color ($cur_port) is left RUNNING (idle, providers drained off) for inspection; stop it manually with '$SYSTEMCTL_BIN stop darkbloom-coordinator@${cur_color}'."
@@ -635,15 +695,17 @@ Options:
                      (undrain + clear its going-away latch), flip Caddy back +
                      reload, then push providers back onto it and wait for
                      providers>0.
-  --force            With --rollback: flip even if the target color fails its
-                     health check (DANGEROUS — may route traffic to a dead port).
+  --force            Forward: continue drain/stop even if providers do not land or
+                     drain times out. Rollback: flip even if target health fails
+                     (DANGEROUS — may route traffic to a dead port).
   --dry-run          Print the plan; change nothing.
   -y, --yes          Assume "yes" to all confirmation prompts (non-interactive).
   -h, --help         Show this help.
 
 Environment overrides: CADDYFILE, BLUE_PORT(8080), GREEN_PORT(8081), HEALTH_HOST,
 HEALTH_TIMEOUT, DRAIN_TIMEOUT, PROVIDERS_TIMEOUT(60), GOING_AWAY_PATH, CADDY_BIN,
-SYSTEMCTL_BIN, CURL_BIN, DINF_DEPLOY_ENV, DINF_ENV_FILE(/etc/d-inference/env).
+SYSTEMCTL_BIN, CURL_BIN, DINF_DEPLOY_ENV_TMPL(/etc/d-inference/deploy-%s.env),
+DINF_ENV_FILE(/etc/d-inference/env).
 USAGE
 }
 
@@ -680,11 +742,14 @@ main() {
     return $?
   fi
 
-  local active_port active_color idle_color idle_port
+  local active_port active_color idle_color idle_port image_pin_file
   active_port="$(current_upstream_port "$CADDYFILE")" || die "could not detect active upstream port in $CADDYFILE"
   active_color="$(color_for_port "$active_port")" || die "active upstream port $active_port is neither blue($BLUE_PORT) nor green($GREEN_PORT)"
   idle_color="$(other_color "$active_color")"
   idle_port="$(port_for_color "$idle_color")"
+  if [ -n "$IMAGE_REF" ]; then
+    image_pin_file="$(deploy_env_for_color "$idle_color")" || die "could not compute deploy env path for idle color $idle_color"
+  fi
 
   log "=============================================================="
   log " Blue-green deploy plan"
@@ -692,6 +757,7 @@ main() {
   log "   Active (live)  : $active_color (port $active_port)"
   log "   Idle  (target) : $idle_color (port $idle_port)"
   [ -n "$IMAGE_REF" ] && log "   New image      : $IMAGE_REF"
+  [ -n "$IMAGE_REF" ] && log "   Image pin file : $image_pin_file"
   [ "$DRY_RUN" -eq 1 ] && log "   MODE           : DRY-RUN (no changes will be made)"
   log "=============================================================="
 
@@ -701,9 +767,11 @@ main() {
   trap 'restore_image_pin' EXIT
 
   # 1. Pin image for the idle color (optional). Snapshotted so it is rolled back
-  #    if the deploy aborts before cutover (the OLD color shares this pin file).
+  #    if the deploy aborts before cutover.
   if [ -n "$IMAGE_REF" ]; then
-    pin_image "$IMAGE_REF"
+    if ! pin_image "$idle_color" "$IMAGE_REF"; then
+      die "deploy aborted: failed to pin image for idle color '$idle_color'; not restarting it"
+    fi
   fi
 
   # 2. Restart the idle color. RESTART (not start) so a stale already-running idle
@@ -761,7 +829,18 @@ main() {
   signal_going_away "$active_color" "$active_port"
 
   # 6. Wait until the NEW color actually has providers attached (reconnects landed).
-  wait_for_providers "$idle_color" "$idle_port"
+  #    If this times out, do NOT drain/stop the old color unless --force is set:
+  #    old providers have not proven they landed on the new color yet.
+  if ! wait_for_providers "$idle_color" "$idle_port"; then
+    if [ "$FORCE" -eq 1 ]; then
+      warn "Providers did not land on $idle_color within ${PROVIDERS_TIMEOUT}s, but --force was given; proceeding to drain/stop $active_color despite capacity risk."
+    else
+      err "NOT draining or stopping $active_color: $idle_color did not report providers>0 within ${PROVIDERS_TIMEOUT}s."
+      err "Caddy is already -> $idle_color; the old color stays RUNNING so providers/in-flight work are not disrupted."
+      err "Investigate provider reconnects, run '$0 --rollback' before stopping $active_color if needed, or re-run with --force to continue despite capacity risk."
+      die "deploy aborted: providers did not land on new color (cutover done, $active_color left running)"
+    fi
+  fi
 
   # 7. Drain the old color. If it does NOT drain in time, do NOT stop it (stopping
   #    would cut in-flight requests at the container SIGTERM deadline): abort with

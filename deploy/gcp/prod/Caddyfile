@@ -18,7 +18,8 @@
 #   Do NOT add a second `reverse_proxy 127.0.0.1:<port>` line; that would break
 #   the single-swap-point invariant deploy.sh / flip_upstream rely on. The
 #   step-ca (:9000) and MicroMDM (:9002) upstreams use the https:// scheme and a
-#   different port, so the port flip never touches them.
+#   different port, so the port flip never touches them. Static host-served routes
+#   (/dl/* and /enroll.mobileconfig) are handlers, not swap targets.
 
 (coordinator_routes) {
 	# step-ca ACME proxy (device-attest-01 challenges)
@@ -47,16 +48,22 @@
 		}
 	}
 
-	# Static downloads (install script + provider bundles), served from the host
-	# /var/www/html — the SAME route the combined coordinator/Caddyfile serves.
+	# Static downloads + enrollment profile, served from the host /var/www/html —
+	# the SAME routes the combined coordinator/Caddyfile serves.
 	# The coordinator has NO /dl/* handler, so without this the release fallback URL
 	# /dl/eigeninference-bundle-macos-arm64.tar.gz (api/version, consumer.go) would
-	# fall through to the coordinator and 404, breaking scripts/install.sh.
+	# fall through to the coordinator and 404, breaking scripts/install.sh. The ACME
+	# enrollment helper also publishes /enroll.mobileconfig directly under the host
+	# web root.
 	# ASSUMPTION: /var/www/html exists on the box and holds the published bundle
-	# (same precondition as the combined coordinator/Caddyfile setup). This is a
-	# static handler, not a reverse_proxy, so it does NOT add a second upstream
-	# swap point (deploy.sh / flip_upstream remain single-swap).
+	# and enrollment profile (same precondition as the combined coordinator/Caddyfile
+	# setup). These are static handlers, not reverse_proxy, so they do NOT add a
+	# second upstream swap point (deploy.sh / flip_upstream remain single-swap).
 	handle /dl/* {
+		root * /var/www/html
+		file_server
+	}
+	handle /enroll.mobileconfig {
 		root * /var/www/html
 		file_server
 	}

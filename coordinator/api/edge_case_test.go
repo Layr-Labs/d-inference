@@ -1405,7 +1405,7 @@ func TestEdge_NonStreamingResponse(t *testing.T) {
 func TestEdge_VersionEndpoint(t *testing.T) {
 	srv, _ := testServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/version?macos=26.0", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -1421,6 +1421,16 @@ func TestEdge_VersionEndpoint(t *testing.T) {
 	if resp["download_url"] == nil {
 		t.Error("version response missing 'download_url' field")
 	}
+	if resp["min_macos"] != LatestProviderMinMacOS {
+		t.Errorf("min_macos = %v, want %s", resp["min_macos"], LatestProviderMinMacOS)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/version?macos=25.7", nil)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("incompatible fallback status = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestEdge_VersionEndpointIncludesSwiftReleaseMetadata(t *testing.T) {
@@ -1435,13 +1445,14 @@ func TestEdge_VersionEndpointIncludesSwiftReleaseMetadata(t *testing.T) {
 		BinaryHash:   binaryHash,
 		BundleHash:   bundleHash,
 		MetallibHash: metallibHash,
+		MinMacOS:     "26.0",
 		URL:          "https://example.com/darkbloom.tar.gz",
 		Changelog:    "Swift bridge",
 	}); err != nil {
 		t.Fatalf("SetRelease: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/version?macos=26.0", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -1464,6 +1475,9 @@ func TestEdge_VersionEndpointIncludesSwiftReleaseMetadata(t *testing.T) {
 	}
 	if resp["metallib_hash"] != metallibHash {
 		t.Fatalf("metallib_hash = %q, want %q", resp["metallib_hash"], metallibHash)
+	}
+	if resp["min_macos"] != "26.0" {
+		t.Fatalf("min_macos = %q, want 26.0", resp["min_macos"])
 	}
 }
 

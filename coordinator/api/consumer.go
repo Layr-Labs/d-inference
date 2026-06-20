@@ -4403,6 +4403,10 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no compatible active release for platform macos-arm64"))
 		return
 	} else {
+		if !releaseCompatibleWithMacOS(LatestProviderMinMacOS, macOS) {
+			writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no compatible active release for platform macos-arm64"))
+			return
+		}
 		// Fallback to hardcoded version + coordinator download.
 		scheme := "https"
 		if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
@@ -4412,6 +4416,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		resp = types.VersionResponse{
 			Version:     LatestProviderVersion,
 			DownloadURL: downloadURL,
+			MinMacOS:    LatestProviderMinMacOS,
 		}
 	}
 	body, err := json.Marshal(resp)

@@ -15,7 +15,6 @@ body:
       label: Component
       options:
         - coordinator (Go)
-        - provider (Rust, legacy)
         - provider-swift (Swift CLI)
         - console-ui (Next.js)
         - enclave (Swift Secure Enclave helper)

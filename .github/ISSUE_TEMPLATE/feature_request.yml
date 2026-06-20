@@ -15,7 +15,6 @@ body:
       description: Which part of the system would this affect?
       options:
         - coordinator (Go)
-        - provider (Rust, legacy)
         - provider-swift (Swift CLI)
         - console-ui (Next.js)
         - enclave (Swift Secure Enclave helper)

@@ -552,26 +552,21 @@ public actor BatchScheduler {
         }
     }
 
-    /// GPT-OSS/Harmony uses `<|return|>` for final responses and `<|call|>` for
-    /// tool-call turns. The tokenizer config only names `<|return|>` as EOS, so
-    /// add both token IDs at the scheduler boundary when the tokenizer exposes
-    /// them; non-Harmony models keep their configured EOS set unchanged.
+    /// Return model-specific EOS tokens at the scheduler boundary. Most models
+    /// keep the loader-provided set; GPT-OSS/Harmony adds its generation-config
+    /// action stops via `GPTOSSHarmonyTemplateFix`.
     static func effectiveEOSTokenIds(
         modelId: String,
         modelType: String? = nil,
         base: Set<Int>,
         tokenToId: (String) -> Int?
     ) -> Set<Int> {
-        guard isHarmonyModelHint(modelId) || isHarmonyModelHint(modelType) else {
-            return base
-        }
-        var ids = base
-        for token in ["<|return|>", "<|endoftext|>", "<|call|>"] {
-            if let id = tokenToId(token) {
-                ids.insert(id)
-            }
-        }
-        return ids
+        let context = ChatTemplateFixContext(modelId: modelId, modelType: modelType)
+        return ChatTemplateFixes.extraEOSTokenIds(
+            context: context,
+            base: base,
+            tokenToId: tokenToId
+        )
     }
 
     private static func modelType(at configURL: URL) -> String? {

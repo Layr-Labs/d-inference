@@ -116,9 +116,10 @@ extension ProviderLoop {
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.
+        let fixContext = ChatTemplateFixContext(modelId: request.model)
         guard let ids = try? tokenizer.inner.applyChatTemplate(
-            messages: normalizeJinjaMessagesForTemplate(messages, modelId: request.model),
-            tools: normalizeJinjaToolsForTemplate(toolSpecs, modelId: request.model),
+            messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
+            tools: ChatTemplateFixes.normalizeTools(toolSpecs, context: fixContext),
             additionalContext: additionalContext
         ) else { return 0 }
         return ids.count

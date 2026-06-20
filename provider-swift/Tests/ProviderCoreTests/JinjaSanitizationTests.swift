@@ -13,7 +13,7 @@ import ProviderCoreFoundation
 /// (`Cannot convert value of type … to Jinja Value`), surfacing as a 500.
 ///
 /// These tests exercise the sanitizer (`sanitizeForJinja` and the
-/// `sanitizeJinjaMessages` / `sanitizeJinjaTools` adapters applied at the
+/// `sanitizeJinjaMessages` / `ChatTemplateFixes.sanitizeTools` adapters applied at the
 /// three runtime chokepoints) against the EXACT value trees the runtime
 /// builders produce — `OpenAIChatMessage.templateMessageDict()` and
 /// `OpenAITool.toolSpec()` — proving the Jinja-unrepresentable null /
@@ -106,7 +106,7 @@ final class JinjaSanitizationTests: XCTestCase {
     }
 
     func testSanitizeJinjaToolsNilInNilOut() {
-        XCTAssertNil(sanitizeJinjaTools(nil))
+        XCTAssertNil(ChatTemplateFixes.sanitizeTools(nil))
     }
 
     // MARK: - (a) Message with a null tool-call argument
@@ -173,7 +173,7 @@ final class JinjaSanitizationTests: XCTestCase {
         let rawSpec = tool.toolSpec()
         XCTAssertTrue(containsUnrepresentableLeaf(rawSpec))
 
-        let sanitized = sanitizeJinjaTools([rawSpec])
+        let sanitized = ChatTemplateFixes.sanitizeTools([rawSpec])
         XCTAssertNotNil(sanitized)
         let spec = sanitized![0]
         XCTAssertFalse(containsUnrepresentableLeaf(spec))
@@ -236,7 +236,7 @@ final class JinjaSanitizationTests: XCTestCase {
         XCTAssertTrue(rawTools.contains { containsUnrepresentableLeaf($0) })
 
         let cleanMessages = sanitizeJinjaMessages(rawMessages)
-        let cleanTools = sanitizeJinjaTools(rawTools)
+        let cleanTools = ChatTemplateFixes.sanitizeTools(rawTools)
         XCTAssertFalse(cleanMessages.contains { containsUnrepresentableLeaf($0) })
         XCTAssertFalse((cleanTools ?? []).contains { containsUnrepresentableLeaf($0) })
     }
@@ -249,7 +249,10 @@ final class JinjaSanitizationTests: XCTestCase {
 
         let rawSpec = try XCTUnwrap(request.tools?.first?.toolSpec())
         let sanitized = try XCTUnwrap(
-            normalizeJinjaToolsForTemplate([rawSpec], modelId: "gpt-oss-20b")?.first)
+            ChatTemplateFixes.normalizeTools(
+                [rawSpec],
+                context: .init(modelId: "gpt-oss-20b")
+            )?.first)
         let function = sanitized["function"] as? [String: any Sendable]
         XCTAssertEqual(function?["description"] as? String, "")
     }
@@ -262,7 +265,10 @@ final class JinjaSanitizationTests: XCTestCase {
 
         let rawSpec = try XCTUnwrap(request.tools?.first?.toolSpec())
         let sanitized = try XCTUnwrap(
-            normalizeJinjaToolsForTemplate([rawSpec], modelId: "gemma-4-26b")?.first)
+            ChatTemplateFixes.normalizeTools(
+                [rawSpec],
+                context: .init(modelId: "gemma-4-26b")
+            )?.first)
         let function = sanitized["function"] as? [String: any Sendable]
         XCTAssertNil(function?["description"])
     }
@@ -273,7 +279,9 @@ final class JinjaSanitizationTests: XCTestCase {
             ["role": "tool", "content": "{}"],
         ]
 
-        XCTAssertThrowsError(try normalizeJinjaMessagesForTemplate(messages)) { error in
+        XCTAssertThrowsError(
+            try ChatTemplateFixes.normalizeMessages(messages, context: .init())
+        ) { error in
             XCTAssertEqual(
                 error as? MultiModelBatchSchedulerEngineError,
                 .invalidToolPayload("tool message has no preceding assistant tool_calls"))
@@ -294,7 +302,10 @@ final class JinjaSanitizationTests: XCTestCase {
         ]]
 
         XCTAssertThrowsError(
-            try normalizeJinjaMessagesForTemplate(messages, modelId: "gpt-oss-20b")
+            try ChatTemplateFixes.normalizeMessages(
+                messages,
+                context: .init(modelId: "gpt-oss-20b")
+            )
         ) { error in
             XCTAssertEqual(
                 error as? MultiModelBatchSchedulerEngineError,
@@ -314,7 +325,10 @@ final class JinjaSanitizationTests: XCTestCase {
         ]]
 
         XCTAssertThrowsError(
-            try normalizeJinjaMessagesForTemplate(messages, modelId: "gpt-oss-20b")
+            try ChatTemplateFixes.normalizeMessages(
+                messages,
+                context: .init(modelId: "gpt-oss-20b")
+            )
         ) { error in
             XCTAssertEqual(
                 error as? MultiModelBatchSchedulerEngineError,
@@ -333,7 +347,10 @@ final class JinjaSanitizationTests: XCTestCase {
             "tool_calls": toolCalls,
         ]]
 
-        XCTAssertNoThrow(try normalizeJinjaMessagesForTemplate(messages, modelId: "qwen3"))
+        XCTAssertNoThrow(try ChatTemplateFixes.normalizeMessages(
+            messages,
+            context: .init(modelId: "qwen3")
+        ))
     }
 
     func testHarmonyBridgesReasoningContentToThinkingForTemplate() throws {
@@ -347,9 +364,9 @@ final class JinjaSanitizationTests: XCTestCase {
             "tool_calls": toolCalls,
         ]]
 
-        let normalized = try normalizeJinjaMessagesForTemplate(
+        let normalized = try ChatTemplateFixes.normalizeMessages(
             messages,
-            modelId: "gpt-oss-20b"
+            context: .init(modelId: "gpt-oss-20b")
         )
 
         XCTAssertEqual(normalized[0]["thinking"] as? String, "need the weather tool")
@@ -363,9 +380,9 @@ final class JinjaSanitizationTests: XCTestCase {
             "reasoning_content": "hidden",
         ]]
 
-        let normalized = try normalizeJinjaMessagesForTemplate(
+        let normalized = try ChatTemplateFixes.normalizeMessages(
             messages,
-            modelId: "gemma-4-26b"
+            context: .init(modelId: "gemma-4-26b")
         )
 
         XCTAssertNil(normalized[0]["thinking"])
@@ -397,7 +414,10 @@ final class JinjaSanitizationTests: XCTestCase {
         ]
 
         let sanitized = try XCTUnwrap(
-            normalizeJinjaToolsForTemplate([rawSpec], modelId: "gpt-oss-20b")?.first)
+            ChatTemplateFixes.normalizeTools(
+                [rawSpec],
+                context: .init(modelId: "gpt-oss-20b")
+            )?.first)
         let function = try XCTUnwrap(sanitized["function"] as? [String: any Sendable])
         XCTAssertEqual(function["description"] as? String, "42")
 
@@ -430,7 +450,10 @@ final class JinjaSanitizationTests: XCTestCase {
         ]
 
         let sanitized = try XCTUnwrap(
-            normalizeJinjaToolsForTemplate([rawSpec], modelId: "gemma-4-26b")?.first)
+            ChatTemplateFixes.normalizeTools(
+                [rawSpec],
+                context: .init(modelId: "gemma-4-26b")
+            )?.first)
         let function = try XCTUnwrap(sanitized["function"] as? [String: any Sendable])
         XCTAssertEqual(function["description"] as? Int, 42)
 

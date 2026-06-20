@@ -3697,13 +3697,18 @@ func (s *PostgresStore) HasRedeemedInviteCode(code, accountID string) bool {
 func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	createdAt := earning.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
 		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
+		createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert provider earning: %w", err)

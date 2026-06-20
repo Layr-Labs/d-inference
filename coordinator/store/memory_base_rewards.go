@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 )
 
@@ -141,11 +142,7 @@ func (s *MemoryStore) ListFloorDrawsForEpoch(_ context.Context, epochID string) 
 		}
 	}
 	// Largest amount first (mirrors postgres ORDER BY amount_micro_usd DESC).
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].AmountMicroUSD > out[j-1].AmountMicroUSD; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AmountMicroUSD > out[j].AmountMicroUSD })
 	return out, nil
 }
 
@@ -168,11 +165,7 @@ func (s *MemoryStore) ListProviderSessionsOverlapping(_ context.Context, start, 
 		}
 	}
 	// Order by serial_number, connected_at (mirrors postgres ORDER BY).
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && sessionLess(out[j], out[j-1]); j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	sort.Slice(out, func(i, j int) bool { return sessionLess(out[i], out[j]) })
 	return out, nil
 }
 

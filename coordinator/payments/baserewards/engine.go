@@ -3,6 +3,7 @@ package baserewards
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/mdm"
@@ -352,11 +353,7 @@ func (e *Engine) uptimeByProviderKey(sessions []store.ProviderSession, start, en
 	for key, ivs := range byKey {
 		// Sort by start, then sweep-merge overlapping intervals (handles
 		// blue-green double-open without double-counting).
-		for i := 1; i < len(ivs); i++ {
-			for j := i; j > 0 && ivs[j].s.Before(ivs[j-1].s); j-- {
-				ivs[j], ivs[j-1] = ivs[j-1], ivs[j]
-			}
-		}
+		sort.Slice(ivs, func(i, j int) bool { return ivs[i].s.Before(ivs[j].s) })
 		var covered float64
 		curS, curE := ivs[0].s, ivs[0].e
 		for _, iv := range ivs[1:] {

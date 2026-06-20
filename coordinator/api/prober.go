@@ -25,7 +25,9 @@ package api
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
+	"math/big"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
@@ -55,7 +57,7 @@ const (
 // Prober periodically probes eligible providers to prove willingness-to-serve.
 type Prober struct {
 	srv *Server
-	rng func() float64 // injectable [0,1) source (defaults to crypto-free jitter)
+	rng func() float64 // injectable [0,1) source (defaults to crypto-backed jitter)
 }
 
 // NewProber constructs a Prober bound to the server. It is inert until Run is
@@ -215,10 +217,14 @@ func (p *Prober) record(result *store.ProbeResult, success bool, latencyMs int64
 	}
 }
 
-// proberJitter returns a deterministic-free pseudo-random [0,1) using the
-// wall clock's sub-second nanoseconds. Scripts/tests can inject a fixed rng.
-// It does not need to be cryptographically strong — it only spreads probe
-// timing across providers.
+// proberJitter returns a pseudo-random [0,1) from crypto/rand so probe timing is
+// not predictable to providers. Scripts/tests can inject a fixed rng.
 func proberJitter() float64 {
-	return float64(time.Now().UnixNano()%1_000) / 1_000.0
+	const scale = 1_000_000
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(scale))
+	if err != nil {
+		// Extremely unlikely; preserve liveness if system entropy is unavailable.
+		return float64(time.Now().UnixNano()%scale) / float64(scale)
+	}
+	return float64(n.Int64()) / float64(scale)
 }

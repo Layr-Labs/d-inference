@@ -742,7 +742,7 @@ func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
 	}
 
 	// Retrieve latest
-	req = httptest.NewRequest(http.MethodGet, "/v1/releases/latest?platform=macos-arm64", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/releases/latest?platform=macos-arm64&macos=26.0", nil)
 	w = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 

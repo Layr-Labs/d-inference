@@ -339,9 +339,9 @@ func TestSettleEpoch_PreAttestationUnpaid(t *testing.T) {
 }
 
 func TestSettleEpoch_SelfRouteExcluded(t *testing.T) {
-	// Self-route produces no earning row, so the work gate is never satisfied and
-	// no earnings reduce the (absent) draw. Model with zero organic earnings but
-	// a full-uptime session → fails the proven-work gate → $0.
+	// Self-route produces no billed earning row, so the proven-work gate (gate 5)
+	// is never satisfied. Zero organic earnings + a full-uptime session → fails
+	// the work gate → $0, even though uptime is perfect.
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
 	reg := registry.New(testLogger())

@@ -211,7 +211,7 @@ Earn by serving inference on your idle Mac — and stop paying for your own usag
 | | Minimum | Recommended |
 |---|---|---|
 | **Chip** | Apple Silicon (M1+) | M1 Pro/Max/Ultra or newer |
-| **macOS** | 14 (Sonoma) | Latest stable |
+| **macOS** | Tahoe 26.0 | Latest stable |
 | **Memory** | 8 GB (start is rejected below 8 GB) | 32 GB+ for large or multi-model |
 | **Disk** | 50 GB free | 100 GB+ |
 | **Network** | Outbound HTTPS (443) | Low-latency path to `api.darkbloom.dev` |

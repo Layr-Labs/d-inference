@@ -107,6 +107,28 @@ func TestInstallScriptTemplating(t *testing.T) {
 			t.Error("install.sh does not install the Secure Enclave helper")
 		}
 	})
+
+	t.Run("install.sh requires macOS Tahoe or newer", func(t *testing.T) {
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
+		defer srv.Close()
+
+		body := fetchInstallScript(t, srv.URL)
+
+		requiredSubstrings := []string{
+			"MIN_MACOS_MAJOR=26",
+			"MIN_MACOS_MINOR=0",
+			"macOS Tahoe 26.0",
+			"This Mac is running macOS $MACOS",
+		}
+		for _, s := range requiredSubstrings {
+			if !strings.Contains(body, s) {
+				t.Errorf("install.sh does not contain Tahoe version gate substring %q", s)
+			}
+		}
+		if strings.Contains(body, "just macOS 14+") {
+			t.Error("install.sh still advertises the old macOS 14 floor")
+		}
+	})
 }
 
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {

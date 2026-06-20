@@ -10,12 +10,12 @@ serving the public fleet, or use the same node for your own free inference via
 |-------------|---------|-------------|
 | **Chip** | Apple Silicon (M1 or later) | M1 Pro/Max/Ultra or newer |
 | **RAM** | 8 GB | 32 GB+ for multi-model or large weights |
-| **macOS** | 14 (Sonoma) | Latest stable release |
+| **macOS** | Tahoe 26.0 | Latest stable release |
 | **Disk** | 50 GB free | 100 GB+ free |
 | **Network** | Outbound HTTPS (port 443) | Low-latency path to `api.darkbloom.dev` |
 
-The installer enforces macOS + Apple Silicon up front
-(`scripts/install.sh:41-48`). The start path rejects CPU-only execution via
+The installer enforces macOS Tahoe 26.0+ and Apple Silicon up front
+(`scripts/install.sh:41-72`). The start path rejects CPU-only execution via
 `GPUEnforcement.requireMetal()` (`provider-swift/Sources/darkbloom/StartCommand.swift:80-85`)
 and rejects machines with less than 8 GB RAM
 (`provider-swift/Sources/darkbloom/StartCommand.swift:444-447`).

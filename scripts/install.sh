@@ -1,6 +1,6 @@
 #!/bin/bash
 # NOTE: This file is also embedded in the coordinator binary via go:embed.
-# The copy at coordinator/internal/api/install.sh must be kept in sync.
+# The copy at coordinator/api/install.sh must be kept in sync.
 set -euo pipefail
 
 # Darkbloom Provider Installer (Swift CLI release v0.5.0+)
@@ -13,7 +13,7 @@ set -euo pipefail
 #   4. Sets up the Secure Enclave identity
 #   5. Kicks off MDM enrollment (non-blocking)
 #
-# Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift CLI
+# Zero prerequisites — just macOS Tahoe 26.0+ on Apple Silicon. The Swift CLI
 # links mlx-swift directly and ships a colocated mlx.metallib for Metal
 # kernels; there is no Python interpreter to install and no inference
 # subprocess to spawn.
@@ -24,6 +24,9 @@ set -euo pipefail
 COORD_URL="${COORD_URL:-https://api.darkbloom.dev}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
+MIN_MACOS_MAJOR=26
+MIN_MACOS_MINOR=0
+MIN_MACOS_LABEL="macOS Tahoe 26.0"
 
 # Detect interactive vs piped (curl | bash).
 if [ -t 0 ]; then
@@ -47,10 +50,28 @@ if [ "$(uname -m)" != "arm64" ]; then
     exit 1
 fi
 
+MACOS=$(sw_vers -productVersion 2>/dev/null || echo "")
+MACOS_MAJOR=${MACOS%%.*}
+MACOS_REST=${MACOS#*.}
+if [ "$MACOS_REST" = "$MACOS" ]; then
+    MACOS_MINOR=0
+else
+    MACOS_MINOR=${MACOS_REST%%.*}
+fi
+if [[ ! "$MACOS_MAJOR" =~ ^[0-9]+$ ]] || [[ ! "$MACOS_MINOR" =~ ^[0-9]+$ ]]; then
+    echo "Error: Darkbloom requires $MIN_MACOS_LABEL or newer."
+    echo "       Could not determine this Mac's macOS version."
+    exit 1
+fi
+if [ "$MACOS_MAJOR" -lt "$MIN_MACOS_MAJOR" ] || { [ "$MACOS_MAJOR" -eq "$MIN_MACOS_MAJOR" ] && [ "$MACOS_MINOR" -lt "$MIN_MACOS_MINOR" ]; }; then
+    echo "Error: Darkbloom requires $MIN_MACOS_LABEL or newer."
+    echo "       This Mac is running macOS $MACOS."
+    exit 1
+fi
+
 CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
 MEM=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
 SERIAL=$(ioreg -c IOPlatformExpertDevice -d 2 | awk -F'"' '/IOPlatformSerialNumber/{print $4}')
-MACOS=$(sw_vers -productVersion 2>/dev/null || echo "?")
 echo "  $CHIP · ${MEM}GB · macOS $MACOS"
 echo ""
 

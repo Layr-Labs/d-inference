@@ -4,9 +4,9 @@ import PackageDescription
 
 let package = Package(
     name: "DarkbloomProvider",
-    // macOS 14 (Sonoma) — matches libs/mlx-swift-lm and libs/mlx-swift declared
-    // platforms.
-    platforms: [.macOS(.v14)],
+    // macOS 26 (Tahoe) is the provider floor. Newer MLX/Metal runtime paths
+    // rely on Tahoe-era behavior even though some vendored packages build lower.
+    platforms: [.macOS("26.0")],
     products: [
         .library(name: "ProviderCoreFoundation", targets: ["ProviderCoreFoundation"]),
         .library(name: "ProviderCore", targets: ["ProviderCore"]),

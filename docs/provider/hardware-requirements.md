@@ -12,7 +12,7 @@ the models you want to serve.
 | **RAM** | 8 GB | Start path rejects `< 8 GB` (`provider-swift/Sources/darkbloom/StartCommand.swift:444-447`) |
 | **GPU** | Apple Silicon integrated GPU | CPU-only execution is rejected (`provider-swift/Sources/darkbloom/StartCommand.swift:80-85`) |
 | **Storage** | 50 GB free | SSD required; model weights are large |
-| **macOS** | 14 (Sonoma) | Newer is better; install script enforces Darwin + arm64 |
+| **macOS** | Tahoe 26.0 | Installer and release bundle reject older macOS versions |
 | **Network** | Outbound HTTPS to coordinator | No inbound port is required |
 
 ## Recommended configurations
@@ -95,8 +95,10 @@ default).
 
 ## macOS version support
 
-The installer and CLI target macOS 14+. Individual security checks (SIP,
-Authenticated Root, RDMA controls) behave differently across macOS versions;
+The installer and CLI target macOS Tahoe 26.0+. The installer rejects older
+macOS versions before downloading a bundle, and release bundles set
+`LSMinimumSystemVersion=26.0`. Individual security checks (SIP, Authenticated
+Root, RDMA controls) still behave differently across macOS versions;
 `darkbloom doctor` reports the current state without requiring you to manually
 parse tool output.
 

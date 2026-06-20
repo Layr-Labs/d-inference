@@ -59,7 +59,7 @@ env:
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
   CLI_NAME: 'darkbloom'
   ENCLAVE_NAME: 'darkbloom-enclave'
-  MIN_MACOS: '14.0'
+  MIN_MACOS: '26.0'
   # mlx-swift currently pins MLX 0.31.x. The .metallib must come from a wheel
   # matching that ABI EXACTLY (patch-level skew can break Metal kernel
   # loading at runtime). Source of truth: libs/mlx-swift/Source/Cmlx/mlx/mlx/version.h
@@ -255,6 +255,7 @@ jobs:
         working-directory: provider-swift
         run: |
           set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-enclave
           BIN_DIR=$(swift build -c release --show-bin-path)
@@ -399,7 +400,7 @@ jobs:
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>LSMinimumSystemVersion</key>
-              <string>14.0</string>
+              <string>${MIN_MACOS}</string>
           </dict>
           </plist>
           PLIST

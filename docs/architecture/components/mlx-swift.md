@@ -21,7 +21,9 @@ Both are git submodules/forked vendored copies. The provider links them as Swift
 
 ### MLX-Swift core (`libs/mlx-swift/`)
 
-MLX-Swift exposes the MLX array framework to Swift. It targets macOS 14 and later and uses Metal for GPU acceleration on Apple Silicon. The provider links:
+MLX-Swift exposes the MLX array framework to Swift. Upstream MLX-Swift targets
+macOS 14 and later, but Darkbloom's provider package and release bundles require
+macOS Tahoe 26.0+ for the supported runtime. The provider links:
 
 - `MLX` — arrays, device placement, and lazy evaluation.
 - `MLXNN` — neural network layers used by model implementations.

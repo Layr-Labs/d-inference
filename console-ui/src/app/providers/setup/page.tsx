@@ -93,8 +93,8 @@ const REQUIREMENTS = [
   },
   {
     icon: Monitor,
-    title: "macOS 14.0+",
-    description: "Sonoma or later required for Secure Enclave attestation and hardware security features.",
+    title: "macOS Tahoe 26.0+",
+    description: "Tahoe or later required for the supported MLX/Metal provider runtime and hardware security features.",
   },
   {
     icon: Wifi,

@@ -3420,37 +3420,43 @@ func TestBroadcastGoingAway(t *testing.T) {
 	// p1: connected + eligible -> must receive going_away.
 	sc1, cc1, cleanup1 := wsConnPair(t)
 	defer cleanup1()
-	r.providers["p1"] = &Provider{
+	p1 := &Provider{
 		ID:      "p1",
 		Backend: BackendMLXSwift,
 		Version: "0.6.14",
 		Conn:    sc1,
+		writer:  newProviderWriter(sc1),
 		Status:  StatusOnline,
 	}
+	r.providers["p1"] = p1
 
 	// p2: connected + eligible, but its coordinator-side conn is already CLOSED.
 	// BroadcastGoingAway must tolerate the write error and still deliver to p1.
 	sc2, _, cleanup2 := wsConnPair(t)
 	defer cleanup2()
-	sc2.CloseNow()
-	r.providers["p2"] = &Provider{
+	p2 := &Provider{
 		ID:      "p2",
 		Backend: BackendMLXSwift,
 		Version: "0.6.14",
 		Conn:    sc2,
+		writer:  newProviderWriter(sc2),
 		Status:  StatusOnline,
 	}
+	p2.closeWriterNow()
+	r.providers["p2"] = p2
 
 	// p3: connected but INELIGIBLE (below the version floor) -> must be skipped.
 	sc3, cc3, cleanup3 := wsConnPair(t)
 	defer cleanup3()
-	r.providers["p3"] = &Provider{
+	p3 := &Provider{
 		ID:      "p3",
 		Backend: BackendMLXSwift,
 		Version: "0.6.13",
 		Conn:    sc3,
+		writer:  newProviderWriter(sc3),
 		Status:  StatusOnline,
 	}
+	r.providers["p3"] = p3
 
 	eligible := func(backend, version string) bool {
 		return BackendUsesSwiftRuntime(backend) && version == "0.6.14"

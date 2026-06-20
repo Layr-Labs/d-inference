@@ -75,5 +75,8 @@ public enum ProviderCore {
     // jinja_null_bridge / jinja_template / model_load), so durable telemetry can
     // tell the two indistinguishable gpt-oss 500 modes apart. Wire-compatible:
     // `error_reason` is an optional inference-error field, omitted when nil.
-    public static let version = "0.6.17"
+    // 0.6.18 adds the DAR-327 coordinator `going_away` control message decoder +
+    // planned-restart reconnect path. Coordinator broadcasts are gated to
+    // provider version >= 0.6.18 so pre-feature strict decoders never see it.
+    public static let version = "0.6.18"
 }

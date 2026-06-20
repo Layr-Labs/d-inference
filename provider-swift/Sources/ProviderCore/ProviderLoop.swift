@@ -229,6 +229,12 @@ public actor ProviderLoop {
     }
     private var updatePhase: UpdatePhase = .idle
 
+    /// Coordinator-only restart drain (`going_away`): refuse new coordinator-routed
+    /// work while the WebSocket reconnects, but keep the local unified endpoint
+    /// serving. This is intentionally separate from updatePhase `.draining`, which
+    /// precedes a process restart and therefore must also refuse local work.
+    private var coordinatorRestartDraining = false
+
     /// Verified update bundle staged on disk during `.installing`, awaiting the
     /// post-drain commit. The live layout is untouched until the commit, so a
     /// request can never observe a half-replaced bundle. Consumed by
@@ -763,10 +769,12 @@ public actor ProviderLoop {
 
                 case .goingAway:
                     // Coordinator is restarting (graceful shutdown / blue-green
-                    // cutover, DAR-327 Phase 3). Flip admission to draining
-                    // SYNCHRONOUSLY here — before any await — so new work is
-                    // refused immediately and a second going_away can't
-                    // double-spawn the drain. Then mark the planned restart on the
+                    // cutover, DAR-327 Phase 3). Flip COORDINATOR admission to
+                    // draining SYNCHRONOUSLY here — before any await — so new
+                    // coordinator-routed work is refused immediately and a second
+                    // going_away can't double-spawn the drain. Local unified-mode
+                    // inference keeps serving because only the coordinator
+                    // WebSocket is reconnecting. Then mark the planned restart on the
                     // coordinator client IMMEDIATELY (before the drain), so that
                     // even if the socket dies mid-drain — an early/unexpected close
                     // rather than our own post-drain close — runLoop still takes
@@ -781,8 +789,8 @@ public actor ProviderLoop {
                     // ordering. If an auto-update is already draining/installing it
                     // owns the process restart — defer to it.
                     if updatePhase == .idle {
-                        logger.warning("Coordinator going away (planned restart); draining in-flight work then reconnecting")
-                        beginUpdateDraining()
+                        logger.warning("Coordinator going away (planned restart); draining coordinator-routed work then reconnecting")
+                        beginCoordinatorRestartDraining()
                         await coordinator.markPlannedRestart()
                         goingAwayTask?.cancel()
                         goingAwayTask = Task { [coordinator] in
@@ -976,10 +984,12 @@ public actor ProviderLoop {
     /// registration that follows (no suspension in between).
     private var isDrainingForUpdate: Bool { updatePhase == .draining }
 
+    private var isRefusingCoordinatorWork: Bool { isDrainingForUpdate || coordinatorRestartDraining }
+
     /// Coordinator admission: sends the 503 reroute and returns true if the
     /// request must be dropped because we're draining.
     private func rejectIfDrainingForUpdate(requestId: String, send: SendHandle) -> Bool {
-        guard isDrainingForUpdate else { return false }
+        guard isRefusingCoordinatorWork else { return false }
         send.send(.inferenceError(
             requestId: requestId,
             error: providerDrainingForUpdateReason,
@@ -2541,18 +2551,31 @@ public actor ProviderLoop {
         updatePhase = .draining
     }
 
+    /// Enter the coordinator-only restart drain used for `going_away`. Unlike an
+    /// update drain, this does NOT set updatePhase `.draining`, so the local
+    /// endpoint does not reject or block on localReservations for a coordinator
+    /// WebSocket reconnect.
+    private func beginCoordinatorRestartDraining() {
+        coordinatorRestartDraining = true
+    }
+
+    private func resumeServingAfterCoordinatorRestart() {
+        coordinatorRestartDraining = false
+    }
+
     /// Drain in-flight work then force the planned-restart reconnect, run off the
     /// event-consumer loop as a child task (DAR-327 Phase 3). The caller has
-    /// already flipped `updatePhase` to `.draining` (synchronously) AND called
-    /// `markPlannedRestart()` on receipt, so admission is closed and the
-    /// no-backoff reconnect is armed even if the socket dies mid-drain. Here
-    /// we only drain → close → reopen, preserving the drain-before-close ordering.
+    /// already flipped coordinator-only admission to draining (synchronously) AND
+    /// called `markPlannedRestart()` on receipt, so coordinator-routed admission is
+    /// closed and the no-backoff reconnect is armed even if the socket dies mid-
+    /// drain. Local unified-mode inference remains admitted and is not part of this
+    /// drain because only the coordinator WebSocket is reconnecting.
     /// `requestPlannedRestart` cancels the socket (the flag is already set, so this
     /// is the explicit graceful close) so `runLoop` reconnects (jittered) onto the
     /// freshly-deployed coordinator; the process does NOT restart, so we reopen
     /// admission afterward via `resumeServingAfterUpdate`.
     private func drainThenPlannedRestart(coordinator: CoordinatorClient) async {
-        let drained = await waitForInflightDrain(timeout: Self.goingAwayDrainTimeout)
+        let drained = await waitForCoordinatorInflightDrain(timeout: Self.goingAwayDrainTimeout)
         if Task.isCancelled {
             return
         }
@@ -2561,7 +2584,7 @@ public actor ProviderLoop {
             await cancelAllInflight()
         }
         await coordinator.requestPlannedRestart()
-        await resumeServingAfterUpdate()
+        resumeServingAfterCoordinatorRestart()
     }
 
     /// Download, verify, and stage the release bundle while still serving.
@@ -3277,10 +3300,17 @@ public actor ProviderLoop {
 
     /// Whether any inference work is still in flight — coordinator-routed
     /// (`inflightTasks`/`requestToModel`) OR local-endpoint streams
-    /// (`localReservations`). Drain logic (shutdown + update hot-swap) waits on
-    /// all three so a local stream is never cut off mid-generation.
+    /// (`localReservations`). Shutdown + update hot-swap drains wait on all three
+    /// so a local stream is never cut off mid-generation.
     private var hasInflightWork: Bool {
         !inflightTasks.isEmpty || !requestToModel.isEmpty || localReservations.hasAny
+    }
+
+    /// Coordinator-routed work only. Used for coordinator `going_away` reconnects:
+    /// local unified-mode inference does not depend on the coordinator WebSocket
+    /// and must not block re-registration or start returning queue-full locally.
+    private var hasCoordinatorInflightWork: Bool {
+        !inflightTasks.isEmpty || !requestToModel.isEmpty
     }
 
     private func waitForInflightDrain(timeout: Duration) async -> Bool {
@@ -3288,6 +3318,24 @@ public actor ProviderLoop {
         logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
         let started = ContinuousClock.now
         while hasInflightWork {
+            if Task.isCancelled { return false }
+            if ContinuousClock.now - started >= timeout {
+                return false
+            }
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func waitForCoordinatorInflightDrain(timeout: Duration) async -> Bool {
+        guard hasCoordinatorInflightWork else { return true }
+        logger.info("Waiting up to \(timeout.components.seconds)s for coordinator-routed inference to finish before reconnect")
+        let started = ContinuousClock.now
+        while hasCoordinatorInflightWork {
             if Task.isCancelled { return false }
             if ContinuousClock.now - started >= timeout {
                 return false

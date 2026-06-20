@@ -219,6 +219,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			// DAR-327 Phase 3: a provider can pass the pre-upgrade goingAway check,
+			// then lose the race with BroadcastGoingAway before its register frame is
+			// processed. Refuse that late registration too; it was not in the broadcast
+			// snapshot and would otherwise miss going_away and fall back to normal
+			// reconnect backoff when this dying coordinator exits.
+			if s.goingAway.Load() {
+				_ = conn.Close(websocket.StatusTryAgainLater,
+					"coordinator is going away (planned restart); reconnect to the new instance")
+				return
+			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)

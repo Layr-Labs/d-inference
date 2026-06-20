@@ -2427,6 +2427,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Hardware:                msg.Hardware,
 		Models:                  models,
 		Backend:                 msg.Backend,
+		Version:                 msg.Version,
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: msg.EncryptedResponseChunks,
 		PrivateOnly:             msg.PrivateOnly,
@@ -2723,10 +2724,10 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 	return nil
 }
 
-// goingAwayBroadcastTimeout bounds the WHOLE going_away broadcast (every per-conn
-// write shares it), so a slow/blocked socket or a large fleet can never eat into
-// the caller's graceful-shutdown window. going_away is a best-effort nudge: a
-// provider that misses it just discovers the drop and reconnects with backoff.
+// goingAwayBroadcastTimeout bounds the WHOLE going_away broadcast enqueue pass,
+// so a slow/blocked socket or a large fleet can never eat into the caller's
+// graceful-shutdown window. going_away is a best-effort nudge: a provider that
+// misses it just discovers the drop and reconnects with backoff.
 const goingAwayBroadcastTimeout = 3 * time.Second
 
 // BroadcastGoingAway tells every connected, eligible provider that the
@@ -2738,43 +2739,44 @@ const goingAwayBroadcastTimeout = 3 * time.Second
 // Concurrency: provider connections are SNAPSHOTTED under r.mu.RLock (reading
 // p.Conn / p.Backend / p.Version under p.mu, matching the r.mu→p.mu lock
 // ordering used by ForEachProvider, evictStale, and Disconnect) and the
-// websocket writes happen AFTER the lock is released — never while holding r.mu.
-// The writes then fan out CONCURRENTLY (one goroutine per conn) under a single
-// goingAwayBroadcastTimeout deadline shared by all of them, so the cost is
-// ~one timeout rather than N×perWrite and the broadcast can't stall shutdown.
-// nhooyr.io/websocket Conn.Write is concurrency-safe and each conn is distinct,
-// so the writes don't contend. A snapshotted conn may already be closing
-// (Disconnect runs concurrently and calls CloseNow), so per-conn write errors
-// are tolerated: log and continue, never abort the broadcast. Each goroutine
-// also recovers via saferun so one bad write can never crash the process.
+// message enqueues happen AFTER the lock is released — never while holding r.mu.
+// The enqueues then fan out CONCURRENTLY (one goroutine per provider) under a
+// single goingAwayBroadcastTimeout deadline shared by all of them, so the cost is
+// ~one timeout rather than N×perWrite and the broadcast can't stall shutdown. The
+// per-provider writer owns the actual websocket write and deliberately does not
+// pass expiring contexts to nhooyr.Conn.Write, so a broadcast timeout cannot close
+// a slow-but-healthy provider socket. A snapshotted provider may already be
+// closing (Disconnect runs concurrently), so per-provider enqueue errors are
+// tolerated: log and continue, never abort the broadcast. Each goroutine also
+// recovers via saferun so one bad enqueue can never crash the process.
 //
 // eligible, when non-nil, gates which providers are notified (backend + version
 // floor) so a provider whose strict decoder would throw on an unknown message
-// type is skipped. Returns the number of providers the message was successfully
-// written to.
+// type is skipped. Returns the number of providers whose writer accepted the
+// message for best-effort delivery.
 func (r *Registry) BroadcastGoingAway(eligible func(backend, version string) bool) int {
 	type target struct {
-		id   string
-		conn *websocket.Conn
+		id       string
+		provider *Provider
 	}
 
-	// Snapshot eligible conns under the read lock, then release it before any
-	// write so a slow/blocked socket can never stall the registry.
+	// Snapshot eligible providers under the read lock, then release it before any
+	// enqueue/write so a slow/blocked socket can never stall the registry.
 	r.mu.RLock()
 	targets := make([]target, 0, len(r.providers))
 	for id, p := range r.providers {
 		p.mu.Lock()
-		conn := p.Conn
+		hasConn := p.Conn != nil
 		backend := p.Backend
 		version := p.Version
 		p.mu.Unlock()
-		if conn == nil {
+		if !hasConn {
 			continue
 		}
 		if eligible != nil && !eligible(backend, version) {
 			continue
 		}
-		targets = append(targets, target{id: id, conn: conn})
+		targets = append(targets, target{id: id, provider: p})
 	}
 	r.mu.RUnlock()
 
@@ -2789,8 +2791,11 @@ func (r *Registry) BroadcastGoingAway(eligible func(backend, version string) boo
 		return 0
 	}
 
-	// One deadline for the entire broadcast (shared by every write), so the
-	// worst case is a single timeout no matter how many providers are connected.
+	// One enqueue deadline for the entire broadcast (shared by every target), so
+	// the worst case is a single timeout no matter how many providers are connected.
+	// The provider writer never passes this expiring context into nhooyr.Conn.Write;
+	// it only bounds enqueue/result waiting, avoiding context-expiry-induced socket
+	// closes for slow/backpressured writes.
 	ctx, cancel := context.WithTimeout(context.Background(), goingAwayBroadcastTimeout)
 	defer cancel()
 
@@ -2805,9 +2810,10 @@ func (r *Registry) BroadcastGoingAway(eligible func(backend, version string) boo
 			// releases the WaitGroup — wg.Wait below can never hang.
 			defer wg.Done()
 			defer saferun.Recover(r.logger, "registry.broadcastGoingAway")
-			if err := t.conn.Write(ctx, websocket.MessageText, data); err != nil {
+			if err := t.provider.EnqueueText(ctx, data); err != nil {
 				// A snapshotted conn may already be closed (concurrent
-				// Disconnect / CloseNow) or the shared deadline fired.
+				// Disconnect / CloseNow), its writer queue may be full, or the
+				// shared enqueue deadline fired.
 				// Tolerate it — never abort the broadcast.
 				r.logger.Warn("failed to send going_away to provider", "provider_id", t.id, "error", err)
 				return

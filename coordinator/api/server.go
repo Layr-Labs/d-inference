@@ -144,7 +144,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // 0.6.0 is the APNs code-identity / VLM-routing / graceful-update release.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.6.11"
+var LatestProviderVersion = "0.6.18"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -160,12 +160,11 @@ const minProviderVersionForDesiredModels = "0.5.17"
 // below this version (or on a non-Swift backend): a pre-feature provider's
 // strict decoder throws on unknown message types and would disconnect.
 //
-// This is forward-looking: ProviderCore.version is 0.6.13 at the time this
-// landed, so the floor is the NEXT cut (0.6.14). going_away stays dormant until
-// providers ship at/above the floor — at that release cut bump ProviderCore.version
-// to 0.6.14 to activate it, mirroring the minProviderVersionForDesiredModels
-// convention above.
-const minProviderVersionForGoingAway = "0.6.14"
+// This is forward-looking: ProviderCore.version is 0.6.17 in the parent branch,
+// so the floor is the NEXT cut (0.6.18). going_away stays dormant for existing
+// released providers and activates only once the release that includes the Swift
+// decoder is cut, mirroring the minProviderVersionForDesiredModels convention.
+const minProviderVersionForGoingAway = "0.6.18"
 
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when

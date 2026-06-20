@@ -1091,17 +1091,26 @@ public actor BatchScheduler {
         // (Gemma-4, GPT-OSS) use the whole-cache exact-checkpoint
         // PrefixCacheManager. Recurrent (.none) models get neither.
         //
-        // DAR-319 v1: KV-quant is mutually exclusive with the prefix-cache tiers
-        // and with drafter-MTP. When enabled for an allow-listed model, disable
-        // both so quantized caches never flow through checkpoint restore or MTP
-        // capture (Gemma `forwardTrunk` fatals on quantized captured KV).
+        // DAR-319 v2: KV-quant + prefix cache are now COMPOSABLE for the
+        // dequant scheme (GPT-OSS). The engine's checkpoint restore rebuilds a
+        // QUANTIZED batched cache (re-quantizing the restored fp16 prefix via
+        // the cold cache factory) so a restored row stays concrete-class-
+        // compatible with quantized cold rows under `extendBatched` — the
+        // assembly precondition that the v1 exclusion was really avoiding.
+        // The native quantized-kernel scheme (Gemma g128) is NOT yet composed
+        // (separate workstream), so it still disables the prefix cache. Drafter
+        // -MTP remains disabled under KV-quant regardless (separable; handled
+        // where the MTP runtime is wired, not here).
         let kvQuantScheme = Self.resolveKVQuantScheme(
             modelID: modelId,
             architecture: architecture,
             kvQuantEnabled: kvQuantEnabled
         )
         let blockSize = 256
-        let backing = kvQuantScheme != nil
+        // Only the kernel scheme still blocks the prefix cache; dequant composes.
+        let kvQuantBlocksPrefixCache =
+            kvQuantScheme != nil && kvQuantScheme?.candidateMode.cacheKind != .dequant
+        let backing = kvQuantBlocksPrefixCache
             ? nil
             : await makePrefixCacheBackingIfEnabled(
                 modelId: modelId, weightHash: weightHash, architecture: architecture

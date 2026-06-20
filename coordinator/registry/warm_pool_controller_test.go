@@ -419,6 +419,34 @@ func TestWarmPoolPicksBetterIdleProvider(t *testing.T) {
 	}
 }
 
+func TestWarmPoolSkipsUnassignedPoolCandidate(t *testing.T) {
+	reg := New(testLogger())
+	target := "warm-pool-target-pool"
+	assignedOther := "warm-pool-other-pool"
+	offPool := makeSchedulerProvider(t, reg, "off-pool", assignedOther, 200)
+	offPool.mu.Lock()
+	offPool.Models = append(offPool.Models, protocol.ModelInfo{ID: target, ModelType: "chat", Quantization: "4bit"})
+	offPool.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB:     128,
+		GPUMemoryActiveGB: 4,
+		Slots:             []protocol.BackendSlotCapacity{{Model: assignedOther, State: "idle"}},
+	}
+	offPool.mu.Unlock()
+	assigned := makeWarmPoolColdProvider(t, reg, "assigned-pool", target, 40, 64, 8)
+
+	reg.ConfigureWarmPool(testWarmPoolConfig())
+	sent := captureWarmPoolLoads(reg)
+	reg.RecordWarmPoolCapacityReject(target)
+	reg.warmPool.tick(time.Now())
+
+	if len(*sent) != 1 {
+		t.Fatalf("sent loads = %d, want 1", len(*sent))
+	}
+	if (*sent)[0].providerID != assigned.ID {
+		t.Fatalf("selected provider = %q, want assigned provider %q", (*sent)[0].providerID, assigned.ID)
+	}
+}
+
 // --- Little's Law target math (pure, warm_pool_target.go) ---
 
 func TestQualityConcurrencyFromDecodeFloor(t *testing.T) {

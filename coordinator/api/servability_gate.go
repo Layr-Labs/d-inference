@@ -93,6 +93,58 @@ func (s *Server) shedIfUnservable(
 	return true
 }
 
+func (s *Server) shedIfPoolExhausted(
+	w http.ResponseWriter,
+	r *http.Request,
+	parsed map[string]any,
+	publicModel, model string,
+	stream bool,
+	estimatedPromptTokens, requestedMaxTokens int,
+	requiresVision, hasTools bool,
+	allowedProviderSerials []string,
+	refundReservation func(),
+) bool {
+	if s == nil || s.registry == nil {
+		return false
+	}
+	traits := registry.RequestTraits{HasTools: hasTools}
+	if s.registry.PoolRejectedProviderCount(model, traits, requiresVision, allowedProviderSerials...) == 0 {
+		return false
+	}
+
+	retryAfter := s.estimateRetryAfter(model)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	refundReservation()
+
+	tags := []string{"model:" + model, "model_type:" + s.registry.ModelType(model)}
+	s.ddIncr("routing.decisions", append(tags, "outcome:pool_exhausted"))
+	s.ddIncr("routing.pool_exhausted", tags)
+	s.recordRejection(rejectionInfo{
+		r:                     r,
+		stage:                 "preflight_capacity",
+		reasonCode:            "pool_exhausted",
+		httpStatus:            http.StatusTooManyRequests,
+		keyID:                 keyIDFromContext(r.Context()),
+		consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+		requestedModel:        publicModel,
+		resolvedModel:         model,
+		stream:                stream,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		requiresVision:        requiresVision,
+		hasTools:              hasTools,
+		retryAfterMs:          retryAfter * 1000,
+		params:                rejectionSamplingParams(parsed),
+		servabilityComputed:   true,
+		candidateCount:        0,
+	})
+
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+		fmt.Sprintf("assigned provider pool for model %q is exhausted - retry after %ds", publicModel, retryAfter),
+		withCode("rate_limit_exceeded")))
+	return true
+}
+
 // unservableMessage builds the client-facing 429 body for an unservable request.
 func unservableMessage(publicModel string, v registry.ServabilityVerdict, retryAfterSecs int) string {
 	switch v.Reason {

@@ -1994,6 +1994,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
 			return
 		}
+		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 &&
+			s.shedIfPoolExhausted(w, r, parsed, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
+			return
+		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 			// Providers serve this model but none can ever fit it — non-retryable.
 			// Surface a clear 503 instead of a 429 the client would retry forever.
@@ -4793,6 +4797,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// handleChatCompletions): runs AFTER the alias capacity fallback. Gated
 		// (default off), fail-open.
 		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
+			return
+		}
+		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 &&
+			s.shedIfPoolExhausted(w, r, parsed, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
 			return
 		}
 		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {

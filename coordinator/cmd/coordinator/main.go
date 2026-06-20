@@ -157,6 +157,8 @@ func main() {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
 	}
+	reg.SetModelPoolEnforcement(cfg.RegistryCfg.ModelPoolsEnabled)
+	logger.Info("model pool enforcement configured", "enabled", cfg.RegistryCfg.ModelPoolsEnabled)
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
 	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)

@@ -1935,6 +1935,17 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			for _, m := range util.Models {
 				s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
 			}
+			for _, pool := range util.ModelPools {
+				tags := []string{"model_pool:" + pool.Pool}
+				s.ddGauge("model_pool.providers", float64(pool.AssignedProviders), tags)
+				s.ddGauge("model_pool.warm_providers", float64(pool.WarmProviders), tags)
+				s.ddGauge("model_pool.serving_providers", float64(pool.ServingProviders), tags)
+				s.ddGauge("model_pool.active_requests", float64(pool.ActiveRequests), tags)
+				s.ddGauge("model_pool.token_budget_used", float64(pool.TokenBudgetUsed), tags)
+				s.ddGauge("model_pool.token_budget_total", float64(pool.TokenBudgetTotal), tags)
+			}
+			s.ddGauge("model_pool.providers_with_multiple_resident_slots", float64(util.ModelPoolAudit.ProvidersWithMultipleResidentSlots), nil)
+			s.ddGauge("model_pool.providers_with_multiple_active_pools", float64(util.ModelPoolAudit.ProvidersWithMultipleActivePools), nil)
 		}
 	}
 }

@@ -89,6 +89,9 @@ type routingSnapshot struct {
 	minRAMGb        int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
 	modelLoaded     bool    // true when the requested model is resident (running or idle)
 	availableOnDisk bool    // model is in provider's Models list but not currently loaded
+	// coldLoadBlockedByBusySlot is true when a different model slot is actively
+	// running/waiting, so the provider cannot evict it to cold-load this model.
+	coldLoadBlockedByBusySlot bool
 
 	observedDecodeTPS     float64
 	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
@@ -776,63 +779,10 @@ func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, t
 // through the default wrapper above (breaker always honored). Caller holds r.mu
 // and p.mu.
 func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker bool) bool {
-	if !r.providerServesCatalogModelLocked(p, model) {
+	if !r.providerPassesRoutingGatesBeforePoolLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
 		return false
 	}
-	// Skip a provider-model pair cooling down after a dispatch-time load
-	// failure ("insufficient memory") — it would instant-503 again, burning a
-	// dispatch attempt.
-	if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
-		return false
-	}
-	// Skip a triple quarantined by the inference-error circuit breaker for THIS
-	// request shape: repeated provider-side (5xx) failures — e.g. a deterministic
-	// chat-template render crash on tool schemas — mean a retry here fails
-	// identically, so routing must fall to a different provider. Shape-keyed so a
-	// tool failure does not deroute clean text traffic. Cleared by
-	// RecordInferenceSuccess (same shape) or by TTL expiry.
-	if r.inferenceErrorCooldownActiveLocked(p.ID, model, traits.CooldownShape(), now) {
-		return false
-	}
-	// Skip a provider quarantined by the per-provider node-health breaker: a
-	// node returning GENUINE-FAULT errors (500/502/504 or a
-	// fault-shaped 503) for ~all of its requests is sick regardless of model or
-	// shape, so it is derouted fleet-wide. This catches the node that fault-503s
-	// every request — invisible to the shape-keyed inference-error breaker above
-	// (which skips 503 as a capacity signal). Honored on the normal routing
-	// path; the selectBestCandidateLockedFull fail-open pass sets
-	// ignoreProviderBreaker so a bad fleet-wide rollout can't deroute everyone.
-	if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
-		return false
-	}
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
-	}
-	// A private-only machine never serves the public fleet — only its owner's
-	// self-route requests.
-	if p.PrivateOnly && !selfRouteOwner {
-		return false
-	}
-	minTrust := r.MinTrustLevel
-	if selfRouteOwner {
-		minTrust = TrustNone
-	}
-	if trustRank(p.TrustLevel) < trustRank(minTrust) {
-		return false
-	}
-	if !p.RuntimeVerified {
-		return false
-	}
-	if !r.providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return false
-	}
-	// Trait eligibility: a render-broken build is fenced for EVERY request shape
-	// (a crashing chat template breaks plain text, tools, and multimodal alike),
-	// while the capability version floors stay trait-scoped (tools-only today).
-	if !r.providerEligibleForTraitsLocked(p, model, traits) {
+	if !r.providerAssignedOrIdleReassignableToModelPoolLocked(p, model, selfRouteOwner) {
 		return false
 	}
 	return true
@@ -898,6 +848,9 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
 		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model != model && backendSlotBusy(slot) {
+				snap.coldLoadBlockedByBusySlot = true
+			}
 			if slot.Model != model {
 				continue
 			}
@@ -1057,6 +1010,9 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		return nil, rejectNone, false
 	}
 	if !snap.hasHeadroom {
+		return nil, rejectCapacity, false
+	}
+	if !snap.modelLoaded && snap.coldLoadBlockedByBusySlot {
 		return nil, rejectCapacity, false
 	}
 
@@ -1664,6 +1620,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}
 			for _, slot := range p.BackendCapacity.Slots {
+				if slot.Model != model && backendSlotBusy(slot) {
+					snap.coldLoadBlockedByBusySlot = true
+				}
 				if slot.Model != model {
 					continue
 				}
@@ -1700,6 +1659,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		if _, eligible := slotStatePenalty(snap.slotState); !eligible {
 			continue
 		}
+		if !snap.modelLoaded && snap.coldLoadBlockedByBusySlot {
+			capacityRejections++
+			continue
+		}
 
 		// Free memory / token budget admission gate.
 		if !freeMemoryAdmits(snap, dummyPR.EstimatedPromptTokens, dummyPR.RequestedMaxTokens) {
@@ -1722,6 +1685,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		return candidateCount, capacityRejections, modelTooLarge, 0, false
 	}
 	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
+}
+
+func backendSlotBusy(slot protocol.BackendSlotCapacity) bool {
+	return slot.NumRunning > 0 || slot.NumWaiting > 0 || slot.State == "running"
 }
 
 func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.Duration {

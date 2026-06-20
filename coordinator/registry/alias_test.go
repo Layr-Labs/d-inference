@@ -248,6 +248,7 @@ func TestPublicNameForBuild(t *testing.T) {
 
 func TestMergeProviderModelsMakesProviderServeBuild(t *testing.T) {
 	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
 	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8)) // serves only fp8
 
 	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
@@ -417,6 +418,7 @@ func TestMergeProviderModelsRejectsMissingHashAndKeepsPrevious(t *testing.T) {
 
 func TestMergeProviderModelsDoesNotDropSiblingForUnrelatedSharedAlias(t *testing.T) {
 	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
 	const (
 		oldA   = "alias-a-old"
 		shared = "shared-build"
@@ -482,6 +484,30 @@ func TestDesiredModelsForProviderConservative(t *testing.T) {
 	// Unknown provider → nil.
 	if got := reg.DesiredModelsForProvider("nope"); got != nil {
 		t.Fatalf("unknown provider should be nil, got %+v", got)
+	}
+}
+
+func TestDesiredModelsForProviderHonorsModelPoolDisable(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
+	const (
+		poolA    = "pool-disable-a"
+		previous = "pool-disable-b-previous"
+		desired  = "pool-disable-b-desired"
+	)
+	p := registerProviderWithModel(reg, "p-pool-disable", poolA)
+	p.mu.Lock()
+	p.AssignedPool = poolA
+	p.Models = append(p.Models, protocol.ModelInfo{ID: previous, ModelType: "chat"})
+	p.mu.Unlock()
+	reg.SetModelCatalog([]CatalogEntry{{ID: poolA}, {ID: previous}, {ID: desired}})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"pool-b": {Desired: desired, Previous: previous},
+	})
+
+	entries := reg.DesiredModelsForProvider("p-pool-disable")
+	if len(entries) != 1 || entries[0].DesiredBuild != desired {
+		t.Fatalf("desired entries = %+v, want alias-b desired while pools disabled", entries)
 	}
 }
 

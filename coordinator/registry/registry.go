@@ -369,6 +369,10 @@ type Provider struct {
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
 	CurrentModel string   // model currently being served
+	// AssignedPool is the coordinator-managed public model pool seed for this
+	// connection. The rendered pool is modelPoolKeyLocked(AssignedPool), so an
+	// alias desired/previous build stays in the same pool across version rollout.
+	AssignedPool string
 
 	// Live system metrics from heartbeats
 	SystemMetrics protocol.SystemMetrics
@@ -1097,6 +1101,7 @@ type Registry struct {
 
 	cacheAffinity        *cacheAffinityTracker
 	cacheAffinityBonusMs float64
+	enforceModelPools    bool
 	warmPool             *warmPoolController
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
@@ -1164,6 +1169,7 @@ func New(logger *slog.Logger) *Registry {
 		evictStrikes:             make(map[string]int),
 		cacheAffinity:            newCacheAffinityTracker(cacheAffinityTTL),
 		cacheAffinityBonusMs:     defaultCacheAffinityBonusMs,
+		enforceModelPools:        true,
 		logger:                   logger,
 	}
 }
@@ -2181,6 +2187,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			r.providerAssignedOrIdleReassignableToModelPoolLocked(p, model, false) &&
 			r.providerServesVisionModelLocked(p, model)
 		p.mu.Unlock()
 		if eligible {
@@ -2664,6 +2671,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		}
 	}
 	p.mu.Unlock()
+	r.assignProviderModelPool(id)
 
 	r.PersistProviderThrottled(p)
 	// Persist accumulated uptime (throttled) so it survives restarts/reconnects;
@@ -2686,19 +2694,27 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 // does not block waiting for the load to complete. The provider replies
 // asynchronously with a load_model_status message.
 func (r *Registry) SendLoadModel(providerID, modelID string) error {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	if ok {
+		p.mu.Lock()
+		allowed := r.providerAssignedOrIdleReassignableToModelPoolLocked(p, modelID, false)
+		p.mu.Unlock()
+		if !allowed {
+			r.mu.RUnlock()
+			return fmt.Errorf("provider %q is not assigned to model pool for %q", providerID, modelID)
+		}
+	}
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerID)
+	}
 	if r.loadModelSender != nil {
 		if err := r.loadModelSender(providerID, modelID); err != nil {
 			return err
 		}
 		r.logger.Info("sent load_model to provider", "provider_id", providerID, "model_id", modelID)
 		return nil
-	}
-
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("provider %q not found", providerID)
 	}
 
 	msg := protocol.LoadModelMessage{
@@ -2832,11 +2848,19 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 			advertised[m.ID] = struct{}{}
 		}
 	}
+	var assignedPoolKeys []string
+	if r.enforceModelPools {
+		r.assignProviderModelPoolLocked(p)
+		assignedPoolKeys = r.modelPoolKeysLocked(p.AssignedPool)
+	}
 	p.mu.Unlock()
 
 	var entries []protocol.DesiredModelEntry
 	for alias, t := range r.modelAliases {
 		if t.Desired == "" {
+			continue
+		}
+		if r.enforceModelPools && len(assignedPoolKeys) > 0 && !poolKeysOverlap(assignedPoolKeys, r.modelPoolKeysLocked(t.Desired)) {
 			continue
 		}
 		_, hasDesired := advertised[t.Desired]
@@ -2971,6 +2995,9 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return false
 	}
+	if !r.providerAssignedToModelPoolLocked(p, model, false) {
+		return false
+	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == model {
@@ -3049,6 +3076,9 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {
+		return 0, false
+	}
+	if !r.providerAssignedOrIdleReassignableToModelPoolLocked(p, model, false) {
 		return 0, false
 	}
 
@@ -3137,12 +3167,18 @@ func (r *Registry) providerHasPendingLoad(providerID string) bool {
 func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
 	if !ok {
+		r.mu.RUnlock()
 		return
 	}
 
 	p.mu.Lock()
+	if !r.providerAssignedToModelPoolLocked(p, modelID, false) {
+		p.mu.Unlock()
+		r.mu.RUnlock()
+		return
+	}
+	r.mu.RUnlock()
 	defer p.mu.Unlock()
 	for _, wm := range p.WarmModels {
 		if wm == modelID {
@@ -3160,7 +3196,7 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	//
 	// We only add/update the new model's slot and leave existing slots
 	// untouched — the provider may have multiple model slots loaded
-	// simultaneously (maxModelSlots defaults to 3). The next heartbeat
+	// simultaneously when explicitly configured. The next heartbeat
 	// will provide the authoritative slot list.
 	if p.BackendCapacity != nil {
 		found := false
@@ -4576,6 +4612,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
 			if !r.modelAllowedByCatalogLocked(m) {
+				continue
+			}
+			if !r.providerAssignedToModelPoolLocked(p, m.ID, false) {
 				continue
 			}
 			hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(m.ID)

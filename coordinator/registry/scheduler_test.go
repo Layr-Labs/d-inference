@@ -850,6 +850,7 @@ func TestDrainQueuedRequestsUsesAllAvailableCapacity(t *testing.T) {
 
 func TestDrainQueuedRequestsRespectsPerSlotCapsAcrossModels(t *testing.T) {
 	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
 	modelA := "queue-slot-full-a"
 	modelB := "queue-slot-open-b"
 	p := makeSchedulerProvider(t, reg, "multi-slot", modelA, 100)
@@ -906,6 +907,7 @@ func TestDrainQueuedRequestsRespectsPerSlotCapsAcrossModels(t *testing.T) {
 
 func TestSetProviderIdleDrainsOnlyFreedModelCapacity(t *testing.T) {
 	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
 	modelA := "idle-freed-a"
 	modelB := "idle-unchanged-b"
 	p := makeSchedulerProvider(t, reg, "idle-multi", modelA, 100)
@@ -1478,6 +1480,7 @@ func TestManyPerSlotCapsRespectProviderWideAggregateCap(t *testing.T) {
 
 func TestModelCapacitySnapshotRespectsPerSlotMaxConcurrency(t *testing.T) {
 	reg := New(testLogger())
+	reg.SetModelPoolEnforcement(false)
 	modelA := "snapshot-full-model"
 	modelB := "snapshot-open-model"
 	p := makeSchedulerProvider(t, reg, "snapshot-provider", modelA, 100)
@@ -1512,6 +1515,362 @@ func TestModelCapacitySnapshotRespectsPerSlotMaxConcurrency(t *testing.T) {
 	}
 	if !open.Ready || !open.CanAccept || open.RoutableProviders != 1 {
 		t.Fatalf("open model snapshot=%+v, want ready with one routable provider", open)
+	}
+}
+
+func TestModelPoolAssignmentBlocksUnassignedPublicModel(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "pool-gpt-oss"
+	modelB := "pool-gemma"
+	p := makeSchedulerProvider(t, reg, "pool-provider", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "idle", MaxConcurrency: 2},
+		{Model: modelB, State: "idle", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(modelB, &PendingRequest{
+		RequestID:          "req-wrong-pool",
+		Model:              modelB,
+		RequestedMaxTokens: 128,
+	})
+	if selected != nil {
+		t.Fatalf("selected %q for unassigned model %q", selected.ID, modelB)
+	}
+	if decision.CandidateCount != 0 || decision.CapacityRejections != 0 || decision.ModelTooLargeRejections != 0 {
+		t.Fatalf("decision=%+v, want no normal candidate/capacity signal", decision)
+	}
+	if got := reg.PoolRejectedProviderCount(modelB, RequestTraits{}, false); got != 1 {
+		t.Fatalf("PoolRejectedProviderCount = %d, want 1", got)
+	}
+	candidates, rejections, tooLarge := reg.QuickCapacityCheck(modelB, 100, 128, RequestTraits{})
+	if candidates != 0 || rejections != 0 || tooLarge != 0 {
+		t.Fatalf("QuickCapacityCheck = (%d,%d,%d), want (0,0,0) for pool mismatch", candidates, rejections, tooLarge)
+	}
+}
+
+func TestIdleShutdownProviderCanReassignPoolOnDemand(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "pool-idle-shutdown-a"
+	modelB := "pool-idle-shutdown-b"
+	p := makeSchedulerProvider(t, reg, "pool-idle-shutdown-provider", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "idle_shutdown", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(modelB, &PendingRequest{
+		RequestID:          "req-reassign-idle-shutdown",
+		Model:              modelB,
+		RequestedMaxTokens: 128,
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("selected %#v for idle-shutdown reassignment, want %q; decision=%+v", selected, p.ID, decision)
+	}
+	p.mu.Lock()
+	assigned := p.AssignedPool
+	p.mu.Unlock()
+	if reg.ModelPoolKey(assigned) != modelB {
+		t.Fatalf("assigned_pool = %q (pool %q), want %q", assigned, reg.ModelPoolKey(assigned), modelB)
+	}
+}
+
+func TestResidentIdleProviderDoesNotReassignPoolOnDemand(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "pool-resident-a"
+	modelB := "pool-resident-b"
+	p := makeSchedulerProvider(t, reg, "pool-resident-provider", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "idle", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(modelB, &PendingRequest{
+		RequestID:          "req-resident-no-reassign",
+		Model:              modelB,
+		RequestedMaxTokens: 128,
+	})
+	if selected != nil {
+		t.Fatalf("selected %q, want nil while another model is resident", selected.ID)
+	}
+	if decision.CandidateCount != 0 || decision.CapacityRejections != 0 {
+		t.Fatalf("decision=%+v, want pool mismatch without capacity signal", decision)
+	}
+}
+
+func TestModelPoolAssignmentUsesFirstHeartbeatBeforeAdvertisedOrder(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "pool-registration-a"
+	modelB := "pool-registration-b"
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{
+		{ID: modelA, ModelType: "chat", Quantization: "4bit"},
+		{ID: modelB, ModelType: "chat", Quantization: "4bit"},
+	}
+	p := reg.Register("pool-registration-provider", nil, msg)
+	p.mu.Lock()
+	p.TrustLevel = TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.SystemMetrics = protocol.SystemMetrics{ThermalState: "nominal"}
+	p.mu.Unlock()
+
+	active := modelB
+	reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+		Status:      "idle",
+		ActiveModel: &active,
+		WarmModels:  []string{modelB},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: modelB, State: "idle", MaxConcurrency: 2},
+			},
+		},
+	})
+
+	selected, _ := reg.ReserveProviderEx(modelB, &PendingRequest{
+		RequestID:          "req-heartbeat-pool",
+		Model:              modelB,
+		RequestedMaxTokens: 128,
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("selected %#v for heartbeat-active model %q, want %q", selected, modelB, p.ID)
+	}
+	if got := reg.PoolRejectedProviderCount(modelA, RequestTraits{}, false); got != 1 {
+		t.Fatalf("PoolRejectedProviderCount(%s) = %d, want 1", modelA, got)
+	}
+}
+
+func TestModelPoolAssignmentUsesDeterministicSeedForUnrelatedAdvertisedModels(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "pool-deterministic-a"
+	modelB := "pool-deterministic-b"
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{
+		{ID: modelB, ModelType: "chat", Quantization: "4bit"},
+		{ID: modelA, ModelType: "chat", Quantization: "4bit"},
+	}
+	p := reg.Register("pool-deterministic-provider", nil, msg)
+	p.mu.Lock()
+	p.TrustLevel = TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.SystemMetrics = protocol.SystemMetrics{ThermalState: "nominal"}
+	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 64}
+	p.mu.Unlock()
+
+	reg.mu.Lock()
+	p.mu.Lock()
+	assignedA := reg.providerAssignedToModelPoolLocked(p, modelA, false)
+	assignedB := reg.providerAssignedToModelPoolLocked(p, modelB, false)
+	assignedPool := p.AssignedPool
+	p.mu.Unlock()
+	reg.mu.Unlock()
+	if !assignedA {
+		t.Fatalf("provider was not assigned to deterministic seed %q (assigned_pool=%q)", modelA, assignedPool)
+	}
+	if assignedB {
+		t.Fatalf("provider assigned to non-selected unrelated pool %q (assigned_pool=%q)", modelB, assignedPool)
+	}
+}
+
+func TestModelPoolAssignmentAllowsAdvertisedAliasBuildsInSamePool(t *testing.T) {
+	reg := New(testLogger())
+	previous := "pool-alias-previous"
+	desired := "pool-alias-desired"
+	reg.SetModelCatalog([]CatalogEntry{{ID: previous}, {ID: desired}})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"pool-alias": {Desired: desired, Previous: previous},
+	})
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{
+		{ID: previous, ModelType: "chat", Quantization: "4bit"},
+		{ID: desired, ModelType: "chat", Quantization: "4bit"},
+	}
+	p := reg.Register("pool-alias-provider", nil, msg)
+	p.mu.Lock()
+	p.TrustLevel = TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.SystemMetrics = protocol.SystemMetrics{ThermalState: "nominal"}
+	p.mu.Unlock()
+
+	selected, _ := reg.ReserveProviderEx(desired, &PendingRequest{
+		RequestID:          "req-alias-pool-desired",
+		Model:              desired,
+		RequestedMaxTokens: 128,
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("selected %#v for alias desired build, want %q", selected, p.ID)
+	}
+}
+
+func TestModelPoolAssignmentAllowsSharedBuildInOwningAliasPool(t *testing.T) {
+	reg := New(testLogger())
+	shared := "pool-shared-build"
+	other := "pool-alias-b-build"
+	reg.SetModelCatalog([]CatalogEntry{{ID: shared}, {ID: other}})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"alias-a": {Desired: shared},
+		"alias-b": {Desired: other, Previous: shared},
+	})
+	p := makeSchedulerProvider(t, reg, "shared-pool-provider", other, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: shared, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: other, State: "idle", MaxConcurrency: 2},
+		{Model: shared, State: "idle", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	selected, _ := reg.ReserveProviderEx(shared, &PendingRequest{
+		RequestID:          "req-shared-pool-build",
+		Model:              shared,
+		RequestedMaxTokens: 128,
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("selected %#v for shared build in owning alias pool, want %q", selected, p.ID)
+	}
+}
+
+func TestColdDispatchBlockedByBusyOtherSlot(t *testing.T) {
+	reg := New(testLogger())
+	previous := "busy-slot-previous"
+	desired := "busy-slot-desired"
+	reg.SetModelAliases(map[string]AliasTarget{
+		"busy-slot-alias": {Desired: desired, Previous: previous},
+	})
+	p := makeSchedulerProvider(t, reg, "busy-slot-provider", previous, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: desired, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: previous, State: "running", NumRunning: 1, MaxConcurrency: 1},
+	}
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(desired, &PendingRequest{
+		RequestID:          "req-busy-slot-desired",
+		Model:              desired,
+		RequestedMaxTokens: 128,
+	})
+	if selected != nil {
+		t.Fatalf("selected %q, want nil while another slot is busy", selected.ID)
+	}
+	if decision.CandidateCount != 0 || decision.CapacityRejections != 1 {
+		t.Fatalf("decision=%+v, want one capacity rejection from busy other slot", decision)
+	}
+	candidates, rejections, _ := reg.QuickCapacityCheck(desired, 100, 128, RequestTraits{})
+	if candidates != 0 || rejections != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
+	}
+}
+
+func TestResolveModelConstrainedIgnoresPoolMismatchForPreflightClassification(t *testing.T) {
+	reg := New(testLogger())
+	assigned := "pinned-assigned-pool"
+	desired := "pinned-wrong-pool-build"
+	reg.SetModelCatalog([]CatalogEntry{{ID: assigned}, {ID: desired}})
+	reg.SetModelAliases(map[string]AliasTarget{"pinned-alias": {Desired: desired}})
+	p := makeSchedulerProvider(t, reg, "pinned-provider", assigned, 100)
+	setSchedulerProviderSerial(p, "PINNED-SERIAL")
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: desired, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: assigned, State: "idle", MaxConcurrency: 2}}
+	p.mu.Unlock()
+
+	resolved, isAlias, ok := reg.ResolveModelConstrained("pinned-alias", []string{"PINNED-SERIAL"}, "", false, false)
+	if !ok || !isAlias || resolved != desired {
+		t.Fatalf("ResolveModelConstrained = %q alias=%v ok=%v, want %q/true/true", resolved, isAlias, ok, desired)
+	}
+	if got := reg.PoolRejectedProviderCount(desired, RequestTraits{}, false, "PINNED-SERIAL"); got != 1 {
+		t.Fatalf("PoolRejectedProviderCount = %d, want 1", got)
+	}
+}
+
+func TestModelPoolAssignmentBypassesOwnedSelfRoute(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "self-pool-a"
+	modelB := "self-pool-b"
+	p := makeSchedulerProvider(t, reg, "self-pool-provider", modelA, 100)
+	p.mu.Lock()
+	p.AccountID = "acct-owner"
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "idle", MaxConcurrency: 2},
+		{Model: modelB, State: "idle", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	selected, _ := reg.ReserveProviderEx(modelB, &PendingRequest{
+		RequestID:          "req-owned-pool-bypass",
+		Model:              modelB,
+		RequestedMaxTokens: 128,
+		SelfRouteOnly:      true,
+		OwnerAccountID:     "acct-owner",
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("owned self-route selected %#v, want %q", selected, p.ID)
+	}
+}
+
+func TestCapabilityChecksIgnoreOffPoolProviders(t *testing.T) {
+	reg := New(testLogger())
+	assigned := "capability-assigned-pool"
+	target := "capability-off-pool-model"
+	p := makeSchedulerProvider(t, reg, "capability-off-pool", assigned, 100)
+	setProviderVersion(p, "0.6.5")
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: target, ModelType: "chat", Quantization: "4bit", IsVision: true})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: assigned, State: "idle", MaxConcurrency: 2}}
+	p.mu.Unlock()
+
+	if reg.HasToolCapableProviderForModel(target) {
+		t.Fatal("off-pool tool-capable provider must not satisfy tools capability check")
+	}
+	if reg.HasVisionProviderForModel(target) {
+		t.Fatal("off-pool vision-capable provider must not satisfy vision capability check")
+	}
+}
+
+func TestModelCapacitySnapshotOnlyIncludesAssignedPool(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "capacity-pool-a"
+	modelB := "capacity-pool-b"
+	p := makeSchedulerProvider(t, reg, "capacity-pool-provider", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "idle", MaxConcurrency: 2},
+		{Model: modelB, State: "idle", MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	snapshots := reg.ModelCapacitySnapshot()
+	byModel := make(map[string]ModelCapacity, len(snapshots))
+	for _, snap := range snapshots {
+		byModel[snap.ModelID] = snap
+	}
+	if _, ok := byModel[modelB]; ok {
+		t.Fatalf("unassigned model %q appeared in capacity snapshot: %+v", modelB, snapshots)
+	}
+	snap, ok := byModel[modelA]
+	if !ok {
+		t.Fatalf("assigned model %q missing from capacity snapshot: %+v", modelA, snapshots)
+	}
+	if !snap.Ready || snap.RoutableProviders != 1 {
+		t.Fatalf("assigned model snapshot = %+v, want ready with one routable provider", snap)
 	}
 }
 

@@ -77,7 +77,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         continuousBatching: Bool = true,
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
-        maxModelSlots: UInt64 = 3,
+        maxModelSlots: UInt64 = 1,
         kvQuant: Bool = false
     ) {
         self.port = port
@@ -106,7 +106,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.continuousBatching = try container.decodeIfPresent(Bool.self, forKey: .continuousBatching) ?? true
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
-        self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
+        self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 1
         self.kvQuant = try container.decodeIfPresent(Bool.self, forKey: .kvQuant) ?? false
     }
 }
@@ -186,7 +186,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 continuousBatching: true,
                 enabledModels: [],
                 idleTimeoutMins: 60,
-                maxModelSlots: 3
+                maxModelSlots: 1
             ),
             coordinator: CoordinatorSettings(
                 url: "wss://api.darkbloom.dev/ws/provider",

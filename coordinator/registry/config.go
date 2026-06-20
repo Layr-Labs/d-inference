@@ -12,9 +12,10 @@ import (
 
 // Config holds registry-level configuration.
 type Config struct {
-	MinTrustLevel string
-	WarmPool      WarmPoolConfig
-	CacheAffinity CacheAffinityConfig
+	MinTrustLevel     string
+	ModelPoolsEnabled bool
+	WarmPool          WarmPoolConfig
+	CacheAffinity     CacheAffinityConfig
 }
 
 type CacheAffinityConfig struct {
@@ -84,7 +85,8 @@ func (c WarmPoolConfig) perTickCeiling() int {
 // ReadConfig reads registry configuration from environment variables.
 func ReadConfig() Config {
 	return Config{
-		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
+		MinTrustLevel:     os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
+		ModelPoolsEnabled: env.EnvBool(env.EnvPrefix+"_MODEL_POOLS_ENABLED", true),
 		WarmPool: WarmPoolConfig{
 			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
 			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", false),

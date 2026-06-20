@@ -85,8 +85,18 @@ describe("EarnPage", () => {
     fireEvent.click(gemmaButton);
 
     expect(
-      screen.getByText("Selected models share active inference hours, so earnings are not double-counted.")
+      screen.getByText("Selected models share active inference hours, so usage earnings are not double-counted.")
     ).toBeInTheDocument();
     expect(screen.getByText("40 GB weights / 48 GB RAM")).toBeInTheDocument();
+  });
+
+  it("adds the base-reward floor on top of usage earnings (additive, not max)", async () => {
+    const EarnPage = (await import("@/app/earn/page")).default;
+    render(<EarnPage />);
+
+    // Default hardware is MacBook Pro / M4 Max / 48GB → 48GB base-reward tier = $16/mo,
+    // at the default 24h online (100% uptime). The floor is shown on top of usage.
+    expect(await screen.findByText("Base rewards (earnings floor)")).toBeInTheDocument();
+    expect(await screen.findByText("+ $16.00")).toBeInTheDocument();
   });
 });

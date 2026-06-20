@@ -26,6 +26,8 @@ struct Status: AsyncParsableCommand {
         print("Configured model: \(config.backend.model ?? "auto-select")")
         print("Continuous batching: \(config.backend.continuousBatching ? "enabled" : "disabled")")
         print("Idle timeout: \(config.backend.idleTimeoutMins == 0 ? "disabled" : "\(config.backend.idleTimeoutMins)m")")
+        let enabledBeta = BetaFeatures.enabledIDs(in: config)
+        print("Beta features: \(enabledBeta.isEmpty ? "none" : enabledBeta.joined(separator: ", ")) (manage with `darkbloom beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")
 
         if let hardware = snapshot.hardware {

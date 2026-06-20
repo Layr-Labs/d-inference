@@ -29,12 +29,12 @@ function KPI({
   dot?: boolean;
 }) {
   return (
-    <div>
+    <div className="min-w-0">
       <p className="text-[10px] uppercase tracking-wider text-text-tertiary flex items-center gap-1">
         {dot && <span className="w-1.5 h-1.5 rounded-full bg-accent-green" />}
         {label}
       </p>
-      <p className="text-2xl font-mono font-bold text-text-primary leading-tight mt-0.5 tabular-nums">{value}</p>
+      <p className="text-xl font-mono font-bold text-text-primary leading-tight mt-0.5 tabular-nums break-words">{value}</p>
       {sub && <p className="text-[11px] text-text-tertiary">{sub}</p>}
     </div>
   );
@@ -51,8 +51,11 @@ export function FleetHealthStrip({
   const Icon = ICON[verdict.state];
 
   return (
-    <div className={`rounded-xl bg-bg-secondary shadow-sm border border-border-dim border-l-[3px] ${meta.rail} p-5`}>
-      <div className="grid gap-5 lg:grid-cols-[36%_1fr] lg:items-center">
+    <div className={`@container rounded-xl bg-bg-secondary shadow-sm border border-border-dim border-l-[3px] ${meta.rail} p-5`}>
+      {/* Side-by-side verdict + KPIs only once the strip is genuinely wide
+          enough (container-, not viewport-keyed). Below that it stacks, so a
+          narrow strip never crams the verdict on top of the numbers. */}
+      <div className="grid gap-5 @3xl:grid-cols-[36%_1fr] @3xl:items-center">
         {/* Left: the plain-language fleet verdict (worst state wins) */}
         <div className="flex items-center gap-3">
           <div className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 ${meta.tint}`}>
@@ -64,10 +67,13 @@ export function FleetHealthStrip({
           </div>
         </div>
 
-        {/* Right: segmented capacity bar over the money + routable KPIs */}
-        <div className="space-y-4">
+        {/* Right: segmented capacity bar over the money + routable KPIs.
+            @container so columns track this region's real width, not the
+            viewport — the sidebar + 36%/1fr split leaves far less room than
+            a viewport breakpoint assumes, which is what piled the values up. */}
+        <div className="space-y-4 @container">
           <CapacityBar counts={verdict.counts} />
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 @md:grid-cols-3 @2xl:grid-cols-5 gap-4">
             <KPI
               label="Total earned"
               value={summary ? formatUSD(summary.lifetime_micro_usd) : "—"}

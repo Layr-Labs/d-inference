@@ -20,9 +20,9 @@ function Vital({
 }) {
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-text-tertiary">{label}</span>
-        <span className="text-xs font-mono font-semibold text-text-primary capitalize tabular-nums">{value}</span>
+      <div className="flex items-center justify-between gap-2 min-w-0">
+        <span className="text-[10px] uppercase tracking-wider text-text-tertiary truncate">{label}</span>
+        <span className="text-xs font-mono font-semibold text-text-primary capitalize tabular-nums shrink-0">{value}</span>
       </div>
       {children}
     </div>
@@ -52,9 +52,9 @@ export function CardVitals({
   const decodePct = fleetMaxDecodeTps > 0 ? (decode / fleetMaxDecodeTps) * 100 : 0;
 
   return (
-    <div className="px-4 py-3 space-y-3">
+    <div className="px-4 py-3 space-y-3 @container">
       {sm && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-3">
+        <div className="grid grid-cols-2 @lg:grid-cols-4 gap-x-4 gap-y-3">
           <Vital label="Thermal" value={sm.thermal_state}>
             <ThermalPips state={sm.thermal_state} />
           </Vital>

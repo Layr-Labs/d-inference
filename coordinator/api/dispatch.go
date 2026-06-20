@@ -709,6 +709,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					d.refundReservation()
 					return outcomeClientGone
 				}
+				s.registry.Queue().Cancel(queuedReq)
+				select {
+				case assigned := <-queuedReq.ResponseCh:
+					if assigned != nil {
+						assigned.RemovePending(d.requestID)
+						s.registry.SetProviderIdle(assigned.ID)
+					}
+				default:
+				}
 				d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
 				d.refundReservation()
 				s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})

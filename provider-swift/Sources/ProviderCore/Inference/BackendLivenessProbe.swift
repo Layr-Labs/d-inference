@@ -45,19 +45,33 @@ public struct BackendLivenessPolicy: Sendable, Equatable {
     /// many seconds before it is declared pinned — a brief, self-healing dip is
     /// not a restart trigger.
     public var pinnedSeconds: Double
+    /// A token-budget / KV-headroom admission rejection within this many seconds
+    /// counts as DEMAND even when there are no active/queued bridges. A pinned
+    /// pool rejects real requests at the early token-budget guards (and the
+    /// per-request KV reservation) BEFORE any bridge is inserted, so the
+    /// active/pending signal is 0 on every tick even though the box is actively
+    /// 503-ing traffic. Without this window the watchdog would see an idle box
+    /// and never self-restart the pin.
+    public var admissionRejectDemandSeconds: Double
 
     public static let defaultWedgeStallSeconds: Double = 120
     public static let defaultCollapsedBudgetTokens = 4096
     public static let defaultPinnedSeconds: Double = 180
+    /// A reject this recent still indicates live traffic. Comfortably longer than
+    /// the ~2s watchdog tick and typical inter-request gaps, but short enough
+    /// that a single old reject followed by silence stops counting as demand.
+    public static let defaultAdmissionRejectDemandSeconds: Double = 60
 
     public init(
         wedgeStallSeconds: Double = BackendLivenessPolicy.defaultWedgeStallSeconds,
         collapsedBudgetTokens: Int = BackendLivenessPolicy.defaultCollapsedBudgetTokens,
-        pinnedSeconds: Double = BackendLivenessPolicy.defaultPinnedSeconds
+        pinnedSeconds: Double = BackendLivenessPolicy.defaultPinnedSeconds,
+        admissionRejectDemandSeconds: Double = BackendLivenessPolicy.defaultAdmissionRejectDemandSeconds
     ) {
         self.wedgeStallSeconds = wedgeStallSeconds
         self.collapsedBudgetTokens = collapsedBudgetTokens
         self.pinnedSeconds = pinnedSeconds
+        self.admissionRejectDemandSeconds = admissionRejectDemandSeconds
     }
 
     /// Decide backend liveness from the current scheduler state.
@@ -74,22 +88,38 @@ public struct BackendLivenessPolicy: Sendable, Equatable {
     ///     or nil if nothing has succeeded since the model loaded.
     ///   - hasDemand: whether there is any active or queued request right now (an
     ///     idle box with a momentarily small budget is failing no one).
+    ///   - secondsSinceLastAdmissionReject: seconds since a request was last
+    ///     rejected at admission BEFORE any bridge was inserted (early
+    ///     token-budget guard or per-request KV-headroom failure), or nil if
+    ///     none. A reject within ``admissionRejectDemandSeconds`` ALSO counts as
+    ///     demand: a pinned pool fails real traffic at those guards, leaving
+    ///     `hasDemand` (active/queued) false on every tick, so this is the only
+    ///     evidence that the box is actively rejecting requests.
     public func assess(
         longestAdmittedZeroTokenSeconds: Double?,
         budgetCollapsedForSeconds: Double?,
         secondsSinceLastSuccess: Double?,
-        hasDemand: Bool
+        hasDemand: Bool,
+        secondsSinceLastAdmissionReject: Double? = nil
     ) -> BackendLiveness {
         // Wedge first: a concrete stalled request is the strongest, most specific
         // signal that the backend is not making progress.
         if let stall = longestAdmittedZeroTokenSeconds, stall >= wedgeStallSeconds {
             return .wedged
         }
+        // Effective demand = active/queued work right now OR a recent admission
+        // rejection. The latter is essential for the pinned case: every request
+        // is rejected at the early token-budget / KV-headroom guards before a
+        // bridge exists, so `hasDemand` stays false while the box 503s real
+        // traffic. A reject older than the window is no longer current demand.
+        let recentReject =
+            (secondsSinceLastAdmissionReject ?? .greatestFiniteMagnitude) <= admissionRejectDemandSeconds
+        let demand = hasDemand || recentReject
         // Pinned: the budget has been collapsed long enough, there is demand, and
         // nothing has succeeded within the same window.
         if let collapsedFor = budgetCollapsedForSeconds,
             collapsedFor >= pinnedSeconds,
-            hasDemand {
+            demand {
             let noRecentSuccess = (secondsSinceLastSuccess ?? .greatestFiniteMagnitude) >= pinnedSeconds
             if noRecentSuccess { return .pinned }
         }

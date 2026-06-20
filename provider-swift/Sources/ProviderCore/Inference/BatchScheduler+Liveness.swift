@@ -40,6 +40,16 @@ extension BatchScheduler {
         }
     }
 
+    /// Record an admission rejection that returns BEFORE any `activeBridges`
+    /// entry exists: the early token-budget guards in `submit` / `submitTokenized`
+    /// and the per-request KV reservation failure (which drops its bridge before
+    /// returning). This is the watchdog's only evidence of demand for a pinned
+    /// KV pool — every real request is rejected at those sites, so `activeBridges`
+    /// and `pendingRequestCount` stay 0 and would otherwise make the box look idle.
+    func noteAdmissionReject() {
+        lastAdmissionRejectAt = ContinuousClock.now
+    }
+
     /// One watchdog tick: proactively trim the reclaimable KV pool (off-actor,
     /// non-blocking) then assess and recover backend liveness.
     func tickLivenessWatchdog() async {
@@ -70,12 +80,17 @@ extension BatchScheduler {
         }
 
         let longestStall = longestAdmittedZeroTokenStallSeconds(now: now)
+        // Active/queued work is demand — but so is a recent admission rejection:
+        // a pinned pool rejects every request at the early token-budget / KV
+        // guards before a bridge exists, so these two counters stay 0 while it
+        // 503s real traffic. The pure policy folds the reject window into demand.
         let hasDemand = !activeBridges.isEmpty || pendingRequestCount > 0
         let verdict = livenessPolicy.assess(
             longestAdmittedZeroTokenSeconds: longestStall,
             budgetCollapsedForSeconds: budgetCollapsedSince.map { Self.seconds(now - $0) },
             secondsSinceLastSuccess: lastSuccessAt.map { Self.seconds(now - $0) },
-            hasDemand: hasDemand)
+            hasDemand: hasDemand,
+            secondsSinceLastAdmissionReject: lastAdmissionRejectAt.map { Self.seconds(now - $0) })
 
         switch verdict {
         case .healthy:

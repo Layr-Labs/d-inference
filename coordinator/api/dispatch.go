@@ -670,6 +670,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		for {
 			remaining := s.registry.Queue().MaxWait() - time.Since(queueStarted)
 			if remaining <= 0 {
+				s.registry.Queue().Remove(queuedReq.RequestID, queuedReq.Model)
 				d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
 				d.refundReservation()
 				s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})

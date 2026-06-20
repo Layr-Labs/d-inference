@@ -129,6 +129,22 @@ extension BatchScheduler {
         }
     }
 
+    /// Truthful slot `model` for the heartbeat. During a recovery self-restart the
+    /// live `modelId` is transiently "" — `loadModel` → `stopCurrentEngine` clears
+    /// it before `loadModel` re-sets it — so report the captured REAL id being
+    /// reloaded for the WHOLE window. Paired with the `reloading` state above, this
+    /// keeps the coordinator seeing the real model as not-servable (and derouting
+    /// it) instead of a phantom `model:""` slot, which would make the real model
+    /// look absent/cold here and let the coordinator route a request into a nil
+    /// engine ("No model loaded" 500). Outside a recovery restart this returns the
+    /// live capacity model unchanged, so the normal load/teardown path is unaffected.
+    func heartbeatSlotModel(capacityModel: String) -> String {
+        if isReloadingForRecovery, let id = recoveryReloadModelId, !id.isEmpty {
+            return id
+        }
+        return capacityModel
+    }
+
     /// Public surface called from `ProviderLoop` on every heartbeat tick.
     /// Implementation lives in the telemetry extension because most of
     /// the fields are EWMA / queued-budget state owned here.
@@ -147,7 +163,7 @@ extension BatchScheduler {
         let budgetMax = Int64(tokenBudgetMax)
 
         let slot = BackendSlotCapacity(
-            model: cap.model,
+            model: heartbeatSlotModel(capacityModel: cap.model),
             state: heartbeatSlotState(activeRequests: cap.activeRequests),
             numRunning: UInt32(cap.activeRequests),
             numWaiting: UInt32(cap.pendingRequests),

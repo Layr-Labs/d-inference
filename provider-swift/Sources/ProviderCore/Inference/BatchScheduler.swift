@@ -152,6 +152,17 @@ public actor BatchScheduler {
     /// True while a recovery self-restart is in flight; drives a "reloading"
     /// slot_state and prevents the watchdog from launching a second restart.
     var isReloadingForRecovery = false
+    /// The REAL model id being reloaded during a recovery self-restart, captured
+    /// at the start of `selfRestartForRecovery` BEFORE `loadModel` →
+    /// `stopCurrentEngine` transiently clears the live `modelId` to "". The
+    /// heartbeat advertises THIS id (see `heartbeatSlotModel`), not the empty live
+    /// `modelId`, for the whole reload window — so the coordinator keeps seeing the
+    /// real model as `reloading` and deroutes it, instead of seeing a phantom
+    /// `model:""` slot and treating the real model as cold/unknown here (which
+    /// would let it route a request into a nil engine → "No model loaded" 500).
+    /// Owned solely by `selfRestartForRecovery` (set before, cleared after); like
+    /// `isReloadingForRecovery` it is intentionally NOT reset by `stopCurrentEngine`.
+    var recoveryReloadModelId: String?
     /// When the token budget first went continuously collapsed (at/below
     /// `livenessPolicy.collapsedBudgetTokens`); nil when not collapsed.
     var budgetCollapsedSince: ContinuousClock.Instant?

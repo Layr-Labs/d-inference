@@ -87,6 +87,7 @@ struct LoadSnapshot: @unchecked Sendable {
     let bytes: Int
     let tokenizer: TokenizerHandle
     let eosTokenIds: Set<Int>
+    let modelType: String?
     let architecture: ModelArchitecture
 }
 

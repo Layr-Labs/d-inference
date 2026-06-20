@@ -365,7 +365,12 @@ public actor BatchScheduler {
             weightHash: weightHash,
             weightBytes: snapshot.bytes,
             maxConcurrentRequests: maxConcurrentRequests,
-            eosTokenIds: snapshot.eosTokenIds,
+            eosTokenIds: Self.effectiveEOSTokenIds(
+                modelId: modelId,
+                modelType: snapshot.modelType,
+                base: snapshot.eosTokenIds,
+                tokenToId: snapshot.tokenizer.inner.convertTokenToId
+            ),
             architecture: snapshot.architecture,
             diskAccountant: diskAccountant,
             kvQuantEnabled: kvQuantEnabled
@@ -528,19 +533,52 @@ public actor BatchScheduler {
             // Read architecture from config.json: covers hybrid models
             // (Gemma 3/3n/4) that don't conform to KVCacheDimensionProvider.
             let architecture: ModelArchitecture
+            let modelType: String?
             if case .directory(let modelDir) = ctx.configuration.id {
                 let configURL = modelDir.appendingPathComponent("config.json")
                 architecture = KVEstimation.parseModelArchitecture(at: configURL)
+                modelType = Self.modelType(at: configURL)
             } else {
                 architecture = .empty
+                modelType = nil
             }
             return LoadSnapshot(
                 bytes: bytes,
                 tokenizer: TokenizerHandle(ctx.tokenizer),
                 eosTokenIds: ctx.configuration.eosTokenIds,
+                modelType: modelType,
                 architecture: architecture
             )
         }
+    }
+
+    /// GPT-OSS/Harmony uses `<|return|>` for final responses and `<|call|>` for
+    /// tool-call turns. The tokenizer config only names `<|return|>` as EOS, so
+    /// add both token IDs at the scheduler boundary when the tokenizer exposes
+    /// them; non-Harmony models keep their configured EOS set unchanged.
+    static func effectiveEOSTokenIds(
+        modelId: String,
+        modelType: String? = nil,
+        base: Set<Int>,
+        tokenToId: (String) -> Int?
+    ) -> Set<Int> {
+        guard isHarmonyModelHint(modelId) || isHarmonyModelHint(modelType) else {
+            return base
+        }
+        var ids = base
+        for token in ["<|return|>", "<|endoftext|>", "<|call|>"] {
+            if let id = tokenToId(token) {
+                ids.insert(id)
+            }
+        }
+        return ids
+    }
+
+    private static func modelType(at configURL: URL) -> String? {
+        guard let data = try? Data(contentsOf: configURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return json["model_type"] as? String
     }
 
     /// Build a `BatchedEngine` with our scheduler config. Pulled out

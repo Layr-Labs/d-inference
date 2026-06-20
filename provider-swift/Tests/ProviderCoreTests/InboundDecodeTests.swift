@@ -161,6 +161,37 @@ struct InboundDecodeTests {
         #expect(req.messages[1].textContent == "sunny")
     }
 
+    @Test("legacy assistant function_call is translated to tool_calls")
+    func legacyFunctionCallTranslatedToToolCalls() throws {
+        let req = try decode(#"""
+        {"model":"m","messages":[
+           {"role":"user","content":"weather?"},
+           {"role":"assistant","function_call":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}},
+           {"role":"function","name":"get_weather","content":"sunny"}
+        ]}
+        """#)
+
+        #expect(req.messages[1].role == .assistant)
+        #expect(req.messages[1].textContent == "")
+        #expect(req.messages[1].toolCalls?.count == 1)
+        #expect(req.messages[1].toolCalls?.first?.id == "call_legacy_1")
+        #expect(req.messages[1].toolCalls?.first?.function.name == "get_weather")
+        #expect(req.messages[1].toolCalls?.first?.function.arguments == #"{"city":"SF"}"#)
+        #expect(req.messages[2].role == .tool)
+    }
+
+    @Test("malformed legacy function_call throws invalidToolPayload")
+    func malformedLegacyFunctionCallThrowsInvalidToolPayload() throws {
+        #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "assistant function_call is missing a function name")) {
+            _ = try decode(#"""
+            {"model":"m","messages":[
+               {"role":"assistant","function_call":{"arguments":"{}"}}
+            ]}
+            """#)
+        }
+    }
+
     @Test("unrecognised role throws a clear invalidRole (not a masked decode error)")
     func unknownRoleThrowsInvalidRole() throws {
         #expect(throws: MultiModelBatchSchedulerEngineError.invalidRole("robot")) {

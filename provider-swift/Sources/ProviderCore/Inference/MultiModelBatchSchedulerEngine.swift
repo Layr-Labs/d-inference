@@ -304,8 +304,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // handed to the template only — `toolSpecs` keeps its raw shape
             // for the tool-call output parser below.
             promptTokens = try tokenizer.inner.applyChatTemplate(
-                messages: sanitizeJinjaMessages(messages),
-                tools: sanitizeJinjaTools(toolSpecs),
+                messages: normalizeJinjaMessagesForTemplate(
+                    messages,
+                    modelId: request.model,
+                    modelType: modelType
+                ),
+                tools: normalizeJinjaToolsForTemplate(
+                    toolSpecs,
+                    modelId: request.model,
+                    modelType: modelType
+                ),
                 additionalContext: additionalContext
             )
         } catch {
@@ -465,8 +473,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Drop JSON `null` / `Optional` leaves the Jinja bridge
         // can't convert before rendering (mirrors `streamChatCompletion`).
         let tokens = try tokenizer.inner.applyChatTemplate(
-            messages: sanitizeJinjaMessages(messages),
-            tools: sanitizeJinjaTools(tools),
+            messages: normalizeJinjaMessagesForTemplate(messages, modelId: request.model),
+            tools: normalizeJinjaToolsForTemplate(tools, modelId: request.model),
             additionalContext: nil
         )
         return TokenizeResponse(tokens: tokens)

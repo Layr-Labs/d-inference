@@ -421,6 +421,42 @@ func TestReserveProviderExNodeHealthBreakerFailsOpen(t *testing.T) {
 	}
 }
 
+// The PUBLIC PREFLIGHT (QuickCapacityCheck) must fail open on the node-health
+// breaker: the breaker is a selection-time gate with a fail-open valve in the
+// dispatch path, so if the preflight excluded breaker-open nodes an
+// all-breaker-open fleet would report 0 candidates / 0 capacity-rejections and
+// the consumer would hard-503 "no_provider" BEFORE dispatch's fail-open ran —
+// defeating the valve during a bad fleet-wide rollout. The preflight therefore
+// ignores the provider breaker (every other gate, incl. the shape-keyed
+// inference-error cooldown, is still honored at the preflight).
+func TestQuickCapacityCheckFailsOpenOnProviderBreaker(t *testing.T) {
+	reg := New(testLogger())
+	model := "preflight-failopen-model"
+	p := makeSchedulerProvider(t, reg, "solo", model, 100)
+
+	// A healthy provider is a preflight candidate.
+	if cc, _, _ := reg.QuickCapacityCheck(model, 100, 128, RequestTraits{}); cc != 1 {
+		t.Fatalf("healthy provider: candidateCount=%d, want 1", cc)
+	}
+
+	// Trip the only provider's breaker — the entire fleet is now breaker-open.
+	for i := 0; i < providerBreakerConsecTrip; i++ {
+		reg.RecordProviderOutcome(p.ID, false, 503, "request rejected")
+	}
+	if !reg.ProviderBreakerOpen(p.ID) {
+		t.Fatal("provider breaker must be open")
+	}
+	// Selection-time gate still excludes it (honored at dispatch)...
+	if !providerBreakerOpenAt(reg, p.ID, time.Now()) {
+		t.Fatal("selection gate must report the breaker open")
+	}
+	// ...but the PREFLIGHT must still count it as a candidate so the consumer
+	// path falls through to dispatch's fail-open valve instead of a hard 503.
+	if cc, capRej, _ := reg.QuickCapacityCheck(model, 100, 128, RequestTraits{}); cc != 1 {
+		t.Fatalf("FAIL OPEN: preflight candidateCount=%d (capacityRejections=%d), want 1 (breaker ignored in preflight)", cc, capRej)
+	}
+}
+
 // Disconnect must drop every per-provider breaker map entry so a per-session
 // UUID leaves no residue.
 func TestDisconnectClearsProviderBreaker(t *testing.T) {

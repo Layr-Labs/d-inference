@@ -1598,7 +1598,17 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// and the admit re-check). This pre-flight only runs for public
 		// (non-self-route) requests, so selfRouteOwner is false — private-only
 		// machines are excluded unconditionally.
-		if !r.providerPassesRoutingGatesLocked(p, model, traits, false, now) {
+		//
+		// ignoreProviderBreaker=true (DAR-335): the per-provider node-health
+		// breaker is a SELECTION-time gate that fails open in the dispatch path
+		// (selectBestCandidateScanLocked / ReserveProviderEx). The preflight must
+		// fail open on it too — otherwise an all-breaker-open fleet reports 0
+		// candidates AND 0 capacity-rejections here, and the consumer hard-503s
+		// "no_provider" BEFORE dispatch's fail-open valve can serve a probe,
+		// re-introducing the very model-wide outage the valve exists to prevent.
+		// Every other gate (incl. the shape-keyed inference-error cooldown) is
+		// still honored; the breaker still steers SELECTION away from bad nodes.
+		if !r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true) {
 			p.mu.Unlock()
 			continue
 		}

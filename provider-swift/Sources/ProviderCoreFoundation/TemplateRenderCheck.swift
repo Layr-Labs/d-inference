@@ -112,11 +112,19 @@ public enum TemplateRenderCheck {
         let specialTokens = specialTokenContext(at: snapshotDir)
 
         for source in sources {
+            // Apply the same non-mutating, hash-gated chat-template override the
+            // runtime tokenize path uses (`ChatTemplateOverride`), so a known-
+            // broken published template (e.g. the outdated Gemma 4 tool template)
+            // is render-checked as the corrected upstream revision it will
+            // actually be served with. Keeps "renders here == renders at request
+            // time" exact; healthy/unknown templates pass through untouched.
+            let effectiveSource = ChatTemplateOverride.corrected(forTemplate: source) ?? source
+
             // Same compile options as the runtime tokenizer
             // (swift-transformers `compiledTemplate(for:)`).
             let template: Template
             do {
-                template = try Template(source, with: .init(lstripBlocks: true, trimBlocks: true))
+                template = try Template(effectiveSource, with: .init(lstripBlocks: true, trimBlocks: true))
             } catch {
                 // A template that doesn't compile can't render at request time.
                 return false

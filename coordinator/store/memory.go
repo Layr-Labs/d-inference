@@ -700,13 +700,10 @@ func (s *MemoryStore) UsageTimeSeries(since time.Time) []UsageBucket {
 	return out
 }
 
-// Leaderboard ranks accounts by the chosen metric, combining inference work
-// (provider_earnings) with non-inference reward ledger entries (referral_reward,
-// admin_reward). EarningsMicroUSD is the combined total (work + reward) and is
-// the ranking key for the earnings metric. Only providers (accounts with
-// inference work in the window) are ranked; reward earnings are credited to
-// those providers, while reward-only accounts (e.g. consumer-only referrers) do
-// not appear. A deterministic account_id tiebreaker keeps ordering stable.
+// Leaderboard ranks accounts by the chosen metric, splitting inference work from
+// network rewards. Base-reward rows live in provider_earnings for provider-facing
+// history, but count as reward earnings here so they do not inflate work/jobs.
+// Reward-only ledger accounts (e.g. consumer-only referrers) do not appear.
 func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -722,7 +719,7 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 		}
 		return row
 	}
-	// Inference work earnings.
+	// Provider earnings rows: inference work plus base_reward rows.
 	for _, e := range s.providerEarnings {
 		if e.AccountID == "" {
 			continue
@@ -731,6 +728,10 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 			continue
 		}
 		row := rowFor(e.AccountID)
+		if e.Model == "base_reward" {
+			row.RewardEarningsMicroUSD += e.AmountMicroUSD
+			continue
+		}
 		row.WorkEarningsMicroUSD += e.AmountMicroUSD
 		row.Tokens += int64(e.PromptTokens + e.CompletionTokens)
 		row.Jobs++
@@ -778,12 +779,10 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 	return rows
 }
 
-// NetworkTotals aggregates metrics across all earnings, combining inference
-// work (provider_earnings) with non-inference reward ledger entries
-// (referral_reward, admin_reward). Rewards are only counted for provider
-// accounts (those with inference work in the window), so consumer-only reward
-// recipients do not inflate the totals. EarningsMicroUSD is the combined total
-// and ActiveAccounts counts distinct provider accounts.
+// NetworkTotals aggregates provider earnings, splitting inference work from
+// rewards. Base-reward rows count as reward earnings, not work/jobs/tokens.
+// Ledger rewards are only counted for accounts that also have provider earnings
+// rows in the window, so consumer-only reward recipients do not inflate totals.
 func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -793,12 +792,16 @@ func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 		if !since.IsZero() && e.CreatedAt.Before(since) {
 			continue
 		}
-		t.WorkEarningsMicroUSD += e.AmountMicroUSD
-		t.Tokens += int64(e.PromptTokens + e.CompletionTokens)
-		t.Jobs++
 		if e.AccountID != "" {
 			providers[e.AccountID] = struct{}{}
 		}
+		if e.Model == "base_reward" {
+			t.RewardEarningsMicroUSD += e.AmountMicroUSD
+			continue
+		}
+		t.WorkEarningsMicroUSD += e.AmountMicroUSD
+		t.Tokens += int64(e.PromptTokens + e.CompletionTokens)
+		t.Jobs++
 	}
 	for _, e := range s.ledgerEntries {
 		if !IsRewardLedgerType(e.Type) {

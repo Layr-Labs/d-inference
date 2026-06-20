@@ -42,9 +42,8 @@ const (
 // tier whose MinGB it meets; sub-24GB machines get $0 (they can't hold even the
 // 20B baseline model or run useful specialist work — design §3). The 24GB and
 // 32GB tiers exist to incentivize the common mid-range Macs that can serve the
-// gpt-oss-20B baseline plus specialist tasks (STT, embeddings); they still earn
-// only when actually serving (the work gate). Policy constants, not deployment
-// config.
+// gpt-oss-20B baseline plus specialist tasks (STT, embeddings). Policy
+// constants, not deployment config.
 var floorTiers = []struct {
 	MinGB int
 	Floor int64

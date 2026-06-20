@@ -678,11 +678,9 @@ func main() {
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
 	srv.StartThroughputAnomalyDetector(ctx)
 
-	// Base-rewards settlement + correctness prober (only when enabled).
+	// Base-rewards settlement (only when enabled).
 	if br := srv.BaseRewards(); br != nil {
 		saferun.Go(logger, "base_rewards_settlement", func() { br.Run(ctx) })
-		prober := api.NewProber(srv)
-		saferun.Go(logger, "base_rewards_prober", func() { prober.Run(ctx) })
 	}
 
 	// HTTP server with graceful shutdown.

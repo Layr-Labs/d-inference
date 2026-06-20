@@ -12,8 +12,8 @@ not a backstop.** Every eligible machine keeps 100% of its organic earnings *and
 its full memory-tier floor; real usage is pure upside on top of a stable base.
 Cost is bounded not by clawing the base back against earnings, but by a **fixed
 monthly pool** (`FLOOR_POOL_B`, §7) that is prorated into 5-minute settlement
-periods, plus a strict **eligibility gate** (attested, online, actually serving —
-§6).
+periods, plus a strict **eligibility gate** (attested, online, healthy, linked —
+§6). Rewards do not depend on demand.
 
 An optional reduction knob `k` (default **0**) can claw the base back against
 earnings if the program ever needs to economize — `k=1` reproduces a pure
@@ -22,16 +22,16 @@ earnings if the program ever needs to economize — `k=1` reproduces a pure
 It replaces the earlier `streaming.go` design (a flat `memoryBase + bandwidthBonus`
 rate paid on top of per-token earnings), which was unbounded, double-paid, and
 idle-farmable. This design is also additive, but unlike streaming.go it is
-**pool-bounded, verified-memory-tiered, work-gated, and durably settled.**
+**pool-bounded, verified-memory-tiered, uptime-gated, and durably settled.**
 See [§9 Delta](#9-delta-vs-the-previous-streaming-design).
 
 ---
 
 ## 1. The question this answers
 
-> *"If a machine is attested, online, and actually serving, should it earn a
-> stable base — even before the network is busy — and still keep everything it
-> makes from real work?"*
+> *"If a machine is attested, online, healthy, and linked, should it earn a stable
+> base — even before the network is busy — and still keep everything it makes
+> from real work?"*
 
 Yes. The base reward is **additive base income**: `payout = earned + floor`. A
 provider always keeps 100% of organic earnings and receives its full tier floor
@@ -43,10 +43,10 @@ stays affordable for three reasons:
    periods and water-filled across eligible machines. We bound cost at the
    *fleet* level instead of means-testing each machine, so the promise to any one
    provider stays clean: your base is never cut because you earned.
-2. **A real eligibility gate.** The floor goes only to attested, online machines
-   that actually serve (a passed probe or a dispatched billed job; self-route
-   excluded — §6). Idlers and self-dealers earn nothing, so additive payment is
-   not idle-farmable.
+2. **A real eligibility gate.** The floor goes only to attested, linked machines
+   that are online, healthy, and have a loaded routable model (§6). Demand is not
+   required: if the machine is up and eligible during a quiet period, it accrues
+   the base reward.
 3. **Verified, bounded valuation.** The floor is set by *verified* memory tier
    (§3); no self-reported number can raise a payout (§3b).
 
@@ -168,8 +168,7 @@ Notes:
 - **24GB and 32GB are incentivized entry tiers.** They can serve the gpt-oss-20B
   baseline and specialist work (STT, embeddings), and the real fleet skews into
   this range (~27GB average), so paying them brings in the bulk of useful supply.
-  They earn only while actually serving (the work gate), so the floor never
-  rewards an idle small machine.
+  They earn while online and eligible, even if demand is quiet.
 - **Sub-24GB machines get $0 floor by design.** They can't hold the 20B baseline
   or run useful specialist work; they still earn from real usage.
 
@@ -177,7 +176,7 @@ Notes:
 
 | Signal | Source | Trust | Role |
 |---|---|---|---|
-| Memory tier | serial→model lookup + tier-sized correctness probe | **verified** | sets `floor_tier` |
+| Memory tier | serial→model max-memory cap + reported MemoryGB | **capped** | sets `floor_tier` |
 | Uptime | `provider_sessions` (durable) | **coordinator** | sets `avail` |
 | Trust level | attestation (`hardware` / `self_signed`) | **attested** | eligibility |
 | Organic earnings | `ProviderEarning` rows, filtered (§5) | **coordinator** | the reduction (`k · earned`) |
@@ -213,29 +212,23 @@ additive model.
 
 ## 5. What counts as "earned" (organic earnings)
 
-"Earned" must be defined on **real** money — it feeds the eligibility gate (§6),
-the admin/dashboard `earned + base` breakdown, the optional `k`-clawback (§2), and
-the scarcity ranking when the pool is over-subscribed (§7). The real risk is fake
-"served work" to clear the **eligibility gate** (§6); under additive payment there
-is no incentive to fake *earnings* (they wouldn't raise the base). "Earned" is
-defined tightly:
+"Earned" must be defined on **real** money — it feeds the admin/dashboard
+`earned + base` breakdown, the optional `k`-clawback (§2), and the scarcity
+ranking when the pool is over-subscribed (§7). Under additive payment there is no
+incentive to fake *earnings* (they wouldn't raise the base). "Earned" is defined
+tightly:
 
 ```
 organic_earned_i = Σ ProviderEarning.AmountMicroUSD
                    WHERE Model        ≠ 'base_reward'
                      AND AmountMicroUSD > 0
                      AND consumer_account ≠ provider_account   // excludes self-route
-                     AND not a synthetic-probe credit
                    over the settlement period
 ```
 
 - **Self-route excluded.** Self-route settles at $0 today, but a provider can be
   its own consumer through a second account; jobs where the consumer account ==
   the provider's account never count.
-- **Probe credits excluded.** Synthetic probes (§6) may pay a tiny real amount
-  for indistinguishability; those credits are flagged and excluded from the
-  optional reduction and the displayed organic-earnings breakdown.
-
 ---
 
 ## 6. Eligibility gate (anti-gaming)
@@ -245,42 +238,29 @@ while all of these hold**. Floor without these is $0 — unproven capacity earns
 nothing (it must not dilute honest providers).
 
 1. **Attested** — trust ∈ {`hardware`, `self_signed`} ≥ `MIN_TRUST`.
-2. **Memory verified** — serial→model lookup **and** a tier-sized correctness
-   probe confirm the machine can hold the tier it's being paid for.
+2. **Memory capped** — serial→model lookup caps self-reported memory downward;
+   unknown models receive $0 until catalogued.
 3. **Online ≥ 90%** of the settlement period (else `avail` ramps the floor down).
 4. **Healthy** — memory pressure < 0.8, thermal ≠ critical, and the advertised
    model is actually loaded for routing.
-5. **Proven work** — in a rolling window, **either** passed ≥1 coordinator
-   correctness-probe **or** served ≥1 coordinator-dispatched, other-account,
-   billed job. Self-route and self-reported counters do not qualify.
+### Code realities that gate shipping
 
-### Three code realities that gate shipping
-
-These were verified against the coordinator source. The reward is farmable until
-each is fixed:
+These were verified against the coordinator source:
 
 - **MDM `SecurityInfo` carries the serial number but *not* memory size**
   (`coordinator/mdm/mdm.go`). `MemoryGB` arrives only via the self-reported
-  heartbeat. → A 16GB Air can claim 512GB and bank $40. **Fix: serial→model
-  lookup + tier-sized probe; never raise a floor from a self-reported spec.**
-- **No probe code exists.** "Served work" is provider-reported (`requests_served`).
-  **Fix: coordinator runs known-answer probes** — encrypt to the provider's
-  X25519 key like a real consumer, temp=0 on a pinned model + weight-hash, check
-  the SE-signed `ResponseHash` against the precomputed expected hash. Make probes
-  indistinguishable (occasionally pay them; rotate consumer keys; fire at random
-  times within the month).
-- **Self-route settles at $0 and credits success unconditionally**
-  (`coordinator/api/consumer.go`, `coordinator/api/provider.go`). **Fix: count
-  only coordinator-dispatched, other-account, billed jobs toward the work gate.**
+  heartbeat. A small Mac could otherwise claim 512GB and bank the top tier. **Fix:
+  serial→model lookup caps self-reported memory downward; unknown models get $0
+  until we explicitly catalogue them.**
 
 ### Concentration — per-machine, no per-account cap (default)
 
 Base rewards are paid **per machine, not per account**: an operator running N
-real, attested, serving Macs contributes N machines of capacity and earns N
-floors. We deliberately do **not** cap an account's share by default, because:
+real, attested, online Macs contributes N machines of capacity and earns N floors.
+We deliberately do **not** cap an account's share by default, because:
 
 - **Attestation is the Sybil defense.** Every machine must be real, attested
-  Apple hardware passing the uptime + work/probe gates — you cannot fake
+  Apple hardware passing the uptime/health/model-loaded gates — you cannot fake
   machines, so a large account share reflects real capacity, not Sybils.
 - **The pool already bounds total spend** ($9k), so a per-account cap adds
   nothing to cost control — it only changes *distribution*, toward penalizing
@@ -310,9 +290,8 @@ period_draw = Σ base_draw_i  ≤  FLOOR_POOL_B × period_seconds / seconds_in_m
 | Line | Worst case |
 |---|---|
 | Draw (`FLOOR_POOL_B`) | **≤ $9,000 / mo** — the board number |
-| Probe COGS | ≤ $1,000 / mo |
 | Stripe payout fees | ≤ $500 / mo |
-| **All-in ceiling `Z`** | **≈ $10,500 / mo** |
+| **All-in ceiling `Z`** | **≈ $9,500 / mo** |
 | **Today's actual** (≈600 machines) | **≈ $7,600 / mo** — the cap doesn't bind until ~1,000 machines |
 | Optional lifetime cap | ~$40,000 → a money-driven end date independent of demand |
 
@@ -366,7 +345,7 @@ per-token.
 | Relationship to earnings | additive (`base + usage`) | **additive base income** (`earned + floor`; optional `k`-clawback, default off) |
 | Total cost | unbounded (`rate × fleet × time`) | **bounded** by `FLOOR_POOL_B` (flat while enabled) |
 | Valuation | `memBase + bwBonus` (sum) on **self-reported** specs | memory-tier floor on **verified** memory |
-| Work proof | "warm model loaded" (idle-farmable) | probe / dispatched billed job; self-route excluded |
+| Eligibility | "warm model loaded" (idle-farmable) | attested + online + healthy + loaded model + linked account + uptime |
 | Durability | in-memory, lost every deploy | durable `provider_sessions` + idempotent settlement |
 | Demand coupling | none | fleet pool cap (optional per-provider `k`) |
 
@@ -395,16 +374,13 @@ table, the in-memory tracker as source-of-truth, the bandwidth-bonus term.
 ## 11. Phased rollout
 
 **Phase 0 — bounded floor, honest gate, restart-safe (~3 wks).** Floor table +
-additive `k=0` base income (prorated floor on top of earnings); eligibility gates 1, 3, 4, and the *billed-job* half of gate 5
-(cheap — no new schema); `UNIQUE(job_id)` + idempotent `provider_floor_draw`
-settlement from `provider_sessions`; slot allocation protecting the workhorse
-tier; per-machine payout (per-account cap off by default). Idlers and self-dealers earn nothing
-from day one. Test live-isolated against throwaway Postgres (double-credit,
+additive `k=0` base income (prorated floor on top of earnings); eligibility gates
+for attestation, uptime, health, loaded model, and linked account; `UNIQUE(job_id)`
++ idempotent `provider_floor_draw` settlement from `provider_sessions`; slot
+allocation protecting the workhorse tier; per-machine payout (per-account cap off
+by default). Test live-isolated against throwaway Postgres (double-credit,
 blue-green double-open, partial-settlement Σ==pool, empty-fleet no-NaN,
 pre-attestation unpaid).
-
-**Phase 1 — verified capacity + probes (~2 wks).** serial→model memory
-verification; coordinator correctness-probes (gate 2 + probe half of gate 5).
 
 ---
 
@@ -423,5 +399,5 @@ verification; coordinator correctness-probes (gate 2 + probe half of gate 5).
 5. **Entry tiers (decided)** — 24GB ($10) and 32GB ($12) now earn a floor to
    incentivize the common mid-range Macs (they can serve the 20B baseline +
    specialist STT/embeddings work, and the fleet skews into this range). They
-   earn only while serving (work gate). Open sub-question: extend a floor to
-   16GB for specialist-only work, or keep 24GB as the threshold?
+   earn while online and eligible. Open sub-question: extend a floor to 16GB for
+   specialist-only work, or keep 24GB as the threshold?

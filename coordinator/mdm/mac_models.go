@@ -86,10 +86,10 @@ var modelMaxMemoryGB = map[string]int{
 	// --- Mac Studio (2025): M4 Max + M3 Ultra ---
 	// Mac16,9 is AMBIGUOUS: it covers both the M4 Max Mac Studio (max 128GB) and
 	// the M3 Ultra Mac Studio (max 512GB). Since memory is only clamped DOWN and
-	// the probe does not yet verify a tier-sized model, capping at 512 would let a
+	// we do not verify exact installed memory yet, capping at 512 would let a
 	// 128GB M4 Max self-report 512GB and bank the top $40 floor. We cap
-	// conservatively at 128 until the tier-sized correctness probe can confirm a
-	// genuine ≥512GB machine (a rare honest M3 Ultra is under-tiered until then).
+	// conservatively at 128 until we have a stronger memory proof for genuine
+	// ≥512GB machines (a rare honest M3 Ultra is under-tiered until then).
 	"Mac16,9": 128,
 
 	// --- M5 family (Mac17,x) ---

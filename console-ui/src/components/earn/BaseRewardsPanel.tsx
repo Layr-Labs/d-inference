@@ -87,7 +87,7 @@ export function BaseRewardsPanel({ highlightGB }: { highlightGB?: number }) {
         <div className="flex items-start gap-2 text-xs text-text-tertiary">
           <Info size={13} className="shrink-0 mt-0.5" />
           <span>
-            Base rewards go to attested, actively-serving machines up to a fixed monthly budget,
+            Base rewards go to attested, online, healthy machines up to a fixed monthly budget,
             prorated per settlement period; not a guarantee. See the docs for eligibility.
           </span>
         </div>

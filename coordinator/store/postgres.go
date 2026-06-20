@@ -989,23 +989,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_floor_draws_epoch ON provider_floor_draws(epoch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_floor_draws_account ON provider_floor_draws(account_id, epoch_id)`,
-
-		// Base-rewards Phase 1: coordinator correctness probe outcomes (work-gate).
-		`CREATE TABLE IF NOT EXISTS provider_probe_results (
-			id BIGSERIAL PRIMARY KEY,
-			provider_key TEXT NOT NULL,
-			provider_id TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL DEFAULT '',
-			weight_hash TEXT NOT NULL DEFAULT '',
-			success BOOLEAN NOT NULL DEFAULT FALSE,
-			response_hash TEXT NOT NULL DEFAULT '',
-			expected_hash TEXT NOT NULL DEFAULT '',
-			latency_ms BIGINT NOT NULL DEFAULT 0,
-			paid_micro_usd BIGINT NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_probe_results_key_created ON provider_probe_results(provider_key, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_probe_results_key_success ON provider_probe_results(provider_key, created_at DESC) WHERE success`,
 	}
 
 	for _, m := range migrations {

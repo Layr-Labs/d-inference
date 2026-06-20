@@ -209,7 +209,7 @@ func TestSettleProviderFloorDraw_ZeroAmount(t *testing.T) {
 }
 
 // TestSumProviderEarningsByKey_Filters asserts the organic-earnings sum excludes
-// base_reward/probe credits, non-positive amounts, and rows outside [since,until).
+// base_reward credits, non-positive amounts, and rows outside [since,until).
 func TestSumProviderEarningsByKey_Filters(t *testing.T) {
 	ctx := context.Background()
 	for name, s := range storeBackends(t) {
@@ -239,11 +239,8 @@ func TestSumProviderEarningsByKey_Filters(t *testing.T) {
 			if err := s.RecordProviderEarning(mk("gemma", 5_000, base.Add(time.Hour))); err != nil {
 				t.Fatal(err)
 			}
-			// Excluded: base_reward, probe, zero amount, out-of-window (before/after).
+			// Excluded: base_reward, zero amount, out-of-window (before/after).
 			if err := s.RecordProviderEarning(mk("base_reward", 99_000, base)); err != nil {
-				t.Fatal(err)
-			}
-			if err := s.RecordProviderEarning(mk("probe", 99_000, base)); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.RecordProviderEarning(mk("qwen", 0, base)); err != nil {
@@ -269,82 +266,6 @@ func TestSumProviderEarningsByKey_Filters(t *testing.T) {
 			}
 			if total != 15_000 {
 				t.Fatalf("sum = %d, want 15000", total)
-			}
-		})
-	}
-}
-
-// TestHasBilledJobSince asserts the billed-job work gate: true with ≥1 organic
-// row in window, false when only excluded rows exist.
-func TestHasBilledJobSince(t *testing.T) {
-	ctx := context.Background()
-	for name, s := range storeBackends(t) {
-		t.Run(name, func(t *testing.T) {
-			pk := uniqueID("pk")
-			since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-			in := since.Add(time.Hour)
-
-			mk := func(model string, amt int64, at time.Time) *ProviderEarning {
-				return &ProviderEarning{
-					AccountID: uniqueID("acct"), ProviderID: "prov", ProviderKey: pk,
-					JobID: uniqueID("job"), Model: model, AmountMicroUSD: amt, CreatedAt: at,
-				}
-			}
-
-			// No organic rows yet → false.
-			ok, err := s.HasBilledJobSince(ctx, pk, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok {
-				t.Fatalf("HasBilledJobSince before any job = true, want false")
-			}
-
-			// Only excluded rows → still false.
-			if err := s.RecordProviderEarning(mk("base_reward", 99_000, in)); err != nil {
-				t.Fatal(err)
-			}
-			if err := s.RecordProviderEarning(mk("probe", 99_000, in)); err != nil {
-				t.Fatal(err)
-			}
-			if err := s.RecordProviderEarning(mk("qwen", 0, in)); err != nil {
-				t.Fatal(err)
-			}
-			ok, err = s.HasBilledJobSince(ctx, pk, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok {
-				t.Fatalf("HasBilledJobSince with only excluded rows = true, want false")
-			}
-
-			// One organic in-window row → true.
-			if err := s.RecordProviderEarning(mk("qwen", 1_000, in)); err != nil {
-				t.Fatal(err)
-			}
-			ok, err = s.HasBilledJobSince(ctx, pk, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !ok {
-				t.Fatalf("HasBilledJobSince with one organic row = false, want true")
-			}
-
-			// A row before the window does not count.
-			pk2 := uniqueID("pk")
-			if err := s.RecordProviderEarning(&ProviderEarning{
-				AccountID: uniqueID("acct"), ProviderID: "prov", ProviderKey: pk2,
-				JobID: uniqueID("job"), Model: "qwen", AmountMicroUSD: 1_000,
-				CreatedAt: since.Add(-time.Hour),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			ok, err = s.HasBilledJobSince(ctx, pk2, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok {
-				t.Fatalf("HasBilledJobSince with only pre-window row = true, want false")
 			}
 		})
 	}
@@ -471,100 +392,10 @@ func TestListProviderSessionsOverlapping_OpenSessionGraceIncludesOverlap(t *test
 	}
 }
 
-// TestRecordProbeResult_HasProbeSuccessSince covers the Phase-1 probe store path.
-func TestRecordProbeResult_HasProbeSuccessSince(t *testing.T) {
-	for name, s := range storeBackends(t) {
-		t.Run(name, func(t *testing.T) {
-			pk := uniqueID("pk")
-			since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-
-			ok, err := s.HasProbeSuccessSince(pk, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok {
-				t.Fatalf("HasProbeSuccessSince before any probe = true, want false")
-			}
-
-			// A failed probe does not satisfy the gate.
-			if err := s.RecordProbeResult(&ProbeResult{
-				ProviderKey: pk, Model: "qwen", Success: false, CreatedAt: since.Add(time.Hour),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			ok, err = s.HasProbeSuccessSince(pk, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok {
-				t.Fatalf("HasProbeSuccessSince with only a failed probe = true, want false")
-			}
-
-			// A successful probe in-window satisfies it.
-			if err := s.RecordProbeResult(&ProbeResult{
-				ProviderKey: pk, Model: "qwen", Success: true, CreatedAt: since.Add(2 * time.Hour),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			ok, err = s.HasProbeSuccessSince(pk, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !ok {
-				t.Fatalf("HasProbeSuccessSince with a successful probe = false, want true")
-			}
-
-			// A later failed probe expires the earlier success.
-			if err := s.RecordProbeResult(&ProbeResult{
-				ProviderKey: pk, Model: "qwen", Success: false, CreatedAt: since.Add(3 * time.Hour),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			ok, err = s.HasProbeSuccessSince(pk, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok {
-				t.Fatalf("HasProbeSuccessSince with later failed probe = true, want false")
-			}
-
-			// A still-later success qualifies again.
-			if err := s.RecordProbeResult(&ProbeResult{
-				ProviderKey: pk, Model: "qwen", Success: true, CreatedAt: since.Add(4 * time.Hour),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			ok, err = s.HasProbeSuccessSince(pk, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !ok {
-				t.Fatalf("HasProbeSuccessSince with latest successful probe = false, want true")
-			}
-
-			// A success before the window does not count.
-			pk2 := uniqueID("pk")
-			if err := s.RecordProbeResult(&ProbeResult{
-				ProviderKey: pk2, Model: "qwen", Success: true, CreatedAt: since.Add(-time.Hour),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			ok, err = s.HasProbeSuccessSince(pk2, since)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok {
-				t.Fatalf("HasProbeSuccessSince with only a pre-window success = true, want false")
-			}
-		})
-	}
-}
-
 // TestSettleProviderFloorDraw_RecordsVisibleEarning is the regression for the
 // "invisible payout" finding: a settled floor draw must show in the provider's
 // earnings history + summary (as a base_reward row) so it isn't an unexplained
-// balance jump — while staying EXCLUDED from organic gating (work-gate + draw
-// math) so it can never count as real served revenue.
+// balance jump — while staying EXCLUDED from organic draw math.
 func TestSettleProviderFloorDraw_RecordsVisibleEarning(t *testing.T) {
 	ctx := context.Background()
 	for name, s := range storeBackends(t) {
@@ -603,7 +434,7 @@ func TestSettleProviderFloorDraw_RecordsVisibleEarning(t *testing.T) {
 				t.Fatalf("summary = %+v, want total 18000000 count 1", sum)
 			}
 
-			// EXCLUDED from organic gating: must not count toward earned or the work-gate.
+			// EXCLUDED from organic draw math: must not count toward earned.
 			lo := time.Now().Add(-24 * time.Hour)
 			hi := time.Now().Add(24 * time.Hour)
 			organic, err := s.SumProviderEarningsByKey(ctx, pk, lo, hi)
@@ -612,13 +443,6 @@ func TestSettleProviderFloorDraw_RecordsVisibleEarning(t *testing.T) {
 			}
 			if organic != 0 {
 				t.Fatalf("organic earnings = %d, want 0 (base_reward must be excluded)", organic)
-			}
-			billed, err := s.HasBilledJobSince(ctx, pk, lo)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if billed {
-				t.Fatalf("HasBilledJobSince = true on a base_reward row, want false")
 			}
 		})
 	}

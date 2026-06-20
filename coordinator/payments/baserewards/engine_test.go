@@ -29,11 +29,10 @@ type engineStore struct {
 	inner       *store.MemoryStore
 	sessions    []store.ProviderSession
 	earnings    []store.ProviderEarning // organic earning rows, keyed by ProviderKey
-	probed      map[string]bool         // providerKey → passed a probe in-window (gate-5 OR)
 }
 
 func newEngineStore() *engineStore {
-	return &engineStore{inner: store.NewMemory(store.Config{}), probed: map[string]bool{}}
+	return &engineStore{inner: store.NewMemory(store.Config{})}
 }
 
 func (s *engineStore) ListProviderSessionsOverlapping(_ context.Context, start, end time.Time, openSessionGrace time.Duration) ([]store.ProviderSession, error) {
@@ -58,7 +57,7 @@ func (s *engineStore) SumProviderEarningsByKey(_ context.Context, providerKey st
 		if e.ProviderKey != providerKey || e.AmountMicroUSD <= 0 {
 			continue
 		}
-		if e.Model == "base_reward" || e.Model == "probe" {
+		if e.Model == "base_reward" {
 			continue
 		}
 		if e.CreatedAt.Before(since) || !e.CreatedAt.Before(until) {
@@ -67,25 +66,6 @@ func (s *engineStore) SumProviderEarningsByKey(_ context.Context, providerKey st
 		total += e.AmountMicroUSD
 	}
 	return total, nil
-}
-
-func (s *engineStore) HasBilledJobSince(_ context.Context, providerKey string, since time.Time) (bool, error) {
-	for _, e := range s.earnings {
-		if e.ProviderKey != providerKey || e.AmountMicroUSD <= 0 {
-			continue
-		}
-		if e.Model == "base_reward" || e.Model == "probe" {
-			continue
-		}
-		if !e.CreatedAt.Before(since) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (s *engineStore) HasProbeSuccessSince(providerKey string, _ time.Time) (bool, error) {
-	return s.probed[providerKey], nil
 }
 
 func (s *engineStore) WithEpochSettlementLock(_ context.Context, _ string, fn func() error) error {
@@ -321,9 +301,8 @@ func TestSettleEpoch_RestartSafe(t *testing.T) {
 	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
 	setSerial(p, "S1", "Mac15,8")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
-	// A billed job served just BEFORE the epoch (within the 45d work window)
-	// satisfies the proven-work gate but contributes $0 to this period's earned →
-	// the machine draws its prorated floor.
+	// A prior job contributes $0 to this period's earned; eligibility no longer
+	// depends on demand, so the machine draws its prorated floor.
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 2_000_000, start.Add(-24*time.Hour))}
 
 	e1 := newTestEngine(st, reg, clock)
@@ -366,10 +345,9 @@ func TestSettleEpoch_PreAttestationUnpaid(t *testing.T) {
 	}
 }
 
-func TestSettleEpoch_SelfRouteExcluded(t *testing.T) {
-	// Self-route produces no billed earning row, so the proven-work gate (gate 5)
-	// is never satisfied. Zero organic earnings + a full-uptime session → fails
-	// the work gate → $0, even though uptime is perfect.
+func TestSettleEpoch_NoDemandStillPaid(t *testing.T) {
+	// Base rewards are demand-independent: zero organic earnings + a full-uptime
+	// eligible session still earns the prorated floor.
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
 	reg := registry.New(testLogger())
@@ -383,8 +361,9 @@ func TestSettleEpoch_SelfRouteExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Eligible != 0 || res.Settled != 0 {
-		t.Fatalf("no billed work → no floor, got %+v", res)
+	want := PeriodFloor(64, 1.0, start, end)
+	if res.Eligible != 1 || res.Settled != 1 || res.TotalDrawMicroUSD != want {
+		t.Fatalf("no demand should still pay prorated floor %d, got %+v", want, res)
 	}
 }
 
@@ -455,8 +434,8 @@ func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
 	s1 := store.ProviderSession{SessionID: "s1", SerialNumber: "S1", AccountID: "acc1", ProviderKey: "PK1", ConnectedAt: start, LastSeen: end, DisconnectedAt: &disc}
 	s2 := store.ProviderSession{SessionID: "s2", SerialNumber: "S1", AccountID: "acc1", ProviderKey: "PK1", ConnectedAt: half, LastSeen: end, DisconnectedAt: &disc}
 	st.sessions = []store.ProviderSession{s1, s2}
-	// Billed job before the period satisfies the work gate; $0 earned this period →
-	// prorated floor, so the test isolates the uptime-cap behavior.
+	// $0 earned this period → prorated floor, so the test isolates the uptime-cap
+	// behavior without depending on demand.
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 2_000_000, start.Add(-24*time.Hour))}
 
 	e := newTestEngine(st, reg, clock)

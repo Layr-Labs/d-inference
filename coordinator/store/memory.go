@@ -145,9 +145,6 @@ type MemoryStore struct {
 	floorDrawSeq       int64
 	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
 
-	// Base rewards Phase 1 — coordinator correctness-probe outcomes.
-	probeResults   []ProbeResult
-	probeResultSeq int64
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -202,7 +199,6 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceRejections:           make([]RejectionRecord, 0),
 		providerFloorDraws:            make([]ProviderFloorDraw, 0),
 		floorDrawKeys:                 make(map[string]struct{}),
-		probeResults:                  make([]ProbeResult, 0),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{
@@ -264,10 +260,6 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	if n := len(s.providerFloorDraws); n > maxEntries {
 		s.providerFloorDraws = append([]ProviderFloorDraw(nil), s.providerFloorDraws[n-maxEntries:]...)
 	}
-	if n := len(s.probeResults); n > maxEntries {
-		s.probeResults = append([]ProbeResult(nil), s.probeResults[n-maxEntries:]...)
-	}
-
 	// Expired device codes can be dropped outright.
 	now := time.Now()
 	for code, dc := range s.deviceCodesByCode {

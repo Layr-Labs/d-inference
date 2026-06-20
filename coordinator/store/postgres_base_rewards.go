@@ -2,8 +2,8 @@ package store
 
 // Postgres implementation of the base-rewards store methods (design §8).
 // The money source-of-truth lives here: organic-earnings sums, the idempotent
-// per-epoch floor-draw settlement, the floor-draw pool accounting, the
-// session-overlap read used for uptime, and the Phase-1 probe outcomes.
+// per-epoch floor-draw settlement, the floor-draw pool accounting, and the
+// session-overlap read used for uptime.
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 )
 
 // SumProviderEarningsByKey returns total organic micro-USD for one provider node
-// in [since, until): amount>0, excluding base_reward and probe credits.
+// in [since, until): amount>0, excluding base_reward credits.
 func (s *PostgresStore) SumProviderEarningsByKey(ctx context.Context, providerKey string, since, until time.Time) (int64, error) {
 	var total int64
 	err := s.pool.QueryRow(ctx,
@@ -23,33 +23,13 @@ func (s *PostgresStore) SumProviderEarningsByKey(ctx context.Context, providerKe
 		  WHERE provider_key = $1
 		    AND created_at >= $2 AND created_at < $3
 		    AND amount_micro_usd > 0
-		    AND model NOT IN ('base_reward', 'probe')`,
+		    AND model <> 'base_reward'`,
 		providerKey, since, until,
 	).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("store: sum provider earnings by key: %w", err)
 	}
 	return total, nil
-}
-
-// HasBilledJobSince reports whether a provider node served ≥1 organic, billed
-// job since `since`. Self-route produces no earning row, so it is excluded
-// structurally.
-func (s *PostgresStore) HasBilledJobSince(ctx context.Context, providerKey string, since time.Time) (bool, error) {
-	var exists bool
-	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS(
-			SELECT 1 FROM provider_earnings
-			 WHERE provider_key = $1
-			   AND created_at >= $2
-			   AND amount_micro_usd > 0
-			   AND model NOT IN ('base_reward', 'probe'))`,
-		providerKey, since,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("store: has billed job since: %w", err)
-	}
-	return exists, nil
 }
 
 // SettleProviderFloorDraw atomically inserts the idempotent draw row and credits
@@ -72,7 +52,7 @@ func (s *PostgresStore) SettleProviderFloorDraw(ctx context.Context, draw *Provi
 	// Earnings row job_id: deterministic per (epoch, provider) so it is idempotent
 	// and matches the floor-draw dedup key. Model "base_reward" makes it visible
 	// in the provider's earnings history/summary while organic-earnings filters
-	// (which exclude base_reward) keep it out of the work-gate and draw math.
+	// keep it out of draw math.
 	earningJobID := "floor:" + draw.EpochID + ":" + draw.ProviderKey
 
 	var credited bool
@@ -207,48 +187,6 @@ func (s *PostgresStore) ListProviderSessionsOverlapping(ctx context.Context, sta
 		out = append(out, ps)
 	}
 	return out, nil
-}
-
-// RecordProbeResult stores one coordinator correctness-probe outcome (Phase 1).
-func (s *PostgresStore) RecordProbeResult(result *ProbeResult) error {
-	if result == nil {
-		return errors.New("probe result is required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_probe_results (provider_key, provider_id, model, weight_hash,
-			success, response_hash, expected_hash, latency_ms, paid_micro_usd, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamptz, NOW()))`,
-		result.ProviderKey, result.ProviderID, result.Model, result.WeightHash,
-		result.Success, result.ResponseHash, result.ExpectedHash, result.LatencyMs,
-		result.PaidMicroUSD, nullableCreatedAt(result.CreatedAt),
-	)
-	if err != nil {
-		return fmt.Errorf("store: record probe result: %w", err)
-	}
-	return nil
-}
-
-// HasProbeSuccessSince reports whether the latest probe since `since` succeeded.
-func (s *PostgresStore) HasProbeSuccessSince(providerKey string, since time.Time) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var exists bool
-	err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE((
-			SELECT success FROM provider_probe_results
-			 WHERE provider_key = $1 AND created_at >= $2
-			 ORDER BY created_at DESC, id DESC
-			 LIMIT 1), false)`,
-		providerKey, since,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("store: has probe success since: %w", err)
-	}
-	return exists, nil
 }
 
 // WithEpochSettlementLock holds a session-level Postgres advisory lock keyed on

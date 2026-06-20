@@ -2,8 +2,8 @@ package store
 
 // In-memory implementation of the base-rewards store methods (design §8).
 // These mirror postgres_base_rewards.go exactly: same organic-earnings filter
-// (amount>0, model != base_reward/probe), same idempotent per-epoch settlement,
-// same session-overlap semantics, all under the single MemoryStore mutex.
+// (amount>0, model != base_reward), same idempotent per-epoch settlement, same
+// session-overlap semantics, all under the single MemoryStore mutex.
 
 import (
 	"context"
@@ -18,9 +18,9 @@ func floorDrawKey(providerKey, epochID string) string {
 }
 
 // isOrganicEarning reports whether an earning row counts as organic revenue:
-// positive amount and not a base_reward / probe credit.
+// positive amount and not a base_reward credit.
 func isOrganicEarning(e *ProviderEarning) bool {
-	return e.AmountMicroUSD > 0 && e.Model != "base_reward" && e.Model != "probe"
+	return e.AmountMicroUSD > 0 && e.Model != "base_reward"
 }
 
 // SumProviderEarningsByKey returns total organic micro-USD for one provider node
@@ -41,25 +41,6 @@ func (s *MemoryStore) SumProviderEarningsByKey(_ context.Context, providerKey st
 		total += e.AmountMicroUSD
 	}
 	return total, nil
-}
-
-// HasBilledJobSince reports whether a provider node served ≥1 organic, billed
-// job since `since`.
-func (s *MemoryStore) HasBilledJobSince(_ context.Context, providerKey string, since time.Time) (bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for i := range s.providerEarnings {
-		e := &s.providerEarnings[i]
-		if e.ProviderKey != providerKey || !isOrganicEarning(e) {
-			continue
-		}
-		if e.CreatedAt.Before(since) {
-			continue
-		}
-		return true, nil
-	}
-	return false, nil
 }
 
 // SettleProviderFloorDraw inserts the idempotent draw row and, when the row is
@@ -99,7 +80,7 @@ func (s *MemoryStore) SettleProviderFloorDraw(_ context.Context, draw *ProviderF
 		s.creditLocked(cp.AccountID, cp.AmountMicroUSD, LedgerFloorDraw, cp.EpochID, cp.CreatedAt)
 		s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
 		// Surface the draw in the provider's earnings history/summary. Model
-		// "base_reward" keeps it out of organic gating (isOrganicEarning) while
+		// "base_reward" keeps it out of organic earning sums while
 		// GetAccountEarnings*/GetProviderEarningsSummary (which sum all rows) show
 		// it, so the payout isn't an unexplained balance jump in the UI.
 		s.providerEarningsSeq++
@@ -178,42 +159,6 @@ func sessionLess(a, b ProviderSession) bool {
 		return a.SerialNumber < b.SerialNumber
 	}
 	return a.ConnectedAt.Before(b.ConnectedAt)
-}
-
-// RecordProbeResult stores one coordinator correctness-probe outcome (Phase 1).
-func (s *MemoryStore) RecordProbeResult(result *ProbeResult) error {
-	if result == nil {
-		return errors.New("probe result is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cp := *result
-	if cp.CreatedAt.IsZero() {
-		cp.CreatedAt = time.Now()
-	}
-	s.probeResultSeq++
-	cp.ID = s.probeResultSeq
-	s.probeResults = append(s.probeResults, cp)
-	return nil
-}
-
-// HasProbeSuccessSince reports whether the latest probe since `since` succeeded.
-func (s *MemoryStore) HasProbeSuccessSince(providerKey string, since time.Time) (bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var latest *ProbeResult
-	for i := range s.probeResults {
-		p := &s.probeResults[i]
-		if p.ProviderKey != providerKey || p.CreatedAt.Before(since) {
-			continue
-		}
-		if latest == nil || p.CreatedAt.After(latest.CreatedAt) || (p.CreatedAt.Equal(latest.CreatedAt) && p.ID > latest.ID) {
-			latest = p
-		}
-	}
-	return latest != nil && latest.Success, nil
 }
 
 // WithEpochSettlementLock runs fn directly: the memory store is single-process,

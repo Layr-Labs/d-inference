@@ -14,7 +14,7 @@ type ProviderSnapshot struct {
 	Attested       bool
 	Online         bool    // status is online (not offline/untrusted)
 	ModelLoaded    bool    // an advertised model is currently loaded for routing
-	CurrentModel   string  // model currently loaded/served (probe target); "" if none
+	CurrentModel   string  // model currently loaded/served; "" if none
 	MemoryPressure float64 // live system metric (0..1)
 	ThermalState   string  // nominal/fair/serious/critical
 }
@@ -56,8 +56,8 @@ func (r *Registry) ListProviders() []ProviderSnapshot {
 	return out
 }
 
-// warmServingModel returns the model a base-rewards probe should target and that
-// counts as "loaded for routing" — using the authoritative backend slot state
+// warmServingModel returns the model that counts as "loaded for routing" for
+// base-rewards eligibility, using the authoritative backend slot state
 // when present (a slot is warm only in "running"/"idle", matching the scheduler
 // at registry.go's warm check), so a crashed/reloading/idle_shutdown slot with
 // stale legacy fields is NOT treated as serving. Falls back to the reported

@@ -36,9 +36,8 @@ type Config struct {
 	// multi-machine operators (the supply we most want). Left as an optional knob
 	// in case a concentration limit is ever needed.
 	PerAccountCapFrac float64
-	MinUptimeFrac     float64       // 0.90 — hard eligibility gate (design §6 gate 3)
-	GraceSeconds      int           // 90 — open-session uptime grace (design §8)
-	WorkWindow        time.Duration // rolling window for the proven-work gate (gate 5)
+	MinUptimeFrac     float64 // 0.90 — hard eligibility gate (design §6 gate 3)
+	GraceSeconds      int     // 90 — open-session uptime grace (design §8)
 }
 
 // DefaultConfig returns the recommended launch configuration: k=0 additive base
@@ -54,7 +53,6 @@ func DefaultConfig() Config {
 		PerAccountCapFrac:    0, // disabled — per-machine, not per-account (see Config)
 		MinUptimeFrac:        MinUptimeForAvail,
 		GraceSeconds:         defaultGraceSeconds,
-		WorkWindow:           45 * 24 * time.Hour, // rolling ~45d proven-work window
 	}
 }
 
@@ -75,9 +73,6 @@ func NewEngine(s store.Store, reg *registry.Registry, cfg Config, logger *slog.L
 	}
 	if cfg.GraceSeconds <= 0 {
 		cfg.GraceSeconds = defaultGraceSeconds
-	}
-	if cfg.WorkWindow <= 0 {
-		cfg.WorkWindow = 45 * 24 * time.Hour
 	}
 	return &Engine{
 		store:  s,
@@ -214,10 +209,9 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 }
 
 // buildCandidates enumerates the live fleet and returns one candidate per
-// machine that passes every Phase-0 eligibility gate (design §6): attested +
-// trust floor (gate 1), healthy + model loaded (gate 4), uptime ≥ MinUptimeFrac
-// (gate 3), and proven work — a billed other-account job in the rolling window
-// (gate 5, billed-job half). Memory tier is the self-reported bucket in Phase 0.
+// machine that passes every eligibility gate (design §6): attested + trust floor
+// (gate 1), healthy + model loaded (gate 4), uptime ≥ MinUptimeFrac (gate 3), and
+// linked payout account. Base rewards intentionally do not depend on demand.
 func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]candidate, error) {
 	grace := time.Duration(e.cfg.GraceSeconds) * time.Second
 	sessions, err := e.store.ListProviderSessionsOverlapping(ctx, start, end, grace)
@@ -226,7 +220,6 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 	}
 	uptimeByKey := e.uptimeByProviderKey(sessions, start, end)
 
-	workSince := e.now().Add(-e.cfg.WorkWindow)
 	out := make([]candidate, 0)
 	for _, p := range e.reg.ListProviders() {
 		// Gate 1: attested + trust floor.
@@ -252,23 +245,6 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 			continue
 		}
 
-		// Gate 5: proven willingness-to-serve — a billed, other-account job
-		// (self-route produces no earning row, so this is structurally clean)
-		// OR a passed coordinator correctness probe (Phase 1) within the window.
-		hasWork, err := e.store.HasBilledJobSince(ctx, p.ProviderKey, workSince)
-		if err != nil {
-			return nil, err
-		}
-		if !hasWork {
-			probed, err := e.store.HasProbeSuccessSince(p.ProviderKey, workSince)
-			if err != nil {
-				return nil, err
-			}
-			if !probed {
-				continue
-			}
-		}
-
 		earned, err := e.store.SumProviderEarningsByKey(ctx, p.ProviderKey, start, end)
 		if err != nil {
 			return nil, err
@@ -276,9 +252,8 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 
 		// Memory tier: self-reported, but clamped DOWN to the max ever shipped
 		// for the SE-signed hardware model so a machine cannot claim a higher
-		// tier than its model can physically hold (a self-reported number may
-		// only lower the floor, never raise it). Full verification (probe on a
-		// tier-sized model) is Phase 1.
+		// tier than its model can physically hold (a self-reported number may only
+		// lower the floor, never raise it). Unknown models are unpaid until catalogued.
 		memGB := p.MemoryGB
 		if capGB, known := mdm.ModelMaxMemoryGB(p.HardwareModel); known {
 			if capGB > 0 && memGB > capGB {

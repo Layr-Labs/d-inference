@@ -447,13 +447,9 @@ type Store interface {
 	// --- Base Rewards (provider earnings floor) ---
 
 	// SumProviderEarningsByKey returns total organic micro-USD for one provider
-	// node in [since, until): amount>0, model != 'base_reward', model != 'probe'.
-	// Self-route already produces no earning row, so it needs no extra filter.
+	// node in [since, until): amount>0, model != 'base_reward'. Self-route already
+	// produces no earning row, so it needs no extra filter.
 	SumProviderEarningsByKey(ctx context.Context, providerKey string, since, until time.Time) (int64, error)
-
-	// HasBilledJobSince reports whether a provider node served ≥1 organic,
-	// billed job since `since` (work-gate, design §6 gate 5, billed-job half).
-	HasBilledJobSince(ctx context.Context, providerKey string, since time.Time) (bool, error)
 
 	// SettleProviderFloorDraw atomically (1) inserts the idempotent draw row
 	// (ON CONFLICT (provider_key, epoch_id) DO NOTHING) and (2) credits the
@@ -475,14 +471,6 @@ type Store interface {
 	// and clamps open sessions to min(end, last_seen + grace). Ordered by
 	// serial_number, connected_at.
 	ListProviderSessionsOverlapping(ctx context.Context, start, end time.Time, openSessionGrace time.Duration) ([]ProviderSession, error)
-
-	// RecordProbeResult stores one coordinator correctness-probe outcome (Phase 1).
-	RecordProbeResult(result *ProbeResult) error
-
-	// HasProbeSuccessSince reports whether the latest probe since `since` was a
-	// success (work-gate, design §6 gate 5, probe half). A later failure expires an
-	// older success.
-	HasProbeSuccessSince(providerKey string, since time.Time) (bool, error)
 
 	// WithEpochSettlementLock runs fn while holding a cross-instance lock keyed
 	// on epochID, so two coordinators cannot settle the same epoch concurrently
@@ -1367,21 +1355,6 @@ type ProviderFloorDraw struct {
 	UptimeFrac     float64   `json:"uptime_frac"`
 	MemoryGB       int       `json:"memory_gb"` // verified tier
 	CreatedAt      time.Time `json:"created_at"`
-}
-
-// ProbeResult records one coordinator correctness probe (Phase 1).
-type ProbeResult struct {
-	ID           int64     `json:"id"`
-	ProviderKey  string    `json:"provider_key"`
-	ProviderID   string    `json:"provider_id"`
-	Model        string    `json:"model"`
-	WeightHash   string    `json:"weight_hash"`
-	Success      bool      `json:"success"`
-	ResponseHash string    `json:"response_hash"`
-	ExpectedHash string    `json:"expected_hash"`
-	LatencyMs    int64     `json:"latency_ms"`
-	PaidMicroUSD int64     `json:"paid_micro_usd"`
-	CreatedAt    time.Time `json:"created_at"`
 }
 
 // ProviderEarningsSummary captures lifetime payout aggregates independent of

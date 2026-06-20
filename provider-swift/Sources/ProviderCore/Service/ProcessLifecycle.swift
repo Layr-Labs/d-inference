@@ -160,19 +160,93 @@ public enum ProcessLifecycle {
         }
     }
 
+    /// Outcome of a graceful stop attempt via `stopProcessGracefully(_:timeout:onActiveRequests:)`.
+    public enum GracefulStopOutcome: Sendable, Equatable {
+        /// The target PID was not alive when the stop was requested.
+        case notRunning
+        /// The process exited after receiving SIGTERM (within the drain timeout).
+        case stoppedGracefully
+        /// The process did not exit within the drain timeout and was force-killed.
+        /// The value is the PID that was signalled.
+        case forceKilled(Int32)
+    }
+
+    /// Ask a running daemon process to shut down gracefully and wait for it to exit.
+    ///
+    /// Sends `SIGTERM`, then polls until the process exits or `timeout` elapses.
+    /// If the process is still alive after the timeout it is sent `SIGKILL` and
+    /// polled again briefly. This mirrors the provider's own shutdown drain:
+    /// `ProviderLoop.run()` cancels in-flight work and waits for active inference
+    /// to finish when its task is cancelled.
+    ///
+    /// - Parameters:
+    ///   - pid: Target process identifier.
+    ///   - timeout: Seconds to wait after sending SIGTERM before escalating to SIGKILL.
+    ///   - onActiveRequests: Called once if the process is still alive immediately
+    ///     after SIGTERM is delivered, signalling that the daemon is draining
+    ///     in-flight requests.
+    /// - Returns: The outcome of the stop attempt.
+    public static func stopProcessGracefully(
+        pid: Int32,
+        timeout: TimeInterval = 600.0,
+        onActiveRequests: (() -> Void)? = nil
+    ) async -> GracefulStopOutcome {
+        guard pid > 0, processIsAlive(pid) else { return .notRunning }
+
+        sendSignal(SIGTERM, to: pid)
+
+        // Fast path: process exited synchronously (nothing to drain).
+        if !processIsAlive(pid) { return .stoppedGracefully }
+
+        // The daemon is still running — it is draining. Notify the caller so the
+        // CLI can tell the user to wait.
+        onActiveRequests?()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, processIsAlive(pid) {
+            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
+        }
+
+        if !processIsAlive(pid) {
+            return .stoppedGracefully
+        }
+
+        // Drain timeout expired: escalate to SIGKILL. Report this as a force
+        // kill even if SIGKILL eventually succeeds, because the graceful drain
+        // window was exceeded.
+        sendSignal(SIGKILL, to: pid)
+
+        let killDeadline = Date().addingTimeInterval(2.0)
+        while Date() < killDeadline, processIsAlive(pid) {
+            try? await Task.sleep(nanoseconds: 50_000_000) // 0.05s
+        }
+
+        return .forceKilled(pid)
+    }
+
     // MARK: - Internals
 
-    private static func readPID(at url: URL) -> Int32? {
+    /// Read a PID from a file, returning `nil` if the file is missing or not a valid PID.
+    public static func readPID(at url: URL) -> Int32? {
         guard let raw = try? String(contentsOf: url, encoding: .utf8) else {
             return nil
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Int32(trimmed)
+        guard let value = Int32(trimmed), value > 0 else { return nil }
+        return value
     }
 
-    private static func processIsAlive(_ pid: Int32) -> Bool {
-        // kill(pid, 0) returns 0 if we have permission to signal the process,
-        // even if signal 0 is a no-op. ESRCH means the process is gone.
+    /// Reports whether a process with the given PID is currently alive.
+    /// `kill(pid, 0)` returns 0 if we have permission to signal the process,
+    /// even though signal 0 is a no-op. `ESRCH` means the process is gone.
+    ///
+    /// Rejects nonpositive PIDs up front: `kill(0, …)` targets the caller's whole
+    /// process group and `kill(-1, …)` targets every process the user may signal.
+    /// This helper is fed by on-disk PID / daemon-state files, so a corrupt `0` or
+    /// `-1` must never be treated as "a live process" (and must never reach a real
+    /// `kill` via callers that gate on this result).
+    public static func processIsAlive(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
         let rc = kill(pid, 0)
         if rc == 0 { return true }
         return errno != ESRCH

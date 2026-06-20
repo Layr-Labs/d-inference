@@ -24,12 +24,20 @@ struct Stop: AsyncParsableCommand {
         try? FileManager.default.removeItem(at: WatchdogStateStore.path())
 
         if uninstall {
+            // Drain before uninstall so we don't tear down the launchd job while
+            // the daemon is still serving requests.
+            _ = await drainRunningProvider(action: .stop)
             try LaunchAgent.uninstall()
             print("Provider service uninstalled.")
         } else {
+            let didDrain = await drainRunningProvider(action: .stop)
             try LaunchAgent.stop()
             if wasLoaded {
-                print("Provider service stopped. (Auto-restart disabled until you start again.)")
+                if didDrain {
+                    print("Provider service stopped after draining active requests. (Auto-restart disabled until you start again.)")
+                } else {
+                    print("Provider service stopped. (Auto-restart disabled until you start again.)")
+                }
             } else {
                 print("Provider service is not running.")
             }

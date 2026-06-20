@@ -260,6 +260,10 @@ Each reviewer should:
 
 Only proceed to the next objective after both reviewers pass. If either flags issues, fix them before moving on.
 
+## Pull Requests
+
+Every new PR must include a **before/after Mermaid diagram** in its description. The diagram should show the behavior before the change and the behavior after the change at the architectural or user-flow level. Focus on the components actually affected by the PR.
+
 ## Git Hooks
 
 Hooks live in `.githooks/` and are enabled via `git config core.hooksPath .githooks` (already set for this repo).

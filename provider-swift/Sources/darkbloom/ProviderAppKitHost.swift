@@ -44,10 +44,30 @@ enum ProviderAppKitHost {
 final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
     private let args: [String]
 
+    /// The long-running serve task (`start --foreground` or `--local`). Retained
+    /// so that `applicationShouldTerminate` can request a graceful drain before
+    /// the app exits.
+    private var serveTask: Task<Void, Never>?
+
+    /// Set when AppKit asks us to terminate (SIGTERM from `launchctl bootout`,
+    /// logout, or `darkbloom stop` signalling the daemon PID). When true the
+    /// serve-task completion calls `reply(toApplicationShouldTerminate:)` instead
+    /// of `exit(0)` so AppKit finishes its own termination sequence cleanly.
+    private var terminationRequested = false
+
+    /// Guard against calling `reply(toApplicationShouldTerminate:)` more than
+    /// once if AppKit re-enters termination or the signal source races it.
+    private var hasReplied = false
+
     init(args: [String]) {
         self.args = args
         super.init()
     }
+
+    /// Dispatch sources for SIGTERM/SIGINT. AppKit normally translates these
+    /// into `applicationShouldTerminate`, but a direct `kill <pid>` may bypass
+    /// that path; the sources ensure the graceful drain runs regardless.
+    private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_: Notification) {
         // INVARIANT: register for REMOTE notifications only — never request
@@ -59,8 +79,14 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
         // (apsd redacts the payload as <private> and keeps no cleartext copy —
         // verified on macOS 26.4, see docs/apns-code-attestation-design.md).
         NSApplication.shared.registerForRemoteNotifications()
+
+        // Install graceful-shutdown signal sources. We ignore the default action
+        // so DispatchSourceSignal fires, then ask AppKit to terminate, which
+        // routes through `applicationShouldTerminate` and cancels the serve task.
+        installShutdownSignalSources()
+
         let args = self.args
-        Task {
+        serveTask = Task {
             do {
                 let command = try Darkbloom.parseAsRoot(args)
                 if let asyncCommand = command as? AsyncParsableCommand {
@@ -70,10 +96,51 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
                     var cmd = command
                     try cmd.run()
                 }
-                exit(0)
+                await self.finishServeTask()
             } catch {
+                // When AppKit requested termination, reply before exiting so
+                // the run loop terminates cleanly; otherwise preserve the
+                // nonzero exit from the actual failure.
+                if terminationRequested {
+                    await self.finishServeTask()
+                }
                 Darkbloom.exit(withError: error)
             }
+        }
+    }
+
+    /// Called by AppKit on SIGTERM / logout / `NSApp.terminate`. We cancel the
+    /// serve task so `ProviderLoop.run()` enters its shutdown drain, then tell
+    /// AppKit we'll reply later. The serve-task completion calls
+    /// `reply(toApplicationShouldTerminate: true)` once the drain finishes.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        terminationRequested = true
+        serveTask?.cancel()
+        return .terminateLater
+    }
+
+    private func finishServeTask() async {
+        guard terminationRequested else {
+            exit(0)
+        }
+        guard !hasReplied else { return }
+        hasReplied = true
+        NSApp.reply(toApplicationShouldTerminate: true)
+    }
+
+    private func installShutdownSignalSources() {
+        let signals = [SIGTERM, SIGINT]
+        for signo in signals {
+            signal(signo, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signo, queue: DispatchQueue.main)
+            source.setEventHandler { [weak self] in
+                self?.serveTask?.cancel()
+                // Also drive the AppKit termination path so the run loop exits
+                // cleanly once the serve task finishes draining.
+                NSApp.terminate(nil)
+            }
+            source.resume()
+            signalSources.append(source)
         }
     }
 

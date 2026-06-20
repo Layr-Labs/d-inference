@@ -68,6 +68,62 @@ public enum LaunchAgent: Sendable {
         }
     }
 
+    /// Every distinct PID launchd currently reports for loaded provider services,
+    /// across the canonical and legacy labels. Returns an empty array if no
+    /// supported label is loaded or none is currently running a process (e.g.
+    /// installed-but-not-yet-kickstarted).
+    ///
+    /// These are the authoritative drain targets: each PID is tied to a
+    /// launchd-managed daemon. Unlike the shared `~/.darkbloom/provider.pid` lock
+    /// file (which a standalone `start --local` server also writes), these can
+    /// never resolve to a non-launchd process. During an upgrade BOTH the
+    /// canonical and a legacy job can be loaded, and the stop/replace paths
+    /// unload every supported label — so all of them must be drained, not just
+    /// the first.
+    public static func loadedServicePIDs() -> [Int32] {
+        var pids: [Int32] = []
+        for candidate in supportedLabels {
+            if let pid = servicePID(label: candidate), !pids.contains(pid) {
+                pids.append(pid)
+            }
+        }
+        return pids
+    }
+
+    /// Parse the `pid = N` field from `launchctl print gui/<uid>/<label>`.
+    /// Returns `nil` when the label is not loaded or has no running PID.
+    private static func servicePID(label: String) -> Int32? {
+        let target = "gui/\(getuid())/\(label)"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", target]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        // Read to EOF before waiting so a large `launchctl print` dump can't
+        // deadlock on a full pipe buffer.
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+
+        // launchctl prints a `\tpid = 12345` line only while the job is running.
+        for rawLine in text.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("pid ") || line.hasPrefix("pid=") else { continue }
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            if let pid = Int32(value), pid > 0 { return pid }
+        }
+        return nil
+    }
+
     // MARK: - Install & Start
 
     /// Write the plist, load the service, and kickstart the process.
@@ -329,6 +385,10 @@ public enum LaunchAgent: Sendable {
     /// the binary, racing the stage-then-swap. Crash-recovery is instead owned by
     /// the separate `WatchdogAgent`, which waits out a grace period before
     /// relaunching (so it never races the updater) and honours `darkbloom stop`.
+    ///
+    /// `ExitTimeOut = 600` gives the provider the same 10-minute window used by
+    /// `ProviderLoop.waitForInflightDrain()` to finish active inference before
+    /// launchd escalates `launchctl bootout` / logout shutdown to SIGKILL.
     static func makeServicePlist(
         label: String,
         programArguments: [String],
@@ -344,6 +404,7 @@ public enum LaunchAgent: Sendable {
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
+            "ExitTimeOut": 600,
         ]
 
         // launchd does NOT inherit the installing shell's environment, so any

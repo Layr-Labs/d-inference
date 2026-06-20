@@ -280,12 +280,18 @@ private final class ManagedAtomic<Value: FixedWidthInteger>: @unchecked Sendable
 private final class OutboundRouter: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var continuation: AsyncStream<OutboundMessage>.Continuation?
+    /// Count of messages yielded to the live connection but not yet confirmed
+    /// written to the socket. Lets a graceful shutdown flush the tail (e.g. the
+    /// final `inference_complete`) before the transport is torn down. Reset on
+    /// (re)connect / finish, since a stream's buffered messages are abandoned.
+    private var pendingWrites = 0
 
     /// Install the continuation for a new connection, finishing any prior one.
     func activate(_ cont: AsyncStream<OutboundMessage>.Continuation) {
         let previous: AsyncStream<OutboundMessage>.Continuation? = lock.withLock {
             let prev = continuation
             continuation = cont
+            pendingWrites = 0
             return prev
         }
         previous?.finish()
@@ -295,8 +301,22 @@ private final class OutboundRouter: @unchecked Sendable {
     /// while disconnected are dropped (the caller cannot reach the coordinator
     /// anyway) rather than buffered into a stream nothing is consuming.
     func yield(_ msg: OutboundMessage) {
-        let cont = lock.withLock { continuation }
+        let cont: AsyncStream<OutboundMessage>.Continuation? = lock.withLock {
+            guard let c = continuation else { return nil }
+            pendingWrites += 1
+            return c
+        }
         cont?.yield(msg)
+    }
+
+    /// Called by the outbound writer after a message is written to the socket.
+    func markWritten() {
+        lock.withLock { if pendingWrites > 0 { pendingWrites -= 1 } }
+    }
+
+    /// Messages yielded but not yet written to the socket.
+    func pendingCount() -> Int {
+        lock.withLock { pendingWrites }
     }
 
     /// Tear down outbound delivery permanently (shutdown).
@@ -304,6 +324,7 @@ private final class OutboundRouter: @unchecked Sendable {
         let cont: AsyncStream<OutboundMessage>.Continuation? = lock.withLock {
             let c = continuation
             continuation = nil
+            pendingWrites = 0
             return c
         }
         cont?.finish()
@@ -553,6 +574,25 @@ public actor CoordinatorClient {
 
     private var shutdownRequested = false
 
+    /// Set when a graceful shutdown drain has begun. The socket stays open so
+    /// in-flight responses can finish, but the `ProviderLoop` event stream is no
+    /// longer being consumed — so the receive loop rejects NEW inference requests
+    /// here with 503 (instead of yielding them into an unconsumed stream) so the
+    /// coordinator reroutes them immediately. See `beginDraining()`.
+    private var draining = false
+
+    /// Cancel handler installed by `beginDraining`. While draining (the event
+    /// stream is no longer consumed), the receive loop routes coordinator
+    /// `cancel` frames straight here so an aborted in-flight request still stops
+    /// generating instead of running until the drain timeout.
+    private var drainCancelHandler: (@Sendable (String) async -> Void)?
+
+    /// Disconnect handler installed by `beginDraining`. If the socket drops while
+    /// draining (event stream no longer consumed), the coordinator fails our
+    /// in-flight requests, so this lets the provider cancel them rather than keep
+    /// generating frames that can never reach the consumer.
+    private var drainDisconnectHandler: (@Sendable () async -> Void)?
+
     /// Mutable advertised-model list. Seeded from `config.models`; background
     /// prefetch (Layer 3) appends newly-verified builds so re-registration and
     /// reconnects pick them up without dropping the currently-served model.
@@ -641,6 +681,42 @@ public actor CoordinatorClient {
         outboundRouter.finish()
     }
 
+    /// Enter draining mode: keep the connection open (so in-flight responses can
+    /// still be delivered) but reject NEW inference requests with 503 from the
+    /// receive loop. Used during a graceful stop/restart, when the `ProviderLoop`
+    /// event stream is no longer consuming events but the drain has not finished.
+    ///
+    /// - Parameters:
+    ///   - onCancel: invoked for coordinator `cancel` frames received while
+    ///     draining, so an aborted in-flight request stops generating promptly
+    ///     instead of running until the drain timeout.
+    ///   - onDisconnect: invoked if the socket drops while draining, so the
+    ///     provider can cancel in-flight work the coordinator has already failed
+    ///     instead of generating frames that can no longer be delivered.
+    public func beginDraining(
+        onCancel: (@Sendable (String) async -> Void)? = nil,
+        onDisconnect: (@Sendable () async -> Void)? = nil
+    ) {
+        draining = true
+        drainCancelHandler = onCancel
+        drainDisconnectHandler = onDisconnect
+    }
+
+    /// Wait until queued outbound messages have been written to the socket, or
+    /// `timeout` elapses. Used during a graceful drain so the tail of a finished
+    /// request (chunks + the final `inference_complete`) is delivered before the
+    /// transport is torn down by `shutdown()`.
+    public func flushOutbound(timeout: Duration) async {
+        let deadline = ContinuousClock.now + timeout
+        while outboundRouter.pendingCount() > 0 {
+            if ContinuousClock.now >= deadline {
+                logger.warning("Outbound flush timed out with \(self.outboundRouter.pendingCount()) message(s) still queued")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     /// Re-register over a fresh connection carrying a device token that arrived
     /// after the initial registration. Cancelling the socket (without setting
     /// `shutdownRequested`) surfaces as a connection error, so the reconnect loop
@@ -660,6 +736,14 @@ public actor CoordinatorClient {
         modelWeightHashOverrides = hashes
     }
 
+    /// Handle a socket drop that happens while draining: the coordinator fails
+    /// our in-flight requests on disconnect, so cancel them (don't keep
+    /// generating undeliverable frames) and stop reconnecting.
+    private func handleDrainDisconnect() async {
+        logger.info("Coordinator socket closed during drain; cancelling in-flight work and stopping reconnects")
+        if let handler = drainDisconnectHandler { await handler() }
+    }
+
     // MARK: - Connection Loop
 
     private func runLoop() async {
@@ -672,10 +756,12 @@ public actor CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info("Coordinator connection closed, reconnecting...")
+                if draining { await handleDrainDisconnect(); break }
                 backoff.reset()
                 continue
             } catch {
                 if shutdownRequested { break }
+                if draining { await handleDrainDisconnect(); break }
 
                 eventContinuation?.yield(.disconnected)
                 let delay = backoff.nextDelay()
@@ -761,6 +847,9 @@ public actor CoordinatorClient {
                     if shutting { break }
                     let json = await self.encodeOutbound(msg)
                     try await ws.send(.string(json))
+                    // Confirm the write so a graceful shutdown can flush the tail
+                    // (e.g. the final inference_complete) before tearing down.
+                    self.outboundRouter.markWritten()
                 }
             }
 
@@ -860,6 +949,23 @@ public actor CoordinatorClient {
             let requestId = request.requestId
             logger.info("Received inference request: \(requestId)")
 
+            // Graceful drain in progress: the provider event loop has stopped
+            // consuming events, but this socket is intentionally kept open so
+            // in-flight responses can finish. Reject NEW requests with 503 right
+            // here so the coordinator reroutes them immediately instead of
+            // waiting for an inference timeout on a request that will never be
+            // processed.
+            if draining {
+                logger.info("Rejecting inference request during drain: \(requestId)")
+                let errorResponse = encodeInferenceError(
+                    requestId: requestId,
+                    error: "provider is shutting down",
+                    statusCode: 503
+                )
+                try? await ws.send(.string(errorResponse))
+                return
+            }
+
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
                 let errorResponse = encodeInferenceError(
@@ -906,7 +1012,14 @@ public actor CoordinatorClient {
         case .cancel(let cancel):
             let requestId = cancel.requestId
             logger.info("Received cancel for: \(requestId)")
-            eventContinuation?.yield(.cancel(requestId: requestId))
+            // While draining, the provider event stream is no longer consumed, so
+            // route cancels straight to the drain handler — otherwise an aborted
+            // request would keep generating until the drain timeout.
+            if draining, let handler = drainCancelHandler {
+                await handler(requestId)
+            } else {
+                eventContinuation?.yield(.cancel(requestId: requestId))
+            }
 
         case .attestationChallenge(let challenge):
             logger.info("Received attestation challenge")

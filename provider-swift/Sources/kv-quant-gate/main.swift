@@ -18,11 +18,11 @@ struct KVQuantGate: AsyncParsableCommand {
     @Option(name: .customLong("reference"), help: "Reference KV mode.")
     var reference = "fp16-kv"
 
-    @Option(name: .customLong("candidate"), help: "Candidate KV quant mode.")
-    var candidate = "full-v-affine4:g64:start1024"
+    @Option(name: .customLong("candidate"), help: "Candidate KV quant mode, or 'auto' for the live engine scheme for --model-id.")
+    var candidate = "auto"
 
-    @Option(name: .customLong("suites"), help: "Comma-separated suites to run.")
-    var suites = "perf,memory,output"
+    @Option(name: .customLong("suites"), help: "Comma-separated suites to run. Capacity is always prepended to keep max-admitted-tokens first.")
+    var suites = "capacity,logits,perf,memory,output"
 
     @Option(name: .customLong("contexts"), help: "Comma-separated context lengths.")
     var contexts = "4096,8192"
@@ -49,7 +49,9 @@ struct KVQuantGate: AsyncParsableCommand {
         _ = try parseSuites(suites)
         _ = try parseContexts(contexts)
         _ = try parseCandidateMode(reference, option: "--reference")
-        _ = try parseCandidateMode(candidate, option: "--candidate")
+        if candidate != "auto" {
+            _ = try parseCandidateMode(candidate, option: "--candidate")
+        }
 
         if decodeTokens <= 0 {
             throw ValidationError("--decode-tokens must be greater than zero")
@@ -70,7 +72,7 @@ struct KVQuantGate: AsyncParsableCommand {
             modelID: modelID,
             modelDirectory: modelDir.map { URL(fileURLWithPath: $0) },
             reference: parseCandidateMode(reference, option: "--reference"),
-            candidate: parseCandidateMode(candidate, option: "--candidate"),
+            candidate: try resolvedCandidateMode(),
             suites: parseSuites(suites),
             contexts: parseContexts(contexts),
             decodeTokens: decodeTokens,
@@ -88,6 +90,53 @@ struct KVQuantGate: AsyncParsableCommand {
         } else {
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
+        }
+
+        // Make the process exit code reflect the gate verdict so CI can enforce
+        // it without parsing JSON. A report is written above regardless.
+        //   - failed  -> always non-zero (threshold/suite failure).
+        //   - skipped -> non-zero unless --allow-missing-data (missing model or
+        //     fixtures should fail a gate run by default, but an explicit opt-in
+        //     lets exploratory/local runs tolerate skips).
+        //   - passed  -> zero.
+        switch report.passFail.status {
+        case .passed:
+            return
+        case .failed:
+            FileHandle.standardError.write(Data(
+                "kv-quant-gate: FAILED — \(report.failures.joined(separator: "; "))\n".utf8))
+            throw ExitCode.failure
+        case .skipped:
+            guard allowMissingData else {
+                FileHandle.standardError.write(Data(
+                    ("kv-quant-gate: SKIPPED (\(report.skipped.joined(separator: "; "))). "
+                        + "Pass --allow-missing-data to treat skips as success.\n").utf8))
+                throw ExitCode.failure
+            }
+            return
+        }
+    }
+}
+
+private extension KVQuantGate {
+    func resolvedCandidateMode() throws -> KVQuantCandidateMode {
+        guard candidate == "auto" else {
+            return try parseCandidateMode(candidate, option: "--candidate")
+        }
+        switch KVQuantPolicy.classify(modelID: modelID) {
+        case .gemma4:
+            return .k8v8g128
+        case .gptOSS:
+            // Mirror BatchScheduler.resolveKVQuantScheme: the live scheduler
+            // forces the native quantized kernel path when
+            // DARKBLOOM_KV_GPTOSS_KERNEL=1, so the gate must benchmark that same
+            // path for the forced-kernel experiment instead of the dequant default.
+            if ProcessInfo.processInfo.environment["DARKBLOOM_KV_GPTOSS_KERNEL"] == "1" {
+                return .k8v8g64
+            }
+            return .k8v8g64Dequant
+        case .unknown:
+            throw ValidationError("--candidate auto has no live KV quant scheme for model-id '\(modelID)'; pass an explicit --candidate")
         }
     }
 }

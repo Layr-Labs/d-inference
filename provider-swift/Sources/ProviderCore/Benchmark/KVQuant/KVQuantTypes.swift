@@ -33,6 +33,7 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
     case fullKVTurbo4 = "full-kv-turbo4:start1024"
     case turbo4v2 = "turbo4v2:start1024"
     case k8v8g128 = "k8v8:g128"
+    case k8v8g64 = "k8v8:g64"
     case k8v8g64Dequant = "k8v8:g64:dequant"
     case k6v6g64 = "k6v6:g64"
     case k6v6g64Dequant = "k6v6:g64:dequant"
@@ -46,7 +47,7 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
     public var bitWidth: Int? {
         switch self {
         case .fp16KV, .bf16KV, .fullVBF16: nil
-        case .affine8, .k8v8g128, .k8v8g64Dequant: 8
+        case .affine8, .k8v8g128, .k8v8g64, .k8v8g64Dequant: 8
         case .k6v6g64, .k6v6g64Dequant: 6
         case .affine4, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: 4
         }
@@ -54,7 +55,7 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
 
     public var groupSize: Int? {
         switch self {
-        case .affine4, .affine8, .fullVAffine4, .k8v8g64Dequant, .k6v6g64, .k6v6g64Dequant: 64
+        case .affine4, .affine8, .fullVAffine4, .k8v8g64, .k8v8g64Dequant, .k6v6g64, .k6v6g64Dequant: 64
         case .k8v8g128: 128
         case .fp16KV, .bf16KV, .fullVBF16, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: nil
         }
@@ -64,21 +65,21 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
         switch self {
         case .fp16KV: nil
         case .bf16KV, .fullVBF16, .affine4, .affine8, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: 1024
-        case .k8v8g128, .k8v8g64Dequant, .k6v6g64, .k6v6g64Dequant: 0
+        case .k8v8g128, .k8v8g64, .k8v8g64Dequant, .k6v6g64, .k6v6g64Dequant: 0
         }
     }
 
     public var quantizesKeys: Bool {
         switch self {
         case .fp16KV, .bf16KV, .fullVBF16, .fullVAffine4, .fullVTurbo4: false
-        case .affine4, .affine8, .fullKVTurbo4, .turbo4v2, .k8v8g128, .k8v8g64Dequant, .k6v6g64, .k6v6g64Dequant: true
+        case .affine4, .affine8, .fullKVTurbo4, .turbo4v2, .k8v8g128, .k8v8g64, .k8v8g64Dequant, .k6v6g64, .k6v6g64Dequant: true
         }
     }
 
     public var quantizesValues: Bool {
         switch self {
         case .fp16KV, .bf16KV, .fullVBF16: false
-        case .affine4, .affine8, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2, .k8v8g128, .k8v8g64Dequant, .k6v6g64, .k6v6g64Dequant: true
+        case .affine4, .affine8, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2, .k8v8g128, .k8v8g64, .k8v8g64Dequant, .k6v6g64, .k6v6g64Dequant: true
         }
     }
 
@@ -88,7 +89,7 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
     public var storedBitsK: Int {
         switch self {
         case .fp16KV, .bf16KV, .fullVBF16, .fullVAffine4, .fullVTurbo4: 16
-        case .affine8, .k8v8g128, .k8v8g64Dequant: 8
+        case .affine8, .k8v8g128, .k8v8g64, .k8v8g64Dequant: 8
         case .k6v6g64, .k6v6g64Dequant: 6
         case .affine4, .fullKVTurbo4, .turbo4v2: 4
         }
@@ -100,7 +101,7 @@ public enum KVQuantCandidateMode: String, CaseIterable, Codable, Sendable, Custo
     public var storedBitsV: Int {
         switch self {
         case .fp16KV, .bf16KV, .fullVBF16: 16
-        case .affine8, .k8v8g128, .k8v8g64Dequant: 8
+        case .affine8, .k8v8g128, .k8v8g64, .k8v8g64Dequant: 8
         case .k6v6g64, .k6v6g64Dequant: 6
         case .affine4, .fullVAffine4, .fullVTurbo4, .fullKVTurbo4, .turbo4v2: 4
         }
@@ -231,6 +232,7 @@ public struct KVQuantGateConfig: Codable, Sendable, Equatable {
         let normalizedModelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedModelID.isEmpty else { throw KVQuantGateConfigError.emptyModelID }
         guard !suites.isEmpty else { throw KVQuantGateConfigError.emptySuites }
+        let normalizedSuites = Self.normalizedSuites(suites)
         guard !contexts.isEmpty else { throw KVQuantGateConfigError.emptyContexts }
         for context in contexts where context <= 0 {
             throw KVQuantGateConfigError.invalidContext(context)
@@ -245,7 +247,7 @@ public struct KVQuantGateConfig: Codable, Sendable, Equatable {
         self.modelDirectory = modelDirectory?.standardizedFileURL
         self.reference = reference
         self.candidate = candidate
-        self.suites = suites
+        self.suites = normalizedSuites
         self.contexts = contexts
         self.decodeTokens = decodeTokens
         self.iterations = iterations
@@ -253,6 +255,23 @@ public struct KVQuantGateConfig: Codable, Sendable, Equatable {
         self.thresholds = thresholds?.standardizedFileURL
         self.allowMissingData = allowMissingData
         self.prompt = prompt
+    }
+
+    private static func normalizedSuites(_ suites: [KVQuantSuite]) -> [KVQuantSuite] {
+        var seen = Set<KVQuantSuite>()
+        var normalized: [KVQuantSuite] = []
+
+        func appendOnce(_ suite: KVQuantSuite) {
+            guard !seen.contains(suite) else { return }
+            seen.insert(suite)
+            normalized.append(suite)
+        }
+
+        appendOnce(.capacity)
+        for suite in suites {
+            appendOnce(suite)
+        }
+        return normalized
     }
 }
 

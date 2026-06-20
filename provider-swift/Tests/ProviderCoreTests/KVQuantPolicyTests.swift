@@ -22,7 +22,7 @@ func kvQuantPolicyMapsHardwareCandidateModes() {
     #expect(KVQuantPolicy.candidateMode(for: nil) == .conservative)
 }
 
-@Test("Gemma 4 KV quant defaults stay value-only and preserve unsafe layers")
+@Test("Gemma 4 KV quant defaults use live K8V8 g128 policy and preserve unsafe layers")
 func gemma4KVQuantDefaultsAreConservative() {
     let policy = KVQuantPolicy(modelID: "gemma-4-26b", chipFamily: .m4)
 
@@ -30,16 +30,16 @@ func gemma4KVQuantDefaultsAreConservative() {
     #expect(policy.candidateMode == .normal)
     #expect(policy.plan.enabled)
     #expect(policy.plan.layerScope == .fullAndGlobalOnly)
-    #expect(policy.plan.tensorTarget == .valuesOnly)
-    #expect(policy.plan.keyPrecision == .fp16)
-    #expect(policy.plan.valuePrecision == .quantized4Bit)
-    #expect(policy.plan.valueEncoding == .affine4Placeholder)
-    #expect(policy.plan.quantizationStartToken == 1024)
+    #expect(policy.plan.tensorTarget == .keysAndValues)
+    #expect(policy.plan.keyPrecision == .quantized8Bit)
+    #expect(policy.plan.valuePrecision == .quantized8Bit)
+    #expect(policy.plan.valueEncoding == .affine8)
+    #expect(policy.plan.quantizationStartToken == 0)
     #expect(policy.plan.rotatingSlidingPrecision == .fp16)
     #expect(policy.plan.mtpPolicy == .disabled)
 }
 
-@Test("GPT-OSS KV quant defaults require sink-aware handling")
+@Test("GPT-OSS KV quant defaults use live K8V8 g64 dequant policy")
 func gptOSSKVQuantDefaultsRequireSinkAwareness() {
     let policy = KVQuantPolicy(modelID: "gpt_oss", chipFamily: .m5)
 
@@ -47,10 +47,11 @@ func gptOSSKVQuantDefaultsRequireSinkAwareness() {
     #expect(policy.candidateMode == .aggressiveCandidate)
     #expect(policy.plan.enabled)
     #expect(policy.plan.layerScope == .fullOnly)
-    #expect(policy.plan.tensorTarget == .valuesOnly)
-    #expect(policy.plan.keyPrecision == .fp16)
-    #expect(policy.plan.valuePrecision == .quantized4Bit)
-    #expect(policy.plan.quantizationStartToken == 1024)
+    #expect(policy.plan.tensorTarget == .keysAndValues)
+    #expect(policy.plan.keyPrecision == .quantized8Bit)
+    #expect(policy.plan.valuePrecision == .quantized8Bit)
+    #expect(policy.plan.valueEncoding == .affine8)
+    #expect(policy.plan.quantizationStartToken == 0)
     #expect(policy.plan.sinkAware == .required)
     #expect(policy.plan.rotatingSlidingPrecision == .fp16)
 }

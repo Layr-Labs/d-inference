@@ -2,14 +2,21 @@ import Foundation
 
 struct KVQuantThresholdEvaluator {
     static func evaluate(report: KVQuantGateReport, thresholdsURL: URL, hardware: HardwareInfo?) -> KVQuantThresholdReport? {
-        guard let data = try? Data(contentsOf: thresholdsURL),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
+        // A threshold file was explicitly supplied (config/CLI already verified it
+        // exists). If we can't actually enforce it — unreadable, malformed, no
+        // rules, or none of its metrics are present in the report — the gate must
+        // FAIL rather than silently pass with thresholds disabled.
+        guard let data = try? Data(contentsOf: thresholdsURL) else {
+            return failingReport(thresholdsURL.path, "threshold file could not be read")
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return failingReport(thresholdsURL.path, "threshold file is not a valid JSON object")
+        }
 
         let rules = selectedRules(object, hardware: hardware)
         let flattened = flattenThresholdRules(rules)
         guard !flattened.isEmpty else {
-            return KVQuantThresholdReport(thresholdPath: thresholdsURL.path, checks: [])
+            return failingReport(thresholdsURL.path, "threshold file defines no min/max rules")
         }
 
         let metrics = reportMetricValues(report)
@@ -34,7 +41,33 @@ struct KVQuantThresholdEvaluator {
             )
         }
 
+        guard !checks.isEmpty else {
+            return failingReport(
+                thresholdsURL.path,
+                "none of the thresholded metrics were present in the report")
+        }
+
         return KVQuantThresholdReport(thresholdPath: thresholdsURL.path, checks: checks)
+    }
+
+    /// A threshold report carrying a single synthetic failed check. Used when the
+    /// threshold file cannot be enforced at all, so `KVQuantThresholdReport`
+    /// aggregates to `.failed` (a non-empty `failures` list) and the gate exits
+    /// non-zero instead of silently passing.
+    private static func failingReport(_ path: String, _ message: String) -> KVQuantThresholdReport {
+        KVQuantThresholdReport(
+            thresholdPath: path,
+            checks: [
+                KVQuantThresholdCheck(
+                    metric: "thresholds",
+                    value: nil,
+                    min: nil,
+                    max: nil,
+                    status: .failed,
+                    failureMessage: "threshold evaluation failed: \(message)"
+                )
+            ]
+        )
     }
 
     private static func selectedRules(_ document: [String: Any], hardware: HardwareInfo?) -> [String: Any] {

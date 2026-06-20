@@ -36,6 +36,7 @@ import os
 // `internal` (not `private`) so the BatchScheduler extension files
 // (e.g. +EngineBridge) can log under the same category.
 let prefixCacheLogger = Logger(subsystem: "dev.darkbloom.provider", category: "prefix-cache-wiring")
+let kvQuantLogger = Logger(subsystem: "dev.darkbloom.provider", category: "kv-quant")
 
 /// Continuous-batching scheduler. Wraps a single `MLXLMCommon.BatchedEngine`
 /// per loaded model. The engine owns the GPU step loop; this actor owns
@@ -56,6 +57,9 @@ public actor BatchScheduler {
     /// nil ⇒ today's per-model disk budget behavior.
     let diskAccountant: GlobalDiskAccountant?
     let adaptiveCapPolicy = AdaptiveBatchCapPolicy.default
+    /// Opt-in KV-cache quantization flag from provider config. Only takes effect
+    /// for model families explicitly allow-listed by ``KVQuantPolicy``.
+    let kvQuantEnabled: Bool
 
     // MARK: - Model-specific state (set by `loadModel`)
 
@@ -67,6 +71,15 @@ public actor BatchScheduler {
     var currentWeightHash: String?
     var modelWeightBytes: Int = 0
     var kvBytesPerToken: Int = 400_000
+    /// FP16 (un-quantized) per-token KV cost. Equals `kvBytesPerToken` unless KV
+    /// quantization is active for this model — in which case `kvBytesPerToken`
+    /// holds the reduced (quantized) rate used for batched-engine admission while
+    /// this holds the full fp16 rate. The non-batched VLM media path streams
+    /// through `container.generate`, which allocates an fp16 KV cache (NOT the
+    /// quantized batched cache), so its reservation (`reserveVisionRequest`) must
+    /// size generation KV from THIS value; reserving at the quantized rate would
+    /// under-count ~2x and risk unified-memory OOM under concurrent media traffic.
+    var fp16KVBytesPerToken: Int = 400_000
     var dynamicTokenBudgetMax: Int = 0
     /// The model's maximum context window read from config.json
     /// (`max_position_embeddings`). Used to size `maxTokensPerBatch`
@@ -246,6 +259,14 @@ public actor BatchScheduler {
     var performanceByBatchSize: [Int: AdaptiveBatchPerformanceBucket] = [:]
     var lastBatchSampleAt: ContinuousClock.Instant = .now
     var dynamicMaxConcurrentRequests: Int
+    /// Last concurrency cap pushed to the engine via `setMaxNumSeqs`. `-1` means
+    /// "nothing pushed yet", so the first `syncEngineConcurrency()` after a
+    /// (re)load always pushes. Reset to `-1` in `stopCurrentEngine` because a
+    /// freshly-built engine starts at its own default (`config.maxNumSeqs`), so
+    /// the cap must be re-sent even when it numerically matches the prior model.
+    /// Tracking the last-pushed value makes `syncEngineConcurrency()` a no-op
+    /// unless the effective cap actually changed (no redundant engine calls).
+    var lastPushedMaxNumSeqs: Int = -1
     var pendingSummaryCache: PendingSummary = .empty
 
     /// Memory-kind selector for `gpuMemory(_:)` in the telemetry extension.
@@ -266,7 +287,8 @@ public actor BatchScheduler {
         pendingTimeout: Duration = .seconds(120),
         defaultMaxTokens: Int = 4096,
         kvBudget: GlobalKVCacheBudget? = nil,
-        diskAccountant: GlobalDiskAccountant? = nil
+        diskAccountant: GlobalDiskAccountant? = nil,
+        kvQuantEnabled: Bool = false
     ) {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
@@ -274,7 +296,20 @@ public actor BatchScheduler {
         self.initDefaultMaxTokens = defaultMaxTokens
         self.kvBudget = kvBudget
         self.diskAccountant = diskAccountant
-        self.dynamicMaxConcurrentRequests = min(4, max(1, maxConcurrentRequests))
+        self.kvQuantEnabled = kvQuantEnabled
+        // Cold-start concurrency seed. Start at the configured ceiling rather
+        // than the old hard pin to 4: a startup burst of N concurrent requests
+        // has no per-batch TPS samples yet, so the adaptive ramp hasn't engaged
+        // — pinning to 4 forced e.g. 8-way load to run as two serialized waves
+        // of 4 (≈halving aggregate throughput at concurrency). The value the
+        // engine is actually told is always re-clamped to
+        // `memoryBoundMaxConcurrentRequests` (OOM gate) and `maxConcurrentRequests`
+        // inside `effectiveMaxConcurrentRequests` / `syncEngineConcurrency()`, so
+        // seeding optimistically here can never over-admit. At construction time
+        // no model is loaded (and `memoryBoundMaxConcurrentRequests` — file-private
+        // to the telemetry extension — collapses to `maxConcurrentRequests`
+        // anyway), so the ceiling IS the memory-bound value here.
+        self.dynamicMaxConcurrentRequests = max(1, maxConcurrentRequests)
         // Wedge threshold tracks the pending-timeout window: a request admitted
         // but emitting 0 tokens for that long means the engine loop has stalled.
         let pendingSecs = Double(pendingTimeout.components.seconds)
@@ -331,7 +366,8 @@ public actor BatchScheduler {
             maxConcurrentRequests: maxConcurrentRequests,
             eosTokenIds: snapshot.eosTokenIds,
             architecture: snapshot.architecture,
-            diskAccountant: diskAccountant
+            diskAccountant: diskAccountant,
+            kvQuantEnabled: kvQuantEnabled
         )
         let engine = build.engine
         // Re-check epoch after the engine.start suspension. If another
@@ -450,10 +486,15 @@ public actor BatchScheduler {
         }
 
         applyPostLoadBudgets(snapshot: snapshot)
-        // Apply the conservative startup cap before admitting any request,
-        // otherwise the first few submits could run at the hard cap until
-        // the adaptive policy kicks in.
-        engine.setMaxNumSeqs(dynamicMaxConcurrentRequests)
+        // Push the effective concurrency cap to the freshly-built engine before
+        // admitting any request. `syncEngineConcurrency()` sends
+        // min(maxConcurrentRequests, dynamicMaxConcurrentRequests,
+        // memoryBoundMaxConcurrentRequests) — the SAME effective cap the
+        // heartbeat reports — and records it so later adaptive-ramp / memory
+        // updates only re-push when it actually changes. Previously the engine
+        // was told the cold-start `dynamicMaxConcurrentRequests` here ONCE and
+        // never heard the adaptive ramp, so it stayed pinned at the seed value.
+        syncEngineConcurrency()
         self.planner = makePlanner(activeTokenBudget: tokenBudgetMax)
         // Engine has no pending-queue TTL; we enforce `pendingTimeout`.
         startPendingTimeoutWatchdog()
@@ -1101,7 +1142,8 @@ public actor BatchScheduler {
         maxConcurrentRequests: Int,
         eosTokenIds: Set<Int>,
         architecture: ModelArchitecture,
-        diskAccountant: GlobalDiskAccountant? = nil
+        diskAccountant: GlobalDiskAccountant? = nil,
+        kvQuantEnabled: Bool = false
     ) async -> EngineBuild {
         // TB-007: the prefix cache is ON by default (operator decision) with an
         // ENCRYPTED-at-rest backend; opt out with DARKBLOOM_PREFIX_CACHE=0.
@@ -1114,11 +1156,47 @@ public actor BatchScheduler {
         // in-GPU block PrefixCache; hybrid sliding-window (.checkpoint) models
         // (Gemma-4, GPT-OSS) use the whole-cache exact-checkpoint
         // PrefixCacheManager. Recurrent (.none) models get neither.
-        let blockSize = 256
-        let backing = await makePrefixCacheBackingIfEnabled(
-            modelId: modelId, weightHash: weightHash, architecture: architecture
+        //
+        // KV-quant + prefix cache are now composable for the
+        // dequant scheme (GPT-OSS). The engine's checkpoint restore rebuilds a
+        // QUANTIZED batched cache (re-quantizing the restored fp16 prefix via
+        // the cold cache factory) so a restored row stays concrete-class-
+        // compatible with quantized cold rows under `extendBatched` — the
+        // assembly precondition that the v1 exclusion was really avoiding.
+        // The native quantized-kernel scheme (Gemma g128) is NOT yet composed
+        // (separate workstream), so it still disables the prefix cache. Drafter
+        // -MTP remains disabled under KV-quant regardless (separable; handled
+        // where the MTP runtime is wired, not here).
+        let kvQuantScheme = Self.resolveKVQuantScheme(
+            modelID: modelId,
+            architecture: architecture,
+            kvQuantEnabled: kvQuantEnabled
         )
-        let kvBytesPerToken = resolvedKVBytesPerToken(architecture: architecture, weightBytes: weightBytes)
+        let blockSize = 256
+        // Only the kernel scheme still blocks the prefix cache; dequant composes.
+        let kvQuantBlocksPrefixCache =
+            kvQuantScheme != nil && kvQuantScheme?.candidateMode.cacheKind != .dequant
+        let backing = kvQuantBlocksPrefixCache
+            ? nil
+            : await makePrefixCacheBackingIfEnabled(
+                modelId: modelId, weightHash: weightHash, architecture: architecture
+            )
+        let kvBytesPerToken = resolvedKVBytesPerToken(
+            architecture: architecture,
+            weightBytes: weightBytes,
+            quantScheme: kvQuantScheme
+        )
+        // Make the switch observable: a beta provider can confirm via
+        // `darkbloom logs` whether kv_quant actually engaged for this model.
+        if let scheme = kvQuantScheme {
+            let kind = scheme.candidateMode.cacheKind == .dequant ? "dequant" : "kernel"
+            let pc = kvQuantBlocksPrefixCache ? "off (kernel scheme)" : "on"
+            kvQuantLogger.notice(
+                "KV-quant ENABLED for \(modelId, privacy: .public): \(kind, privacy: .public) scheme, \(kvBytesPerToken) KV bytes/token, prefix cache \(pc, privacy: .public)")
+        } else if kvQuantEnabled {
+            kvQuantLogger.notice(
+                "KV-quant requested (kv_quant=true) but \(modelId, privacy: .public) is not a supported family — serving fp16")
+        }
         let maxBlocks = prefixCacheMaxBlocks(
             kvBytesPerToken: kvBytesPerToken,
             budgetBytes: prefixCacheBudgetBytes(),
@@ -1237,7 +1315,8 @@ public actor BatchScheduler {
                     maxNumBatchedTokens: 8192,
                     prefillStepSize: 512,
                     streamInterval: 1,
-                    maxKVCacheTokens: 0  // unlimited — our kvBudget gates by bytes
+                    maxKVCacheTokens: 0,  // unlimited — our kvBudget gates by bytes
+                    kvQuantization: kvQuantScheme?.schedulerConfig
                 ),
                 eosTokenIds: eosTokenIds,
                 prefixCache: enginePrefixCache  // nil unless .engine + flag (TB-007)
@@ -1266,6 +1345,8 @@ public actor BatchScheduler {
                         schedulerConfig: scheduler.config,
                         stepInterval: 0.001,
                         prefixCacheConfig: nil,
+                        // MTP/drafter capture requires non-quantized KV;
+                        // keep disabled when KV-quant is on (and off by default).
                         mtpEnabled: false
                     ),
                     externalChatTemplate: nil
@@ -1602,7 +1683,23 @@ public actor BatchScheduler {
     /// memory. Pulled out of `loadModel` so the lifecycle reads as a
     /// short sequence; the arithmetic itself is unchanged.
     private func applyPostLoadBudgets(snapshot: LoadSnapshot) {
+        let quantScheme = Self.resolveKVQuantScheme(
+            modelID: modelId,
+            architecture: snapshot.architecture,
+            kvQuantEnabled: kvQuantEnabled
+        )
         self.kvBytesPerToken = Self.resolvedKVBytesPerToken(
+            architecture: snapshot.architecture,
+            weightBytes: snapshot.bytes,
+            quantScheme: quantScheme
+        )
+        // FP16 KV cost (no quantScheme): identical to kvBytesPerToken when KV
+        // quant is off, but ~2x larger when it's on. The non-batched VLM media
+        // path uses container.generate (fp16 KV, not the quantized batched
+        // cache), so reserveVisionRequest sizes its generation-KV reservation
+        // from this un-quantized value rather than the quantized rate the
+        // batched engine admits against.
+        self.fp16KVBytesPerToken = Self.resolvedKVBytesPerToken(
             architecture: snapshot.architecture,
             weightBytes: snapshot.bytes
         )
@@ -1630,7 +1727,17 @@ public actor BatchScheduler {
             self.defaultMaxTokens = min(maxContextLength, 8192)
         }
 
-        self.dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
+        // Cold-start concurrency seed for the just-loaded model. Start at the
+        // configured ceiling, not the old hard pin to 4. The memory clamp is
+        // applied authoritatively in `effectiveMaxConcurrentRequests` /
+        // `syncEngineConcurrency()` (which `loadModel` calls immediately after
+        // this), so the engine is never told more than
+        // `memoryBoundMaxConcurrentRequests`. Seeding at the ceiling (rather than
+        // min(ceiling, memoryBound)) also lets the effective cap track a RISING
+        // memory bound instantly instead of waiting for the slow adaptive ramp to
+        // re-raise it. (`memoryBoundMaxConcurrentRequests` is file-private to the
+        // telemetry extension and not referenceable here.)
+        self.dynamicMaxConcurrentRequests = max(1, maxConcurrentRequests)
         self.performanceByBatchSize.removeAll()
         self.lastBatchSampleAt = .now
     }
@@ -1648,7 +1755,9 @@ public actor BatchScheduler {
     /// 1. `mediaDecodeBytes` — the transient CIImage rasters + Swift `Data` pixel
     ///    buffers from media decode. These are NOT MLXArrays, so they are
     ///    invisible to the cap's live MLX counters (the original blind spot).
-    /// 2. The generation KV cache — `kvBytesPerToken × maxOutputTokens`. This IS
+    /// 2. The generation KV cache — `fp16KVBytesPerToken × kvTokens` (the fp16
+    ///    rate, since this path's `container.generate` allocates an un-quantized
+    ///    KV cache even when batched admission uses quantized KV). This IS
     ///    MLXArray-backed (eventually visible to the live counters), but the
     ///    vision path's decode loop runs in a detached task with no per-request
     ///    reservation, so N concurrent media requests can grow KV simultaneously
@@ -1668,14 +1777,21 @@ public actor BatchScheduler {
         requestId: String, mediaDecodeBytes: UInt64, kvTokens: Int
     ) async -> Bool {
         guard let kvBudget else { return true }
-        // KV bytes = kvBytesPerToken × the FULL token span the cache will hold:
+        // KV bytes = per-token KV cost × the FULL token span the cache will hold:
         // prompt text + image/video soft tokens + generated output (the caller
         // computes that conservative total). Reserving only the output tokens
         // would badly under-count — a single image expands to hundreds of vision
         // tokens, all of which occupy KV.
+        // Charge the FP16 (un-quantized) per-token KV cost: this request streams
+        // through container.generate, which allocates an fp16 KV cache — NOT the
+        // quantized batched cache. With KV quant on, kvBytesPerToken is the
+        // reduced batched rate (~0.52x); sizing the reservation from it would
+        // under-reserve the real fp16 allocation ~2x and risk OOM under
+        // concurrent image/video traffic. When KV quant is off,
+        // fp16KVBytesPerToken == kvBytesPerToken, so this is a no-op.
         var genKVBytes: UInt64 = 0
-        if kvBytesPerToken > 0, kvTokens > 0 {
-            let (b, overflow) = UInt64(kvBytesPerToken)
+        if fp16KVBytesPerToken > 0, kvTokens > 0 {
+            let (b, overflow) = UInt64(fp16KVBytesPerToken)
                 .multipliedReportingOverflow(by: UInt64(kvTokens))
             genKVBytes = overflow ? .max : b
         }
@@ -2248,6 +2364,7 @@ public actor BatchScheduler {
         modelId = ""
         currentWeightHash = nil
         kvBytesPerToken = 400_000
+        fp16KVBytesPerToken = 400_000
         dynamicTokenBudgetMax = 0
         maxContextLength = 0
         defaultMaxTokens = initDefaultMaxTokens
@@ -2258,7 +2375,15 @@ public actor BatchScheduler {
         prefillEwmaInitialized = false
         lastModelLoadMs = 0
         performanceByBatchSize.removeAll()
-        dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
+        // Reset the cold-start seed to the configured ceiling (same rationale as
+        // the init / applyPostLoadBudgets seeds). With no model loaded the memory
+        // clamp collapses to `maxConcurrentRequests` anyway; the next load
+        // re-seeds and `syncEngineConcurrency()` re-clamps against real memory.
+        dynamicMaxConcurrentRequests = max(1, maxConcurrentRequests)
+        // Force the next load's `syncEngineConcurrency()` to push: the new engine
+        // is built fresh and starts at its own default (`config.maxNumSeqs`), so
+        // the cap must be re-sent even if it equals what the prior engine held.
+        lastPushedMaxNumSeqs = -1
         // Reset backend-liveness diagnosis tracking for the next load (fresh
         // engine = healthy until proven otherwise). `isReloadingForRecovery` is
         // intentionally not reset here: it is owned by `selfRestartForRecovery`

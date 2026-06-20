@@ -94,6 +94,19 @@ extension BatchScheduler {
         activeTokenBudgetUsed + queuedTokenBudget
     }
 
+    // MARK: - Demo / diagnostics accessors
+    //
+    // Exposed so standalone harnesses (e.g. `kv-engine-demo`) can read the
+    // exact per-token KV cost and admitted-token budget the scheduler uses
+    // without reimplementing the architecture-aware estimation math.
+
+    /// Per-token KV-cache byte cost for the currently loaded model. This is the
+    /// value admission uses; it changes when KV quantization is enabled.
+    public func resolvedKVBytesPerToken() -> Int { kvBytesPerToken }
+
+    /// Memory-aware maximum token budget for the currently loaded model.
+    public func resolvedTokenBudgetMax() -> Int { tokenBudgetMax }
+
     private var averageReservedTokensForAdmission: Int {
         let requestCount = activeBridges.count + pendingRequestCount
         guard requestCount > 0 else { return defaultMaxTokens }
@@ -207,10 +220,51 @@ extension BatchScheduler {
             observedBatchSize: observedBatchSize,
             performanceByBatchSize: performanceByBatchSize
         )
-        guard next != dynamicMaxConcurrentRequests else { return }
-        dynamicMaxConcurrentRequests = next
-        // Mirror to the engine (planner also enforces, ahead of admission).
-        engine?.setMaxNumSeqs(next)
+        if next != dynamicMaxConcurrentRequests {
+            dynamicMaxConcurrentRequests = next
+        }
+        // Re-sync unconditionally — NOT only when the adaptive cap moved. This is
+        // called on every finish (via `recordBatchPerformance`); even when the
+        // adaptive cap is unchanged the memory clamp can have shifted (a
+        // finish/admission changes `averageReservedTokensForAdmission` and
+        // `tokenBudgetMax`), so the *effective* cap the engine must admit at can
+        // differ from what was last pushed. `syncEngineConcurrency()` is itself a
+        // no-op unless the effective cap changed.
+        syncEngineConcurrency()
+    }
+
+    /// Push the current effective concurrency cap to the engine's admission
+    /// ceiling (`setMaxNumSeqs` → engine `runtimeMaxNumSeqs`), but only when it
+    /// changed since the last push.
+    ///
+    /// The pushed value is computed IDENTICALLY to
+    /// `effectiveMaxConcurrentRequests`:
+    /// `max(1, min(maxConcurrentRequests, dynamicMaxConcurrentRequests,
+    /// memoryBoundMaxConcurrentRequests))`. This is the single point that keeps
+    /// the engine's admission cap in sync with the scheduler's view of the cap:
+    ///
+    ///  * At load it replaces the old raw `setMaxNumSeqs(dynamicMaxConcurrent…)`
+    ///    call.
+    ///  * After the adaptive policy ramps `dynamicMaxConcurrentRequests` (or the
+    ///    memory clamp moves) it re-pushes. Previously the engine was told the
+    ///    cold-start value ONCE at load and never heard the ramp, so a configured
+    ///    `maxConcurrentRequests` of 8 ran as two serialized waves of the pinned
+    ///    4 — roughly halving aggregate throughput at concurrency.
+    ///
+    /// The pushed value can NEVER exceed `memoryBoundMaxConcurrentRequests` (OOM
+    /// safety) or `maxConcurrentRequests`, because both bound the `min` inside
+    /// `effectiveMaxConcurrentRequests`. Returns the effective cap (the value
+    /// pushed, or the unchanged current value) so callers/tests can observe what
+    /// the engine was told even when no engine is attached.
+    @discardableResult
+    func syncEngineConcurrency() -> Int {
+        let effectiveCap = effectiveMaxConcurrentRequests
+        guard effectiveCap != lastPushedMaxNumSeqs else { return effectiveCap }
+        lastPushedMaxNumSeqs = effectiveCap
+        // No-op when no engine is loaded; the next load pushes via `loadModel`
+        // (which resets `lastPushedMaxNumSeqs` to -1 in `stopCurrentEngine`).
+        engine?.setMaxNumSeqs(effectiveCap)
+        return effectiveCap
     }
 
     /// EWMA update for `observedDecodeTpsEwma`. Split out of

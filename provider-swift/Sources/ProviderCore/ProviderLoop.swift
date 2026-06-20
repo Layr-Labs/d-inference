@@ -2722,7 +2722,8 @@ public actor ProviderLoop {
                 pendingTimeout: Self.schedulerPendingTimeout,
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 kvBudget: kvBudget,
-                diskAccountant: diskAccountant
+                diskAccountant: diskAccountant,
+                kvQuantEnabled: loopConfig.config.backend.kvQuant
             )
             await scheduler.loadModel(
                 container: container,

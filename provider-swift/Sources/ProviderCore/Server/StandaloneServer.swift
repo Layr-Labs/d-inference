@@ -51,12 +51,22 @@ public struct StandaloneServerConfig: Sendable {
     /// Bearer token required on every inference route (direct/local mode).
     /// nil = no auth (library default / explicit `--no-auth`).
     public let authToken: String?
+    /// When true, enable KV-cache quantization for validated model families
+    /// (Gemma 4 only in v1). Default false keeps the legacy fp16 path.
+    public let kvQuant: Bool
 
-    public init(port: UInt16 = 8000, host: String = "127.0.0.1", maxCachedModels: Int = 3, authToken: String? = nil) {
+    public init(
+        port: UInt16 = 8000,
+        host: String = "127.0.0.1",
+        maxCachedModels: Int = 3,
+        authToken: String? = nil,
+        kvQuant: Bool = false
+    ) {
         self.port = port
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
+        self.kvQuant = kvQuant
     }
 }
 
@@ -260,7 +270,8 @@ public actor StandaloneServer {
             pendingTimeout: Self.schedulerPendingTimeout,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
             kvBudget: kvBudget,
-            diskAccountant: diskAccountant
+            diskAccountant: diskAccountant,
+            kvQuantEnabled: config.kvQuant
         )
         await scheduler.loadModel(container: container, modelId: modelId)
         let tokenizer: TokenizerHandle = await container.perform { ctx in

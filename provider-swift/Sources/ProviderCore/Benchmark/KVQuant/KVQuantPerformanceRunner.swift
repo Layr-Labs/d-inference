@@ -5,6 +5,8 @@ import MLXLMCommon
 import ProviderCoreFoundation
 
 public struct KVQuantPerformanceRunner {
+    private static let minimumDecodeTPSRatio = 0.50
+
     public init() {}
 
     public func run(
@@ -97,21 +99,29 @@ public struct KVQuantPerformanceRunner {
                 todos = []
             } else {
                 let candidateExec = try KVQuantExecution.config(for: config.candidate, base: baseParams)
-                let candidateReport = try await runBaseline(
+                let rawCandidateReport = try await runBaseline(
                     label: "candidate",
                     mode: config.candidate,
                     container: container,
                     config: config,
                     cacheFactory: candidateExec.cacheFactory
                 )
+                let gate = Self.evaluatePerfGate(reference: referenceReport, candidate: rawCandidateReport)
+                let candidateReport = gate.candidate
                 comparison = KVQuantPerformanceComparison(
                     reference: referenceReport,
                     candidate: candidateReport,
-                    notes: []
+                    notes: gate.notes
                 )
-                suitePassFail = .passed()
+                // The decode-TPS regression gate only governs the performance
+                // suite. The memory suite shares this runner to collect the same
+                // measurements, but its pass/fail is owned by memory/threshold
+                // evaluation — it must not fail solely on candidate throughput.
+                suitePassFail = (suite == .performance) ? gate.passFail : .passed()
                 skipped = []
-                todos = []
+                todos = [
+                    "This perf suite is a fail-safe sequential regression gate. Use kv-engine-demo --concurrency-sweep for the live continuous-batching diagnostic."
+                ]
             }
 
             return KVQuantSuiteReport(
@@ -127,7 +137,7 @@ public struct KVQuantPerformanceRunner {
                 performance: comparison,
                 quality: nil,
                 passFail: suitePassFail,
-                failures: [],
+                failures: suitePassFail.failures,
                 skipped: skipped,
                 todos: todos
             )
@@ -291,6 +301,46 @@ public struct KVQuantPerformanceRunner {
             outputs: report.outputs,
             passFail: report.passFail
         )
+    }
+
+    private static func evaluatePerfGate(
+        reference: KVQuantPerformanceReport,
+        candidate: KVQuantPerformanceReport
+    ) -> (candidate: KVQuantPerformanceReport, passFail: KVQuantPassFail, notes: [String]) {
+        let ratios = zip(reference.iterations, candidate.iterations).compactMap { ref, cand -> Double? in
+            guard ref.decodeTokensPerSecond > 0, cand.decodeTokensPerSecond > 0 else { return nil }
+            return cand.decodeTokensPerSecond / ref.decodeTokensPerSecond
+        }
+        var metrics = candidate.metrics
+        metrics["perf.decode_tps_ratio"] = KVQuantMetricSummary(unit: "ratio", samples: ratios)
+        let enriched = KVQuantPerformanceReport(
+            label: candidate.label,
+            mode: candidate.mode,
+            iterations: candidate.iterations,
+            metrics: metrics,
+            memory: candidate.memory,
+            outputs: candidate.outputs,
+            passFail: candidate.passFail
+        )
+
+        guard !ratios.isEmpty else {
+            return (
+                enriched,
+                .failed(["perf.decode_tps_ratio missing: no paired reference/candidate decode TPS samples"]),
+                ["perf.decode_tps_ratio missing"]
+            )
+        }
+        let ratioSummary = KVQuantMetricSummary(unit: "ratio", samples: ratios)
+        let p50 = ratioSummary.p50 ?? 0
+        let note = "perf.decode_tps_ratio p50=\(String(format: "%.3f", p50)) minimum=\(String(format: "%.3f", minimumDecodeTPSRatio))"
+        if p50 < minimumDecodeTPSRatio {
+            return (
+                enriched,
+                .failed(["\(note): candidate decode TPS regressed beyond default threshold"]),
+                [note]
+            )
+        }
+        return (enriched, .passed(), [note])
     }
 
     private static func metrics(for iterations: [KVQuantIterationReport]) -> [String: KVQuantMetricSummary] {

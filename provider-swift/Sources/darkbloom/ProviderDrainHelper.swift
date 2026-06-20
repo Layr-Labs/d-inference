@@ -37,26 +37,28 @@ func drainRunningProvider(
 ) async -> Bool {
     guard LaunchAgent.isAnySupportedLabelLoaded() else { return false }
 
-    // Authoritative drain target: the PID launchd reports for the loaded
-    // service. This ties the drain to the launchd-managed daemon, so a
-    // standalone `start --local` server — which also writes the shared
+    // Authoritative drain targets: the PIDs launchd reports for the loaded
+    // service label(s). This ties the drain to the launchd-managed daemon(s), so
+    // a standalone `start --local` server — which also writes the shared
     // `~/.darkbloom/provider.pid` lock file — is never the one we signal on
-    // `stop`/`restart`/replacement `start`.
-    guard let pid = LaunchAgent.loadedServicePID(), pid > 0, ProcessLifecycle.processIsAlive(pid) else {
+    // `stop`/`restart`/replacement `start`. During an upgrade both the canonical
+    // and a legacy job can be loaded; the launchd stop/replace paths unload every
+    // supported label, so we must drain all of them.
+    let pids = LaunchAgent.loadedServicePIDs().filter { $0 > 0 && ProcessLifecycle.processIsAlive($0) }
+    guard !pids.isEmpty else {
         // The job is loaded but launchd has no live PID for it (e.g. installed
         // but not yet kickstarted). Fall back to the launchd-level path.
         return false
     }
 
-    // Read the daemon state for the user-facing in-flight count. If the freshest
-    // state describes a *different* process than the one launchd is running, the
-    // state file is stale/foreign — don't risk a confusing message, but still
-    // drain launchd's actual PID.
+    // Read the daemon state for the user-facing in-flight count. The state file
+    // is a single file (with multiple daemons it reflects whichever wrote last);
+    // only trust it for messaging when its PID is one we're about to drain.
     let state = DaemonStateFile.read()
     let now = Date().timeIntervalSince1970
     let freshState: DaemonState? = {
         guard let state, !state.isStale(now: now) else { return nil }
-        return state.pid == pid ? state : nil
+        return pids.contains(state.pid) ? state : nil
     }()
 
     let requestCount = freshState?.inflightRequestCount ?? (freshState?.inferenceActive == true ? 1 : 0)
@@ -67,15 +69,22 @@ func drainRunningProvider(
         print("Provider is currently serving requests. Waiting up to \(Int(timeout))s for them to finish before \(action.verb)...")
     }
 
-    let outcome = await ProcessLifecycle.stopProcessGracefully(pid: pid, timeout: timeout)
-
-    switch outcome {
-    case .notRunning:
-        return false
-    case .stoppedGracefully:
-        return true
-    case .forceKilled:
-        print("Warning: provider did not stop within \(Int(timeout))s; force-killing before \(action.verb).")
-        return true
+    // Drain all loaded-label daemons concurrently so the total wait is bounded by
+    // `timeout` even when two jobs are loaded.
+    let outcomes = await withTaskGroup(of: ProcessLifecycle.GracefulStopOutcome.self) { group in
+        for pid in pids {
+            group.addTask { await ProcessLifecycle.stopProcessGracefully(pid: pid, timeout: timeout) }
+        }
+        var results: [ProcessLifecycle.GracefulStopOutcome] = []
+        for await outcome in group { results.append(outcome) }
+        return results
     }
+
+    let forceKilled = outcomes.contains { if case .forceKilled = $0 { return true } else { return false } }
+    if forceKilled {
+        print("Warning: provider did not stop within \(Int(timeout))s; force-killing before \(action.verb).")
+    }
+    // True if at least one live daemon was found and signalled (so the caller
+    // knows a graceful drain was attempted).
+    return outcomes.contains { $0 != .notRunning }
 }

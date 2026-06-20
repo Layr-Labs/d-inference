@@ -68,22 +68,26 @@ public enum LaunchAgent: Sendable {
         }
     }
 
-    /// The PID launchd currently reports for the loaded provider service (the
-    /// canonical label, or the first loaded legacy label). Returns `nil` if no
-    /// supported label is loaded, or the job is loaded but not currently running
-    /// a process (e.g. installed-but-not-yet-kickstarted).
+    /// Every distinct PID launchd currently reports for loaded provider services,
+    /// across the canonical and legacy labels. Returns an empty array if no
+    /// supported label is loaded or none is currently running a process (e.g.
+    /// installed-but-not-yet-kickstarted).
     ///
-    /// This is the authoritative drain target: it ties a PID to the
-    /// launchd-managed daemon. Unlike the shared `~/.darkbloom/provider.pid`
-    /// lock file (which a standalone `start --local` server also writes), this
-    /// can never resolve to a non-launchd process.
-    public static func loadedServicePID() -> Int32? {
+    /// These are the authoritative drain targets: each PID is tied to a
+    /// launchd-managed daemon. Unlike the shared `~/.darkbloom/provider.pid` lock
+    /// file (which a standalone `start --local` server also writes), these can
+    /// never resolve to a non-launchd process. During an upgrade BOTH the
+    /// canonical and a legacy job can be loaded, and the stop/replace paths
+    /// unload every supported label — so all of them must be drained, not just
+    /// the first.
+    public static func loadedServicePIDs() -> [Int32] {
+        var pids: [Int32] = []
         for candidate in supportedLabels {
-            if let pid = servicePID(label: candidate) {
-                return pid
+            if let pid = servicePID(label: candidate), !pids.contains(pid) {
+                pids.append(pid)
             }
         }
-        return nil
+        return pids
     }
 
     /// Parse the `pid = N` field from `launchctl print gui/<uid>/<label>`.

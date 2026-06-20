@@ -3286,6 +3286,14 @@ public actor ProviderLoop {
         syncWarmModelState()
         await updateAggregateCapacity()
 
+        // Cancel the detached cold-load task (if this request is still loading),
+        // so `handleInferenceRequest`'s `await loadTask.value` unblocks. Without
+        // this, a cancel during a stalled cold load would leave the serve task
+        // awaiting forever and the CLI would escalate to SIGKILL.
+        if let loadTask = inflightModelLoadTasks.removeValue(forKey: requestId) {
+            loadTask.cancel()
+        }
+
         if let task = inflightTasks.removeValue(forKey: requestId) {
             task.cancel()
         }

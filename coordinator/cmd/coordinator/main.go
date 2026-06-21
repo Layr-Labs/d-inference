@@ -183,6 +183,24 @@ func main() {
 		logger.Info("dedicated-model routing disabled")
 	}
 
+	// Quality-concurrency admission cap: tighten the flat per-provider concurrency
+	// cap (24) to each model's quality_concurrency × overcommit, computed from the
+	// provider's static single-stream decode rate. Stops slow, saturated models
+	// (e.g. Gemma) from over-admitting onto a few boxes and collapsing decode TPS;
+	// near-no-op for fast/over-provisioned models. Reuses the warm-pool decode
+	// floor + fallback so admission and warm-pool planning share the same math.
+	reg.SetQualityConcurrencyCap(
+		cfg.RegistryCfg.QualityCap.Enabled,
+		cfg.RegistryCfg.QualityCap.Overcommit,
+		cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
+		cfg.RegistryCfg.WarmPool.FallbackQualityConcurrency,
+	)
+	logger.Info("quality-concurrency cap",
+		"enabled", cfg.RegistryCfg.QualityCap.Enabled,
+		"overcommit", cfg.RegistryCfg.QualityCap.Overcommit,
+		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
+	)
+
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
 	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)

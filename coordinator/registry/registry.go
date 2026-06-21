@@ -1009,6 +1009,19 @@ type Registry struct {
 	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
 	dedicatedModels []string
 
+	// Quality-concurrency admission cap (see concurrency_cap.go). When enabled,
+	// the per-provider concurrency cap for a model is tightened from the flat
+	// fallback to quality_concurrency × overcommit, computed from the provider's
+	// STATIC single-stream decode rate so slow/saturated models stop
+	// over-admitting. Set once at startup via SetQualityConcurrencyCap; read on the
+	// routing/preflight paths (which hold r.mu). qualityCapFloorTPS / qualityCapFallback
+	// mirror the warm-pool DecodeFloorTPS / FallbackQualityConcurrency so admission
+	// and warm-pool planning share the same quality math.
+	qualityCapEnabled    bool
+	qualityCapOvercommit float64
+	qualityCapFloorTPS   float64
+	qualityCapFallback   int
+
 	// APNs code-identity rollout policy (v0.6.0), guarded by r.mu and evaluated
 	// LIVE at every routing decision so a deadline can flip enforcement on/off
 	// without forcing providers to reconnect.

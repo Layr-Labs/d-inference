@@ -2036,10 +2036,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// it. The dispatch/queue path still returns a 429 when the queue is
 			// full or the wait times out (true saturation). The reservation is
 			// kept for dispatch.
-			if s.queueBeforeShedEnabled() {
+			// Dedicated-family models (e.g. Gemma 4) bypass queue-before-shed when
+			// their dedicated boxes are saturated: holding an OpenRouter request in
+			// the 120s queue would blow its TTFT SLA, so shed immediately with a
+			// 429 + Retry-After for a clean failover rather than waiting on a
+			// dedicated slot that may not free in time.
+			if s.queueBeforeShedEnabled() && !s.registry.IsDedicatedModel(model) {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
-				// Legacy fast-shed: immediate 429.
+				// Fast-shed: immediate 429 (always for dedicated models; for every
+				// model when queue-before-shed is disabled).
 				retryAfter := s.estimateRetryAfter(model)
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				refundReservation()
@@ -4870,7 +4876,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			// capacity right now. Fall through to the dispatch+queue path so a slot
 			// freeing — or a cold load completing — within the queue window serves
 			// it; the queue path still 429s on a full queue or wait timeout.
-			if s.queueBeforeShedEnabled() {
+			// Dedicated-family models (e.g. Gemma 4) bypass queue-before-shed when
+			// saturated — fast-429 for a clean OpenRouter failover instead of a
+			// 120s queue that would blow the TTFT SLA. Mirrors handleChatCompletions.
+			if s.queueBeforeShedEnabled() && !s.registry.IsDedicatedModel(model) {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 			} else {
 				retryAfter := s.estimateRetryAfter(model)

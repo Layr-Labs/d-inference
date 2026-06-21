@@ -117,3 +117,52 @@ func TestDedicatedModelShed429NotServiceUnavailable(t *testing.T) {
 		t.Fatalf("/v1/completions 429 missing Retry-After header")
 	}
 }
+
+// TestDedicatedSaturatedBoxFast429 verifies that when the dedicated box for a
+// Gemma 4 request EXISTS but is at capacity, the request is fast-429'd
+// immediately instead of sitting in the 120s queue-before-shed window (which is
+// left at its default ON) — so OpenRouter fails over within its TTFT SLA.
+func TestDedicatedSaturatedBoxFast429(t *testing.T) {
+	ts, reg := setupAdaptiveCapacityIntegration(t)
+	defer ts.Close()
+	reg.SetDedicatedModels([]string{"gemma-4"})
+	// queue-before-shed left at default (ON): dedicated models must still fast-429.
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	gemma := "gemma-4-26b-test"
+	// A single DEDICATED gemma-4 box with its token budget nearly exhausted.
+	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+		{ID: gemma, ModelType: "chat", Quantization: "4bit"},
+	}, testPublicKeyB64())
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	p := markOnlyProviderRoutable(t, reg)
+
+	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{{
+			Model:                 gemma,
+			State:                 "running",
+			MaxConcurrency:        8,
+			ActiveTokenBudgetUsed: 950,
+			ActiveTokenBudgetMax:  1_000,
+		}},
+	})
+	waitForAdaptiveCondition(t, time.Second, func() bool {
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		return p.BackendCapacity != nil && p.BackendCapacity.Slots[0].ActiveTokenBudgetMax == 1_000
+	})
+
+	status, body, retryAfter, err := chatRequestWithHeaders(ctx, ts.URL, gemma)
+	if err != nil {
+		t.Fatalf("request: %v (a hang here means the dedicated request was queued instead of fast-429'd)", err)
+	}
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (dedicated boxes bypass queue-before-shed when saturated); body = %s", status, body)
+	}
+	if retryAfter == "" {
+		t.Fatalf("saturated dedicated 429 missing Retry-After header")
+	}
+}

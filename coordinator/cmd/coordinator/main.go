@@ -542,6 +542,9 @@ func main() {
 			// is re-granted this connection.
 			reg.ForEachProvider(func(p *registry.Provider) {
 				if p.SetMDAProofIfHardware(certChain, mdaResult) {
+					// Persist now so the late-arriving chain is durable for reuse on
+					// the next reconnect, rather than waiting on a throttled heartbeat.
+					reg.PersistProvider(p)
 					logger.Info("late MDA cert stored on provider",
 						"provider_id", p.ID,
 						"serial", mdaResult.DeviceSerial,

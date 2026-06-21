@@ -334,6 +334,14 @@ type Provider struct {
 	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
 
+	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
+	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
+	// only: it is surfaced as a verified proof (MDAVerified/MDACertChain/MDAResult)
+	// solely after attachCachedMDAProof re-verifies it against Apple's pinned root
+	// AND re-binds it to this connection's SE key at hardware-grant time. Kept
+	// unexported so it never serializes to the store or the attestation endpoint.
+	restoredMDAChain [][]byte
+
 	// MDMFailureReason records the last MDM verification outcome for this
 	// connection, bucketed for observability: "" (verified/none),
 	// "device-not-found", "found-not-enrolled", "securityinfo-timeout",
@@ -626,6 +634,63 @@ func (p *Provider) SetMDAProofIfHardware(certChain [][]byte, mdaResult *attestat
 	p.MDACertChain = certChain
 	p.MDAResult = mdaResult
 	return true
+}
+
+// SetMDAProofIfHardwareBound atomically attaches an Apple Device Attestation proof
+// IFF the provider currently holds hardware trust AND the proof binds to THIS
+// machine — either by SE-key freshness (seKeyBound, the FreshnessCode OID equals
+// SHA-256 of this connection's SE public key) OR by a matching attested serial.
+// Returns true if attached. Unlike SetMDAProofIfHardware (which requires a serial
+// match), this accepts an SE-key binding so a privacy-preserving attestation that
+// omits the serial can still be reused. Same single-lock TOCTOU/race rationale as
+// SetMDAProofIfHardware.
+func (p *Provider) SetMDAProofIfHardwareBound(certChain [][]byte, mdaResult *attestation.MDAResult, seKeyBound bool) bool {
+	if mdaResult == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.TrustLevel != TrustHardware {
+		return false
+	}
+	serialOK := mdaResult.DeviceSerial != "" && p.AttestationResult != nil &&
+		mdaResult.DeviceSerial == p.AttestationResult.SerialNumber
+	if !seKeyBound && !serialOK {
+		return false
+	}
+	p.MDAVerified = true
+	p.MDACertChain = certChain
+	p.MDAResult = mdaResult
+	p.SEKeyBound = seKeyBound
+	return true
+}
+
+// StagedMDAChain returns the durable MDA cert chain restored from the store for
+// this reconnect (nil if none). Thread-safe. The chain is a CANDIDATE only: the
+// caller must re-verify it against Apple's root and re-bind it to the live SE key
+// before trusting it (see api.attachCachedMDAProof).
+func (p *Provider) StagedMDAChain() [][]byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.restoredMDAChain
+}
+
+// StageMDAChainFromJSON stages a JSON-encoded ([][]byte) MDA cert chain — recovered
+// from a live store record at reconnect — as a reuse candidate. No-op on empty
+// input or a decode error. Like the staging in RestoreProviderState, this only
+// sets the candidate; the proof is surfaced only after attachCachedMDAProof
+// re-verifies it against Apple's root and re-binds it to this SE key.
+func (p *Provider) StageMDAChainFromJSON(raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var chain [][]byte
+	if err := json.Unmarshal(raw, &chain); err != nil || len(chain) == 0 {
+		return
+	}
+	p.mu.Lock()
+	p.restoredMDAChain = chain
+	p.mu.Unlock()
 }
 
 // SetLastChallengeVerified updates the challenge timestamp (thread-safe).
@@ -1331,6 +1396,23 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	// this connection.
 	p.MDAVerified = false
 	p.ACMEVerified = false
+
+	// Stage the durable Apple-signed MDA cert chain (if the store has one) for
+	// local re-verification at this connection's hardware-grant. We deliberately
+	// do NOT set MDAVerified/MDACertChain here — the proof is surfaced only after
+	// attachCachedMDAProof re-verifies it against Apple's pinned root AND re-binds
+	// it to this connection's SE key. This lets a reconnect/restart reuse a
+	// still-valid attestation instead of forcing a fresh, Apple-rate-limited
+	// (≈1/device/7d) DevicePropertiesAttestation round-trip over the throttled
+	// MicroMDM→APNs channel — the root cause of providers showing "Apple Device
+	// Attestation incomplete" after a restart.
+	p.restoredMDAChain = nil
+	if len(rec.MDACertChain) > 0 {
+		var chain [][]byte
+		if err := json.Unmarshal(rec.MDACertChain, &chain); err == nil && len(chain) > 0 {
+			p.restoredMDAChain = chain
+		}
+	}
 
 	// Restore challenge state, but never move a fresh live verification
 	// backwards. Registration attestation sets LastChallengeVerified=now before

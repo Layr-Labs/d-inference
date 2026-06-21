@@ -1796,7 +1796,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			// mdmVerificationLoop (SignalChallengeSettled, so it stops deferring and
 			// runs the live verify) if ACME did NOT grant hardware.
 			s.retryACMETrust(providerID, provider)
-			if provider.GetTrustLevel() != registry.TrustHardware {
+			if provider.GetTrustLevel() == registry.TrustHardware {
+				// ACME granted hardware without the live MDM verify, so
+				// verifyAppleDeviceAttestation (which runs the MDA leg) never fires and
+				// the mdmVerificationLoop exits. Attach the durable MDA proof here too,
+				// or an ACME-trusted reconnect keeps mda_verified=false despite a valid
+				// cached chain.
+				if ar := provider.GetAttestationResult(); ar != nil {
+					s.attachCachedMDAProof(providerID, provider, *ar)
+				}
+			} else {
 				provider.SignalChallengeSettled()
 			}
 		}
@@ -3203,6 +3212,13 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 		// Not hardware-trusted (yet) — nothing to attach the proof to.
 		return false
 	}
+	// Persist immediately under THIS connection's record. The grant-path
+	// PersistProvider ran before this attach, so without this write the new
+	// session's row would carry an empty mda_cert_chain until the next throttled
+	// heartbeat — and a disconnect in that window would lose the chain (serial now
+	// indexes this session's row), forcing a fresh, rate-limited refetch on the
+	// next reconnect. Mirrors the fresh-MDA path's immediate persist.
+	s.registry.PersistProvider(provider)
 	s.logger.Info("MDA reused from durable cert chain — skipped fresh DevicePropertiesAttestation",
 		"provider_id", providerID,
 		"mda_serial", mdaResult.DeviceSerial,

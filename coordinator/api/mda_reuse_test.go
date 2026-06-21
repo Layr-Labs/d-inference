@@ -210,6 +210,18 @@ func TestStageDurableMDAChain_LiveStoreReusedAcrossReconnect(t *testing.T) {
 	if !mdaVerified(p) {
 		t.Error("MDAVerified must be true after reuse via the live store path")
 	}
+
+	// The reuse must persist the chain under THIS session's record, so a later
+	// reconnect can reuse it again instead of re-hitting Apple's rate limit. Look
+	// it up by serial (which now indexes this session) and confirm the chain is
+	// durable.
+	rec, err := mem.GetProviderBySerial(context.Background(), serial)
+	if err != nil || rec == nil {
+		t.Fatalf("expected a persisted record for serial after reuse: %v", err)
+	}
+	if !rec.MDAVerified || len(rec.MDACertChain) == 0 {
+		t.Errorf("reuse must persist the chain: mda_verified=%v chain_len=%d", rec.MDAVerified, len(rec.MDACertChain))
+	}
 }
 
 // TestAttachCachedMDAProof_ExpiredChainNotReused proves the time dimension: an

@@ -249,6 +249,9 @@ func TestSettleEpoch_UnknownHardwareModelUnpaid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if res.Eligible != 0 {
+		t.Fatalf("unknown hardware model should be ineligible, got eligible=%d", res.Eligible)
+	}
 	if res.TotalDrawMicroUSD != 0 {
 		t.Fatalf("unknown hardware model should draw 0, got %d", res.TotalDrawMicroUSD)
 	}

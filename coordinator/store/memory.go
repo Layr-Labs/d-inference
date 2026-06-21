@@ -2497,10 +2497,13 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 		if earning.ProviderKey != providerKey {
 			continue
 		}
-		summary.Count++
 		summary.TotalMicroUSD += earning.AmountMicroUSD
-		summary.PromptTokens += int64(earning.PromptTokens)
-		summary.CompletionTokens += int64(earning.CompletionTokens)
+		// base_reward rows add money but are not inference jobs.
+		if earning.Model != "base_reward" {
+			summary.Count++
+			summary.PromptTokens += int64(earning.PromptTokens)
+			summary.CompletionTokens += int64(earning.CompletionTokens)
+		}
 	}
 
 	return summary, nil
@@ -2516,10 +2519,13 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 		if earning.AccountID != accountID {
 			continue
 		}
-		summary.Count++
 		summary.TotalMicroUSD += earning.AmountMicroUSD
-		summary.PromptTokens += int64(earning.PromptTokens)
-		summary.CompletionTokens += int64(earning.CompletionTokens)
+		// base_reward rows add money but are not inference jobs.
+		if earning.Model != "base_reward" {
+			summary.Count++
+			summary.PromptTokens += int64(earning.PromptTokens)
+			summary.CompletionTokens += int64(earning.CompletionTokens)
+		}
 	}
 
 	return summary, nil

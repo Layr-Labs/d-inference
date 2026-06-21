@@ -84,16 +84,14 @@ func (s *PostgresStore) SettleProviderFloorDraw(ctx context.Context, draw *Provi
 			RETURNING account_id, provider_key, amount_micro_usd
 		), summary_account AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT account_id, 'account', 1, amount_micro_usd, 0, 0, NOW() FROM earning
+			SELECT account_id, 'account', 0, amount_micro_usd, 0, 0, NOW() FROM earning
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  updated_at = NOW()
 		), summary_provider AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', 1, amount_micro_usd, 0, 0, NOW() FROM earning WHERE provider_key <> ''
+			SELECT provider_key, 'provider', 0, amount_micro_usd, 0, 0, NOW() FROM earning WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  updated_at = NOW()
 		)

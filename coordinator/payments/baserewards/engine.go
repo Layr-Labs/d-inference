@@ -191,7 +191,7 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 			if err != nil {
 				e.logger.Error("base rewards: settle draw failed",
 					"epoch", epochID, "provider_key", a.ProviderKey, "error", err)
-				continue
+				return err // abort so the failed provider's allocation is preserved for retry
 			}
 			if credited {
 				res.Settled++
@@ -260,10 +260,10 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 				memGB = capGB
 			}
 		} else {
-			// Until a model is catalogued, don't trust self-reported memory for base
-			// rewards. This prevents future/unknown identifiers (e.g. M5) from claiming
-			// top-tier floors before we add an explicit cap.
-			memGB = 0
+			// Until a model is catalogued, skip the candidate entirely rather than
+			// settling a $0 draw that permanently blocks future payment if the model
+			// is later added to the catalog.
+			continue
 		}
 		floor := PeriodFloor(memGB, uptimeFrac, start, end)
 		draw := Draw(floor, earned, e.cfg.ReductionK)
@@ -319,7 +319,13 @@ func (e *Engine) uptimeByProviderKey(sessions []store.ProviderSession, start, en
 		}
 		var sessEnd time.Time
 		if ps.DisconnectedAt != nil {
+			// Closed session: clamp to min(disconnected_at, last_seen + grace) so a
+			// stale eviction (disconnected well after last heartbeat) does not
+			// overcount uptime.
 			sessEnd = *ps.DisconnectedAt
+			if graceEnd := ps.LastSeen.Add(grace); graceEnd.Before(sessEnd) {
+				sessEnd = graceEnd
+			}
 		} else {
 			// Open session: clamp to last_seen + grace.
 			sessEnd = ps.LastSeen.Add(grace)

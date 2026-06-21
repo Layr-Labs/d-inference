@@ -430,8 +430,8 @@ func TestSettleProviderFloorDraw_RecordsVisibleEarning(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if sum.TotalMicroUSD != 18_000_000 || sum.Count != 1 {
-				t.Fatalf("summary = %+v, want total 18000000 count 1", sum)
+			if sum.TotalMicroUSD != 18_000_000 || sum.Count != 0 {
+				t.Fatalf("summary = %+v, want total 18000000 count 0 (base_reward is not a job)", sum)
 			}
 
 			// EXCLUDED from organic draw math: must not count toward earned.

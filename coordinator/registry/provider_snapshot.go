@@ -45,7 +45,7 @@ func (r *Registry) ListProviders() []ProviderSnapshot {
 			MemoryGB:       p.Hardware.MemoryGB,
 			TrustLevel:     p.TrustLevel,
 			Attested:       p.Attested,
-			Online:         p.Status == StatusOnline,
+			Online:         p.Status == StatusOnline || p.Status == StatusServing,
 			ModelLoaded:    warm != "",
 			CurrentModel:   warm,
 			MemoryPressure: p.SystemMetrics.MemoryPressure,

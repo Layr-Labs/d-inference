@@ -966,7 +966,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 
 		// Base-rewards: idempotency on per-job settlement (design §8 "required fix").
-		// job_id has always been msg.RequestID (unique per request) so this builds clean.
+		// Deduplicate any existing rows first so the unique index builds on prod DBs
+		// that may have retried credits with the same job_id. The DO block is safe
+		// on fresh DBs where no duplicates exist (0-row delete).
+		`DO $$ BEGIN DELETE FROM provider_earnings WHERE id NOT IN (SELECT MIN(id) FROM provider_earnings WHERE job_id <> '' GROUP BY job_id) AND job_id <> ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_earnings_job ON provider_earnings(job_id) WHERE job_id <> ''`,
 
 		// Base-rewards: unify sessions↔earnings identity (design §8).

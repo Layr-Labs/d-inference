@@ -144,6 +144,19 @@ const (
 // rejecting provider (its reported budget is known and below the model context),
 // in which case it is transient. An explicit "exceeds … context" phrasing names
 // the context directly and is always deterministic.
+//
+// LIMITATION (residual stale-snapshot edge): providerBudget is the LAST
+// heartbeat's ActiveTokenBudgetMax, not the live budget the provider rejected
+// against — the wire InferenceErrorMessage carries no rejection-time budget. So if
+// a provider's budget was >= context at the last heartbeat but memory pressure
+// shrank it below context just before this request, we still classify
+// deterministic and stop after one attempt. This is strictly better than the
+// pre-DAR-347 behavior (which classified EVERY batch-budget rejection
+// deterministic) and degrades only to a rare uptime-neutral 429 the client
+// retries — never a 503 storm. The complete fix is provider-side: emit a distinct
+// reason for "prompt > context" vs "prompt > this node's budget" so the
+// coordinator never has to infer it from a stale snapshot (tracked as a follow-up;
+// requires a protocol/provider change across a mixed fleet, out of scope here).
 func classifyRejection(reason, errStr string, providerBudget int64, modelContext int) rejectionKind {
 	// Capacity-class is gated by isCapacityClassProviderError so fault strings
 	// (checked first there) can never be miscategorised as a capacity shed.

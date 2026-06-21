@@ -2316,6 +2316,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// model may have been rewritten by a capacity- or TTFT-fallback above
+	// (maybeFallbackAliasCapacity / maybeFallbackAliasTTFT), so refresh the context
+	// window for the FINAL build before handing it to the dispatch loop — otherwise
+	// shouldStopFailover/classifyRejection would compare a provider's budget against
+	// the originally-resolved model's context. Overwrite only on a successful lookup
+	// (fallback builds of the same alias normally share a context window; a build
+	// absent from the store keeps the prior value, matching the initial read).
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		modelMaxContext = rec.MaxContextLength
+	}
+
 	d := &dispatchState{
 		s:                      s,
 		w:                      w,

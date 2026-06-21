@@ -173,6 +173,37 @@ func TestQualityCapSpreadsAndSheds(t *testing.T) {
 	}
 }
 
+// TestQualityCapAppliedAtAdmitRecheck: the FINAL admit re-check (providerCanAdmitLockedEx,
+// used by ReserveProviderEx after selection) must apply the quality cap too — otherwise
+// a heartbeat that bumps load between snapshot and reservation lets a box past its
+// quality cap be over-admitted via the legacy flat-cap re-check (TOCTOU).
+func TestQualityCapAppliedAtAdmitRecheck(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetDedicatedModels([]string{"gemma-4"})
+	reg.SetQualityConcurrencyCap(true, 2.0, 15, 4)
+	p := makeSchedulerProvider(t, reg, "gemma", gemmaBuild, 23)
+	budgetSlot(p, 2.6)
+
+	admit := func() bool {
+		reg.mu.RLock()
+		defer reg.mu.RUnlock()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return reg.providerCanAdmitLockedEx(p, gemmaBuild, RequestTraits{}, false, false)
+	}
+
+	// Under the cap (1 in flight, cap 2) → admit re-check passes.
+	p.AddPending(&PendingRequest{RequestID: "a", Model: gemmaBuild})
+	if !admit() {
+		t.Fatal("admit re-check rejected a box below its quality cap (1 < 2)")
+	}
+	// At the cap (2 in flight) → admit re-check must reject (not the flat 24).
+	p.AddPending(&PendingRequest{RequestID: "b", Model: gemmaBuild})
+	if admit() {
+		t.Fatal("admit re-check admitted a box already at its quality cap (2); final re-check must apply the cap")
+	}
+}
+
 // TestWarmTargetDedicatedWholePool: for a dedicated model UNDER DEMAND the
 // warm-pool target is the entire eligible pool (warm + eligibleCold), so idle
 // dedicated boxes get warmed. With NO demand for that build it is left at the

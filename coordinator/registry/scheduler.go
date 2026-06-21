@@ -1530,7 +1530,11 @@ func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits Re
 	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
 		return false
 	}
-	if !p.hasConcurrencyHeadroomForModelLocked(model) {
+	// Apply the SAME quality-concurrency cap as the selection snapshot and the
+	// preflight. This is the final admit re-check in ReserveProviderEx; if a
+	// heartbeat bumped NumRunning after the snapshot was built, the legacy flat-cap
+	// check here would let a box that just reached its quality cap be over-admitted.
+	if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) {
 		return false
 	}
 	if p.BackendCapacity != nil {

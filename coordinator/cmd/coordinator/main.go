@@ -427,6 +427,17 @@ func main() {
 		}
 	}
 
+	// Per-family prompt-token estimate calibration for the servability context
+	// check (the len/4 routing estimate undercounts dense content). Default
+	// {gpt-oss:1.3}; override with "family:factor,..." e.g. "gpt-oss:1.3,gemma:1.15".
+	if v := os.Getenv("EIGENINFERENCE_PROMPT_CALIBRATION"); v != "" {
+		if n := api.SetPromptContextCalibrationFromEnv(v); n > 0 {
+			logger.Info("prompt-token context calibration overridden", "pairs", n, "value", v)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PROMPT_CALIBRATION; using default", "value", v)
+		}
+	}
+
 	// SSE keepalives during long prefill. ON by default at a 10s cadence so a long
 	// prefill never leaves the consumer connection idle long enough for OpenRouter's
 	// fetch timeout to fire and fail us over mid-prefill. The first keepalive fires

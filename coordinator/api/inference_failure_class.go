@@ -94,6 +94,68 @@ func isCapacityClassProviderError(errStr string) bool {
 	return false
 }
 
+// rejectionKind refines a CAPACITY-class provider rejection by how the dispatch
+// loop should respond. isCapacityClassProviderError only answers the 5xx→429
+// question; this answers the orthogonal "should we keep failing over?" question.
+//
+// A request that is intrinsically too large for the MODEL (its prompt exceeds
+// the context window / per-batch prompt cap) is rejected identically by EVERY
+// provider serving that model — so retrying across the fleet is pure waste. In
+// prod this produced a 22-63× dispatch storm (ceiling maxDispatchAttempts=64),
+// ~8.7 min latency per request, and 0% eventual success. Those stop after the
+// first rejection. A provider/time-specific shortage (this node's live KV
+// budget, a full queue, an update drain, a cold miss) MAY clear on another
+// provider, so those still fail over — but under a tight cap so a fleet-wide
+// transient can't storm either.
+type rejectionKind int
+
+const (
+	// rejectionNotCapacity: a genuine fault (or unrecognised string) — the caller
+	// keeps existing behavior (stays a 5xx fault, the per-provider breaker may
+	// deroute the offender, and fault failover continues to maxDispatchAttempts).
+	rejectionNotCapacity rejectionKind = iota
+	// rejectionDeterministicUnservable: the request exceeds the model's context /
+	// per-batch prompt limit — identical on every provider. Stop immediately and
+	// return an uptime-neutral 429; retrying cannot help.
+	rejectionDeterministicUnservable
+	// rejectionTransientCapacity: a provider/time-specific shortage. Failover may
+	// help, bounded by maxCapacityClassRetries.
+	rejectionTransientCapacity
+)
+
+// classifyRejection refines a pre-content provider error into the dispatch
+// response kind. reason is the structured InferenceErrorMessage.ErrorReason
+// (may be empty); errStr is the human-readable provider error. A non-capacity
+// error returns rejectionNotCapacity so callers preserve fault failover + the
+// per-provider breaker. Matching mirrors isCapacityClassProviderError
+// (substring, case-insensitive, curly-apostrophe-normalised).
+func classifyRejection(reason, errStr string) rejectionKind {
+	// Capacity-class is gated by isCapacityClassProviderError so fault strings
+	// (checked first there) can never be miscategorised as a capacity shed.
+	if !isCapacityClassProviderError(errStr) && !isCapacityClassProviderError(reason) {
+		return rejectionNotCapacity
+	}
+	s := strings.ToLower(strings.TrimSpace(errStr + " " + reason))
+	s = strings.ReplaceAll(s, "’", "'")
+	// Model-intrinsic (fleet-wide deterministic): the prompt exceeds the model's
+	// per-batch prompt cap (= min(context window, KV budget)) or its context
+	// window. The provider's KV budget is millions of tokens in practice, so the
+	// binding limit is the context window — identical on every provider serving
+	// the model. The provider emits "request exceeds batch token budget"
+	// (BatchSchedulerTypes: requestExceedsBatchTokenBudget) or a
+	// "prompt exceeds … context" phrasing. Retrying cannot help.
+	if strings.Contains(s, "batch token budget") ||
+		(strings.Contains(s, "exceeds") && strings.Contains(s, "context")) {
+		return rejectionDeterministicUnservable
+	}
+	// Everything else capacity-class is provider/time-specific — this node's live
+	// KV budget ("exceeds active token budget" / "requires N tokens but only M
+	// available" / "insufficient kv headroom"), a full queue, server busy, an
+	// update drain, or a cold "not loaded" miss. Another provider (bigger budget,
+	// free queue, already warm) may serve it, so fail over under the cap.
+	return rejectionTransientCapacity
+}
+
 // capacityClassMarkers are BUCKET A substrings: ADMITTED-but-unservable or
 // lifecycle rejections that should reclassify a provider 5xx to an uptime-neutral
 // 429. Drop a newly-observed capacity string here (predicates that need more than

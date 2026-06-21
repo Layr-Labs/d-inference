@@ -126,6 +126,18 @@ type dispatchState struct {
 	keepalive         *prefillKeepaliver
 	lastFailedVersion string
 	excludeProviders  map[string]struct{}
+	// capacityRetries counts pre-content TRANSIENT-capacity failovers (this
+	// node's live KV budget, a full queue, a drain). Bounded by
+	// maxCapacityClassRetries so a fleet-wide transient cannot storm; a
+	// DETERMINISTIC-context rejection (prompt > model context) stops on the first
+	// attempt regardless (see classifyRejection / failoverOutcome).
+	capacityRetries int
+	// unservable is set when the dispatch loop stops because the request cannot
+	// be served (deterministic-context rejection, or a transient that exhausted
+	// maxCapacityClassRetries). The exhausted ladder then emits a single
+	// uptime-neutral 429 with unservableReason instead of retrying/5xx'ing.
+	unservable       bool
+	unservableReason string
 
 	// ---- per-attempt scratch (reset each attempt) ----
 	attempt          int
@@ -812,6 +824,55 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr string, held *[]string) {
 	if !d.s.noteDispatchProviderError(provider, pr, statusCode, errStr, held) {
 		d.s.ddIncr("inference.dispatches", []string{"status:retry"})
+	}
+}
+
+// rejectionReasonOversized is the rejection-ledger reason_code for a request the
+// dispatch loop stopped because no provider can serve it (deterministic context
+// overflow, or a transient-capacity shortage that exhausted
+// maxCapacityClassRetries). Distinct from the preflight "context_exceeded" /
+// "prompt_too_long" and the legacy dispatch-exhausted "unservable_token_budget".
+const rejectionReasonOversized = "oversized_request"
+
+// shouldStopFailover is the single choke point that decides, after a dispatched
+// attempt failed with outcomeRetry, whether the dispatch loop should STOP failing
+// over because the request is unservable — rather than walk all 64 providers and
+// 503 each. The orchestrator calls it at both post-dispatch retry points (after
+// waitFirstChunk and waitAccepted), through which EVERY pre-content provider
+// rejection funnels (including the speculative/race paths, which return their
+// outcome up through waitFirstChunk). It inspects the just-recorded error
+// (d.lastErr / d.lastErrReason via setLastInferenceError) and classifies it:
+//
+//   - DETERMINISTIC-context rejection (prompt > model context — identical on
+//     every provider): stop on the FIRST occurrence. Retrying is pure waste
+//     (prod: median 22 / max 63 futile attempts, ~8.7 min, 0% eventual success).
+//   - TRANSIENT-capacity rejection (this node's KV budget / queue / drain): keep
+//     failing over, but only up to maxCapacityClassRetries, then stop.
+//   - genuine fault / timeout / unrecognised: return false → existing fault
+//     failover (the per-provider breaker quarantines a persistently-sick node).
+//
+// When it returns true it sets d.unservable + d.unservableReason so the exhausted
+// ladder emits exactly one uptime-neutral 429 (not a storm, not a raw 5xx). It is
+// a no-op (returns false, no counters) for non-capacity outcomes, so timeouts and
+// faults are unaffected.
+func (d *dispatchState) shouldStopFailover() bool {
+	switch classifyRejection(d.lastErrReason, d.lastErr) {
+	case rejectionDeterministicUnservable:
+		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
+		d.unservable = true
+		d.unservableReason = rejectionReasonOversized
+		return true
+	case rejectionTransientCapacity:
+		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:transient"})
+		d.capacityRetries++
+		if d.capacityRetries >= maxCapacityClassRetries {
+			d.unservable = true
+			d.unservableReason = rejectionReasonOversized
+			return true
+		}
+		return false
+	default:
+		return false
 	}
 }
 
@@ -1868,6 +1929,14 @@ func (d *dispatchState) run() {
 		// ---- Speculative TTFT-aware first-chunk wait ----
 		switch d.waitFirstChunk() {
 		case outcomeRetry:
+			// Post-dispatch provider failure. Stop failing over when the request is
+			// unservable (deterministic context overflow, or a capacity transient
+			// past maxCapacityClassRetries) so we don't storm all 64 providers; the
+			// exhausted ladder then emits one uptime-neutral 429. Faults/timeouts
+			// return false and keep failing over as before.
+			if d.shouldStopFailover() {
+				goto exhausted
+			}
 			continue
 		case outcomeClientGone:
 			return
@@ -1875,6 +1944,9 @@ func (d *dispatchState) run() {
 			// Provider accepted or held preamble but hasn't produced content.
 			switch d.waitAccepted() {
 			case outcomeRetry:
+				if d.shouldStopFailover() {
+					goto exhausted
+				}
 				continue
 			case outcomeClientGone:
 				return
@@ -1893,7 +1965,18 @@ exhausted:
 		keepaliveCommitted := d.keepalive.takeOver()
 		statusCode := d.lastErrCode
 		reason := "dispatch_exhausted"
-		if statusCode == 0 {
+		if d.unservable {
+			// The loop stopped early because no provider can serve this request
+			// (deterministic context overflow, or a capacity transient that
+			// exhausted maxCapacityClassRetries). We already know the verdict, so
+			// skip the quick-capacity probe and the 5xx→429 reclassification below:
+			// emit a single uptime-neutral 429. This is the proactive complement to
+			// the always-on backstop — it converts the request BEFORE storming the
+			// fleet, not after 64 attempts.
+			statusCode = http.StatusTooManyRequests
+			reason = rejectionReasonOversized
+			s.ddIncr("routing.oversized_request_rejected", []string{"model:" + d.model, "stage:dispatch"})
+		} else if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
 			_, capRej, _ := s.registry.QuickCapacityCheckForRequest(d.model, d.estimatedPromptTokens, d.requestedMaxTokens, registry.RequestTraits{HasTools: d.hasTools}, d.requiresVision, d.allowedProviderSerials...)
@@ -1936,7 +2019,16 @@ exhausted:
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			s.recordRejection(d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000))
+			info := d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000)
+			if d.unservable {
+				// No provider could serve this request (it exceeds the model
+				// context, identical fleet-wide). Mark it not-servable so the
+				// rejection ledger's could_have_served reflects reality — candidates
+				// existed but every one would reject — mirroring the preflight gate.
+				info.servabilityComputed = true
+				info.candidateCount = 0
+			}
+			s.recordRejection(info)
 		} else {
 			s.recordRejection(d.rejectionInfo("dispatch", reason, statusCode, 0))
 		}

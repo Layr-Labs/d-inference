@@ -76,6 +76,16 @@ const (
 	// immediately-available healthy providers rather than waiting on busy ones.
 	maxDispatchAttempts = 64
 
+	// maxCapacityClassRetries bounds failover specifically for TRANSIENT-capacity
+	// rejections (this provider's live KV budget, a full queue, an update drain).
+	// Such a shortage MAY clear on another provider, so we fail over — but only a
+	// few times, so a fleet-wide transient (or an oversized request the determinism
+	// check didn't tag) cannot walk all maxDispatchAttempts providers and 503 each
+	// (the prod storm: median 22, max 63 attempts, ~8.7 min, 0% eventual success).
+	// A DETERMINISTIC-context rejection (prompt > model context, identical on every
+	// provider) stops on the FIRST attempt regardless — see classifyRejection.
+	maxCapacityClassRetries = 3
+
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
 	// the coordinator launches a speculative backup dispatch. The primary
 	// provider gets this fraction of the deadline before the backup is

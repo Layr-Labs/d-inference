@@ -466,6 +466,14 @@ type Store interface {
 	// GetProviderBySerial returns a provider record by serial number.
 	GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error)
 
+	// GetMDAChainBySerial returns the newest NON-EMPTY Apple MDA cert chain stored
+	// for a serial, or (nil, nil) if none. A reconnecting provider gets a new row
+	// (keyed by a fresh provider id) that may be persisted with an empty chain
+	// before the chain is reattached; GetProviderBySerial would return that newer
+	// empty row and shadow a still-valid chain from a prior connection. This query
+	// looks past empty rows so MDA reuse survives that race.
+	GetMDAChainBySerial(ctx context.Context, serial string) (json.RawMessage, error)
+
 	// ListProviders returns all stored provider records.
 	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
 

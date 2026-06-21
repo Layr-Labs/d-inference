@@ -3163,11 +3163,15 @@ func (s *Server) stageDurableMDAChain(provider *registry.Provider, serial string
 	// back to a fresh attestation.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	rec, err := s.store.GetProviderBySerial(ctx, serial)
-	if err != nil || rec == nil || len(rec.MDACertChain) == 0 {
+	// Newest NON-EMPTY chain for this serial: a reconnect persists a new row that
+	// may briefly carry an empty chain (async persists race the reattach), which
+	// would shadow a still-valid chain via a plain by-serial lookup. This looks
+	// past those empty rows.
+	chain, err := s.store.GetMDAChainBySerial(ctx, serial)
+	if err != nil || len(chain) == 0 {
 		return
 	}
-	provider.StageMDAChainFromJSON(rec.MDACertChain)
+	provider.StageMDAChainFromJSON(chain)
 }
 
 // attachCachedMDAProof tries to satisfy the Apple Device Attestation (MDA) leg

@@ -4118,6 +4118,30 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 	return &p, nil
 }
 
+func (s *PostgresStore) GetMDAChainBySerial(ctx context.Context, serial string) (json.RawMessage, error) {
+	if serial == "" {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Newest NON-EMPTY chain for the serial — skips a reconnect's empty row that
+	// would otherwise shadow a still-valid chain from a prior connection.
+	var chain json.RawMessage
+	err := s.pool.QueryRow(ctx,
+		`SELECT mda_cert_chain FROM providers
+		 WHERE serial_number = $1 AND serial_number != '' AND mda_cert_chain IS NOT NULL
+		 ORDER BY last_seen DESC LIMIT 1`, serial,
+	).Scan(&chain)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: get mda chain by serial: %w", err)
+	}
+	return chain, nil
+}
+
 func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

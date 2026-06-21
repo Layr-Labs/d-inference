@@ -2726,6 +2726,33 @@ func (s *MemoryStore) GetProviderBySerial(_ context.Context, serial string) (*Pr
 	return &cp, nil
 }
 
+func (s *MemoryStore) GetMDAChainBySerial(_ context.Context, serial string) (json.RawMessage, error) {
+	if serial == "" {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Scan all records (not just the serial-indexed latest) so a newer empty-chain
+	// row cannot shadow a chain-bearing one from a prior connection. Pick the most
+	// recently seen non-empty chain.
+	var best *ProviderRecord
+	for _, p := range s.providerRecords {
+		if p.SerialNumber != serial || len(p.MDACertChain) == 0 {
+			continue
+		}
+		if best == nil || p.LastSeen.After(best.LastSeen) {
+			best = p
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	out := make(json.RawMessage, len(best.MDACertChain))
+	copy(out, best.MDACertChain)
+	return out, nil
+}
+
 func (s *MemoryStore) ListProviderRecords(_ context.Context) ([]ProviderRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

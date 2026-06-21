@@ -886,6 +886,32 @@ func (p *Provider) MaxConcurrencyForModel(model string) int {
 	return p.maxConcurrencyForModelLocked(model)
 }
 
+// ReportedTokenBudgetMaxForModel returns the provider's most recently reported
+// live token budget (ActiveTokenBudgetMax) for the given model, or 0 when the
+// provider has reported no per-model token budget. The provider derives this
+// value from live memory headroom (see BatchScheduler+Telemetry.swift
+// tokenBudgetMax = activeTokenBudgetUsed + headroom/kvBytesPerToken, floored at
+// 1024), so it SHRINKS under memory pressure and can fall below the model context
+// window. The dispatch path (classifyRejection) uses it to tell a fleet-wide
+// context overflow (budget >= model context ⇒ the provider's admission cap
+// min(context,budget) was the context, so every provider rejects identically)
+// apart from THIS node's shrunk KV budget (budget < context ⇒ a healthier
+// provider may still serve), which the bare "batch token budget" wire string
+// alone cannot distinguish.
+func (p *Provider) ReportedTokenBudgetMaxForModel(model string) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.BackendCapacity == nil {
+		return 0
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model == model {
+			return slot.ActiveTokenBudgetMax
+		}
+	}
+	return 0
+}
+
 // maxConcurrency is the lock-free version (caller must hold p.mu).
 //
 // Tier values were lowered in Phase 2 of the routing-algorithm rework

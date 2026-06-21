@@ -125,11 +125,26 @@ const (
 
 // classifyRejection refines a pre-content provider error into the dispatch
 // response kind. reason is the structured InferenceErrorMessage.ErrorReason
-// (may be empty); errStr is the human-readable provider error. A non-capacity
-// error returns rejectionNotCapacity so callers preserve fault failover + the
-// per-provider breaker. Matching mirrors isCapacityClassProviderError
-// (substring, case-insensitive, curly-apostrophe-normalised).
-func classifyRejection(reason, errStr string) rejectionKind {
+// (may be empty); errStr is the human-readable provider error. providerBudget is
+// the rejecting provider's most recently reported token budget for the model
+// (ActiveTokenBudgetMax, 0 = unknown); modelContext is the model's context window
+// (0 = unknown). A non-capacity error returns rejectionNotCapacity so callers
+// preserve fault failover + the per-provider breaker. Matching mirrors
+// isCapacityClassProviderError (substring, case-insensitive,
+// curly-apostrophe-normalised).
+//
+// providerBudget/modelContext exist to fix the unsound assumption that EVERY
+// "batch token budget" rejection is fleet-wide deterministic. The provider's
+// admission cap is min(context, activeTokenBudget) (BatchScheduler.swift
+// resolvedMaxTokensPerBatch), and activeTokenBudget is memory-aware: under
+// pressure it drops BELOW the context window. So the bare string can mean either
+// "prompt > context" (deterministic — every provider rejects) or "prompt > THIS
+// node's shrunk KV budget" (transient — a healthier provider serves). We treat it
+// as deterministic UNLESS we have positive evidence of memory pressure on the
+// rejecting provider (its reported budget is known and below the model context),
+// in which case it is transient. An explicit "exceeds … context" phrasing names
+// the context directly and is always deterministic.
+func classifyRejection(reason, errStr string, providerBudget int64, modelContext int) rejectionKind {
 	// Capacity-class is gated by isCapacityClassProviderError so fault strings
 	// (checked first there) can never be miscategorised as a capacity shed.
 	if !isCapacityClassProviderError(errStr) && !isCapacityClassProviderError(reason) {
@@ -137,15 +152,23 @@ func classifyRejection(reason, errStr string) rejectionKind {
 	}
 	s := strings.ToLower(strings.TrimSpace(errStr + " " + reason))
 	s = strings.ReplaceAll(s, "’", "'")
-	// Model-intrinsic (fleet-wide deterministic): the prompt exceeds the model's
-	// per-batch prompt cap (= min(context window, KV budget)) or its context
-	// window. The provider's KV budget is millions of tokens in practice, so the
-	// binding limit is the context window — identical on every provider serving
-	// the model. The provider emits "request exceeds batch token budget"
-	// (BatchSchedulerTypes: requestExceedsBatchTokenBudget) or a
-	// "prompt exceeds … context" phrasing. Retrying cannot help.
-	if strings.Contains(s, "batch token budget") ||
-		(strings.Contains(s, "exceeds") && strings.Contains(s, "context")) {
+	// An explicit "prompt exceeds … context window/length" phrasing names the
+	// model context directly — unambiguous, fleet-wide deterministic regardless of
+	// any provider's KV budget. Retrying cannot help.
+	if strings.Contains(s, "exceeds") && strings.Contains(s, "context") {
+		return rejectionDeterministicUnservable
+	}
+	// "request exceeds batch token budget" (BatchSchedulerTypes:
+	// requestExceedsBatchTokenBudget) is rejected at min(context, activeTokenBudget).
+	// Deterministic ONLY when we can rule out that this node was memory-pressured:
+	// a known reported budget below the model context means the binding term may
+	// have been THIS node's KV budget, so a less-pressured provider could serve —
+	// treat as transient (failover, capped). Otherwise (budget >= context, or
+	// either value unknown) the binding term is the context, identical fleet-wide.
+	if strings.Contains(s, "batch token budget") {
+		if modelContext > 0 && providerBudget > 0 && providerBudget < int64(modelContext) {
+			return rejectionTransientCapacity
+		}
 		return rejectionDeterministicUnservable
 	}
 	// Everything else capacity-class is provider/time-specific — this node's live

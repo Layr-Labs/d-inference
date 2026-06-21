@@ -433,7 +433,7 @@ func TestPostgresSetUserStripeAccount(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	if err := s.SetUserStripeAccount("acct-pg-1", "acct_123", "ready", "card", "4242", true); err != nil {
+	if err := s.SetUserStripeAccount("acct-pg-1", "acct_123", "ready", "US", "card", "4242", true); err != nil {
 		t.Fatalf("set stripe account: %v", err)
 	}
 
@@ -447,11 +447,23 @@ func TestPostgresSetUserStripeAccount(t *testing.T) {
 	if got.StripeAccountStatus != "ready" {
 		t.Errorf("status = %q", got.StripeAccountStatus)
 	}
+	if got.StripeAccountCountry != "US" {
+		t.Errorf("StripeAccountCountry = %q, want US", got.StripeAccountCountry)
+	}
 	if got.StripeDestinationType != "card" || got.StripeDestinationLast4 != "4242" {
 		t.Errorf("destination = %q ••%q", got.StripeDestinationType, got.StripeDestinationLast4)
 	}
 	if !got.StripeInstantEligible {
 		t.Error("instant_eligible should be true")
+	}
+
+	// Updating without a country should leave it unchanged.
+	if err := s.SetUserStripeAccount("acct-pg-1", "acct_123", "restricted", "", "card", "4242", true); err != nil {
+		t.Fatalf("set stripe account without country: %v", err)
+	}
+	got, _ = s.GetUserByAccountID("acct-pg-1")
+	if got.StripeAccountCountry != "US" {
+		t.Errorf("StripeAccountCountry after no-country update = %q, want US", got.StripeAccountCountry)
 	}
 
 	// Lookup by stripe account ID.
@@ -507,7 +519,7 @@ func TestPostgresCreateUserPersistsRoleAndFee(t *testing.T) {
 
 func TestPostgresSetUserStripeAccountUserNotFound(t *testing.T) {
 	s := testPostgresStore(t)
-	err := s.SetUserStripeAccount("nope", "acct_x", "pending", "", "", false)
+	err := s.SetUserStripeAccount("nope", "acct_x", "pending", "", "", "", false)
 	if err == nil {
 		t.Fatal("expected error for missing user")
 	}
@@ -518,7 +530,7 @@ func TestPostgresStripeWithdrawalCRUD(t *testing.T) {
 
 	u := &User{AccountID: "acct-pg-wd", PrivyUserID: "did:privy:pgwd"}
 	_ = s.CreateUser(u)
-	_ = s.SetUserStripeAccount("acct-pg-wd", "acct_wd", "ready", "bank", "6789", false)
+	_ = s.SetUserStripeAccount("acct-pg-wd", "acct_wd", "ready", "", "bank", "6789", false)
 
 	wd := &StripeWithdrawal{
 		ID:              "wd-pg-1",
@@ -581,7 +593,7 @@ func TestPostgresStripeWithdrawalRefundFlag(t *testing.T) {
 	s := testPostgresStore(t)
 	u := &User{AccountID: "acct-pg-rf", PrivyUserID: "did:privy:pgrf"}
 	_ = s.CreateUser(u)
-	_ = s.SetUserStripeAccount("acct-pg-rf", "acct_rf", "ready", "bank", "1", false)
+	_ = s.SetUserStripeAccount("acct-pg-rf", "acct_rf", "ready", "", "bank", "1", false)
 
 	wd := &StripeWithdrawal{
 		ID: "wd-pg-rf", AccountID: "acct-pg-rf", StripeAccountID: "acct_rf",
@@ -612,7 +624,7 @@ func TestPostgresStripeWithdrawalDuplicateIDRejected(t *testing.T) {
 	s := testPostgresStore(t)
 	u := &User{AccountID: "acct-pg-dup", PrivyUserID: "did:privy:pgdup"}
 	_ = s.CreateUser(u)
-	_ = s.SetUserStripeAccount("acct-pg-dup", "acct_dup", "ready", "bank", "1", false)
+	_ = s.SetUserStripeAccount("acct-pg-dup", "acct_dup", "ready", "", "bank", "1", false)
 
 	wd := &StripeWithdrawal{
 		ID: "wd-dup", AccountID: "acct-pg-dup", StripeAccountID: "acct_dup",

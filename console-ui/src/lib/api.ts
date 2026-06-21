@@ -253,6 +253,7 @@ export interface StripeStatus {
   configured: boolean;
   has_account: boolean;
   stripe_account_id?: string;
+  stripe_account_country?: string;
   status: "" | "pending" | "ready" | "restricted" | "rejected";
   destination_type?: "" | "bank" | "card";
   destination_last4?: string;

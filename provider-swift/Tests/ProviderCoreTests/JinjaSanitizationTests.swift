@@ -13,7 +13,7 @@ import ProviderCoreFoundation
 /// (`Cannot convert value of type … to Jinja Value`), surfacing as a 500.
 ///
 /// These tests exercise the sanitizer (`sanitizeForJinja` and the
-/// `sanitizeJinjaMessages` / `sanitizeJinjaTools` adapters applied at the
+/// `sanitizeJinjaMessages` / `ChatTemplateFixes.sanitizeTools` adapters applied at the
 /// three runtime chokepoints) against the EXACT value trees the runtime
 /// builders produce — `OpenAIChatMessage.templateMessageDict()` and
 /// `OpenAITool.toolSpec()` — proving the Jinja-unrepresentable null /
@@ -106,7 +106,7 @@ final class JinjaSanitizationTests: XCTestCase {
     }
 
     func testSanitizeJinjaToolsNilInNilOut() {
-        XCTAssertNil(sanitizeJinjaTools(nil))
+        XCTAssertNil(ChatTemplateFixes.sanitizeTools(nil))
     }
 
     // MARK: - (a) Message with a null tool-call argument
@@ -173,7 +173,7 @@ final class JinjaSanitizationTests: XCTestCase {
         let rawSpec = tool.toolSpec()
         XCTAssertTrue(containsUnrepresentableLeaf(rawSpec))
 
-        let sanitized = sanitizeJinjaTools([rawSpec])
+        let sanitized = ChatTemplateFixes.sanitizeTools([rawSpec])
         XCTAssertNotNil(sanitized)
         let spec = sanitized![0]
         XCTAssertFalse(containsUnrepresentableLeaf(spec))
@@ -236,8 +236,230 @@ final class JinjaSanitizationTests: XCTestCase {
         XCTAssertTrue(rawTools.contains { containsUnrepresentableLeaf($0) })
 
         let cleanMessages = sanitizeJinjaMessages(rawMessages)
-        let cleanTools = sanitizeJinjaTools(rawTools)
+        let cleanTools = ChatTemplateFixes.sanitizeTools(rawTools)
         XCTAssertFalse(cleanMessages.contains { containsUnrepresentableLeaf($0) })
         XCTAssertFalse((cleanTools ?? []).contains { containsUnrepresentableLeaf($0) })
+    }
+
+    func testMissingToolDescriptionIsFilledBeforeHarmonyRender() throws {
+        let request = try ProviderLoop.decodeOpenAIRequest(Data(#"""
+        {"model":"m","messages":[{"role":"user","content":"x"}],
+         "tools":[{"type":"function","function":{"name":"add","parameters":{"type":"object"}}}]}
+        """#.utf8))
+
+        let rawSpec = try XCTUnwrap(request.tools?.first?.toolSpec())
+        let sanitized = try XCTUnwrap(
+            ChatTemplateFixes.normalizeTools(
+                [rawSpec],
+                context: .init(modelId: "gpt-oss-20b")
+            )?.first)
+        let function = sanitized["function"] as? [String: any Sendable]
+        XCTAssertEqual(function?["description"] as? String, "")
+    }
+
+    func testMissingToolDescriptionIsNotFilledForNonHarmonyTemplates() throws {
+        let request = try ProviderLoop.decodeOpenAIRequest(Data(#"""
+        {"model":"gemma-4-26b","messages":[{"role":"user","content":"x"}],
+         "tools":[{"type":"function","function":{"name":"add","parameters":{"type":"object"}}}]}
+        """#.utf8))
+
+        let rawSpec = try XCTUnwrap(request.tools?.first?.toolSpec())
+        let sanitized = try XCTUnwrap(
+            ChatTemplateFixes.normalizeTools(
+                [rawSpec],
+                context: .init(modelId: "gemma-4-26b")
+            )?.first)
+        let function = sanitized["function"] as? [String: any Sendable]
+        XCTAssertNil(function?["description"])
+    }
+
+    func testToolMessageWithoutAssistantToolCallIsRejectedBeforeTemplate() {
+        let messages: [[String: any Sendable]] = [
+            ["role": "user", "content": "hi"],
+            ["role": "tool", "content": "{}"],
+        ]
+
+        XCTAssertThrowsError(
+            try ChatTemplateFixes.normalizeMessages(messages, context: .init())
+        ) { error in
+            XCTAssertEqual(
+                error as? MultiModelBatchSchedulerEngineError,
+                .invalidToolPayload("tool message has no preceding assistant tool_calls"))
+        }
+    }
+
+    func testAssistantToolCallWithContentAndThinkingIsRejectedBeforeTemplate() {
+        let toolCalls: [any Sendable] = [
+            [
+                "function": ["name": "get_weather"] as [String: any Sendable]
+            ] as [String: any Sendable]
+        ]
+        let messages: [[String: any Sendable]] = [[
+            "role": "assistant",
+            "content": "call the tool",
+            "thinking": "need weather",
+            "tool_calls": toolCalls,
+        ]]
+
+        XCTAssertThrowsError(
+            try ChatTemplateFixes.normalizeMessages(
+                messages,
+                context: .init(modelId: "gpt-oss-20b")
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? MultiModelBatchSchedulerEngineError,
+                .invalidToolPayload(
+                    "assistant message with tool_calls cannot include both content and thinking"))
+        }
+    }
+
+    func testAssistantMessageWithMultipleToolCallsIsRejectedBeforeTemplate() {
+        let toolCalls: [any Sendable] = [
+            ["function": ["name": "first"] as [String: any Sendable]] as [String: any Sendable],
+            ["function": ["name": "second"] as [String: any Sendable]] as [String: any Sendable],
+        ]
+        let messages: [[String: any Sendable]] = [[
+            "role": "assistant",
+            "tool_calls": toolCalls,
+        ]]
+
+        XCTAssertThrowsError(
+            try ChatTemplateFixes.normalizeMessages(
+                messages,
+                context: .init(modelId: "gpt-oss-20b")
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? MultiModelBatchSchedulerEngineError,
+                .invalidToolPayload(
+                    "assistant message contains multiple tool_calls; Harmony supports one tool call per assistant message"))
+        }
+    }
+
+    func testMultipleToolCallsRemainAllowedForNonHarmonyTemplates() throws {
+        let toolCalls: [any Sendable] = [
+            ["function": ["name": "first"] as [String: any Sendable]] as [String: any Sendable],
+            ["function": ["name": "second"] as [String: any Sendable]] as [String: any Sendable],
+        ]
+        let messages: [[String: any Sendable]] = [[
+            "role": "assistant",
+            "tool_calls": toolCalls,
+        ]]
+
+        XCTAssertNoThrow(try ChatTemplateFixes.normalizeMessages(
+            messages,
+            context: .init(modelId: "qwen3")
+        ))
+    }
+
+    func testHarmonyBridgesReasoningContentToThinkingForTemplate() throws {
+        let toolCalls: [any Sendable] = [
+            ["function": ["name": "get_weather"] as [String: any Sendable]] as [String: any Sendable]
+        ]
+        let messages: [[String: any Sendable]] = [[
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "need the weather tool",
+            "tool_calls": toolCalls,
+        ]]
+
+        let normalized = try ChatTemplateFixes.normalizeMessages(
+            messages,
+            context: .init(modelId: "gpt-oss-20b")
+        )
+
+        XCTAssertEqual(normalized[0]["thinking"] as? String, "need the weather tool")
+        XCTAssertEqual(normalized[0]["reasoning_content"] as? String, "need the weather tool")
+    }
+
+    func testReasoningContentIsNotBridgedForNonHarmonyTemplates() throws {
+        let messages: [[String: any Sendable]] = [[
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_content": "hidden",
+        ]]
+
+        let normalized = try ChatTemplateFixes.normalizeMessages(
+            messages,
+            context: .init(modelId: "gemma-4-26b")
+        )
+
+        XCTAssertNil(normalized[0]["thinking"])
+        XCTAssertEqual(normalized[0]["reasoning_content"] as? String, "hidden")
+    }
+
+    func testToolSchemaConcatHazardsAreNormalizedForHarmonyTemplate() throws {
+        let rawSpec: [String: any Sendable] = [
+            "type": "function",
+            "function": [
+                "name": "choose_mode",
+                "description": 42,
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "mode": [
+                            "type": "string",
+                            "description": 7,
+                            "enum": ["1", "2"] as [any Sendable],
+                            "default": 1,
+                        ] as [String: any Sendable],
+                        "bad": [
+                            "type": "object",
+                            "properties": "not an object",
+                        ] as [String: any Sendable],
+                    ] as [String: any Sendable],
+                ] as [String: any Sendable],
+            ] as [String: any Sendable],
+        ]
+
+        let sanitized = try XCTUnwrap(
+            ChatTemplateFixes.normalizeTools(
+                [rawSpec],
+                context: .init(modelId: "gpt-oss-20b")
+            )?.first)
+        let function = try XCTUnwrap(sanitized["function"] as? [String: any Sendable])
+        XCTAssertEqual(function["description"] as? String, "42")
+
+        let parameters = try XCTUnwrap(function["parameters"] as? [String: any Sendable])
+        let properties = try XCTUnwrap(parameters["properties"] as? [String: any Sendable])
+        let mode = try XCTUnwrap(properties["mode"] as? [String: any Sendable])
+        XCTAssertEqual(mode["description"] as? String, "7")
+        XCTAssertEqual(mode["default"] as? String, "1")
+
+        let bad = try XCTUnwrap(properties["bad"] as? [String: any Sendable])
+        XCTAssertNil(bad["properties"])
+    }
+
+    func testToolSchemaConcatCleanupDoesNotRunForNonHarmonyTemplates() throws {
+        let rawSpec: [String: any Sendable] = [
+            "type": "function",
+            "function": [
+                "name": "choose_mode",
+                "description": 42,
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "bad": [
+                            "type": "object",
+                            "properties": "not an object",
+                        ] as [String: any Sendable],
+                    ] as [String: any Sendable],
+                ] as [String: any Sendable],
+            ] as [String: any Sendable],
+        ]
+
+        let sanitized = try XCTUnwrap(
+            ChatTemplateFixes.normalizeTools(
+                [rawSpec],
+                context: .init(modelId: "gemma-4-26b")
+            )?.first)
+        let function = try XCTUnwrap(sanitized["function"] as? [String: any Sendable])
+        XCTAssertEqual(function["description"] as? Int, 42)
+
+        let parameters = try XCTUnwrap(function["parameters"] as? [String: any Sendable])
+        let properties = try XCTUnwrap(parameters["properties"] as? [String: any Sendable])
+        let bad = try XCTUnwrap(properties["bad"] as? [String: any Sendable])
+        XCTAssertEqual(bad["properties"] as? String, "not an object")
     }
 }

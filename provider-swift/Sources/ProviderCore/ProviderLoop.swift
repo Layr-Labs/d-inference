@@ -1447,30 +1447,76 @@ public actor ProviderLoop {
             }
             if token.isCancelled { cancelledMidStream = true }
 
-            // Cancelled with nothing delivered: 499 so the coordinator refunds.
-            if cancelledMidStream && contentFrameCount == 0 && fullResponseText.isEmpty {
-                providerStats.incrementCancellationsBeforeOutput()
-                send.send(.inferenceError(
-                    requestId: requestId,
-                    error: "request cancelled",
-                    statusCode: 499,
-                    errorReason: nil
+            if cancelledMidStream {
+                if reasoningTokens == 0 && !reasoningText.isEmpty {
+                    let completionFloor = completionTokens > 0 ? completionTokens : contentFrameCount
+                    if completionFloor > 0 {
+                        reasoningTokens = min(
+                            tokenizer.inner.encode(
+                                text: reasoningText, addSpecialTokens: false
+                            ).count,
+                            completionFloor
+                        )
+                    }
+                }
+
+                let partialUsage = StreamedGenerationUsage(
+                    promptTokens: promptTokens,
+                    completionTokens: completionTokens,
+                    reasoningTokens: reasoningTokens,
+                    contentFrameCount: contentFrameCount,
+                    deliveredCompletionTokenFloor: tokenizer.inner.encode(
+                        text: fullResponseText, addSpecialTokens: false
+                    ).count,
+                    hasVisibleOutput: Self.hasVisibleStreamOutput(
+                        contentFrameCount: contentFrameCount,
+                        fullResponseText: fullResponseText
+                    )
+                )
+                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: Self.promptTokenFloor(
+                    request: streamingRequest,
+                    tokenizer: tokenizer,
+                    reasoningEffort: reasoningEffort
                 ))
-                return
+                guard case .complete(let settledUsage) = terminal else {
+                    // Cancelled with nothing delivered: 499 so the coordinator refunds.
+                    providerStats.incrementCancellationsBeforeOutput()
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "request cancelled",
+                        statusCode: 499,
+                        errorReason: nil
+                    ))
+                    return
+                }
+                if completionTokens == 0 {
+                    log.warning(
+                        "[\(requestId)] usage chunk missing/zero completion tokens (cancelled mid-stream); "
+                        + "billing \(settledUsage.completionTokens) delivered completion tokens as a floor."
+                    )
+                }
+                if promptTokens == 0 && settledUsage.promptTokens > 0 {
+                    log.warning(
+                        "[\(requestId)] usage chunk missing/zero prompt tokens (cancelled mid-stream); "
+                        + "billing \(settledUsage.promptTokens) re-templated prompt tokens as a floor."
+                    )
+                }
+                promptTokens = Int(clamping: settledUsage.promptTokens)
+                completionTokens = Int(clamping: settledUsage.completionTokens)
+                reasoningTokens = Int(clamping: settledUsage.reasoningTokens)
             }
 
-            // No usage chunk (the normal case for a cancelled stream, since the
-            // engine's usage rides the final chunk an abort never sends; also an
-            // upstream regression on clean finish). Recover a billing floor:
-            // completion = content-frame count (~1 token/frame); prompt =
-            // re-template via the engine's exact applyChatTemplate path. VLM
-            // prompts under-count (no image tokens) — a floor, never an overcharge.
-            if promptTokens == 0 || completionTokens == 0 {
+            // No usage chunk on a clean finish means an upstream regression.
+            // Recover a billing floor: completion = content-frame count (~1
+            // token/frame); prompt = re-template via the engine's exact
+            // applyChatTemplate path. VLM prompts under-count (no image tokens) —
+            // a floor, never an overcharge.
+            if !cancelledMidStream && (promptTokens == 0 || completionTokens == 0) {
                 if completionTokens == 0 && contentFrameCount > 0 {
                     completionTokens = contentFrameCount
                     log.warning(
                         "[\(requestId)] usage chunk missing/zero completion tokens"
-                        + "\(cancelledMidStream ? " (cancelled mid-stream)" : ""); "
+                        + "; "
                         + "billing \(contentFrameCount) observed content frames as a floor."
                     )
                 }
@@ -1483,13 +1529,12 @@ public actor ProviderLoop {
                     if promptTokens > 0 {
                         log.warning(
                             "[\(requestId)] usage chunk missing/zero prompt tokens"
-                            + "\(cancelledMidStream ? " (cancelled mid-stream)" : ""); "
+                            + "; "
                             + "billing \(promptTokens) re-templated prompt tokens as a floor."
                         )
                     }
                 }
-                // Re-tokenize reasoning here too — a cancel ends before the
-                // usage parse that normally does it.
+                // Re-tokenize reasoning here too when the usage frame is missing.
                 if reasoningTokens == 0 && !reasoningText.isEmpty && completionTokens > 0 {
                     reasoningTokens = min(
                         tokenizer.inner.encode(

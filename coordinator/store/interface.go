@@ -330,7 +330,9 @@ type Store interface {
 
 	// SetUserStripeAccount upserts the Stripe Connect fields on a user record.
 	// Pass empty strings to clear the destination (e.g. before re-onboarding).
-	SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error
+	// stripeAccountCountry is the ISO 3166-1 alpha-2 country the Express
+	// account is locked to; empty leaves the column unchanged.
+	SetUserStripeAccount(accountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) error
 
 	// GetUserByStripeAccount finds a user by their Stripe connected account ID.
 	// Used by webhook handlers to route account.updated / payout.* events.
@@ -1074,6 +1076,7 @@ type User struct {
 	// "rejected" (Stripe permanently disabled the account).
 	StripeAccountID        string `json:"stripe_account_id,omitempty"`
 	StripeAccountStatus    string `json:"stripe_account_status,omitempty"`
+	StripeAccountCountry   string `json:"stripe_account_country,omitempty"`  // ISO 3166-1 alpha-2 country the Express account is locked to
 	StripeDestinationType  string `json:"stripe_destination_type,omitempty"` // "bank" | "card" | ""
 	StripeDestinationLast4 string `json:"stripe_destination_last4,omitempty"`
 	StripeInstantEligible  bool   `json:"stripe_instant_eligible,omitempty"` // debit-card destination supports Instant Payouts

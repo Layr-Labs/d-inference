@@ -244,6 +244,58 @@ func invalidRoleMapsToBadRequest() {
     #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 400)
 }
 
+@Test("invalidToolPayload maps to 400")
+func invalidToolPayloadMapsToBadRequest() {
+    let err = MultiModelBatchSchedulerEngineError.invalidToolPayload(
+        "tool message has no preceding assistant tool_calls")
+    #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 400)
+}
+
+@Test("GPT-OSS Harmony EOS includes return and call tokens")
+func gptOssHarmonyEOSIncludesCallAndReturnTokens() {
+    let ids = BatchScheduler.effectiveEOSTokenIds(
+        modelId: "mlx-community/gpt-oss-20b-MXFP4-Q8",
+        base: []
+    ) { token in
+        switch token {
+        case "<|return|>": return 200002
+        case "<|endoftext|>": return 199999
+        case "<|call|>": return 200012
+        default: return nil
+        }
+    }
+
+    #expect(ids == [199999, 200002, 200012])
+}
+
+@Test("Harmony EOS can be detected from model_type for aliased GPT-OSS models")
+func harmonyEOSUsesModelTypeForAliasedModels() {
+    let ids = BatchScheduler.effectiveEOSTokenIds(
+        modelId: "local-alias",
+        modelType: "gpt_oss",
+        base: []
+    ) { token in
+        switch token {
+        case "<|return|>": return 200002
+        case "<|endoftext|>": return 199999
+        case "<|call|>": return 200012
+        default: return nil
+        }
+    }
+
+    #expect(ids == [199999, 200002, 200012])
+}
+
+@Test("non-Harmony EOS set is unchanged")
+func nonHarmonyEOSIsUnchanged() {
+    let ids = BatchScheduler.effectiveEOSTokenIds(
+        modelId: "mlx-community/Qwen3-0.6B",
+        base: [151645]
+    ) { _ in 200012 }
+
+    #expect(ids == [151645])
+}
+
 // MARK: - Helpers
 
 private actor Counter {

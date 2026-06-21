@@ -998,6 +998,17 @@ type Registry struct {
 
 	MinTrustLevel TrustLevel
 
+	// dedicatedModels holds lowercased substring patterns identifying model
+	// families that may ONLY route to providers dedicated to that family (a
+	// provider whose entire advertised catalog matches the pattern). A request
+	// whose resolved build id contains one of these patterns is restricted to
+	// such dedicated boxes — for both routing candidate selection and the
+	// capacity preflight that decides whether to shed (429) to OpenRouter. Empty
+	// = feature disabled (default in tests and the e2e testbed, which never set
+	// it). Configured once at startup from EIGENINFERENCE_DEDICATED_MODELS; see
+	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
+	dedicatedModels []string
+
 	// APNs code-identity rollout policy (v0.6.0), guarded by r.mu and evaluated
 	// LIVE at every routing decision so a deadline can flip enforcement on/off
 	// without forcing providers to reconnect.
@@ -1795,11 +1806,22 @@ func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSeri
 // provider actually serve this build right now" — the same gates
 // snapshotProviderLocked applies (advertises the build + in catalog, not
 // offline/untrusted, public, trust ≥ floor, runtime verified, private-text
-// capable, fresh challenge, AND the model fits the provider's RAM), minus the
-// per-request capacity/headroom checks. Cold-but-healthy providers pass (no warm
-// slot required — they load on first demand). Caller holds r.mu (RLock) and p.mu.
+// capable, fresh challenge, the dedicated-box rule, AND the model fits the
+// provider's RAM), minus the per-request capacity/headroom checks. Cold-but-
+// healthy providers pass (no warm slot required — they load on first demand).
+// Caller holds r.mu (RLock) and p.mu.
 func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
 	if !r.providerServesCatalogModelLocked(p, buildID) {
+		return false
+	}
+	// Dedicated-box isolation, mirroring providerPassesRoutingGatesLockedEx so
+	// alias routability (and rollout/drop measurement) matches actual dispatch
+	// routability: a dedicated-family build is only routable on a provider
+	// dedicated to that family. Without this, an alias whose Desired build is
+	// advertised only by a mixed box would resolve to Desired (then 429 at
+	// dispatch) instead of failing over to a Previous build on a dedicated box.
+	// allowPrivate marks the owner self-route context, exempt like selfRouteOwner.
+	if !allowPrivate && r.providerExcludedByDedicatedRuleLocked(p, buildID) {
 		return false
 	}
 	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
@@ -2971,6 +2993,13 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return false
 	}
+	// For a dedicated-family model (e.g. Gemma 4), a warm mixed-catalog box is not
+	// a usable warm provider — routing won't send the model there. Treat it as not
+	// warm so it neither suppresses cold-spill/swap planning onto a real dedicated
+	// box nor counts toward the model's warm-capacity demand target.
+	if r.providerExcludedByDedicatedRuleLocked(p, model) {
+		return false
+	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == model {
@@ -3049,6 +3078,11 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {
+		return 0, false
+	}
+	// A dedicated-family model (e.g. Gemma 4) may only be loaded onto a provider
+	// dedicated to it — never a mixed-catalog box (routing would never use it).
+	if r.providerExcludedByDedicatedRuleLocked(p, model) {
 		return 0, false
 	}
 

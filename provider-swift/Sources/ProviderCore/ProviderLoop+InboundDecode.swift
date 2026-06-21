@@ -33,7 +33,11 @@ extension ProviderLoop {
         // Inject default `type`s into tool parameter schemas so a Gemma-style
         // chat template's `{{ value['type'] | upper }}` can't crash on a typeless
         // property (DAR-130). No-op for requests without tools.
-        let data = ToolSchemaNormalization.ensureParameterTypes(in: data)
+        var data = ToolSchemaNormalization.ensureParameterTypes(in: data)
+        // Legacy assistant `function_call` is an unknown field to the upstream
+        // decoder, so normalize it before the strict fast path can silently drop
+        // it and leave a following tool/function result orphaned for Harmony.
+        data = try InboundChatNormalization.normalizeLegacyFunctionCalls(in: data)
         let decoder = JSONDecoder()
         do {
             return try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
@@ -112,9 +116,10 @@ extension ProviderLoop {
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.
+        let fixContext = ChatTemplateFixContext(modelId: request.model)
         guard let ids = try? tokenizer.inner.applyChatTemplate(
-            messages: sanitizeJinjaMessages(messages),
-            tools: sanitizeJinjaTools(toolSpecs),
+            messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
+            tools: ChatTemplateFixes.normalizeTools(toolSpecs, context: fixContext),
             additionalContext: additionalContext
         ) else { return 0 }
         return ids.count

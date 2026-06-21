@@ -31,7 +31,6 @@ import {
   CreditCard,
   Building2,
   Zap,
-  AlertCircle,
   ArrowDownToLine,
 } from "lucide-react";
 import { UsageChart } from "@/components/UsageChart";
@@ -90,6 +89,15 @@ export default function BillingContent() {
   const [withdrawMethod, setWithdrawMethod] = useState<"standard" | "instant">("standard");
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [selectedStripeCountry, setSelectedStripeCountry] = useState("");
+
+  // Once a Stripe Express account exists, its country is locked. Pre-select
+  // that country so the user sees what will actually be used, and so a
+  // deliberate change triggers backend creation of a new account.
+  useEffect(() => {
+    if (stripeStatus?.stripe_account_country) {
+      setSelectedStripeCountry(stripeStatus.stripe_account_country);
+    }
+  }, [stripeStatus?.stripe_account_country]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -669,24 +677,36 @@ function StripePayoutsCard({
         </>
       ) : (
         <>
-          <p className="text-sm text-text-secondary mb-4 leading-relaxed flex items-start gap-2">
-            <AlertCircle size={14} className="text-coral mt-0.5 flex-shrink-0" />
-            {restricted
-              ? "Stripe needs more information to enable payouts on your account."
-              : rejected
-              ? "Stripe has disabled payouts on this account. Contact support."
-              : "Finish linking your account on Stripe to enable withdrawals."}
+          <p className="text-sm text-text-secondary mb-4 leading-relaxed">
+            Your Stripe account is locked to{" "}
+            <span className="font-medium text-text-primary">
+              {STRIPE_CONNECT_COUNTRIES.find((c) => c.code === status?.stripe_account_country)?.name || status?.stripe_account_country || "your selected country"}
+            </span>
+            . If that is not correct, select your country below and we will create a new account.
           </p>
-          {!rejected && (
-            <button
-              onClick={onOnboard}
-              disabled={onboardLoading}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
-            >
-              {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
-              {onboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
-            </button>
-          )}
+          <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
+            Country
+          </label>
+          <select
+            value={selectedCountry}
+            onChange={(e) => onCountryChange(e.target.value)}
+            className="w-full mb-4 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-sm text-text-primary outline-none transition-colors hover:border-teal/40 focus:border-teal"
+          >
+            <option value="">Select your country</option>
+            {STRIPE_CONNECT_COUNTRIES.map((country) => (
+              <option key={country.code} value={country.code}>
+                {country.name} ({country.code})
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={onOnboard}
+            disabled={onboardLoading || !selectedCountry}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+          >
+            {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
+            {onboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
+          </button>
         </>
       )}
 

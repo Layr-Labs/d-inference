@@ -198,7 +198,7 @@ public enum TemplateRenderCheck {
         // Strip Harmony assistant replay tags, then JSON `null` / `Optional`
         // leaves, exactly as the
         // runtime tokenize chokepoints now do (`sanitizeJinjaMessages` /
-        // `sanitizeJinjaTools`) before `Value(any:)`. Without this the
+        // `ChatTemplateFixes.sanitizeTools`) before `Value(any:)`. Without this the
         // channel-tagged and null-bearing fixtures below would throw here and
         // false-flag every healthy template; with it the self-check stays
         // faithful to "renders here == renders at request time".

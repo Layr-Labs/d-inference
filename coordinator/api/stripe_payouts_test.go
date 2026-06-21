@@ -202,11 +202,11 @@ func TestStripeOnboardReusesExistingAccount(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-reuse-1", "bob@example.com")
 
-	// Pre-seed an existing Stripe account ID.
-	_ = st.SetUserStripeAccount(user.AccountID, "acct_existing_123", "ready", "bank", "1234", false)
+	// Pre-seed an existing Stripe account ID locked to the US.
+	_ = st.SetUserStripeAccount(user.AccountID, "acct_existing_123", "ready", "US", "bank", "1234", false)
 	user, _ = st.GetUserByAccountID(user.AccountID)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(`{"country":"US"}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
 	srv.handleStripeOnboard(w, req)
@@ -221,12 +221,101 @@ func TestStripeOnboardReusesExistingAccount(t *testing.T) {
 	}
 }
 
+func TestStripeOnboardCreatesNewAccountWhenCountryChanges(t *testing.T) {
+	var mu sync.Mutex
+	var createdCountries []string
+
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/accounts" && r.Method == http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			parsed, _ := url.ParseQuery(string(body))
+			mu.Lock()
+			createdCountries = append(createdCountries, parsed.Get("country"))
+			mu.Unlock()
+			w.WriteHeader(200)
+			id := "acct_" + strings.ToLower(parsed.Get("country")) + "_new"
+			_, _ = w.Write([]byte(`{"id":"` + id + `","type":"express","charges_enabled":false,"payouts_enabled":false,"details_submitted":false}`))
+		case strings.HasPrefix(r.URL.Path, "/v1/account_links"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"url":"https://connect.stripe.com/setup/e/new"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := seedUser(t, st, "acct-country-change-1", "alice@example.com")
+
+	// Pre-seed an existing Stripe account ID locked to the US.
+	_ = st.SetUserStripeAccount(user.AccountID, "acct_us_old", "pending", "US", "", "", false)
+	user, _ = st.GetUserByAccountID(user.AccountID)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard",
+		strings.NewReader(`{"country":"GB"}`))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeOnboard(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["stripe_account_id"] != "acct_gb_new" {
+		t.Errorf("expected new GB account, got %v", resp["stripe_account_id"])
+	}
+
+	refreshed, _ := st.GetUserByAccountID(user.AccountID)
+	if refreshed.StripeAccountCountry != "GB" {
+		t.Errorf("StripeAccountCountry = %q, want GB", refreshed.StripeAccountCountry)
+	}
+	if refreshed.StripeAccountStatus != "pending" {
+		t.Errorf("status = %q, want pending", refreshed.StripeAccountStatus)
+	}
+
+	mu.Lock()
+	countries := append([]string(nil), createdCountries...)
+	mu.Unlock()
+	if len(countries) != 1 || countries[0] != "GB" {
+		t.Errorf("Stripe create account countries = %v, want [GB]", countries)
+	}
+}
+
+func TestStripeOnboardCreatesNewAccountWhenExistingCountryUnknown(t *testing.T) {
+	srv, st := stripePayoutsTestServer(t, true, nil)
+	user := seedUser(t, st, "acct-country-unknown-1", "carol@example.com")
+
+	// Simulates users created before stripe_account_country existed. If they
+	// explicitly select a country, don't reuse the unknown-country account.
+	_ = st.SetUserStripeAccount(user.AccountID, "acct_old_unknown", "pending", "", "", "", false)
+	user, _ = st.GetUserByAccountID(user.AccountID)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard",
+		strings.NewReader(`{"country":"GB"}`))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeOnboard(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	refreshed, _ := st.GetUserByAccountID(user.AccountID)
+	if refreshed.StripeAccountID == "acct_old_unknown" {
+		t.Fatal("expected a new Stripe account for explicit country selection")
+	}
+	if refreshed.StripeAccountCountry != "GB" {
+		t.Errorf("StripeAccountCountry = %q, want GB", refreshed.StripeAccountCountry)
+	}
+}
+
 // --- Status ---
 
 func TestStripeStatusReportsCurrentState(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-status-1", "alice@example.com")
-	_ = st.SetUserStripeAccount(user.AccountID, "acct_x", "ready", "card", "4242", true)
+	_ = st.SetUserStripeAccount(user.AccountID, "acct_x", "ready", "", "card", "4242", true)
 	user, _ = st.GetUserByAccountID(user.AccountID)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/billing/stripe/status", nil)
@@ -696,7 +785,7 @@ func TestConnectWebhookAccountUpdatedFlipsStatusToReady(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := seedUser(t, st, "acct-wh-1", "alice@example.com")
-	_ = st.SetUserStripeAccount(user.AccountID, "acct_x_wh", "pending", "", "", false)
+	_ = st.SetUserStripeAccount(user.AccountID, "acct_x_wh", "pending", "", "", "", false)
 
 	payload := []byte(`{
 		"type": "account.updated",
@@ -889,7 +978,7 @@ func readyUser(t *testing.T, st *store.MemoryStore, accountID, email string, ins
 		dest = "card"
 		last4 = "4242"
 	}
-	if err := st.SetUserStripeAccount(u.AccountID, "acct_"+accountID, "ready", dest, last4, instantEligible); err != nil {
+	if err := st.SetUserStripeAccount(u.AccountID, "acct_"+accountID, "ready", "", dest, last4, instantEligible); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := st.GetUserByAccountID(u.AccountID)

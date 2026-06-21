@@ -21,7 +21,6 @@ import {
   LogIn,
   ArrowDownToLine,
   Check,
-  AlertCircle,
   Building2,
   CreditCard,
   Clock,
@@ -102,6 +101,15 @@ export default function EarningsContent() {
   const [withdrawMethod, setWithdrawMethod] = useState<"standard" | "instant">("standard");
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState("");
+
+  // Once a Stripe Express account exists, its country is locked. Pre-select
+  // that country so the user sees what will actually be used, and so a
+  // deliberate change triggers backend creation of a new account.
+  useEffect(() => {
+    if (stripeStatus?.stripe_account_country) {
+      setSelectedCountry(stripeStatus.stripe_account_country);
+    }
+  }, [stripeStatus?.stripe_account_country]);
   const [countryDropdownOpen, setCountryDropdownOpen] = useState(false);
   const [countryFilter, setCountryFilter] = useState("");
   const countryDropdownRef = useRef<HTMLDivElement>(null);
@@ -484,24 +492,86 @@ export default function EarningsContent() {
           </>
         ) : (
           <>
-            <p className="text-sm text-text-secondary mb-4 leading-relaxed flex items-start gap-2">
-              <AlertCircle size={14} className="text-coral mt-0.5 flex-shrink-0" />
-              {restricted
-                ? "Stripe needs more information to enable payouts on your account."
-                : rejected
-                ? "Stripe has disabled payouts on this account. Contact support."
-                : "Finish linking your account on Stripe to enable withdrawals."}
+            <p className="text-sm text-text-secondary mb-4 leading-relaxed">
+              Your Stripe account is locked to{" "}
+              <span className="font-medium text-text-primary">
+                {STRIPE_CONNECT_COUNTRIES.find(c => c.code === stripeStatus?.stripe_account_country)?.name || stripeStatus?.stripe_account_country || "your selected country"}
+              </span>
+              . If that is not correct, select your country below and we will create a new account.
             </p>
-            {!rejected && (
+            <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
+              Country
+            </label>
+            <div className="relative mb-4" ref={countryDropdownRef}>
               <button
-                onClick={handleStripeOnboard}
-                disabled={stripeOnboardLoading}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+                type="button"
+                onClick={() => { setCountryDropdownOpen(!countryDropdownOpen); setCountryFilter(""); }}
+                className="w-full flex items-center justify-between gap-2 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-sm text-left transition-colors hover:border-teal/40 focus:outline-none focus:border-teal"
               >
-                {stripeOnboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
-                {stripeOnboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
+                {selectedCountry ? (
+                  <span className="flex items-center gap-2 text-text-primary">
+                    <span>{STRIPE_CONNECT_COUNTRIES.find(c => c.code === selectedCountry)?.flag}</span>
+                    <span>{STRIPE_CONNECT_COUNTRIES.find(c => c.code === selectedCountry)?.name}</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2 text-text-tertiary">
+                    <Globe size={14} />
+                    <span>Select your country</span>
+                  </span>
+                )}
+                <ChevronDown size={14} className={`text-text-tertiary transition-transform ${countryDropdownOpen ? "rotate-180" : ""}`} />
               </button>
-            )}
+
+              {countryDropdownOpen && (
+                <div className="absolute z-50 mt-1 w-full bg-bg-white border border-border-dim rounded-xl shadow-lg overflow-hidden">
+                  <div className="p-2 border-b border-border-dim">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+                      <input
+                        type="text"
+                        value={countryFilter}
+                        onChange={(e) => setCountryFilter(e.target.value)}
+                        placeholder="Search countries..."
+                        autoFocus
+                        className="w-full bg-bg-primary border border-border-dim rounded-lg pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-teal"
+                      />
+                    </div>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {STRIPE_CONNECT_COUNTRIES
+                      .filter(c => {
+                        const q = countryFilter.toLowerCase();
+                        return !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q);
+                      })
+                      .map(c => (
+                        <button
+                          key={c.code}
+                          type="button"
+                          onClick={() => { setSelectedCountry(c.code); setCountryDropdownOpen(false); }}
+                          className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left transition-colors ${
+                            selectedCountry === c.code
+                              ? "bg-teal/10 text-teal"
+                              : "text-text-secondary hover:bg-bg-hover"
+                          }`}
+                        >
+                          <span className="text-base">{c.flag}</span>
+                          <span className="flex-1">{c.name}</span>
+                          <span className="text-xs font-mono text-text-tertiary">{c.code}</span>
+                        </button>
+                      ))
+                    }
+                  </div>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={handleStripeOnboard}
+              disabled={stripeOnboardLoading || !selectedCountry}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              {stripeOnboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
+              {stripeOnboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
+            </button>
           </>
         )}
 

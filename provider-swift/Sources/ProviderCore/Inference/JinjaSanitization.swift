@@ -67,15 +67,3 @@ private func stripHarmonyFramingFromMessage(
     }
     return output
 }
-
-/// Sanitize a chat-template `tools` array (or `nil`), dropping null /
-/// `Optional` leaves from each tool spec (e.g. `"default": null`,
-/// `"const": null`, or a `null` enum element inside a `function.parameters`
-/// JSON schema). `nil` in ⇒ `nil` out, so the render context still omits
-/// the `tools` key entirely for tool-less requests.
-func sanitizeJinjaTools(
-    _ tools: [[String: any Sendable]]?
-) -> [[String: any Sendable]]? {
-    guard let tools else { return nil }
-    return tools.map(sanitizeJinjaObject)
-}

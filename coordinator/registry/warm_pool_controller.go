@@ -573,6 +573,13 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return warmPoolCandidate{}, false
 	}
+	// Don't pre-warm a dedicated-family model (e.g. Gemma 4) onto a non-dedicated
+	// (mixed-catalog) box: routing will never send the model there, so the warm
+	// would be wasted GPU memory and would mislead the demand calc into thinking
+	// the model is already covered. Mirrors the routing/preflight gate.
+	if r.providerExcludedByDedicatedRuleLocked(p, model) {
+		return warmPoolCandidate{}, false
+	}
 	totalMemoryGB := float64(p.Hardware.MemoryGB)
 	gpuActiveGB := 0.0
 	if p.BackendCapacity != nil {

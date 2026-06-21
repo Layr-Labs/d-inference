@@ -3049,6 +3049,14 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		if seKey != "" && binaryHash != "" {
 			s.recordTrustReuse(c.provider, seKey, c.serial, binaryHash, true /*sip*/, true /*secureBootFull*/, udid)
 		}
+
+		// The late grant earned hardware WITHOUT the synchronous MDM verify (which
+		// runs the MDA leg via verifyAppleDeviceAttestation), so attach the durable
+		// MDA proof here too — otherwise a provider upgraded via late SecurityInfo
+		// stays mda_verified=false despite a valid cached chain.
+		if ar := c.provider.GetAttestationResult(); ar != nil {
+			s.attachCachedMDAProof(c.provider.ID, c.provider, *ar)
+		}
 	}
 }
 

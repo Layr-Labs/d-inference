@@ -767,7 +767,7 @@ export default function EarnPage() {
               <span className="font-medium text-text-secondary">These are estimates only.</span> Usage earnings assume {Math.round(ASSUMED_UTILIZATION * 100)}% utilization with continuous batching ({CONTINUOUS_BATCH_FACTOR}× concurrent requests); actual usage depends on network demand, model popularity, your provider reputation, and how many other providers serve the same model. The live network currently runs well below this.
             </p>
             <p className="text-xs text-text-tertiary mb-2">
-              <span className="font-medium text-text-secondary">Base rewards</span> are paid on top of usage to attested machines that stay online ≥90% of the month, up to a fixed monthly budget — they are not a guarantee and taper off as the network grows.
+              <span className="font-medium text-text-secondary">Base rewards</span> are paid on top of usage to attested machines that stay online ≥90% of each 5-minute settlement period, up to a fixed monthly budget — they are not a guarantee.
             </p>
             <p className="text-xs text-text-tertiary">
               When your Mac is idle (no requests), it draws minimal power — the electricity cost shown only applies during active inference. You keep 100% of both usage revenue and base rewards.

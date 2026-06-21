@@ -37,11 +37,11 @@ export function BaseRewardsPanel({ highlightGB }: { highlightGB?: number }) {
         <h3 className="text-sm font-semibold text-text-primary">Base rewards (earnings floor)</h3>
       </div>
       <p className="text-sm text-text-secondary mb-5">
-        On top of what you earn from real inference, attested machines earn a monthly{" "}
+        On top of what you earn from real inference, attested machines accrue a monthly{" "}
         <span className="text-text-primary font-medium">base reward</span> for staying online — so a{" "}
         <span className="text-text-primary font-medium">64GB+ Mac</span> clears a full Netflix
-        subscription even while the network is still quiet. Real usage is the upside on top, and it
-        grows as demand fills up the network.
+        subscription even while the network is still quiet. It is paid in 5-minute prorated
+        increments, while real usage remains the upside on top.
       </p>
 
       <div className="overflow-hidden rounded-lg border border-border-subtle">
@@ -78,7 +78,7 @@ export function BaseRewardsPanel({ highlightGB }: { highlightGB?: number }) {
       <div className="mt-4 space-y-2">
         <div className="flex items-start gap-2 text-xs text-text-tertiary">
           <Clock size={13} className="shrink-0 mt-0.5" />
-          <span>Requires staying online ≥90% of the month (the base reward ramps with uptime).</span>
+          <span>Rewards settle every 5 minutes and require staying online ≥90% of that period.</span>
         </div>
         <div className="flex items-start gap-2 text-xs text-text-tertiary">
           <TrendingUp size={13} className="shrink-0 mt-0.5" />
@@ -87,8 +87,8 @@ export function BaseRewardsPanel({ highlightGB }: { highlightGB?: number }) {
         <div className="flex items-start gap-2 text-xs text-text-tertiary">
           <Info size={13} className="shrink-0 mt-0.5" />
           <span>
-            Base rewards go to attested, actively-serving machines up to a fixed monthly budget; not
-            a guarantee. See the docs for eligibility.
+            Base rewards go to attested, online, healthy machines up to a fixed monthly budget,
+            prorated per settlement period; not a guarantee. See the docs for eligibility.
           </span>
         </div>
       </div>

@@ -444,6 +444,40 @@ type Store interface {
 	// records the corresponding payout history row.
 	CreditProviderWallet(payout *ProviderPayout) error
 
+	// --- Base Rewards (provider earnings floor) ---
+
+	// SumProviderEarningsByKey returns total organic micro-USD for one provider
+	// node in [since, until): amount>0, model != 'base_reward'. Self-route already
+	// produces no earning row, so it needs no extra filter.
+	SumProviderEarningsByKey(ctx context.Context, providerKey string, since, until time.Time) (int64, error)
+
+	// SettleProviderFloorDraw atomically (1) inserts the idempotent draw row
+	// (ON CONFLICT (provider_key, epoch_id) DO NOTHING) and (2) credits the
+	// account's balance + withdrawable with a LedgerFloorDraw entry — but ONLY
+	// when the row was newly inserted. Returns credited=false on a duplicate
+	// epoch. A zero-amount draw still inserts the audit row but credits nothing.
+	SettleProviderFloorDraw(ctx context.Context, draw *ProviderFloorDraw) (credited bool, err error)
+
+	// SumFloorDrawsForEpoch returns Σ amount_micro_usd already settled for an
+	// epoch (pool-cap accounting + admin status).
+	SumFloorDrawsForEpoch(ctx context.Context, epochID string) (int64, error)
+
+	// ListFloorDrawsForEpoch returns all draw rows for an epoch (admin status).
+	ListFloorDrawsForEpoch(ctx context.Context, epochID string) ([]ProviderFloorDraw, error)
+
+	// ListProviderSessionsOverlapping returns sessions whose lifetime interval
+	// overlaps [start, end). Closed sessions end at disconnected_at; open sessions
+	// may overlap via last_seen + openSessionGrace. The caller unions per machine
+	// and clamps open sessions to min(end, last_seen + grace). Ordered by
+	// serial_number, connected_at.
+	ListProviderSessionsOverlapping(ctx context.Context, start, end time.Time, openSessionGrace time.Duration) ([]ProviderSession, error)
+
+	// WithEpochSettlementLock runs fn while holding a cross-instance lock keyed
+	// on epochID, so two coordinators cannot settle the same epoch concurrently
+	// and overshoot the floor pool cap. The memory store runs fn directly; the
+	// postgres store uses a session-level advisory lock.
+	WithEpochSettlementLock(ctx context.Context, epochID string, fn func() error) error
+
 	// --- Provider Tokens (device-linked auth) ---
 
 	// CreateProviderToken stores a long-lived provider auth token linked to an account.
@@ -497,8 +531,8 @@ type Store interface {
 	OpenProviderSession(ctx context.Context, sessionID, serial, accountID string) error
 
 	// TouchProviderSession updates the open session's last_seen heartbeat and
-	// backfills serial/account if they were unknown at open time.
-	TouchProviderSession(ctx context.Context, sessionID, serial, accountID string, lastSeen time.Time) error
+	// backfills serial/account/provider_key if they were unknown at open time.
+	TouchProviderSession(ctx context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error
 
 	// CloseProviderSession marks the open session for sessionID as ended.
 	CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error
@@ -956,19 +990,20 @@ func IsRewardLedgerType(t LedgerEntryType) bool {
 type LedgerEntryType string
 
 const (
-	LedgerDeposit        LedgerEntryType = "deposit"         // consumer funds account
-	LedgerCharge         LedgerEntryType = "charge"          // consumer pays for inference
-	LedgerPayout         LedgerEntryType = "payout"          // provider credited for serving
-	LedgerPlatformFee    LedgerEntryType = "platform_fee"    // Darkbloom platform cut
-	LedgerWithdrawal     LedgerEntryType = "withdrawal"      // on-chain withdrawal
-	LedgerReferralReward LedgerEntryType = "referral_reward" // referrer earns share of platform fee
-	LedgerStripeDeposit  LedgerEntryType = "stripe_deposit"  // Stripe checkout deposit
-	LedgerStripePayout   LedgerEntryType = "stripe_payout"   // user-initiated bank/card withdrawal via Stripe Connect
-	LedgerInviteCredit   LedgerEntryType = "invite_credit"   // invite code redemption
-	LedgerRefund         LedgerEntryType = "refund"          // reservation refund (request failed before inference)
-	LedgerAdminCredit    LedgerEntryType = "admin_credit"    // admin-granted non-withdrawable credit
-	LedgerAdminReward    LedgerEntryType = "admin_reward"    // admin-granted withdrawable reward
-	LedgerMigration      LedgerEntryType = "migration"       // balance moved between account identities (e.g. legacy key re-keying)
+	LedgerDeposit        LedgerEntryType = "deposit"             // consumer funds account
+	LedgerCharge         LedgerEntryType = "charge"              // consumer pays for inference
+	LedgerPayout         LedgerEntryType = "payout"              // provider credited for serving
+	LedgerPlatformFee    LedgerEntryType = "platform_fee"        // Darkbloom platform cut
+	LedgerWithdrawal     LedgerEntryType = "withdrawal"          // on-chain withdrawal
+	LedgerReferralReward LedgerEntryType = "referral_reward"     // referrer earns share of platform fee
+	LedgerStripeDeposit  LedgerEntryType = "stripe_deposit"      // Stripe checkout deposit
+	LedgerStripePayout   LedgerEntryType = "stripe_payout"       // user-initiated bank/card withdrawal via Stripe Connect
+	LedgerInviteCredit   LedgerEntryType = "invite_credit"       // invite code redemption
+	LedgerRefund         LedgerEntryType = "refund"              // reservation refund (request failed before inference)
+	LedgerAdminCredit    LedgerEntryType = "admin_credit"        // admin-granted non-withdrawable credit
+	LedgerAdminReward    LedgerEntryType = "admin_reward"        // admin-granted withdrawable reward
+	LedgerMigration      LedgerEntryType = "migration"           // balance moved between account identities (e.g. legacy key re-keying)
+	LedgerFloorDraw      LedgerEntryType = "provider_floor_draw" // base-rewards epoch base income (additive)
 )
 
 // LedgerEntry is a single balance-changing event.
@@ -1342,6 +1377,22 @@ type ProviderEarning struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+// ProviderFloorDraw is one epoch's base-reward settlement for one machine.
+// Idempotent on (ProviderKey, EpochID). AmountMicroUSD is the new money printed
+// (max(0, floor − k·earned)); the audit columns record how it was derived.
+type ProviderFloorDraw struct {
+	ID             int64     `json:"id"`
+	ProviderKey    string    `json:"provider_key"`
+	AccountID      string    `json:"account_id"`
+	EpochID        string    `json:"epoch_id"` // "YYYY-MM" UTC
+	AmountMicroUSD int64     `json:"amount_micro_usd"`
+	FloorMicroUSD  int64     `json:"floor_micro_usd"`  // scaled floor used
+	EarnedMicroUSD int64     `json:"earned_micro_usd"` // organic earned snapshot
+	UptimeFrac     float64   `json:"uptime_frac"`
+	MemoryGB       int       `json:"memory_gb"` // verified tier
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 // ProviderEarningsSummary captures lifetime payout aggregates independent of
 // any pagination applied to recent earnings history.
 type ProviderEarningsSummary struct {
@@ -1424,6 +1475,7 @@ type ProviderSession struct {
 	SessionID        string     `json:"session_id"` // providers.id for this connection
 	SerialNumber     string     `json:"serial_number"`
 	AccountID        string     `json:"account_id"`
+	ProviderKey      string     `json:"provider_key"` // X25519 public key — unifies sessions↔earnings identity (design §8)
 	ConnectedAt      time.Time  `json:"connected_at"`
 	LastSeen         time.Time  `json:"last_seen"`
 	DisconnectedAt   *time.Time `json:"disconnected_at,omitempty"`

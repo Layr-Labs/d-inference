@@ -45,6 +45,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -182,6 +183,24 @@ func main() {
 	} else {
 		logger.Info("dedicated-model routing disabled")
 	}
+
+	// Quality-concurrency admission cap: tighten the flat per-provider concurrency
+	// cap (24) to each model's quality_concurrency × overcommit, computed from the
+	// provider's static single-stream decode rate. Stops slow, saturated models
+	// (e.g. Gemma) from over-admitting onto a few boxes and collapsing decode TPS;
+	// near-no-op for fast/over-provisioned models. Reuses the warm-pool decode
+	// floor + fallback so admission and warm-pool planning share the same math.
+	reg.SetQualityConcurrencyCap(
+		cfg.RegistryCfg.QualityCap.Enabled,
+		cfg.RegistryCfg.QualityCap.Overcommit,
+		cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
+		cfg.RegistryCfg.WarmPool.FallbackQualityConcurrency,
+	)
+	logger.Info("quality-concurrency cap",
+		"enabled", cfg.RegistryCfg.QualityCap.Enabled,
+		"overcommit", cfg.RegistryCfg.QualityCap.Overcommit,
+		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
+	)
 
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
@@ -427,6 +446,17 @@ func main() {
 		}
 	}
 
+	// Per-family prompt-token estimate calibration for the servability context
+	// check (the len/4 routing estimate undercounts dense content). Default
+	// {gpt-oss:1.3}; override with "family:factor,..." e.g. "gpt-oss:1.3,gemma:1.15".
+	if v := os.Getenv("EIGENINFERENCE_PROMPT_CALIBRATION"); v != "" {
+		if n := api.SetPromptContextCalibrationFromEnv(v); n > 0 {
+			logger.Info("prompt-token context calibration overridden", "pairs", n, "value", v)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PROMPT_CALIBRATION; using default", "value", v)
+		}
+	}
+
 	// SSE keepalives during long prefill. ON by default at a 10s cadence so a long
 	// prefill never leaves the consumer connection idle long enough for OpenRouter's
 	// fetch timeout to fire and fail us over mid-prefill. The first keepalive fires
@@ -476,6 +506,23 @@ func main() {
 	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billingCfg)
 	srv.SetBilling(billingSvc)
+
+	// Provider base rewards (off unless EIGENINFERENCE_BASE_REWARDS=true).
+	if brc := cfg.ServerConfig.BaseRewards; brc.Enabled {
+		brCfg := baserewards.DefaultConfig()
+		brCfg.Enabled = true
+		brCfg.ReductionK = brc.ReductionK
+		brCfg.PoolBudgetMicroUSD = brc.FloorPoolB
+		brCfg.MinUptimeFrac = brc.MinUptimeFrac
+		brCfg.PerAccountCapFrac = brc.AccountCapFrac
+		srv.SetBaseRewards(baserewards.NewEngine(st, reg, brCfg, logger))
+		logger.Info("base rewards enabled",
+			"reduction_k", brCfg.ReductionK,
+			"pool_micro_usd", brCfg.PoolBudgetMicroUSD,
+			"min_uptime", brCfg.MinUptimeFrac)
+	} else {
+		logger.Info("base rewards disabled (set EIGENINFERENCE_BASE_REWARDS=true to enable)")
+	}
 
 	// Derive the coordinator's long-lived X25519 key.
 	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.EncryptionMnemonic); err == nil {
@@ -685,6 +732,11 @@ func main() {
 	// Flag any model decoding far below its active-param/hardware class (W8 —
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
 	srv.StartThroughputAnomalyDetector(ctx)
+
+	// Base-rewards settlement (only when enabled).
+	if br := srv.BaseRewards(); br != nil {
+		saferun.Go(logger, "base_rewards_settlement", func() { br.Run(ctx) })
+	}
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

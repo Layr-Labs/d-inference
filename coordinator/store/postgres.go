@@ -995,6 +995,34 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			mda_udid TEXT NOT NULL DEFAULT '',
 			verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+
+		// Base-rewards: idempotency on per-job settlement (design §8 "required fix").
+		// Deduplicate any existing rows first so the unique index builds on prod DBs
+		// that may have retried credits with the same job_id. The DO block is safe
+		// on fresh DBs where no duplicates exist (0-row delete).
+		`DO $$ BEGIN DELETE FROM provider_earnings WHERE id NOT IN (SELECT MIN(id) FROM provider_earnings WHERE job_id <> '' GROUP BY job_id) AND job_id <> ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_earnings_job ON provider_earnings(job_id) WHERE job_id <> ''`,
+
+		// Base-rewards: unify sessions↔earnings identity (design §8).
+		`DO $$ BEGIN ALTER TABLE provider_sessions ADD COLUMN IF NOT EXISTS provider_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_key ON provider_sessions(provider_key, connected_at) WHERE provider_key <> ''`,
+
+		// Base-rewards: idempotent epoch settlement, one row per (provider_key, epoch_id).
+		`CREATE TABLE IF NOT EXISTS provider_floor_draws (
+			id BIGSERIAL PRIMARY KEY,
+			provider_key TEXT NOT NULL,
+			account_id TEXT NOT NULL DEFAULT '',
+			epoch_id TEXT NOT NULL,
+			amount_micro_usd BIGINT NOT NULL,
+			floor_micro_usd BIGINT NOT NULL DEFAULT 0,
+			earned_micro_usd BIGINT NOT NULL DEFAULT 0,
+			uptime_frac DOUBLE PRECISION NOT NULL DEFAULT 0,
+			memory_gb INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (provider_key, epoch_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_floor_draws_epoch ON provider_floor_draws(epoch_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_floor_draws_account ON provider_floor_draws(account_id, epoch_id)`,
 	}
 
 	for _, m := range migrations {
@@ -2248,14 +2276,10 @@ func rewardLedgerTypesSQLList() string {
 }
 
 // Leaderboard returns the top N accounts ranked by the given metric over the
-// given time window. Zero `since` means all-time. The ranking is computed in
-// SQL — no per-row wire transfer. Only providers (accounts with inference work
-// in the window) are ranked: the query LEFT JOINs reward ledger entries
-// (referral_reward, admin_reward) onto provider_earnings so reward earnings are
-// credited to providers, while reward-only accounts (e.g. consumer-only
-// referrers) never appear on the provider leaderboard. The "earnings" metric
-// ranks by the combined total (work + reward); a deterministic account_id
-// tiebreaker keeps ordering stable.
+// given time window. Base-reward rows live in provider_earnings for
+// provider-facing history, but count as reward earnings here so they do not
+// inflate inference work/jobs/tokens. Ledger reward-only accounts (e.g.
+// consumer-only referrers) never appear on the provider leaderboard.
 func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2275,21 +2299,28 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 	// `since` is bound once as $1 and referenced in both CTEs; `limit` is the
 	// final positional arg. account_id != '' filters out unassigned earnings.
 	args := []any{}
-	workSince := ""
+	workWhere := ` WHERE account_id != '' AND model <> 'base_reward'`
+	baseRewardWhere := ` WHERE account_id != '' AND model = 'base_reward'`
 	rewardSince := ""
 	if !since.IsZero() {
 		args = append(args, since)
-		workSince = ` AND created_at >= $1`
+		workWhere += ` AND created_at >= $1`
+		baseRewardWhere += ` AND created_at >= $1`
 		rewardSince = ` AND created_at >= $1`
 	}
 
 	q := `WITH work AS (
 	          SELECT account_id,
-	                 SUM(amount_micro_usd)                  AS work_micro,
-	                 SUM(prompt_tokens + completion_tokens) AS tokens,
-	                 COUNT(*)                               AS jobs
-	          FROM provider_earnings
-	          WHERE account_id != ''` + workSince + `
+		                 SUM(amount_micro_usd)                  AS work_micro,
+		                 SUM(prompt_tokens + completion_tokens) AS tokens,
+		                 COUNT(*)                               AS jobs
+		          FROM provider_earnings` + workWhere + `
+		          GROUP BY account_id
+		      ),
+		      base_reward AS (
+	          SELECT account_id,
+	                 SUM(amount_micro_usd) AS reward_micro
+	          FROM provider_earnings` + baseRewardWhere + `
 	          GROUP BY account_id
 	      ),
 	      reward AS (
@@ -2299,14 +2330,16 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 	          WHERE account_id != '' AND entry_type IN (` + rewardLedgerTypesSQLList() + `)` + rewardSince + `
 	          GROUP BY account_id
 	      )
-	      SELECT w.account_id                            AS account_id,
-	             w.work_micro + COALESCE(r.reward_micro,0) AS earnings_micro_usd,
-	             w.work_micro                            AS work_micro_usd,
-	             COALESCE(r.reward_micro,0)              AS reward_micro_usd,
-	             w.tokens                                AS tokens,
-	             w.jobs                                  AS jobs
+	      SELECT COALESCE(w.account_id, br.account_id)  AS account_id,
+	             COALESCE(w.work_micro,0) + COALESCE(br.reward_micro,0) + COALESCE(r.reward_micro,0) AS earnings_micro_usd,
+	             COALESCE(w.work_micro,0)                AS work_micro_usd,
+	             COALESCE(br.reward_micro,0) + COALESCE(r.reward_micro,0) AS reward_micro_usd,
+	             COALESCE(w.tokens,0)                    AS tokens,
+	             COALESCE(w.jobs,0)                      AS jobs
 	      FROM work w
-	      LEFT JOIN reward r ON w.account_id = r.account_id
+	      FULL OUTER JOIN base_reward br ON br.account_id = w.account_id
+	      LEFT JOIN reward r ON r.account_id = COALESCE(w.account_id, br.account_id)
+	      WHERE COALESCE(w.account_id, br.account_id) IS NOT NULL
 	      ORDER BY ` + orderCol + ` DESC, account_id ASC
 	      LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
@@ -2339,14 +2372,16 @@ func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	defer cancel()
 
 	// `since`, when set, is bound once as $1 and referenced in the work,
-	// providers, and reward subqueries.
+	// base_reward, providers, and reward subqueries.
 	args := []any{}
-	workWhere := ""
+	workWhere := ` WHERE model <> 'base_reward'`
+	baseRewardWhere := ` WHERE model = 'base_reward'`
 	providerSince := ""
 	rewardSince := ""
 	if !since.IsZero() {
 		args = append(args, since)
-		workWhere = ` WHERE created_at >= $1`
+		workWhere += ` AND created_at >= $1`
+		baseRewardWhere += ` AND created_at >= $1`
 		providerSince = ` AND created_at >= $1`
 		rewardSince = ` AND le.created_at >= $1`
 	}
@@ -2355,11 +2390,15 @@ func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	q := `WITH work AS (
 	          SELECT COALESCE(SUM(amount_micro_usd),0)                  AS work_micro,
 	                 COALESCE(SUM(prompt_tokens + completion_tokens),0) AS tokens,
-	                 COUNT(*)                                           AS jobs
-	          FROM provider_earnings` + workWhere + `
-	      ),
-	      providers AS (
-	          SELECT DISTINCT account_id FROM provider_earnings WHERE account_id != ''` + providerSince + `
+		                 COUNT(*)                                           AS jobs
+		          FROM provider_earnings` + workWhere + `
+		      ),
+		      base_reward AS (
+		          SELECT COALESCE(SUM(amount_micro_usd),0) AS reward_micro
+		          FROM provider_earnings` + baseRewardWhere + `
+		      ),
+		      providers AS (
+		          SELECT DISTINCT account_id FROM provider_earnings WHERE account_id != ''` + providerSince + `
 	      ),
 	      reward AS (
 	          SELECT COALESCE(SUM(le.amount_micro_usd),0) AS reward_micro
@@ -2367,10 +2406,10 @@ func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	          JOIN providers p ON p.account_id = le.account_id
 	          WHERE le.entry_type IN (` + rewardTypes + `)` + rewardSince + `
 	      )
-	      SELECT work.work_micro + reward.reward_micro AS earnings_micro,
-	             work.work_micro, reward.reward_micro, work.tokens, work.jobs,
+	      SELECT work.work_micro + base_reward.reward_micro + reward.reward_micro AS earnings_micro,
+	             work.work_micro, base_reward.reward_micro + reward.reward_micro, work.tokens, work.jobs,
 	             (SELECT COUNT(*) FROM providers)        AS active_accounts
-	      FROM work, reward`
+	      FROM work, base_reward, reward`
 
 	var t NetworkTotalsRow
 	_ = s.pool.QueryRow(ctx, q, args...).
@@ -3765,12 +3804,18 @@ func (s *PostgresStore) HasRedeemedInviteCode(code, accountID string) bool {
 func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	createdAt := earning.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
 		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
+		createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert provider earning: %w", err)
@@ -3973,44 +4018,52 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// The earning CTE is the idempotency gate: ON CONFLICT (job_id) DO NOTHING
+	// means a retried settlement (same job_id) inserts nothing and RETURNS no
+	// row, so every downstream CTE (which selects FROM earning) is a pure no-op
+	// — no balance bump, no ledger row, no summary bump. The outer COALESCE keeps
+	// the query returning exactly one row even on a duplicate.
 	var balanceAfter int64
 	err := s.pool.QueryRow(ctx, `
-		WITH credit AS (
+		WITH earning AS (
+			INSERT INTO provider_earnings (
+				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
+			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
+			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
+			RETURNING account_id, provider_key, amount_micro_usd, prompt_tokens, completion_tokens
+		), credit AS (
 			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
-			VALUES ($1, $2, $2, NOW())
+			SELECT account_id, amount_micro_usd, amount_micro_usd, NOW() FROM earning
 			ON CONFLICT (account_id) DO UPDATE SET
-			  balance_micro_usd = balances.balance_micro_usd + $2,
-			  withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
+			  balance_micro_usd = balances.balance_micro_usd + EXCLUDED.balance_micro_usd,
+			  withdrawable_micro_usd = balances.withdrawable_micro_usd + EXCLUDED.withdrawable_micro_usd,
 			  updated_at = NOW()
 			RETURNING balance_micro_usd
 		), ledger AS (
 			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-			SELECT $1, $3, $2, balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
-			FROM credit
-		), earning AS (
-			INSERT INTO provider_earnings (
-				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
-			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
+			SELECT e.account_id, $3, e.amount_micro_usd, c.balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
+			FROM earning e CROSS JOIN credit c
 		), summary_account AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			VALUES ($1, 'account', 1, $2, $9, $10, NOW())
+			SELECT account_id, 'account', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
 			ON CONFLICT (key, key_type) DO UPDATE SET
 			  total_count = earnings_summary.total_count + 1,
-			  total_micro_usd = earnings_summary.total_micro_usd + $2,
-			  total_prompt_tokens = earnings_summary.total_prompt_tokens + $9,
-			  total_completion_tokens = earnings_summary.total_completion_tokens + $10,
+			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		), summary_provider AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			VALUES ($7, 'provider', 1, $2, $9, $10, NOW())
+			SELECT provider_key, 'provider', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
 			  total_count = earnings_summary.total_count + 1,
-			  total_micro_usd = earnings_summary.total_micro_usd + $2,
-			  total_prompt_tokens = earnings_summary.total_prompt_tokens + $9,
-			  total_completion_tokens = earnings_summary.total_completion_tokens + $10,
+			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		)
-		SELECT balance_micro_usd FROM credit`,
+		SELECT COALESCE((SELECT balance_micro_usd FROM credit), 0)`,
 		earning.AccountID,                    // $1
 		earning.AmountMicroUSD,               // $2
 		string(LedgerPayout),                 // $3
@@ -4726,15 +4779,16 @@ func (s *PostgresStore) OpenProviderSession(ctx context.Context, sessionID, seri
 }
 
 // TouchProviderSession updates the open session's last_seen and backfills
-// serial/account if they were unknown at open time.
-func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, serial, accountID string, lastSeen time.Time) error {
+// serial/account/provider_key if they were unknown at open time.
+func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE provider_sessions
 		    SET last_seen = $2,
 		        serial_number = CASE WHEN serial_number = '' THEN $3 ELSE serial_number END,
-		        account_id    = CASE WHEN account_id = ''    THEN $4 ELSE account_id    END
+		        account_id    = CASE WHEN account_id = ''    THEN $4 ELSE account_id    END,
+		        provider_key  = CASE WHEN provider_key = ''  THEN $5 ELSE provider_key  END
 		  WHERE session_id = $1 AND disconnected_at IS NULL`,
-		sessionID, lastSeen, serial, accountID,
+		sessionID, lastSeen, serial, accountID, providerKey,
 	)
 	if err != nil {
 		return fmt.Errorf("store: touch provider session: %w", err)

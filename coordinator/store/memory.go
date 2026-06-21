@@ -139,6 +139,12 @@ type MemoryStore struct {
 
 	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
 	inferenceRejections []RejectionRecord
+
+	// Base rewards — per-epoch floor draws (idempotent on provider_key|epoch_id).
+	providerFloorDraws []ProviderFloorDraw
+	floorDrawSeq       int64
+	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
+
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -191,6 +197,8 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
 		inferenceRejections:           make([]RejectionRecord, 0),
+		providerFloorDraws:            make([]ProviderFloorDraw, 0),
+		floorDrawKeys:                 make(map[string]struct{}),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{
@@ -246,7 +254,12 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	if n := len(s.logReports); n > maxEntries {
 		s.logReports = append([]LogReport(nil), s.logReports[n-maxEntries:]...)
 	}
-
+	// Floor-draw audit rows are bounded, but the floorDrawKeys idempotency map is
+	// intentionally NOT pruned — it is the authoritative dedupe guard and dropping
+	// it could let a re-settle double-credit.
+	if n := len(s.providerFloorDraws); n > maxEntries {
+		s.providerFloorDraws = append([]ProviderFloorDraw(nil), s.providerFloorDraws[n-maxEntries:]...)
+	}
 	// Expired device codes can be dropped outright.
 	now := time.Now()
 	for code, dc := range s.deviceCodesByCode {
@@ -687,13 +700,10 @@ func (s *MemoryStore) UsageTimeSeries(since time.Time) []UsageBucket {
 	return out
 }
 
-// Leaderboard ranks accounts by the chosen metric, combining inference work
-// (provider_earnings) with non-inference reward ledger entries (referral_reward,
-// admin_reward). EarningsMicroUSD is the combined total (work + reward) and is
-// the ranking key for the earnings metric. Only providers (accounts with
-// inference work in the window) are ranked; reward earnings are credited to
-// those providers, while reward-only accounts (e.g. consumer-only referrers) do
-// not appear. A deterministic account_id tiebreaker keeps ordering stable.
+// Leaderboard ranks accounts by the chosen metric, splitting inference work from
+// network rewards. Base-reward rows live in provider_earnings for provider-facing
+// history, but count as reward earnings here so they do not inflate work/jobs.
+// Reward-only ledger accounts (e.g. consumer-only referrers) do not appear.
 func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -709,7 +719,7 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 		}
 		return row
 	}
-	// Inference work earnings.
+	// Provider earnings rows: inference work plus base_reward rows.
 	for _, e := range s.providerEarnings {
 		if e.AccountID == "" {
 			continue
@@ -718,6 +728,10 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 			continue
 		}
 		row := rowFor(e.AccountID)
+		if e.Model == "base_reward" {
+			row.RewardEarningsMicroUSD += e.AmountMicroUSD
+			continue
+		}
 		row.WorkEarningsMicroUSD += e.AmountMicroUSD
 		row.Tokens += int64(e.PromptTokens + e.CompletionTokens)
 		row.Jobs++
@@ -765,12 +779,10 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 	return rows
 }
 
-// NetworkTotals aggregates metrics across all earnings, combining inference
-// work (provider_earnings) with non-inference reward ledger entries
-// (referral_reward, admin_reward). Rewards are only counted for provider
-// accounts (those with inference work in the window), so consumer-only reward
-// recipients do not inflate the totals. EarningsMicroUSD is the combined total
-// and ActiveAccounts counts distinct provider accounts.
+// NetworkTotals aggregates provider earnings, splitting inference work from
+// rewards. Base-reward rows count as reward earnings, not work/jobs/tokens.
+// Ledger rewards are only counted for accounts that also have provider earnings
+// rows in the window, so consumer-only reward recipients do not inflate totals.
 func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -780,12 +792,16 @@ func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 		if !since.IsZero() && e.CreatedAt.Before(since) {
 			continue
 		}
-		t.WorkEarningsMicroUSD += e.AmountMicroUSD
-		t.Tokens += int64(e.PromptTokens + e.CompletionTokens)
-		t.Jobs++
 		if e.AccountID != "" {
 			providers[e.AccountID] = struct{}{}
 		}
+		if e.Model == "base_reward" {
+			t.RewardEarningsMicroUSD += e.AmountMicroUSD
+			continue
+		}
+		t.WorkEarningsMicroUSD += e.AmountMicroUSD
+		t.Tokens += int64(e.PromptTokens + e.CompletionTokens)
+		t.Jobs++
 	}
 	for _, e := range s.ledgerEntries {
 		if !IsRewardLedgerType(e.Type) {
@@ -2411,6 +2427,16 @@ func (s *MemoryStore) RecordProviderEarning(earning *ProviderEarning) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
+	// a retried settlement with the same non-empty job_id is a no-op.
+	if earning.JobID != "" {
+		for i := range s.providerEarnings {
+			if s.providerEarnings[i].JobID == earning.JobID {
+				return nil
+			}
+		}
+	}
+
 	s.providerEarningsSeq++
 	cp := *earning
 	cp.ID = s.providerEarningsSeq
@@ -2471,10 +2497,13 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 		if earning.ProviderKey != providerKey {
 			continue
 		}
-		summary.Count++
 		summary.TotalMicroUSD += earning.AmountMicroUSD
-		summary.PromptTokens += int64(earning.PromptTokens)
-		summary.CompletionTokens += int64(earning.CompletionTokens)
+		// base_reward rows add money but are not inference jobs.
+		if earning.Model != "base_reward" {
+			summary.Count++
+			summary.PromptTokens += int64(earning.PromptTokens)
+			summary.CompletionTokens += int64(earning.CompletionTokens)
+		}
 	}
 
 	return summary, nil
@@ -2490,10 +2519,13 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 		if earning.AccountID != accountID {
 			continue
 		}
-		summary.Count++
 		summary.TotalMicroUSD += earning.AmountMicroUSD
-		summary.PromptTokens += int64(earning.PromptTokens)
-		summary.CompletionTokens += int64(earning.CompletionTokens)
+		// base_reward rows add money but are not inference jobs.
+		if earning.Model != "base_reward" {
+			summary.Count++
+			summary.PromptTokens += int64(earning.PromptTokens)
+			summary.CompletionTokens += int64(earning.CompletionTokens)
+		}
 	}
 
 	return summary, nil
@@ -2559,6 +2591,17 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
+	// a retried settlement with the same non-empty job_id must not double-credit
+	// the balance, the withdrawable subset, the ledger, or the earnings summary.
+	if earning.JobID != "" {
+		for i := range s.providerEarnings {
+			if s.providerEarnings[i].JobID == earning.JobID {
+				return nil
+			}
+		}
+	}
 
 	cp := *earning
 	if cp.CreatedAt.IsZero() {
@@ -3051,8 +3094,8 @@ func (s *MemoryStore) OpenProviderSession(_ context.Context, sessionID, serial, 
 }
 
 // TouchProviderSession updates the open session's last_seen and backfills
-// serial/account if they were unknown at open time.
-func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial, accountID string, lastSeen time.Time) error {
+// serial/account/provider_key if they were unknown at open time.
+func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.providerSessions {
@@ -3064,6 +3107,9 @@ func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial,
 			}
 			if ps.AccountID == "" {
 				ps.AccountID = accountID
+			}
+			if ps.ProviderKey == "" {
+				ps.ProviderKey = providerKey
 			}
 			// At most one open row per sessionID (OpenProviderSession
 			// guarantees it), so stop scanning once matched.

@@ -974,6 +974,32 @@ func (p *Provider) MaxConcurrencyForModel(model string) int {
 	return p.maxConcurrencyForModelLocked(model)
 }
 
+// ReportedTokenBudgetMaxForModel returns the provider's most recently reported
+// live token budget (ActiveTokenBudgetMax) for the given model, or 0 when the
+// provider has reported no per-model token budget. The provider derives this
+// value from live memory headroom (see BatchScheduler+Telemetry.swift
+// tokenBudgetMax = activeTokenBudgetUsed + headroom/kvBytesPerToken, floored at
+// 1024), so it SHRINKS under memory pressure and can fall below the model context
+// window. The dispatch path (classifyRejection) uses it to tell a fleet-wide
+// context overflow (budget >= model context ⇒ the provider's admission cap
+// min(context,budget) was the context, so every provider rejects identically)
+// apart from THIS node's shrunk KV budget (budget < context ⇒ a healthier
+// provider may still serve), which the bare "batch token budget" wire string
+// alone cannot distinguish.
+func (p *Provider) ReportedTokenBudgetMaxForModel(model string) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.BackendCapacity == nil {
+		return 0
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model == model {
+			return slot.ActiveTokenBudgetMax
+		}
+	}
+	return 0
+}
+
 // maxConcurrency is the lock-free version (caller must hold p.mu).
 //
 // Tier values were lowered in Phase 2 of the routing-algorithm rework
@@ -1096,6 +1122,19 @@ type Registry struct {
 	// it). Configured once at startup from EIGENINFERENCE_DEDICATED_MODELS; see
 	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
 	dedicatedModels []string
+
+	// Quality-concurrency admission cap (see concurrency_cap.go). When enabled,
+	// the per-provider concurrency cap for a model is tightened from the flat
+	// fallback to quality_concurrency × overcommit, computed from the provider's
+	// STATIC single-stream decode rate so slow/saturated models stop
+	// over-admitting. Set once at startup via SetQualityConcurrencyCap; read on the
+	// routing/preflight paths (which hold r.mu). qualityCapFloorTPS / qualityCapFallback
+	// mirror the warm-pool DecodeFloorTPS / FallbackQualityConcurrency so admission
+	// and warm-pool planning share the same quality math.
+	qualityCapEnabled    bool
+	qualityCapOvercommit float64
+	qualityCapFloorTPS   float64
+	qualityCapFallback   int
 
 	// APNs code-identity rollout policy (v0.6.0), guarded by r.mu and evaluated
 	// LIVE at every routing decision so a deadline can flip enforcement on/off
@@ -1559,6 +1598,7 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			seKey = p.AttestationResult.PublicKey
 			serial = p.AttestationResult.SerialNumber
 		}
+		providerKey := p.PublicKey // X25519 key — earnings/session identity (base rewards)
 		var mdaCertJSON json.RawMessage
 		if len(p.MDACertChain) > 0 {
 			mdaCertJSON, _ = json.Marshal(p.MDACertChain)
@@ -1614,9 +1654,9 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
 		}
 
-		// Keep this connection's session row fresh and backfill serial/account
-		// once attestation/linking has populated them.
-		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, rec.LastSeen); err != nil {
+		// Keep this connection's session row fresh and backfill
+		// serial/account/provider_key once attestation/linking has populated them.
+		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, providerKey, rec.LastSeen); err != nil {
 			r.logger.Warn("failed to touch provider session", "provider_id", rec.ID, "error", err)
 		}
 	})
@@ -4700,7 +4740,11 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			if !r.modelAllowedByCatalogLocked(m) {
 				continue
 			}
-			hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(m.ID)
+			// Use the SAME quality-concurrency-capped headroom the routing/preflight
+			// path enforces, so the public capacity feed doesn't advertise a capped
+			// box (e.g. Gemma at 2) as routable up to the flat fallback (24) and lure
+			// upstream routers into sending requests this coordinator immediately 429s.
+			hasHeadroom := r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, m.ID)
 			// Count only pending requests for this specific model, not the
 			// total across all models. Using the total inflates
 			// activeRequests for multi-model providers.

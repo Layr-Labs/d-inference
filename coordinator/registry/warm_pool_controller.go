@@ -69,6 +69,14 @@ type WarmPoolSnapshot struct {
 	ServiceTime        time.Duration
 	QualityConcurrency int
 	DemandConcurrency  float64
+
+	// ColdIneligible is the count of cold (on-disk, not-warm) providers advertising
+	// the model that failed the warm-pool candidate gate this tick, with
+	// ColdDisqualifiers breaking it down by reason (warmColdReason). Diagnoses why
+	// the eligible-cold set (and thus the warmable target) is smaller than the raw
+	// cold-provider count — counts only, no provider identities.
+	ColdIneligible    int
+	ColdDisqualifiers map[string]int
 }
 
 type warmPoolModelSnapshot struct {
@@ -86,6 +94,11 @@ type warmPoolModelSnapshot struct {
 	prefillTPS      float64
 	maxProviderConc int
 	eligibleCold    []warmPoolCandidate
+	// coldIneligible / coldDisq tally cold (on-disk, not-warm) providers that
+	// FAILED the warm-pool candidate gate, by reason — diagnostics for why
+	// eligibleCold is smaller than the raw cold count.
+	coldIneligible int
+	coldDisq       map[warmColdReason]int
 }
 
 type warmPoolCandidate struct {
@@ -343,11 +356,24 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		}
 		loadsRemaining -= len(actions)
 		c.state.rememberTarget(model, target, now)
+		// Surface why cold boxes aren't warmable (counts only). For a dedicated pool
+		// this explains a gap between the raw cold count and what we can actually warm.
+		if f.coldIneligible > 0 && c.registry != nil && c.registry.logger != nil && c.registry.IsDedicatedModel(model) {
+			c.registry.logger.Info("warm-pool cold-ineligible (dedicated)",
+				"model", model,
+				"warm", f.warm,
+				"eligible_cold", len(f.eligibleCold),
+				"cold_ineligible", f.coldIneligible,
+				"reasons", warmColdReasonStrings(f.coldDisq),
+			)
+		}
 		out = append(out, WarmPoolSnapshot{
 			Model:              model,
 			TargetWarm:         target,
 			WarmProviders:      f.warm,
 			EligibleCold:       len(f.eligibleCold),
+			ColdIneligible:     f.coldIneligible,
+			ColdDisqualifiers:  warmColdReasonStrings(f.coldDisq),
 			QueueDepth:         q.Depth,
 			OldestQueueAge:     q.OldestAge,
 			CapacityRejects:    p.capacityRejects,
@@ -447,6 +473,21 @@ func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure wa
 			target = maxReachable
 		}
 	}
+	// Dedicated pools (e.g. Gemma): when a dedicated build is under demand, warm the
+	// ENTIRE eligible pool rather than demand-tracking it — this lifts idle dedicated
+	// boxes into service and removes cold-start lag (a cold box's ~30s load makes it
+	// un-routable on the request hot path, so proactive warming is the only way it
+	// ever serves). Gated on demand for THIS build so we don't force-warm every
+	// build a box advertises matching the family pattern — e.g. during an alias
+	// migration where desired+previous Gemma builds are both catalog-allowed, only
+	// the build actually receiving traffic gets the whole pool, not the stale one
+	// (which would otherwise burn model slots/memory and evict the live build).
+	// Bounded by warm+eligibleCold; the per-tick ramp still throttles the load rate.
+	if c.registry != nil && c.registry.IsDedicatedModel(fleet.model) && c.hasDemandPressure(fleet, pressure, queue) {
+		if whole := fleet.warm + len(fleet.eligibleCold); whole > target {
+			target = whole
+		}
+	}
 	return target
 }
 
@@ -513,15 +554,23 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 				continue
 			}
-			if candidate, ok := r.warmPoolCandidateLocked(p, model, now); ok {
-				s := out[model]
-				s.model = model
+			candidate, reason := r.warmPoolCandidateReasonLocked(p, model, now)
+			s := out[model]
+			s.model = model
+			if reason == warmColdEligible {
 				s.eligibleCold = append(s.eligibleCold, candidate)
 				out[model] = s
 				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
 				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
 				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
 				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
+			} else {
+				if s.coldDisq == nil {
+					s.coldDisq = make(map[warmColdReason]int)
+				}
+				s.coldDisq[reason]++
+				s.coldIneligible++
+				out[model] = s
 			}
 		}
 		p.mu.Unlock()
@@ -551,34 +600,75 @@ func warmPoolModelLoadLocked(p *Provider, model string) (running, waiting int) {
 	return 0, 0
 }
 
+// warmColdReason labels why a cold (on-disk, not-warm) provider is or isn't an
+// eligible warm-pool target. Empty ("") means eligible. Used to instrument why
+// the eligible-cold set is smaller than the raw cold-provider count (e.g. a
+// dedicated pool reporting many cold boxes but warming few) — counts only, no
+// provider identities, so it is privacy-safe to log/expose.
+type warmColdReason string
+
+const (
+	warmColdEligible       warmColdReason = ""
+	warmColdOfflineUntrust warmColdReason = "offline_untrusted_private"
+	warmColdPendingLoad    warmColdReason = "pending_load_or_cooldown"
+	warmColdNotIdle        warmColdReason = "not_idle"
+	warmColdThermal        warmColdReason = "thermal_critical"
+	warmColdTrust          warmColdReason = "trust_or_runtime"
+	warmColdStaleChallenge warmColdReason = "stale_challenge"
+	warmColdNotServing     warmColdReason = "not_serving_catalog"
+	warmColdDedicated      warmColdReason = "dedicated_excluded"
+	warmColdTooLarge       warmColdReason = "model_too_large"
+	warmColdNoFreeForLoad  warmColdReason = "no_free_for_load"
+)
+
+// warmColdReasonStrings converts a reason tally to a string-keyed map for
+// logging / the snapshot. Returns nil for an empty tally.
+func warmColdReasonStrings(in map[warmColdReason]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for reason, n := range in {
+		out[string(reason)] = n
+	}
+	return out
+}
+
 func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, bool) {
+	c, reason := r.warmPoolCandidateReasonLocked(p, model, now)
+	return c, reason == warmColdEligible
+}
+
+// warmPoolCandidateReasonLocked is warmPoolCandidateLocked with the
+// disqualification reason exposed for instrumentation. Caller holds r.mu + p.mu.
+func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, warmColdReason) {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdOfflineUntrust
 	}
 	if r.providerHasPendingLoad(p.ID) || r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdPendingLoad
 	}
 	if p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdNotIdle
 	}
 	if p.SystemMetrics.ThermalState == "critical" {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdThermal
 	}
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdTrust
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdStaleChallenge
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdNotServing
 	}
 	// Don't pre-warm a dedicated-family model (e.g. Gemma 4) onto a non-dedicated
 	// (mixed-catalog) box: routing will never send the model there, so the warm
 	// would be wasted GPU memory and would mislead the demand calc into thinking
 	// the model is already covered. Mirrors the routing/preflight gate.
 	if r.providerExcludedByDedicatedRuleLocked(p, model) {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdDedicated
 	}
 	totalMemoryGB := float64(p.Hardware.MemoryGB)
 	gpuActiveGB := 0.0
@@ -589,14 +679,14 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 		gpuActiveGB = p.BackendCapacity.GPUMemoryActiveGB
 	}
 	if !modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemoryGB) {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdTooLarge
 	}
 	// Live free-capacity gate (shared helper with the direct/planner paths): don't
 	// pick a warm-pool target the provider already reports it cannot fit, or the
 	// warm pool issues a load_model the provider rejects (failed warm + pending-load
 	// cooldown) instead of choosing a truly loadable node (#390).
 	if admit, reported := reportedFreeForLoadAdmits(r.catalogSizeGBLocked(model), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
-		return warmPoolCandidate{}, false
+		return warmPoolCandidate{}, warmColdNoFreeForLoad
 	}
 	freeGB := totalMemoryGB - gpuActiveGB
 	if freeGB < 0 {
@@ -610,7 +700,7 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 		thermalPenalty = 250
 	}
 	score := freeGB*100 + resolvedDecodeTPS(p)*10 - p.SystemMetrics.MemoryPressure*500 - p.SystemMetrics.CPUUsage*100 - thermalPenalty
-	return warmPoolCandidate{providerID: p.ID, score: score}, true
+	return warmPoolCandidate{providerID: p.ID, score: score}, warmColdEligible
 }
 
 func warmPoolBackendSlotBusyLocked(p *Provider) bool {

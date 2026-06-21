@@ -107,6 +107,11 @@ type dispatchState struct {
 	timing                 *registry.RequestTiming
 	deadline               time.Duration
 	speculativeAt          time.Duration
+	// modelMaxContext is the model's context window (0 = unknown), used by
+	// shouldStopFailover/classifyRejection to tell a fleet-wide context overflow
+	// apart from a memory-pressured provider's shrunk KV budget when a "batch token
+	// budget" rejection arrives.
+	modelMaxContext int
 	// refundReservation refunds the shared base reservation (the caller's closure).
 	refundReservation func()
 
@@ -119,13 +124,32 @@ type dispatchState struct {
 	lastErr       string
 	lastErrCode   int
 	lastErrReason string
-	committed     bool
+	// lastErrProviderBudget is the rejecting provider's reported token budget
+	// (ActiveTokenBudgetMax) for d.model at the time lastErr was set, or 0 when the
+	// error is not a provider rejection / the provider reported no budget. Captured
+	// by setLastInferenceError so shouldStopFailover can classify a "batch token
+	// budget" rejection as deterministic (budget >= context) vs transient
+	// (budget < context — this node was memory-pressured).
+	lastErrProviderBudget int64
+	committed             bool
 	// keepalive emits SSE keepalive comments during a long prefill once the
 	// request has been dispatched, committing HTTP 200 early so the consumer
 	// connection does not time out. nil when disabled or non-streaming.
 	keepalive         *prefillKeepaliver
 	lastFailedVersion string
 	excludeProviders  map[string]struct{}
+	// capacityRetries counts pre-content TRANSIENT-capacity failovers (this
+	// node's live KV budget, a full queue, a drain). Bounded by
+	// maxCapacityClassRetries so a fleet-wide transient cannot storm; a
+	// DETERMINISTIC-context rejection (prompt > model context) stops on the first
+	// attempt regardless (see classifyRejection / failoverOutcome).
+	capacityRetries int
+	// unservable is set when the dispatch loop stops because the request cannot
+	// be served (deterministic-context rejection, or a transient that exhausted
+	// maxCapacityClassRetries). The exhausted ladder then emits a single
+	// uptime-neutral 429 with unservableReason instead of retrying/5xx'ing.
+	unservable       bool
+	unservableReason string
 
 	// ---- per-attempt scratch (reset each attempt) ----
 	attempt          int
@@ -366,12 +390,31 @@ func (d *dispatchState) setLastError(errText string, statusCode int) {
 	d.lastErr = errText
 	d.lastErrCode = statusCode
 	d.lastErrReason = ""
+	// Not a provider capacity rejection (timeout / no-provider / coordinator
+	// fault): clear any budget captured from a prior attempt so it never bleeds
+	// into a later classification.
+	d.lastErrProviderBudget = 0
 }
 
-func (d *dispatchState) setLastInferenceError(msg protocol.InferenceErrorMessage) {
+// setLastInferenceError records a pre-content provider rejection as the dispatch
+// loop's last error and snapshots the rejecting provider's reported token budget
+// for d.model. shouldStopFailover needs that budget to tell a fleet-wide
+// DETERMINISTIC context overflow apart from THIS node's memory-pressured KV budget
+// (see classifyRejection). provider may be nil (budget 0 = unknown).
+func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
 	d.lastErr = msg.Error
 	d.lastErrCode = msg.StatusCode
 	d.lastErrReason = msg.ErrorReason
+	d.lastErrProviderBudget = providerReportedBudget(provider, d.model)
+}
+
+// providerReportedBudget reads a provider's reported token budget for a model,
+// tolerating a nil provider (returns 0 = unknown).
+func providerReportedBudget(provider *registry.Provider, model string) int64 {
+	if provider == nil {
+		return 0
+	}
+	return provider.ReportedTokenBudgetMaxForModel(model)
 }
 
 // providerFailedRoutingOutcome builds the outcome for a POST-DISPATCH provider
@@ -815,6 +858,88 @@ func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *regis
 	}
 }
 
+// rejectionReasonOversized is the rejection-ledger reason_code for a request the
+// dispatch loop stopped because no provider can serve it (deterministic context
+// overflow, or a transient-capacity shortage that exhausted
+// maxCapacityClassRetries). Distinct from the preflight "context_exceeded" /
+// "prompt_too_long" and the legacy dispatch-exhausted "unservable_token_budget".
+const rejectionReasonOversized = "oversized_request"
+
+// shouldStopFailover is the single choke point that decides, after a dispatched
+// attempt failed with outcomeRetry, whether the dispatch loop should STOP failing
+// over because the request is unservable — rather than walk all 64 providers and
+// 503 each. The orchestrator calls it at both post-dispatch retry points (after
+// waitFirstChunk and waitAccepted), through which EVERY pre-content provider
+// rejection funnels (including the speculative/race paths, which return their
+// outcome up through waitFirstChunk). It inspects the just-recorded error
+// (d.lastErr / d.lastErrReason via setLastInferenceError) and classifies it:
+//
+//   - DETERMINISTIC-context rejection (prompt > model context — identical on
+//     every provider): stop on the FIRST occurrence. Retrying is pure waste
+//     (prod: median 22 / max 63 futile attempts, ~8.7 min, 0% eventual success).
+//   - TRANSIENT-capacity rejection (this node's KV budget / queue / drain): keep
+//     failing over, but only up to maxCapacityClassRetries, then stop.
+//   - genuine fault / timeout / unrecognised: return false → existing fault
+//     failover (the per-provider breaker quarantines a persistently-sick node).
+//
+// When it returns true it sets d.unservable + d.unservableReason so the exhausted
+// ladder emits exactly one uptime-neutral 429 (not a storm, not a raw 5xx). It is
+// a no-op (returns false, no counters) for non-capacity outcomes, so timeouts and
+// faults are unaffected.
+//
+// A previously-LATCHED verdict wins: a speculative race records the loser's error
+// into speculative tracking, not d.lastErr (the surviving racer owns that), so a
+// deterministic context overflow from a race loser would otherwise be masked by
+// the survivor's later transient/timeout error and the loop would keep storming.
+// latchDeterministicLoser sets d.unservable at the loser site; the guard below
+// honors it at the first retry point regardless of what the survivor reported.
+func (d *dispatchState) shouldStopFailover() bool {
+	if d.unservable {
+		return true
+	}
+	switch classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext) {
+	case rejectionDeterministicUnservable:
+		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
+		d.unservable = true
+		d.unservableReason = rejectionReasonOversized
+		return true
+	case rejectionTransientCapacity:
+		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:transient"})
+		d.capacityRetries++
+		if d.capacityRetries >= maxCapacityClassRetries {
+			d.unservable = true
+			d.unservableReason = rejectionReasonOversized
+			return true
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// latchDeterministicLoser preserves a DETERMINISTIC-unservable rejection observed
+// from a speculative race LOSER. A race loser's error is recorded into speculative
+// tracking but NOT written to d.lastErr (the surviving racer owns that), so without
+// this latch a deterministic context overflow from the loser would be masked by the
+// survivor's later transient/timeout error and the dispatch loop would keep storming
+// the fleet (the exact gap shouldStopFailover otherwise closes only on the non-
+// speculative path). Once latched, shouldStopFailover stops at the next retry point
+// regardless of the survivor's outcome. It is budget-aware (see classifyRejection):
+// a memory-pressured loser's "batch token budget" is NOT latched, so failover to a
+// healthier provider still happens. Harmless if the survivor ultimately succeeds —
+// d.unservable is only consulted on the exhausted/retry path, never on a commit.
+func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
+	if d.unservable {
+		return
+	}
+	budget := providerReportedBudget(provider, d.model)
+	if classifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext) == rejectionDeterministicUnservable {
+		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
+		d.unservable = true
+		d.unservableReason = rejectionReasonOversized
+	}
+}
+
 // waitFirstChunk runs the speculative TTFT-aware first-chunk wait (the former
 // `firstChunkWait` labeled loop). It holds preamble chunks, commits on first
 // content, extends on AcceptedCh / preamble liveness, retries invisibly on
@@ -873,7 +998,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 				case errMsg := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
-					d.setLastInferenceError(errMsg)
+					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
 					d.provider = nil
@@ -898,7 +1023,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			deadlineTimer.Stop()
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
-			d.setLastInferenceError(errMsg)
+			d.setLastInferenceError(provider, errMsg)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			s.logger.Warn("provider failed, retrying",
 				"request_id", d.requestID,
@@ -1089,7 +1214,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 				case errMsg := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
-					d.setLastInferenceError(errMsg)
+					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
 					d.provider = nil
@@ -1108,7 +1233,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			remainingDeadline.Stop()
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
-			d.setLastInferenceError(errMsg)
+			d.setLastInferenceError(provider, errMsg)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
@@ -1204,7 +1329,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					d.markSpeculativeLoser(backupPR)
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
-					d.setLastInferenceError(errMsg)
+					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
 					d.provider = nil
@@ -1247,6 +1372,9 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
 					d.updateSpeculativeFailure(backupPR, errMsg)
 					s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, &backupHeld)
+					// Preserve a deterministic-unservable verdict from this loser so the
+					// surviving primary's error can't mask it (see latchDeterministicLoser).
+					d.latchDeterministicLoser(backupProvider, errMsg)
 					// Wait remaining deadline for primary.
 					return d.raceBackupChunkClosedWaitPrimary(provider, pr)
 				default:
@@ -1292,6 +1420,9 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg)
 			s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+			// Preserve a deterministic-unservable verdict from this loser so the
+			// surviving backup's error can't mask it (see latchDeterministicLoser).
+			d.latchDeterministicLoser(provider, errMsg)
 			d.requestID = ""
 			d.provider = nil
 			d.pr = nil
@@ -1305,6 +1436,9 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
 			d.updateSpeculativeFailure(backupPR, errMsg)
 			s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, &backupHeld)
+			// Preserve a deterministic-unservable verdict from this loser so the
+			// surviving primary's error can't mask it (see latchDeterministicLoser).
+			d.latchDeterministicLoser(backupProvider, errMsg)
 			return d.raceBackupErrWaitPrimary(provider, pr)
 
 		case <-raceDeadline.C:
@@ -1382,7 +1516,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 				case errMsg2 := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
-					d.setLastInferenceError(errMsg2)
+					d.setLastInferenceError(provider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.updateSpeculativeFailure(pr, errMsg2)
 					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, &d.heldChunks)
@@ -1407,7 +1541,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			remainingPrimary.Stop()
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
-			d.setLastInferenceError(errMsg2)
+			d.setLastInferenceError(provider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg2)
 			d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, &d.heldChunks)
@@ -1480,7 +1614,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 				case errMsg2 := <-backupPR.ErrorCh:
 					d.excludeProviders[backupProvider.ID] = struct{}{}
 					s.cancelDispatch(backupProvider, backupPR)
-					d.setLastInferenceError(errMsg2)
+					d.setLastInferenceError(backupProvider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
 					d.updateSpeculativeFailure(backupPR, errMsg2)
 					d.noteDispatchRetry(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, &backupHeld)
@@ -1510,7 +1644,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			backupDeadline.Stop()
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			s.cancelDispatch(backupProvider, backupPR)
-			d.setLastInferenceError(errMsg2)
+			d.setLastInferenceError(backupProvider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
 			d.updateSpeculativeFailure(backupPR, errMsg2)
 			s.noteDispatchProviderError(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, &backupHeld)
@@ -1577,7 +1711,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 				case errMsg2 := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
-					d.setLastInferenceError(errMsg2)
+					d.setLastInferenceError(provider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, &d.heldChunks)
 					d.provider = nil
@@ -1596,7 +1730,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			primaryDeadline.Stop()
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
-			d.setLastInferenceError(errMsg2)
+			d.setLastInferenceError(provider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg2)
 			s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, errMsg2.Error, &d.heldChunks)
@@ -1696,7 +1830,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 				case errMsg := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
-					d.setLastInferenceError(errMsg)
+					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					s.logger.Warn("provider failed after accepting request, retrying",
 						"request_id", d.requestID,
@@ -1728,7 +1862,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			chunkTimer.Stop()
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
-			d.setLastInferenceError(errMsg)
+			d.setLastInferenceError(provider, errMsg)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			s.logger.Warn("provider failed after accepting request, retrying",
 				"request_id", d.requestID,
@@ -1868,6 +2002,14 @@ func (d *dispatchState) run() {
 		// ---- Speculative TTFT-aware first-chunk wait ----
 		switch d.waitFirstChunk() {
 		case outcomeRetry:
+			// Post-dispatch provider failure. Stop failing over when the request is
+			// unservable (deterministic context overflow, or a capacity transient
+			// past maxCapacityClassRetries) so we don't storm all 64 providers; the
+			// exhausted ladder then emits one uptime-neutral 429. Faults/timeouts
+			// return false and keep failing over as before.
+			if d.shouldStopFailover() {
+				goto exhausted
+			}
 			continue
 		case outcomeClientGone:
 			return
@@ -1875,6 +2017,9 @@ func (d *dispatchState) run() {
 			// Provider accepted or held preamble but hasn't produced content.
 			switch d.waitAccepted() {
 			case outcomeRetry:
+				if d.shouldStopFailover() {
+					goto exhausted
+				}
 				continue
 			case outcomeClientGone:
 				return
@@ -1893,7 +2038,18 @@ exhausted:
 		keepaliveCommitted := d.keepalive.takeOver()
 		statusCode := d.lastErrCode
 		reason := "dispatch_exhausted"
-		if statusCode == 0 {
+		if d.unservable {
+			// The loop stopped early because no provider can serve this request
+			// (deterministic context overflow, or a capacity transient that
+			// exhausted maxCapacityClassRetries). We already know the verdict, so
+			// skip the quick-capacity probe and the 5xx→429 reclassification below:
+			// emit a single uptime-neutral 429. This is the proactive complement to
+			// the always-on backstop — it converts the request BEFORE storming the
+			// fleet, not after 64 attempts.
+			statusCode = http.StatusTooManyRequests
+			reason = rejectionReasonOversized
+			s.ddIncr("routing.oversized_request_rejected", []string{"model:" + d.model, "stage:dispatch"})
+		} else if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
 			_, capRej, _ := s.registry.QuickCapacityCheckForRequest(d.model, d.estimatedPromptTokens, d.requestedMaxTokens, registry.RequestTraits{HasTools: d.hasTools}, d.requiresVision, d.allowedProviderSerials...)
@@ -1936,7 +2092,16 @@ exhausted:
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			s.recordRejection(d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000))
+			info := d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000)
+			if d.unservable {
+				// No provider could serve this request (it exceeds the model
+				// context, identical fleet-wide). Mark it not-servable so the
+				// rejection ledger's could_have_served reflects reality — candidates
+				// existed but every one would reject — mirroring the preflight gate.
+				info.servabilityComputed = true
+				info.candidateCount = 0
+			}
+			s.recordRejection(info)
 		} else {
 			s.recordRejection(d.rejectionInfo("dispatch", reason, statusCode, 0))
 		}

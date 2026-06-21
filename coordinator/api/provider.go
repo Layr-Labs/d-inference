@@ -3148,16 +3148,6 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 	}
 }
 
-// attachCachedMDAProof tries to satisfy the Apple Device Attestation (MDA) leg
-// from the durable cert chain restored on reconnect, WITHOUT a fresh
-// DevicePropertiesAttestation round-trip. Apple rate-limits a fresh attestation to
-// ≈1/device/7d and it rides the same throttled MicroMDM→APNs channel as
-// SecurityInfo, so re-fetching on every reconnect is the reason restarted
-// providers show "Apple Device Attestation incomplete". The cached chain is
-// re-verified here against Apple's pinned Enterprise Attestation Root CA (an
-// expired or tampered chain is rejected) and re-bound to THIS connection's SE key
-// via the FreshnessCode OID (anti-relay). Returns true if a valid, bound proof was
-// attached — which requires the provider to already hold hardware trust.
 // stageDurableMDAChain recovers a previously-earned Apple MDA cert chain from the
 // store (by serial) and stages it on the provider as a reuse candidate for this
 // reconnect. The store record survives provider disconnect, so this works under
@@ -3168,13 +3158,28 @@ func (s *Server) stageDurableMDAChain(provider *registry.Provider, serial string
 	if s.store == nil || serial == "" {
 		return
 	}
-	rec, err := s.store.GetProviderBySerial(context.Background(), serial)
+	// Bound the store read: this runs on the attestation path, so a slow or
+	// unavailable Postgres must not stall it — on timeout we skip staging and fall
+	// back to a fresh attestation.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rec, err := s.store.GetProviderBySerial(ctx, serial)
 	if err != nil || rec == nil || len(rec.MDACertChain) == 0 {
 		return
 	}
 	provider.StageMDAChainFromJSON(rec.MDACertChain)
 }
 
+// attachCachedMDAProof tries to satisfy the Apple Device Attestation (MDA) leg
+// from the durable cert chain restored on reconnect, WITHOUT a fresh
+// DevicePropertiesAttestation round-trip. Apple rate-limits a fresh attestation to
+// ≈1/device/7d and it rides the same throttled MicroMDM→APNs channel as
+// SecurityInfo, so re-fetching on every reconnect is the reason restarted
+// providers show "Apple Device Attestation incomplete". The cached chain is
+// re-verified here against Apple's pinned Enterprise Attestation Root CA (an
+// expired or tampered chain is rejected) and re-bound to THIS connection's SE key
+// via the FreshnessCode OID (anti-relay). Returns true if a valid, bound proof was
+// attached — which requires the provider to already hold hardware trust.
 func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) bool {
 	chain := provider.StagedMDAChain()
 	if len(chain) == 0 {
@@ -3197,6 +3202,11 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 	if attestResult.PublicKey == "" || len(mdaResult.FreshnessCode) == 0 {
 		return false
 	}
+	// INVARIANT: this must use the exact same input as the fresh path's nonce
+	// (verifyAppleDeviceAttestation computes expectedFreshness = sha256([]byte(
+	// attestResult.PublicKey)) and sends its base64 as the DeviceAttestationNonce).
+	// Apple echoes the decoded nonce as the FreshnessCode, so a chain earned fresh
+	// has FreshnessCode == this digest. Keep the two formulas identical.
 	want := sha256.Sum256([]byte(attestResult.PublicKey))
 	if !bytes.Equal(mdaResult.FreshnessCode, want[:]) {
 		return false

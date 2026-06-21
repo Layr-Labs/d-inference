@@ -1806,11 +1806,22 @@ func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSeri
 // provider actually serve this build right now" — the same gates
 // snapshotProviderLocked applies (advertises the build + in catalog, not
 // offline/untrusted, public, trust ≥ floor, runtime verified, private-text
-// capable, fresh challenge, AND the model fits the provider's RAM), minus the
-// per-request capacity/headroom checks. Cold-but-healthy providers pass (no warm
-// slot required — they load on first demand). Caller holds r.mu (RLock) and p.mu.
+// capable, fresh challenge, the dedicated-box rule, AND the model fits the
+// provider's RAM), minus the per-request capacity/headroom checks. Cold-but-
+// healthy providers pass (no warm slot required — they load on first demand).
+// Caller holds r.mu (RLock) and p.mu.
 func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
 	if !r.providerServesCatalogModelLocked(p, buildID) {
+		return false
+	}
+	// Dedicated-box isolation, mirroring providerPassesRoutingGatesLockedEx so
+	// alias routability (and rollout/drop measurement) matches actual dispatch
+	// routability: a dedicated-family build is only routable on a provider
+	// dedicated to that family. Without this, an alias whose Desired build is
+	// advertised only by a mixed box would resolve to Desired (then 429 at
+	// dispatch) instead of failing over to a Previous build on a dedicated box.
+	// allowPrivate marks the owner self-route context, exempt like selfRouteOwner.
+	if !allowPrivate && r.providerExcludedByDedicatedRuleLocked(p, buildID) {
 		return false
 	}
 	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {

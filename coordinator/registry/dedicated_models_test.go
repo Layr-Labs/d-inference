@@ -329,6 +329,41 @@ func TestDedicatedWarmDetectionIgnoresMixedBox(t *testing.T) {
 	}
 }
 
+// During a staged rollout, if a dedicated alias's Desired build is advertised
+// only by a mixed-catalog box (not yet on a dedicated box) while the Previous
+// build still has a dedicated box, alias resolution must fail over to Previous —
+// not resolve to Desired and then 429 at dispatch. This is the alias-routability
+// drift Codex flagged: providerCanRouteBuildLocked must apply the dedicated gate.
+func TestDedicatedAliasFailsOverToPreviousOnDedicatedBox(t *testing.T) {
+	desired := gemmaBuild      // would-be new build, only on a mixed box here
+	previous := gemmaBuildSmol // stable build on a dedicated box
+
+	setup := func(reg *Registry) {
+		mixed := makeSchedulerProvider(t, reg, "mixed", desired, 200)
+		addAdvertisedModel(mixed, qwenBuild) // Desired's only advertiser is mixed
+		_ = makeSchedulerProvider(t, reg, "dedicated-prev", previous, 80)
+		reg.SetModelAliases(map[string]AliasTarget{
+			"gemma-4-26b": {Desired: desired, Previous: previous},
+		})
+	}
+
+	// Baseline (rule OFF): Desired is routable on the mixed box → resolves Desired.
+	off := New(testLogger())
+	setup(off)
+	if build, _, _ := off.ResolveModel("gemma-4-26b"); build != desired {
+		t.Fatalf("rule off: resolved %q, want desired %q", build, desired)
+	}
+
+	// Rule ON: Desired only on a mixed box → not routable → fail over to the
+	// dedicated Previous box instead of resolving Desired (which would 429).
+	on := New(testLogger())
+	on.SetDedicatedModels([]string{"gemma-4"})
+	setup(on)
+	if build, isAlias, ok := on.ResolveModel("gemma-4-26b"); !ok || !isAlias || build != previous {
+		t.Fatalf("rule on: resolved %q (isAlias=%v ok=%v), want previous %q", build, isAlias, ok, previous)
+	}
+}
+
 func TestIsDedicatedModel(t *testing.T) {
 	reg := New(testLogger())
 	if reg.IsDedicatedModel(gemmaBuild) {

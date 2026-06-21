@@ -43,6 +43,9 @@ const (
 	TypeLoadModelStatus         = "load_model_status"
 	TypePrefetchModelStatus     = "prefetch_model_status"
 	TypeModelsUpdate            = "models_update"
+	// TypeAssignModelStatus is the provider's reply to an AssignModelMessage,
+	// reporting the per-model pool-assignment lifecycle (DAR-345).
+	TypeAssignModelStatus = "assign_model_status"
 
 	// Coordinator → Provider.
 	TypeInferenceRequest     = "inference_request"
@@ -53,6 +56,11 @@ const (
 	TypePrefetchModel        = "prefetch_model"
 	TypeDesiredModels        = "desired_models"
 	TypeTrustStatus          = "trust_status"
+	// TypeAssignModel binds a managed provider to exactly one public model
+	// (DAR-345 model pools): drain the current model, unload every other
+	// resident model, then load+warm the assigned one. Distinct from
+	// TypeLoadModel (additive warm, no exclusivity).
+	TypeAssignModel = "assign_model"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -71,6 +79,26 @@ const (
 // the full cooldown. Mirrored in
 // provider-swift/Sources/ProviderCore/Protocol/Types.swift.
 const ProviderDrainingForUpdate = "provider draining for update"
+
+// AssignModelStatus is the lifecycle a provider reports while reconciling an
+// AssignModelMessage (DAR-345). The provider walks draining → loading →
+// succeeded (warm + servable) or failed. Distinct from LoadModelStatus*: an
+// assignment includes draining in-flight work and unloading every other model.
+const (
+	AssignModelStatusDraining  = "draining"
+	AssignModelStatusLoading   = "loading"
+	AssignModelStatusSucceeded = "succeeded"
+	AssignModelStatusFailed    = "failed"
+)
+
+// ProviderSwitchingModel is the well-known transient error reason a managed
+// provider attaches to inference / load_model rejections while it is draining
+// + swapping to a newly-assigned pool model (DAR-345). Mirrors
+// ProviderDrainingForUpdate: the coordinator matches this exact string to treat
+// the rejection as a brief transition (short reroute/backoff), not a genuine
+// failure earning the full cooldown. Mirrored in
+// provider-swift/Sources/ProviderCore/Protocol/Types.swift.
+const ProviderSwitchingModel = "provider switching model"
 
 // PrefetchModelStatus is the lifecycle state reported by a provider in
 // response to a PrefetchModelMessage. Unlike a load, a prefetch only
@@ -385,6 +413,34 @@ type LoadModelStatusMessage struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// AssignModelMessage binds a managed provider to a single public model (DAR-345
+// model pools). On receipt the provider drains in-flight work, unloads every
+// resident model that is not ModelID, then loads + warms ModelID, refusing to
+// opportunistically load any other model while the assignment stands. Epoch is a
+// monotonic per-provider generation: the provider ignores an assignment whose
+// epoch is older than one it has already applied, and echoes Epoch in its
+// AssignModelStatusMessage so the coordinator can discard stale acks.
+//
+// Sent only to Swift-runtime providers at or above the assign-model feature
+// version (a pre-feature provider's strict decoder throws on unknown types).
+type AssignModelMessage struct {
+	Type    string `json:"type"`
+	ModelID string `json:"model_id"`
+	Epoch   uint64 `json:"epoch"`
+}
+
+// AssignModelStatusMessage is the provider's reply to an AssignModelMessage.
+// Status is one of AssignModelStatus{Draining,Loading,Succeeded,Failed}. Epoch
+// echoes the assignment generation the provider is acting on. On failure, Error
+// carries a human-readable reason (e.g. "GPU OOM", "model not in local cache").
+type AssignModelStatusMessage struct {
+	Type    string `json:"type"`
+	ModelID string `json:"model_id"`
+	Epoch   uint64 `json:"epoch"`
+	Status  string `json:"status"`
+	Error   string `json:"error,omitempty"`
+}
+
 // PrefetchModelMessage instructs a provider to download AND verify a model
 // build in the background WITHOUT loading it into GPU memory and without
 // disrupting whatever model it is currently serving. It is the transport
@@ -625,6 +681,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg LoadModelStatusMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal load_model_status: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeAssignModelStatus:
+		var msg AssignModelStatusMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal assign_model_status: %w", err)
 		}
 		pm.Payload = &msg
 

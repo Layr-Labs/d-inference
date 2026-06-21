@@ -307,6 +307,39 @@ import Testing
     #expect(failedObj["error"] as? String == "GPU OOM")
 }
 
+@Test func assignModelMessagesRoundTripWithCoordinator() throws {
+    // Coordinator → provider pool assignment (decode a Go-emitted wire form).
+    let goAssign = #"{"type":"assign_model","model_id":"gpt-oss-20b","epoch":7}"#
+    let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goAssign)
+    guard case .assignModel(let a) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(a.modelId == "gpt-oss-20b")
+    #expect(a.epoch == 7)
+
+    // Provider → coordinator lifecycle replies (all four states), echoing epoch.
+    let replies: [ProviderMessage] = [
+        .assignModelStatus(ProviderMessage.AssignModelStatus(modelId: "gpt-oss-20b", epoch: 7, status: .draining)),
+        .assignModelStatus(ProviderMessage.AssignModelStatus(modelId: "gpt-oss-20b", epoch: 7, status: .loading)),
+        .assignModelStatus(ProviderMessage.AssignModelStatus(modelId: "gpt-oss-20b", epoch: 7, status: .succeeded)),
+        .assignModelStatus(ProviderMessage.AssignModelStatus(modelId: "gpt-oss-20b", epoch: 7, status: .failed, error: "GPU OOM")),
+    ]
+    for reply in replies {
+        let encoded = try ProviderProtocolCodec.encodeProviderMessage(reply)
+        let object = try jsonObject(encoded)
+        #expect(object["type"] as? String == "assign_model_status")
+        #expect(object["model_id"] as? String == "gpt-oss-20b")
+        #expect((object["epoch"] as? NSNumber)?.uint64Value == 7)
+        let roundTripped = try ProviderProtocolCodec.decodeProviderMessage(from: encoded)
+        #expect(roundTripped == reply)
+    }
+
+    // Failed status surfaces the error string on the wire.
+    let failedObj = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(replies[3]))
+    #expect(failedObj["status"] as? String == "failed")
+    #expect(failedObj["error"] as? String == "GPU OOM")
+}
+
 @Test func prefetchModelMessagesRoundTripWithCoordinator() throws {
     // Coordinator → provider prefetch request (decode a Go-emitted wire form).
     let goPrefetchRequest = #"{"type":"prefetch_model","model_id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","priority":5}"#

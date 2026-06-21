@@ -282,3 +282,18 @@ func (s *Server) providerSupportsDesiredModels(backend, version string) bool {
 	}
 	return !semverLess(version, minProviderVersionForDesiredModels)
 }
+
+// providerSupportsModelAssignment reports whether a provider can receive the
+// assign_model message (DAR-345 model pools): Swift backend, reported version
+// at or above minProviderVersionForModelAssignment. No version → too old
+// (fail-closed), so an un-upgraded provider is never pushed an assignment and
+// keeps its current multi-slot behavior.
+func (s *Server) providerSupportsModelAssignment(backend, version string) bool {
+	if !registry.BackendUsesSwiftRuntime(backend) {
+		return false
+	}
+	if version == "" {
+		return false
+	}
+	return !semverLess(version, minProviderVersionForModelAssignment)
+}

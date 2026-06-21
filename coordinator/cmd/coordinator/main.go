@@ -191,6 +191,17 @@ func main() {
 	if cfg.RegistryCfg.WarmPool.Enabled {
 		logger.Info("warm-pool controller enabled", "observe_only", cfg.RegistryCfg.WarmPool.ObserveOnly, "interval", cfg.RegistryCfg.WarmPool.Interval.String())
 	}
+	// DAR-345 model pools: enable the routing isolation gate + pool_exhausted 429
+	// admission, and surface whether the placement controller is computing
+	// (shadow) or enforcing (pushing assign_model). All default-off.
+	reg.SetAssignmentGateEnabled(cfg.RegistryCfg.WarmPool.AssignmentGateEnabled)
+	if cfg.RegistryCfg.WarmPool.AssignmentGateEnabled || cfg.RegistryCfg.WarmPool.PlacementEnabled {
+		logger.Info("model-pool placement",
+			"assignment_gate", cfg.RegistryCfg.WarmPool.AssignmentGateEnabled,
+			"placement_enabled", cfg.RegistryCfg.WarmPool.PlacementEnabled,
+			"placement_enforce", cfg.RegistryCfg.WarmPool.PlacementEnforce,
+		)
+	}
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
 	// Stop the routing-telemetry sink's worker pool on shutdown. Deferred so it

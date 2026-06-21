@@ -34,6 +34,11 @@ public enum CoordinatorEvent: Sendable {
     case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
+    /// Coordinator-driven exclusive pool assignment (DAR-345). Provider drains,
+    /// unloads every other model, then loads + warms `modelId`, refusing other
+    /// models while assigned. Reply with `assignModelStatus` outbound messages
+    /// (echoing `epoch`). `epoch` is the monotonic assignment generation.
+    case assignModel(modelId: String, epoch: UInt64)
 }
 
 // MARK: - Shared State
@@ -396,6 +401,7 @@ public enum OutboundMessage: Sendable {
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case assignModelStatus(modelId: String, epoch: UInt64, status: ProviderMessage.AssignModelStatus.Status, error: String?)
     case prefetchModelStatus(
         modelId: String,
         status: ProviderMessage.PrefetchModelStatus.Status,
@@ -950,6 +956,10 @@ public actor CoordinatorClient {
                 status: ts.status,
                 reason: ts.reason
             ))
+
+        case .assignModel(let a):
+            logger.info("Received coordinator-driven pool assignment: \(a.modelId) (epoch=\(a.epoch))")
+            eventContinuation?.yield(.assignModel(modelId: a.modelId, epoch: a.epoch))
         }
     }
 

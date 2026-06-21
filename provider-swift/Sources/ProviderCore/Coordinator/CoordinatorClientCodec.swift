@@ -158,6 +158,14 @@ public enum CoordinatorClientCodec {
                 error: error
             ))
 
+        case .assignModelStatus(let modelId, let epoch, let status, let error):
+            return .assignModelStatus(ProviderMessage.AssignModelStatus(
+                modelId: modelId,
+                epoch: epoch,
+                status: status,
+                error: error
+            ))
+
         case .prefetchModelStatus(let modelId, let status, let bytesDone, let bytesTotal, let error):
             return .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
                 modelId: modelId,

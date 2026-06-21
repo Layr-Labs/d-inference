@@ -8,6 +8,14 @@ import Foundation
 /// (ProviderDrainingForUpdate) — keep the two in sync.
 public let providerDrainingForUpdateReason = "provider draining for update"
 
+/// Well-known transient error reason a managed provider attaches to rejections
+/// while it is draining + swapping to a newly-assigned pool model (DAR-345).
+/// Like `providerDrainingForUpdateReason`, the coordinator matches this exact
+/// string to treat the rejection as a brief transition (reroute/backoff), not a
+/// genuine failure. Mirrored in coordinator/protocol/messages.go
+/// (ProviderSwitchingModel) — keep the two in sync.
+public let providerSwitchingModelReason = "provider switching model"
+
 public struct HardwareInfo: Codable, Sendable, Equatable {
     public var machineModel: String
     public var chipName: String

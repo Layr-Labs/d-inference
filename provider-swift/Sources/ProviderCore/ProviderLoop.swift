@@ -193,6 +193,19 @@ public actor ProviderLoop {
         return max(1, min(configuredMaxModelSlots, live))
     }
 
+    /// DAR-345 model-pool assignment. When non-nil, the coordinator has bound
+    /// this machine to exactly one public model: the provider keeps only this
+    /// model loaded/warm and REFUSES to load any other (refuse-don't-swap, vs
+    /// the legacy LRU swap). `assignmentEpoch` is the monotonic generation of the
+    /// latest applied/accepted assignment; a stale assign_model (older epoch) is
+    /// ignored. nil = unmanaged (legacy multi-slot behaviour). Actor-isolated.
+    private var assignedModel: String?
+    private var assignmentEpoch: UInt64 = 0
+    /// In-flight pool switch, run off the event loop so a long drain/cold-load
+    /// doesn't stall cancels or the attestation challenge. A newer assign_model
+    /// cancels the prior switch (the epoch guards make the cancel safe).
+    private var assignmentTask: Task<Void, Never>?
+
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
     private var requestToModel: [String: String] = [:]
@@ -724,6 +737,15 @@ public actor ProviderLoop {
 
                 case .loadModel(let modelId):
                     handleLoadModelRequest(modelId: modelId, send: send)
+
+                case .assignModel(let modelId, let epoch):
+                    // Run off the event loop: a switch's drain (≤30s) + cold load
+                    // can take a while, and blocking here would stall cancels and
+                    // the attestation challenge. A newer assignment cancels the
+                    // prior in-flight switch; the epoch guards keep that safe.
+                    assignmentTask?.cancel()
+                    let me = self
+                    assignmentTask = Task { await me.handleAssignModelRequest(modelId: modelId, epoch: epoch, send: send) }
 
                 case .prefetchModel(let modelId, let priority):
                     if isDrainingForUpdate {
@@ -1696,6 +1718,83 @@ public actor ProviderLoop {
         }
     }
 
+    // MARK: - Coordinator-driven pool assignment (DAR-345)
+
+    /// Max time to wait for in-flight work on the outgoing models to drain before
+    /// unloading them during a pool switch. Bounded like the update drain so a
+    /// stuck stream cannot wedge the switch forever.
+    private static let assignDrainTimeout: Duration = .seconds(30)
+
+    /// Handle an `assign_model` push: bind this machine to exactly one model.
+    /// Walks draining → unload-others → loading → succeeded (or failed), echoing
+    /// `epoch` so the coordinator can discard a stale ack. Idempotent for an
+    /// already-warm assigned model. Reuses waitForInflightDrain + unloadModel +
+    /// ensureModelLoaded.
+    private func handleAssignModelRequest(modelId: String, epoch: UInt64, send: SendHandle) async {
+        // Stale assignment (an older generation than one already applied) — ignore.
+        if epoch < assignmentEpoch {
+            logger.info("Ignoring stale assign_model for \(modelId): epoch \(epoch) < current \(assignmentEpoch)")
+            return
+        }
+        if isShuttingDown {
+            send.send(.assignModelStatus(modelId: modelId, epoch: epoch, status: .failed, error: "provider is shutting down"))
+            return
+        }
+        if isDrainingForUpdate {
+            send.send(.assignModelStatus(modelId: modelId, epoch: epoch, status: .failed, error: providerSwitchingModelReason))
+            return
+        }
+
+        // Accept the assignment up front so refuse-don't-swap + the idle monitor
+        // immediately treat this as the single pool model.
+        assignmentEpoch = epoch
+        assignedModel = modelId
+        logger.info("Pool assignment accepted: \(modelId) (epoch=\(epoch))")
+
+        // Already warm + serving the assigned model: just make sure nothing else
+        // is resident, then ack succeeded. If OTHER models ARE resident (the
+        // co-residency this assignment eliminates), drain in-flight work first so
+        // unloadModelsExcept doesn't abort an active stream on those models.
+        if modelSlots[modelId] != nil, !modelsUnloading.contains(modelId) {
+            let othersResident = modelSlots.keys.contains { $0 != modelId && !modelsUnloading.contains($0) }
+            if othersResident {
+                send.send(.assignModelStatus(modelId: modelId, epoch: epoch, status: .draining, error: nil))
+                _ = await waitForInflightDrain(timeout: Self.assignDrainTimeout)
+                guard assignmentEpoch == epoch else { return } // superseded mid-drain
+            }
+            await unloadModelsExcept(modelId)
+            send.send(.assignModelStatus(modelId: modelId, epoch: epoch, status: .succeeded, error: nil))
+            return
+        }
+
+        send.send(.assignModelStatus(modelId: modelId, epoch: epoch, status: .draining, error: nil))
+        _ = await waitForInflightDrain(timeout: Self.assignDrainTimeout)
+        guard assignmentEpoch == epoch else { return } // superseded mid-drain
+        await unloadModelsExcept(modelId)
+
+        send.send(.assignModelStatus(modelId: modelId, epoch: epoch, status: .loading, error: nil))
+        do {
+            try await ensureModelLoaded(modelId: modelId)
+            guard assignmentEpoch == epoch else { return } // superseded mid-load
+            send.send(.assignModelStatus(modelId: modelId, epoch: epoch, status: .succeeded, error: nil))
+        } catch is CancellationError {
+            return
+        } catch {
+            logger.warning("Pool assignment load failed for \(modelId): \(error.localizedDescription)")
+            send.send(.assignModelStatus(modelId: modelId, epoch: epoch, status: .failed, error: error.localizedDescription))
+        }
+    }
+
+    /// Unload every resident model that is not `keep` (the assigned model),
+    /// enforcing one-model-per-machine. Called after a bounded drain.
+    private func unloadModelsExcept(_ keep: String) async {
+        let toUnload = modelSlots.keys.filter { $0 != keep && !modelsUnloading.contains($0) }
+        for model in toUnload {
+            logger.info("Pool switch: unloading non-assigned model \(model)")
+            await unloadModel(model)
+        }
+    }
+
     // MARK: - Coordinator-driven background prefetch (Layer 3)
 
     /// Build the prefetch coordinator, wiring the pre-check (already
@@ -1974,6 +2073,16 @@ public actor ProviderLoop {
 
     /// Test seam: whether a model id is currently advertised.
     func isModelAdvertised(_ id: String) -> Bool { advertisedModels[id] != nil }
+
+    /// Test seam: drive the DAR-345 pool-assignment handler directly (the real
+    /// entry point is private and otherwise only reached via the coordinator
+    /// event loop).
+    func handleAssignModelForTesting(modelId: String, epoch: UInt64, send: SendHandle) async {
+        await handleAssignModelRequest(modelId: modelId, epoch: epoch, send: send)
+    }
+
+    /// Test seam: the currently-assigned pool model (nil = unmanaged) + its epoch.
+    func assignmentForTesting() -> (model: String?, epoch: UInt64) { (assignedModel, assignmentEpoch) }
 
     /// Test seam: recorded weight hash for a model (nil when unknown).
     func modelHashForTesting(_ id: String) -> String? { modelHashes[id] }
@@ -2650,6 +2759,19 @@ public actor ProviderLoop {
     private func ensureModelLoaded(modelId: String) async throws {
         if isShuttingDown {
             throw CancellationError()
+        }
+
+        // DAR-345 refuse-don't-swap: a managed machine (assignedModel set) serves
+        // ONLY its assigned model. A request for any other model is refused —
+        // checked FIRST so an already-resident non-assigned model (e.g. mid-switch,
+        // or a local/self-route path) is refused rather than served, and so the
+        // legacy LRU eviction below can never swap a different model in. The
+        // coordinator's isolation gate normally prevents non-assigned routing
+        // reaching here; this is the provider-side backstop.
+        if let assigned = assignedModel, modelId != assigned {
+            throw InferenceError.invalidModelDirectory(
+                "model '\(modelId)' is not this machine's assigned pool model '\(assigned)'"
+            )
         }
 
         while modelsUnloading.contains(modelId) {

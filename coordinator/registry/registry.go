@@ -334,6 +334,14 @@ type Provider struct {
 	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
 
+	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
+	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
+	// only: it is surfaced as a verified proof (MDAVerified/MDACertChain/MDAResult)
+	// solely after attachCachedMDAProof re-verifies it against Apple's pinned root
+	// AND re-binds it to this connection's SE key at hardware-grant time. Kept
+	// unexported so it never serializes to the store or the attestation endpoint.
+	restoredMDAChain [][]byte
+
 	// MDMFailureReason records the last MDM verification outcome for this
 	// connection, bucketed for observability: "" (verified/none),
 	// "device-not-found", "found-not-enrolled", "securityinfo-timeout",
@@ -369,6 +377,20 @@ type Provider struct {
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
 	CurrentModel string   // model currently being served
+
+	// Model pool assignment (DAR-345). When AssignedModel != "", the coordinator
+	// has bound this machine to exactly one public model: the scheduler routes
+	// only AssignedModel to it (see providerPassesRoutingGatesLockedEx) and a
+	// managed provider refuses to load any other model. "" = unmanaged (legacy /
+	// dev multi-slot). AssignmentEpoch is a monotonic per-provider generation
+	// echoed by the provider so stale assign_model_status acks are discarded.
+	// AssignmentState is "" (unmanaged) or one of AssignmentState{Assigned,
+	// Draining,Loading}; only Assigned is routing-eligible. AssignedAt stamps the
+	// last assignment change for the min-dwell anti-thrash guard. Guarded by p.mu.
+	AssignedModel   string
+	AssignmentEpoch uint64
+	AssignmentState string
+	AssignedAt      time.Time
 
 	// Live system metrics from heartbeats
 	SystemMetrics protocol.SystemMetrics
@@ -626,6 +648,45 @@ func (p *Provider) SetMDAProofIfHardware(certChain [][]byte, mdaResult *attestat
 	p.MDACertChain = certChain
 	p.MDAResult = mdaResult
 	return true
+}
+
+// SetMDAProofIfHardwareBound atomically attaches an Apple Device Attestation proof
+// IFF the provider currently holds hardware trust AND the proof binds to THIS
+// machine — either by SE-key freshness (seKeyBound, the FreshnessCode OID equals
+// SHA-256 of this connection's SE public key) OR by a matching attested serial.
+// Returns true if attached. Unlike SetMDAProofIfHardware (which requires a serial
+// match), this accepts an SE-key binding so a privacy-preserving attestation that
+// omits the serial can still be reused. Same single-lock TOCTOU/race rationale as
+// SetMDAProofIfHardware.
+func (p *Provider) SetMDAProofIfHardwareBound(certChain [][]byte, mdaResult *attestation.MDAResult, seKeyBound bool) bool {
+	if mdaResult == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.TrustLevel != TrustHardware {
+		return false
+	}
+	serialOK := mdaResult.DeviceSerial != "" && p.AttestationResult != nil &&
+		mdaResult.DeviceSerial == p.AttestationResult.SerialNumber
+	if !seKeyBound && !serialOK {
+		return false
+	}
+	p.MDAVerified = true
+	p.MDACertChain = certChain
+	p.MDAResult = mdaResult
+	p.SEKeyBound = seKeyBound
+	return true
+}
+
+// StagedMDAChain returns the durable MDA cert chain restored from the store for
+// this reconnect (nil if none). Thread-safe. The chain is a CANDIDATE only: the
+// caller must re-verify it against Apple's root and re-bind it to the live SE key
+// before trusting it (see api.attachCachedMDAProof).
+func (p *Provider) StagedMDAChain() [][]byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.restoredMDAChain
 }
 
 // SetLastChallengeVerified updates the challenge timestamp (thread-safe).
@@ -1111,6 +1172,23 @@ type Registry struct {
 	warmPool             *warmPoolController
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
+	// assignModelSender is a test seam for SendAssignModel (DAR-345). Nil uses the
+	// provider WebSocket.
+	assignModelSender func(providerID, modelID string, epoch uint64) error
+
+	// manageableProvider gates which providers the placement controller may bind
+	// to a pool (DAR-345): the api wires it to providerSupportsModelAssignment so
+	// pre-feature providers stay unmanaged. nil = permissive (test default).
+	// Guarded by r.mu.
+	manageableProvider func(backend, version string) bool
+
+	// assignmentGateEnabled turns on DAR-345 model-pool isolation in the routing
+	// gate: when true, a managed provider (AssignedModel set) is routing-eligible
+	// only for its assigned model and only while AssignmentStateAssigned. An
+	// explicit, reversible kill switch independent of whether the placement
+	// controller has pushed assignments. atomic so the hot routing path reads it
+	// without caring which lock is held.
+	assignmentGateEnabled atomic.Bool
 
 	// onHardUntrust is an optional hook fired (off the registry locks) whenever a
 	// provider is HARD-untrusted (a non-recoverable security deroute). The api
@@ -1154,6 +1232,33 @@ const dispatchLoadCooldownTTL = 2 * time.Minute
 type modelLoadAction struct {
 	providerID string
 	modelID    string
+}
+
+// Pool-assignment lifecycle states (DAR-345). Stored on Provider.AssignmentState.
+// Only AssignmentStateAssigned is routing-eligible; Draining/Loading are
+// transitional and excluded by the scheduler isolation gate. "" means the
+// provider is unmanaged (no pool assignment).
+const (
+	AssignmentStateAssigned = "assigned"
+	AssignmentStateDraining = "draining"
+	AssignmentStateLoading  = "loading"
+	// AssignmentStateFailed marks an assignment whose load failed. The provider
+	// stays bound to AssignedModel (so it is NOT eligible for any other model —
+	// no spillover) but is not routing-eligible until a later assignment
+	// succeeds; the placement controller reconsiders it after the failed-load
+	// cooldown elapses.
+	AssignmentStateFailed = "failed"
+)
+
+// ProviderAssignment is a read-only snapshot of a provider's pool assignment
+// (DAR-345), used by the placement controller, the scheduler gate, and
+// observability without exposing the live Provider under lock.
+type ProviderAssignment struct {
+	ProviderID string
+	Model      string
+	Epoch      uint64
+	State      string
+	AssignedAt time.Time
 }
 
 // New creates a new Registry.
@@ -1331,6 +1436,23 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	// this connection.
 	p.MDAVerified = false
 	p.ACMEVerified = false
+
+	// Stage the durable Apple-signed MDA cert chain (if the store has one) for
+	// local re-verification at this connection's hardware-grant. We deliberately
+	// do NOT set MDAVerified/MDACertChain here — the proof is surfaced only after
+	// attachCachedMDAProof re-verifies it against Apple's pinned root AND re-binds
+	// it to this connection's SE key. This lets a reconnect/restart reuse a
+	// still-valid attestation instead of forcing a fresh, Apple-rate-limited
+	// (≈1/device/7d) DevicePropertiesAttestation round-trip over the throttled
+	// MicroMDM→APNs channel — the root cause of providers showing "Apple Device
+	// Attestation incomplete" after a restart.
+	p.restoredMDAChain = nil
+	if len(rec.MDACertChain) > 0 {
+		var chain [][]byte
+		if err := json.Unmarshal(rec.MDACertChain, &chain); err == nil && len(chain) > 0 {
+			p.restoredMDAChain = chain
+		}
+	}
 
 	// Restore challenge state, but never move a fresh live verification
 	// backwards. Registration attestation sets LastChallengeVerified=now before
@@ -2743,6 +2865,192 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		"model_id", modelID,
 	)
 	return nil
+}
+
+// SendAssignModel binds a managed provider to a single public model (DAR-345
+// model pools). The provider drains in-flight work, unloads every other
+// resident model, then loads + warms modelID, refusing other models while the
+// assignment stands. Like SendLoadModel this is fire-and-forget — the provider
+// replies asynchronously with assign_model_status messages echoing epoch. The
+// caller is responsible for version-gating (assign_model is only understood by
+// Swift providers at or above the assign-model feature version).
+func (r *Registry) SendAssignModel(providerID, modelID string, epoch uint64) error {
+	if r.assignModelSender != nil {
+		if err := r.assignModelSender(providerID, modelID, epoch); err != nil {
+			return err
+		}
+		r.logger.Info("sent assign_model to provider", "provider_id", providerID, "model_id", modelID, "epoch", epoch)
+		return nil
+	}
+
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerID)
+	}
+
+	msg := protocol.AssignModelMessage{
+		Type:    protocol.TypeAssignModel,
+		ModelID: modelID,
+		Epoch:   epoch,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal assign_model message: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
+	defer cancel()
+	if err := p.WriteText(ctx, data); err != nil {
+		return fmt.Errorf("failed to send assign_model to provider %q: %w", providerID, err)
+	}
+
+	r.logger.Info("sent assign_model to provider",
+		"provider_id", providerID,
+		"model_id", modelID,
+		"epoch", epoch,
+	)
+	return nil
+}
+
+// AssignProviderModel records a new pool assignment for a provider (DAR-345):
+// it sets AssignedModel, bumps the monotonic AssignmentEpoch, marks the
+// provider AssignmentStateLoading, and stamps AssignedAt. It returns the new
+// epoch and whether anything changed (changed=false — and the existing epoch —
+// when the provider is already assigned this model and serving it, so the
+// caller skips a redundant assign_model push). Callers pair a changed result
+// with SendAssignModel(providerID, modelID, epoch).
+func (r *Registry) AssignProviderModel(providerID, modelID string) (epoch uint64, changed bool, err error) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return 0, false, fmt.Errorf("provider %q not found", providerID)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.AssignedModel == modelID && p.AssignmentState == AssignmentStateAssigned {
+		return p.AssignmentEpoch, false, nil
+	}
+	p.AssignmentEpoch++
+	p.AssignedModel = modelID
+	p.AssignmentState = AssignmentStateLoading
+	p.AssignedAt = time.Now()
+	return p.AssignmentEpoch, true, nil
+}
+
+// ApplyAssignModelStatus applies a provider's assign_model_status ack (DAR-345).
+// It is epoch-guarded: a status echoing an epoch older than the provider's
+// current AssignmentEpoch, or naming a different model, is ignored (stale ack
+// from a superseded assignment). On succeeded the provider becomes
+// AssignmentStateAssigned (routing-eligible); draining/loading update the
+// transitional state; failed marks AssignmentStateFailed and arms the
+// (provider,model) dispatch-load cooldown so the controller waits before
+// retrying. Returns true when the status was applied (not stale).
+func (r *Registry) ApplyAssignModelStatus(providerID, modelID string, epoch uint64, status string) bool {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	p.mu.Lock()
+	stale := p.AssignedModel != modelID || epoch < p.AssignmentEpoch
+	if stale {
+		p.mu.Unlock()
+		return false
+	}
+	switch status {
+	case protocol.AssignModelStatusDraining:
+		p.AssignmentState = AssignmentStateDraining
+	case protocol.AssignModelStatusLoading:
+		p.AssignmentState = AssignmentStateLoading
+	case protocol.AssignModelStatusSucceeded:
+		p.AssignmentState = AssignmentStateAssigned
+	case protocol.AssignModelStatusFailed:
+		p.AssignmentState = AssignmentStateFailed
+	}
+	p.mu.Unlock()
+	if status == protocol.AssignModelStatusFailed {
+		// Stay isolated (AssignedModel still set) but arm the cooldown so the
+		// controller doesn't immediately re-push the same model.
+		r.RecordDispatchLoadFailure(providerID, modelID)
+	}
+	return true
+}
+
+// SetAssignmentGateEnabled toggles DAR-345 model-pool isolation in the routing
+// gate (stage-3 enforcement switch). When false (default) AssignedModel does not
+// constrain routing, so assignments can be staged/observed without enforcement.
+func (r *Registry) SetAssignmentGateEnabled(enabled bool) {
+	r.assignmentGateEnabled.Store(enabled)
+}
+
+// AssignmentGateEnabled reports whether model-pool isolation is enforced.
+func (r *Registry) AssignmentGateEnabled() bool {
+	return r.assignmentGateEnabled.Load()
+}
+
+// PoolExhausted reports whether model m is a managed pool that currently has no
+// machine assigned-and-serving it, while the fleet DOES have machines that could
+// serve it (the model is on their disk, assigned elsewhere or mid-switch). In
+// that state a request should get an uptime-neutral 429 pool_exhausted rather
+// than queueing against zero machines or 503-ing — the placement controller will
+// grow the pool. It returns false when the assignment gate is off (no
+// enforcement), when the pool already has a serving machine (let normal
+// dispatch/queue handle saturation), or when no provider serves the model at all
+// (a different rejection — model_not_found / no_provider). The second return is
+// the count of fleet machines that could serve the model (catalog-capable),
+// recorded so the rejection is correctly marked could-have-served.
+func (r *Registry) PoolExhausted(model string) (exhausted bool, catalogCapable int) {
+	if !r.assignmentGateEnabled.Load() {
+		return false, 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	poolServing := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		online := p.Status != StatusOffline && p.Status != StatusUntrusted
+		serves := online && r.providerServesCatalogModelLocked(p, model)
+		// Mirror the routing gate's eligibility EXACTLY (see
+		// providerPassesRoutingGatesLockedEx): an UNMANAGED machine
+		// (AssignedModel=="") still serves the model — so it must count as serving,
+		// or a mixed managed/unmanaged fleet during rollout would 429 a request
+		// the gate would happily route to that unmanaged box. A managed machine is
+		// eligible only for its assigned model while AssignmentStateAssigned.
+		eligible := p.AssignedModel == "" || (p.AssignedModel == model && p.AssignmentState == AssignmentStateAssigned)
+		p.mu.Unlock()
+		if serves {
+			catalogCapable++
+			if eligible {
+				poolServing++
+			}
+		}
+	}
+	return poolServing == 0 && catalogCapable > 0, catalogCapable
+}
+
+// ProviderAssignmentSnapshot returns a provider's current pool assignment, or
+// (zero, false) when the provider is unknown. Read-only; safe under no caller
+// lock.
+func (r *Registry) ProviderAssignmentSnapshot(providerID string) (ProviderAssignment, bool) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return ProviderAssignment{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return ProviderAssignment{
+		ProviderID: providerID,
+		Model:      p.AssignedModel,
+		Epoch:      p.AssignmentEpoch,
+		State:      p.AssignmentState,
+		AssignedAt: p.AssignedAt,
+	}, true
 }
 
 // SendPrefetchModel instructs a provider to download + verify a model build

@@ -779,6 +779,15 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return false
 	}
+	// Dedicated-box isolation: a request for a dedicated model family (e.g.
+	// Gemma 4) may ONLY route to a provider whose ENTIRE advertised catalog is
+	// that family. This single gate is shared by the dispatch hot path and the
+	// OpenRouter capacity preflight, so the filter restricts the routing
+	// candidate set AND the shed (429) decision together with no drift. A caller
+	// self-routing to its OWN machine is exempt — owners may run mixed boxes.
+	if !selfRouteOwner && r.providerExcludedByDedicatedRuleLocked(p, model) {
+		return false
+	}
 	// Skip a provider-model pair cooling down after a dispatch-time load
 	// failure ("insufficient memory") — it would instant-503 again, burning a
 	// dispatch attempt.

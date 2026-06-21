@@ -998,6 +998,17 @@ type Registry struct {
 
 	MinTrustLevel TrustLevel
 
+	// dedicatedModels holds lowercased substring patterns identifying model
+	// families that may ONLY route to providers dedicated to that family (a
+	// provider whose entire advertised catalog matches the pattern). A request
+	// whose resolved build id contains one of these patterns is restricted to
+	// such dedicated boxes — for both routing candidate selection and the
+	// capacity preflight that decides whether to shed (429) to OpenRouter. Empty
+	// = feature disabled (default in tests and the e2e testbed, which never set
+	// it). Configured once at startup from EIGENINFERENCE_DEDICATED_MODELS; see
+	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
+	dedicatedModels []string
+
 	// APNs code-identity rollout policy (v0.6.0), guarded by r.mu and evaluated
 	// LIVE at every routing decision so a deadline can flip enforcement on/off
 	// without forcing providers to reconnect.
@@ -2971,6 +2982,13 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return false
 	}
+	// For a dedicated-family model (e.g. Gemma 4), a warm mixed-catalog box is not
+	// a usable warm provider — routing won't send the model there. Treat it as not
+	// warm so it neither suppresses cold-spill/swap planning onto a real dedicated
+	// box nor counts toward the model's warm-capacity demand target.
+	if r.providerExcludedByDedicatedRuleLocked(p, model) {
+		return false
+	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == model {
@@ -3049,6 +3067,11 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {
+		return 0, false
+	}
+	// A dedicated-family model (e.g. Gemma 4) may only be loaded onto a provider
+	// dedicated to it — never a mixed-catalog box (routing would never use it).
+	if r.providerExcludedByDedicatedRuleLocked(p, model) {
 		return 0, false
 	}
 

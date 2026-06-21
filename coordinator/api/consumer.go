@@ -2096,6 +2096,44 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
 				// Fall through to dispatch+queue; reservation kept.
+			} else if s.registry.IsDedicatedModel(model) && s.registry.HasProviderForModel(model, allowedProviderSerials...) {
+				// Dedicated-box model (e.g. Gemma 4): the fleet DOES serve this
+				// model, but no provider DEDICATED to it can take the request right
+				// now — either none are dedicated, or the dedicated ones are busy/
+				// cooling. That is transient capacity pressure, not an absent model,
+				// so shed to OpenRouter as a 429 + Retry-After (clean failover)
+				// rather than a 503 (which can get the endpoint marked unhealthy /
+				// deranked). Mirrors the capacity_429 path above.
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "machine_busy",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("no provider dedicated to model %q is available right now — retry after %ds", publicModel, retryAfter),
+					withCode("rate_limit_exceeded")))
+				return
 			} else {
 				// None of these clear by a slot freeing up, so queueing for up to
 				// 120s only adds misleading latency before the same error. Fail
@@ -4882,6 +4920,41 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
 				// Fall through to dispatch+queue; reservation kept.
+			} else if s.registry.IsDedicatedModel(model) && s.registry.HasProviderForModel(model, allowedProviderSerials...) {
+				// Dedicated-box model served by the fleet but no dedicated box is
+				// available right now: transient capacity, so shed with 429 +
+				// Retry-After (not 503). Mirrors the chat-completions preflight so
+				// /v1/completions and /v1/messages classify the shed identically.
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "machine_busy",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   keyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  stream,
+					estimatedPromptTokens:   estimatedPromptTokens,
+					requestedMaxTokens:      requestedMaxTokens,
+					requiresVision:          requiresVision,
+					hasTools:                hasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("no provider dedicated to model %q is available right now — retry after %ds", publicModel, retryAfter),
+					withCode("rate_limit_exceeded")))
+				return
 			} else {
 				// Queueing cannot help — fail fast with a retryable 503 instead of
 				// a 120s queue. Mirrors the chat-completions preflight.

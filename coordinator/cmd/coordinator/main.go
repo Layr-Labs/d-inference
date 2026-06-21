@@ -157,6 +157,30 @@ func main() {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
 	}
+
+	// Dedicated-box routing: model families (matched as case-insensitive
+	// substrings of the resolved build id) that may ONLY route to providers
+	// whose entire advertised catalog is that family — isolating an unstable
+	// model (e.g. Gemma 4) onto dedicated machines so it never contends with
+	// other models. Default: "gemma-4". Override with a comma-separated list, or
+	// set the value to empty / "none" to disable. With no dedicated box
+	// available, a request for such a model sheds to OpenRouter as a transient
+	// 429 (not 503).
+	dedicatedModels := []string{"gemma-4"}
+	if v, ok := os.LookupEnv("EIGENINFERENCE_DEDICATED_MODELS"); ok {
+		if strings.EqualFold(strings.TrimSpace(v), "none") {
+			dedicatedModels = nil
+		} else {
+			dedicatedModels = registry.ParseDedicatedModels(v)
+		}
+	}
+	reg.SetDedicatedModels(dedicatedModels)
+	if len(dedicatedModels) > 0 {
+		logger.Info("dedicated-model routing ENABLED", "patterns", strings.Join(dedicatedModels, ","))
+	} else {
+		logger.Info("dedicated-model routing disabled")
+	}
+
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
 	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)

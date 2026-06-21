@@ -130,28 +130,44 @@ func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 // read-only and fail-open (see file header). Self-route requests should not use
 // this fleet-wide gate (they queue on the owner machine), matching the existing
 // preflight which only runs for public routes.
-func (r *Registry) PredictServable(model string, estimatedPromptTokens, requestedMaxTokens, contextLimit int, traits RequestTraits, requiresVision bool, allowedSerials ...string) ServabilityVerdict {
+//
+// contextPromptTokens is the prompt-token count used ONLY for the context-window
+// tier. It exists so a caller can feed a CALIBRATED estimate to the context tier
+// (the len/4 routing estimate undercounts dense content) WITHOUT inflating the
+// token-budget tier — the budget tier always uses the raw estimatedPromptTokens,
+// so a calibration multiplier can never over-reject a request that fits a
+// provider's real KV budget (a false-NO). Callers that don't calibrate pass
+// contextPromptTokens == estimatedPromptTokens; a value below the raw estimate is
+// floored to it (calibration only scales up).
+func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextPromptTokens, requestedMaxTokens, contextLimit int, traits RequestTraits, requiresVision bool, allowedSerials ...string) ServabilityVerdict {
 	reqPrompt := estimatedPromptTokens
 	if reqPrompt < 0 {
 		reqPrompt = 0
+	}
+	reqContextPrompt := contextPromptTokens
+	if reqContextPrompt < reqPrompt {
+		reqContextPrompt = reqPrompt
 	}
 	reqMax := requestedMaxTokens
 	if reqMax <= 0 {
 		reqMax = defaultRequestedMaxTokens
 	}
-	requestTokens := reqPrompt + reqMax
+	budgetRequestTokens := reqPrompt + reqMax
+	contextRequestTokens := reqContextPrompt + reqMax
 
 	verdict := ServabilityVerdict{
 		Servable:      true,
-		RequestTokens: requestTokens,
+		RequestTokens: budgetRequestTokens,
 		ContextLimit:  contextLimit,
 	}
 
 	// Tier 1: context window. Model-level and provider-agnostic. Exceeding the
-	// model's context is a guaranteed failure on every provider.
-	if contextLimit > 0 && requestTokens > contextLimit {
+	// model's context is a guaranteed failure on every provider. Uses the
+	// (possibly calibrated) context-prompt count.
+	if contextLimit > 0 && contextRequestTokens > contextLimit {
 		verdict.Servable = false
 		verdict.Reason = ServabilityContextExceeded
+		verdict.RequestTokens = contextRequestTokens
 		return verdict
 	}
 
@@ -210,7 +226,7 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, requeste
 	// all-zero-budget fleet would fail open and dispatch into a guaranteed
 	// provider-side token/KV rejection. Any unknown budget, or zero eligible
 	// providers (a different rejection path owns that), still fails open.
-	if providerCount > 0 && !sawUnknown && int64(requestTokens) > fleetMax {
+	if providerCount > 0 && !sawUnknown && int64(budgetRequestTokens) > fleetMax {
 		verdict.Servable = false
 		verdict.Reason = ServabilityPromptTooLong
 		return verdict

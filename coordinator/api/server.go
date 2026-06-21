@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
@@ -187,6 +188,17 @@ type Server struct {
 	codeAttestor           apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
 	codeAttestThrottle     *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
 	trustReuseCache        *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+
+	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
+	// coordinatorDraining=true before a restart/swap so the drain gate rejects
+	// NEW inference requests with 429+Retry-After while already-admitted ones run
+	// to completion; httpInflight counts requests currently inside the gate so
+	// /readyz (and the deploy script) can wait for it to reach 0 before shutdown.
+	// Deliberately named to avoid collision with the provider-side drain concepts
+	// (protocol.ProviderDrainingForUpdate, registry.drainQueuedRequestsForModels):
+	// this is purely the coordinator's own HTTP-ingress drain. See drain.go.
+	httpInflight        atomic.Int64
+	coordinatorDraining atomic.Bool
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -1657,6 +1669,11 @@ func (s *Server) routes() {
 	// Health check — no auth required.
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 
+	// Readiness probe — no auth required. Reports graceful-drain state so load
+	// balancers and the deploy script treat a draining coordinator as not-ready
+	// (503) and can wait for inflight==0 before restart. See drain.go (DAR-327).
+	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
 
@@ -1684,10 +1701,21 @@ func (s *Server) routes() {
 	// rateLimitConsumer is chained inside requireAuth so the accountID is in
 	// context. Read-only endpoints (GET /v1/models) skip rate limiting since
 	// they're cheap and clients poll them.
-	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))
-	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions))))
-	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages))))
+	// drainGate is the OUTERMOST wrapper: while the coordinator is draining for a
+	// restart/upgrade it rejects NEW inference requests with 429+Retry-After
+	// before any auth/decrypt work, and otherwise counts the request as in-flight
+	// so /readyz can report when it's safe to shut down (DAR-327 Phase 1).
+	//
+	// IMPORTANT: ANY future provider-routed inference endpoint (e.g.
+	// /v1/audio/transcriptions, /v1/images/generations, /v1/embeddings) MUST also
+	// be wrapped in s.drainGate(...). An ungated route won't 429 during drain and,
+	// because it isn't counted in httpInflight, won't be seen by WaitForInflightZero
+	// — so a graceful shutdown could cut it off mid-flight. Add new dispatch routes
+	// here, gated, alongside the four below.
+	s.mux.HandleFunc("POST /v1/chat/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))
+	s.mux.HandleFunc("POST /v1/responses", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
+	s.mux.HandleFunc("POST /v1/messages", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
 	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
@@ -1857,6 +1885,16 @@ func (s *Server) routes() {
 	// Network utilization snapshot (admin only) — handler enforces admin auth
 	// internally via requireAdminKey.
 	s.mux.HandleFunc("GET /v1/admin/utilization", s.handleAdminUtilization)
+
+	// Graceful drain toggle (admin only) — sets the coordinator into drain mode
+	// before a restart/upgrade so new inference requests get 429 while in-flight
+	// ones finish. Wrapped with requireAuth (the SAME pattern as the other
+	// isAdminAuthorized/requireAdminKey endpoints, e.g. invite codes) so a Privy
+	// admin JWT is parsed into the request context AND the admin key is accepted
+	// as a pseudo-account; handleAdminDrain then authorizes via isAdminAuthorized
+	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
+	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
+	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.

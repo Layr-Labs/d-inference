@@ -13,8 +13,10 @@
 // Configuration is defined per-package and composed into config.AppConfig.
 // See coordinator/config/ for the full schema.
 //
-// Graceful shutdown: The coordinator handles SIGINT/SIGTERM, stops the
-// eviction loop, and drains active connections with a 15-second deadline.
+// Graceful shutdown: The coordinator handles SIGINT/SIGTERM, enters drain mode,
+// stops the eviction loop, waits for in-flight requests to finish (up to
+// EIGENINFERENCE_DRAIN_GRACE, default 10m), then drains connections with a hard
+// 15-second http.Server.Shutdown deadline as the final backstop.
 package main
 
 import (
@@ -158,6 +160,48 @@ func main() {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
 	}
+
+	// Dedicated-box routing: model families (matched as case-insensitive
+	// substrings of the resolved build id) that may ONLY route to providers
+	// whose entire advertised catalog is that family — isolating an unstable
+	// model (e.g. Gemma 4) onto dedicated machines so it never contends with
+	// other models. Default: "gemma-4". Override with a comma-separated list, or
+	// set the value to empty / "none" to disable. With no dedicated box
+	// available, a request for such a model sheds to OpenRouter as a transient
+	// 429 (not 503).
+	dedicatedModels := []string{"gemma-4"}
+	if v, ok := os.LookupEnv("EIGENINFERENCE_DEDICATED_MODELS"); ok {
+		if strings.EqualFold(strings.TrimSpace(v), "none") {
+			dedicatedModels = nil
+		} else {
+			dedicatedModels = registry.ParseDedicatedModels(v)
+		}
+	}
+	reg.SetDedicatedModels(dedicatedModels)
+	if len(dedicatedModels) > 0 {
+		logger.Info("dedicated-model routing ENABLED", "patterns", strings.Join(dedicatedModels, ","))
+	} else {
+		logger.Info("dedicated-model routing disabled")
+	}
+
+	// Quality-concurrency admission cap: tighten the flat per-provider concurrency
+	// cap (24) to each model's quality_concurrency × overcommit, computed from the
+	// provider's static single-stream decode rate. Stops slow, saturated models
+	// (e.g. Gemma) from over-admitting onto a few boxes and collapsing decode TPS;
+	// near-no-op for fast/over-provisioned models. Reuses the warm-pool decode
+	// floor + fallback so admission and warm-pool planning share the same math.
+	reg.SetQualityConcurrencyCap(
+		cfg.RegistryCfg.QualityCap.Enabled,
+		cfg.RegistryCfg.QualityCap.Overcommit,
+		cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
+		cfg.RegistryCfg.WarmPool.FallbackQualityConcurrency,
+	)
+	logger.Info("quality-concurrency cap",
+		"enabled", cfg.RegistryCfg.QualityCap.Enabled,
+		"overcommit", cfg.RegistryCfg.QualityCap.Overcommit,
+		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
+	)
+
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
 	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)
@@ -399,6 +443,17 @@ func main() {
 			logger.Info("smart servability gate ENABLED via EIGENINFERENCE_SERVABILITY_GATE (unservable long prompts → early 429)")
 		} else if err != nil {
 			logger.Warn("invalid EIGENINFERENCE_SERVABILITY_GATE; gate stays off", "value", v)
+		}
+	}
+
+	// Per-family prompt-token estimate calibration for the servability context
+	// check (the len/4 routing estimate undercounts dense content). Default
+	// {gpt-oss:1.3}; override with "family:factor,..." e.g. "gpt-oss:1.3,gemma:1.15".
+	if v := os.Getenv("EIGENINFERENCE_PROMPT_CALIBRATION"); v != "" {
+		if n := api.SetPromptContextCalibrationFromEnv(v); n > 0 {
+			logger.Info("prompt-token context calibration overridden", "pairs", n, "value", v)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PROMPT_CALIBRATION; using default", "value", v)
 		}
 	}
 
@@ -717,12 +772,38 @@ func main() {
 	sig := <-sigCh
 	logger.Info("shutting down", "signal", sig.String())
 
-	// Graceful shutdown with a deadline.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer shutdownCancel()
+	// Enter drain mode first so /readyz and /health immediately report not-ready,
+	// the capacity feed stops advertising, and new inference requests get
+	// 429+Retry-After (DAR-327 Phase 1).
+	srv.SetDraining(true)
 
+	// DAR-327 merge note: when Phase 3 (#396) lands, srv.BroadcastGoingAway()
+	// belongs HERE — right after SetDraining(true) and BEFORE cancel() /
+	// WaitForInflightZero — so providers begin draining+reconnecting while we wait
+	// for in-flight HTTP to finish. The canonical combined shutdown order is:
+	// SetDraining → BroadcastGoingAway → cancel → WaitForInflightZero → Shutdown.
 	cancel() // Stop the eviction loop.
 
+	// Wait for already-admitted in-flight requests to finish before shutting the
+	// HTTP server down. Streaming responses can run well past the 15s Shutdown
+	// deadline, so we poll Inflight() until it reaches 0 or EIGENINFERENCE_DRAIN_GRACE
+	// (default 10m) elapses — whichever comes first — instead of cutting them off.
+	// We never block forever: the grace context bounds the wait, and the hard
+	// Shutdown deadline below is the final backstop.
+	grace := api.DrainGraceFromEnv()
+	graceCtx, graceCancel := context.WithTimeout(context.Background(), grace)
+	if srv.WaitForInflightZero(graceCtx) {
+		logger.Info("drain complete; in-flight requests finished", "grace", grace.String())
+	} else {
+		logger.Warn("drain grace elapsed; forcing shutdown with requests still in flight",
+			"grace", grace.String(), "inflight", srv.Inflight())
+	}
+	graceCancel()
+
+	// Hard backstop: even after the grace wait, give Shutdown a bounded deadline so
+	// a stuck connection can't block process exit forever.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}

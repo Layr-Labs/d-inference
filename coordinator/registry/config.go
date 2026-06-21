@@ -65,6 +65,23 @@ type WarmPoolConfig struct {
 	MaxLoadsPerTickCeiling int
 	RampGapFraction        float64
 	MaxGlobalPendingLoads  int
+
+	// Placement controller (DAR-345 one-model-per-machine). PlacementEnabled runs
+	// the allocator each tick (computes the desired model→machine assignment and
+	// emits metrics/logs). PlacementEnforce additionally PUSHES assign_model to
+	// switch machines between pools (else shadow/observe-only). ModelPriority
+	// orders pools when demand exceeds the fleet (higher wins; default 0). The
+	// allocator reuses MinDwell (per-machine hold), MinWarmByModel (per-pool
+	// floor), MaxGlobalPendingLoads + MaxLoadsPerTick (switch budget) as its
+	// anti-thrash knobs.
+	PlacementEnabled bool
+	PlacementEnforce bool
+	ModelPriority    map[string]int
+
+	// AssignmentGateEnabled turns on the routing-layer isolation gate + the
+	// pool_exhausted 429 admission (DAR-345 stage 3/4). Independent of the
+	// placement controller so enforcement can be a separate, reversible switch.
+	AssignmentGateEnabled bool
 }
 
 // perTickCeiling is the hard per-tick load cap after demand scaling. It is the
@@ -110,6 +127,11 @@ func ReadConfig() Config {
 			MaxLoadsPerTickCeiling: env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_LOADS_PER_TICK_CEILING", 16),
 			RampGapFraction:        env.EnvFloat(env.EnvPrefix+"_WARM_POOL_RAMP_GAP_FRACTION", 0.5),
 			MaxGlobalPendingLoads:  env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_GLOBAL_PENDING_LOADS", 16),
+
+			PlacementEnabled:      env.EnvBool(env.EnvPrefix+"_WARM_POOL_PLACEMENT_ENABLED", false),
+			PlacementEnforce:      env.EnvBool(env.EnvPrefix+"_WARM_POOL_PLACEMENT_ENFORCE", false),
+			ModelPriority:         envModelIntMap(env.EnvPrefix + "_WARM_POOL_MODEL_PRIORITY"),
+			AssignmentGateEnabled: env.EnvBool(env.EnvPrefix+"_WARM_POOL_ASSIGNMENT_GATE", false),
 		},
 		CacheAffinity: CacheAffinityConfig{
 			TTL:     envDuration(env.EnvPrefix+"_CACHE_AFFINITY_TTL", cacheAffinityTTL),

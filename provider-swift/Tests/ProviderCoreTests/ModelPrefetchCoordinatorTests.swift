@@ -493,6 +493,15 @@ private final class OutboundRecorder: @unchecked Sendable {
             return nil
         }
     }
+    func assignStatuses() -> [ProviderMessage.AssignModelStatus] {
+        lock.lock(); defer { lock.unlock() }
+        return _messages.compactMap { msg in
+            if case .assignModelStatus(let modelId, let epoch, let status, let error) = msg {
+                return ProviderMessage.AssignModelStatus(modelId: modelId, epoch: epoch, status: status, error: error)
+            }
+            return nil
+        }
+    }
 }
 
 /// Fake prefetcher that succeeds without touching the network — used by the
@@ -543,6 +552,33 @@ struct ProviderLoopPrefetchTests {
             )
         )
         return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    }
+
+    /// DAR-345: the assign_model handler walks the lifecycle, echoes the epoch on
+    /// every status, binds the machine (arming refuse-don't-swap), and ignores a
+    /// stale (older-epoch) assignment. The model isn't on disk so the load fails —
+    /// but the orchestration + epoch guard are exactly what we assert.
+    @Test func assignModelLifecycleEchoesEpochAndIsEpochGuarded() async throws {
+        let model = ModelInfo(id: "org/assign-pool", sizeBytes: 1, estimatedMemoryGb: 1)
+        let loop = try makeLoop(models: [model], maxModelSlots: 3)
+        let outbound = OutboundRecorder()
+        let send = SendHandle { outbound.record($0) }
+
+        await loop.handleAssignModelForTesting(modelId: model.id, epoch: 5, send: send)
+        let statuses = outbound.assignStatuses()
+        #expect(!statuses.isEmpty)
+        #expect(statuses.allSatisfy { $0.epoch == 5 })
+        #expect(statuses.contains { $0.status == .draining })
+        #expect(statuses.last?.status == .failed) // not on disk → load fails after the lifecycle ran
+
+        let assignment = await loop.assignmentForTesting()
+        #expect(assignment.model == model.id)
+        #expect(assignment.epoch == 5)
+
+        // A stale, older-epoch assignment is ignored — no further status messages.
+        let before = outbound.assignStatuses().count
+        await loop.handleAssignModelForTesting(modelId: model.id, epoch: 4, send: send)
+        #expect(outbound.assignStatuses().count == before)
     }
 
     private func makeClient() -> CoordinatorClient {

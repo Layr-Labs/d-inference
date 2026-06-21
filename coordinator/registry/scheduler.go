@@ -779,14 +779,30 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return false
 	}
-	// Dedicated-box isolation: a request for a dedicated model family (e.g.
-	// Gemma 4) may ONLY route to a provider whose ENTIRE advertised catalog is
-	// that family. This single gate is shared by the dispatch hot path and the
-	// OpenRouter capacity preflight, so the filter restricts the routing
-	// candidate set AND the shed (429) decision together with no drift. A caller
-	// self-routing to its OWN machine is exempt — owners may run mixed boxes.
+	// Dedicated-box isolation (catalog-based, already on master): a request for a
+	// dedicated model family (e.g. Gemma 4) may ONLY route to a provider whose
+	// ENTIRE advertised catalog is that family. Shared by the dispatch hot path
+	// and the OpenRouter capacity preflight. A caller self-routing to its OWN
+	// machine is exempt — owners may run mixed boxes.
 	if !selfRouteOwner && r.providerExcludedByDedicatedRuleLocked(p, model) {
 		return false
+	}
+	// DAR-345 model-pool isolation (assignment-based, this PR). A managed provider
+	// (AssignedModel != "") serves ONLY its assigned model, and only while the
+	// assignment is live (AssignmentStateAssigned) — draining/loading/failed
+	// transitions are excluded so no request lands on a machine mid-swap. This
+	// single gate makes no-spillover structural across selection, queue-drain,
+	// preflight, and admit-recheck (all route through here) and makes
+	// candidate/capacity counts pool-scoped. Unmanaged providers are unaffected.
+	// Self-route owners bypass it (never filtered into "no candidate" on their own
+	// machine; the placement controller never manages PrivateOnly machines). Gated
+	// by assignmentGateEnabled (default off). Composes with the catalog-based
+	// dedicated-box rule above — both are independent eligibility filters; the team
+	// can consolidate the two pool approaches in a follow-up.
+	if r.assignmentGateEnabled.Load() && !selfRouteOwner && p.AssignedModel != "" {
+		if p.AssignedModel != model || p.AssignmentState != AssignmentStateAssigned {
+			return false
+		}
 	}
 	// Skip a provider-model pair cooling down after a dispatch-time load
 	// failure ("insufficient memory") — it would instant-503 again, burning a

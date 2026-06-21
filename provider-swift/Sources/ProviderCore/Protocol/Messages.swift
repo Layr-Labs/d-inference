@@ -14,6 +14,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case loadModelStatus(LoadModelStatus)
     case prefetchModelStatus(PrefetchModelStatus)
     case modelsUpdate(ModelsUpdate)
+    case assignModelStatus(AssignModelStatus)
 
     public struct Register: Sendable, Equatable {
         public var hardware: HardwareInfo
@@ -190,6 +191,31 @@ public enum ProviderMessage: Sendable, Equatable {
         }
     }
 
+    /// Lifecycle reply to a `CoordinatorMessage.assignModel` (DAR-345 model
+    /// pools). The provider walks draining → loading → succeeded (warm +
+    /// servable) or failed. `epoch` echoes the assignment generation so the
+    /// coordinator can discard a stale ack from a superseded assignment.
+    public struct AssignModelStatus: Sendable, Equatable {
+        public enum Status: String, Sendable, Equatable {
+            case draining
+            case loading
+            case succeeded
+            case failed
+        }
+
+        public var modelId: String
+        public var epoch: UInt64
+        public var status: Status
+        public var error: String?
+
+        public init(modelId: String, epoch: UInt64, status: Status, error: String? = nil) {
+            self.modelId = modelId
+            self.epoch = epoch
+            self.status = status
+            self.error = error
+        }
+    }
+
     /// Progress/terminal reply to a `CoordinatorMessage.prefetchModel`. A
     /// prefetch only downloads + verifies the build on disk; it does NOT load
     /// weights into GPU. `verified` is the terminal success state (build is on
@@ -321,6 +347,7 @@ extension ProviderMessage: Codable {
         case loadModelStatus = "load_model_status"
         case prefetchModelStatus = "prefetch_model_status"
         case modelsUpdate = "models_update"
+        case assignModelStatus = "assign_model_status"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -376,6 +403,8 @@ extension ProviderMessage: Codable {
         // PrefetchModelStatus
         case bytesDone = "bytes_done"
         case bytesTotal = "bytes_total"
+        // AssignModelStatus
+        case epoch
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -498,6 +527,13 @@ extension ProviderMessage: Codable {
             try container.encode(TypeValue.modelsUpdate, forKey: .type)
             // Reuse the ModelInfo encoding shared with `register`'s models[].
             try container.encode(u.models, forKey: .models)
+
+        case .assignModelStatus(let a):
+            try container.encode(TypeValue.assignModelStatus, forKey: .type)
+            try container.encode(a.modelId, forKey: .modelId)
+            try container.encode(a.epoch, forKey: .epoch)
+            try container.encode(a.status.rawValue, forKey: .status)
+            try container.encodeIfPresent(a.error, forKey: .error)
         }
     }
 
@@ -628,6 +664,22 @@ extension ProviderMessage: Codable {
             self = .modelsUpdate(ModelsUpdate(
                 models: try container.decode([ModelInfo].self, forKey: .models)
             ))
+
+        case .assignModelStatus:
+            let raw = try container.decode(String.self, forKey: .status)
+            guard let status = AssignModelStatus.Status(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .status,
+                    in: container,
+                    debugDescription: "unknown assign_model_status value: \(raw)"
+                )
+            }
+            self = .assignModelStatus(AssignModelStatus(
+                modelId: try container.decode(String.self, forKey: .modelId),
+                epoch: try container.decodeIfPresent(UInt64.self, forKey: .epoch) ?? 0,
+                status: status,
+                error: try container.decodeIfPresent(String.self, forKey: .error)
+            ))
         }
     }
 }
@@ -643,6 +695,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case prefetchModel(PrefetchModel)
     case desiredModels(DesiredModels)
     case trustStatus(TrustStatus)
+    case assignModel(AssignModel)
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
@@ -686,6 +739,22 @@ public enum CoordinatorMessage: Sendable, Equatable {
     public struct LoadModel: Sendable, Equatable {
         public var modelId: String
         public init(modelId: String) { self.modelId = modelId }
+    }
+
+    /// Coordinator-driven exclusive pool assignment (DAR-345). The provider
+    /// drains in-flight work, unloads every resident model that is not `modelId`,
+    /// then loads + warms `modelId`, refusing to opportunistically load any other
+    /// model while the assignment stands. `epoch` is a monotonic per-provider
+    /// generation: ignore an assignment older than one already applied, and echo
+    /// it in every `assignModelStatus` reply. Distinct from `loadModel` (additive
+    /// warm, no exclusivity, no drain).
+    public struct AssignModel: Sendable, Equatable {
+        public var modelId: String
+        public var epoch: UInt64
+        public init(modelId: String, epoch: UInt64) {
+            self.modelId = modelId
+            self.epoch = epoch
+        }
     }
 
     /// Coordinator-driven background prefetch. Provider should download AND
@@ -757,6 +826,7 @@ extension CoordinatorMessage: Codable {
         case prefetchModel = "prefetch_model"
         case desiredModels = "desired_models"
         case trustStatus = "trust_status"
+        case assignModel = "assign_model"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -771,6 +841,7 @@ extension CoordinatorMessage: Codable {
         case trustLevel = "trust_level"
         case status, reason
         case models
+        case epoch
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -822,6 +893,11 @@ extension CoordinatorMessage: Codable {
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
+
+        case .assignModel(let a):
+            try container.encode(TypeValue.assignModel, forKey: .type)
+            try container.encode(a.modelId, forKey: .modelId)
+            try container.encode(a.epoch, forKey: .epoch)
         }
     }
 
@@ -875,6 +951,12 @@ extension CoordinatorMessage: Codable {
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
+            ))
+
+        case .assignModel:
+            self = .assignModel(AssignModel(
+                modelId: try container.decode(String.self, forKey: .modelId),
+                epoch: try container.decodeIfPresent(UInt64.self, forKey: .epoch) ?? 0
             ))
         }
     }

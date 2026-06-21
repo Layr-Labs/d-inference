@@ -31,6 +31,10 @@ type warmPoolController struct {
 	lastMu      sync.RWMutex
 	lastSnaps   []WarmPoolSnapshot
 	lastSnapsAt time.Time
+
+	// lastPlacement caches the most recent DAR-345 placement plan (desired/current
+	// pool sizes + switch count) for observability. Guarded by lastMu.
+	lastPlacement PlacementSnapshot
 }
 
 type syncQueuePressure struct {
@@ -250,6 +254,10 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 		}
 		c.registry.sendModelLoadActions(snap.Actions)
 	}
+	// DAR-345 placement: turn the per-model demand targets into an exclusive
+	// model→machine assignment. Runs after warm loads so it sees (and shares) the
+	// updated pending-load budget. No-op unless PlacementEnabled.
+	c.runPlacement(now, snapshots)
 	return snapshots
 }
 

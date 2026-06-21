@@ -149,6 +149,64 @@ func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, par
 	return true
 }
 
+// shedIfPoolExhausted answers a public/prefer-owner request with an
+// uptime-neutral 429 + Retry-After when its model is a managed pool (DAR-345)
+// that currently has no machine assigned-and-serving it, while the fleet does
+// have machines that could serve it. This is the no-spillover admission decision:
+// rather than queue against zero in-pool machines (or 503 because the isolation
+// gate filtered every provider), shed cleanly — the placement controller grows
+// the pool on its next tick. A pool that has serving machines but is merely
+// saturated is left to the normal capacity/queue path. Exclusive self-route
+// bypasses the shed (it never falls back to the public fleet and bypasses the
+// isolation gate). No-op when the assignment gate is disabled.
+func (s *Server) shedIfPoolExhausted(w http.ResponseWriter, r *http.Request, parsed map[string]any, policy selfRoutePolicy, publicModel, model string, stream bool, estimatedPromptTokens, requestedMaxTokens int, requiresVision, hasTools bool) bool {
+	if policy.enabled || s.registry == nil {
+		return false
+	}
+	exhausted, catalogCapable := s.registry.PoolExhausted(model)
+	if !exhausted {
+		return false
+	}
+	retryAfter := s.estimateRetryAfter(model)
+	if retryAfter < 10 {
+		// Floor above a cold-load (~10-30s): the pool must warm a machine before
+		// it can serve, so a 2s retry would only restorm. Uptime-neutral either
+		// way — an aggregator fails over on the first 429.
+		retryAfter = 10
+	}
+	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:pool_exhausted"})
+	s.recordRejection(rejectionInfo{
+		r:                     r,
+		stage:                 "preflight_capacity",
+		reasonCode:            "pool_exhausted",
+		httpStatus:            http.StatusTooManyRequests,
+		keyID:                 keyIDFromContext(r.Context()),
+		consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+		requestedModel:        publicModel,
+		resolvedModel:         model,
+		stream:                stream,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		requiresVision:        requiresVision,
+		hasTools:              hasTools,
+		selfRouteOnly:         policy.enabled,
+		preferOwner:           policy.prefer,
+		retryAfterMs:          retryAfter * 1000,
+		params:                rejectionSamplingParams(parsed),
+		// The fleet HAS the model on catalogCapable machines — it just isn't in
+		// this pool right now — so the request could have been served. Mark it
+		// could-have-served (candidateCount>0) and skip the off-path recompute,
+		// which would see 0 gated candidates and wrongly flag it unservable.
+		servabilityComputed: true,
+		candidateCount:      catalogCapable,
+	})
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+		fmt.Sprintf("model %q is at capacity right now — retry after %ds", publicModel, retryAfter),
+		withCode("rate_limit_exceeded")))
+	return true
+}
+
 // sendProviderCancel sends a Cancel message for the given request to the
 // provider with a bounded timeout so a half-dead WebSocket doesn't hang the
 // caller. Errors are logged at debug level because a disconnect race is the
@@ -1793,6 +1851,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	deadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
+		return
+	}
+	if s.shedIfPoolExhausted(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
 
@@ -4715,6 +4776,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	genericDeadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
+		return
+	}
+	if s.shedIfPoolExhausted(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
 

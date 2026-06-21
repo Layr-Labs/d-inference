@@ -476,6 +476,34 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			// "started" status: no action — load is in progress.
 
+		case protocol.TypeAssignModelStatus:
+			statusMsg := msg.Payload.(*protocol.AssignModelStatusMessage)
+			s.logger.Info("provider assign_model_status",
+				"provider_id", providerID,
+				"model_id", statusMsg.ModelID,
+				"epoch", statusMsg.Epoch,
+				"status", statusMsg.Status,
+				"error", statusMsg.Error,
+			)
+			// Epoch-guarded apply: a stale ack (superseded epoch / wrong model) is
+			// ignored. On succeeded the machine is warm + serving its assigned pool
+			// model — mark it warm, release the pending-load reservation, and drain
+			// any queued requests. On failed, ApplyAssignModelStatus already set
+			// AssignmentStateFailed + armed the dispatch-load cooldown; clear the
+			// reservation so the placement controller reconsiders after the cooldown.
+			if s.registry.ApplyAssignModelStatus(providerID, statusMsg.ModelID, statusMsg.Epoch, statusMsg.Status) {
+				switch statusMsg.Status {
+				case protocol.AssignModelStatusSucceeded:
+					s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
+					s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
+					s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
+					s.ddIncr("routing.model_assignment", []string{"model:" + statusMsg.ModelID, "outcome:assigned"})
+				case protocol.AssignModelStatusFailed:
+					s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
+					s.ddIncr("routing.model_assignment", []string{"model:" + statusMsg.ModelID, "outcome:failed"})
+				}
+			}
+
 		case protocol.TypeModelsUpdate:
 			updateMsg := msg.Payload.(*protocol.ModelsUpdateMessage)
 			s.handleModelsUpdate(providerID, provider, updateMsg)

@@ -131,6 +131,13 @@ var capacityClassMarkers = []string{
 	// these markers match "model not loaded" / "is not loaded on this provider".
 	"not loaded",
 	"no model loaded",
+	// DAR-345 model-pool transitions: a managed provider mid-switch
+	// (protocol.ProviderSwitchingModel = "provider switching model") or refusing a
+	// non-assigned model ("… is not this machine's assigned pool model …"). The
+	// request didn't run, so failover/reroute is safe — must NOT count as a node
+	// fault against the per-provider breaker during the brief transition race.
+	"provider switching model",
+	"assigned pool model",
 }
 
 // faultClassMarkers are BUCKET B substrings: genuine server faults that MUST stay

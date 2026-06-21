@@ -40,6 +40,7 @@ public struct CapturedMessages: Sendable {
     public var inferenceErrors: [ProviderMessage.InferenceError] = []
     public var loadModelStatuses: [ProviderMessage.LoadModelStatus] = []
     public var prefetchModelStatuses: [ProviderMessage.PrefetchModelStatus] = []
+    public var assignModelStatuses: [ProviderMessage.AssignModelStatus] = []
     public var modelsUpdates: [ProviderMessage.ModelsUpdate] = []
     public var telemetryBatches: [TelemetryBatch] = []
 
@@ -572,6 +573,7 @@ public final class MockCoordinator: @unchecked Sendable {
             case .loadModelStatus(let s):    captured.loadModelStatuses.append(s)
             case .prefetchModelStatus(let s): captured.prefetchModelStatuses.append(s)
             case .modelsUpdate(let u):       captured.modelsUpdates.append(u)
+            case .assignModelStatus(let s):  captured.assignModelStatuses.append(s)
             }
         }
         eventContinuation.yield(.providerMessage(parsed))

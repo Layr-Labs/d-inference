@@ -154,6 +154,13 @@ var LatestProviderVersion = "0.6.11"
 // desired_models support (ProviderCore.version at that cut).
 const minProviderVersionForDesiredModels = "0.5.17"
 
+// minProviderVersionForModelAssignment is the floor for the DAR-345 assign_model
+// push (one-model-per-machine pools). Same fail-closed rationale as
+// minProviderVersionForDesiredModels: a pre-feature provider's strict decoder
+// throws on the unknown assign_model type. KEEP THIS IN SYNC with the release
+// that ships Swift assign_model support (ProviderCore.version at that cut).
+const minProviderVersionForModelAssignment = "0.6.18"
+
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when
 // no release record exists.
@@ -703,6 +710,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 	s.registerDefaultGauges()
 	s.routes()
+
+	// DAR-345: gate which providers the placement controller may bind to a pool
+	// on the same backend+version rule used for the assign_model push, so a
+	// pre-feature provider (whose strict decoder would throw on assign_model)
+	// stays unmanaged.
+	reg.SetManageableProviderFunc(s.providerSupportsModelAssignment)
 
 	// Load stored provider records into a lookup table for matching
 	// reconnecting providers to their persisted state.

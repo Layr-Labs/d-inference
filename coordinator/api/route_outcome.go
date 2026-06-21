@@ -43,6 +43,7 @@ func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt 
 		return
 	}
 	s.emitInferenceErrorMetric(model, outcome)
+	s.emitCancelMetrics(model, outcome)
 	s.submitTelemetry("updateInferenceRoute", func() {
 		if err := s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome); err != nil && s.logger != nil {
 			s.logger.Error("inference_routes outcome update failed",
@@ -85,10 +86,13 @@ func routeOutcome(status, class string, code int) *store.InferenceRouteOutcome {
 
 func routeOutcomeWithReason(status, class string, code int, providerReason, errorText string) *store.InferenceRouteOutcome {
 	return &store.InferenceRouteOutcome{
-		FinalStatus: status,
-		ErrorCode:   code,
-		ErrorClass:  class,
-		ErrorReason: inferenceErrorReason(providerReason, status, class, code, errorText),
+		FinalStatus:             status,
+		ErrorCode:               code,
+		ErrorClass:              class,
+		ErrorReason:             inferenceErrorReason(providerReason, status, class, code, errorText),
+		CancelPhase:             deriveCancelPhase(status, class),
+		CancelSource:            deriveCancelSource(status, class, code),
+		PartialSettlementStatus: deriveCancelSettlement(status, class),
 	}
 }
 
@@ -197,6 +201,24 @@ func completeRouteOutcome(pr *registry.PendingRequest, usage protocol.UsageInfo,
 	}
 	if errorClass != "" {
 		out.ErrorReason = inferenceErrorReason("", status, errorClass, 0, "")
+		// Consumer disconnected after commit but the provider completed: a
+		// settled cancellation (provider paid, consumer charged). Record the
+		// delivered/settled counts and that a provider terminal arrived.
+		out.CancelPhase = deriveCancelPhase(status, errorClass)
+		out.CancelSource = deriveCancelSource(status, errorClass, 0)
+		out.PartialSettlementStatus = deriveCancelSettlement(status, errorClass)
+		out.SettledPartialTokens = usage.CompletionTokens
+		out.SettledPartialMicroUSD = costMicroUSD
+		out.ProviderTerminalReceived = true
+		out.ProviderTerminalAtMs = time.Now().UnixMilli()
+		// DAR-346: the provider settles the delivered-token floor into
+		// usage.CompletionTokens on a mid-stream cancel (commit dc5a4136), so the
+		// settled completion gives us an EXACT delivered-token count — prefer it
+		// over the coordinator's content-frame estimate (set in
+		// applyPendingRouteTelemetry, which only fills when this is still zero).
+		if usage.CompletionTokens > 0 {
+			out.EstimatedDeliveredTokens = usage.CompletionTokens
+		}
 	}
 	applyPendingRouteTelemetry(out, pr)
 	return out
@@ -255,11 +277,56 @@ func applyPendingRouteTelemetry(out *store.InferenceRouteOutcome, pr *registry.P
 	}
 	out.UsedBackup = pr.UsedBackup
 	out.BackupWon = pr.BackupWon
+	// DAR-346: cancel-signal timestamp. Stamped ONLY at the actual WS-cancel send
+	// sites (cancelDispatch, the post-commit disconnect defer) so it measures real
+	// provider cancel latency. It stays unset when no provider cancel was sent
+	// (e.g. a queued request canceled before any provider was assigned), and is
+	// never backfilled to the terminal/grace-expiry outcome-build time.
+	if ts := pr.CancelSignalSentAtSafe(); !ts.IsZero() {
+		out.CancelSignalSentAtMs = ts.UnixMilli()
+	}
+	// DAR-346: delivery measurement — what actually reached the client before a
+	// cancel/terminal. Counts opaque ciphertext SSE frames only (never decrypted).
+	if snap := pr.DeliverySnapshot(); snap.Chunks > 0 {
+		out.ChunksSent = snap.Chunks
+		out.BytesSent = snap.Bytes
+		if out.EstimatedDeliveredTokens == 0 {
+			// Best effort: content frames ≈ tokens. Phase 3 supplies the exact
+			// provider-reported count when present.
+			out.EstimatedDeliveredTokens = snap.Chunks
+		}
+		if !snap.LastChunkAt.IsZero() {
+			out.LastChunkAtMs = snap.LastChunkAt.UnixMilli()
+		}
+		idleGapMs := snap.MaxIdleGapMs
+		// For an after-first-token cancel the decisive gap is usually the silence
+		// AFTER the last delivered chunk (stream stalled, then the client closed) —
+		// no later chunk records it, so fold in the trailing gap. Bound it at the
+		// cancel-signal time (≈ client close), NOT time.Now(): this can run from the
+		// terminal/grace path up to 30s after the close, and counting that
+		// settlement wait would misclassify a quick user abort as stream_idle.
+		if out.CancelPhase == cancelPhaseAfterFirstToken && !snap.LastChunkAt.IsZero() {
+			if cancelAt := pr.CancelSignalSentAtSafe(); !cancelAt.IsZero() {
+				if trailing := float64(cancelAt.Sub(snap.LastChunkAt).Milliseconds()); trailing > idleGapMs {
+					idleGapMs = trailing
+				}
+			}
+		}
+		if idleGapMs > 0 {
+			out.MaxIdleGapMs = idleGapMs
+		}
+		// Refine a generic client-close into a stream-idle cancel when a measured
+		// no-progress gap preceded the close (provider stalled mid-stream).
+		out.CancelSource = refineCancelSourceForIdle(out.CancelSource, out.CancelPhase, idleGapMs)
+	}
 	if pr.Timing == nil {
 		return
 	}
 	t := pr.Timing
 	firstChunk := pr.FirstChunkAtSafe()
+	if !firstChunk.IsZero() {
+		out.FirstChunkAtMs = firstChunk.UnixMilli()
+	}
 	if !firstChunk.IsZero() && !t.DispatchedAt.IsZero() {
 		ms := float64(firstChunk.Sub(t.DispatchedAt).Milliseconds())
 		out.ActualTTFTMs = ms

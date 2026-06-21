@@ -2526,6 +2526,11 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		if !cancelTerminal {
 			outcome.AdmittedButFailed = true
 		}
+		// A provider terminal did arrive for this after-commit cancellation
+		// (error / cancel-ack / disconnect), distinguishing it from the
+		// settlement-grace-expiry path that records no terminal (DAR-346).
+		outcome.ProviderTerminalReceived = true
+		outcome.ProviderTerminalAtMs = time.Now().UnixMilli()
 		s.updateInferenceRouteOutcomeForPending(pr, outcome)
 		// Consumer disconnected — no reader for the channels; settle by
 		// refunding, OFF the read loop (a store Credit can block for seconds

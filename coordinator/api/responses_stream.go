@@ -155,7 +155,13 @@ func (e *responsesStreamEmitter) emit(eventType string, fields map[string]any) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data)
+	// DAR-346: count what actually reached the client. The emitter translates one
+	// provider chunk into zero or more client events, so delivery is measured here
+	// (per emitted event) rather than per raw provider chunk in the relay loop —
+	// and only when the write succeeds (a gone client must not be counted).
+	if _, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data); werr == nil {
+		e.pr.RecordDeliveredChunk(len(data))
+	}
 	e.flusher.Flush()
 }
 

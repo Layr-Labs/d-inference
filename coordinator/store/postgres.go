@@ -822,6 +822,20 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			used_backup BOOL,
 			backup_won BOOL,
 			error_reason TEXT,
+			cancel_phase TEXT,
+			cancel_source TEXT,
+			partial_settlement_status TEXT,
+			settled_partial_tokens INTEGER,
+			settled_partial_micro_usd BIGINT,
+			cancel_signal_sent_at_ms BIGINT,
+			provider_terminal_received BOOL,
+			provider_terminal_at_ms BIGINT,
+			first_chunk_at_ms BIGINT,
+			last_chunk_at_ms BIGINT,
+			chunks_sent INTEGER,
+			bytes_sent BIGINT,
+			estimated_delivered_tokens INTEGER,
+			max_idle_gap_ms DOUBLE PRECISION,
 			UNIQUE(request_id, attempt)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_inference_routes_created ON inference_routes(created_at DESC)`,
@@ -867,6 +881,23 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// DAR-341: normalized provider/coordinator error reason. Nullable and
 		// appended so fresh DBs match upgraded DB column order for SELECT * scans.
 		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS error_reason TEXT`,
+		// DAR-346: structured cancellation telemetry. Appended after error_reason
+		// so fresh and ALTER'd DBs keep one column order; reads use the explicit
+		// inferenceRouteSelectColumns list. Timestamps are epoch ms (BIGINT).
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS cancel_phase TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS cancel_source TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS partial_settlement_status TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS settled_partial_tokens INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS settled_partial_micro_usd BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS cancel_signal_sent_at_ms BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS provider_terminal_received BOOL`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS provider_terminal_at_ms BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS first_chunk_at_ms BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS last_chunk_at_ms BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS chunks_sent INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS bytes_sent BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS estimated_delivered_tokens INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS max_idle_gap_ms DOUBLE PRECISION`,
 
 		// Rejected inbound inference requests (4xx/5xx) at any pipeline stage,
 		// with the request shape and a counterfactual servability snapshot
@@ -1517,7 +1548,10 @@ const inferenceRouteSelectColumns = `
 			created_at, updated_at,
 			provider_region, consumer_region,
 			parse_ms, reserve_ms, route_ms, encrypt_ms, queue_wait_ms, dispatch_ms, actual_decode_tps,
-			admitted_but_failed, used_backup, backup_won, error_reason`
+			admitted_but_failed, used_backup, backup_won, error_reason,
+			cancel_phase, cancel_source, partial_settlement_status, settled_partial_tokens, settled_partial_micro_usd,
+			cancel_signal_sent_at_ms, provider_terminal_received, provider_terminal_at_ms,
+			first_chunk_at_ms, last_chunk_at_ms, chunks_sent, bytes_sent, estimated_delivered_tokens, max_idle_gap_ms`
 
 // RecordInferenceRoute writes the routing decision snapshot for a request
 // attempt. Callers keep this best-effort by logging returned errors off the
@@ -1679,6 +1713,20 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 			admitted_but_failed = COALESCE(admitted_but_failed, FALSE) OR $21,
 			used_backup = COALESCE(used_backup, FALSE) OR $22,
 			backup_won = COALESCE(backup_won, FALSE) OR $23,
+			cancel_phase = COALESCE(NULLIF($24, ''), cancel_phase),
+			cancel_source = COALESCE(NULLIF($25, ''), cancel_source),
+			partial_settlement_status = COALESCE(NULLIF($26, ''), partial_settlement_status),
+			settled_partial_tokens = CASE WHEN $27 <> 0 THEN $27 ELSE settled_partial_tokens END,
+			settled_partial_micro_usd = CASE WHEN $28::bigint <> 0 THEN $28::bigint ELSE settled_partial_micro_usd END,
+			cancel_signal_sent_at_ms = CASE WHEN $29::bigint <> 0 THEN $29::bigint ELSE cancel_signal_sent_at_ms END,
+			provider_terminal_received = COALESCE(provider_terminal_received, FALSE) OR $30,
+			provider_terminal_at_ms = CASE WHEN $31::bigint <> 0 THEN $31::bigint ELSE provider_terminal_at_ms END,
+			first_chunk_at_ms = CASE WHEN $32::bigint <> 0 THEN $32::bigint ELSE first_chunk_at_ms END,
+			last_chunk_at_ms = CASE WHEN $33::bigint <> 0 THEN $33::bigint ELSE last_chunk_at_ms END,
+			chunks_sent = CASE WHEN $34 <> 0 THEN $34 ELSE chunks_sent END,
+			bytes_sent = CASE WHEN $35::bigint <> 0 THEN $35::bigint ELSE bytes_sent END,
+			estimated_delivered_tokens = CASE WHEN $36 <> 0 THEN $36 ELSE estimated_delivered_tokens END,
+			max_idle_gap_ms = CASE WHEN $37 <> 0 THEN $37 ELSE max_idle_gap_ms END,
 			updated_at = NOW()
 		 WHERE request_id = $1 AND attempt = $2`,
 		requestID, attempt,
@@ -1686,6 +1734,9 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 		outcome.CostMicroUSD, outcome.ActualTTFTMs, outcome.DispatchToFirstChunkMs, outcome.TotalDurationMs,
 		outcome.ParseMs, outcome.ReserveMs, outcome.RouteMs, outcome.EncryptMs, outcome.QueueWaitMs, outcome.DispatchMs, outcome.ActualDecodeTPS,
 		outcome.AdmittedButFailed, outcome.UsedBackup, outcome.BackupWon,
+		outcome.CancelPhase, outcome.CancelSource, outcome.PartialSettlementStatus, outcome.SettledPartialTokens, outcome.SettledPartialMicroUSD,
+		outcome.CancelSignalSentAtMs, outcome.ProviderTerminalReceived, outcome.ProviderTerminalAtMs,
+		outcome.FirstChunkAtMs, outcome.LastChunkAtMs, outcome.ChunksSent, outcome.BytesSent, outcome.EstimatedDeliveredTokens, outcome.MaxIdleGapMs,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update inference route outcome: %w", err)
@@ -1734,6 +1785,20 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 		var admittedButFailed *bool
 		var usedBackup *bool
 		var backupWon *bool
+		var cancelPhase *string
+		var cancelSource *string
+		var partialSettlementStatus *string
+		var settledPartialTokens *int
+		var settledPartialMicroUSD *int64
+		var cancelSignalSentAtMs *int64
+		var providerTerminalReceived *bool
+		var providerTerminalAtMs *int64
+		var firstChunkAtMs *int64
+		var lastChunkAtMs *int64
+		var chunksSent *int
+		var bytesSent *int64
+		var estimatedDeliveredTokens *int
+		var maxIdleGapMs *float64
 
 		if err := rows.Scan(
 			&id,
@@ -1754,6 +1819,9 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 			&providerRegion, &consumerRegion,
 			&parseMs, &reserveMs, &routeMs, &encryptMs, &queueWaitMs, &dispatchMs, &actualDecodeTPS,
 			&admittedButFailed, &usedBackup, &backupWon, &errorReason,
+			&cancelPhase, &cancelSource, &partialSettlementStatus, &settledPartialTokens, &settledPartialMicroUSD,
+			&cancelSignalSentAtMs, &providerTerminalReceived, &providerTerminalAtMs,
+			&firstChunkAtMs, &lastChunkAtMs, &chunksSent, &bytesSent, &estimatedDeliveredTokens, &maxIdleGapMs,
 		); err != nil {
 			continue
 		}
@@ -1823,6 +1891,48 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 		}
 		if backupWon != nil {
 			outcome.BackupWon = *backupWon
+		}
+		if cancelPhase != nil {
+			outcome.CancelPhase = *cancelPhase
+		}
+		if cancelSource != nil {
+			outcome.CancelSource = *cancelSource
+		}
+		if partialSettlementStatus != nil {
+			outcome.PartialSettlementStatus = *partialSettlementStatus
+		}
+		if settledPartialTokens != nil {
+			outcome.SettledPartialTokens = *settledPartialTokens
+		}
+		if settledPartialMicroUSD != nil {
+			outcome.SettledPartialMicroUSD = *settledPartialMicroUSD
+		}
+		if cancelSignalSentAtMs != nil {
+			outcome.CancelSignalSentAtMs = *cancelSignalSentAtMs
+		}
+		if providerTerminalReceived != nil {
+			outcome.ProviderTerminalReceived = *providerTerminalReceived
+		}
+		if providerTerminalAtMs != nil {
+			outcome.ProviderTerminalAtMs = *providerTerminalAtMs
+		}
+		if firstChunkAtMs != nil {
+			outcome.FirstChunkAtMs = *firstChunkAtMs
+		}
+		if lastChunkAtMs != nil {
+			outcome.LastChunkAtMs = *lastChunkAtMs
+		}
+		if chunksSent != nil {
+			outcome.ChunksSent = *chunksSent
+		}
+		if bytesSent != nil {
+			outcome.BytesSent = *bytesSent
+		}
+		if estimatedDeliveredTokens != nil {
+			outcome.EstimatedDeliveredTokens = *estimatedDeliveredTokens
+		}
+		if maxIdleGapMs != nil {
+			outcome.MaxIdleGapMs = *maxIdleGapMs
 		}
 		applyInferenceRouteOutcomeToRecord(&r, outcome)
 		records = append(records, r)

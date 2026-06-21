@@ -992,6 +992,67 @@ func testInferenceRouteStore(t *testing.T, s Store) {
 		t.Fatalf("queued route snapshot was not refreshed with serving provider: %+v", queuedGot)
 	}
 
+	// DAR-346: structured cancellation telemetry round-trips through the store
+	// (memory AND postgres) and merges on non-zero like the other outcome fields.
+	findRoute := func(reqID string, attempt int) *InferenceRouteRecord {
+		recs := s.InferenceRouteRecordsSince(time.Time{})
+		for i := range recs {
+			if recs[i].RequestID == reqID && recs[i].Attempt == attempt {
+				return &recs[i]
+			}
+		}
+		return nil
+	}
+	cancelRec := &InferenceRouteRecord{RequestID: "req-cancel", Attempt: 0, Model: rec.Model, Outcome: "routed"}
+	if err := s.RecordInferenceRoute(cancelRec); err != nil {
+		t.Fatalf("RecordInferenceRoute cancel: %v", err)
+	}
+	cancelOutcome := &InferenceRouteOutcome{
+		FinalStatus:              "partial_success",
+		ErrorClass:               "client_gone_after_commit_provider_completed",
+		CancelPhase:              "after_provider_complete",
+		CancelSource:             "client_closed",
+		PartialSettlementStatus:  "settled",
+		SettledPartialTokens:     128,
+		SettledPartialMicroUSD:   4200,
+		CancelSignalSentAtMs:     1_700_000_000_000,
+		ProviderTerminalReceived: true,
+		ProviderTerminalAtMs:     1_700_000_000_500,
+		FirstChunkAtMs:           1_700_000_000_100,
+		LastChunkAtMs:            1_700_000_040_000,
+		ChunksSent:               37,
+		BytesSent:                8192,
+		EstimatedDeliveredTokens: 37,
+		MaxIdleGapMs:             1500,
+	}
+	if err := s.UpdateInferenceRouteOutcome("req-cancel", 0, cancelOutcome); err != nil {
+		t.Fatalf("UpdateInferenceRouteOutcome cancel: %v", err)
+	}
+	gotCancel := findRoute("req-cancel", 0)
+	if gotCancel == nil {
+		t.Fatal("req-cancel not found after outcome update")
+	}
+	if gotCancel.CancelPhase != "after_provider_complete" || gotCancel.CancelSource != "client_closed" || gotCancel.PartialSettlementStatus != "settled" {
+		t.Errorf("cancel enums not exposed on route record: %+v", gotCancel)
+	}
+	if gotCancel.SettledPartialTokens != 128 || gotCancel.SettledPartialMicroUSD != 4200 || !gotCancel.ProviderTerminalReceived {
+		t.Errorf("cancel settlement fields not exposed on route record: %+v", gotCancel)
+	}
+	if gotCancel.ChunksSent != 37 || gotCancel.BytesSent != 8192 || gotCancel.EstimatedDeliveredTokens != 37 || gotCancel.MaxIdleGapMs != 1500 {
+		t.Errorf("cancel delivery fields not exposed on route record: %+v", gotCancel)
+	}
+	if gotCancel.FirstChunkAtMs != 1_700_000_000_100 || gotCancel.LastChunkAtMs != 1_700_000_040_000 || gotCancel.CancelSignalSentAtMs != 1_700_000_000_000 || gotCancel.ProviderTerminalAtMs != 1_700_000_000_500 {
+		t.Errorf("cancel timestamps not exposed on route record: %+v", gotCancel)
+	}
+	// A later latency-only update must not erase the cancellation fields.
+	if err := s.UpdateInferenceRouteOutcome("req-cancel", 0, &InferenceRouteOutcome{TotalDurationMs: 41000}); err != nil {
+		t.Fatalf("UpdateInferenceRouteOutcome cancel latency-only: %v", err)
+	}
+	gotCancel = findRoute("req-cancel", 0)
+	if gotCancel == nil || gotCancel.CancelPhase != "after_provider_complete" || gotCancel.PartialSettlementStatus != "settled" || gotCancel.ChunksSent != 37 || gotCancel.TotalDurationMs != 41000 {
+		t.Errorf("cancel fields should survive a latency-only merge, got %+v", gotCancel)
+	}
+
 	// Updating a non-existent attempt is best-effort and returns no error.
 	if err := s.UpdateInferenceRouteOutcome("req-missing", 99, outcome); err != nil {
 		t.Errorf("UpdateInferenceRouteOutcome missing record: %v", err)

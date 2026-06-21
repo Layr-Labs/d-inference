@@ -728,6 +728,24 @@ type InferenceRouteRecord struct {
 	UsedBackup             bool    `json:"used_backup"`
 	BackupWon              bool    `json:"backup_won"`
 
+	// DAR-346 structured cancellation telemetry. Timestamps are epoch
+	// milliseconds (0 = unset) so they ride the numeric merge-on-nonzero path.
+	// Every field is a count, timestamp, or normalized enum — never content.
+	CancelPhase              string  `json:"cancel_phase,omitempty"`
+	CancelSource             string  `json:"cancel_source,omitempty"`
+	PartialSettlementStatus  string  `json:"partial_settlement_status,omitempty"`
+	SettledPartialTokens     int     `json:"settled_partial_tokens,omitempty"`
+	SettledPartialMicroUSD   int64   `json:"settled_partial_micro_usd,omitempty"`
+	CancelSignalSentAtMs     int64   `json:"cancel_signal_sent_at_ms,omitempty"`
+	ProviderTerminalReceived bool    `json:"provider_terminal_received,omitempty"`
+	ProviderTerminalAtMs     int64   `json:"provider_terminal_at_ms,omitempty"`
+	FirstChunkAtMs           int64   `json:"first_chunk_at_ms,omitempty"`
+	LastChunkAtMs            int64   `json:"last_chunk_at_ms,omitempty"`
+	ChunksSent               int     `json:"chunks_sent,omitempty"`
+	BytesSent                int64   `json:"bytes_sent,omitempty"`
+	EstimatedDeliveredTokens int     `json:"estimated_delivered_tokens,omitempty"`
+	MaxIdleGapMs             float64 `json:"max_idle_gap_ms,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -763,6 +781,24 @@ type InferenceRouteOutcome struct {
 	// Speculative/backup-race dispatch outcome.
 	UsedBackup bool `json:"used_backup"`
 	BackupWon  bool `json:"backup_won"`
+
+	// DAR-346 structured cancellation telemetry. Timestamps are epoch
+	// milliseconds (0 = unset) so they ride the numeric merge-on-nonzero path.
+	// Every field is a count, timestamp, or normalized enum — never content.
+	CancelPhase              string  `json:"cancel_phase,omitempty"`
+	CancelSource             string  `json:"cancel_source,omitempty"`
+	PartialSettlementStatus  string  `json:"partial_settlement_status,omitempty"`
+	SettledPartialTokens     int     `json:"settled_partial_tokens,omitempty"`
+	SettledPartialMicroUSD   int64   `json:"settled_partial_micro_usd,omitempty"`
+	CancelSignalSentAtMs     int64   `json:"cancel_signal_sent_at_ms,omitempty"`
+	ProviderTerminalReceived bool    `json:"provider_terminal_received,omitempty"`
+	ProviderTerminalAtMs     int64   `json:"provider_terminal_at_ms,omitempty"`
+	FirstChunkAtMs           int64   `json:"first_chunk_at_ms,omitempty"`
+	LastChunkAtMs            int64   `json:"last_chunk_at_ms,omitempty"`
+	ChunksSent               int     `json:"chunks_sent,omitempty"`
+	BytesSent                int64   `json:"bytes_sent,omitempty"`
+	EstimatedDeliveredTokens int     `json:"estimated_delivered_tokens,omitempty"`
+	MaxIdleGapMs             float64 `json:"max_idle_gap_ms,omitempty"`
 }
 
 // RejectionRecord captures a single rejected inbound inference request (4xx/5xx)

@@ -76,6 +76,16 @@ const (
 	// immediately-available healthy providers rather than waiting on busy ones.
 	maxDispatchAttempts = 64
 
+	// maxCapacityClassRetries bounds failover specifically for TRANSIENT-capacity
+	// rejections (this provider's live KV budget, a full queue, an update drain).
+	// Such a shortage MAY clear on another provider, so we fail over — but only a
+	// few times, so a fleet-wide transient (or an oversized request the determinism
+	// check didn't tag) cannot walk all maxDispatchAttempts providers and 503 each
+	// (the prod storm: median 22, max 63 attempts, ~8.7 min, 0% eventual success).
+	// A DETERMINISTIC-context rejection (prompt > model context, identical on every
+	// provider) stops on the FIRST attempt regardless — see classifyRejection.
+	maxCapacityClassRetries = 3
+
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
 	// the coordinator launches a speculative backup dispatch. The primary
 	// provider gets this fraction of the deadline before the backup is
@@ -2306,6 +2316,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// model may have been rewritten by a capacity- or TTFT-fallback above
+	// (maybeFallbackAliasCapacity / maybeFallbackAliasTTFT), so refresh the context
+	// window for the FINAL build before handing it to the dispatch loop — otherwise
+	// shouldStopFailover/classifyRejection would compare a provider's budget against
+	// the originally-resolved model's context. Overwrite only on a successful lookup
+	// (fallback builds of the same alias normally share a context window; a build
+	// absent from the store keeps the prior value, matching the initial read).
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		modelMaxContext = rec.MaxContextLength
+	}
+
 	d := &dispatchState{
 		s:                      s,
 		w:                      w,
@@ -2330,6 +2351,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		timing:                 timing,
 		deadline:               deadline,
 		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
+		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
 		// Track providers that failed during retry so we don't dispatch to them again.
 		excludeProviders: make(map[string]struct{}),

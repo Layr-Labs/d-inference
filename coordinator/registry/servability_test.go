@@ -124,7 +124,7 @@ func TestPredictServableContextTier(t *testing.T) {
 	model := "ctx-model"
 
 	// prompt 9000 + max 256 = 9256 > contextLimit 8192 → guaranteed-unservable.
-	v := reg.PredictServable(model, 9000, 256, 8192, RequestTraits{}, false)
+	v := reg.PredictServable(model, 9000, 9000, 256, 8192, RequestTraits{}, false)
 	if v.Servable {
 		t.Fatalf("over-context request reported servable: %+v", v)
 	}
@@ -140,7 +140,7 @@ func TestPredictServableContextTier(t *testing.T) {
 
 	// prompt 4000 + max 256 = 4256 <= contextLimit 131072 → context tier passes;
 	// with an empty fleet the budget tier fails open → servable.
-	v = reg.PredictServable(model, 4000, 256, 131072, RequestTraits{}, false)
+	v = reg.PredictServable(model, 4000, 4000, 256, 131072, RequestTraits{}, false)
 	if !v.Servable {
 		t.Fatalf("within-context request reported unservable (must fail open on empty fleet): %+v", v)
 	}
@@ -166,7 +166,7 @@ func TestPredictServableTokenBudgetTier(t *testing.T) {
 	// prompt 20000 + max 256 = 20256 > fleet max 8192, and every provider's
 	// budget is known → confident reject as prompt_too_long. contextLimit=0
 	// disables tier 1.
-	over := reg.PredictServable(model, 20000, 256, 0, RequestTraits{}, false)
+	over := reg.PredictServable(model, 20000, 20000, 256, 0, RequestTraits{}, false)
 	if over.Servable {
 		t.Fatalf("over-budget request reported servable: %+v", over)
 	}
@@ -184,7 +184,7 @@ func TestPredictServableTokenBudgetTier(t *testing.T) {
 	}
 
 	// prompt 1000 + max 256 = 1256 <= fleet max 8192 → fits → servable.
-	within := reg.PredictServable(model, 1000, 256, 0, RequestTraits{}, false)
+	within := reg.PredictServable(model, 1000, 1000, 256, 0, RequestTraits{}, false)
 	if !within.Servable {
 		t.Fatalf("within-budget request reported unservable: %+v", within)
 	}
@@ -196,6 +196,38 @@ func TestPredictServableTokenBudgetTier(t *testing.T) {
 	}
 	if within.FleetMaxBudget != 8192 {
 		t.Fatalf("FleetMaxBudget = %d, want 8192", within.FleetMaxBudget)
+	}
+}
+
+// TestPredictServableContextPromptOnlyAffectsContextTier guards the DAR-347
+// review fix: the calibrated contextPromptTokens must drive ONLY the context
+// tier, never the token-budget tier. The budget tier always uses the RAW
+// estimate, so a calibration multiplier can never over-reject a request that fits
+// a provider's real KV budget (a false-NO / underutilization).
+func TestPredictServableContextPromptOnlyAffectsContextTier(t *testing.T) {
+	reg := New(testLogger())
+	model := "context-prompt-isolation-model"
+	makeTokenBudgetProvider(t, reg, "p", model, 100, 0, 8192, 80) // fleet max budget 8192
+
+	// Budget tier (contextLimit=0 disables tier 1): raw 4000+256=4256 <= 8192
+	// fits. A calibrated context-prompt of 9000 (9256 > 8192) must NOT leak into
+	// the budget tier and shed it.
+	budget := reg.PredictServable(model, 4000, 9000, 256, 0, RequestTraits{}, false)
+	if !budget.Servable {
+		t.Fatalf("calibrated context prompt leaked into the budget tier and over-rejected a budget-fitting request: %+v", budget)
+	}
+	if budget.RequestTokens != 4256 {
+		t.Fatalf("RequestTokens = %d, want 4256 (budget tier must use the RAW estimate)", budget.RequestTokens)
+	}
+
+	// Context tier: raw 4000+256=4256 fits an 8192 context, but the calibrated
+	// 9000+256=9256 exceeds it — the context tier DOES use the calibrated prompt.
+	ctx := reg.PredictServable(model, 4000, 9000, 256, 8192, RequestTraits{}, false)
+	if ctx.Servable || ctx.Reason != ServabilityContextExceeded {
+		t.Fatalf("context tier did not use the calibrated context prompt: %+v", ctx)
+	}
+	if ctx.RequestTokens != 9256 {
+		t.Fatalf("RequestTokens = %d, want 9256 (context tier uses the calibrated prompt)", ctx.RequestTokens)
 	}
 }
 
@@ -211,7 +243,7 @@ func TestPredictServableFailsOpenOnUnknownBudget(t *testing.T) {
 	// force fail-open regardless of the known ceiling.
 	makeTokenBudgetProvider(t, reg, "known-small", model, 100, 0, 4096, 80)
 
-	huge := reg.PredictServable(model, 1_000_000, 256, 0, RequestTraits{}, false)
+	huge := reg.PredictServable(model, 1_000_000, 1_000_000, 256, 0, RequestTraits{}, false)
 	if !huge.Servable {
 		t.Fatalf("request must fail open when an eligible provider's budget is unknown: %+v", huge)
 	}
@@ -237,7 +269,7 @@ func TestPredictServableKnownZeroColdBudgetUnservable(t *testing.T) {
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 14, MinRAMGB: 14}})
 	makeWarmPoolColdProvider(t, reg, "tight", model, 80, 16, 0)
 
-	v := reg.PredictServable(model, 1000, 256, 0, RequestTraits{}, false)
+	v := reg.PredictServable(model, 1000, 1000, 256, 0, RequestTraits{}, false)
 	if v.Servable {
 		t.Fatalf("known-zero-budget fleet reported servable (must reject, not fail open): %+v", v)
 	}
@@ -257,7 +289,7 @@ func TestPredictServableKnownZeroColdBudgetUnservable(t *testing.T) {
 func TestPredictServableEmptyFleet(t *testing.T) {
 	reg := New(testLogger())
 
-	v := reg.PredictServable("no-such-model", 10_000_000, 256, 0, RequestTraits{}, false)
+	v := reg.PredictServable("no-such-model", 10_000_000, 10_000_000, 256, 0, RequestTraits{}, false)
 	if !v.Servable {
 		t.Fatalf("empty fleet must be servable (fail open): %+v", v)
 	}

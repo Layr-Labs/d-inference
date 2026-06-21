@@ -424,7 +424,15 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	affinityProviderID := ""
 	affinityLookup := pr.CacheAffinityKey != "" && pr.ConsumerKey != ""
 	if affinityLookup && r.cacheAffinityBonusMs > 0 {
-		affinityProviderID = r.cacheAffinity.lookup(pr.ConsumerKey, model, pr.CacheAffinityKey, now)
+		// Cache affinity is disabled for dedicated-pool models (e.g. Gemma): pinning
+		// a consumer's repeat traffic to one box (via the bonus AND the hard
+		// near-tie override below) reintroduces exactly the concentration the
+		// per-box quality cap + cost-based spreading exist to prevent. The dedicated
+		// pool is concurrency-bound, not prompt-cache-bound, so the pin is not worth
+		// it. Leaving affinityProviderID empty skips both the bonus and the override.
+		if _, dedicated := r.dedicatedPatternForLocked(model); !dedicated {
+			affinityProviderID = r.cacheAffinity.lookup(pr.ConsumerKey, model, pr.CacheAffinityKey, now)
+		}
 	}
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
@@ -897,7 +905,13 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		snap.pendingForModel++
 		snap.pendingMaxTokens += pendingTokenBudget(pr)
 	}
-	snap.hasHeadroom = p.hasConcurrencyHeadroomForModelLocked(model)
+	// Concurrency headroom with the quality-concurrency cap: a slow model whose
+	// quality batch is below the flat fallback (e.g. Gemma at ~23 tok/s solo →
+	// batch 1-2) stops being admittable once it is at its quality cap, so load
+	// spreads across boxes instead of collapsing a few. Uses the static
+	// single-stream decode rate (snap.decodeTPS = resolvedDecodeTPS), not the
+	// observed-under-load value. No-op (legacy flat cap) when the cap is disabled.
+	snap.hasHeadroom = r.hasConcurrencyHeadroomForModelCapLocked(p, model, snap.decodeTPS)
 	snap.hasBackendCapacity = p.BackendCapacity != nil
 
 	if p.BackendCapacity != nil {
@@ -1516,7 +1530,11 @@ func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits Re
 	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
 		return false
 	}
-	if !p.hasConcurrencyHeadroomForModelLocked(model) {
+	// Apply the SAME quality-concurrency cap as the selection snapshot and the
+	// preflight. This is the final admit re-check in ReserveProviderEx; if a
+	// heartbeat bumped NumRunning after the snapshot was built, the legacy flat-cap
+	// check here would let a box that just reached its quality cap be over-admitted.
+	if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -1638,8 +1656,11 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 
-		// Concurrency gate.
-		if !p.hasConcurrencyHeadroomForModelLocked(model) {
+		// Concurrency gate (with the quality-concurrency cap, same as the dispatch
+		// snapshot — uses the static single-stream decode rate so routing and the
+		// shed preflight stay consistent and a slow model's quality cap counts a
+		// saturated box as a capacity rejection here too).
+		if !r.hasConcurrencyHeadroomForModelCapLocked(p, model, resolvedDecodeTPS(p)) {
 			p.mu.Unlock()
 			capacityRejections++
 			continue

@@ -15,11 +15,29 @@ type Config struct {
 	MinTrustLevel string
 	WarmPool      WarmPoolConfig
 	CacheAffinity CacheAffinityConfig
+	QualityCap    QualityCapConfig
 }
 
 type CacheAffinityConfig struct {
 	TTL     time.Duration
 	BonusMs float64
+}
+
+// QualityCapConfig governs the per-provider admission concurrency cap derived
+// from each model's quality_concurrency (the largest batch that keeps every
+// request at/above the decode floor), replacing the flat-24 fallback. Universal:
+// it caps slow/saturated models tightly while leaving fast, over-provisioned
+// models effectively unchanged. See concurrency_cap.go.
+type QualityCapConfig struct {
+	// Enabled turns the cap on. When false the legacy flat per-provider cap
+	// (maxConcurrencyForModelLocked) applies unchanged.
+	Enabled bool
+	// Overcommit multiplies the strict quality batch. 1.0 = the exact
+	// decode-floor-preserving batch; 2.0 (default) allows double that, trading a
+	// little per-request TPS for ~double pool capacity. The decode floor + load
+	// factor are shared with the warm-pool target math (WarmPool.DecodeFloorTPS,
+	// effectiveTPSLoadFactor) so admission and planning cannot drift.
+	Overcommit float64
 }
 
 type WarmPoolConfig struct {
@@ -115,6 +133,10 @@ func ReadConfig() Config {
 			TTL:     envDuration(env.EnvPrefix+"_CACHE_AFFINITY_TTL", cacheAffinityTTL),
 			BonusMs: env.EnvFloat(env.EnvPrefix+"_CACHE_AFFINITY_BONUS_MS", defaultCacheAffinityBonusMs),
 		},
+		QualityCap: QualityCapConfig{
+			Enabled:    env.EnvBool(env.EnvPrefix+"_QUALITY_CONCURRENCY_CAP", true),
+			Overcommit: env.EnvFloat(env.EnvPrefix+"_QUALITY_CONCURRENCY_OVERCOMMIT", 2.0),
+		},
 	}
 }
 
@@ -130,21 +152,20 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 // Check validates the configuration.
 // An empty MinTrustLevel is valid and means "use the default".
 func (c Config) Check() error {
-	if c.MinTrustLevel == "" {
-		if err := c.WarmPool.Check(); err != nil {
-			return err
-		}
-		return c.CacheAffinity.Check()
-	}
-	// trustRank returns -1 for unrecognized trust levels.
-	if trustRank(TrustLevel(c.MinTrustLevel)) < 0 {
+	// An empty MinTrustLevel is valid ("use the default"); a non-empty one must be
+	// a recognized level (trustRank returns -1 otherwise). Either way, all
+	// sub-configs are validated on every path.
+	if c.MinTrustLevel != "" && trustRank(TrustLevel(c.MinTrustLevel)) < 0 {
 		return fmt.Errorf("registry: invalid MinTrustLevel %q (valid: %q, %q, %q)",
 			c.MinTrustLevel, TrustNone, TrustSelfSigned, TrustHardware)
 	}
 	if err := c.WarmPool.Check(); err != nil {
 		return err
 	}
-	return c.CacheAffinity.Check()
+	if err := c.CacheAffinity.Check(); err != nil {
+		return err
+	}
+	return c.QualityCap.Check()
 }
 
 func (c CacheAffinityConfig) Check() error {
@@ -156,6 +177,13 @@ func (c CacheAffinityConfig) Check() error {
 	}
 	if c.BonusMs > 10_000 {
 		return fmt.Errorf("registry: cache affinity bonus must be <= 10000ms")
+	}
+	return nil
+}
+
+func (c QualityCapConfig) Check() error {
+	if c.Overcommit < 0 {
+		return fmt.Errorf("registry: quality concurrency overcommit must be >= 0")
 	}
 	return nil
 }

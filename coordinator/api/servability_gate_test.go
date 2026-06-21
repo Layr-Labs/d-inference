@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // End-to-end coverage for the smart servability gate (early-429 admission).
@@ -136,5 +137,76 @@ func TestServabilityGateDisabledAdmits(t *testing.T) {
 	// capacity path, which sheds it as a busy/at-capacity 429 instead.
 	if w.Code != http.StatusTooManyRequests || !strings.Contains(body, "at capacity") {
 		t.Fatalf("gate-off request did not take the capacity path: status=%d body=%s", w.Code, body)
+	}
+}
+
+// TestServabilityGate_CalibrationShedsContextOversized (DAR-347) proves the
+// per-family prompt-token calibration is wired into the context tier. The prompt
+// is sized so the RAW len/4 estimate + max_tokens stays UNDER the model context
+// (so an uncalibrated gate would admit it → dispatch → provider 503), while the
+// CALIBRATED estimate (gpt-oss ×1.3) crosses the context window and is shed at
+// preflight as an uptime-neutral 429. The provider carries a large token budget
+// so the token-budget tier cannot fire — isolating the context tier.
+func TestServabilityGate_CalibrationShedsContextOversized(t *testing.T) {
+	t.Setenv("EIGENINFERENCE_QUEUE_BEFORE_SHED", "false")
+	srv, st := testServer(t)
+	srv.SetServabilityGate(true)
+
+	const model = "gpt-oss-ctx-test" // contains "gpt-oss" → calibration ×1.3 applies
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+
+	// Model registry record supplies modelMaxContext. modelRegistryRecordLocked
+	// needs an active entry + a ready, promoted version.
+	entry := &store.ModelRegistryEntry{
+		ID: model, DisplayName: "ctx", Quantization: "4bit",
+		MaxContextLength: 131072, MaxOutputLength: 32768, MinRAMGB: 24, Status: "active",
+	}
+	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
+	if err := st.SetModelVersion(entry, &store.ModelVersion{
+		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
+	}, files); err != nil {
+		t.Fatalf("SetModelVersion: %v", err)
+	}
+	if err := st.PromoteModelVersion(model, "v1"); err != nil {
+		t.Fatalf("PromoteModelVersion: %v", err)
+	}
+
+	// Resident provider with a LARGE structural token budget so PredictServable's
+	// tier-2 (prompt_too_long) cannot fire — the only tier that can shed here is
+	// tier-1 (context), and only because of the calibration.
+	p := registerBuildsProvider(srv, "ctx-provider", model)
+	p.Mu().Lock()
+	p.BackendCapacity.Slots[0].State = "running"
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 5_000_000
+	p.Mu().Unlock()
+
+	// ~440,000 chars → est ~110,000 prompt tokens (len/4). With max_tokens 64:
+	//   raw:        110,064          < 131,072  → uncalibrated tier-1 PASSES
+	//   calibrated: 110,000×1.3 + 64 = 143,064 > 131,072 → calibrated tier-1 SHEDS
+	hugePrompt := strings.Repeat("x", 440000)
+	reqBody, err := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []any{map[string]any{"role": "user", "content": hugePrompt}},
+		"max_tokens": 64,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(reqBody)))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (calibrated prompt exceeds context); body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("missing Retry-After on context-oversized 429")
+	}
+	if !strings.Contains(w.Body.String(), "context window") {
+		t.Errorf("body missing context-window detail (want the context_exceeded tier, proving calibration tripped tier-1); body=%s", w.Body.String())
 	}
 }

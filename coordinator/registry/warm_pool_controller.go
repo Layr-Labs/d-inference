@@ -473,13 +473,17 @@ func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure wa
 			target = maxReachable
 		}
 	}
-	// Dedicated pools (e.g. Gemma) exist solely to serve one model family, so keep
-	// the ENTIRE eligible pool warm rather than demand-tracking it: this lifts idle
-	// dedicated boxes into service and removes cold-start lag on demand spikes
-	// (a cold box's ~30s load makes it un-routable on the request hot path, so the
-	// only way it ever serves is proactive warming). Bounded by warm+eligibleCold
-	// (all we can warm); the per-tick ramp still throttles how fast loads issue.
-	if c.registry != nil && c.registry.IsDedicatedModel(fleet.model) {
+	// Dedicated pools (e.g. Gemma): when a dedicated build is under demand, warm the
+	// ENTIRE eligible pool rather than demand-tracking it — this lifts idle dedicated
+	// boxes into service and removes cold-start lag (a cold box's ~30s load makes it
+	// un-routable on the request hot path, so proactive warming is the only way it
+	// ever serves). Gated on demand for THIS build so we don't force-warm every
+	// build a box advertises matching the family pattern — e.g. during an alias
+	// migration where desired+previous Gemma builds are both catalog-allowed, only
+	// the build actually receiving traffic gets the whole pool, not the stale one
+	// (which would otherwise burn model slots/memory and evict the live build).
+	// Bounded by warm+eligibleCold; the per-tick ramp still throttles the load rate.
+	if c.registry != nil && c.registry.IsDedicatedModel(fleet.model) && c.hasDemandPressure(fleet, pressure, queue) {
 		if whole := fleet.warm + len(fleet.eligibleCold); whole > target {
 			target = whole
 		}

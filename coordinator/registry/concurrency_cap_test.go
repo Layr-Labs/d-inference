@@ -63,6 +63,41 @@ func TestQualityCapScalesWithModelSpeed(t *testing.T) {
 	}
 }
 
+// TestQualityCapFallbackRateOnlyCapsDedicated guards the P1 regression: when a
+// provider has NOT reported a real decode benchmark (DecodeTPS==0), resolvedDecodeTPS
+// falls back to sqrt(memory_bandwidth) — a model-agnostic hardware proxy that
+// under-estimates fast models. The cap must therefore bite only DEDICATED models
+// from that fallback; a non-dedicated model keeps the flat cap (so healthy
+// fast-model traffic isn't shed on a bad rate estimate).
+func TestQualityCapFallbackRateOnlyCapsDedicated(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetDedicatedModels([]string{"gemma-4"})
+	reg.SetQualityConcurrencyCap(true, 2.0, 15, 4)
+
+	// No DecodeTPS benchmark; rate comes from sqrt(bandwidth)=sqrt(800)≈28.
+	mkFallback := func(id, model string) *Provider {
+		p := makeSchedulerProvider(t, reg, id, model, 0) // DecodeTPS unset
+		p.mu.Lock()
+		p.Hardware.MemoryBandwidthGBs = 800
+		p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 500_000
+		p.mu.Unlock()
+		return p
+	}
+
+	// Non-dedicated on the fallback rate → NOT capped (flat 24): don't shed a fast
+	// model on a hardware proxy that can't see its true ~57 tok/s rate.
+	nonDed := mkFallback("qwen-box", qwenBuild)
+	if got := effCap(reg, nonDed, qwenBuild); got != 24 {
+		t.Fatalf("non-dedicated fallback-rate cap = %d, want 24 (no benchmark → not capped from sqrt(bw))", got)
+	}
+
+	// Dedicated on the same fallback rate → capped (best-effort): qc from ~28 tok/s.
+	ded := mkFallback("gemma-box", gemmaBuild)
+	if got := effCap(reg, ded, gemmaBuild); got >= 24 || got < 1 {
+		t.Fatalf("dedicated fallback-rate cap = %d, want a tightened value < 24 (dedicated capped even without a benchmark)", got)
+	}
+}
+
 // TestQualityCapDisabledKeepsFlatCap: with the cap off, the legacy flat
 // token-budget fallback (24) applies unchanged.
 func TestQualityCapDisabledKeepsFlatCap(t *testing.T) {
@@ -138,10 +173,12 @@ func TestQualityCapSpreadsAndSheds(t *testing.T) {
 	}
 }
 
-// TestWarmTargetDedicatedWholePool: for a dedicated model the warm-pool target is
-// the entire eligible pool (warm + eligibleCold) regardless of demand pressure,
-// so idle dedicated boxes get warmed; a non-dedicated model with no pressure is
-// left at its current warm count.
+// TestWarmTargetDedicatedWholePool: for a dedicated model UNDER DEMAND the
+// warm-pool target is the entire eligible pool (warm + eligibleCold), so idle
+// dedicated boxes get warmed. With NO demand for that build it is left at the
+// demand-derived count (so an idle/stale build — e.g. the previous build during
+// an alias migration — is not force-warmed across the whole pool). A
+// non-dedicated model with no pressure is left at its current warm count.
 func TestWarmTargetDedicatedWholePool(t *testing.T) {
 	reg := New(testLogger())
 	reg.SetDedicatedModels([]string{"gemma-4"})
@@ -173,8 +210,14 @@ func TestWarmTargetDedicatedWholePool(t *testing.T) {
 		},
 	}
 	svc := estimateServiceTime(dedicated.prefillTPS, dedicated.soloDecodeTPS, params)
-	if got := c.targetWarm(dedicated, warmPoolPressureBucket{}, warmPoolQueuePressure{}, params, svc, now); got != 5 {
-		t.Fatalf("dedicated warm target = %d, want 5 (warm 2 + eligibleCold 3 = whole pool)", got)
+	// Under demand (a capacity reject) → warm the whole eligible pool (2 + 3 = 5).
+	underDemand := warmPoolPressureBucket{capacityRejects: 1}
+	if got := c.targetWarm(dedicated, underDemand, warmPoolQueuePressure{}, params, svc, now); got != 5 {
+		t.Fatalf("dedicated (under demand) warm target = %d, want 5 (warm 2 + eligibleCold 3 = whole pool)", got)
+	}
+	// No demand for this build → NOT force-warmed across the pool (left demand-derived).
+	if got := c.targetWarm(dedicated, warmPoolPressureBucket{}, warmPoolQueuePressure{}, params, svc, now); got == 5 {
+		t.Fatalf("dedicated (no demand) warm target = %d, want < 5 (idle/stale build must not force-warm the whole pool)", got)
 	}
 
 	nonDedicated := warmPoolModelSnapshot{

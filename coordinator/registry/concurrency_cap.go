@@ -58,6 +58,19 @@ func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model stri
 	if !r.qualityCapEnabled {
 		return base
 	}
+	// The cap needs a trustworthy single-stream rate. p.DecodeTPS is the
+	// provider-reported registration benchmark; without it, resolvedDecodeTPS falls
+	// back to sqrt(memory_bandwidth) — a coarse, MODEL-AGNOSTIC hardware proxy that
+	// under-estimates fast models (a ~57 tok/s gpt-oss reads as ~28), so hard-capping
+	// a fast non-dedicated model from it could shed healthy traffic. Only cap from
+	// the bandwidth fallback for DEDICATED models, which are known-slow and urgently
+	// need it; a non-dedicated model without a real benchmark keeps the legacy flat
+	// cap until its provider reports decode_tps.
+	if p.DecodeTPS <= 0 {
+		if _, dedicated := r.dedicatedPatternForLocked(model); !dedicated {
+			return base
+		}
+	}
 	qc := qualityConcurrency(staticDecodeTPS, r.qualityCapFloorTPS, effectiveTPSLoadFactor, base, r.qualityCapFallback)
 	capped := int(math.Ceil(float64(qc) * r.qualityCapOvercommit))
 	if capped < 1 {
@@ -77,4 +90,14 @@ func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model stri
 func (r *Registry) hasConcurrencyHeadroomForModelCapLocked(p *Provider, model string, staticDecodeTPS float64) bool {
 	return p.pendingLoadForModelLocked(model) < r.effectiveMaxConcurrencyForModelLocked(p, model, staticDecodeTPS) &&
 		p.pendingCount() < p.maxConcurrency()
+}
+
+// hasConcurrencyHeadroomForModelCapResolvedLocked is hasConcurrencyHeadroomForModelCapLocked
+// with the provider's static single-stream decode rate resolved internally. Used
+// by the public capacity feeds (ModelCapacitySnapshot) so /v1/models[/capacity]
+// report the SAME headroom the routing path enforces — otherwise a capped box is
+// advertised as routable and upstream routers keep sending requests it 429s.
+// Caller holds r.mu and p.mu.
+func (r *Registry) hasConcurrencyHeadroomForModelCapResolvedLocked(p *Provider, model string) bool {
+	return r.hasConcurrencyHeadroomForModelCapLocked(p, model, resolvedDecodeTPS(p))
 }

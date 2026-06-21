@@ -165,10 +165,18 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 	}
 	s := strings.ToLower(strings.TrimSpace(errStr + " " + reason))
 	s = strings.ReplaceAll(s, "’", "'")
-	// An explicit "prompt exceeds … context window/length" phrasing names the
-	// model context directly — unambiguous, fleet-wide deterministic regardless of
-	// any provider's KV budget. Retrying cannot help.
-	if strings.Contains(s, "exceeds") && strings.Contains(s, "context") {
+	// An explicit context-window/length overflow names the model context directly —
+	// unambiguous, fleet-wide deterministic regardless of any provider's KV budget.
+	// Match BOTH tenses ("exceeds"/"exceeded") and the bare "context length" /
+	// "context window" markers (mirrored in capacityClassMarkers and the provider
+	// breaker), so phrasings like "context length exceeded" / "context window
+	// exceeded" / "prompt too long for context window" stop on the first provider
+	// instead of failing over. Retrying cannot help.
+	if strings.Contains(s, "context") &&
+		(strings.Contains(s, "exceeds") || strings.Contains(s, "exceeded")) {
+		return rejectionDeterministicUnservable
+	}
+	if strings.Contains(s, "context length") || strings.Contains(s, "context window") {
 		return rejectionDeterministicUnservable
 	}
 	// "request exceeds batch token budget" (BatchSchedulerTypes:

@@ -29,6 +29,24 @@ func TestClassifyRejection(t *testing.T) {
 			errStr: "prompt exceeds the model's context window",
 			want:   rejectionDeterministicUnservable,
 		},
+		// Past-tense / marker-only context-overflow phrasings are deterministic too
+		// (the deterministic check matches both "exceeds"/"exceeded" and the bare
+		// context length/window markers).
+		{
+			name:   "context_length_exceeded_past_tense_is_deterministic",
+			errStr: "context length exceeded",
+			want:   rejectionDeterministicUnservable,
+		},
+		{
+			name:   "context_window_exceeded_past_tense_is_deterministic",
+			errStr: "context window exceeded",
+			want:   rejectionDeterministicUnservable,
+		},
+		{
+			name:   "too_long_for_context_window_is_deterministic",
+			errStr: "prompt too long for context window",
+			want:   rejectionDeterministicUnservable,
+		},
 		{
 			name:   "active_token_budget_is_transient",
 			errStr: "token_budget_exhausted: request exceeds active token budget",

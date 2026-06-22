@@ -18,6 +18,7 @@ package api
 // handlers can't drift.
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -26,6 +27,90 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// balanceReservationParams bundles the inputs to the shared pre-flight balance
+// reservation.
+type balanceReservationParams struct {
+	model                 string
+	publicModel           string
+	billingPromptTokens   int
+	estimatedPromptTokens int
+	requestedMaxTokens    int
+	stream                bool
+	requiresVision        bool
+	hasTools              bool
+	policy                selfRoutePolicy
+}
+
+// reserveInferenceBalance performs the shared pre-flight balance reservation +
+// per-key spend cap for both inference handlers. Self-route (policy.enabled) and
+// a nil billing backend skip it (the request is free). On a spend-cap or
+// insufficient-funds rejection it writes the exact terminal response and returns
+// handled=true; otherwise it returns the reserved amount and whether it was a
+// service-account reservation. The post-inference charge refunds any unused
+// portion; the routing estimate is kept separate so capacity checks aren't
+// over-inflated.
+func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (reservedMicroUSD int64, serviceReservation bool, handled bool) {
+	// Self-route is free: skip the pre-flight balance reservation and the
+	// per-key spend cap entirely. A zero-balance owner must never be blocked
+	// from running on their own machine, and a self_route_only key never spends.
+	if s.billing == nil || p.policy.enabled {
+		return 0, false, false
+	}
+	consumerKey := consumerKeyFromContext(r.Context())
+	reservedMicroUSD = s.reservationCost(p.model, p.billingPromptTokens, p.requestedMaxTokens)
+	// Per-key spend cap (phase 1) — checked before the reservation so a capped
+	// key never debits the account ledger.
+	if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "balance",
+			reasonCode:            "insufficient_quota",
+			httpStatus:            http.StatusPaymentRequired,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        p.publicModel,
+			resolvedModel:         p.model,
+			stream:                p.stream,
+			estimatedPromptTokens: p.estimatedPromptTokens,
+			requestedMaxTokens:    p.requestedMaxTokens,
+			requiresVision:        p.requiresVision,
+			hasTools:              p.hasTools,
+			params:                rejectionSamplingParams(parsed),
+		})
+		writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
+		return reservedMicroUSD, false, true
+	}
+	var err error
+	serviceReservation, err = s.reserveInitialBalance(consumerKey, p.model, reservedMicroUSD)
+	if err != nil {
+		if errors.Is(err, store.ErrInsufficientBalance) {
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "balance",
+				reasonCode:            "insufficient_funds",
+				httpStatus:            http.StatusPaymentRequired,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        p.publicModel,
+				resolvedModel:         p.model,
+				stream:                p.stream,
+				estimatedPromptTokens: p.estimatedPromptTokens,
+				requestedMaxTokens:    p.requestedMaxTokens,
+				requiresVision:        p.requiresVision,
+				hasTools:              p.hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+		} else {
+			s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
+			s.writeServiceUnavailable(w, p.model)
+		}
+		return reservedMicroUSD, serviceReservation, true
+	}
+	return reservedMicroUSD, serviceReservation, false
+}
 
 // inferenceAdmissionParams bundles the per-request inputs the shared routing
 // preflight needs. model is the resolved build id; the preflight may swap it to

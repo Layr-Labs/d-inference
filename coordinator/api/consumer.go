@@ -1447,70 +1447,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pre-flight balance reservation — atomically debit the worst-case cost
-	// using the byte-length upper bound for prompt tokens (guaranteed >=
-	// actual tokens for any BPE tokenizer) plus max_tokens we just bounded
-	// the generation to. The post-inference charge refunds any unused
-	// portion. The routing estimate (estimatedPromptTokens, len/4) is kept
-	// separate so scheduler capacity checks aren't over-inflated.
-	var reservedMicroUSD int64
-	serviceReservation := false
-	// Self-route is free: skip the pre-flight balance reservation and the
-	// per-key spend cap entirely. A zero-balance owner must never be blocked
-	// from running on their own machine, and a self_route_only key never spends.
-	if s.billing != nil && !policy.enabled {
-		consumerKey := consumerKeyFromContext(r.Context())
-		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
-		// Per-key spend cap (phase 1) — checked before the reservation so a
-		// capped key never debits the account ledger.
-		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
-			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "balance",
-				reasonCode:            "insufficient_quota",
-				httpStatus:            http.StatusPaymentRequired,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        publicModel,
-				resolvedModel:         model,
-				stream:                stream,
-				estimatedPromptTokens: estimatedPromptTokens,
-				requestedMaxTokens:    requestedMaxTokens,
-				requiresVision:        requiresVision,
-				hasTools:              hasTools,
-				params:                rejectionSamplingParams(parsed),
-			})
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-			return
-		}
-		var err error
-		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
-		if err != nil {
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
-			} else {
-				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				s.writeServiceUnavailable(w, model)
-			}
-			return
-		}
+	// Pre-flight balance reservation + per-key spend cap (see
+	// reserveInferenceBalance). Self-route and a nil billing backend are free.
+	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+		model:                 model,
+		publicModel:           publicModel,
+		billingPromptTokens:   billingPromptTokens,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		stream:                stream,
+		requiresVision:        requiresVision,
+		hasTools:              hasTools,
+		policy:                policy,
+	})
+	if reserveHandled {
+		return
 	}
 	timing.ReservedAt = time.Now()
 
@@ -3663,65 +3614,23 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// Pre-flight balance reservation — same worst-case-cost reservation as
-	// handleChatCompletions, using the byte-length upper bound for prompt
-	// tokens so the reservation always covers actual cost.
+	// Pre-flight balance reservation + per-key spend cap (see
+	// reserveInferenceBalance). Self-route and a nil billing backend are free.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	var reservedMicroUSD int64
-	serviceReservation := false
-	// Self-route is free: skip the reservation and per-key spend cap.
-	if s.billing != nil && !policy.enabled {
-		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
-		// Per-key spend cap (phase 1) — checked before the reservation.
-		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
-			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "balance",
-				reasonCode:            "insufficient_quota",
-				httpStatus:            http.StatusPaymentRequired,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        publicModel,
-				resolvedModel:         model,
-				stream:                stream,
-				estimatedPromptTokens: estimatedPromptTokens,
-				requestedMaxTokens:    requestedMaxTokens,
-				requiresVision:        requiresVision,
-				hasTools:              hasTools,
-				params:                rejectionSamplingParams(parsed),
-			})
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-			return
-		}
-		var err error
-		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
-		if err != nil {
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
-			} else {
-				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				s.writeServiceUnavailable(w, model)
-			}
-			return
-		}
+	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+		model:                 model,
+		publicModel:           publicModel,
+		billingPromptTokens:   billingPromptTokens,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		stream:                stream,
+		requiresVision:        requiresVision,
+		hasTools:              hasTools,
+		policy:                policy,
+	})
+	if reserveHandled {
+		return
 	}
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {

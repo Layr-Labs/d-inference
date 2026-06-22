@@ -276,7 +276,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					}
 					statusData, err := json.Marshal(statusMsg)
 					if err == nil {
-						_ = provider.EnqueueText(loopCtx, statusData)
+						if err := provider.EnqueueText(loopCtx, statusData); err != nil {
+							s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
+							s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
+						}
 					}
 					mismatchDetails := make([]string, 0, len(mismatches))
 					for _, m := range mismatches {
@@ -1664,7 +1667,10 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				}
 				statusData, err := json.Marshal(statusMsg)
 				if err == nil {
-					_ = provider.EnqueueText(context.Background(), statusData)
+					if err := provider.EnqueueText(context.Background(), statusData); err != nil {
+						s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
+						s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
+					}
 				}
 			}
 			return
@@ -2238,7 +2244,12 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		} else if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
 			start := time.Now()
-			_ = s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID)
+			// Financial: a failed refund over-charges the consumer. Never swallow it.
+			if err := s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID); err != nil {
+				s.logger.Error("failed to credit settlement refund to consumer",
+					"request_id", msg.RequestID, "refund_micro_usd", refund, "error", err)
+				s.ddIncr("billing.credit_failed", []string{"op:settlement_refund"})
+			}
 			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
 			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
 		}
@@ -2423,7 +2434,12 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			go func() {
 				defer settlementWg.Done()
 				start := time.Now()
-				_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
+				// Financial: a failed platform-fee credit drops revenue accounting. Never swallow it.
+				if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
+					s.logger.Error("failed to credit platform fee",
+						"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
+					s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
+				}
 				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
 				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
 			}()
@@ -3540,5 +3556,8 @@ func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registr
 	if err != nil {
 		return
 	}
-	_ = provider.EnqueueText(context.Background(), data)
+	if err := provider.EnqueueText(context.Background(), data); err != nil {
+		s.logger.Debug("failed to enqueue trust status to provider", "provider_id", provider.ID, "error", err)
+		s.ddIncr("provider.enqueue_failed", []string{"msg:trust_status"})
+	}
 }

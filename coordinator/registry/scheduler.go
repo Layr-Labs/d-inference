@@ -746,6 +746,89 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 	return online, servesModel
 }
 
+// OwnedProviderEligible reports whether the account owns at least one online
+// machine that is STRUCTURALLY CAPABLE of serving `model` for THIS request's
+// shape: it serves the catalog model, matches the serial allowlist, advertises a
+// vision build when the request carries media, and meets the tool-trait gates
+// (render-ok + version floor). The hardware-trust floor is relaxed for the
+// owner's own (possibly un-enrolled) machine, exactly as self-route dispatch
+// does, while every privacy-critical gate (runtime-verified, private-text,
+// challenge freshness) still applies.
+//
+// It deliberately tests CAPABILITY, not TRANSIENT load/health: the node-health
+// breaker, the slot state (crashed/reloading), free-memory/concurrency capacity,
+// and thermal pressure are NOT consulted. Those are the dimensions on which an
+// exclusive self-route QUEUES on the owner's machine (or fails open, as dispatch
+// does on the breaker) rather than hard-failing, so they must not gate the
+// prefer→self-route downgrade — gating on them would block an owner from their
+// own Mac in exactly the cases where an explicit `X-Darkbloom-Route: self`
+// request would still be served (or queued). The downgrade's job is only to
+// refuse the conversion when the machine can NEVER serve the request shape
+// (wrong model / serial / vision / tools), which would otherwise strand an
+// exclusive self-route with no candidate and no paid fallback.
+func (r *Registry) OwnedProviderEligible(accountID, model string, traits RequestTraits, requiresVision bool, allowedSerials []string) bool {
+	if accountID == "" {
+		return false
+	}
+	allowedSet := make(map[string]struct{}, len(allowedSerials))
+	for _, s := range allowedSerials {
+		allowedSet[s] = struct{}{}
+	}
+	now := time.Now()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		// Ownership + allowlist first (both take p.mu internally), mirroring the
+		// candidate filter in selectBestCandidateScanLocked.
+		if !providerOwnedBy(p, accountID) {
+			continue
+		}
+		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
+			continue
+		}
+		p.mu.Lock()
+		// relaxTrust=true: the owner's own machine. ignoreProviderBreaker=true:
+		// the transient node-health breaker is not a capability gate — self-route
+		// fails open on it just like dispatch, so it must not block the
+		// downgrade. This applies serves-model, privacy/runtime/challenge, and
+		// the trait gates (render-broken fences all shapes; the tools version
+		// floor fences tool requests) but no slot-state/capacity gate.
+		eligible := r.providerPassesRoutingGatesLockedEx(p, model, traits, true, now, true)
+		if eligible && requiresVision {
+			eligible = r.providerServesVisionModelLocked(p, model)
+		}
+		if eligible {
+			// Permanent hardware-fit gate (mirrors buildCandidateWithReason): a
+			// model whose footprint can never fit this Mac's total memory is a
+			// PERMANENT miss, not transient load — so, unlike slot-state/capacity,
+			// it must gate the downgrade (otherwise dispatch 503s on a machine
+			// that can never run the model). Skipped when the model is already
+			// resident, which proves it fit.
+			totalMemoryGB := float64(p.Hardware.MemoryGB)
+			resident := false
+			if p.BackendCapacity != nil {
+				if p.BackendCapacity.TotalMemoryGB > 0 {
+					totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+				}
+				for _, slot := range p.BackendCapacity.Slots {
+					if slot.Model == model {
+						resident = slotStateModelLoaded(slot.State)
+						break
+					}
+				}
+			}
+			if !resident && !modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemoryGB) {
+				eligible = false
+			}
+		}
+		p.mu.Unlock()
+		if eligible {
+			return true
+		}
+	}
+	return false
+}
+
 // logRoutingDecision emits a structured debug-level record of the
 // winning candidate and its cost breakdown. Cheap when the level is
 // disabled, since slog short-circuits before formatting.

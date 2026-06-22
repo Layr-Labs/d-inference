@@ -326,6 +326,189 @@ func TestSelfRoute_PreferFreeOnOwnedMachine(t *testing.T) {
 	}
 }
 
+// TestSelfRoute_PreferZeroBalanceOwnerServedFree is the regression for "if you
+// don't have credits you can't use your machine": a zero-balance owner sending
+// prefer (what the console "Use my machine" toggle sends) whose own machine can
+// serve the model must be served for free instead of getting a 402. The upfront
+// balance reservation fails, but because an owned machine serves the model the
+// request is downgraded to exclusive self-route (free, owned-only).
+func TestSelfRoute_PreferZeroBalanceOwnerServedFree(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "broke-owner"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	// No Credit() call: the owner has zero balance.
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Fatalf("precondition: balance = %d, want 0", bal)
+	}
+
+	model := "broke-owner-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("prefer status = %d, want 200 (zero-balance owner must run free on own machine)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Errorf("owner balance = %d, want 0 (own machine must be net free)", bal)
+	}
+	earnings, _ := st.GetAccountEarnings(owner, 100)
+	if len(earnings) != 0 {
+		t.Errorf("provider earnings = %d, want 0 when own machine served a free request", len(earnings))
+	}
+}
+
+// TestSelfRoute_PreferZeroBalanceNoOwnedMachineStill402: a zero-balance caller
+// sending prefer who has NO owned machine that can serve the model must still be
+// rejected with 402 — the downgrade only rescues owners whose own machine can
+// serve, never grants free paid-fleet inference.
+func TestSelfRoute_PreferZeroBalanceNoOwnedMachineStill402(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const caller = "broke-owns-nothing"
+	raw, _, err := st.CreateAPIKey(caller, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	if bal := ledger.Balance(caller); bal != 0 {
+		t.Fatalf("precondition: balance = %d, want 0", bal)
+	}
+
+	model := "broke-fallback-model"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, "someone-else") // caller owns nothing
+
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusPaymentRequired {
+		t.Fatalf("prefer status = %d, want 402 (no owned machine + no balance must not get free paid inference)", status)
+	}
+}
+
+// TestSelfRoute_PreferSpendCappedOwnerServedFree is the regression for the
+// Codex review finding: a spend-capped key must not pre-empt the owned-machine
+// downgrade. An owner whose key has an exhausted spend cap (and who would
+// otherwise get insufficient_quota before the balance check) sending prefer,
+// with an owned machine that serves the model, must be served for free.
+func TestSelfRoute_PreferSpendCappedOwnerServedFree(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "capped-owner"
+	zeroCap := int64(0) // any spend exceeds a $0 cap
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "capped", LimitMicroUSD: &zeroCap})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	// Even with a healthy balance, the $0 spend cap would reject a paid request.
+	_ = st.Credit(owner, 100_000_000, store.LedgerDeposit, "test-setup")
+	initial := ledger.Balance(owner)
+
+	model := "capped-owner-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("prefer status = %d, want 200 (spend cap must not block the owned-machine downgrade)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	// Free self-route spends nothing, so the cap is never touched.
+	if bal := ledger.Balance(owner); bal != initial {
+		t.Errorf("owner balance = %d, want %d (own machine must be net free)", bal, initial)
+	}
+}
+
+// TestSelfRoute_PreferShedModelServedOnOwnedMachine is the regression for the
+// Codex review finding that model-shed pre-empted the downgrade: a prefer
+// request for a SHED model whose owner has an eligible machine must bypass the
+// public model-shed 429 and run on the owner's machine — just like an explicit
+// self-route does.
+func TestSelfRoute_PreferShedModelServedOnOwnedMachine(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "shed-owner"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	_ = st.Credit(owner, 100_000_000, store.LedgerDeposit, "test-setup")
+	initial := ledger.Balance(owner)
+
+	model := "shed-owner-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	// Shed the model fleet-wide: a normal/prefer public request would 429.
+	srv.SetRejectModels(map[string]bool{model: true})
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("prefer status = %d, want 200 (shed must not block an eligible owned machine)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	// Served on the owner's own machine → free.
+	if bal := ledger.Balance(owner); bal != initial {
+		t.Errorf("owner balance = %d, want %d (own machine must be net free)", bal, initial)
+	}
+}
+
+// TestSelfRoute_PreferShedModelNoOwnedMachineStill429: a prefer request for a
+// shed model whose caller has NO eligible owned machine is still shed (429) —
+// the bypass only covers owners who can actually self-serve.
+func TestSelfRoute_PreferShedModelNoOwnedMachineStill429(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const caller = "shed-owns-nothing"
+	raw, _, err := st.CreateAPIKey(caller, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	_ = st.Credit(caller, 100_000_000, store.LedgerDeposit, "test-setup")
+
+	model := "shed-nomachine-model"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, "someone-else") // caller owns nothing
+	srv.SetRejectModels(map[string]bool{model: true})
+
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusTooManyRequests {
+		t.Fatalf("prefer status = %d, want 429 (shed must hold when caller has no eligible owned machine)", status)
+	}
+}
+
 // TestSelfRoute_PreferFallsBackToPaid: with prefer and an owner who owns NO
 // machine, the request falls back to the paid public fleet and is charged —
 // unlike exclusive self-route, which would 409. "Never a dead end."

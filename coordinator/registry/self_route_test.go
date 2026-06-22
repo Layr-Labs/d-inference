@@ -2,6 +2,7 @@ package registry
 
 import (
 	"testing"
+	"time"
 )
 
 func setProviderAccount(p *Provider, accountID string) {
@@ -176,6 +177,126 @@ func TestOwnedProviderSummary(t *testing.T) {
 	// Empty account never matches.
 	if online, serves = reg.OwnedProviderSummary("", model); online != 0 || serves != 0 {
 		t.Fatalf("empty account summary=(%d,%d), want (0,0)", online, serves)
+	}
+}
+
+// TestOwnedProviderEligible verifies the trait/vision/serial-aware owner
+// eligibility gate used by the prefer→self-route downgrade. Unlike
+// OwnedProviderSummary it must reject an owned machine that serves the model but
+// can't satisfy the actual request shape.
+func TestOwnedProviderEligible(t *testing.T) {
+	reg := New(testLogger())
+	model := "eligible-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	setProviderAccount(mine, "acct-A")
+	setSchedulerProviderSerial(mine, "SERIAL-A")
+
+	// Plain request: owned + serving → eligible.
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("plain request: owned serving machine should be eligible")
+	}
+	// Different account / empty account never matches.
+	if reg.OwnedProviderEligible("acct-B", model, RequestTraits{}, false, nil) {
+		t.Fatal("acct-B must not match acct-A's machine")
+	}
+	if reg.OwnedProviderEligible("", model, RequestTraits{}, false, nil) {
+		t.Fatal("empty account must never match")
+	}
+	// Unknown model → not eligible.
+	if reg.OwnedProviderEligible("acct-A", "other-model", RequestTraits{}, false, nil) {
+		t.Fatal("machine that doesn't serve the model must not be eligible")
+	}
+
+	// Serial allowlist: a non-matching serial excludes the machine; a matching
+	// one admits it.
+	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, []string{"SERIAL-OTHER"}) {
+		t.Fatal("serial allowlist miss must exclude the owned machine")
+	}
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, []string{"SERIAL-A"}) {
+		t.Fatal("serial allowlist hit must admit the owned machine")
+	}
+
+	// Tools trait: a below-floor binary (empty version) is gated for a
+	// tool-bearing request, even though it serves the model for plain text.
+	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{HasTools: true}, false, nil) {
+		t.Fatal("below-floor binary must be ineligible for a tools request")
+	}
+	mine.mu.Lock()
+	mine.Version = "0.6.3" // first version meeting the tools floor
+	mine.mu.Unlock()
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{HasTools: true}, false, nil) {
+		t.Fatal("at-floor binary must be eligible for a tools request")
+	}
+
+	// Vision: this machine advertises only a text build, so a vision request is
+	// ineligible (a downgrade here would strand the request).
+	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, true, nil) {
+		t.Fatal("text-only machine must be ineligible for a vision request")
+	}
+
+	// TRANSIENT state must NOT gate eligibility — the downgrade tests capability,
+	// not current load/health, because self-route queues / fails open on these
+	// just like dispatch.
+
+	// A crashed slot (transient) must still be eligible: an exclusive self-route
+	// queues on it, so the downgrade must not refuse it and force a 402.
+	mine.mu.Lock()
+	mine.BackendCapacity.Slots[0].State = "crashed"
+	mine.mu.Unlock()
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("crashed slot is transient and must not gate the downgrade")
+	}
+	mine.mu.Lock()
+	mine.BackendCapacity.Slots[0].State = "running"
+	mine.mu.Unlock()
+
+	// An OPEN node-health breaker (transient) must still be eligible: dispatch
+	// fails open on the breaker, so the preflight must too — otherwise an owner
+	// whose only Mac has a tripped breaker is wrongly forced to a 402.
+	reg.mu.Lock()
+	reg.providerBreakerOpenUntil[mine.ID] = time.Now().Add(time.Minute)
+	reg.mu.Unlock()
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("open node-health breaker is transient and must not gate the downgrade (fail open)")
+	}
+}
+
+// TestOwnedProviderEligibleHardwareFit verifies the PERMANENT hardware-fit gate:
+// a model that can never fit the owner's Mac is ineligible (so the downgrade is
+// refused rather than stranding an exclusive self-route on a 503), while a
+// fitting model — or one already resident — stays eligible.
+func TestOwnedProviderEligibleHardwareFit(t *testing.T) {
+	reg := New(testLogger())
+	model := "fit-model"
+
+	p := makeSchedulerProvider(t, reg, "mine", model, 100) // 64 GB Mac
+	setProviderAccount(p, "acct-A")
+	// Not resident, so the fit gate applies (a resident model has demonstrably fit).
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].State = "unknown"
+	p.mu.Unlock()
+
+	// Catalog says the model needs 128 GB — it can never fit the 64 GB Mac.
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 128}})
+	if reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("a model that can't fit the Mac must be ineligible (no downgrade)")
+	}
+
+	// A fitting requirement → eligible again.
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 32}})
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("a model that fits the Mac must be eligible")
+	}
+
+	// A RESIDENT (loaded) model has demonstrably fit, so the fit gate is skipped
+	// even if the catalog over-states its footprint.
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].State = "running"
+	p.mu.Unlock()
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 128}})
+	if !reg.OwnedProviderEligible("acct-A", model, RequestTraits{}, false, nil) {
+		t.Fatal("a resident model must stay eligible despite an over-size catalog entry")
 	}
 }
 

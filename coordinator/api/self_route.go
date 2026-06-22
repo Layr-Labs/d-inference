@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // This file holds the consumer-side "use my own machine, for free" (self-route)
@@ -62,6 +64,56 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 		return selfRoutePolicy{}
 	}
 	return selfRoutePolicy{enabled: exclusive, prefer: prefer, ownerAccountID: owner}
+}
+
+// downgradePreferToSelfRoute converts a PREFER request into an EXCLUSIVE
+// self-route when the owner can't afford the paid fallback but their own
+// machine can serve THIS request right now. This is what lets a zero-balance
+// provider-owner keep using their own Mac for free: instead of a 402, the
+// request is pinned to the owner's online machine (free, no paid fallback).
+//
+// Eligibility is the full request shape (model + serial allowlist + vision +
+// tools), not just "owns a provider for the model": if the owned machine can't
+// actually satisfy the request, we must NOT downgrade — doing so would strand an
+// exclusive self-route with no candidate (and no paid fallback) instead of
+// preserving the precise 402/error.
+//
+// It mutates policy in place and reports whether the downgrade happened. The
+// downgrade only fires for PREFER requests (never a normal paid request) — so
+// billing integrity holds: the request can no longer settle on the paid fleet,
+// and if the machine drops between here and dispatch, the exclusive self-route
+// pre-flight returns a precise 503 rather than handing out free public inference.
+func (s *Server) downgradePreferToSelfRoute(policy *selfRoutePolicy, model string, traits registry.RequestTraits, requiresVision bool, allowedSerials []string) bool {
+	if policy == nil || !policy.prefer || policy.ownerAccountID == "" {
+		return false
+	}
+	if !s.registry.OwnedProviderEligible(policy.ownerAccountID, model, traits, requiresVision, allowedSerials) {
+		return false
+	}
+	policy.enabled = true
+	policy.prefer = false
+	return true
+}
+
+// pinPreferToSelfRouteOnShed converts a PREFER request into an EXCLUSIVE
+// self-route when its model is being shed from the public fleet but the owner
+// has a structurally-eligible machine. Model-shed is a PUBLIC-fleet load lever,
+// so a prefer request must never be allowed to skip the shed and then fall back
+// to the paid public fleet (which would defeat the shed for exactly the fleet it
+// protects). Pinning it owned-only — exclusive, no fallback — keeps the shed
+// effective while never blocking an owner from their own Mac: it runs free on
+// the owner's machine (queuing there if busy) instead of touching the shed
+// public fleet. Owners with no eligible machine are left as prefer and shed
+// normally by shedIfModelRejected. Mutates policy in place.
+func (s *Server) pinPreferToSelfRouteOnShed(policy *selfRoutePolicy, model string, traits registry.RequestTraits, requiresVision bool, allowedSerials []string) {
+	if policy == nil || !policy.prefer || policy.ownerAccountID == "" {
+		return
+	}
+	if !s.registry.OwnedProviderEligible(policy.ownerAccountID, model, traits, requiresVision, allowedSerials) {
+		return
+	}
+	policy.enabled = true
+	policy.prefer = false
 }
 
 // selfRouteUnavailable reports whether a self-route request cannot proceed and,

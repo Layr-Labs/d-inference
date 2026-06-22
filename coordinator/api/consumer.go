@@ -1973,6 +1973,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+	// During a model shed, pin a prefer request whose owner can self-serve to an
+	// exclusive owned-only route (no paid public fallback) so the shed still
+	// protects the public fleet; non-eligible owners are shed normally below.
+	if s.modelShed(model, publicModel) {
+		s.pinPreferToSelfRouteOnShed(&policy, model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials)
+	}
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
@@ -2026,8 +2032,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		consumerKey := consumerKeyFromContext(r.Context())
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		// Per-key spend cap (phase 1) — checked before the reservation so a
-		// capped key never debits the account ledger.
-		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+		// capped key never debits the account ledger. The reservation only runs
+		// when the cap passes, so a capped key never reaches the ledger.
+		capMsg, capOK := s.checkKeySpendCap(r.Context(), reservedMicroUSD)
+		var err error
+		if capOK {
+			serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
+		}
+		// A capped key OR an insufficient balance blocks the request. But a
+		// zero-balance / spend-capped owner whose own machine can serve THIS
+		// request must never be blocked from their own Mac: downgrade prefer →
+		// exclusive self-route (free, owned-only). A free self-route neither
+		// spends (cap moot) nor reserves balance, exactly like a self_route_only
+		// key — so the cap/balance gates do not apply to it. The downgrade is
+		// attempted before either rejection so the cap can't pre-empt it.
+		blockedByCap := !capOK
+		blockedByBalance := errors.Is(err, store.ErrInsufficientBalance)
+		switch {
+		case (blockedByCap || blockedByBalance) &&
+			s.downgradePreferToSelfRoute(&policy, model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials):
+			reservedMicroUSD = 0
+			serviceReservation = false
+		case blockedByCap:
 			s.recordRejection(rejectionInfo{
 				r:                     r,
 				stage:                 "balance",
@@ -2044,35 +2070,31 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				hasTools:              hasTools,
 				params:                rejectionSamplingParams(parsed),
 			})
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", capMsg, withCode("insufficient_quota")))
 			return
-		}
-		var err error
-		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
-		if err != nil {
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
-			} else {
-				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				s.writeServiceUnavailable(w, model)
-			}
+		case blockedByBalance:
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "balance",
+				reasonCode:            "insufficient_funds",
+				httpStatus:            http.StatusPaymentRequired,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			return
+		case err != nil:
+			s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
+			s.writeServiceUnavailable(w, model)
 			return
 		}
 	}
@@ -4910,6 +4932,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	genericDeadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+	// During a model shed, pin a prefer request whose owner can self-serve to an
+	// exclusive owned-only route (no paid public fallback) so the shed still
+	// protects the public fleet; non-eligible owners are shed normally below.
+	if s.modelShed(model, publicModel) {
+		s.pinPreferToSelfRouteOnShed(&policy, model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials)
+	}
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
@@ -4933,8 +4961,26 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Self-route is free: skip the reservation and per-key spend cap.
 	if s.billing != nil && !policy.enabled {
 		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
-		// Per-key spend cap (phase 1) — checked before the reservation.
-		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+		// Per-key spend cap (phase 1) — checked before the reservation so a
+		// capped key never debits the account ledger.
+		capMsg, capOK := s.checkKeySpendCap(r.Context(), reservedMicroUSD)
+		var err error
+		if capOK {
+			serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
+		}
+		// A capped key OR an insufficient balance blocks the request, unless a
+		// zero-balance / spend-capped owner whose own machine can serve THIS
+		// request downgrades prefer → exclusive self-route (free, owned-only). A
+		// free self-route neither spends nor reserves, so the cap/balance gates
+		// don't apply; the downgrade is attempted before either rejection.
+		blockedByCap := !capOK
+		blockedByBalance := errors.Is(err, store.ErrInsufficientBalance)
+		switch {
+		case (blockedByCap || blockedByBalance) &&
+			s.downgradePreferToSelfRoute(&policy, model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials):
+			reservedMicroUSD = 0
+			serviceReservation = false
+		case blockedByCap:
 			s.recordRejection(rejectionInfo{
 				r:                     r,
 				stage:                 "balance",
@@ -4951,35 +4997,31 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				hasTools:              hasTools,
 				params:                rejectionSamplingParams(parsed),
 			})
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", capMsg, withCode("insufficient_quota")))
 			return
-		}
-		var err error
-		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
-		if err != nil {
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
-			} else {
-				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				s.writeServiceUnavailable(w, model)
-			}
+		case blockedByBalance:
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "balance",
+				reasonCode:            "insufficient_funds",
+				httpStatus:            http.StatusPaymentRequired,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			return
+		case err != nil:
+			s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
+			s.writeServiceUnavailable(w, model)
 			return
 		}
 	}

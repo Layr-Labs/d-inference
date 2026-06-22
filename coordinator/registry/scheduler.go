@@ -784,16 +784,14 @@ func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, t
 // through the default wrapper above (breaker always honored). Caller holds r.mu
 // and p.mu.
 func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker bool) bool {
-	if !r.providerServesCatalogModelLocked(p, model) {
-		return false
-	}
-	// Dedicated-box isolation: a request for a dedicated model family (e.g.
-	// Gemma 4) may ONLY route to a provider whose ENTIRE advertised catalog is
-	// that family. This single gate is shared by the dispatch hot path and the
-	// OpenRouter capacity preflight, so the filter restricts the routing
-	// candidate set AND the shed (429) decision together with no drift. A caller
-	// self-routing to its OWN machine is exempt — owners may run mixed boxes.
-	if !selfRouteOwner && r.providerExcludedByDedicatedRuleLocked(p, model) {
+	// Catalog membership + dedicated-box isolation: a request for a dedicated
+	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
+	// advertised catalog is that family. This single gate is shared by the
+	// dispatch hot path and the OpenRouter capacity preflight, so the filter
+	// restricts the routing candidate set AND the shed (429) decision together
+	// with no drift. A caller self-routing to its OWN machine is exempt — owners
+	// may run mixed boxes.
+	if !r.providerServesRoutableModelLocked(p, model, selfRouteOwner) {
 		return false
 	}
 	// Skip a provider-model pair cooling down after a dispatch-time load
@@ -822,28 +820,14 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
 		return false
 	}
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
-	}
-	// A private-only machine never serves the public fleet — only its owner's
-	// self-route requests.
-	if p.PrivateOnly && !selfRouteOwner {
-		return false
-	}
+	// Liveness/trust/privacy core. selfRouteOwner relaxes ONLY the hardware-trust
+	// floor (to TrustNone) and private-only admission for a caller's own
+	// (possibly un-enrolled) machine; every privacy-critical gate still applies.
 	minTrust := r.MinTrustLevel
 	if selfRouteOwner {
 		minTrust = TrustNone
 	}
-	if trustRank(p.TrustLevel) < trustRank(minTrust) {
-		return false
-	}
-	if !p.RuntimeVerified {
-		return false
-	}
-	if !r.providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+	if !r.providerLivenessGateLocked(p, minTrust, selfRouteOwner, now) {
 		return false
 	}
 	// Trait eligibility: a render-broken build is fenced for EVERY request shape

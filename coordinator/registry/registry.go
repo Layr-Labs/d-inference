@@ -1941,35 +1941,24 @@ func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSeri
 // healthy providers pass (no warm slot required — they load on first demand).
 // Caller holds r.mu (RLock) and p.mu.
 func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
-	if !r.providerServesCatalogModelLocked(p, buildID) {
-		return false
-	}
-	// Dedicated-box isolation, mirroring providerPassesRoutingGatesLockedEx so
-	// alias routability (and rollout/drop measurement) matches actual dispatch
-	// routability: a dedicated-family build is only routable on a provider
-	// dedicated to that family. Without this, an alias whose Desired build is
-	// advertised only by a mixed box would resolve to Desired (then 429 at
-	// dispatch) instead of failing over to a Previous build on a dedicated box.
-	// allowPrivate marks the owner self-route context, exempt like selfRouteOwner.
-	if !allowPrivate && r.providerExcludedByDedicatedRuleLocked(p, buildID) {
+	// Catalog membership + dedicated-box isolation, mirroring
+	// providerPassesRoutingGatesLockedEx so alias routability (and rollout/drop
+	// measurement) matches actual dispatch routability: a dedicated-family build
+	// is only routable on a provider dedicated to that family. Without this, an
+	// alias whose Desired build is advertised only by a mixed box would resolve
+	// to Desired (then 429 at dispatch) instead of failing over to a Previous
+	// build on a dedicated box. allowPrivate marks the owner self-route context,
+	// exempt like selfRouteOwner.
+	if !r.providerServesRoutableModelLocked(p, buildID, allowPrivate) {
 		return false
 	}
 	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
 		return false
 	}
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
-	}
-	if p.PrivateOnly && !allowPrivate {
-		return false
-	}
-	if trustRank(p.TrustLevel) < trustRank(minTrust) {
-		return false
-	}
-	if !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+	// Liveness/trust/privacy core. allowPrivate marks the owner self-route
+	// context (relax private-only admission); the trust-floor relaxation is
+	// folded into the minTrust the caller passes (TrustNone for owner routes).
+	if !r.providerLivenessGateLocked(p, minTrust, allowPrivate, now) {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -3097,37 +3086,21 @@ func (r *Registry) hasWarmProviderLocked(model string, now time.Time) bool {
 // with stale attestation or failed privacy checks should not suppress swap
 // planning. Caller must hold p.mu. Caller must hold r.mu (read or write).
 func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now time.Time) bool {
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
-	}
-	// Private-only providers serve only their owner's self-route traffic, never
-	// the public fleet. They must not suppress public swap planning: otherwise a
+	// Liveness/trust/privacy core, with NO owner relaxation: private-only
+	// providers serve only their owner's self-route traffic, never the public
+	// fleet, and must not suppress public swap planning — otherwise a
 	// private-only machine that happens to hold a queued public model warm makes
 	// the planner believe the model is already served and skip load_model to an
 	// eligible public node, stranding public requests until queue timeout.
-	if p.PrivateOnly {
+	if !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
 		return false
 	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-		return false
-	}
-	if !p.RuntimeVerified {
-		return false
-	}
-	if !r.providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return false
-	}
-	if !r.providerServesCatalogModelLocked(p, model) {
-		return false
-	}
-	// For a dedicated-family model (e.g. Gemma 4), a warm mixed-catalog box is not
-	// a usable warm provider — routing won't send the model there. Treat it as not
-	// warm so it neither suppresses cold-spill/swap planning onto a real dedicated
-	// box nor counts toward the model's warm-capacity demand target.
-	if r.providerExcludedByDedicatedRuleLocked(p, model) {
+	// Catalog membership + dedicated-box isolation: for a dedicated-family model
+	// (e.g. Gemma 4), a warm mixed-catalog box is not a usable warm provider —
+	// routing won't send the model there. Treat it as not warm so it neither
+	// suppresses cold-spill/swap planning onto a real dedicated box nor counts
+	// toward the model's warm-capacity demand target.
+	if !r.providerServesRoutableModelLocked(p, model, false) {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -3187,32 +3160,16 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+	// Liveness/trust/privacy core + catalog membership + dedicated-box
+	// isolation, with NO owner relaxation: this is a public load_model target
+	// picker, so private-only machines never qualify and a dedicated-family
+	// model (e.g. Gemma 4) may only be loaded onto a provider dedicated to it,
+	// never a mixed-catalog box (routing would never use it). Mirrors
+	// providerHasWarmModelLocked.
+	if !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
 		return 0, false
 	}
-	// Private-only providers never serve public traffic, so never pick one as a
-	// public load_model target (mirrors the public-routing exclusion).
-	if p.PrivateOnly {
-		return 0, false
-	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-		return 0, false
-	}
-	if !p.RuntimeVerified {
-		return 0, false
-	}
-	if !r.providerSupportsPrivateTextLocked(p) {
-		return 0, false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return 0, false
-	}
-	if !r.providerServesCatalogModelLocked(p, model) {
-		return 0, false
-	}
-	// A dedicated-family model (e.g. Gemma 4) may only be loaded onto a provider
-	// dedicated to it — never a mixed-catalog box (routing would never use it).
-	if r.providerExcludedByDedicatedRuleLocked(p, model) {
+	if !r.providerServesRoutableModelLocked(p, model, false) {
 		return 0, false
 	}
 
@@ -4414,25 +4371,9 @@ type providerCapSnap struct {
 // ModelCapacitySnapshot and FleetCapacitySnapshot so both count the same set of
 // providers.
 func (r *Registry) publiclyRoutableLocked(p *Provider, now time.Time) bool {
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
-	}
-	if p.PrivateOnly {
-		return false
-	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-		return false
-	}
-	if !p.RuntimeVerified {
-		return false
-	}
-	if !r.providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return false
-	}
-	return true
+	// The public routing gate is exactly the liveness/trust/privacy core with no
+	// owner relaxation — private-only machines never serve the public fleet.
+	return r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now)
 }
 
 // ModelCapacitySnapshot returns a capacity snapshot for every model served

@@ -641,6 +641,18 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 
 // warmPoolCandidateReasonLocked is warmPoolCandidateLocked with the
 // disqualification reason exposed for instrumentation. Caller holds r.mu + p.mu.
+//
+// This is intentionally NOT folded onto providerLivenessGateLocked /
+// providerServesRoutableModelLocked (unlike the other four eligibility gates):
+// it returns a granular per-gate reason label (exposed in the warm-pool
+// snapshot/metrics), so the liveness checks must stay split across their
+// distinct reason buckets (warmColdOfflineUntrust / warmColdTrust /
+// warmColdStaleChallenge / warmColdNotServing / warmColdDedicated) rather than
+// collapse into one boolean. It also interleaves warm-pool-specific gates
+// (pending-load, not-idle, thermal-critical, model-too-large, free-for-load)
+// between those buckets, in an order that determines which reason wins. Reusing
+// the boolean helpers here would change the reported reason mix — a behavior
+// change — so the checks are kept inline.
 func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, warmColdReason) {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
 		return warmPoolCandidate{}, warmColdOfflineUntrust

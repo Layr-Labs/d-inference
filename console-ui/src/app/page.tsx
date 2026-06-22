@@ -160,6 +160,7 @@ export default function ChatPage() {
         isStreaming={isStreaming}
         authenticated={authenticated}
         onLogin={login}
+        ready={ready}
       />
     </div>
   );

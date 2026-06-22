@@ -13,9 +13,12 @@ interface ChatInputProps {
   isStreaming: boolean;
   authenticated?: boolean;
   onLogin?: () => void;
+  // Privy auth readiness. While false the SDK is still lazy-loading and
+  // `onLogin` is a no-op, so the sign-in CTA is disabled (Codex review).
+  ready?: boolean;
 }
 
-export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, onLogin }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, onLogin, ready = true }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Narrow selectors: these fields don't change mid-stream, so the composer no
@@ -90,11 +93,13 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
               });
               onLogin?.();
             }}
+            disabled={!ready}
             className="w-full flex items-center justify-center gap-2 bg-bg-tertiary rounded-2xl border border-border-dim
-                       py-4 text-text-tertiary hover:text-text-secondary hover:border-border-subtle cursor-pointer transition-all"
+                       py-4 text-text-tertiary hover:text-text-secondary hover:border-border-subtle cursor-pointer transition-all
+                       disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <LogIn size={16} />
-            <span className="text-sm font-medium">Sign in to start chatting</span>
+            <span className="text-sm font-medium">{ready ? "Sign in to start chatting" : "Loading..."}</span>
           </button>
         </div>
       </div>

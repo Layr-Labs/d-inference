@@ -48,7 +48,7 @@ interface EarningsResponse {
 }
 
 export default function EarningsContent() {
-  const { authenticated, login, getAccessToken } = useAuth();
+  const { ready, authenticated, login, getAccessToken } = useAuth();
   const addToast = useToastStore((s) => s.addToast);
   const [data, setData] = useState<EarningsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,9 +111,10 @@ export default function EarningsContent() {
               });
               login();
             }}
-            className="px-4 py-2 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all"
+            disabled={!ready}
+            className="px-4 py-2 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Sign In
+            {ready ? "Sign In" : "Loading..."}
           </button>
         </div>
       </div>

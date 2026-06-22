@@ -11,18 +11,17 @@ import (
 // Each field corresponds to a Set* method on Server that is called during
 // wiring in main.go.
 type ServerConfig struct {
-	Port                 string
-	ConsoleURL           string
-	CORSOrigin           string
-	BaseURL              string
-	R2CDNURL             string
-	R2SitePackagesCDNURL string
-	MinProviderVersion   string
-	AdminKey             string
-	AdminEmails          []string
-	ReleaseKey           string
-	ServiceReservations  bool
-	BaseRewards          BaseRewardsConfig
+	Port                string
+	ConsoleURL          string
+	CORSOrigin          string
+	BaseURL             string
+	R2CDNURL            string
+	MinProviderVersion  string
+	AdminKey            string
+	AdminEmails         []string
+	ReleaseKey          string
+	ServiceReservations bool
+	BaseRewards         BaseRewardsConfig
 }
 
 // BaseRewardsConfig holds the deployment knobs for the provider base-rewards
@@ -40,17 +39,16 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
-		Port:                 env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
-		ConsoleURL:           os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
-		CORSOrigin:           os.Getenv("CORS_ORIGIN"),
-		BaseURL:              os.Getenv(env.EnvPrefix + "_BASE_URL"),
-		R2CDNURL:             os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
-		R2SitePackagesCDNURL: os.Getenv(env.EnvPrefix + "_R2_SITE_PACKAGES_CDN_URL"),
-		MinProviderVersion:   os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
-		AdminKey:             os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
-		AdminEmails:          ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:           os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
-		ServiceReservations:  env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
+		Port:                env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
+		ConsoleURL:          os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
+		CORSOrigin:          os.Getenv("CORS_ORIGIN"),
+		BaseURL:             os.Getenv(env.EnvPrefix + "_BASE_URL"),
+		R2CDNURL:            os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
+		MinProviderVersion:  os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
+		AdminKey:            os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
+		AdminEmails:         ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:          os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
+		ServiceReservations: env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)

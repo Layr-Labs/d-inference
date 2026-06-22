@@ -96,18 +96,40 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
-        // ProviderBenchmark: KV-quant gate/perf/quality runners, throughput
-        // sweep, decode-bandwidth model, and the standalone benchmark KV
-        // caches (incl. fatalError protocol-conformance stubs). Kept OUT of
-        // the shipped ProviderCore library so the provider/enclave binaries
-        // don't link benchmark-only code; only the benchmark-bearing
-        // executables (darkbloom `benchmark`, kv-quant-gate, kv-attn-selftest,
-        // kv-engine-demo) depend on it. The engine-facing types it shares
-        // with the live scheduler (KVQuantCandidateMode, KVQuantPolicy) live
-        // in ProviderCore.
+        // ProviderBenchmark: LIGHTWEIGHT benchmark runners that the shipped
+        // `darkbloom benchmark` command needs — ModelBenchmark (prefill/decode
+        // latency), ThroughputSweep (+ report), and DecodeBandwidthModel. This
+        // is the ONLY benchmark target the installed `darkbloom` binary links,
+        // so it deliberately carries NO KV-quant cache code and NO fatalError
+        // protocol-conformance stubs. The heavy KV-quant gate/eval/cache code
+        // lives in ProviderBenchmarkKVQuant, which `darkbloom` does NOT depend
+        // on. The engine-facing types shared with the live scheduler
+        // (KVQuantCandidateMode, KVQuantPolicy) live in ProviderCore.
         // ----------------------------------------------------------------
         .target(
             name: "ProviderBenchmark",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/ProviderBenchmark"
+        ),
+
+        // ----------------------------------------------------------------
+        // ProviderBenchmarkKVQuant: KV-quant gate/perf/quality runners plus
+        // the standalone benchmark KV caches — INCLUDING the fatalError
+        // protocol-conformance stubs (ProtocolSafeQuantizedKVCache, the
+        // V-only / BFloat16 caches). Linked ONLY by the KV-quant research
+        // tools (kv-quant-gate, kv-attn-selftest) and their tests, never by
+        // the shipped `darkbloom` binary, so installed providers never link
+        // benchmark-only fatalError stubs. The engine-facing types shared with
+        // the live scheduler (KVQuantCandidateMode, KVQuantPolicy) live in
+        // ProviderCore, not here.
+        // ----------------------------------------------------------------
+        .target(
+            name: "ProviderBenchmarkKVQuant",
             dependencies: [
                 "ProviderCore",
                 "ProviderCoreFoundation",
@@ -116,7 +138,7 @@ let package = Package(
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ],
-            path: "Sources/ProviderBenchmark"
+            path: "Sources/ProviderBenchmarkKVQuant"
         ),
 
         // ----------------------------------------------------------------
@@ -190,7 +212,7 @@ let package = Package(
             name: "kv-quant-gate",
             dependencies: [
                 "ProviderCore",
-                "ProviderBenchmark",
+                "ProviderBenchmarkKVQuant",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/kv-quant-gate"
@@ -200,7 +222,7 @@ let package = Package(
             name: "kv-attn-selftest",
             dependencies: [
                 "ProviderCore",
-                "ProviderBenchmark",
+                "ProviderBenchmarkKVQuant",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXRandom", package: "mlx-swift"),
@@ -220,6 +242,7 @@ let package = Package(
             dependencies: [
                 "ProviderCore",
                 "ProviderBenchmark",
+                "ProviderBenchmarkKVQuant",
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
             ],

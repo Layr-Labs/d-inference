@@ -3650,6 +3650,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if ok {
 			firstChunk = chunk
 			pr.MarkFirstChunkArrived()
+			// Stamp the actual_ttft_ms anchor at first CONTENT, before the
+			// committedRouteOutcome write below — the generic (/v1/completions,
+			// /v1/messages) path has no dispatch preamble filter, so without this
+			// stamp applyPendingRouteTelemetry would persist actual_ttft_ms as
+			// 0/NULL for successful generic requests.
+			pr.MarkFirstContentArrived()
 			committed = true
 		} else {
 			select {
@@ -3717,6 +3723,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			if ok {
 				firstChunk = chunk
 				pr.MarkFirstChunkArrived()
+				// Stamp the actual_ttft_ms anchor at first CONTENT (see the
+				// pre-accept branch above) before committedRouteOutcome runs.
+				pr.MarkFirstContentArrived()
 				committed = true
 			} else {
 				select {

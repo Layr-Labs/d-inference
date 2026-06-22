@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -403,19 +404,21 @@ func main() {
 	//     reserved for a future step that would actually shed; it currently
 	//     behaves like shadow.
 	if v := os.Getenv("EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA"); v != "" {
-		if alpha, err := strconv.ParseFloat(v, 64); err == nil && alpha >= 0 {
+		if alpha, ok := validateTTFTOccupancyAlpha(v); ok {
 			registry.SetTTFTOccupancyAlpha(alpha)
 			logger.Info("TTFT occupancy term configured via EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA", "alpha", alpha, "behavior_neutral", alpha == 0)
 		} else {
-			logger.Warn("invalid EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA; ignoring", "value", v)
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA; keeping default 0 (term off)",
+				"value", v, "max", maxTTFTOccupancyAlpha)
 		}
 	}
 	if v := os.Getenv("EIGENINFERENCE_TTFT_DEADLINE_BASE_MS"); v != "" {
-		if base, err := strconv.ParseFloat(v, 64); err == nil && base > 0 {
+		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
 			registry.SetTTFTDeadlineBaseMs(base)
 			logger.Info("TTFT shadow deadline base configured via EIGENINFERENCE_TTFT_DEADLINE_BASE_MS", "base_ms", base)
 		} else {
-			logger.Warn("invalid EIGENINFERENCE_TTFT_DEADLINE_BASE_MS; ignoring", "value", v)
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_DEADLINE_BASE_MS; keeping default ~10s",
+				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
 		}
 	}
 	if v := os.Getenv("EIGENINFERENCE_TTFT_ADMISSION_MODE"); v != "" {
@@ -890,6 +893,55 @@ func parseAPNsEnforceAfter() (time.Time, error) {
 		return time.Time{}, fmt.Errorf("APNS_ENFORCE_AFTER %q is not valid RFC3339: %w", raw, err)
 	}
 	return t, nil
+}
+
+const (
+	// maxTTFTOccupancyAlpha bounds EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA. The term
+	// is alpha·occ·1000/decodeTPS ms, so an alpha above this would imply >1e6
+	// decode-token-times of head-of-line wait per peer — nonsensical and almost
+	// certainly a typo (e.g. a misplaced decimal), so it is rejected for the safe
+	// default (0 = term off) rather than silently distorting the shadow estimate.
+	maxTTFTOccupancyAlpha = 1e6
+	// minTTFTDeadlineBaseMs / maxTTFTDeadlineBaseMs bound
+	// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS. Below ~1s no first-token SLA is
+	// realistic; above ~120s the shadow gate is meaningless. The verified
+	// OpenRouter base is ~10s (telemetry-db findings §2).
+	minTTFTDeadlineBaseMs = 1000.0
+	maxTTFTDeadlineBaseMs = 120000.0
+)
+
+// validateTTFTOccupancyAlpha parses and bounds EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA.
+// It returns (alpha, ok): ok=false means the raw value was unparseable, non-finite,
+// or absurd (> maxTTFTOccupancyAlpha) and the caller should keep the default 0. A
+// negative value is clamped to 0 (occupancy term disabled) and accepted (ok=true).
+func validateTTFTOccupancyAlpha(raw string) (float64, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	if v < 0 {
+		return 0, true
+	}
+	if v > maxTTFTOccupancyAlpha {
+		return 0, false
+	}
+	return v, true
+}
+
+// validateTTFTDeadlineBaseMs parses and range-checks
+// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS. It returns (baseMs, ok): ok=false means
+// the raw value was unparseable, non-finite, or outside
+// [minTTFTDeadlineBaseMs, maxTTFTDeadlineBaseMs], and the caller should keep the
+// verified ~10s default.
+func validateTTFTDeadlineBaseMs(raw string) (float64, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	if v < minTTFTDeadlineBaseMs || v > maxTTFTDeadlineBaseMs {
+		return 0, false
+	}
+	return v, true
 }
 
 // loadAPNsAttestor builds the production APNs code-identity attestor from the

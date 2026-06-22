@@ -1897,6 +1897,22 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			})
 		}
 
+		// Fallback actual_ttft_ms anchor. The dispatch goroutine normally stamps
+		// FirstContentAt at the content-commit site (commitFirstContent), which
+		// precedes this terminal. But a fast single-chunk completion can deliver its
+		// only content chunk and TypeInferenceComplete almost simultaneously, so
+		// this provider read-loop goroutine may reach completeRouteOutcome before the
+		// dispatch goroutine has processed the chunk. If the provider reported
+		// delivered tokens, content WAS produced, so stamp FirstContentAt now rather
+		// than persist actual_ttft_ms as 0/NULL. MarkFirstContentArrived is
+		// idempotent (timingMu-guarded, first-write-wins), so when the dispatch
+		// goroutine already stamped (the common case) this is a no-op and the
+		// accurate first-content time is preserved; it only fires in the race, where
+		// the near-simultaneous complete time is within ms of first content.
+		if msg.Usage.CompletionTokens > 0 {
+			pr.MarkFirstContentArrived()
+		}
+
 		// Update the routing telemetry outcome with final token counts and timing.
 		// handleComplete is the authoritative final writer for provider completion;
 		// when the consumer already disconnected this is a partial success because

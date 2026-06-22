@@ -10,10 +10,13 @@ import "strings"
 // it computes two signals against the winning candidate and hands them to the
 // caller as fields on RoutingDecision, which the API layer emits as metrics.
 //
-//   - WouldShed: the occupancy-aware TTFT estimate (ttftMsFromSnapshot, which is
-//     occupancy-aware only when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA > 0) for the
-//     chosen provider exceeds the verified ~10s deadline base (NOT the code's 5s
-//     internal budget — gating at 5s over-sheds ~2x per telemetry-db findings §2).
+//   - WouldShed: the occupancy-aware TTFT estimate
+//     (occupancyAwareTTFTMsFromSnapshot = base + the occupancy term, which is
+//     non-zero only when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA > 0) for the chosen
+//     provider exceeds the verified ~10s deadline base (NOT the code's 5s internal
+//     budget — gating at 5s over-sheds ~2x per telemetry-db findings §2). The
+//     occupancy term is intentionally confined to this shadow estimate so it can
+//     never tighten the live HARD_REJECT ceiling fed by ttftMsFromSnapshot.
 //   - IdleAlternativeExists: the chosen provider already carries occupying peers
 //     while an instantly-usable (loaded, zero-occupancy) provider for the same
 //     model was routable — the load-SPREADING failure the data shows (idle loaded
@@ -159,7 +162,11 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 		reqPrompt = 0
 	}
 	snap := winner.snapshot
-	estimate := ttftMsFromSnapshot(snap, reqPrompt)
+	// Occupancy-aware estimate (base + occupancy term). The occupancy term lives
+	// here, in the SHADOW path only — ttftMsFromSnapshot (the live cost / ceiling /
+	// bestTTFT input) stays occupancy-free so raising alpha cannot tighten the
+	// live 5s HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
+	estimate := occupancyAwareTTFTMsFromSnapshot(snap, reqPrompt)
 	deadline := ttftDeadlineMsForPrompt(reqPrompt)
 	occ := snapshotOccupancy(snap)
 
@@ -186,10 +193,14 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 
 // loadedIdleAlternativeExistsLocked reports whether some provider OTHER than the
 // winner is a routable, model-resident, zero-occupancy candidate for model — an
-// instantly-usable box the herded request could have been spread to. It mirrors
-// selection's owner/self-route filtering and reuses snapshotProviderLockedEx so
-// it counts only providers that pass the same routing gates. Caller holds r.mu
-// and no provider lock.
+// instantly-usable box the herded request could have been spread to. It applies
+// the SAME gates the scheduler's selection loop does so it cannot report a peer
+// the scheduler would have rejected (which would corrupt the Phase-0 spread
+// metric): structural gates + owner/self-route filtering (snapshotProviderLockedEx),
+// the vision-capability gate (providerServesVisionModelLocked, for media
+// requests), and the capacity / token-budget / hardware-fit feasibility predicate
+// (buildCandidateWithReason — the exact check the selection loop runs). Caller
+// holds r.mu and no provider lock.
 func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRequest, winner *Provider) bool {
 	winnerID := ""
 	if winner != nil {
@@ -208,9 +219,31 @@ func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRe
 		if !ok || !snap.modelLoaded {
 			continue
 		}
-		if snapshotOccupancy(snap) == 0 {
-			return true
+		// A spread target must be instantly usable — model resident AND
+		// unoccupied. Filter occupied peers before the costlier gates below.
+		if snapshotOccupancy(snap) != 0 {
+			continue
 		}
+		// Vision gate: a media request must only count a vision-capable peer, or
+		// the scheduler would have rejected it (visionRejections) and the spread
+		// signal would be a false positive. snapshotProviderLockedEx released p.mu,
+		// so re-take it for the p.Models read (mirrors the selection loop).
+		if pr.RequiresVision {
+			p.mu.Lock()
+			servesVision := r.providerServesVisionModelLocked(p, model)
+			p.mu.Unlock()
+			if !servesVision {
+				continue
+			}
+		}
+		// Capacity / token-budget / hardware-fit feasibility — the same predicate
+		// the selection loop applies via buildCandidateWithReason. Without it an
+		// oversized-token or memory-starved peer would be counted as a valid idle
+		// alternative the scheduler could never actually have selected.
+		if _, _, admissible := r.buildCandidateWithReason(snap, pr); !admissible {
+			continue
+		}
+		return true
 	}
 	return false
 }

@@ -1,6 +1,11 @@
 package registry
 
-import "testing"
+import (
+	"math"
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 // withTTFTConfig snapshots and restores the package-level Phase-0 TTFT knobs so
 // each test runs in isolation (Go runs package tests sequentially, so resetting
@@ -42,9 +47,12 @@ func TestTTFTOccupancyTermZeroWhenAlphaZero(t *testing.T) {
 	}
 }
 
-// TestTTFTEstimateOccupancyTermActiveAndMonotonic exercises the flag ON: the
-// occupancy term raises the estimate, the estimate is strictly increasing in
-// occupancy, and it crosses the verified ~10s deadline at a knee.
+// TestTTFTEstimateOccupancyTermActiveAndMonotonic exercises the flag ON via the
+// SHADOW estimate (occupancyAwareTTFTMsFromSnapshot — the only place the term is
+// added; ttftMsFromSnapshot stays occupancy-free, see Fix D): the occupancy term
+// raises the estimate, the estimate is strictly increasing in occupancy, and it
+// crosses the verified ~10s deadline at a knee. It also pins the safety invariant
+// at the unit level — ttftMsFromSnapshot (the live input) is unchanged by alpha.
 func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	withTTFTConfig(t, 45, defaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
 
@@ -59,13 +67,22 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	}
 	const reqPrompt = 1000
 
-	// The occupancy term must add to the estimate at b>0 (compare alpha on vs off).
+	// The occupancy term must add to the SHADOW estimate at b>0 (compare alpha on
+	// vs off). The LIVE estimate (ttftMsFromSnapshot) must NOT move with alpha.
 	SetTTFTOccupancyAlpha(0)
-	base4 := ttftMsFromSnapshot(mk(4), reqPrompt)
+	liveOff := ttftMsFromSnapshot(mk(4), reqPrompt)
+	shadowOff := occupancyAwareTTFTMsFromSnapshot(mk(4), reqPrompt)
 	SetTTFTOccupancyAlpha(45)
-	withTerm4 := ttftMsFromSnapshot(mk(4), reqPrompt)
-	if withTerm4 <= base4 {
-		t.Fatalf("occupancy term must raise the estimate at b=4: with=%f base=%f", withTerm4, base4)
+	liveOn := ttftMsFromSnapshot(mk(4), reqPrompt)
+	shadowOn := occupancyAwareTTFTMsFromSnapshot(mk(4), reqPrompt)
+	if liveOn != liveOff {
+		t.Fatalf("ttftMsFromSnapshot must be occupancy-FREE (invariant): alpha=0 %f vs alpha=45 %f", liveOff, liveOn)
+	}
+	if shadowOff != liveOff {
+		t.Fatalf("at alpha=0 the shadow estimate must equal the base: shadow=%f base=%f", shadowOff, liveOff)
+	}
+	if shadowOn <= shadowOff {
+		t.Fatalf("occupancy term must raise the shadow estimate at b=4: with=%f base=%f", shadowOn, shadowOff)
 	}
 
 	// Strictly increasing in occupancy, crossing the deadline at a knee.
@@ -73,7 +90,7 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	last := -1.0
 	knee := -1
 	for b := 0; b <= 8; b++ {
-		est := ttftMsFromSnapshot(mk(b), reqPrompt)
+		est := occupancyAwareTTFTMsFromSnapshot(mk(b), reqPrompt)
 		if est <= last {
 			t.Fatalf("estimate not strictly increasing at b=%d: %f <= %f", b, est, last)
 		}
@@ -86,8 +103,60 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 		t.Fatalf("estimate should cross the %.0fms deadline at a knee in b=1..8, got knee=%d", deadline, knee)
 	}
 	// b=0 (idle) must stay well under the deadline — route-to-idle is preserved.
-	if idle := ttftMsFromSnapshot(mk(0), reqPrompt); idle > deadline {
+	if idle := occupancyAwareTTFTMsFromSnapshot(mk(0), reqPrompt); idle > deadline {
 		t.Fatalf("idle box (b=0) must be under the deadline, got %f > %f", idle, deadline)
+	}
+}
+
+// TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning pins Fix C: in the herd
+// case (pendingForModel > backend_running) the occupancy term must project the
+// per-request decode rate at the batch the request ACTUALLY joins (occ), not the
+// stale heartbeat backend_running gauge. Charging the backend_running rate would
+// divide by an idle/low-batch rate and UNDER-state the term — the opposite of
+// intended — in exactly the case the term exists to measure.
+func TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning(t *testing.T) {
+	withTTFTConfig(t, 45, defaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
+
+	// Heartbeat still reads backend_running=2, but the coordinator has already
+	// reserved 8 dispatched-not-terminal requests for this model (pendingForModel
+	// =8) → occ=8. The new request joins a batch of 8, not 2.
+	herd := routingSnapshot{
+		hasBackendCapacity: true,
+		slotState:          "running",
+		decodeTPS:          55,
+		prefillTPS:         660,
+		backendRunning:     2,
+		backendWaiting:     0,
+		pendingForModel:    8,
+	}
+	occ := snapshotOccupancy(herd)
+	if occ != 8 {
+		t.Fatalf("precondition: occ should be 8 (herd), got %d", occ)
+	}
+	got := ttftOccupancyMs(herd)
+
+	// Correct: rate projected at the batch the request joins (occ).
+	wantRate := projectedPerRequestDecodeTPSAtBatch(herd, occ)
+	want := 45 * float64(occ) * 1000.0 / wantRate
+	if math.Abs(got-want) > 1e-6 {
+		t.Fatalf("occupancy term must use occ for the rate: got %f want %f", got, want)
+	}
+
+	// The pre-fix rate (projected at the bare backend_running gauge) is FASTER, so
+	// the buggy term would be SMALLER. Assert the fix charges strictly more.
+	buggyRate := projectedPerRequestDecodeTPSAtBatch(herd, herd.backendRunning)
+	buggyTerm := 45 * float64(occ) * 1000.0 / buggyRate
+	if !(got > buggyTerm) {
+		t.Fatalf("herd term must exceed the backend_running-rate term: got %f buggy %f", got, buggyTerm)
+	}
+
+	// At an EQUAL heartbeat gauge, a larger pending burst (higher occ) must grow
+	// the term — both via the occ numerator AND the shrinking occ-projected rate.
+	lowBurst := herd
+	lowBurst.pendingForModel = 3 // occ = max(3, 2) = 3
+	if !(ttftOccupancyMs(herd) > ttftOccupancyMs(lowBurst)) {
+		t.Fatalf("term must grow with pending burst at equal backend_running: occ8=%f occ3=%f",
+			ttftOccupancyMs(herd), ttftOccupancyMs(lowBurst))
 	}
 }
 
@@ -206,5 +275,111 @@ func TestTTFTShadowEvalNoRedirectWhenWinnerIdle(t *testing.T) {
 	}
 	if decision.ShadowIdleAlternativeExists {
 		t.Fatalf("no redirect signal expected when the winner itself is idle: %+v", decision)
+	}
+}
+
+// TestTTFTOccupancyAlphaDoesNotMoveLiveCeiling pins the central HARD_REJECT safety
+// invariant (Fix D): with pr.MaxTTFTMs set (HARD_REJECT semantics) and the
+// occupancy term ON (alpha>0, mode=shadow), the LIVE candidate-loop ceiling is
+// identical to alpha=0 — the herded box is NOT hard-rejected by the occupancy term
+// and the winning decision's live TTFTMs is unchanged — while the shadow evaluator
+// STILL computes the occupancy-aware would_shed at the verified ~10s base.
+func TestTTFTOccupancyAlphaDoesNotMoveLiveCeiling(t *testing.T) {
+	const (
+		model     = "hardreject-invariant-model"
+		decodeTPS = 55.0
+		prompt    = 1000
+		// base estimate (~1.5s) passes this ceiling; the occupancy-aware estimate
+		// (~15s at occ=6) is well over the ~10s shadow deadline → would_shed.
+		maxTTFT = 5000.0
+	)
+	mkHerded := func(reg *Registry) *Provider {
+		p := makeSchedulerProvider(t, reg, "herded", model, decodeTPS)
+		p.mu.Lock()
+		p.BackendCapacity.Slots[0].NumRunning = 6 // occ=6
+		p.mu.Unlock()
+		return p
+	}
+	newReq := func() *PendingRequest {
+		return &PendingRequest{RequestID: "r1", Model: model, EstimatedPromptTokens: prompt, RequestedMaxTokens: 256, MaxTTFTMs: maxTTFT}
+	}
+
+	// Baseline: alpha=0, no shadow. The herded box passes the 5s live ceiling.
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
+	regOff := New(testLogger())
+	pOff := mkHerded(regOff)
+	selOff, decOff := regOff.ReserveProviderEx(model, newReq())
+	if selOff == nil || decOff.ProviderID != pOff.ID {
+		t.Fatalf("alpha=0: herded box must pass the live ceiling and be selected: sel=%v dec=%+v", selOff, decOff)
+	}
+
+	// alpha>0 + shadow: the SAME live ceiling must hold (selection + live TTFTMs
+	// identical), proving the occupancy term never reached breakdown.TTFTMs; the
+	// shadow evaluator must still flag would_shed via the occupancy-aware estimate.
+	SetTTFTOccupancyAlpha(45)
+	SetTTFTAdmissionMode(TTFTAdmissionShadow)
+	regOn := New(testLogger())
+	pOn := mkHerded(regOn)
+	selOn, decOn := regOn.ReserveProviderEx(model, newReq())
+	if selOn == nil || decOn.ProviderID != pOn.ID {
+		t.Fatalf("alpha=45: occupancy term must NOT hard-reject the herded box (HARD_REJECT invariant): sel=%v dec=%+v", selOn, decOn)
+	}
+	if decOn.TTFTMs != decOff.TTFTMs {
+		t.Fatalf("live TTFTMs must be identical at alpha=0 and alpha=45 (occupancy-free): off=%f on=%f", decOff.TTFTMs, decOn.TTFTMs)
+	}
+	if !decOn.ShadowEvaluated || !decOn.ShadowWouldShed {
+		t.Fatalf("shadow must still compute occupancy-aware would_shed: %+v", decOn)
+	}
+	if decOn.ShadowEstimateMs <= decOn.TTFTMs {
+		t.Fatalf("shadow occupancy-aware estimate must exceed the occupancy-free live TTFTMs: shadow=%f live=%f", decOn.ShadowEstimateMs, decOn.TTFTMs)
+	}
+}
+
+// TestLoadedIdleAlternativeHonorsVisionGate pins Fix B: the idle shadow scan must
+// apply the SAME selection gates the scheduler does. A vision request whose only
+// idle peer is text-only must NOT count that peer as a spread alternative (the
+// scheduler would have vision-rejected it), and the same fleet must count it for a
+// text request and count a vision-capable peer for the vision request.
+func TestLoadedIdleAlternativeHonorsVisionGate(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	reg := New(testLogger())
+	model := "shadow-vision-gate-model"
+
+	// Winner is excluded by ID inside the scan; its capability is irrelevant.
+	winner := makeSchedulerProvider(t, reg, "winner", model, 100)
+
+	// The only idle peer is TEXT-ONLY for this model.
+	idleText := makeSchedulerProvider(t, reg, "idle-text", model, 100)
+	idleText.mu.Lock()
+	idleText.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: false}}
+	idleText.mu.Unlock()
+
+	visionReq := &PendingRequest{RequestID: "rv", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, RequiresVision: true}
+	textReq := &PendingRequest{RequestID: "rt", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128}
+
+	// loadedIdleAlternativeExistsLocked requires r.mu; take it per call so the
+	// makeSchedulerProvider (Register → r.mu.Lock) calls between checks don't
+	// deadlock against a held lock.
+	idleAlt := func(pr *PendingRequest) bool {
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+		return reg.loadedIdleAlternativeExistsLocked(model, pr, winner)
+	}
+
+	if idleAlt(visionReq) {
+		t.Fatal("vision request must NOT count a text-only idle peer as a spread alternative")
+	}
+	// A TEXT request on the same fleet DOES have a valid idle alternative.
+	if !idleAlt(textReq) {
+		t.Fatal("text request must count the text-only idle peer as a spread alternative")
+	}
+
+	// Once a VISION-capable idle peer exists, the vision request counts it.
+	idleVision := makeSchedulerProvider(t, reg, "idle-vision", model, 100)
+	idleVision.mu.Lock()
+	idleVision.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: true}}
+	idleVision.mu.Unlock()
+	if !idleAlt(visionReq) {
+		t.Fatal("vision request must count a vision-capable idle peer as a spread alternative")
 	}
 }

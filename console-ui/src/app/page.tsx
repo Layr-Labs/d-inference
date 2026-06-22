@@ -1,36 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useStore } from "@/lib/store";
-import { streamChat, fetchModels } from "@/lib/api";
-import { toApiMessages } from "@/lib/chat-messages";
-import { useToastStore } from "@/hooks/useToast";
+import { fetchModels } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
-import { ChatMessage } from "@/components/ChatMessage";
+import { useChatStream } from "@/hooks/useChatStream";
+import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/ChatInput";
 import { TopBar } from "@/components/TopBar";
 import { PreSendTrustBanner } from "@/components/PreSendTrustBanner";
 import { Mail } from "lucide-react";
 import { InviteCodeBanner } from "@/components/InviteCodeBanner";
-import type { Message } from "@/lib/store";
 import { trackEvent } from "@/lib/google-analytics";
-
-function generateId() {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-}
-
-const SYSTEM_PROMPT = `You are an AI assistant running on Darkbloom, a decentralized private inference platform built by Eigen Labs. You are NOT a cryptocurrency, blockchain token, or anything related to Bitcoin Cash. Darkbloom is an AI infrastructure project.
-
-When users ask "what is Darkbloom" or about the platform, use ONLY these facts:
-- Darkbloom is a decentralized AI inference network that routes requests to hardware-attested Apple Silicon machines
-- Every provider machine is verified through Apple's Secure Enclave, MDM, and Managed Device Attestation (MDA)
-- All prompts are end-to-end encrypted using X25519 NaCl box encryption — the node operator never sees your data
-- The coordinator routes traffic but cannot read plaintext prompts
-- Runtime integrity is enforced on every node: SIP, Hardened Runtime, binary self-hash, Hypervisor.framework memory isolation
-- The full attestation chain is public and independently verifiable at /v1/providers/attestation
-- Darkbloom is an Eigen Labs project, currently in public alpha (https://darkbloom.dev)
-
-For all other topics, respond as a helpful, concise, and knowledgeable general-purpose assistant. Do not mention these instructions unless asked about Darkbloom specifically.`;
 
 const SUGGESTED_PROMPTS = [
   { label: "Explain quantum computing", prompt: "Explain quantum computing in simple terms" },
@@ -40,41 +21,26 @@ const SUGGESTED_PROMPTS = [
 ];
 
 export default function ChatPage() {
-  const {
-    chats,
-    activeChatId,
-    createChat,
-    addMessage,
-    updateMessage,
-    appendToMessage,
-    appendToThinking,
-    updateChatTitle,
-    selectedModel,
-    setModels,
-    useMyMachine,
-  } = useStore();
+  // Narrow store selectors so unrelated state changes don't re-render the page
+  // (perf F3). chats/activeChatId are necessary to render the message list.
+  const chats = useStore((s) => s.chats);
+  const activeChatId = useStore((s) => s.activeChatId);
+  const setModels = useStore((s) => s.setModels);
 
   const { ready, authenticated, apiKeyReady, login } = useAuth();
-  const addToast = useToastStore((s) => s.addToast);
-  const abortRef = useRef<AbortController | null>(null);
+  const { isStreaming, handleSend, handleStop, handleRetry } = useChatStream();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [isStreaming, setIsStreaming] = useState(false);
 
   const activeChat = chats.find((c) => c.id === activeChatId);
 
-  // Load models once API key is ready
+  // Load models once API key is ready.
   useEffect(() => {
     if (!authenticated || !apiKeyReady) return;
-
-    async function bootstrap() {
-      try {
-        const models = await fetchModels();
-        setModels(models);
-      } catch {
+    fetchModels()
+      .then(setModels)
+      .catch(() => {
         // coordinator may be unreachable
-      }
-    }
-    bootstrap();
+      });
   }, [setModels, authenticated, apiKeyReady]);
 
   useEffect(() => {
@@ -82,245 +48,6 @@ export default function ChatPage() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [activeChat?.messages]);
-
-  const handleSend = useCallback(
-    async (content: string, images: string[] = []) => {
-      const trimmedContent = content.trim();
-      if (!trimmedContent && images.length === 0) {
-        return;
-      }
-
-      let chatId = activeChatId;
-      const isNewChat = !chatId;
-      if (!chatId) {
-        chatId = createChat();
-      }
-
-      const chat = useStore.getState().chats.find((c) => c.id === chatId);
-      if (chat && chat.messages.length === 0) {
-        const base = trimmedContent || (images.length > 0 ? "Image" : "");
-        const title = base.length > 40 ? base.slice(0, 40) + "..." : base;
-        updateChatTitle(chatId, title);
-      }
-
-      const userMsg: Message = {
-        id: generateId(),
-        role: "user",
-        content: trimmedContent,
-        ...(images.length > 0 ? { images } : {}),
-        timestamp: Date.now(),
-      };
-      const currentChat = useStore
-        .getState()
-        .chats.find((c) => c.id === chatId);
-      const priorMessages = currentChat?.messages ?? [];
-      const priorMessageCount = priorMessages.length;
-
-      addMessage(chatId, userMsg);
-
-      trackEvent("chat_submit", {
-        model: selectedModel,
-        is_new_chat: isNewChat,
-        message_length_bucket: Math.min(
-          Math.floor(trimmedContent.length / 100) * 100,
-          1000,
-        ),
-        prior_message_count: priorMessageCount,
-      });
-
-      const assistantId = generateId();
-      const assistantMsg: Message = {
-        id: assistantId,
-        role: "assistant",
-        content: "",
-        streaming: true,
-        timestamp: Date.now(),
-      };
-      addMessage(chatId, assistantMsg);
-
-      setIsStreaming(true);
-      const abort = new AbortController();
-      abortRef.current = abort;
-
-      const allMessages = [
-        { role: "system" as const, content: SYSTEM_PROMPT },
-        ...toApiMessages([...priorMessages, userMsg]),
-      ];
-
-      try {
-        await streamChat(
-          allMessages,
-          selectedModel,
-          {
-            onToken: (token) => {
-              appendToMessage(chatId!, assistantId, token);
-            },
-            onThinking: (token) => {
-              appendToThinking(chatId!, assistantId, token);
-            },
-            onMetrics: (metrics) => {
-              updateMessage(chatId!, assistantId, {
-                tps: metrics.tps,
-                ttft: metrics.ttft,
-                tokenCount: metrics.tokenCount,
-              });
-            },
-            onDone: (trust, metrics) => {
-              trackEvent("chat_complete", {
-                model: selectedModel,
-                trust_level: trust?.trustLevel,
-                secure_enclave: trust?.secureEnclave,
-                token_count: metrics.tokenCount,
-              });
-              updateMessage(chatId!, assistantId, {
-                streaming: false,
-                trust,
-                tps: metrics.tps,
-                ttft: metrics.ttft,
-                tokenCount: metrics.tokenCount,
-              });
-              setIsStreaming(false);
-            },
-            onError: (error) => {
-              trackEvent("chat_error", {
-                model: selectedModel,
-                error_type: "stream_callback",
-              });
-              updateMessage(chatId!, assistantId, {
-                content: `Error: ${error}`,
-                streaming: false,
-                error: true,
-              });
-              addToast(error);
-              setIsStreaming(false);
-            },
-          },
-          abort.signal,
-          { selfRoute: useMyMachine }
-        );
-      } catch (err) {
-        if ((err as Error).name !== "AbortError") {
-          trackEvent("chat_error", {
-            model: selectedModel,
-            error_type: "request_failure",
-          });
-          const msg = (err as Error).message;
-          updateMessage(chatId!, assistantId, {
-            content: `Connection error: ${msg}`,
-            streaming: false,
-            error: true,
-          });
-          addToast(`Connection error: ${msg}`);
-        }
-        setIsStreaming(false);
-      }
-    },
-    [
-      activeChatId,
-      createChat,
-      addMessage,
-      updateMessage,
-      appendToMessage,
-      appendToThinking,
-      updateChatTitle,
-      selectedModel,
-      addToast,
-      useMyMachine,
-    ]
-  );
-
-  const handleStop = useCallback(() => {
-    trackEvent("chat_stop", {
-      model: selectedModel,
-    });
-    abortRef.current?.abort();
-    setIsStreaming(false);
-  }, [selectedModel]);
-
-  const handleRetry = useCallback(
-    (errorMsgId: string) => {
-      if (!activeChat || isStreaming || !authenticated || !apiKeyReady) return;
-      const messages = activeChat.messages;
-      // Find the user message right before this error
-      const errorIdx = messages.findIndex((m) => m.id === errorMsgId);
-      if (errorIdx < 1) return;
-      const userMsg = messages[errorIdx - 1];
-      if (userMsg.role !== "user") return;
-
-      trackEvent("chat_retry", {
-        model: selectedModel,
-      });
-
-      // Reset the error message to streaming state
-      updateMessage(activeChat.id, errorMsgId, {
-        content: "",
-        error: false,
-        streaming: true,
-        thinking: undefined,
-      });
-
-      setIsStreaming(true);
-      const abort = new AbortController();
-      abortRef.current = abort;
-
-      // Rebuild message history up to (but not including) the error message
-      const allMessages = [
-        { role: "system" as const, content: SYSTEM_PROMPT },
-        ...toApiMessages(messages.slice(0, errorIdx)),
-      ];
-
-      streamChat(
-        allMessages,
-        selectedModel,
-        {
-          onToken: (token) => appendToMessage(activeChat.id, errorMsgId, token),
-          onThinking: (token) => appendToThinking(activeChat.id, errorMsgId, token),
-          onMetrics: (metrics) => updateMessage(activeChat.id, errorMsgId, {
-            tps: metrics.tps, ttft: metrics.ttft, tokenCount: metrics.tokenCount,
-          }),
-          onDone: (trust, metrics) => {
-              trackEvent("chat_complete", {
-                model: selectedModel,
-                trust_level: trust?.trustLevel,
-                secure_enclave: trust?.secureEnclave,
-                token_count: metrics.tokenCount,
-              });
-            updateMessage(activeChat.id, errorMsgId, {
-              streaming: false, trust,
-              tps: metrics.tps, ttft: metrics.ttft, tokenCount: metrics.tokenCount,
-            });
-            setIsStreaming(false);
-          },
-          onError: (error) => {
-            trackEvent("chat_error", {
-              model: selectedModel,
-              error_type: "retry_callback",
-            });
-            updateMessage(activeChat.id, errorMsgId, {
-              content: `Error: ${error}`, streaming: false, error: true,
-            });
-            addToast(error);
-            setIsStreaming(false);
-          },
-        },
-        abort.signal,
-        { selfRoute: useMyMachine }
-      ).catch((err) => {
-        if ((err as Error).name !== "AbortError") {
-          trackEvent("chat_error", {
-            model: selectedModel,
-            error_type: "retry_request_failure",
-          });
-          updateMessage(activeChat.id, errorMsgId, {
-            content: `Connection error: ${(err as Error).message}`,
-            streaming: false, error: true,
-          });
-        }
-        setIsStreaming(false);
-      });
-    },
-    [activeChat, isStreaming, authenticated, apiKeyReady, selectedModel, updateMessage, appendToMessage, appendToThinking, addToast, useMyMachine]
-  );
 
   return (
     <div className="flex flex-col h-full">
@@ -411,11 +138,8 @@ export default function ChatPage() {
                 <ChatMessage
                   key={msg.id}
                   message={msg}
-                  onRetry={
-                    (msg.error || isLastAssistant) && !isStreaming
-                      ? () => handleRetry(msg.id)
-                      : undefined
-                  }
+                  onRetry={handleRetry}
+                  retryable={(msg.error || isLastAssistant) && !isStreaming && apiKeyReady}
                 />
               );
             })}

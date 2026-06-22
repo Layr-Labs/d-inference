@@ -18,7 +18,13 @@ interface ChatInputProps {
 export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, onLogin }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { selectedModel, models, setSelectedModel, useMyMachine, setUseMyMachine } = useStore();
+  // Narrow selectors: these fields don't change mid-stream, so the composer no
+  // longer re-renders on every streamed token (perf F3).
+  const selectedModel = useStore((s) => s.selectedModel);
+  const models = useStore((s) => s.models);
+  const setSelectedModel = useStore((s) => s.setSelectedModel);
+  const useMyMachine = useStore((s) => s.useMyMachine);
+  const setUseMyMachine = useStore((s) => s.setUseMyMachine);
   const [modelOpen, setModelOpen] = useState(false);
 
   const selectedModelObj = models.find((m) => m.id === selectedModel);

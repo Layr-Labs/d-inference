@@ -24,15 +24,15 @@ import { usePathname, useRouter } from "next/navigation";
 import { CommunityLinks } from "@/components/community/CommunityLinks";
 
 export function Sidebar() {
-  const {
-    chats,
-    activeChatId,
-    setActiveChat,
-    createChat,
-    deleteChat,
-    sidebarOpen,
-    setSidebarOpen,
-  } = useStore();
+  // Per-field selectors so the sidebar only re-renders when chat list / sidebar
+  // state changes, not on unrelated store updates (perf F3).
+  const chats = useStore((s) => s.chats);
+  const activeChatId = useStore((s) => s.activeChatId);
+  const setActiveChat = useStore((s) => s.setActiveChat);
+  const createChat = useStore((s) => s.createChat);
+  const deleteChat = useStore((s) => s.deleteChat);
+  const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useStore((s) => s.setSidebarOpen);
   const pathname = usePathname();
   const router = useRouter();
   const { displayName, logout } = useAuth();

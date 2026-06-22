@@ -282,7 +282,10 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// excludes the request we are about to admit. No-op (zero value) when the
 	// admission mode is off — keeping default behavior byte-for-byte. Attached to
 	// the success decision below; discarded if the admit re-check rejects.
-	shadowEval := r.evaluateTTFTShadowLocked(model, pr, selected)
+	// excludeIDs is threaded through so the idle-spread scan honors the SAME
+	// retry/speculative-backup exclusions the selector applied (an excluded
+	// provider is not a routable spread alternative).
+	shadowEval := r.evaluateTTFTShadowLocked(model, pr, selected, excludeIDs...)
 
 	p := selected.provider
 	p.mu.Lock()

@@ -32,6 +32,17 @@ const (
 // every provider — so it is NOT a provider fault and NOT an admission mismatch.
 const errorClassClientError = "client_error"
 
+// Final-status values persisted on inference_routes (store.InferenceRouteOutcome
+// .FinalStatus). Centralized so status comparisons/constructions don't drift on a
+// bare string literal.
+const (
+	finalStatusSuccess        = "success"
+	finalStatusPartialSuccess = "partial_success"
+	finalStatusError          = "error"
+	finalStatusCancelled      = "cancelled"
+	finalStatusTimeout        = "timeout"
+)
+
 var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonJinjaChannelTags:   {},
 	errorReasonJinjaNullBridge:    {},
@@ -77,7 +88,7 @@ func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt 
 }
 
 func (s *Server) emitInferenceErrorMetric(model string, outcome *store.InferenceRouteOutcome) {
-	if s == nil || outcome == nil || outcome.ErrorReason == "" || outcome.FinalStatus == "" || outcome.FinalStatus == "success" {
+	if s == nil || outcome == nil || outcome.ErrorReason == "" || outcome.FinalStatus == "" || outcome.FinalStatus == finalStatusSuccess {
 		return
 	}
 	tags := []string{"reason:" + outcome.ErrorReason}
@@ -121,7 +132,7 @@ func routeOutcomeWithReason(status, class string, code int, providerReason, erro
 // queryable; partial_success and success are handled by their own count writers.
 func terminalForcesCompletionTokens(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "cancelled", "error", "timeout":
+	case finalStatusCancelled, finalStatusError, finalStatusTimeout:
 		return true
 	default:
 		return false
@@ -157,7 +168,7 @@ func providerFailedPendingRouteOutcomeWithReason(pr *registry.PendingRequest, st
 }
 
 func dispatchFailedPendingRouteOutcome(pr *registry.PendingRequest, class string, code int) *store.InferenceRouteOutcome {
-	return pendingRouteOutcome(pr, "error", class, code)
+	return pendingRouteOutcome(pr, finalStatusError, class, code)
 }
 
 func providerDisconnectedError(errorText string, statusCode int) bool {
@@ -169,7 +180,7 @@ func postCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.In
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_after_commit"
 	}
-	return providerFailedPendingRouteOutcomeWithReason(pr, "partial_success", class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	return providerFailedPendingRouteOutcomeWithReason(pr, finalStatusPartialSuccess, class, msg.StatusCode, msg.ErrorReason, msg.Error)
 }
 
 func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
@@ -177,7 +188,7 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_before_response"
 	}
-	return providerFailedPendingRouteOutcomeWithReason(pr, "error", class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	return providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, msg.Error)
 }
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
@@ -186,48 +197,48 @@ func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.Inf
 		// by shape (fails identically on every provider), not a provider fault.
 		// Record as client_error WITHOUT AdmittedButFailed so it never pollutes the
 		// admission-mismatch gauge.
-		return pendingRouteOutcomeWithReason(pr, "error", errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
+		return pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
 	}
 	class := "provider_error"
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_pre_commit"
 	}
-	return providerFailedPendingRouteOutcomeWithReason(pr, "error", class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	return providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, msg.Error)
 }
 
 func postCommitProviderIncompleteOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
-	return providerFailedPendingRouteOutcome(pr, "partial_success", "provider_incomplete_after_commit", 502)
+	return providerFailedPendingRouteOutcome(pr, finalStatusPartialSuccess, "provider_incomplete_after_commit", 502)
 }
 
 func preResponseProviderIncompleteOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
-	return providerFailedPendingRouteOutcome(pr, "error", "provider_incomplete_before_response", 502)
+	return providerFailedPendingRouteOutcome(pr, finalStatusError, "provider_incomplete_before_response", 502)
 }
 
 func postCommitStreamTimeoutOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
-	return pendingRouteOutcome(pr, "partial_success", "stream_timeout_after_commit", 504)
+	return pendingRouteOutcome(pr, finalStatusPartialSuccess, "stream_timeout_after_commit", 504)
 }
 
 func preResponseTimeoutOutcome(pr *registry.PendingRequest, class string) *store.InferenceRouteOutcome {
-	return pendingRouteOutcome(pr, "timeout", class, 504)
+	return pendingRouteOutcome(pr, finalStatusTimeout, class, 504)
 }
 
 func noTerminalAfterCancelOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
-	return pendingRouteOutcome(pr, "partial_success", "no_terminal_after_cancel", 504)
+	return pendingRouteOutcome(pr, finalStatusPartialSuccess, "no_terminal_after_cancel", 504)
 }
 
 func speculativeLoserOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
-	return pendingRouteOutcome(pr, "cancelled", "speculative_loser", 0)
+	return pendingRouteOutcome(pr, finalStatusCancelled, "speculative_loser", 0)
 }
 
 func clientGoneBeforeResponseOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
-	return pendingRouteOutcome(pr, "cancelled", "client_gone_before_response", 0)
+	return pendingRouteOutcome(pr, finalStatusCancelled, "client_gone_before_response", 0)
 }
 
 func completeRouteOutcome(pr *registry.PendingRequest, usage protocol.UsageInfo, costMicroUSD int64, consumerGone bool) *store.InferenceRouteOutcome {
-	status := "success"
+	status := finalStatusSuccess
 	errorClass := ""
 	if consumerGone {
-		status = "partial_success"
+		status = finalStatusPartialSuccess
 		errorClass = errorClassClientGoneAfterCommitCompleted
 	}
 	out := &store.InferenceRouteOutcome{
@@ -259,7 +270,7 @@ func inferenceErrorReason(providerReason, status, class string, code int, messag
 	if status == "" && class == "" && code == 0 && message == "" {
 		return ""
 	}
-	if strings.EqualFold(strings.TrimSpace(status), "success") {
+	if strings.EqualFold(strings.TrimSpace(status), finalStatusSuccess) {
 		return ""
 	}
 

@@ -383,3 +383,106 @@ func TestLoadedIdleAlternativeHonorsVisionGate(t *testing.T) {
 		t.Fatal("vision request must count a vision-capable idle peer as a spread alternative")
 	}
 }
+
+// TestLoadedIdleAlternativeHonorsPreferOwnerPool pins the prefer-owner owned-pool
+// restriction: when prefer-owner selected an OWNED winner, the selector's pool was
+// owned-only, so a PUBLIC idle peer is not a real alternative. A plain request (no
+// prefer-owner) still counts the public peer, and an OWNED idle peer counts for the
+// prefer-owner request.
+func TestLoadedIdleAlternativeHonorsPreferOwnerPool(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	reg := New(testLogger())
+	model := "shadow-prefer-owner-model"
+	const owner = "owner-account-1"
+
+	// Owned winner (excluded by ID in the scan) — its ownership makes the
+	// selector's pool owned-only for a prefer-owner request.
+	winner := makeSchedulerProvider(t, reg, "owned-winner", model, 100)
+	winner.mu.Lock()
+	winner.AccountID = owner
+	winner.mu.Unlock()
+
+	// The only idle peer is PUBLIC (no owner).
+	makeSchedulerProvider(t, reg, "public-idle", model, 100)
+
+	idleAlt := func(pr *PendingRequest) bool {
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+		return reg.loadedIdleAlternativeExistsLocked(model, pr, winner)
+	}
+
+	preferOwner := &PendingRequest{RequestID: "rp", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, OwnerAccountID: owner, PreferOwner: true}
+	if idleAlt(preferOwner) {
+		t.Fatal("prefer-owner with an owned winner must NOT count a public idle peer (owned-pool restriction)")
+	}
+
+	// A plain request (no prefer-owner) does count the public idle peer.
+	plain := &PendingRequest{RequestID: "rpp", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128}
+	if !idleAlt(plain) {
+		t.Fatal("a plain request must count the public idle peer")
+	}
+
+	// An OWNED idle peer IS a valid prefer-owner alternative.
+	ownedIdle := makeSchedulerProvider(t, reg, "owned-idle", model, 100)
+	ownedIdle.mu.Lock()
+	ownedIdle.AccountID = owner
+	ownedIdle.mu.Unlock()
+	if !idleAlt(preferOwner) {
+		t.Fatal("prefer-owner must count an OWNED idle peer as a spread alternative")
+	}
+}
+
+// TestLoadedIdleAlternativeHonorsAllowlist pins the provider-allowlist gate: a
+// request with AllowedProviderSerials must not count an idle peer whose serial is
+// not in the allowlist, but must count one whose serial is.
+func TestLoadedIdleAlternativeHonorsAllowlist(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	reg := New(testLogger())
+	model := "shadow-allowlist-model"
+
+	winner := makeSchedulerProvider(t, reg, "winner", model, 100)
+	idlePeer := makeSchedulerProvider(t, reg, "idle-peer", model, 100)
+	setSchedulerProviderSerial(idlePeer, "SERIAL-IDLE")
+
+	idleAlt := func(pr *PendingRequest) bool {
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+		return reg.loadedIdleAlternativeExistsLocked(model, pr, winner)
+	}
+
+	disallowed := &PendingRequest{RequestID: "ra", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, AllowedProviderSerials: []string{"SERIAL-OTHER"}}
+	if idleAlt(disallowed) {
+		t.Fatal("allowlist request must NOT count a non-allowlisted idle peer")
+	}
+
+	allowed := &PendingRequest{RequestID: "raa", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, AllowedProviderSerials: []string{"SERIAL-IDLE"}}
+	if !idleAlt(allowed) {
+		t.Fatal("allowlist request must count an allowlisted idle peer")
+	}
+}
+
+// TestLoadedIdleAlternativeHonorsExcludeIDs pins the retry/speculative-backup
+// exclusion: an idle peer that the selector excluded (passed in excludeIDs) must
+// not be counted as a spread alternative.
+func TestLoadedIdleAlternativeHonorsExcludeIDs(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	reg := New(testLogger())
+	model := "shadow-exclude-model"
+
+	winner := makeSchedulerProvider(t, reg, "winner", model, 100)
+	idlePeer := makeSchedulerProvider(t, reg, "idle-peer", model, 100)
+
+	idleAlt := func(pr *PendingRequest, exclude ...string) bool {
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+		return reg.loadedIdleAlternativeExistsLocked(model, pr, winner, exclude...)
+	}
+
+	req := &PendingRequest{RequestID: "re", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128}
+	if !idleAlt(req) {
+		t.Fatal("idle peer should count when not excluded")
+	}
+	if idleAlt(req, idlePeer.ID) {
+		t.Fatal("an excluded (retry/backup) idle peer must not count as a spread alternative")
+	}
+}

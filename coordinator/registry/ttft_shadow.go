@@ -152,7 +152,12 @@ func (e ttftShadowEval) applyTo(d *RoutingDecision) {
 // so taking a provider lock here would risk holding two at once. winner.snapshot
 // is the PRE-reserve snapshot, so the winner's occupancy excludes the request
 // about to be admitted (the b, not b+1, the new request actually waits behind).
-func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, winner *routingCandidate) ttftShadowEval {
+//
+// excludeIDs are the same retry/speculative-backup exclusions ReserveProviderEx
+// passed to the real selector; they are threaded into the idle-spread scan so a
+// provider the selector would never have considered is never counted as a
+// routable idle alternative.
+func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, winner *routingCandidate, excludeIDs ...string) ttftShadowEval {
 	mode := ttftAdmissionMode
 	if mode == TTFTAdmissionOff || winner == nil || pr == nil {
 		return ttftShadowEval{}
@@ -186,32 +191,67 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 	// to. When herded, check whether an instantly-usable loaded-idle peer for the
 	// same model was routable.
 	if occ > 0 {
-		eval.IdleAlternativeExists = r.loadedIdleAlternativeExistsLocked(model, pr, winner.provider)
+		eval.IdleAlternativeExists = r.loadedIdleAlternativeExistsLocked(model, pr, winner.provider, excludeIDs...)
 	}
 	return eval
 }
 
 // loadedIdleAlternativeExistsLocked reports whether some provider OTHER than the
 // winner is a routable, model-resident, zero-occupancy candidate for model — an
-// instantly-usable box the herded request could have been spread to. It applies
-// the SAME gates the scheduler's selection loop does so it cannot report a peer
-// the scheduler would have rejected (which would corrupt the Phase-0 spread
-// metric): structural gates + owner/self-route filtering (snapshotProviderLockedEx),
-// the vision-capability gate (providerServesVisionModelLocked, for media
-// requests), and the capacity / token-budget / hardware-fit feasibility predicate
-// (buildCandidateWithReason — the exact check the selection loop runs). Caller
-// holds r.mu and no provider lock.
-func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRequest, winner *Provider) bool {
+// instantly-usable box the herded request could have been spread to.
+//
+// It applies the SAME per-provider eligibility the scheduler's selection scan
+// (selectBestCandidateScanLocked) applies, in the same order and using the same
+// helpers, so the Phase-0 spread metric can never count a peer the selector would
+// have rejected. The correspondence (keep in sync with the selection loop):
+//
+//   - winner / excludeIDs skip      → the selector's excludeSet (retry +
+//     speculative-backup exclusions) plus the already-reserved winner.
+//   - self-route owner gate         → `pr.SelfRouteOnly && !owned`.
+//   - provider allowlist            → `providerMatchesAllowedSerial`.
+//   - prefer-owner POOL restriction → when prefer-owner selected an OWNED winner,
+//     the selector's pool was owned-only, so a public peer is not a real
+//     alternative (mirrors the owned-pool block after candidate collection).
+//   - structural / trait / trust gates → `snapshotProviderLockedEx`.
+//   - instantly-usable              → model resident AND zero occupancy.
+//   - vision capability             → `providerServesVisionModelLocked`.
+//   - capacity / token-budget / fit → `buildCandidateWithReason`.
+//
+// Caller holds r.mu and no provider lock.
+func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRequest, winner *Provider, excludeIDs ...string) bool {
 	winnerID := ""
 	if winner != nil {
 		winnerID = winner.ID
 	}
+	excludeSet := make(map[string]struct{}, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excludeSet[id] = struct{}{}
+	}
+	allowedSerials := make(map[string]struct{}, len(pr.AllowedProviderSerials))
+	for _, serial := range pr.AllowedProviderSerials {
+		allowedSerials[serial] = struct{}{}
+	}
+	// Prefer-owner restricts the selector's pool to OWNED candidates whenever an
+	// owned candidate can serve — and the winner being owned is exactly that
+	// signal (prefer-owner picks from the owned pool when it is non-empty). So a
+	// public peer is only a real alternative when the winner itself is public.
+	winnerOwnedPool := pr.PreferOwner && providerOwnedBy(winner, pr.OwnerAccountID)
+
 	for _, p := range r.providers {
 		if p == nil || p.ID == winnerID {
 			continue
 		}
+		if _, excluded := excludeSet[p.ID]; excluded {
+			continue
+		}
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		if pr.SelfRouteOnly && !owned {
+			continue
+		}
+		if len(allowedSerials) > 0 && !providerMatchesAllowedSerial(p, allowedSerials) {
+			continue
+		}
+		if winnerOwnedPool && !owned {
 			continue
 		}
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)

@@ -486,3 +486,74 @@ func TestLoadedIdleAlternativeHonorsExcludeIDs(t *testing.T) {
 		t.Fatal("an excluded (retry/backup) idle peer must not count as a spread alternative")
 	}
 }
+
+// TestLoadedIdleAlternativeHonorsAvoidVersionPool pins the post-candidate
+// diverse-version pool narrowing (Codex P2 round 3): a version-diverse retry must
+// not count an idle peer that runs the AVOIDED build (the selector drops it from
+// the pool). Reusing scanCandidatesLocked means the shadow scan honors this
+// automatically. The plain-request contrast proves the peer is otherwise eligible.
+func TestLoadedIdleAlternativeHonorsAvoidVersionPool(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	reg := New(testLogger())
+	model := "shadow-avoidversion-model"
+
+	// Winner runs a build DIFFERENT from the one being avoided (so a diverse
+	// candidate exists and the pool narrows).
+	winner := makeSchedulerProvider(t, reg, "winner", model, 100)
+	winner.mu.Lock()
+	winner.Version = "0.6.30"
+	winner.mu.Unlock()
+
+	// The only idle peer runs the AVOIDED build.
+	idleAvoided := makeSchedulerProvider(t, reg, "idle-avoided", model, 100)
+	idleAvoided.mu.Lock()
+	idleAvoided.Version = "0.6.29"
+	idleAvoided.mu.Unlock()
+
+	idleAlt := func(pr *PendingRequest) bool {
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+		return reg.loadedIdleAlternativeExistsLocked(model, pr, winner)
+	}
+
+	avoid := &PendingRequest{RequestID: "rav", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, Traits: RequestTraits{AvoidVersion: "0.6.29"}}
+	if idleAlt(avoid) {
+		t.Fatal("AvoidVersion retry must NOT count an idle peer on the avoided build")
+	}
+
+	plain := &PendingRequest{RequestID: "rav2", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128}
+	if !idleAlt(plain) {
+		t.Fatal("a plain retry must count the idle peer (proves it is otherwise eligible)")
+	}
+}
+
+// TestLoadedIdleAlternativeHonorsMinDecodeTPS pins the post-candidate decode-floor
+// pool narrowing (Codex P2 round 3): a quality-floored retry must not count an
+// idle peer below MinDecodeTPS (the selector drops it from the pool). The
+// plain-request contrast proves the peer is otherwise eligible.
+func TestLoadedIdleAlternativeHonorsMinDecodeTPS(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	reg := New(testLogger())
+	model := "shadow-mindecode-model"
+
+	// Winner is fast (clears the floor → the quality pool narrows).
+	winner := makeSchedulerProvider(t, reg, "winner-fast", model, 200)
+	// The only idle peer is slow: projected ~20/(1+0.27) ≈ 15.7 tok/s at b=0.
+	makeSchedulerProvider(t, reg, "idle-slow", model, 20)
+
+	idleAlt := func(pr *PendingRequest) bool {
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+		return reg.loadedIdleAlternativeExistsLocked(model, pr, winner)
+	}
+
+	floor := &PendingRequest{RequestID: "rmd", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, MinDecodeTPS: 50}
+	if idleAlt(floor) {
+		t.Fatal("MinDecodeTPS retry must NOT count an idle peer below the decode floor")
+	}
+
+	plain := &PendingRequest{RequestID: "rmd2", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128}
+	if !idleAlt(plain) {
+		t.Fatal("a plain retry must count the slow idle peer (proves it is otherwise eligible)")
+	}
+}

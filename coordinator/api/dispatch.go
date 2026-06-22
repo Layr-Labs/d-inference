@@ -388,6 +388,10 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	d.firstChunk = chunk
 	pr.MarkFirstChunkArrived()
 	pr.MarkFirstContentArrived()
+	// Mark THIS attempt as the committed one so handleComplete's fallback only
+	// ever stamps FirstContentAt for the attempt that actually delivered content —
+	// never a late-completing abandoned/retried attempt sharing the same Timing.
+	pr.MarkContentCommitted()
 }
 
 // successRoutingOutcome builds a success outcome for the committed attempt.

@@ -424,15 +424,34 @@ func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capa
 	return winner == nil && breakerRejected > 0 && capacityRejections == 0 && ttftRejections == 0
 }
 
-// selectBestCandidateScanLocked is one pass of candidate selection. When
-// ignoreProviderBreaker is true the node-health breaker gate is skipped
-// (every other structural/privacy/capacity/trait gate still applies). It
-// additionally returns breakerRejected: how many providers were dropped while
-// their node-health breaker was OPEN on this pass — the signal
-// selectBestCandidateLockedFull uses to decide whether a breaker-bypassed
-// fail-open re-scan could help. breakerRejected is always 0 when
-// ignoreProviderBreaker is true (the breaker is not consulted).
-func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64, int) {
+// candidateScan is the result of building the eligible candidate pool for a
+// request: the cost-rankable pool (after every per-provider gate AND the
+// post-candidate pool narrowing) plus the rejection tallies and the affinity
+// hint selection needs. It is the SINGLE SOURCE of routing eligibility, shared by
+// the cost-ranking selector (selectBestCandidateScanLocked) and the Phase-0
+// idle-spread shadow scan (loadedIdleAlternativeExistsLocked) so the two can
+// never drift on which providers are routable.
+type candidateScan struct {
+	pool               []*routingCandidate
+	affinityProviderID string
+	candidateCount     int
+	capacityRejections int
+	tooLargeRejections int
+	visionRejections   int
+	ttftRejections     int
+	bestTTFTMs         float64
+	breakerRejected    int
+}
+
+// scanCandidatesLocked builds the eligible candidate pool for a request — every
+// per-provider gate (self-route, allowlist, exclude, structural/trait/trust via
+// snapshotProviderLockedEx, vision, capacity via buildCandidateWithReason, plus
+// the per-request TTFT ceiling) followed by the post-candidate pool narrowing
+// (prefer-owner / AvoidVersion / MinDecodeTPS) — i.e. exactly the set the
+// selector ranks by cost. When ignoreProviderBreaker is true the node-health
+// breaker gate is skipped (every other gate still applies); breakerRejected is
+// always 0 in that mode. Caller holds r.mu and no provider lock.
+func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) candidateScan {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -579,10 +598,6 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		candidateCount++
 	}
 
-	if len(candidates) == 0 {
-		return nil, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected
-	}
-
 	// Prefer-with-fallback: if the caller asked to prefer their own machine and
 	// at least one owned candidate can serve, choose among owned candidates
 	// only; otherwise fall back to the full pool (a public provider, charged
@@ -637,6 +652,35 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		}
 	}
 
+	return candidateScan{
+		pool:               pool,
+		affinityProviderID: affinityProviderID,
+		candidateCount:     candidateCount,
+		capacityRejections: capacityRejections,
+		tooLargeRejections: tooLargeRejections,
+		visionRejections:   visionRejections,
+		ttftRejections:     ttftRejections,
+		bestTTFTMs:         bestTTFTMs,
+		breakerRejected:    breakerRejected,
+	}
+}
+
+// selectBestCandidateScanLocked is one pass of candidate selection: it builds the
+// eligible pool (scanCandidatesLocked — the single source of eligibility) and
+// ranks it by cost, returning the winner plus the rejection tallies. When
+// ignoreProviderBreaker is true the node-health breaker gate is skipped;
+// breakerRejected (providers dropped while their breaker was OPEN) is the signal
+// selectBestCandidateLockedFull uses to decide whether a breaker-bypassed
+// fail-open re-scan could help, and is always 0 in that mode.
+func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64, int) {
+	scan := r.scanCandidatesLocked(model, pr, ignoreProviderBreaker, excludeIDs...)
+	if len(scan.pool) == 0 {
+		return nil, scan.candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
+	}
+	pool := scan.pool
+	affinityProviderID := scan.affinityProviderID
+	candidateCount := scan.candidateCount
+
 	var best *routingCandidate
 	for _, c := range pool {
 		if best == nil || c.costMs < best.costMs {
@@ -685,7 +729,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		}
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected
+	return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {

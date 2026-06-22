@@ -205,6 +205,16 @@ type PendingRequest struct {
 	// dispatch-goroutine-only.
 	Timing   *RequestTiming
 	timingMu sync.Mutex
+	// contentCommitted marks THIS attempt as the one that delivered its first
+	// content chunk to the client (set by commitFirstContent / the generic
+	// first-content stamp, in the dispatch/handler goroutine). It distinguishes the
+	// committed attempt from abandoned/retried attempts that SHARE the same Timing
+	// pointer. handleComplete's fallback reads it (ContentCommittedSafe) so a
+	// late-completing abandoned attempt can never stamp FirstContentAt on the
+	// shared Timing and corrupt the committed attempt's actual_ttft_ms. Guarded by
+	// timingMu (written in the dispatch/handler goroutine, read in the provider
+	// read-loop goroutine).
+	contentCommitted bool
 }
 
 // MarkFirstChunkArrived stamps Timing.FirstChunkAt to now exactly once, under
@@ -262,6 +272,33 @@ func (pr *PendingRequest) FirstContentAtSafe() time.Time {
 	pr.timingMu.Lock()
 	defer pr.timingMu.Unlock()
 	return pr.Timing.FirstContentAt
+}
+
+// MarkContentCommitted records that THIS attempt committed its first content
+// chunk to the client. Set once, under timingMu, by the dispatch/handler
+// goroutine (commitFirstContent / the generic first-content stamp). See the
+// contentCommitted field for why it is per-attempt rather than on the shared
+// Timing.
+func (pr *PendingRequest) MarkContentCommitted() {
+	if pr == nil {
+		return
+	}
+	pr.timingMu.Lock()
+	pr.contentCommitted = true
+	pr.timingMu.Unlock()
+}
+
+// ContentCommittedSafe reports whether THIS attempt committed its first content,
+// read under timingMu. It is the safe way for the provider read-loop goroutine
+// (handleComplete) to verify the completing attempt is the committed one before
+// stamping shared-Timing fields.
+func (pr *PendingRequest) ContentCommittedSafe() bool {
+	if pr == nil {
+		return false
+	}
+	pr.timingMu.Lock()
+	defer pr.timingMu.Unlock()
+	return pr.contentCommitted
 }
 
 type TokenAdmission struct {

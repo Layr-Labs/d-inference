@@ -197,93 +197,34 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 }
 
 // loadedIdleAlternativeExistsLocked reports whether some provider OTHER than the
-// winner is a routable, model-resident, zero-occupancy candidate for model — an
-// instantly-usable box the herded request could have been spread to.
+// winner is an instantly-usable (model-resident, zero-occupancy) spread target
+// the herded request could have been routed to instead.
 //
-// It applies the SAME per-provider eligibility the scheduler's selection scan
-// (selectBestCandidateScanLocked) applies, in the same order and using the same
-// helpers, so the Phase-0 spread metric can never count a peer the selector would
-// have rejected. The correspondence (keep in sync with the selection loop):
-//
-//   - winner / excludeIDs skip      → the selector's excludeSet (retry +
-//     speculative-backup exclusions) plus the already-reserved winner.
-//   - self-route owner gate         → `pr.SelfRouteOnly && !owned`.
-//   - provider allowlist            → `providerMatchesAllowedSerial`.
-//   - prefer-owner POOL restriction → when prefer-owner selected an OWNED winner,
-//     the selector's pool was owned-only, so a public peer is not a real
-//     alternative (mirrors the owned-pool block after candidate collection).
-//   - structural / trait / trust gates → `snapshotProviderLockedEx`.
-//   - instantly-usable              → model resident AND zero occupancy.
-//   - vision capability             → `providerServesVisionModelLocked`.
-//   - capacity / token-budget / fit → `buildCandidateWithReason`.
-//
-// Caller holds r.mu and no provider lock.
+// It derives eligibility from the SAME computation the selector uses
+// (scanCandidatesLocked — the single source of routing eligibility: every
+// per-provider gate AND the post-candidate pool narrowing, i.e.
+// exclude/self-route/allowlist/vision/capacity/TTFT-ceiling + prefer-owner +
+// AvoidVersion + MinDecodeTPS), then checks whether any resulting eligible
+// candidate other than the winner is loaded-idle. Because it reuses the
+// selector's pool rather than re-deriving the gates, the Phase-0 spread metric
+// can never count a peer the scheduler would have rejected. Caller holds r.mu and
+// no provider lock.
 func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRequest, winner *Provider, excludeIDs ...string) bool {
 	winnerID := ""
 	if winner != nil {
 		winnerID = winner.ID
 	}
-	excludeSet := make(map[string]struct{}, len(excludeIDs))
-	for _, id := range excludeIDs {
-		excludeSet[id] = struct{}{}
-	}
-	allowedSerials := make(map[string]struct{}, len(pr.AllowedProviderSerials))
-	for _, serial := range pr.AllowedProviderSerials {
-		allowedSerials[serial] = struct{}{}
-	}
-	// Prefer-owner restricts the selector's pool to OWNED candidates whenever an
-	// owned candidate can serve — and the winner being owned is exactly that
-	// signal (prefer-owner picks from the owned pool when it is non-empty). So a
-	// public peer is only a real alternative when the winner itself is public.
-	winnerOwnedPool := pr.PreferOwner && providerOwnedBy(winner, pr.OwnerAccountID)
-
-	for _, p := range r.providers {
-		if p == nil || p.ID == winnerID {
+	scan := r.scanCandidatesLocked(model, pr, false, excludeIDs...)
+	for _, c := range scan.pool {
+		if c.provider == nil || c.provider.ID == winnerID {
 			continue
 		}
-		if _, excluded := excludeSet[p.ID]; excluded {
-			continue
+		// Instantly usable: the model is resident AND no work is occupying the box
+		// (a herded peer is not a spread target). The candidate already passed
+		// every selection gate via scanCandidatesLocked.
+		if c.snapshot.modelLoaded && snapshotOccupancy(c.snapshot) == 0 {
+			return true
 		}
-		owned := providerOwnedBy(p, pr.OwnerAccountID)
-		if pr.SelfRouteOnly && !owned {
-			continue
-		}
-		if len(allowedSerials) > 0 && !providerMatchesAllowedSerial(p, allowedSerials) {
-			continue
-		}
-		if winnerOwnedPool && !owned {
-			continue
-		}
-		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
-		snap, ok := r.snapshotProviderLockedEx(p, model, pr.Traits, relaxTrust, false)
-		if !ok || !snap.modelLoaded {
-			continue
-		}
-		// A spread target must be instantly usable — model resident AND
-		// unoccupied. Filter occupied peers before the costlier gates below.
-		if snapshotOccupancy(snap) != 0 {
-			continue
-		}
-		// Vision gate: a media request must only count a vision-capable peer, or
-		// the scheduler would have rejected it (visionRejections) and the spread
-		// signal would be a false positive. snapshotProviderLockedEx released p.mu,
-		// so re-take it for the p.Models read (mirrors the selection loop).
-		if pr.RequiresVision {
-			p.mu.Lock()
-			servesVision := r.providerServesVisionModelLocked(p, model)
-			p.mu.Unlock()
-			if !servesVision {
-				continue
-			}
-		}
-		// Capacity / token-budget / hardware-fit feasibility — the same predicate
-		// the selection loop applies via buildCandidateWithReason. Without it an
-		// oversized-token or memory-starved peer would be counted as a valid idle
-		// alternative the scheduler could never actually have selected.
-		if _, _, admissible := r.buildCandidateWithReason(snap, pr); !admissible {
-			continue
-		}
-		return true
 	}
 	return false
 }

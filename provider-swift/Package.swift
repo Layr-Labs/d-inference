@@ -153,23 +153,6 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
-        // vlm-smoke: THROWAWAY harness to test Gemma 4 multimodal (VLM)
-        // inference via the mlx-swift-lm fork's MLXVLM library. NOT a
-        // product. Mirrors the provider's real load path (LocalTokenizerLoader)
-        // but swaps LLMModelFactory -> VLMModelFactory. Safe to delete.
-        // ----------------------------------------------------------------
-        .executableTarget(
-            name: "vlm-smoke",
-            dependencies: [
-                "ProviderCore",
-                .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                .product(name: "MLXVLM", package: "mlx-swift-lm"),
-            ],
-            path: "Sources/vlm-smoke"
-        ),
-
-        // ----------------------------------------------------------------
         // darkbloom-enclave: small CLI wrapper around the Secure Enclave
         // identity helpers in ProviderCore (the Secure Enclave FFI bridge
         // lives in ProviderCore/Security). Used by install.sh to render an attestation
@@ -224,23 +207,6 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ],
             path: "Sources/kv-attn-selftest"
-        ),
-
-        // ----------------------------------------------------------------
-        // kv-engine-demo: DAR-318 capacity demo. Loads Gemma 4 into the
-        // real continuous-batching engine twice (fp16 baseline + K8V8 g128
-        // quantized), reports capacity, quality, and perf axes separately.
-        // NOT a product.
-        // ----------------------------------------------------------------
-        .executableTarget(
-            name: "kv-engine-demo",
-            dependencies: [
-                "ProviderCore",
-                "ProviderBenchmark",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-            ],
-            path: "Sources/kv-engine-demo"
         ),
 
         // ----------------------------------------------------------------

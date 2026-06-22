@@ -416,19 +416,20 @@ func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMod
 	if !ok || target.Desired != currentModel || target.Previous == "" {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
-	if s.modelShed(target.Previous, publicModel) {
+	// Previous must be a real, non-shed catalog build before we probe it.
+	if s.modelShed(target.Previous, publicModel) || !s.registry.IsModelInCatalog(target.Previous) {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
-	if !s.registry.IsModelInCatalog(target.Previous) {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
+	// A SINGLE Previous-build probe drives both modes; the mode only decides
+	// whether the probe's TTFT estimate also gates the fallback.
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
-	tooSlow := mode == aliasFallbackTTFT && ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold)
-	if candidates <= 0 || tooSlow {
-		// Preserve the historical failure-path model: capacity mode reports the
-		// unchanged current build; TTFT mode reports the previous build it probed.
+	enforceTTFT := mode == aliasFallbackTTFT
+	if candidates <= 0 || (enforceTTFT && ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold)) {
+		// No fallback. TTFT mode reports the probed Previous build (the caller
+		// uses it as the alternate TTFT estimate); capacity mode discards the
+		// model, so keep the unchanged current build.
 		failModel := currentModel
-		if mode == aliasFallbackTTFT {
+		if enforceTTFT {
 			failModel = target.Previous
 		}
 		return failModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false

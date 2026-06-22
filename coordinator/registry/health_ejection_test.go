@@ -7,16 +7,16 @@ import (
 )
 
 func TestStableProviderIdentityLocked_Precedence(t *testing.T) {
-	if got := stableProviderIdentity(&Provider{AttestationResult: &attestation.VerificationResult{SerialNumber: "SER1", PublicKey: "PK1"}, AccountID: "acct1"}); got != "serial:SER1" {
+	if got := stableProviderIdentityLocked(&Provider{AttestationResult: &attestation.VerificationResult{SerialNumber: "SER1", PublicKey: "PK1"}, AccountID: "acct1"}); got != "serial:SER1" {
 		t.Errorf("serial must win; got %q", got)
 	}
-	if got := stableProviderIdentity(&Provider{AttestationResult: &attestation.VerificationResult{PublicKey: "PK1"}, AccountID: "acct1"}); got != "sekey:PK1" {
+	if got := stableProviderIdentityLocked(&Provider{AttestationResult: &attestation.VerificationResult{PublicKey: "PK1"}, AccountID: "acct1"}); got != "sekey:PK1" {
 		t.Errorf("se-key second; got %q", got)
 	}
-	if got := stableProviderIdentity(&Provider{AccountID: "acct1"}); got != "acct:acct1" {
+	if got := stableProviderIdentityLocked(&Provider{AccountID: "acct1"}); got != "acct:acct1" {
 		t.Errorf("account third; got %q", got)
 	}
-	if got := stableProviderIdentity(&Provider{}); got != "" {
+	if got := stableProviderIdentityLocked(&Provider{}); got != "" {
 		t.Errorf("un-attestable must be empty (never ejected); got %q", got)
 	}
 }

@@ -830,7 +830,7 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	// fail-open contract: skipped on the ignoreProviderBreaker rescan, and an
 	// un-attestable provider (empty stable id) is never ejected.
 	if !ignoreProviderBreaker && healthEjectionEnabled() {
-		if sid := stableProviderIdentity(p); sid != "" && r.healthEjectionOpenLocked(sid, now) {
+		if sid := stableProviderIdentityLocked(p); sid != "" && r.healthEjectionOpenLocked(sid, now) {
 			return false
 		}
 	}

@@ -60,18 +60,21 @@ func healthEjectionEnabled() bool {
 	}
 }
 
-// stableProviderIdentity derives a provider's stable identity (precedence:
+// stableProviderIdentityLocked derives a provider's stable identity (precedence:
 // hardware serial → SE public key → account id), or "" when none is available
-// (un-attestable → never ejected, fail-open). Reads AttestationResult through the
-// thread-safe p.GetAttestationResult() accessor (it is re-set under p.mu on live
-// re-attestation), so this is safe to call while holding only r.mu (the accessor
-// takes p.mu; r.mu→p.mu is the established order). AccountID is set once at
-// registration and read lock-free elsewhere under r.mu.
-func stableProviderIdentity(p *Provider) string {
+// (un-attestable → never ejected, fail-open).
+//
+// Reads p.AttestationResult / p.AccountID DIRECTLY — it must NOT take p.mu. The
+// routing gate (providerPassesRoutingGatesLockedEx) calls this with p.mu ALREADY
+// HELD (snapshotProviderLocked* holds it; the gate reads p.Status/p.TrustLevel the
+// same direct way), so re-locking via p.GetAttestationResult() self-deadlocks the
+// gate. The only lock-free caller, GetProviderStableIdentity, takes p.mu itself
+// before calling — so every path reads these fields under p.mu without re-entrancy.
+func stableProviderIdentityLocked(p *Provider) string {
 	if p == nil {
 		return ""
 	}
-	if ar := p.GetAttestationResult(); ar != nil {
+	if ar := p.AttestationResult; ar != nil {
 		if ar.SerialNumber != "" {
 			return "serial:" + ar.SerialNumber
 		}
@@ -98,9 +101,12 @@ func (r *Registry) GetProviderStableIdentity(providerID string) string {
 	if p == nil {
 		return ""
 	}
-	// Release r.mu before the identity read: stableProviderIdentity takes p.mu via
-	// GetAttestationResult, and there is no need to hold both.
-	return stableProviderIdentity(p)
+	// This path does NOT hold p.mu (unlike the routing gate), so take it for the
+	// read — guarding against a concurrent SetAttestationResult (live re-attestation
+	// writes p.AttestationResult under p.mu). Not nested with r.mu, so no deadlock.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return stableProviderIdentityLocked(p)
 }
 
 // RecordProviderServeOutcome feeds one terminal outcome into the stable-identity

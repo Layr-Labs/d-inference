@@ -98,7 +98,12 @@ final class ProtocolSafeQuantizedKVCache: QuantizedKVCacheProtocol, KVCache,
     }
 
     func copy() -> any KVCache {
-        let copiedInner = inner.copy() as! QuantizedKVCache
+        // `inner` is a QuantizedKVCache, so its `copy()` must return one too.
+        // Assert that invariant explicitly rather than force-casting blind.
+        guard let copiedInner = inner.copy() as? QuantizedKVCache else {
+            preconditionFailure(
+                "ProtocolSafeQuantizedKVCache.copy(): inner.copy() did not return a QuantizedKVCache")
+        }
         let new = ProtocolSafeQuantizedKVCache(
             groupSize: groupSize,
             bits: bits,

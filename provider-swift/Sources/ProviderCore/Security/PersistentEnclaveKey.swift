@@ -258,7 +258,12 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
 
         switch status {
         case errSecSuccess:
-            // Force-unwrap safe: errSecSuccess guarantees a result.
+            // errSecSuccess should populate `result`; guard the optional so a
+            // Keychain contract violation surfaces as a typed error instead of
+            // a force-unwrap crash. (CFTypeRef→SecKey itself always succeeds.)
+            guard let result else {
+                throw PersistentEnclaveKeyError.keyLookupFailed(status: status)
+            }
             let key = result as! SecKey
             return try PersistentEnclaveKey(privateKey: key)
         case errSecItemNotFound:

@@ -2187,7 +2187,11 @@ public actor ProviderLoop {
                 oneShot.resume(returning: true)
             }
 
-            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(Int(timeout.components.seconds))) {
+            // Structured timeout: first resume wins (OneShotBoolContinuation
+            // dedupes), so a slept Task replaces the GCD asyncAfter without
+            // changing the race semantics.
+            Task {
+                try? await Task.sleep(for: timeout)
                 oneShot.resume(returning: false)
             }
         }

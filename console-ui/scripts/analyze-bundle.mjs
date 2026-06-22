@@ -14,7 +14,7 @@
  *
  * Budgets (gzip): shared baseline <= SHARED_BUDGET_KB, any route <= ROUTE_BUDGET_KB.
  */
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { join, relative } from "node:path";
 

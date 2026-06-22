@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook, act, render, screen, waitFor } from "@testing-library/react";
+import { renderHook, act, render, screen } from "@testing-library/react";
 import { useStripePayouts } from "@/components/payouts/useStripePayouts";
 import { StripePayoutsCard } from "@/components/payouts/StripePayoutsCard";
 import type { StripeStatus } from "@/lib/api";

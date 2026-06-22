@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { coordinatorUrl } from "@/lib/server/coordinator";
+import { coordinatorUrl, cacheControl } from "@/lib/server/coordinator";
 
 export async function GET(req: NextRequest) {
   const search = req.nextUrl.searchParams.toString();
@@ -8,5 +8,7 @@ export async function GET(req: NextRequest) {
   if (!res.ok) {
     return NextResponse.json({ error: `Upstream ${res.status}` }, { status: res.status });
   }
-  return NextResponse.json(await res.json());
+  return NextResponse.json(await res.json(), {
+    headers: { "Cache-Control": cacheControl(10, 30) },
+  });
 }

@@ -44,3 +44,13 @@ export async function passthrough(res: Response): Promise<NextResponse> {
 export function missingPrivyToken(): NextResponse {
   return NextResponse.json({ error: "missing privy token" }, { status: 401 });
 }
+
+/**
+ * Cache-Control value for read-only, unauthenticated proxy responses so the
+ * edge/CDN serves repeats instead of every poll hitting the coordinator
+ * (perf F5a). `s-maxage` = fresh window, `stale-while-revalidate` = how long a
+ * stale copy may be served while a refresh happens in the background.
+ */
+export function cacheControl(sMaxAgeSeconds: number, swrSeconds: number): string {
+  return `public, s-maxage=${sMaxAgeSeconds}, stale-while-revalidate=${swrSeconds}`;
+}

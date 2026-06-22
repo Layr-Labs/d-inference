@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { coordinatorUrl } from "@/lib/server/coordinator";
+import { coordinatorUrl, cacheControl } from "@/lib/server/coordinator";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -252,6 +252,10 @@ async function publicCatalogResponse(coordUrl: string) {
     aliases,
     data: (aliases.length > 0 ? publicModelRows(catalogModels, aliases) : applyGemmaRolloutQuickFix(catalogModels, capacityByID))
       .map((model) => toModelEntry(model, capacityByID.get(model.id as string))),
+  }, {
+    // Public, unauthenticated catalog — edge-cacheable (perf F5a). The private
+    // (api-key) branch below is never cached.
+    headers: { "Cache-Control": cacheControl(30, 120) },
   });
 }
 

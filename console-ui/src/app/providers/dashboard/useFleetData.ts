@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import type { MyProvidersResponse, MySummaryResponse } from "../types";
 import type { RoutingCtx } from "./routing";
 
@@ -103,15 +104,13 @@ export function useFleetData(): FleetData {
     }
   }, [getAccessToken]);
 
+  // When not authenticated, drop the first-load spinner (no fetch will run).
   useEffect(() => {
-    if (!authenticated) {
-      setLoading(false);
-      return;
-    }
-    fetchAll();
-    const id = setInterval(fetchAll, REFRESH_MS);
-    return () => clearInterval(id);
-  }, [authenticated, fetchAll]);
+    if (!authenticated) setLoading(false);
+  }, [authenticated]);
+
+  // Poll only while the tab is visible; pause in the background (perf F6).
+  useVisiblePolling(fetchAll, REFRESH_MS, authenticated);
 
   return {
     ready,

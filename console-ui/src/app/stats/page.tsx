@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import {
   Activity,
   BarChart3,
@@ -3045,11 +3046,9 @@ export default function StatsPage() {
     }
   };
 
-  useEffect(() => {
-    fetchStats();
-    const interval = setInterval(fetchStats, 10_000);
-    return () => clearInterval(interval);
-  }, []);
+  // Poll only while the tab is visible; pause in the background (perf F6).
+  // Cadence raised 10s -> 15s to cut active request volume.
+  useVisiblePolling(fetchStats, 15_000);
 
   if (loading) {
     return (

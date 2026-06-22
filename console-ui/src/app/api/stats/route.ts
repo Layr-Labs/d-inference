@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { coordinatorUrl } from "@/lib/server/coordinator";
+import { coordinatorUrl, cacheControl } from "@/lib/server/coordinator";
 
 type LocationBucket = {
   key: string;
@@ -536,5 +536,7 @@ export async function GET(req: NextRequest) {
       { status: res.status },
     );
   }
-  return NextResponse.json(await res.json());
+  return NextResponse.json(await res.json(), {
+    headers: { "Cache-Control": cacheControl(10, 30) },
+  });
 }

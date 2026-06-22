@@ -1,7 +1,7 @@
 import Foundation
 import MLXLMCommon
 import Testing
-@testable import ProviderBenchmark
+@testable import ProviderBenchmarkKVQuant
 @testable import ProviderCore
 
 @Test("KV quant candidate modes parse from their raw labels")

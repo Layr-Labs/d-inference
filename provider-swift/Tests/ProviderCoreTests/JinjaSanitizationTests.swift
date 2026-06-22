@@ -301,20 +301,18 @@ final class JinjaSanitizationTests: XCTestCase {
             "tool_calls": toolCalls,
         ]]
 
-        XCTAssertThrowsError(
-            try ChatTemplateFixes.normalizeMessages(
-                messages,
-                context: .init(modelId: "gpt-oss-20b")
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? MultiModelBatchSchedulerEngineError,
-                .invalidToolPayload(
-                    "assistant message with tool_calls cannot include both content and thinking"))
-        }
+        // P2: content+thinking sharing a turn with a tool_call is now NORMALIZED
+        // (thinking split into its own preceding assistant turn) rather than rejected.
+        let out = try! ChatTemplateFixes.normalizeMessages(
+            messages, context: .init(modelId: "gpt-oss-20b"))
+        XCTAssertEqual(out.count, 2, "thinking must be split into a standalone turn")
+        XCTAssertEqual(out[0]["thinking"] as? String, "need weather")
+        XCTAssertNil(out[0]["tool_calls"], "the thinking turn carries no tool_call")
+        XCTAssertEqual(out[1]["content"] as? String, "call the tool")
+        XCTAssertEqual((out[1]["tool_calls"] as? [any Sendable])?.count, 1)
     }
 
-    func testAssistantMessageWithMultipleToolCallsIsRejectedBeforeTemplate() {
+    func testAssistantMessageWithMultipleToolCallsIsSplitBeforeTemplate() throws {
         let toolCalls: [any Sendable] = [
             ["function": ["name": "first"] as [String: any Sendable]] as [String: any Sendable],
             ["function": ["name": "second"] as [String: any Sendable]] as [String: any Sendable],
@@ -324,17 +322,45 @@ final class JinjaSanitizationTests: XCTestCase {
             "tool_calls": toolCalls,
         ]]
 
-        XCTAssertThrowsError(
-            try ChatTemplateFixes.normalizeMessages(
-                messages,
-                context: .init(modelId: "gpt-oss-20b")
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? MultiModelBatchSchedulerEngineError,
-                .invalidToolPayload(
-                    "assistant message contains multiple tool_calls; Harmony supports one tool call per assistant message"))
+        // P2: parallel tool_calls are split into one Harmony turn per call instead
+        // of being rejected with a 400 (they were previously unservable on gpt-oss).
+        let out = try ChatTemplateFixes.normalizeMessages(
+            messages, context: .init(modelId: "gpt-oss-20b"))
+        XCTAssertEqual(out.count, 2, "two parallel calls → two sequential turns")
+        for turn in out {
+            XCTAssertEqual(turn["role"] as? String, "assistant")
+            XCTAssertEqual((turn["tool_calls"] as? [any Sendable])?.count, 1,
+                           "each split turn carries exactly one tool_call")
         }
+    }
+
+    func testParallelToolCallsInterleaveWithResultsAndRejectOrphans() throws {
+        let toolCalls: [any Sendable] = [
+            ["id": "c1", "function": ["name": "a"] as [String: any Sendable]] as [String: any Sendable],
+            ["id": "c2", "function": ["name": "b"] as [String: any Sendable]] as [String: any Sendable],
+        ]
+        let messages: [[String: any Sendable]] = [
+            ["role": "assistant", "tool_calls": toolCalls],
+            ["role": "tool", "tool_call_id": "c1", "content": "ra"],
+            ["role": "tool", "tool_call_id": "c2", "content": "rb"],
+        ]
+        // Interleaved: assistant(c1) → tool(c1) → assistant(c2) → tool(c2).
+        let out = try ChatTemplateFixes.normalizeMessages(
+            messages, context: .init(modelId: "gpt-oss-20b"))
+        XCTAssertEqual(out.count, 4)
+        XCTAssertEqual(out[0]["role"] as? String, "assistant")
+        XCTAssertEqual(out[1]["tool_call_id"] as? String, "c1")
+        XCTAssertEqual(out[2]["role"] as? String, "assistant")
+        XCTAssertEqual(out[3]["tool_call_id"] as? String, "c2")
+
+        // An orphan tool result (no matching tool_call id) is rejected cleanly.
+        let orphan: [[String: any Sendable]] = [
+            ["role": "assistant", "tool_calls": toolCalls],
+            ["role": "tool", "tool_call_id": "c1", "content": "ra"],
+            ["role": "tool", "tool_call_id": "nope", "content": "orphan"],
+        ]
+        XCTAssertThrowsError(
+            try ChatTemplateFixes.normalizeMessages(orphan, context: .init(modelId: "gpt-oss-20b")))
     }
 
     func testMultipleToolCallsRemainAllowedForNonHarmonyTemplates() throws {

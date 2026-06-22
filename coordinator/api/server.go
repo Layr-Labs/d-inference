@@ -258,6 +258,13 @@ type Server struct {
 	// → 429, which fixes the same failure on the actual provider-rejection path.
 	servabilityGate bool
 
+	// disableClientErrorStop is the kill switch for the C1 StatusCode-driven
+	// non-retryable failover stop. Default false = stop ENABLED: a deterministic
+	// provider client 4xx (400/413/422/415) returns ONCE instead of failing over up
+	// to maxDispatchAttempts. Set EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP=true to
+	// restore the pre-fix behavior (string-only classifyRejection failover).
+	disableClientErrorStop bool
+
 	// prefillKeepaliveInterval enables SSE keepalives during long prefill:
 	// when > 0, a STREAMING request that has been dispatched but not yet produced
 	// its first content chunk commits HTTP 200 and emits ": keepalive" SSE comments
@@ -1090,6 +1097,13 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 // servabilityGate field. Call before serving starts.
 func (s *Server) SetServabilityGate(enabled bool) {
 	s.servabilityGate = enabled
+}
+
+// SetDisableClientErrorStop is the kill switch for the C1 client-shape failover
+// stop. true restores pre-fix behavior (deterministic provider 4xx fails over up
+// to maxDispatchAttempts). Default (false) = stop enabled. Call before serving.
+func (s *Server) SetDisableClientErrorStop(disabled bool) {
+	s.disableClientErrorStop = disabled
 }
 
 // SetPrefillKeepaliveInterval sets the prefill SSE keepalive cadence.

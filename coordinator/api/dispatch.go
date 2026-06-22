@@ -150,6 +150,15 @@ type dispatchState struct {
 	// uptime-neutral 429 with unservableReason instead of retrying/5xx'ing.
 	unservable       bool
 	unservableReason string
+	// terminalClientError is set when a dispatched provider returned a DETERMINISTIC
+	// client-shape 4xx (400/413/422/415 — invalid tool payload / role / response_format
+	// / unsupported media). That rejection is identical on every provider (the bad
+	// request body is forwarded unchanged), so the loop stops immediately and the
+	// exhausted ladder surfaces terminalClientErrorCode ONCE — instead of failing over
+	// up to maxDispatchAttempts (the prod 29×/max-63 storm). String-blind: the status
+	// code is ground truth; the human-readable provider string drifts across versions.
+	terminalClientError     bool
+	terminalClientErrorCode int
 
 	// ---- per-attempt scratch (reset each attempt) ----
 	attempt          int
@@ -427,6 +436,12 @@ func providerReportedBudget(provider *registry.Provider, model string) int64 {
 // pre-dispatch failures (queue reservation DB error, invalid key, keygen, send
 // failure) and coordinator-side timeouts are NOT flagged.
 func (d *dispatchState) providerFailedRoutingOutcome() *store.InferenceRouteOutcome {
+	if isTerminalClientErrorCode(d.lastErrCode) {
+		// Deterministic client-shape 4xx: a malformed/unservable-by-shape request,
+		// not a provider fault. Record as client_error WITHOUT AdmittedButFailed so
+		// it stays out of the admission-mismatch gauge.
+		return d.errorRoutingOutcome("error", errorClassClientError, d.lastErrCode)
+	}
 	class := "provider_error"
 	if providerDisconnectedError(d.lastErr, d.lastErrCode) {
 		class = "provider_disconnect_pre_commit"
@@ -434,6 +449,28 @@ func (d *dispatchState) providerFailedRoutingOutcome() *store.InferenceRouteOutc
 	out := d.errorRoutingOutcome("error", class, d.lastErrCode)
 	out.AdmittedButFailed = true
 	return out
+}
+
+// isTerminalClientErrorCode reports whether a provider-returned status code is a
+// DETERMINISTIC client-shape rejection that fails identically on every provider,
+// so the dispatch loop must stop and return it ONCE rather than fail over.
+//
+// Set: 400 (invalidRole / invalidToolPayload / mediaUnsupportedByModel + all VLM
+// client MediaError), 422 (invalidResponseFormatOutput), plus 413/415 defensively
+// (unambiguous client shapes; not emitted by the provider map today but correct if
+// a future version does). EXCLUDES 404 ("model not loaded" — a cold-miss/lifecycle
+// that MUST fail over, and which also matches the "not loaded" capacity marker),
+// 408 and 429 (transient). 402 (the only coordinator-emitted 4xx) is excluded, so a
+// code in this set can ONLY originate from a provider InferenceErrorMessage.
+func isTerminalClientErrorCode(code int) bool {
+	switch code {
+	case http.StatusBadRequest, // 400
+		http.StatusRequestEntityTooLarge, // 413
+		http.StatusUnsupportedMediaType,  // 415
+		http.StatusUnprocessableEntity:   // 422
+		return true
+	}
+	return false
 }
 
 func dispatchErrorClass(errText string) string {
@@ -894,7 +931,18 @@ const rejectionReasonOversized = "oversized_request"
 // latchDeterministicLoser sets d.unservable at the loser site; the guard below
 // honors it at the first retry point regardless of what the survivor reported.
 func (d *dispatchState) shouldStopFailover() bool {
-	if d.unservable {
+	// Honor a previously-latched verdict (incl. a client-shape 4xx latched from a
+	// speculative race loser, whose code never lands in d.lastErrCode).
+	if d.unservable || d.terminalClientError {
+		return true
+	}
+	// StatusCode-driven stop BEFORE the string classifier: a deterministic provider
+	// client 4xx is identical on every provider, so retrying is pure waste (the 29×
+	// storm). String-blind on purpose — the code is ground truth here.
+	if !d.s.disableClientErrorStop && isTerminalClientErrorCode(d.lastErrCode) {
+		d.s.ddIncr("routing.dispatch_client_error_stop", []string{"model:" + d.model, "code:" + strconv.Itoa(d.lastErrCode)})
+		d.terminalClientError = true
+		d.terminalClientErrorCode = d.lastErrCode
 		return true
 	}
 	switch classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext) {
@@ -929,7 +977,16 @@ func (d *dispatchState) shouldStopFailover() bool {
 // healthier provider still happens. Harmless if the survivor ultimately succeeds —
 // d.unservable is only consulted on the exhausted/retry path, never on a commit.
 func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
-	if d.unservable {
+	if d.unservable || d.terminalClientError {
+		return
+	}
+	// Mirror the StatusCode stop at the race-loser site: the loser's error is NOT
+	// written to d.lastErr (the survivor owns it), so without this a deterministic
+	// client 4xx from the loser is masked and the storm resumes via the survivor.
+	if !d.s.disableClientErrorStop && isTerminalClientErrorCode(msg.StatusCode) {
+		d.s.ddIncr("routing.dispatch_client_error_stop", []string{"model:" + d.model, "code:" + strconv.Itoa(msg.StatusCode), "src:race_loser"})
+		d.terminalClientError = true
+		d.terminalClientErrorCode = msg.StatusCode
 		return
 	}
 	budget := providerReportedBudget(provider, d.model)
@@ -2038,7 +2095,14 @@ exhausted:
 		keepaliveCommitted := d.keepalive.takeOver()
 		statusCode := d.lastErrCode
 		reason := "dispatch_exhausted"
-		if d.unservable {
+		if d.terminalClientError {
+			// Deterministic provider client 4xx (identical fleet-wide): pass the real
+			// code through ONCE. Checked BEFORE d.unservable / statusCode==0 so it can
+			// never be reclassified to 429/503 — this is a client fault, not capacity.
+			statusCode = d.terminalClientErrorCode
+			reason = "client_error"
+			s.ddIncr("routing.client_error_passthrough", []string{"model:" + d.model, "code:" + strconv.Itoa(statusCode)})
+		} else if d.unservable {
 			// The loop stopped early because no provider can serve this request
 			// (deterministic context overflow, or a capacity transient that
 			// exhausted maxCapacityClassRetries). We already know the verdict, so
@@ -2129,6 +2193,11 @@ exhausted:
 			writeJSON(w, statusCode, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("all providers at capacity after %d attempt(s): %s", d.attempt+1, d.lastErr),
 				withCode("rate_limit_exceeded")))
+		} else if d.terminalClientError {
+			// Surface the provider's client-shape error verbatim as an
+			// invalid_request_error, with no misleading "after N attempt(s)" framing
+			// (it was returned once, deterministically).
+			writeJSON(w, statusCode, errorResponse("invalid_request_error", d.lastErr))
 		} else {
 			writeJSON(w, statusCode, errorResponse("provider_error",
 				fmt.Sprintf("inference failed after %d attempt(s): %s", d.attempt+1, d.lastErr)))

@@ -1203,6 +1203,14 @@ type Registry struct {
 	providerBreakerOpenUntil map[string]time.Time             // breaker-open expiry per provider
 	providerBreakerTrips     map[string]int                   // trip count per provider (exponential backoff)
 
+	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
+	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
+	// NOT deleted on Disconnect — so a zombie that fails ~every request while
+	// reconnecting constantly still accumulates to the ejection threshold.
+	healthEjectionWindows map[string]*providerHealthWindow // stable-id sliding fault/success ring
+	healthEjectionUntil   map[string]time.Time             // ejection-open expiry per stable id
+	healthEjectionTrips   map[string]int                   // trip count per stable id (exponential backoff)
+
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
 	// transient coordinator stall (which ages many LastHeartbeat values at once)
@@ -1276,6 +1284,9 @@ func New(logger *slog.Logger) *Registry {
 		providerOutcomes:         make(map[string]*providerHealthWindow),
 		providerBreakerOpenUntil: make(map[string]time.Time),
 		providerBreakerTrips:     make(map[string]int),
+		healthEjectionWindows:    make(map[string]*providerHealthWindow),
+		healthEjectionUntil:      make(map[string]time.Time),
+		healthEjectionTrips:      make(map[string]int),
 		evictStrikes:             make(map[string]int),
 		cacheAffinity:            newCacheAffinityTracker(cacheAffinityTTL),
 		cacheAffinityBonusMs:     defaultCacheAffinityBonusMs,
@@ -3527,6 +3538,11 @@ func (r *Registry) Disconnect(id string) {
 		delete(r.providerOutcomes, id)
 		delete(r.providerBreakerOpenUntil, id)
 		delete(r.providerBreakerTrips, id)
+		// NOTE: the STABLE-IDENTITY health-ejection maps (healthEjectionWindows/
+		// Until/Trips, health_ejection.go) are intentionally NOT cleared here — they
+		// are keyed by serial/SE-key/account, not this session UUID, and MUST survive
+		// reconnect churn so a zombie that fails ~every request while disconnecting
+		// constantly still accumulates to the ejection threshold.
 		p.mu.Lock()
 		if p.Status != StatusUntrusted {
 			r.onlineCount.Add(-1)

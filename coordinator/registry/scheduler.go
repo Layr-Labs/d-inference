@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -822,6 +823,17 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
 		return false
 	}
+	// Skip a provider EJECTED by the stable-identity health breaker (health_ejection.go):
+	// a node whose serial/SE-key/account has collapsed to a near-total served-fault
+	// rate is derouted even across reconnects (the session breaker above is wiped on
+	// every disconnect, which the constantly-disconnecting zombies exploit). Same
+	// fail-open contract: skipped on the ignoreProviderBreaker rescan, and an
+	// un-attestable provider (empty stable id) is never ejected.
+	if !ignoreProviderBreaker && healthEjectionEnabled() {
+		if sid := stableProviderIdentity(p); sid != "" && r.healthEjectionOpenLocked(sid, now) {
+			return false
+		}
+	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}
@@ -1489,14 +1501,33 @@ func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
 	if b < 0 {
 		b = 0
 	}
-	solo := snap.decodeTPS
-	if snap.observedDecodeTPS > 0 {
-		solo = snap.observedDecodeTPS * (1 + k*float64(b)) // unwind measured@b to solo (b=0)
+	// Solo (b=0) decode-rate base, durable 3-tier chain:
+	solo := snap.decodeTPS // tier 3: static benchmark (last resort)
+	switch {
+	case snap.observedDecodeTPS > 0:
+		// tier 1: this box's own LIVE measured rate, unwound from batch b to solo.
+		solo = snap.observedDecodeTPS * (1 + k*float64(b))
+	case decodeFloorUseFleetMedian() && snap.fleetMedianTPS > 0:
+		// tier 2: durable per-(model,chip) observed median from the tps registry.
+		// Exists even when this box is IDLE, so a historically-slow chip (e.g. the
+		// ~9 tok/s gemma boxes driving client_gone) is deprioritized BEFORE it gets
+		// packed — the static benchmark (~23) otherwise made idle slow boxes look
+		// fast. Conservative for a quality floor: a median that understates true
+		// solo biases AWAY from borderline boxes (the safe direction).
+		solo = snap.fleetMedianTPS
 	}
 	if solo <= 0 {
 		return 0
 	}
 	return solo / (1 + k*float64(b+1))
+}
+
+// decodeFloorUseFleetMedian gates the tier-2 (fleet-median) solo-rate source in
+// projectedPerRequestDecodeTPS. Read LIVE (no restart); default ON. Set
+// EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN=false for byte-for-byte pre-fix
+// behavior (idle boxes fall straight to the static benchmark).
+func decodeFloorUseFleetMedian() bool {
+	return env.EnvBool(env.EnvPrefix+"_DECODE_FLOOR_USE_FLEET_MEDIAN", true)
 }
 
 func providerModelIDs(p *Provider) []string {

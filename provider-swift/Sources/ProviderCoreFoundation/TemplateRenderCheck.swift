@@ -204,7 +204,7 @@ public enum TemplateRenderCheck {
         // faithful to "renders here == renders at request time".
         context["messages"] = .array(
             try fixture.messages.map { message in
-                try Value(any: sanitizeForJinja(stripHarmonyFraming(message)))
+                try Value(any: sanitizeForJinja(stripHarmonyFramingFromAssistantMessage(message)))
             })
         context["add_generation_prompt"] = .boolean(true)
         if let tools = fixture.tools {
@@ -212,21 +212,6 @@ public enum TemplateRenderCheck {
                 try tools.map { try Value(any: sanitizeForJinja($0)) })
         }
         return context
-    }
-
-    /// Apply Harmony replay normalization in the self-check's `[String: Any]`
-    /// fixture domain. The shared string sanitizer remains the source of truth;
-    /// this wrapper only handles role/key selection for message dictionaries.
-    private static func stripHarmonyFraming(_ message: [String: Any]) -> [String: Any] {
-        guard (message["role"] as? String) == "assistant" else { return message }
-
-        var output = message
-        for key in ["content", "thinking", "reasoning_content"] {
-            if let text = output[key] as? String {
-                output[key] = stripHarmonyChannelFraming(fromAssistantContent: text)
-            }
-        }
-        return output
     }
 
     // MARK: - Canonical fixtures

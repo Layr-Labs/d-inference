@@ -58,3 +58,27 @@ public func stripHarmonyChannelFraming(fromAssistantContent text: String) -> Str
     }
     return answer
 }
+
+/// Assistant message text fields that may carry Harmony control-channel framing
+/// in replayed turns. Centralized so every tokenize chokepoint strips the same
+/// set (the OpenAI `content`, plus the reasoning aliases some clients replay).
+public let harmonyAssistantTextFields: [String] = ["content", "thinking", "reasoning_content"]
+
+/// Strip Harmony channel framing from an assistant message's text fields.
+///
+/// Operates on the `[String: Any]` chat-template message shape used by
+/// `MLXLMCommon.Tokenizer.applyChatTemplate` and the scan-time render
+/// self-check. Non-assistant messages and non-string field values pass through
+/// unchanged. The string transform (``stripHarmonyChannelFraming(fromAssistantContent:)``)
+/// remains the single source of truth; this only handles role/key selection.
+public func stripHarmonyFramingFromAssistantMessage(_ message: [String: Any]) -> [String: Any] {
+    guard (message["role"] as? String) == "assistant" else { return message }
+
+    var output = message
+    for key in harmonyAssistantTextFields {
+        if let text = output[key] as? String {
+            output[key] = stripHarmonyChannelFraming(fromAssistantContent: text)
+        }
+    }
+    return output
+}

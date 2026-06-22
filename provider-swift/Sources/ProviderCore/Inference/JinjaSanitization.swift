@@ -60,7 +60,7 @@ private func stripHarmonyFramingFromMessage(
     guard (message["role"] as? String) == "assistant" else { return message }
 
     var output = message
-    for key in ["content", "thinking", "reasoning_content"] {
+    for key in harmonyAssistantTextFields {
         if let text = output[key] as? String {
             output[key] = stripHarmonyChannelFraming(fromAssistantContent: text)
         }

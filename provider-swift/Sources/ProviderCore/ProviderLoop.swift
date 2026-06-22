@@ -106,49 +106,6 @@ private enum ProviderLoopError: Error, CustomStringConvertible {
     }
 }
 
-// MARK: - Configuration
-
-public struct ProviderLoopConfig: Sendable {
-    public let coordinatorURL: String
-    public let hardware: HardwareInfo
-    public let models: [ModelInfo]
-    public let config: ProviderConfig
-    public let authToken: String?
-    public let runtimeHashes: RuntimeHashes?
-    public let modelHashes: [String: String]
-    /// Snapshot fingerprints captured at the same time as `modelHashes` (see
-    /// `WeightHasher.snapshotFingerprint`). Seeding these lets the first
-    /// `ensureModelLoaded` skip a full re-read of weights that were already
-    /// hashed at startup; without them the first load re-hashes every byte.
-    public let modelHashFingerprints: [String: String]
-    /// When set, the provider also serves a local OpenAI-compatible HTTP
-    /// endpoint off the SAME loaded models it serves to the coordinator
-    /// (unified mode). nil = coordinator-only (the default).
-    public let localEndpoint: LocalInferenceHTTPConfig?
-
-    public init(
-        coordinatorURL: String,
-        hardware: HardwareInfo,
-        models: [ModelInfo],
-        config: ProviderConfig,
-        authToken: String? = nil,
-        runtimeHashes: RuntimeHashes? = nil,
-        modelHashes: [String: String] = [:],
-        modelHashFingerprints: [String: String] = [:],
-        localEndpoint: LocalInferenceHTTPConfig? = nil
-    ) {
-        self.coordinatorURL = coordinatorURL
-        self.hardware = hardware
-        self.models = models
-        self.config = config
-        self.authToken = authToken
-        self.runtimeHashes = runtimeHashes
-        self.modelHashes = modelHashes
-        self.modelHashFingerprints = modelHashFingerprints
-        self.localEndpoint = localEndpoint
-    }
-}
-
 // MARK: - ProviderLoop
 
 public actor ProviderLoop {
@@ -3447,50 +3404,6 @@ public actor ProviderLoop {
     //   - ProviderLoop+SSEParser.swift     (StreamChunkExtract, parseStreamChunk, encodeToolCallsForHash)
     //   - ProviderLoop+ErrorMapping.swift  (mapInferenceErrorToStatus)
     //   - ProviderLoop+InboundDecode.swift (decodeOpenAIRequest; see InboundChatNormalization)
-}
-
-// MARK: - Logger wrapper
-
-/// Unified logger that uses os.Logger on macOS. Internal access so
-/// the `+SSEParser.swift` extension file can re-use it for its
-/// file-scope logger (parseStreamChunk is a `static` method and
-/// can't reach the per-instance logger on the actor).
-struct ProviderLogger: Sendable {
-    #if canImport(os)
-    private let osLogger: os.Logger
-    #endif
-    private let category: String
-
-    init(subsystem: String, category: String) {
-        self.category = category
-        #if canImport(os)
-        self.osLogger = os.Logger(subsystem: subsystem, category: category)
-        #endif
-    }
-
-    func info(_ message: String) {
-        #if canImport(os)
-        osLogger.info("\(message, privacy: .public)")
-        #else
-        print("[\(category)] INFO: \(message)")
-        #endif
-    }
-
-    func warning(_ message: String) {
-        #if canImport(os)
-        osLogger.warning("\(message, privacy: .public)")
-        #else
-        print("[\(category)] WARN: \(message)")
-        #endif
-    }
-
-    func error(_ message: String) {
-        #if canImport(os)
-        osLogger.error("\(message, privacy: .public)")
-        #else
-        print("[\(category)] ERROR: \(message)")
-        #endif
-    }
 }
 
 // MARK: - Import bridge

@@ -287,54 +287,7 @@ public struct ChatMessage: Codable, Sendable {
     }
 }
 
-// MARK: - Response Types (Streaming)
-
-public struct ChatCompletionChunk: Codable, Sendable {
-    public let id: String
-    public let object: String
-    public let created: Int
-    public let model: String
-    public let choices: [ChunkChoice]
-    public let usage: ChunkUsage?
-
-    public init(
-        id: String,
-        object: String = "chat.completion.chunk",
-        created: Int,
-        model: String,
-        choices: [ChunkChoice],
-        usage: ChunkUsage? = nil
-    ) {
-        self.id = id
-        self.object = object
-        self.created = created
-        self.model = model
-        self.choices = choices
-        self.usage = usage
-    }
-}
-
-public struct ChunkChoice: Codable, Sendable {
-    public let index: Int
-    public let delta: ChunkDelta
-    public let finish_reason: String?
-
-    public init(index: Int, delta: ChunkDelta, finish_reason: String? = nil) {
-        self.index = index
-        self.delta = delta
-        self.finish_reason = finish_reason
-    }
-}
-
-public struct ChunkDelta: Codable, Sendable {
-    public let role: String?
-    public let content: String?
-
-    public init(role: String? = nil, content: String? = nil) {
-        self.role = role
-        self.content = content
-    }
-}
+// MARK: - Usage
 
 public struct ChunkUsage: Codable, Sendable {
     public let prompt_tokens: Int
@@ -395,22 +348,6 @@ public struct ResponseMessage: Codable, Sendable {
         self.role = role
         self.content = content
     }
-}
-
-// MARK: - SSE Chunk Wrapper
-
-public struct SSEChunk: Sendable {
-    public let data: String
-
-    public init(data: String) {
-        self.data = data
-    }
-
-    public var formatted: String {
-        "data: \(data)\n\n"
-    }
-
-    public static let done = SSEChunk(data: "[DONE]")
 }
 
 // MARK: - Errors

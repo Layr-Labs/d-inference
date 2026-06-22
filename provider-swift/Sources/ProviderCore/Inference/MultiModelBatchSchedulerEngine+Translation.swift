@@ -19,8 +19,7 @@ extension MultiModelBatchSchedulerEngine {
     /// expects.
     ///
     /// Multimodal content parts are collapsed to text (image URLs are
-    /// dropped) because the BatchScheduler is text-only. This matches
-    /// the existing behavior of `ChatPromptFormatter`.
+    /// dropped) because the BatchScheduler is text-only.
     ///
     /// KNOWN DEVIATION (P1 #3): `seed` is dropped on this path because
     /// the upstream `OpenAIChatCompletionRequest` does not expose a

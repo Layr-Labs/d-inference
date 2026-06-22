@@ -7,10 +7,6 @@ import type { TrustMetadata } from "@/lib/api";
 import type { VerificationStep, CertVerificationResult } from "@/lib/cert-verify";
 import type { ProviderDetail } from "./types";
 
-// Direct attestation fetch (unchanged behavior; routed through the /api/*
-// proxy in the isolated proxy commit).
-export const ATTESTATION_API = "https://api.darkbloom.dev";
-
 /**
  * Device attestation verification state + action. The heavy X.509 verifier
  * (pkijs + asn1js, ~76 KB gz) is dynamically imported only when the user clicks
@@ -29,7 +25,8 @@ export function useDeviceVerification(trust: TrustMetadata) {
     setVerifySteps([]);
 
     try {
-      const res = await fetch(`${ATTESTATION_API}/v1/providers/attestation`);
+      // Same-origin proxy (perf F9).
+      const res = await fetch(`/api/attestation`);
       const data = await res.json();
 
       const provider =

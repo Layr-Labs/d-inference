@@ -6,7 +6,6 @@ import { trackEvent } from "@/lib/google-analytics";
 import { useToastStore } from "@/hooks/useToast";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import { STORAGE_KEYS } from "@/lib/constants";
-import { clientCoordinatorUrl } from "@/lib/coordinator-url";
 import {
   Loader2,
   DollarSign,
@@ -68,11 +67,10 @@ export default function EarningsContent() {
   const fetchEarnings = useCallback(async () => {
     setError(null);
     try {
+      // Same-origin proxy (perf F9): no cross-origin preflight, coordinator URL
+      // resolved server-side.
       const headers = await getAuthHeaders();
-      const res = await fetch(
-        `${clientCoordinatorUrl()}/v1/provider/account-earnings?limit=100`,
-        { headers }
-      );
+      const res = await fetch(`/api/me/earnings?limit=100`, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setData(await res.json());
     } catch (e) {

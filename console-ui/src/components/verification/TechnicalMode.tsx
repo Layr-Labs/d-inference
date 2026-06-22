@@ -12,7 +12,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { StatusLine, VerifyStepLine } from "./StatusLine";
-import { ATTESTATION_API } from "./useDeviceVerification";
+import { clientCoordinatorUrl } from "@/lib/coordinator-url";
 import type { ProviderDetail } from "./types";
 
 /** Technical mode: detailed checks with raw values. */
@@ -217,7 +217,7 @@ export function TechnicalMode({
           <p className="mt-2 text-xs text-text-tertiary leading-relaxed">
             Manual: download MDA cert chain from{" "}
             <a
-              href={`${ATTESTATION_API}/v1/providers/attestation`}
+              href={`${clientCoordinatorUrl()}/v1/providers/attestation`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-accent-brand hover:underline inline-flex items-center gap-0.5"

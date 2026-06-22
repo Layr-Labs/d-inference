@@ -15,8 +15,7 @@ enum GPTOSSHarmonyTemplateFix {
         _ messages: [[String: any Sendable]]
     ) throws -> [[String: any Sendable]] {
         let bridged = bridgeReasoningContentToThinking(messages)
-        try validateHarmonyToolInvariants(bridged)
-        return bridged
+        return try splitParallelToolCalls(bridged)
     }
 
     static func normalizeTools(
@@ -37,27 +36,99 @@ enum GPTOSSHarmonyTemplateFix {
             || normalized.contains("gptoss")
     }
 
-    private static func validateHarmonyToolInvariants(
+    // splitParallelToolCalls rewrites Harmony-incompatible assistant turns into a
+    // valid sequence instead of rejecting them. Harmony represents at most ONE tool
+    // call per assistant turn and forbids content+thinking sharing a turn with a
+    // tool_call, but OpenAI clients (all our traffic, via OpenRouter) legitimately
+    // send an assistant message with N PARALLEL tool_calls followed by N tool
+    // results. The old behavior threw a 400 — making those valid histories
+    // permanently unservable on gpt-oss. Here we split such a message into N
+    // sequential Harmony turns, each carrying one tool_call immediately followed by
+    // its paired tool result (matched by tool_call_id, NOT position). Assistant
+    // `content` rides the FIRST split turn; `thinking` (which Harmony forbids in the
+    // same turn as a tool_call) is emitted as a standalone preceding assistant turn.
+    //
+    // The only genuinely unnormalizable shape — a following tool RESULT whose
+    // tool_call_id matches none of the assistant's tool_calls — still throws a clean
+    // 400 (invalidToolPayload), so we never silently drop a result.
+    private static func splitParallelToolCalls(
         _ messages: [[String: any Sendable]]
-    ) throws {
-        for message in messages where (message["role"] as? String) == "assistant" {
-            guard let toolCalls = message["tool_calls"] as? [any Sendable],
+    ) throws -> [[String: any Sendable]] {
+        var out: [[String: any Sendable]] = []
+        out.reserveCapacity(messages.count)
+        var i = 0
+        while i < messages.count {
+            let message = messages[i]
+            guard (message["role"] as? String) == "assistant",
+                  let toolCalls = message["tool_calls"] as? [any Sendable],
                   !toolCalls.isEmpty
-            else { continue }
-
-            guard toolCalls.count == 1 else {
-                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "assistant message contains multiple tool_calls; Harmony supports one tool call per assistant message")
+            else {
+                out.append(message)
+                i += 1
+                continue
             }
 
-            if hasTruthyString(message["content"])
-                && (hasTruthyString(message["thinking"])
-                    || hasTruthyString(message["reasoning_content"]))
-            {
+            let hasContent = hasTruthyString(message["content"])
+            let thinking = firstTruthyString(message["thinking"], message["reasoning_content"])
+            // A single tool_call with no content+thinking conflict is already
+            // Harmony-legal — pass it (and its trailing results) through untouched.
+            if toolCalls.count == 1 && !(hasContent && !thinking.isEmpty) {
+                out.append(message)
+                i += 1
+                continue
+            }
+
+            // Gather the contiguous tool-result messages that follow, keyed by id.
+            var results: [String: [String: any Sendable]] = [:]
+            var resultOrder: [String] = []
+            var j = i + 1
+            while j < messages.count, (messages[j]["role"] as? String) == "tool" {
+                if let id = messages[j]["tool_call_id"] as? String {
+                    results[id] = messages[j]
+                    resultOrder.append(id)
+                }
+                j += 1
+            }
+
+            // Harmony forbids thinking in the same turn as a tool_call: emit a
+            // standalone assistant thinking-turn first when present.
+            if !thinking.isEmpty {
+                out.append(["role": "assistant", "thinking": thinking])
+            }
+
+            var consumed = Set<String>()
+            for (idx, call) in toolCalls.enumerated() {
+                var turn: [String: any Sendable] = ["role": "assistant", "tool_calls": [call]]
+                if idx == 0 && hasContent {
+                    turn["content"] = message["content"]
+                }
+                out.append(turn)
+                if let callMap = call as? [String: any Sendable],
+                   let id = callMap["id"] as? String,
+                   let result = results[id] {
+                    out.append(result)
+                    consumed.insert(id)
+                }
+            }
+
+            // A trailing tool result that pairs with none of THIS turn's tool_calls
+            // cannot be placed — reject cleanly rather than drop it.
+            for id in resultOrder where !consumed.contains(id) {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "assistant message with tool_calls cannot include both content and thinking")
+                    "tool result for tool_call_id \(id) has no matching assistant tool_call")
+            }
+            i = j
+        }
+        return out
+    }
+
+    private static func firstTruthyString(_ values: (any Sendable)?...) -> String {
+        for value in values {
+            if let s = value as? String, !s.isEmpty {
+                return s
             }
         }
+        return ""
     }
 
     private static func bridgeReasoningContentToThinking(

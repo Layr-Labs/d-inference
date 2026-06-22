@@ -158,6 +158,18 @@ const (
 // coordinator never has to infer it from a stale snapshot (tracked as a follow-up;
 // requires a protocol/provider change across a mixed fleet, out of scope here).
 func classifyRejection(reason, errStr string, providerBudget int64, modelContext int) rejectionKind {
+	// P1 (structured provider reason): when a provider tells us EXACTLY why it
+	// rejected, trust it instead of inferring deterministic-vs-transient from a
+	// stale heartbeat snapshot. request_exceeds_context is fleet-wide deterministic
+	// (every provider rejects → stop on attempt 1); request_exceeds_node / capacity
+	// are this-node-specific (a bigger/idler box may serve → bounded failover). Old
+	// providers send reason=="" and fall through to the string+budget heuristic.
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "request_exceeds_context":
+		return rejectionDeterministicUnservable
+	case "request_exceeds_node", "request_exceeds_node_budget", "capacity_busy":
+		return rejectionTransientCapacity
+	}
 	// Capacity-class is gated by isCapacityClassProviderError so fault strings
 	// (checked first there) can never be miscategorised as a capacity shed.
 	if !isCapacityClassProviderError(errStr) && !isCapacityClassProviderError(reason) {

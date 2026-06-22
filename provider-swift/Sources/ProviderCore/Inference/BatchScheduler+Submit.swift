@@ -106,7 +106,7 @@ extension BatchScheduler {
             )
             if case .rejected(_, let reason) = result {
                 await dropBridge(requestId: id)
-                continuation.yield(.error(Self.errorMessage(for: reason)))
+                continuation.yield(.error(self.rejectionMessage(for: reason, promptTokens: promptTokens.count)))
                 continuation.finish()
                 return stream
             }
@@ -301,7 +301,7 @@ extension BatchScheduler {
             )
             if case .rejected(_, let reason) = result {
                 await dropBridge(requestId: id)
-                continuation.yield(.error(Self.errorMessage(for: reason)))
+                continuation.yield(.error(self.rejectionMessage(for: reason, promptTokens: promptTokens.count)))
                 continuation.finish()
                 return stream
             }
@@ -456,6 +456,27 @@ extension BatchScheduler {
         }
         activeBridges.removeAll()
         timedOutBridges.removeAll()
+    }
+
+    // P1: disambiguate a batch-token-budget rejection so the coordinator never has
+    // to guess deterministic-vs-transient from a stale heartbeat. maxTokensPerBatch
+    // is min(context, activeTokenBudget), so "exceeds batch token budget" conflates
+    // two very different cases: prompt > model context (DETERMINISTIC — every
+    // provider rejects identically) vs prompt > this node's pressure-shrunk KV
+    // budget (TRANSIENT — a bigger/idler box can serve). When the prompt alone
+    // exceeds the model context we emit a CONTEXT-overflow message, which the
+    // coordinator's classifyRejection already treats as fleet-wide deterministic
+    // (stop on the first attempt) rather than failing over. All other reasons keep
+    // their canonical string.
+    private func rejectionMessage(for reason: BatchRejectionReason, promptTokens: Int) -> String {
+        if reason == .requestExceedsBatchTokenBudget,
+            maxContextLength > 0,
+            promptTokens > maxContextLength
+        {
+            return "token_budget_exhausted: request exceeds model context window "
+                + "(\(promptTokens) prompt tokens > \(maxContextLength) context)"
+        }
+        return Self.errorMessage(for: reason)
     }
 
 }

@@ -45,6 +45,15 @@ extension BatchScheduler {
         wedgeMonitor.recordFirstToken(now: .now)
     }
 
+    /// A request terminated WITHOUT ever producing a first token (pre-first-token
+    /// cancel/abort/error or a 0-token finish). Removes it from the wedge
+    /// monitor's currently-hanging streak so common `client_gone` cancels don't
+    /// pollute it into a false wedge. Called from the bridge's terminal paths only
+    /// when no first token was seen.
+    func recordWedgeTerminalWithoutFirstToken() {
+        wedgeMonitor.recordTerminalWithoutFirstToken()
+    }
+
     // MARK: - Engine-step sampling
 
     /// Sample the live engine step counter into the wedge monitor. Idempotent;

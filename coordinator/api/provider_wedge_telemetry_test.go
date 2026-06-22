@@ -71,6 +71,42 @@ func TestBackendWedgeSignalsExtraction(t *testing.T) {
 	}
 }
 
+// TestProviderWideEvalInFlightLong verifies eval_in_flight is treated as a
+// PROVIDER-WIDE signal (max across slots), not per-slot: `eval_in_flight_ms` is
+// the process-global EvalProbe value copied onto every slot, so the "long"
+// decision must be made once from the max — never summed and never fired once
+// per loaded model.
+func TestProviderWideEvalInFlightLong(t *testing.T) {
+	// Three slots each BELOW the threshold individually; a buggy per-slot/summing
+	// emitter would cross the threshold (3×800=2400 ≥ 2000), but the correct
+	// max-based decision (800 < 2000) does not.
+	belowEach := []backendWedgeSignal{
+		{Model: "a", EvalInFlightMs: 800},
+		{Model: "b", EvalInFlightMs: 800},
+		{Model: "c", EvalInFlightMs: 800},
+	}
+	if providerWideEvalInFlightLong(belowEach) {
+		t.Fatalf("3 slots of 800ms must NOT trip (max=800 < %d), got long=true", evalInFlightLongMs)
+	}
+
+	// One stalled eval (process-global, copied onto every slot) ⇒ exactly one
+	// provider-wide decision regardless of how many slots carry it.
+	stalled := []backendWedgeSignal{
+		{Model: "a", EvalInFlightMs: 11000},
+		{Model: "b", EvalInFlightMs: 11000},
+		{Model: "c", EvalInFlightMs: 11000},
+	}
+	if !providerWideEvalInFlightLong(stalled) {
+		t.Fatal("3 slots carrying the same 11s in-flight eval must trip (max ≥ threshold)")
+	}
+	if !providerWideEvalInFlightLong(stalled[:1]) {
+		t.Fatal("a single 11s in-flight eval slot must trip the same way (provider-wide)")
+	}
+	if providerWideEvalInFlightLong(nil) {
+		t.Fatal("no slots must not trip")
+	}
+}
+
 // TestRecordBackendWedgeTelemetryNilSafe verifies the emitter is safe with a
 // Server that has no Datadog client wired (ddIncr is a no-op then), so the
 // heartbeat path never panics on a non-DD deployment.

@@ -160,6 +160,12 @@ extension BatchScheduler {
                             tokensPerSecond: usage.tps
                         ))
                     }
+                    // Wedge instrumentation: this request terminated. If it never
+                    // produced a first token (cancel/abort/error/0-token finish),
+                    // drop it from the hanging streak so it can't read as a wedge.
+                    if !sawFirstToken {
+                        await scheduler.recordWedgeTerminalWithoutFirstToken()
+                    }
                     continuation.finish()
                     return
                 }
@@ -170,6 +176,11 @@ extension BatchScheduler {
             if !sawTerminal {
                 continuation.yield(.error(
                     "request stream closed by engine teardown"))
+            }
+            // Wedge instrumentation: stream-closed end without a first token is
+            // also a no-first-token terminal — clear it from the hanging streak.
+            if !sawFirstToken {
+                await scheduler.recordWedgeTerminalWithoutFirstToken()
             }
             await scheduler.dropBridge(requestId: id)
             continuation.finish()
@@ -527,6 +538,13 @@ extension BatchScheduler {
     /// production binaries.
     func _setModelIdForTest(_ id: String) {
         modelId = id
+    }
+
+    /// Test seam: seed `prefillHealth` without driving `recordFinish`, so a unit
+    /// test can assert the model-swap (`stopCurrentEngine`) reset. Internal +
+    /// @testable-only; stripped from production binaries.
+    func _setPrefillHealthForTest(_ health: PrefillSamplingHealth) {
+        prefillHealth = health
     }
 
     /// Test seam: reproduce the mid-self-restart heartbeat window WITHOUT a live

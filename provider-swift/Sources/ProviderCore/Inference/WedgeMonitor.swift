@@ -77,12 +77,32 @@ struct WedgeMonitor {
         lastAdmitAt = now
     }
 
-    /// A request produced its first content token. Call once per request.
+    /// A request produced its first content token. Call once per request. A
+    /// single first token proves the engine + global eval lock are alive, so it
+    /// fully clears the wedge suspicion (not just -1).
     mutating func recordFirstToken(now: ContinuousClock.Instant) {
         firstTokens += 1
         consecutiveAdmitsWithoutFirstToken = 0
         dryStreakStartedAt = nil
         lastFirstTokenAt = now
+    }
+
+    /// An admitted request terminated WITHOUT ever producing a first token — a
+    /// pre-first-token cancel/abort/error or a zero-token finish. It is no longer
+    /// hanging, so drop it from the currently-hanging streak (floored at 0) and
+    /// clear the streak anchor once nothing is left hanging. This keeps
+    /// `consecutiveAdmitsWithoutFirstToken` tracking admits that are STILL
+    /// hanging, not historical no-token requests: `client_gone` cancels (which
+    /// end before the first token) are common here and would otherwise pollute
+    /// the streak into a false wedge on a healthy box. Do NOT call for a request
+    /// that produced a first token (that path uses `recordFirstToken`).
+    mutating func recordTerminalWithoutFirstToken() {
+        if consecutiveAdmitsWithoutFirstToken > 0 {
+            consecutiveAdmitsWithoutFirstToken -= 1
+        }
+        if consecutiveAdmitsWithoutFirstToken == 0 {
+            dryStreakStartedAt = nil
+        }
     }
 
     /// Sample the engine's cumulative step counter; stamp the advance time when
@@ -123,14 +143,21 @@ struct WedgeMonitor {
         return Self.seconds(now - at)
     }
 
-    /// The Part C primitive: ≥ N consecutive admits emitted the preamble but
-    /// produced 0 first tokens AND the streak has lasted ≥ T seconds. This is
-    /// exactly what a correct first-token watchdog would key on — but here it is
-    /// MEASUREMENT ONLY (reported on the heartbeat + as a telemetry event); no
-    /// restart/derouting action is taken in this PR.
+    /// The Part C primitive — the full three-part wedge signature:
+    ///   1. ≥ N consecutive admits are hanging (emitted preamble, 0 first token),
+    ///   2. that streak has lasted ≥ T seconds, AND
+    ///   3. the engine step counter has been frozen for ≥ T seconds.
+    /// All three are required. The step-frozen term (3) is what separates a real
+    /// wedge from a legitimately slow prefill — e.g. three big-prompt requests
+    /// that each take >10 s but whose `stepsExecuted` keeps advancing are NOT a
+    /// wedge and must not trip. A never-sampled monitor reports
+    /// `secondsSinceLastStep == 0`, so it conservatively does not trip until
+    /// steps have actually been observed frozen. MEASUREMENT ONLY (heartbeat +
+    /// telemetry event); no restart/derouting action is taken in this PR.
     func wedgeSuspected(now: ContinuousClock.Instant) -> Bool {
         consecutiveAdmitsWithoutFirstToken >= Self.suspectConsecutiveAdmits
             && dryStreakSeconds(now: now) >= Self.suspectStallSeconds
+            && secondsSinceLastStep(now: now) >= Self.suspectStallSeconds
     }
 
     /// `ContinuousClock.Duration` → seconds (Double).

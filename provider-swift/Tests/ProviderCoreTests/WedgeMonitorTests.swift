@@ -26,44 +26,89 @@ struct WedgeMonitorTests {
         #expect(m.consecutiveAdmitsWithoutFirstToken == 0)
     }
 
+    /// Seed N hanging admits with the engine step counter FROZEN at `base`
+    /// (sampled once, never advanced) — the full wedge setup. Steps then read as
+    /// frozen for `now - base` seconds.
+    private func frozenHangingMonitor() -> WedgeMonitor {
+        var m = WedgeMonitor()
+        for _ in 0..<WedgeMonitor.suspectConsecutiveAdmits {
+            m.recordAdmit(now: base)
+        }
+        m.sampleSteps(100, now: base)
+        return m
+    }
+
     @Test func notSuspectedBelowConsecutiveThreshold() {
         var m = WedgeMonitor()
-        // Two admits (< 3) even after a long stall must NOT trip.
+        // Two admits (< 3) with steps frozen + a long stall must NOT trip.
         m.recordAdmit(now: base)
         m.recordAdmit(now: base)
+        m.sampleSteps(100, now: base)
         #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(60))) == false)
     }
 
     @Test func notSuspectedBelowStallSeconds() {
-        var m = WedgeMonitor()
-        for _ in 0..<WedgeMonitor.suspectConsecutiveAdmits {
-            m.recordAdmit(now: base)
-        }
-        // Threshold count met, but the streak is younger than T seconds.
+        var m = frozenHangingMonitor()
+        // Count + frozen steps, but the streak is younger than T seconds.
         #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(9))) == false)
     }
 
-    @Test func suspectedWhenAdmitsStallPastThreshold() {
-        var m = WedgeMonitor()
-        for _ in 0..<WedgeMonitor.suspectConsecutiveAdmits {
-            m.recordAdmit(now: base)
-        }
-        // ≥ N admits AND the dry streak has lasted ≥ T seconds → wedge suspected.
+    @Test func suspectedWhenAdmitsStallAndStepsFrozen() {
+        let m = frozenHangingMonitor()
+        // ≥ N hanging admits, streak ≥ T, AND steps frozen ≥ T → wedge suspected.
         #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(11))) == true)
         #expect(m.dryStreakSeconds(now: base.advanced(by: .seconds(11))) == 11)
     }
 
-    @Test func firstTokenClearsSuspicion() {
+    /// Fix 1 regression: 3 slow prefills (>10 s, 0 first tokens) whose engine
+    /// step counter is STILL ADVANCING are a slow batch, NOT a wedge — must not
+    /// trip. Only when steps also flatline does it become a wedge.
+    @Test func notSuspectedWhenStepsAdvancing() {
         var m = WedgeMonitor()
         for _ in 0..<WedgeMonitor.suspectConsecutiveAdmits {
             m.recordAdmit(now: base)
         }
+        // Steps keep advancing — sampled fresh each time, so never frozen.
+        m.sampleSteps(100, now: base)
+        m.sampleSteps(150, now: base.advanced(by: .seconds(11)))
+        // Streak ≥ 10 and count ≥ 3, but steps advanced 0 s ago ⇒ NOT suspected.
+        #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(11))) == false)
+
+        // Now the steps freeze (same value): 11 s later it IS a wedge.
+        m.sampleSteps(150, now: base.advanced(by: .seconds(22)))
+        #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(22))) == true)
+    }
+
+    @Test func firstTokenClearsSuspicion() {
+        var m = frozenHangingMonitor()
         #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(11))) == true)
 
         // A real first token resets the streak — the box recovered.
         m.recordFirstToken(now: base.advanced(by: .seconds(11)))
         #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(30))) == false)
         #expect(m.secondsSinceLastFirstToken(now: base.advanced(by: .seconds(13))) == 2)
+    }
+
+    /// Fix 2 regression: admits that terminate with 0 tokens (client_gone
+    /// cancels) must leave the hanging streak — they must NOT accumulate into a
+    /// false wedge on a healthy box. A genuinely hung admit still trips.
+    @Test func terminalWithoutFirstTokenClearsStreak() {
+        var m = frozenHangingMonitor()
+        #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(11))) == true)
+
+        // All three admits cancel before a first token → streak drains to 0.
+        for _ in 0..<WedgeMonitor.suspectConsecutiveAdmits {
+            m.recordTerminalWithoutFirstToken()
+        }
+        #expect(m.consecutiveAdmitsWithoutFirstToken == 0)
+        #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(30))) == false)
+
+        // A fresh batch of genuinely-hung admits (no terminal) still trips, with
+        // steps still frozen from `base`.
+        for _ in 0..<WedgeMonitor.suspectConsecutiveAdmits {
+            m.recordAdmit(now: base.advanced(by: .seconds(30)))
+        }
+        #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(41))) == true)
     }
 
     @Test func sampleStepsTracksFlatline() {

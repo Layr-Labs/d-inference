@@ -297,10 +297,11 @@ public actor BatchScheduler {
     /// transition (healthy→suspected / suspected→recovered) emits immediately.
     var lastWedgeSuspectedEmitted = false
 
-    /// Cumulative prefill-EWMA sampling health (accepted / floor-dropped /
+    /// Per-load prefill-EWMA sampling health (accepted / floor-dropped /
     /// ceiling-dropped + last raw sample). Tracks why `observedPrefillTpsEwma`
-    /// stays 0; surfaced on the `engine_health` trail. MEASUREMENT ONLY — not
-    /// reset per load, mirroring the EWMA's own cross-load persistence.
+    /// stays 0; surfaced on the `engine_health` trail. MEASUREMENT ONLY. Reset in
+    /// `stopCurrentEngine` alongside `observedPrefillTpsEwma` (which is also reset
+    /// there) so a model swap doesn't carry the previous model's counts.
     var prefillHealth = PrefillSamplingHealth()
 
     /// Memory-kind selector for `gpuMemory(_:)` in the telemetry extension.
@@ -476,6 +477,10 @@ public actor BatchScheduler {
         ewmaInitialized = false
         observedPrefillTpsEwma = 0
         prefillEwmaInitialized = false
+        // Reset prefill-sampling health alongside the EWMA it tracks, so a new
+        // model's engine_health doesn't inherit the previous model's accepted/
+        // dropped/last-sample counts.
+        prefillHealth = PrefillSamplingHealth()
         lastModelLoadMs = 0
         performanceByBatchSize.removeAll()
         // Reset the cold-start seed to the configured ceiling (same rationale as

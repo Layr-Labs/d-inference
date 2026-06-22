@@ -61,18 +61,38 @@ func backendWedgeSignals(hb *protocol.HeartbeatMessage) []backendWedgeSignal {
 	return out
 }
 
-// recordBackendWedgeTelemetry emits a Datadog counter for each slot that reports
-// a suspected first-token wedge, tagged by model. Called from the heartbeat
-// handler. No-op for legacy/idle providers (backendWedgeSignals returns empty).
+// providerWideEvalInFlightLong reports whether a blocking eval has been running
+// past the "long" threshold. `eval_in_flight_ms` comes from the process-global
+// MLX EvalProbe (one evalLock for the whole provider) and is copied onto EVERY
+// slot, so it is a PROVIDER-WIDE fact, not a per-model one — the decision is made
+// once from the max across slots so the metric fires at most once per heartbeat
+// (a per-slot loop would over-count it once per loaded model and falsely tag idle
+// models as stalled).
+func providerWideEvalInFlightLong(sigs []backendWedgeSignal) bool {
+	var maxMs int64
+	for _, sig := range sigs {
+		if sig.EvalInFlightMs > maxMs {
+			maxMs = sig.EvalInFlightMs
+		}
+	}
+	return maxMs >= evalInFlightLongMs
+}
+
+// recordBackendWedgeTelemetry emits Datadog signals from a heartbeat. Called from
+// the heartbeat handler; no-op for legacy/idle providers (no signals extracted).
+//   - provider.first_token_wedge_suspected: PER-MODEL (genuinely per-scheduler).
+//   - provider.eval_in_flight_long: PROVIDER-WIDE, at most once per heartbeat
+//     (the eval probe is process-global; see providerWideEvalInFlightLong).
 func (s *Server) recordBackendWedgeTelemetry(hb *protocol.HeartbeatMessage) {
-	for _, sig := range backendWedgeSignals(hb) {
+	sigs := backendWedgeSignals(hb)
+	for _, sig := range sigs {
 		if sig.WedgeSuspected {
 			s.ddIncr("provider.first_token_wedge_suspected", []string{"model:" + sig.Model})
 		}
-		// A blocking eval still running past the threshold is the direct wedge
-		// smoking gun (the provider is stuck inside mlx_eval under evalLock).
-		if sig.EvalInFlightMs >= evalInFlightLongMs {
-			s.ddIncr("provider.eval_in_flight_long", []string{"model:" + sig.Model})
-		}
+	}
+	// The blocking eval is the direct wedge smoking gun (stuck inside mlx_eval
+	// under the one global evalLock). Emit it provider-wide, untagged by model.
+	if providerWideEvalInFlightLong(sigs) {
+		s.ddIncr("provider.eval_in_flight_long", nil)
 	}
 }

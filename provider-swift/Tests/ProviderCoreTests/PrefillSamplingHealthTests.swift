@@ -56,4 +56,19 @@ struct PrefillSamplingHealthTests {
         #expect(h.droppedCeiling == 0)
         #expect(h.lastSampleTps == 0)
     }
+
+    /// Fix 4 regression: a model swap (`stopCurrentEngine` via `unloadModel`)
+    /// must zero `prefillHealth` alongside the prefill EWMA it tracks, so the new
+    /// model's `engine_health` doesn't inherit the previous model's counts.
+    @Test func modelSwapResetsPrefillHealth() async {
+        let scheduler = BatchScheduler()
+        await scheduler._setPrefillHealthForTest(
+            PrefillSamplingHealth(
+                accepted: 5, droppedFloor: 3, droppedCeiling: 2, lastSampleTps: 1234))
+
+        await scheduler.unloadModel()  // → stopCurrentEngine reset block
+
+        let health = await scheduler.prefillHealth
+        #expect(health == PrefillSamplingHealth())
+    }
 }

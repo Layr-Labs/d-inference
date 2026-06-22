@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { TrustBadge } from "./TrustBadge";
 import { VerificationPanel } from "./VerificationPanel";
 import type { Message } from "@/lib/store";
+import { parseThinkFromContent } from "@/lib/chat/think-parser";
 import { Copy, Check, ChevronRight, Brain, Gauge, Clock, Hash, Sparkles, RotateCcw } from "lucide-react";
 import { useState, useCallback } from "react";
 
@@ -186,65 +187,6 @@ const markdownComponents: any = {
     return <>{children}</>;
   },
 };
-
-function parseThinkFromContent(content: string, existingThinking?: string): { thinking: string; content: string } {
-  if (!content) return { thinking: existingThinking || "", content };
-
-  // Always strip thinking tags from content, even when reasoning_content
-  // was already extracted server-side. Old providers may leave tags in content.
-  let cleaned = content;
-
-  // Strip <think>...</think>
-  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>\s*/g, "");
-
-  // Strip Thinking Process:...</think>
-  cleaned = cleaned.replace(/Thinking Process:?[\s\S]*?<\/think>\s*/g, "");
-
-  // Strip <|channel>thought\n...<channel|>
-  cleaned = cleaned.replace(/<\|channel>thought[\s\S]*?<channel\|>\s*/g, "");
-
-  // If we already have thinking from the server, return cleaned content
-  if (existingThinking) {
-    return { thinking: existingThinking, content: cleaned.trimStart() };
-  }
-
-  // Otherwise, try to extract thinking from content
-  const trimmed = content.trimStart();
-
-  if (trimmed.startsWith("<think>")) {
-    const closeIdx = trimmed.indexOf("</think>");
-    if (closeIdx !== -1) {
-      const thinking = trimmed.slice(7, closeIdx).trim();
-      const rest = trimmed.slice(closeIdx + 8).replace(/^\n+/, "");
-      return { thinking, content: rest };
-    }
-  }
-
-  if (trimmed.startsWith("Thinking Process:") || trimmed.startsWith("Thinking Process\n")) {
-    const closeIdx = trimmed.indexOf("</think>");
-    if (closeIdx !== -1) {
-      const thinkStart = trimmed.indexOf(":") !== -1 && trimmed.indexOf(":") < 20
-        ? trimmed.indexOf(":") + 1
-        : trimmed.indexOf("\n") + 1;
-      const thinking = trimmed.slice(thinkStart, closeIdx).trim();
-      const rest = trimmed.slice(closeIdx + 8).replace(/^\n+/, "");
-      return { thinking, content: rest };
-    }
-  }
-
-  // Gemma 4: <|channel>thought\n...<channel|>
-  if (trimmed.startsWith("<|channel>thought")) {
-    const closeIdx = trimmed.indexOf("<channel|>");
-    if (closeIdx !== -1) {
-      const thinkStart = trimmed.indexOf("\n") + 1;
-      const thinking = trimmed.slice(thinkStart, closeIdx).trim();
-      const rest = trimmed.slice(closeIdx + 10).replace(/^\n+/, "");
-      return { thinking, content: rest };
-    }
-  }
-
-  return { thinking: "", content: cleaned };
-}
 
 export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: () => void }) {
   const isUser = message.role === "user";

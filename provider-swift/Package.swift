@@ -283,5 +283,21 @@ let package = Package(
             dependencies: ["darkbloom"],
             path: "Tests/DarkbloomCLITests"
         ),
+
+        // ----------------------------------------------------------------
+        // DarkbloomPublishTests — exercises the `darkbloom-publish` CLI
+        // entrypoint (the `hash` subcommand) end-to-end against a temp
+        // snapshot dir: argument validation + manifest.json emission. The
+        // manifest-hashing library itself (ManifestBuilder) is covered by
+        // ProviderCoreFoundationTests.
+        // ----------------------------------------------------------------
+        .testTarget(
+            name: "DarkbloomPublishTests",
+            dependencies: [
+                "darkbloom-publish",
+                "ProviderCoreFoundation",
+            ],
+            path: "Tests/DarkbloomPublishTests"
+        ),
     ]
 )

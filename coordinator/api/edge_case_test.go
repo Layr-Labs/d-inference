@@ -343,7 +343,7 @@ func TestEdge_ProviderEmptyModels(t *testing.T) {
 
 	// Provider should register but not be findable for any model
 	time.Sleep(200 * time.Millisecond)
-	if p := reg.FindProvider("any-model"); p != nil {
+	if p := findRoutableProvider(reg, "any-model"); p != nil {
 		t.Error("provider with no models should not be findable")
 	}
 }
@@ -446,7 +446,7 @@ func TestEdge_CatalogChangeDuringActiveProvider(t *testing.T) {
 	}
 
 	// Model should be findable (no catalog = allow all)
-	if p := reg.FindProvider(model); p == nil {
+	if p := findRoutableProvider(reg, model); p == nil {
 		t.Fatal("provider should be findable with no catalog")
 	}
 

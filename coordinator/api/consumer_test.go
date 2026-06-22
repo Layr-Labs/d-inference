@@ -386,7 +386,7 @@ func TestStreamingE2E(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Upgrade provider to hardware trust and mark challenge as verified
-	// so it's eligible for routing (FindProviderWithTrust requires a
+	// so it's eligible for routing (routing requires a
 	// recent LastChallengeVerified).
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -532,7 +532,7 @@ func TestNonStreamingE2E(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Upgrade provider to hardware trust and mark challenge as verified
-	// so it's eligible for routing (FindProviderWithTrust requires a
+	// so it's eligible for routing (routing requires a
 	// recent LastChallengeVerified).
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)

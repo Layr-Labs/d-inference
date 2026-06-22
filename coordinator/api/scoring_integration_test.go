@@ -18,7 +18,7 @@ import (
 
 // TestIntegration_ProviderEvictionRemovesFromRouting verifies that when a
 // provider's WebSocket connection closes, it is removed from the registry
-// and is no longer routable via FindProvider.
+// and is no longer routable.
 func TestIntegration_ProviderEvictionRemovesFromRouting(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -71,7 +71,7 @@ func TestIntegration_ProviderEvictionRemovesFromRouting(t *testing.T) {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 	}
 
-	p := reg.FindProvider(model)
+	p := findRoutableProvider(reg, model)
 	if p == nil {
 		t.Fatal("provider should be routable before disconnect")
 	}
@@ -87,8 +87,8 @@ func TestIntegration_ProviderEvictionRemovesFromRouting(t *testing.T) {
 	if reg.ProviderCount() != 0 {
 		t.Errorf("ProviderCount = %d, want 0 after disconnect", reg.ProviderCount())
 	}
-	if reg.FindProvider(model) != nil {
-		t.Error("FindProvider should return nil after provider disconnects")
+	if findRoutableProvider(reg, model) != nil {
+		t.Error("routing should return nil after provider disconnects")
 	}
 }
 

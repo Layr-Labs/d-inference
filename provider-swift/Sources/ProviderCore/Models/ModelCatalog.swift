@@ -12,6 +12,7 @@
 /// matching what `ModelScanner` already discovers.
 
 import Foundation
+import CryptoKit
 
 // MARK: - Download progress tracking & rendering
 //
@@ -127,6 +128,22 @@ public struct CatalogAlias: Codable, Sendable, Equatable {
     public let retiredBuilds: [String]?
     public let primaryBuild: String?
 
+    public init(
+        id: String,
+        displayName: String,
+        desiredBuild: String,
+        previousBuild: String? = nil,
+        retiredBuilds: [String]? = nil,
+        primaryBuild: String? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.desiredBuild = desiredBuild
+        self.previousBuild = previousBuild
+        self.retiredBuilds = retiredBuilds
+        self.primaryBuild = primaryBuild
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case displayName = "display_name"
@@ -137,14 +154,74 @@ public struct CatalogAlias: Codable, Sendable, Equatable {
     }
 }
 
-public struct CatalogSnapshot: Sendable, Equatable {
+public struct CatalogSnapshot: Sendable, Equatable, Codable {
     public let models: [CatalogModel]
     public let aliases: [CatalogAlias]
+
+    public init(models: [CatalogModel], aliases: [CatalogAlias] = []) {
+        self.models = models
+        self.aliases = aliases
+    }
 }
 
 private struct CatalogResponse: Codable {
     let models: [CatalogModel]
     let aliases: [CatalogAlias]?
+}
+
+// MARK: - Catalog cache
+
+/// On-disk cache for the coordinator catalog so offline commands (`doctor`,
+/// `status`, `models list`) can still distinguish supported models from
+/// downloaded-but-unsupported weights.
+public enum CatalogCache: Sendable {
+    /// Default cache directory: `~/.cache/darkbloom/`.
+    public static func defaultDirectory() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache", isDirectory: true)
+            .appendingPathComponent("darkbloom", isDirectory: true)
+    }
+
+    /// Legacy/default cache file path: `~/.cache/darkbloom/catalog.json`.
+    public static func defaultPath() -> URL {
+        defaultDirectory().appendingPathComponent("catalog.json", isDirectory: false)
+    }
+
+    /// Cache file path scoped to a coordinator base URL. Prevents a transient
+    /// fetch failure on one coordinator from falling back to a cache populated
+    /// by a different coordinator (prod vs staging vs self-hosted).
+    public static func path(for coordinatorURL: String) -> URL {
+        let base = coordinatorHTTPBase(coordinatorURL)
+        let hash = SHA256.hash(data: Data(base.utf8))
+            .compactMap { String(format: "%02x", $0) }
+            .joined()
+            .prefix(16)
+        return defaultDirectory().appendingPathComponent("catalog-\(hash).json", isDirectory: false)
+    }
+
+    /// Read the cached snapshot, if any. Returns `nil` when the file is missing
+    /// or unreadable; callers decide whether an empty catalog is appropriate.
+    public static func read(from path: URL = defaultPath()) -> CatalogSnapshot? {
+        guard FileManager.default.fileExists(atPath: path.path),
+              let data = try? Data(contentsOf: path)
+        else {
+            return nil
+        }
+        do {
+            return try JSONDecoder().decode(CatalogSnapshot.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Persist a snapshot to disk, creating parent directories as needed.
+    public static func write(_ snapshot: CatalogSnapshot, to path: URL = defaultPath()) {
+        let dir = path.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(snapshot) {
+            try? data.write(to: path, options: .atomic)
+        }
+    }
 }
 
 // MARK: - Errors

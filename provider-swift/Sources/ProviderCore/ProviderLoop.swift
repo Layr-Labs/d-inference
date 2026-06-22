@@ -1843,6 +1843,13 @@ public actor ProviderLoop {
             return
         }
 
+        // Note: we intentionally do NOT re-check the startup catalog here.
+        // `CatalogModelPrefetcher` already resolves desired builds against the
+        // live coordinator catalog before downloading, and the coordinator's
+        // `models_update` gate is the authoritative backstop. Gating on a stale
+        // startup snapshot would break live alias repoints / new build rollouts
+        // that happen while the provider is already connected.
+
         // Compute ModelInfo + weight hash off-actor (CPU/IO heavy for big
         // builds). The prefetcher already aggregate-verified the snapshot, so
         // this hash is over a known-good build. Returns nil if the on-disk

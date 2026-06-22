@@ -26,9 +26,9 @@ struct Enroll: AsyncParsableCommand {
     var noOpen = false
 
     mutating func run() async throws {
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let config = try loadProviderConfig(configPath: configOptions.config)
         let coordinatorURL = coordinator
-            ?? snapshot.config.coordinator.url
+            ?? config.coordinator.url
         let httpBase = coordinatorHTTPBase(coordinatorURL)
 
         print("Darkbloom Device Attestation Enrollment")

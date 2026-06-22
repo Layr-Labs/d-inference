@@ -84,7 +84,10 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        // Pass the explicit --coordinator-url override (if any) into the
+        // snapshot loader so the catalog is fetched from the same coordinator
+        // the daemon will connect to.
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions, coordinatorURLOverride: coordinatorURL)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         if let idleTimeout {
@@ -125,12 +128,37 @@ struct Start: AsyncParsableCommand {
         config: ProviderConfig,
         hardware: HardwareInfo
     ) async throws {
-        let advertised = advertisedModels(
-            from: snapshot.models,
-            config: config,
-            modelOverrides: model,
-            includeDisabled: all
-        )
+        // `--local` is coordinator-less by design. If we have a catalog, filter
+        // against it (same behavior as daemon mode). If the catalog is
+        // unavailable, fall back to local model selection so airgapped/trusted
+        // use is still possible.
+        let catalog = snapshot.catalog
+        if catalog != nil {
+            try validateModelSelections(against: catalog, localModels: snapshot.models)
+        }
+
+        let advertised: [ModelInfo]
+        if let catalog {
+            advertised = advertisedModels(
+                from: snapshot.models,
+                config: config,
+                catalog: catalog,
+                modelOverrides: model,
+                includeDisabled: all
+            )
+        } else {
+            advertised = localAdvertisedModels(
+                from: snapshot.models,
+                config: config,
+                modelOverrides: model,
+                includeDisabled: all
+            )
+        }
+
+        guard !advertised.isEmpty else {
+            printError("No supported models selected.")
+            throw ExitCode.failure
+        }
 
         // Direct/local mode: mint (or reuse) a bearer token so the loopback
         // server isn't open to every local process / hostile webpage. --no-auth
@@ -223,17 +251,36 @@ struct Start: AsyncParsableCommand {
         config: ProviderConfig,
         coordinatorURL: String
     ) async throws {
+        guard snapshot.catalog != nil else {
+            printError("Cannot start: coordinator model catalog is unavailable.")
+            printError("hint: check your network connection and coordinator URL, or retry after the coordinator is reachable.")
+            throw ExitCode.failure
+        }
+
+        // The launchd plist may contain stale --model flags from before a model
+        // was retired. Filter them to catalog IDs rather than failing to start.
+        let effectiveOverrides = catalogFilteredOverrides(model, catalog: snapshot.catalog)
+
         let selectedModels: [ModelInfo]
-        if !model.isEmpty {
-            selectedModels = advertisedModels(from: snapshot.models, config: config, modelOverrides: model)
+        let hadExplicitOverrides = !model.isEmpty
+        if hadExplicitOverrides {
+            // If the operator explicitly pinned models, keep that intent: an
+            // empty filtered override set means none of the pinned models are
+            // supported, so advertise nothing rather than falling through to
+            // --all or the default enabled set.
+            if effectiveOverrides.isEmpty {
+                selectedModels = []
+            } else {
+                selectedModels = advertisedModels(from: snapshot.models, config: config, catalog: snapshot.catalog, modelOverrides: effectiveOverrides)
+            }
         } else if all {
-            selectedModels = snapshot.models
+            selectedModels = catalogFilteredModels(snapshot.models, catalog: snapshot.catalog)
         } else {
-            selectedModels = advertisedModels(from: snapshot.models, config: config)
+            selectedModels = advertisedModels(from: snapshot.models, config: config, catalog: snapshot.catalog)
         }
 
         guard !selectedModels.isEmpty else {
-            printError("No models selected.")
+            printError("No supported models selected.")
             throw ExitCode.failure
         }
 
@@ -520,9 +567,29 @@ struct Start: AsyncParsableCommand {
         let selectedModelIDs: [String]
 
         if !model.isEmpty {
+            // Fail up-front on explicit user selections that are not supported.
+            // The daemon's foreground path also filters stale plist flags, but
+            // validating here prevents installing a launchd plist that is
+            // guaranteed to exit on every relaunch.
+            try validateModelSelections(against: snapshot.catalog, localModels: snapshot.models)
             selectedModelIDs = model
         } else if all {
-            selectedModelIDs = snapshot.models.map(\.id)
+            guard snapshot.catalog != nil else {
+                printError("Cannot use --all: coordinator model catalog is unavailable.")
+                printError("hint: check your network connection and coordinator URL, or retry after the coordinator is reachable.")
+                throw ExitCode.failure
+            }
+            let advertised = advertisedModels(
+                from: snapshot.models,
+                config: config,
+                catalog: snapshot.catalog,
+                includeDisabled: true
+            )
+            guard !advertised.isEmpty else {
+                printError("No supported models selected.")
+                throw ExitCode.failure
+            }
+            selectedModelIDs = advertised.map(\.id)
         } else {
             selectedModelIDs = try await interactiveCatalogPicker(
                 snapshot: snapshot,
@@ -1129,5 +1196,43 @@ struct Start: AsyncParsableCommand {
 
             lastLineCount = render(pos: cursorPos, sel: selected, prevLines: lastLineCount)
         }
+    }
+
+    // MARK: - Catalog validation
+
+    /// Reject `--model` selections that are not allowed by the coordinator
+    /// catalog (including alias previous/retired lineage builds). Used for
+    /// explicit user invocations (`--local`); the foreground launchd path uses
+    /// `catalogFilteredOverrides` so a stale plist does not kill the daemon on
+    /// every restart.
+    private func validateModelSelections(against catalog: CatalogSnapshot?, localModels: [ModelInfo]) throws {
+        guard !model.isEmpty else { return }
+        guard catalog != nil else {
+            throw ValidationError("Cannot validate --model selections: coordinator catalog is unavailable.")
+        }
+        let allowedIDs = catalogAllowedIDs(catalog: catalog)
+        for id in model {
+            guard allowedIDs.contains(id) else {
+                throw ValidationError("'\(id)' is not in the coordinator model catalog; only supported models can be served.")
+            }
+        }
+    }
+
+    /// Filter `--model` overrides to catalog-known IDs (including alias
+    /// previous/retired lineage builds), warning about any stale/non-catalog
+    /// IDs. Returns the original array when the catalog is unavailable so the
+    /// caller's existing "no models" guard still fires.
+    private func catalogFilteredOverrides(_ overrides: [String], catalog: CatalogSnapshot?) -> [String] {
+        guard catalog != nil else { return overrides }
+        let allowedIDs = catalogAllowedIDs(catalog: catalog)
+        var kept: [String] = []
+        for id in overrides {
+            if allowedIDs.contains(id) {
+                kept.append(id)
+            } else {
+                printError("Ignoring --model '\(id)': not in the coordinator model catalog.")
+            }
+        }
+        return kept
     }
 }

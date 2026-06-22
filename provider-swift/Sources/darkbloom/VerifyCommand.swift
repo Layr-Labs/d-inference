@@ -15,7 +15,7 @@ struct Verify: AsyncParsableCommand {
     var coordinator: String?
 
     mutating func run() async throws {
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
         var checks = buildDoctorChecks(snapshot: snapshot)
         checks.append(contentsOf: await buildCoordinatorDoctorChecks(
             snapshot: snapshot,

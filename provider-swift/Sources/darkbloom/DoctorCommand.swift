@@ -22,7 +22,13 @@ struct Doctor: AsyncParsableCommand {
     mutating func run() async throws {
         await runUpdateBannerIfEnabled()
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        // Pass the explicit --coordinator override into the snapshot loader so
+        // doctor fetches/caches the catalog from the same coordinator used for
+        // network diagnostics.
+        let snapshot = try await loadRuntimeSnapshot(
+            configOptions: configOptions,
+            coordinatorURLOverride: coordinator
+        )
         var checks = buildDoctorChecks(snapshot: snapshot)
         checks.append(contentsOf: await buildCoordinatorDoctorChecks(
             snapshot: snapshot,

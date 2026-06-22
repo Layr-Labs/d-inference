@@ -24,7 +24,7 @@ struct AutoUpdate: AsyncParsableCommand {
     var action: String
 
     mutating func run() async throws {
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
         let path = snapshot.configPath
 
         switch action.lowercased() {

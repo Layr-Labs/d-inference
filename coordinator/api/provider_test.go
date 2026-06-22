@@ -99,6 +99,149 @@ func TestProviderWebSocketConnect(t *testing.T) {
 	}
 }
 
+func TestProviderRegistrationFiltersNonCatalogModels(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	reg.SetModelCatalog([]registry.CatalogEntry{
+		{ID: "catalog-model", SizeGB: 1, MinRAMGB: 8},
+	})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	regMsg := protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			MachineModel: "Mac15,8",
+			ChipName:     "Apple M3 Max",
+			MemoryGB:     64,
+		},
+		Models: []protocol.ModelInfo{
+			{ID: "catalog-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
+			{ID: "local-only-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
+		},
+		Backend: "mlx-swift",
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if reg.ProviderCount() != 1 {
+		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
+	}
+	ids := reg.ProviderIDs()
+	if len(ids) != 1 {
+		t.Fatalf("provider ids = %v, want 1", ids)
+	}
+	p := reg.GetProvider(ids[0])
+	if p == nil {
+		t.Fatal("expected provider to exist")
+	}
+	p.Mu().Lock()
+	modelIDs := make([]string, len(p.Models))
+	for i, m := range p.Models {
+		modelIDs[i] = m.ID
+	}
+	p.Mu().Unlock()
+
+	want := []string{"catalog-model"}
+	if len(modelIDs) != len(want) || modelIDs[0] != want[0] {
+		t.Errorf("registered models = %v, want %v", modelIDs, want)
+	}
+}
+
+func TestProviderRegistrationKeepsRetiredAliasBuild(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	// Active catalog only contains the desired build; the retired build is
+	// intentionally no longer present.
+	reg.SetModelCatalog([]registry.CatalogEntry{
+		{ID: "desired-build", SizeGB: 1, MinRAMGB: 8},
+	})
+	reg.SetModelAliases(map[string]registry.AliasTarget{
+		"gemma-4-26b": {Desired: "desired-build", Retired: []string{"retired-build"}},
+	})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	regMsg := protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			MachineModel: "Mac15,8",
+			ChipName:     "Apple M3 Max",
+			MemoryGB:     64,
+		},
+		Models: []protocol.ModelInfo{
+			{ID: "retired-build", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
+		},
+		Backend: "mlx-swift",
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if reg.ProviderCount() != 1 {
+		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
+	}
+	ids := reg.ProviderIDs()
+	if len(ids) != 1 {
+		t.Fatalf("provider ids = %v, want 1", ids)
+	}
+	p := reg.GetProvider(ids[0])
+	if p == nil {
+		t.Fatal("expected provider to exist")
+	}
+	p.Mu().Lock()
+	modelIDs := make([]string, len(p.Models))
+	for i, m := range p.Models {
+		modelIDs[i] = m.ID
+	}
+	p.Mu().Unlock()
+
+	want := []string{"retired-build"}
+	if len(modelIDs) != len(want) || modelIDs[0] != want[0] {
+		t.Errorf("registered models = %v, want %v", modelIDs, want)
+	}
+
+	// The retired lineage must be enough for DesiredModelsForProvider to
+	// recognize the provider and push the current desired build.
+	entries := reg.DesiredModelsForProvider(ids[0])
+	if len(entries) != 1 || entries[0].DesiredBuild != "desired-build" {
+		t.Errorf("desired models = %+v, want one entry pointing to desired-build", entries)
+	}
+}
+
 func TestProviderWebSocketMultiple(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})

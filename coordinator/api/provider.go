@@ -132,6 +132,29 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	s.providerReadLoop(r.Context(), conn, providerID, acmeResult, r)
 }
 
+// filterRegistrationModels returns the subset of provider-reported models that
+// are in the coordinator catalog or are a previous/retired member of an active
+// alias lineage, plus a list of any dropped IDs. A nil catalog (dev/test)
+// disables the gate and keeps all models.
+//
+// Retired alias builds are intentionally kept: a provider that was offline
+// through the end of an alias rollout may only advertise a retired build.
+// DesiredModelsForProvider uses that retired lineage to recognize the provider
+// as part of the alias fleet and push the current desired build. Dropping the
+// retired build here would strand that provider with no desired_models update.
+func (s *Server) filterRegistrationModels(models []protocol.ModelInfo) ([]protocol.ModelInfo, []string) {
+	var filtered []protocol.ModelInfo
+	var dropped []string
+	for _, m := range models {
+		if s.registry.IsModelInCatalog(m.ID) || s.registry.IsAliasLineageBuild(m.ID) {
+			filtered = append(filtered, m)
+		} else {
+			dropped = append(dropped, m.ID)
+		}
+	}
+	return filtered, dropped
+}
+
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult, r *http.Request) {
@@ -204,6 +227,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			// Drop any models not in the coordinator catalog at registration time.
+			// The provider is expected to filter its advertised set client-side,
+			// but this is the server-side backstop that keeps unsupported weights
+			// out of provider counts and routing state.
+			if filtered, dropped := s.filterRegistrationModels(regMsg.Models); len(dropped) > 0 {
+				s.logger.Warn("provider registered non-catalog models; dropping",
+					"provider_id", providerID,
+					"dropped", dropped,
+					"kept_count", len(filtered))
+				regMsg.Models = filtered
+			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)

@@ -54,7 +54,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
     public var model: String?
     public var continuousBatching: Bool
-    /// Which models to advertise to the network. If empty, all downloaded models
+    /// Which supported models to advertise to the network. Only models that are
+    /// in the coordinator catalog can be served; this list further restricts that
+    /// catalog-supported set. If empty, all catalog-supported downloaded models
     /// are advertised. If set, only these models are offered.
     public var enabledModels: [String]
     /// Minutes of inactivity before the backend is shut down to free GPU memory.

@@ -51,14 +51,22 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
 
         guard let hardware = snapshot.hardware else {
             printError("hardware detection failed: \(snapshot.hardwareError?.localizedDescription ?? "unknown")")
             throw ExitCode.failure
         }
 
-        let models = advertisedModels(from: snapshot.models, config: snapshot.config)
+        // Benchmarking is a local operation: if a coordinator catalog is
+        // available, filter to supported models; otherwise fall back to the
+        // local scan so offline performance experiments still work.
+        let models: [ModelInfo]
+        if snapshot.catalog != nil {
+            models = advertisedModels(from: snapshot.models, config: snapshot.config, catalog: snapshot.catalog)
+        } else {
+            models = localAdvertisedModels(from: snapshot.models, config: snapshot.config)
+        }
 
         guard let selectedModel = ModelBenchmark.selectModel(
             models: models,

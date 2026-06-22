@@ -27,7 +27,7 @@ struct Report: AsyncParsableCommand {
     mutating func run() async throws {
         await runUpdateBannerIfEnabled()
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try await loadRuntimeSnapshot(configOptions: configOptions)
         let coordinatorURL = snapshot.config.coordinator.url
         let httpBase = coordinatorHTTPBase(coordinatorURL)
 

@@ -475,7 +475,7 @@ function MiniStat({
   sub?: string;
 }) {
   return (
-    <div className="rounded-xl border border-border-dim bg-bg-primary px-4 py-3 shadow-sm">
+    <div className="rounded-xl border border-border-dim bg-bg-white px-4 py-3 shadow-sm">
       <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
         {label}
       </p>
@@ -894,7 +894,7 @@ function ActiveModelsSection({
   const routableSlots = visibleInventory.reduce((sum, item) => sum + item.routable, 0);
 
   return (
-    <section className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
+    <section className="rounded-xl border border-border-dim bg-bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-start gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-accent-brand/20 bg-accent-brand/10 text-accent-brand">
@@ -1214,7 +1214,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
     : "No resolved provider locations yet";
 
   return (
-    <section className="bg-bg-primary rounded-xl p-5 sm:p-6 shadow-sm space-y-5">
+    <section className="bg-bg-white rounded-xl p-5 sm:p-6 shadow-sm space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
@@ -1618,7 +1618,7 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
   const topRegions = regionBuckets.slice(0, 6);
 
   return (
-    <section className="bg-bg-primary rounded-xl p-5 sm:p-6 shadow-sm space-y-5">
+    <section className="bg-bg-white rounded-xl p-5 sm:p-6 shadow-sm space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
@@ -1893,7 +1893,7 @@ function ActivityChart({
   }
 
   return (
-    <div className="bg-bg-primary rounded-xl p-5 space-y-4 shadow-sm">
+    <div className="bg-bg-white rounded-xl p-5 space-y-4 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
@@ -2037,7 +2037,7 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
   }
 
   return (
-    <div className="bg-bg-primary rounded-xl p-5 space-y-4 shadow-sm">
+    <div className="bg-bg-white rounded-xl p-5 space-y-4 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
@@ -2260,7 +2260,7 @@ function LeaderboardSection() {
 
   return (
     <section className="space-y-5">
-      <div className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
+      <div className="rounded-xl border border-border-dim bg-bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -2343,7 +2343,7 @@ function LeaderboardSection() {
         </div>
       </div>
 
-      <div className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
+      <div className="rounded-xl border border-border-dim bg-bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-semibold text-text-primary">Rankings</h3>
@@ -2871,7 +2871,7 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
   }
 
   return (
-    <section className="rounded-xl border border-border-dim bg-bg-primary p-5 shadow-sm">
+    <section className="rounded-xl border border-border-dim bg-bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -3053,7 +3053,7 @@ export default function StatsPage() {
 
   if (loading) {
     return (
-      <div className="flex-1 flex flex-col">
+      <div className="flex flex-col h-full">
         <TopBar title="Network Stats" />
         <div className="flex-1 flex items-center justify-center">
           <Loader2 size={24} className="animate-spin text-text-tertiary" />
@@ -3064,7 +3064,7 @@ export default function StatsPage() {
 
   if (error || !stats) {
     return (
-      <div className="flex-1 flex flex-col">
+      <div className="flex flex-col h-full">
         <TopBar title="Network Stats" />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center space-y-2">
@@ -3093,9 +3093,15 @@ export default function StatsPage() {
   ];
 
   return (
-    <div className="flex-1 flex flex-col overflow-y-auto">
+    <div className="flex flex-col h-full">
       <TopBar title="Network Stats" />
-      <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-6">
+      {/* `relative` makes this the containing block for any absolutely-positioned
+          descendants (e.g. the sr-only toggle checkbox in ActiveModelsSection).
+          Without it, those abs elements escape this scroller's clip, anchor to
+          <body>, and stretch the document — making the whole page scroll when the
+          wheel is over the non-scrolling sidebar. */}
+      <div className="flex-1 overflow-y-auto relative">
+        <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
@@ -3120,7 +3126,7 @@ export default function StatsPage() {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 rounded-xl border border-border-dim bg-bg-primary p-1.5 shadow-sm">
+        <div className="flex flex-wrap gap-2 rounded-xl border border-border-dim bg-bg-white p-1.5 shadow-sm">
           {tabs.map((tab) => (
             <button
               key={tab.value}
@@ -3142,7 +3148,7 @@ export default function StatsPage() {
         ) : (
           <>
         {/* Hero section -- big numbers */}
-        <div className="bg-bg-primary rounded-2xl p-8 shadow-sm">
+        <div className="bg-bg-white rounded-2xl p-8 shadow-sm">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
             <HeroStat
               value={formatNumber(stats.total_tokens)}
@@ -3209,7 +3215,7 @@ export default function StatsPage() {
 
         {/* Token distribution bar (only if there are tokens) */}
         {stats.total_tokens > 0 && (
-          <div className="bg-bg-primary rounded-xl p-5 space-y-3 shadow-sm">
+          <div className="bg-bg-white rounded-xl p-5 space-y-3 shadow-sm">
             <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
               Token Distribution
             </h3>
@@ -3261,6 +3267,7 @@ export default function StatsPage() {
           <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest">
             Auto-refreshes every 10 seconds
           </p>
+        </div>
         </div>
       </div>
     </div>

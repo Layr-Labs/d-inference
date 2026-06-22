@@ -1023,17 +1023,29 @@ public actor CoordinatorClient {
             apnsEnvironment: effectiveEnv
         )
 
-        guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),
-              let json = String(data: data, encoding: .utf8) else {
+        do {
+            let data = try ProviderProtocolCodec.encodeProviderMessage(message)
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw CoordinatorError.encodingFailed
+            }
+            return json
+        } catch {
+            recordEncodeFailure("heartbeat", error)
+            // Last resort: a valid idle heartbeat keeps the connection alive
+            // rather than shipping malformed bytes the coordinator would drop.
             return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
         }
-        return json
     }
 
     // MARK: - Outbound Encoding
 
     private func encodeOutbound(_ msg: OutboundMessage) -> String {
-        (try? CoordinatorClientCodec.encodeOutboundMessageString(msg)) ?? "{}"
+        do {
+            return try CoordinatorClientCodec.encodeOutboundMessageString(msg)
+        } catch {
+            recordEncodeFailure("outbound", error)
+            return "{}"
+        }
     }
 
     private func encodeInferenceError(requestId: String, error: String, statusCode: UInt16, errorReason: String? = nil) -> String {
@@ -1043,11 +1055,45 @@ public actor CoordinatorClient {
             statusCode: statusCode,
             errorReason: errorReason
         ))
-        guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),
-              let json = String(data: data, encoding: .utf8) else {
-            return "{}"
+        do {
+            let data = try ProviderProtocolCodec.encodeProviderMessage(message)
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw CoordinatorError.encodingFailed
+            }
+            return json
+        } catch let encodeError {
+            recordEncodeFailure("inference_error", encodeError)
+            // Surface a parseable, correctly-typed error for THIS request rather
+            // than an empty `{}` the coordinator can't attribute or act on.
+            var fallback: [String: Any] = [
+                "type": "inference_error",
+                "request_id": requestId,
+                "error": error,
+                "status_code": Int(statusCode),
+            ]
+            if let errorReason { fallback["error_reason"] = errorReason }
+            if let data = try? JSONSerialization.data(withJSONObject: fallback),
+               let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return "{\"type\":\"inference_error\",\"request_id\":\"\",\"error\":\"encode_failed\",\"status_code\":500}"
         }
-        return json
+    }
+
+    /// A never-should-happen outbound-encode failure must not silently ship a
+    /// corrupt/empty payload: record it at error severity and via protocol
+    /// telemetry so the drift is observable instead of invisible.
+    private func recordEncodeFailure(_ operation: String, _ error: Error) {
+        logger.error("Outbound encode failed (\(operation)): \(error.localizedDescription)")
+        TelemetryClient.shared.emit(
+            kind: .protocolError,
+            severity: .error,
+            message: "outbound encode failed",
+            fields: [
+                "operation": .string(operation),
+                "error": .string(error.localizedDescription),
+            ]
+        )
     }
 
     // MARK: - Telemetry

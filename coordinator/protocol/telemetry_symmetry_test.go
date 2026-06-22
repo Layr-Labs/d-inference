@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-// TestTelemetryJSONSymmetry checks that the Go canonical encoding of a
-// TelemetryEvent matches the Swift/TypeScript mirrors. Any change here must
-// also be reflected in `provider-swift/Sources/ProviderCore/Telemetry/` and
-// `console-ui/src/lib/telemetry-types.ts` — those mirrors have their own
-// symmetry tests that assert the same invariants.
+// TestTelemetryJSONSymmetry pins the Go canonical encoding of a TelemetryEvent
+// (field names, enum casing, optional-field omission). The Swift and TypeScript
+// mirrors must encode the same shape; any change here must be reflected in
+// `provider-swift/Sources/ProviderCore/Telemetry/` and
+// `console-ui/src/lib/telemetry-types.ts`.
 func TestTelemetryJSONSymmetry(t *testing.T) {
 	ev := TelemetryEvent{
 		ID:        "00000000-0000-0000-0000-000000000001",

@@ -1625,7 +1625,7 @@ func (s *Server) mdmWebhookTokenValid(r *http.Request) bool {
 var installScript []byte
 
 // installScriptPlaceholder is substituted with the coordinator's public URL at
-// serve time. Keep in sync with coordinator/internal/api/install.sh.
+// serve time. Keep in sync with coordinator/api/install.sh.
 //
 // The legacy install.sh also substituted __DARKBLOOM_R2_CDN_URL__ and
 // __DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__ for the Python runtime download.

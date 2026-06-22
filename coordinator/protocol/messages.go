@@ -161,7 +161,7 @@ type RegisterMessage struct {
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
 	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
 	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
 }
@@ -204,7 +204,7 @@ type HeartbeatMessage struct {
 }
 
 // BackendSlotCapacity describes the capacity state of a single backend slot
-// (one vllm-mlx instance serving one model).
+// (one MLX-Swift in-process model serving one model).
 type BackendSlotCapacity struct {
 	Model              string `json:"model"`                     // model ID for this slot
 	State              string `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
@@ -486,7 +486,7 @@ type AttestationResponseMessage struct {
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
 	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
 	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }

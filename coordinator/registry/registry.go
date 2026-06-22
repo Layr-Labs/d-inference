@@ -2652,7 +2652,7 @@ func CloneStringMap(in map[string]string) map[string]string {
 // DisconnectDuplicatesBySerial disconnects all providers that share the same
 // serial number as the given provider, except the given provider itself.
 // This prevents multiple WebSocket connections from the same physical machine
-// from competing for the same vllm-mlx backend on localhost.
+// from competing for the same MLX-Swift backend on the host.
 func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 	if serial == "" {
 		return

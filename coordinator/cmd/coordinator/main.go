@@ -212,6 +212,14 @@ func main() {
 		logger.Info("warm-pool controller enabled", "observe_only", cfg.RegistryCfg.WarmPool.ObserveOnly, "interval", cfg.RegistryCfg.WarmPool.Interval.String())
 	}
 
+	// Provider/consumer IP geolocation (api.newProviderGeoResolverFromEnv, invoked
+	// from NewServer) reads two optional env vars:
+	//   - EIGENINFERENCE_TRUST_GEO_HEADERS=1 — trust CF/Vercel geo headers from a
+	//     trusted reverse proxy instead of calling ip-api.com.
+	//   - EIGENINFERENCE_IPAPI_KEY — ip-api.com PRO key (SECRET; inject via KMS /
+	//     Secret Manager, never commit). When set, geo lookups use the unmetered
+	//     https://pro.ip-api.com endpoint; unset falls back to the free, 45 req/min
+	//     http://ip-api.com endpoint (graceful, so dev without a key still works).
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
 	// Stop the routing-telemetry sink's worker pool on shutdown. Deferred so it
 	// runs after the HTTP server has drained (no in-flight request can still be

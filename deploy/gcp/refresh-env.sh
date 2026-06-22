@@ -55,6 +55,11 @@ EIGENINFERENCE_STRIPE_CANCEL_URL=$(fetch eigeninference-stripe-cancel-url)
 EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET=$(fetch eigeninference-stripe-connect-webhook-secret)
 EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL=$(fetch eigeninference-stripe-connect-return-url)
 EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL=$(fetch eigeninference-stripe-connect-refresh-url)
+# ip-api.com PRO key (optional, not in CRITICAL_VARS). When present, provider/
+# consumer geo lookups use the unmetered https://pro.ip-api.com endpoint; absent
+# (secret missing => empty) the coordinator gracefully falls back to the free
+# 45 req/min http://ip-api.com tier, so a missing secret never breaks deploy.
+EIGENINFERENCE_IPAPI_KEY=$(fetch eigeninference-ipapi-key)
 DD_API_KEY=$(fetch eigeninference-dd-api-key)
 DD_SITE=$(fetch eigeninference-dd-site)
 DD_ENV=development

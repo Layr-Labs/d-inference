@@ -185,6 +185,7 @@ Managed via EigenCloud KMS (prod) or GCP Secret Manager (dev). Core coordinator 
 | `EIGENINFERENCE_STEP_CA_ROOT`, `EIGENINFERENCE_STEP_CA_INTERMEDIATE` | CA cert paths |
 | `MNEMONIC` | 12-word BIP39 Solana wallet for coordinator |
 | `EIGENINFERENCE_SOLANA_RPC_URL` | Solana RPC endpoint |
+| `EIGENINFERENCE_IPAPI_KEY` | ip-api.com **PRO** key (secret, optional). When set, provider/consumer geo lookups use the unmetered `https://pro.ip-api.com` endpoint; unset falls back to the free 45 req/min `http://ip-api.com` tier. Dev: `gcloud secrets create eigeninference-ipapi-key`. Never commit the value. |
 | `DOMAIN` | Public domain, used by Caddyfile and `start.sh` |
 | `APP_PORT` | Port Caddy reverse-proxies to (default 8080) |
 

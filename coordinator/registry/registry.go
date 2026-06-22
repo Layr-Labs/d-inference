@@ -1154,6 +1154,15 @@ type Registry struct {
 	// after a failed one. The value is the entry's expiry time. While an
 	// entry lives, the provider is skipped for new load_model sends
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
+	//
+	// SCOPE: this map is consulted ONLY by warm-pool / model-swap PLANNING. It
+	// does NOT participate in request routing or admission — the dispatch hot
+	// path (snapshotProviderLockedEx, buildCandidateWithReason) and the capacity
+	// preflight (QuickCapacityCheck) never read it. A pending load neither makes
+	// a provider eligible nor reserves capacity for routing; routing eligibility
+	// is derived entirely from BackendCapacity.Slots (with WarmModels as the
+	// legacy fallback). Do not add routing reads of this field — see the
+	// "Coordinator State Model" section in AGENTS.md.
 	pendingModelLoads       map[string]time.Time // key: "providerID:modelID", value: expiry
 	pendingModelLoadStarted map[string]time.Time
 

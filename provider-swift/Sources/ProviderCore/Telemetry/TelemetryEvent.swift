@@ -1,5 +1,5 @@
 /// Telemetry wire types -- mirror of
-/// `coordinator/internal/protocol/telemetry.go`.
+/// `coordinator/protocol/telemetry.go`.
 ///
 /// JSON shapes MUST match the Go definitions. Source, Severity, and Kind raw
 /// values are the exact strings the coordinator expects. Any mismatch silently
@@ -31,7 +31,9 @@ public enum TelemetrySeverity: String, Codable, Sendable {
 
 /// Coarse categorization for filtering in the admin UI.
 /// Raw values match `TelemetryKind` constants in Go.
-public enum TelemetryKind: String, Codable, Sendable {
+/// `CaseIterable` mirrors the Go `KnownKinds()` set so the symmetry test can
+/// pin the kind list + count across layers.
+public enum TelemetryKind: String, Codable, Sendable, CaseIterable {
     case panic
     case httpError = "http_error"
     case protocolError = "protocol_error"
@@ -227,7 +229,7 @@ public struct AnyCodableValue: Codable, Sendable, CustomStringConvertible {
 
 /// Client-side allowlist. The coordinator enforces its own, but we preempt
 /// bandwidth waste. Keys must match the server list in
-/// `coordinator/internal/api/telemetry_handlers.go`.
+/// `coordinator/api/telemetry_handlers.go`.
 public enum TelemetryFieldFilter {
     private static let allowed: Set<String> = [
         "component", "operation", "duration_ms", "attempt", "endpoint",

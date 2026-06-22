@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -104,6 +105,47 @@ func TestProviderWideEvalInFlightLong(t *testing.T) {
 	}
 	if providerWideEvalInFlightLong(nil) {
 		t.Fatal("no slots must not trip")
+	}
+}
+
+// TestEvalInFlightLongEmittedOnceProviderWide verifies the end-to-end emission:
+// three loaded models all carrying the SAME process-global in-flight eval must
+// produce the provider.eval_in_flight_long counter EXACTLY ONCE (not once per
+// model) and WITHOUT a model: tag. This is the direct regression for the per-slot
+// over-counting bug — it fails (n==3) without the provider-wide fix.
+func TestEvalInFlightLongEmittedOnceProviderWide(t *testing.T) {
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+
+	s := &Server{}
+	s.SetDatadog(ddClient)
+
+	hb := &protocol.HeartbeatMessage{
+		BackendCapacity: &protocol.BackendCapacity{
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: "a", State: "running", EvalInFlightMs: 11000},
+				{Model: "b", State: "idle", EvalInFlightMs: 11000},
+				{Model: "c", State: "idle", EvalInFlightMs: 11000},
+			},
+		},
+	}
+	s.recordBackendWedgeTelemetry(hb)
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+
+	n := 0
+	for _, p := range packets {
+		if strings.Contains(p, "provider.eval_in_flight_long") {
+			n++
+			if strings.Contains(p, "model:") {
+				t.Fatalf("eval_in_flight_long must be provider-wide (no model tag), got: %s", p)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("eval_in_flight_long must emit once provider-wide for 3 stalled slots, got %d: %v", n, packets)
 	}
 }
 
